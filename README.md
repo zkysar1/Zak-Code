@@ -86,6 +86,8 @@ Zak Code is documentation-driven. The team maintains these living docs:
 | [`docs/RISKS.md`](docs/RISKS.md) | Risk register |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture Decision Records (ADRs) |
 | [`docs/WORKFLOW.md`](docs/WORKFLOW.md) | How the build is orchestrated |
+| [`docs/references/`](docs/references/) | Clean-room study notes mined from prior art |
+| [`docs/references/`](docs/references/) | Clean-room study notes mined from prior art |
 
 ## Repository layout
 

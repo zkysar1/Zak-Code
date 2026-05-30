@@ -19,8 +19,9 @@ venv/
 env/
 ENV/
 
-# uv  (uv.lock IS committed for reproducible installs)
+# uv  (uv.lock IS committed for reproducible installs; override any global *.lock ignore)
 .uv/
+!uv.lock
 
 # Test / type / lint caches
 .pytest_cache/
@@ -49,6 +50,11 @@ htmlcov/
 _research/
 _zakcode_research/
 **/claw-code-main/
+
+# One-shot helper scripts (recovery/extraction); never committed
+_recover_docs.py
+_extract_docs.py
+_cleanup_entities.py
 
 # OS noise
 .DS_Store

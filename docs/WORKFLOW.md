@@ -32,6 +32,14 @@ Work proceeds in **phases**, each producing a milestone from [`ROADMAP.md`](ROAD
 
 ## Orchestration patterns we use
 
+- **Freeze shared contracts before fan-out** — when a milestone's modules are tightly
+  coupled through shared types (e.g. M0's `Message`/`ToolResult`/`Provider` ABC are imported
+  by providers, agent, session, *and* tools), the orchestrator hand-writes and commits the
+  shared contracts first ("Phase A"), then fans out implementation agents against those
+  frozen interfaces. This stops parallel agents from each inventing an incompatible
+  vocabulary and turning integration into a rewrite. Builders validate only their own files;
+  the orchestrator runs the full integration sweep. Builders never edit the frozen contract
+  files except additively, flagged loudly.
 - **Fan-out research** — many readers, each on a different source/subsystem; barrier;
   synthesize. (Used for the foundation phase.)
 - **Per-subsystem implementation pipeline** — each subsystem flows build → self-test →
@@ -69,4 +77,4 @@ A short, append-only record of orchestration runs (newest at bottom).
 
 | Date | Workflow | Run ID | Purpose | Outcome |
 | --- | --- | --- | --- | --- |
-| 2026-05-30 | `zakcode-foundation` | `wf_efd14b18-b4c` | Mine prior art (claw-code/Hermes/goose/litellm/best-practices) → draft ARCHITECTURE/ROADMAP/PARITY/GUARDRAILS+RISKS | _in progress_ |
+| 2026-05-30 | `zakcode-foundation` | `wf_efd14b18-b4c` | Mine prior art (claw-code/Hermes/goose/litellm/best-practices) → draft ARCHITECTURE/ROADMAP/PARITY/GUARDRAILS+RISKS | ✅ Done — 10 agents, ~995K tokens. Wrote full ARCHITECTURE, ROADMAP, PARITY, GUARDRAILS, RISKS + 6 reference digests in `docs/references/`. |

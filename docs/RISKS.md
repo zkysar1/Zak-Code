@@ -1,15 +1,22 @@
-# Risk Register
+# RISKS
 
-> **The full register is being authored by the `zakcode-foundation` workflow**
-> (run `wf_efd14b18-b4c`, launched 2026-05-30). Seed entries below.
+Risk register for Zak Code. Likelihood and Impact are L / M / H. Status is Open, Mitigating, or Accepted. This expands the seed register in `docs/RISKS.md`.
 
 | Risk | Category | Likelihood | Impact | Mitigation | Status |
 | --- | --- | --- | --- | --- | --- |
-| Accidentally copying leaked/proprietary code | Legal/IP | M | H | Clean-room rule; reference material kept outside repo & gitignored; review diffs | Open |
-| API key leakage via logs/commits | Security | M | H | `.env` gitignored; never print key values; report presence only | Open |
-| RCE / data loss via file & shell tools | Security | M | H | Permission model; confirm destructive ops; path scoping | Open |
-| Prompt injection via tool output / web content | Security | M | M | Treat tool/web output as untrusted; don't auto-execute embedded instructions | Open |
-| Local models lacking native tool-calling | Reliability | H | M | Provider-layer fallback (prompted tool protocol) for such models | Open |
-| Provider/API drift (litellm/OpenAI/Ollama) | Dependency | M | M | Thin provider layer isolates changes; pin versions | Open |
-| Scope creep / never-ending parity chase | Delivery | H | M | Milestones with exit criteria; tiered parity matrix | Open |
-| Context/cost blowups during long sessions | Cost | M | M | Aggressive context compaction; budgets; observability | Open |
+| Accidentally copying leaked/proprietary (Claude Code) source into the repo | Legal/IP | M | H | Clean-room rule (Guardrails §1); reference kept outside repo at `_zakcode_research\` and gitignored; re-express in our own design + ADRs; pre-commit check that ignored research paths aren't staged; diff review | Mitigating |
+| Reference material or `.env` committed by accident | Legal/IP | M | H | `.gitignore` covers `_research/`, `_zakcode_research/`, `claw-code-main/`, `.env*`; never weaken ignores; verify staged paths before commit | Mitigating |
+| Remote code execution / data loss via file & shell tools | Security (RCE) | M | H | Permission gate enforced in core; destructive-op confirmation showing exact command/diff; arg-vector exec, timeouts, output caps, scrubbed env, denylist; fail-closed | Mitigating |
+| Path-escape / writes outside workspace (`..`, symlinks, absolute paths) | Security | M | H | Resolve to real absolute path; reject escapes; deny writes outside root; protect `.git`, `.env`, venv, research dir | Mitigating |
+| API key leakage via logs, commits, errors, or model context | Security (key leakage) | M | H | `.env` gitignored; report presence only, never value; redact logs/tracebacks/session files; keep secrets out of prompts and child-process env | Mitigating |
+| Prompt injection via tool output / file / web content driving privileged actions | Security (prompt injection) | M | H | Treat all tool/web output as untrusted data; never auto-execute embedded instructions; trust-boundary delimiting; gate + confirm; human-in-loop for ingest+egress/destructive chains | Open |
+| Unintended network egress / exfiltration via tools | Security | L | H | No phone-home; egress only to configured provider/Ollama; network tools gated and default-off; endpoints from config not model output | Mitigating |
+| Provider/API drift (litellm, OpenAI, Ollama schema or behavior changes) | Provider/Vendor | M | M | Thin provider layer isolates vendor specifics; pin versions in `uv.lock`; integration tests against first-class targets; config-only provider swap | Open |
+| Vendor pricing/policy/availability change for a relied-upon model | Provider/Vendor | M | M | Vendor-agnostic by construction; fallback model config; local Ollama path keeps tool usable offline/zero-cost | Mitigating |
+| Local models lacking native tool-calling produce malformed/no tool calls | Reliability | H | M | Provider-layer prompted-tool-protocol fallback; strict tool-input validation (pydantic); recommend tool-capable local models (e.g. qwen2.5-coder); retries with repair | Open |
+| Scope creep / never-ending parity chase with Claude Code | Scope creep | H | M | Milestones with exit criteria (`ROADMAP.md`); tiered parity matrix (`PARITY.md`) targeting capability not byte-parity; explicit non-goals in charter | Mitigating |
+| Context window / cost blowups during long sessions | Context/Cost | M | M | Aggressive context compaction; per-session iteration cap (`ZAKCODE_MAX_ITERATIONS`); token/cost budgets; bounded tool output; observability | Open |
+| Supply-chain compromise via a new/transitive dependency | Security/Supply-chain | L | H | Vet + license-check new deps; pin & commit `uv.lock`; no post-install/fetch-execute steps; agent installs go through permission gate | Mitigating |
+| Permission model bypassed by a client (CLI/server) instead of core | Security/Architecture | L | H | Gate enforced in core engine, not clients; clients only render prompts; tests assert privileged tools fail closed without a grant | Open |
+| Maintainability erosion (untyped boundaries, drift between docs and code, core/interface leakage) | Maintainability | M | M | Typed pydantic boundaries; ruff + mypy + pytest before done; "docs travel with code"; core/interface separation; small reviewable changes | Open |
+| New behavior ships without tests, reducing reliability over time | Maintainability/Reliability | M | M | New behavior ships with tests; CI-style verification loop; review gate | Open |

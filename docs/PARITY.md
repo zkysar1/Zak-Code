@@ -46,6 +46,14 @@ row here is `yes` (this matrix only tracks parity against things Claude Code act
 - **M4 — Advanced / Full Parity**: multi-agent teams/swarm, remote/bridge/server,
   cron/remote-trigger, IDE/desktop/mobile/voice, analytics, SDK, internal/debug surface.
 
+> **Milestone-numbering note.** This matrix uses **coarse capability tiers** (M1 = core
+> loop, M2 = daily-driver, M3 = extensibility, M4 = advanced) to group 180+ rows at a
+> glance. [`ROADMAP.md`](ROADMAP.md) uses **fine-grained, sequenced milestones** (M0 core
+> loop → M1 streaming → M2 permissions → M3 server → M4 sub-agents → M5 MCP → M6 plugins →
+> M7 skills → M8 compaction → M9 evals → M10+ web) and is the **canonical source for what
+> gets built when**. The two numbering schemes are independent; when they disagree, ROADMAP
+> wins. (A later pass may retag these rows to ROADMAP's numbers once the surface stabilizes.)
+
 **Touches** (in Tools notes): FS = filesystem, NET = network, PROC = subprocess/process.
 
 ---

@@ -55,3 +55,12 @@ deeply along the way.
 - **Owner / product direction:** Zachary Kysar (Zak Data Solutions).
 - **Lead builder / orchestrator:** the agent team, coordinated via
   [`WORKFLOW.md`](WORKFLOW.md).
+
+## Roadmap at a glance
+
+The full milestone plan lives in [`ROADMAP.md`](ROADMAP.md). In short: **M0** runnable core
+loop (Ollama + OpenAI, sharp tool set, `zakcode chat`, sessions) → **M1** streaming/TUI →
+**M2** permissions/hooks → **M3** FastAPI server (SSE/WS) → **M4** sub-agents → **M5** MCP →
+**M6** plugins → **M7** skills → **M8** advanced compaction → **M9** eval harness →
+**M10+** web client & deferred surfaces. Capability parity vs. Claude Code is tracked in
+[`PARITY.md`](PARITY.md).

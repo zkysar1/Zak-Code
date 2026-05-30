@@ -5,7 +5,31 @@ the same agent runs on ~100 providers (first-class, tested: Ollama and OpenAI). 
 loop must never embed a provider-specific request shape — switching providers is a
 configuration change only.
 
-Status: scaffolded. The provider interface (sync + async completion, streaming, and
-cross-provider tool-call normalization) is implemented in milestone M0.
+:mod:`zakcode.providers.base` defines the :class:`Provider` ABC and the canonical
+request/response value objects. The concrete litellm-backed provider lands next.
 See ``docs/ARCHITECTURE.md``.
 """
+
+from zakcode.providers.base import (
+    AuthError,
+    Capabilities,
+    ContextWindowExceeded,
+    LLMResult,
+    Provider,
+    ProviderError,
+    RateLimited,
+    RequestFailed,
+    ToolCall,
+)
+
+__all__ = [
+    "AuthError",
+    "Capabilities",
+    "ContextWindowExceeded",
+    "LLMResult",
+    "Provider",
+    "ProviderError",
+    "RateLimited",
+    "RequestFailed",
+    "ToolCall",
+]

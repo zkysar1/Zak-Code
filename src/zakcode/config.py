@@ -13,10 +13,24 @@ pydantic reserves the bare name ``model``.
 
 from __future__ import annotations
 
+from enum import IntEnum
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class PermissionTier(IntEnum):
+    """Ordered privilege levels a tool can require.
+
+    Higher value = more dangerous. Ordering matters: a tool is authorized when the active
+    permission level satisfies (>=) the tool's required tier. M0 only *records* each
+    tool's required tier; the enforcing policy lands in M2 (see ``docs/ROADMAP.md``).
+    """
+
+    READ_ONLY = 0
+    WORKSPACE_WRITE = 1
+    DANGER_FULL_ACCESS = 2
 
 
 class Settings(BaseSettings):
@@ -64,3 +78,6 @@ class Settings(BaseSettings):
 def load_settings(**overrides: object) -> Settings:
     """Load settings from env/.env, applying any explicit keyword overrides."""
     return Settings(**overrides)  # type: ignore[arg-type]
+
+
+__all__ = ["PermissionTier", "Settings", "load_settings"]
