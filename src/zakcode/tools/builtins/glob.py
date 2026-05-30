@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import PurePath
+
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -51,6 +53,10 @@ class GlobTool(Tool):
         pattern = args.get("pattern")
         if not isinstance(pattern, str) or not pattern:
             return ToolResult.error("'pattern' is required and must be a string.")
+        # Absolute patterns are unsupported by pathlib's matcher and would let a
+        # caller probe outside the base directory; reject them up front.
+        if PurePath(pattern).is_absolute():
+            return ToolResult.error(f"Pattern must be relative, not absolute: {pattern}")
 
         path = args.get("path")
         if path is not None and not isinstance(path, str):
@@ -72,7 +78,27 @@ class GlobTool(Tool):
             # Strip leading recursive marker for rglob, which already recurses.
             effective = pattern.replace("**/", "", 1) if "**" in pattern else pattern
 
-            matches = sorted(str(p) for p in matcher(effective))
+            try:
+                raw_matches = list(matcher(effective))
+            except (ValueError, NotImplementedError):
+                # e.g. '../*' under rglob, or other patterns pathlib refuses;
+                # treat an un-matchable pattern as simply having no matches.
+                raw_matches = []
+
+            # Defensively drop anything that escaped the workspace root (e.g. via
+            # a symlink the matcher followed, or a '../' pattern). We compare each
+            # match by its fully resolved path and emit that canonical form, so a
+            # self-referential match like 'base/../base' collapses to the base and
+            # is skipped rather than leaking a confusing dotted path.
+            root = ctx.workspace_root.resolve()
+            kept: list[str] = []
+            for p in raw_matches:
+                rp = p.resolve()
+                # Must live strictly under the root, and never be the base/root
+                # itself (a glob should not return its own search directory).
+                if root in rp.parents and rp != resolved_base:
+                    kept.append(str(rp))
+            matches = sorted(set(kept))
             total = len(matches)
             truncated = total > _MAX_RESULTS
             if truncated:

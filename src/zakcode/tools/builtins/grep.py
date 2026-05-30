@@ -131,7 +131,9 @@ class GrepTool(Tool):
             return [root]
 
         collected: list[Path] = []
-        for current, dirnames, filenames in os.walk(root):
+        # ``onerror`` is left at its default (errors swallowed) and we never follow
+        # symlinks, so a cycle or an unreadable subtree cannot hang or crash us.
+        for current, dirnames, filenames in os.walk(root, followlinks=False):
             # Prune skip directories in place so os.walk does not descend.
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
             current_path = Path(current)

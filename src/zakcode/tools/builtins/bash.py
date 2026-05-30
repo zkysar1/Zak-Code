@@ -54,11 +54,12 @@ class BashTool(Tool):
     async def execute(self, args: dict, ctx: ToolContext) -> ToolResult:
         """Run ``command`` and return combined output plus the exit code."""
         command = args.get("command")
-        if not isinstance(command, str) or not command:
-            return ToolResult.error("'command' is required and must be a string.")
+        if not isinstance(command, str) or not command.strip():
+            return ToolResult.error("'command' is required and must be a non-empty string.")
 
+        # ``bool`` is an ``int`` subclass; treat True/False as "no timeout given".
         timeout = args.get("timeout")
-        if not isinstance(timeout, int) or timeout <= 0:
+        if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
             timeout = _DEFAULT_TIMEOUT
         timeout = min(timeout, _MAX_TIMEOUT)
 
@@ -66,9 +67,15 @@ class BashTool(Tool):
             completed = await asyncio.to_thread(
                 self._run, command, str(ctx.workspace_root), timeout
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            partial = exc.output or ""
+            if isinstance(partial, bytes):
+                partial = partial.decode("utf-8", errors="replace")
+            message = f"Command timed out after {timeout}s: {command}"
+            if partial:
+                message += f"\n--- partial output ---\n{partial[:_MAX_OUTPUT]}"
             return ToolResult.error(
-                f"Command timed out after {timeout}s: {command}",
+                message,
                 data={"command": command, "timed_out": True},
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise

@@ -65,7 +65,12 @@ class WriteFileTool(Tool):
                 return ToolResult.error(f"Path is a directory, not a file: {path}")
 
             parent = resolved.parent
-            parent.mkdir(parents=True, exist_ok=True)
+            if parent.exists() and not parent.is_dir():
+                return ToolResult.error(f"Parent path is not a directory: {parent}")
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return ToolResult.error(f"Could not create parent directory for {path}: {exc}")
 
             data = content.encode("utf-8")
             fd, tmp_name = tempfile.mkstemp(dir=str(parent), prefix=".zaktmp-")

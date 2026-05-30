@@ -177,12 +177,22 @@ def get_capabilities(model: str) -> Capabilities:
     """Return the capabilities for ``model``.
 
     Resolution order: static table -> litellm metadata -> safe default
-    (``context_window=8192``, ``supports_tools=True``).
+    (``context_window=8192``, ``supports_tools=True``). This never raises: an
+    empty/blank/non-string model, an unknown model, or any lookup failure all
+    fall through to the safe default.
     """
-    static = _lookup_static(model)
-    if static is not None:
-        return static
-    dynamic = _from_litellm(model)
-    if dynamic is not None:
-        return dynamic
+    # Defensively coerce: callers should pass a str, but a None/odd value must
+    # not blow up capability resolution. An empty/blank name skips lookups.
+    if not isinstance(model, str) or not model.strip():
+        return _DEFAULT.model_copy()
+
+    try:
+        static = _lookup_static(model)
+        if static is not None:
+            return static
+        dynamic = _from_litellm(model)
+        if dynamic is not None:
+            return dynamic
+    except Exception:
+        return _DEFAULT.model_copy()
     return _DEFAULT.model_copy()

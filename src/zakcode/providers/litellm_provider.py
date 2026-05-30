@@ -44,15 +44,36 @@ from zakcode.usage import Usage
 # attr-defined error (litellm ships no type stubs for this module global).
 setattr(litellm, "drop_params", True)  # noqa: B010
 
+
 # Resolve litellm's exception classes defensively. Older/newer versions may not
 # expose every type; access via getattr so a missing attribute degrades to None
 # (no isinstance match) instead of an import-time failure. litellm ships no type
-# stubs, so these attribute reads are untyped regardless.
-_LiteLLMAuthError: type[Exception] | None = getattr(litellm, "AuthenticationError", None)
-_LiteLLMContextWindowError: type[Exception] | None = getattr(
-    litellm, "ContextWindowExceededError", None
-)
-_LiteLLMRateLimitError: type[Exception] | None = getattr(litellm, "RateLimitError", None)
+# stubs, so these attribute reads are untyped regardless. A non-class value (or
+# anything not derived from ``BaseException``) is rejected so it can never blow up
+# a later ``isinstance`` check.
+def _resolve_exc_type(*names: str) -> type[BaseException] | None:
+    """Return the first attribute among ``names`` that is an exception class.
+
+    Tries ``litellm`` first, then the bundled ``litellm.exceptions`` /
+    ``openai`` namespaces if present. Any miss or non-exception value is skipped
+    so resolution never raises at import time.
+    """
+    namespaces: list[Any] = [litellm]
+    exceptions_mod = getattr(litellm, "exceptions", None)
+    if exceptions_mod is not None:
+        namespaces.append(exceptions_mod)
+    for ns in namespaces:
+        for name in names:
+            candidate = getattr(ns, name, None)
+            if isinstance(candidate, type) and issubclass(candidate, BaseException):
+                return candidate
+    return None
+
+
+_LiteLLMAuthError = _resolve_exc_type("AuthenticationError")
+_LiteLLMPermissionError = _resolve_exc_type("PermissionDeniedError")
+_LiteLLMContextWindowError = _resolve_exc_type("ContextWindowExceededError")
+_LiteLLMRateLimitError = _resolve_exc_type("RateLimitError")
 
 
 def _is_ollama_model(model: str) -> bool:
@@ -197,33 +218,66 @@ class LiteLLMProvider(Provider):
         return calls
 
     @staticmethod
-    def _extract_usage(response: Any) -> Usage:
+    def _coerce_int(value: Any) -> int:
+        """Coerce a usage count to a non-negative int; junk -> 0, never raises."""
+        if isinstance(value, bool):  # bool is an int subclass — treat as absent
+            return 0
+        if isinstance(value, int):
+            return max(value, 0)
+        if isinstance(value, float):
+            return max(int(value), 0)
+        if isinstance(value, str):
+            try:
+                return max(int(float(value)), 0)
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    @staticmethod
+    def _coerce_cost(value: Any) -> float:
+        """Coerce a cost to a non-negative float; junk -> 0.0, never raises."""
+        if isinstance(value, bool):
+            return 0.0
+        if isinstance(value, int | float):
+            return max(float(value), 0.0)
+        if isinstance(value, str):
+            try:
+                return max(float(value), 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+
+    @classmethod
+    def _extract_usage(cls, response: Any) -> Usage:
         usage_obj = _get(response, "usage")
-        prompt = _get(usage_obj, "prompt_tokens") or 0
-        completion = _get(usage_obj, "completion_tokens") or 0
-        total = _get(usage_obj, "total_tokens") or 0
+        prompt = cls._coerce_int(_get(usage_obj, "prompt_tokens"))
+        completion = cls._coerce_int(_get(usage_obj, "completion_tokens"))
+        total = cls._coerce_int(_get(usage_obj, "total_tokens"))
+        # If the backend omitted a total but gave the parts, derive it.
+        if total == 0 and (prompt or completion):
+            total = prompt + completion
 
         cost = 0.0
         hidden = _get(response, "_hidden_params")
         if isinstance(hidden, dict):
-            raw_cost = hidden.get("response_cost")
-            if isinstance(raw_cost, int | float):
-                cost = float(raw_cost)
+            cost = cls._coerce_cost(hidden.get("response_cost"))
 
         return Usage(
-            prompt_tokens=int(prompt or 0),
-            completion_tokens=int(completion or 0),
-            total_tokens=int(total or 0),
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=total,
             cost_usd=cost,
         )
 
     @classmethod
     def _normalize(cls, response: Any) -> LLMResult:
-        choices = _get(response, "choices") or []
+        choices = _get(response, "choices")
         message = None
         finish_reason: str | None = None
-        if choices:
+        first = None
+        if isinstance(choices, list | tuple) and choices:
             first = choices[0]
+        if first is not None:
             message = _get(first, "message")
             fr = _get(first, "finish_reason")
             finish_reason = str(fr) if fr is not None else None
@@ -258,25 +312,61 @@ class LiteLLMProvider(Provider):
     # Error mapping
     # ------------------------------------------------------------------
     @staticmethod
-    def _map_error(exc: Exception) -> ProviderError:
-        # Prefer isinstance against resolved classes; fall back to class-name
-        # matching so the mapping still works if imports were unavailable.
-        name = type(exc).__name__
-        retry_after = getattr(exc, "retry_after", None)
-        if not isinstance(retry_after, int | float):
-            retry_after = None
+    def _extract_retry_after(exc: Exception) -> float | None:
+        """Pull a server-suggested retry delay (seconds) off an exception.
 
-        if (
-            _LiteLLMAuthError is not None and isinstance(exc, _LiteLLMAuthError)
-        ) or name == "AuthenticationError":
+        Checks the common ``retry_after`` attribute first, then a numeric
+        ``Retry-After`` header on an attached ``response`` (openai/httpx shape).
+        Anything non-numeric is ignored so this never raises.
+        """
+        candidate = getattr(exc, "retry_after", None)
+        if isinstance(candidate, bool):  # bool is an int subclass — reject it
+            candidate = None
+        if isinstance(candidate, int | float):
+            return float(candidate)
+
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            try:
+                raw = headers.get("retry-after")
+            except Exception:
+                raw = None
+            if raw is not None:
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    @classmethod
+    def _is_a(cls, exc: Exception, resolved: type[BaseException] | None, *names: str) -> bool:
+        """True if ``exc`` matches a resolved class or any fallback class name.
+
+        Class-name matching (over the exception and its MRO) keeps the mapping
+        working even when litellm did not expose the type for ``isinstance``.
+        """
+        if resolved is not None and isinstance(exc, resolved):
+            return True
+        wanted = set(names)
+        return any(base.__name__ in wanted for base in type(exc).__mro__)
+
+    @classmethod
+    def _map_error(cls, exc: Exception) -> ProviderError:
+        # Prefer isinstance against resolved classes; fall back to class-name
+        # matching (across the MRO) so the mapping still works if imports were
+        # unavailable. Auth is checked before the generic catch-all; rate-limit
+        # carries through any server-suggested retry delay. An unknown exception
+        # always degrades to RequestFailed — a raw vendor exception never leaks.
+        retry_after = cls._extract_retry_after(exc)
+
+        if cls._is_a(exc, _LiteLLMAuthError, "AuthenticationError") or cls._is_a(
+            exc, _LiteLLMPermissionError, "PermissionDeniedError"
+        ):
             return AuthError(str(exc))
-        if (
-            _LiteLLMContextWindowError is not None and isinstance(exc, _LiteLLMContextWindowError)
-        ) or name == "ContextWindowExceededError":
+        if cls._is_a(exc, _LiteLLMContextWindowError, "ContextWindowExceededError"):
             return ContextWindowExceeded(str(exc))
-        if (
-            _LiteLLMRateLimitError is not None and isinstance(exc, _LiteLLMRateLimitError)
-        ) or name == "RateLimitError":
+        if cls._is_a(exc, _LiteLLMRateLimitError, "RateLimitError"):
             return RateLimited(str(exc), retry_after=retry_after)
         return RequestFailed(str(exc))
 
@@ -322,12 +412,16 @@ class LiteLLMProvider(Provider):
             count = litellm.token_counter(model=self.model, messages=wire_messages)
         except Exception:
             return self._rough_token_estimate(wire_messages)
+        # bool is an int subclass; reject it (and any non-numeric) explicitly.
+        if isinstance(count, bool):
+            return self._rough_token_estimate(wire_messages)
         if isinstance(count, int):
-            return count
+            return count if count >= 0 else self._rough_token_estimate(wire_messages)
         try:
-            return int(count)
+            coerced = int(count)
         except (TypeError, ValueError):
             return self._rough_token_estimate(wire_messages)
+        return coerced if coerced >= 0 else self._rough_token_estimate(wire_messages)
 
     @staticmethod
     def _rough_token_estimate(wire_messages: list[dict[str, Any]]) -> int:

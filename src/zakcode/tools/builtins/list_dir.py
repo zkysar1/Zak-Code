@@ -58,9 +58,14 @@ class ListDirTool(Tool):
             if not resolved.is_dir():
                 return ToolResult.error(f"Path is not a directory: {target}")
 
+            try:
+                children = sorted(resolved.iterdir(), key=lambda p: p.name)
+            except PermissionError as exc:
+                return ToolResult.error(f"Permission denied listing {target}: {exc}")
+
             entries: list[str] = []
             names: list[str] = []
-            for entry in sorted(resolved.iterdir(), key=lambda p: p.name):
+            for entry in children:
                 if entry.is_dir():
                     entries.append(f"{entry.name}/")
                 else:
