@@ -94,12 +94,14 @@ class LiteLLMProvider(Provider):
         model: str | None = None,
         temperature: float | None = None,
         api_base: str | None = None,
+        api_key: str | None = None,
         num_retries: int | None = None,
         ollama_base_url: str | None = None,
     ) -> None:
         resolved_model = model
         resolved_temperature = temperature
         resolved_api_base = api_base
+        resolved_api_key = api_key
         resolved_ollama_base = ollama_base_url
 
         if settings is not None:
@@ -107,6 +109,12 @@ class LiteLLMProvider(Provider):
                 resolved_model = settings.default_model
             if resolved_temperature is None:
                 resolved_temperature = settings.temperature
+            # Generic endpoint override (any OpenAI-compatible server). Explicit
+            # kwargs win; otherwise take the configured values.
+            if resolved_api_base is None:
+                resolved_api_base = settings.api_base
+            if resolved_api_key is None:
+                resolved_api_key = settings.api_key
             if resolved_ollama_base is None:
                 resolved_ollama_base = settings.ollama_base_url
 
@@ -116,6 +124,7 @@ class LiteLLMProvider(Provider):
         self.model: str = resolved_model
         self.temperature: float = resolved_temperature if resolved_temperature is not None else 0.7
         self.api_base: str | None = resolved_api_base
+        self.api_key: str | None = resolved_api_key
         self.num_retries: int = num_retries if num_retries is not None else 0
         self.ollama_base_url: str | None = resolved_ollama_base
 
@@ -373,16 +382,17 @@ class LiteLLMProvider(Provider):
     # ------------------------------------------------------------------
     # Provider interface
     # ------------------------------------------------------------------
-    async def acomplete(
+    def _build_kwargs(
         self,
-        messages: list[Message],
-        *,
-        system: str | None = None,
-        tools: list[dict[str, Any]] | None = None,
+        wire_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
         **kw: Any,
-    ) -> LLMResult:
-        wire_messages = self._translate_messages(messages, system)
+    ) -> dict[str, Any]:
+        """Assemble the kwargs handed to ``litellm.acompletion``.
 
+        Factored out of :meth:`acomplete` so the request shape (model, endpoint,
+        tool wiring) is unit-testable without a network call.
+        """
         call_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": wire_messages,
@@ -396,8 +406,22 @@ class LiteLLMProvider(Provider):
             call_kwargs["tool_choice"] = "auto"
         if self.api_base is not None:
             call_kwargs["api_base"] = self.api_base
+        if self.api_key is not None:
+            call_kwargs["api_key"] = self.api_key
         # Allow per-call overrides (e.g. max_tokens) without re-listing them.
         call_kwargs.update(kw)
+        return call_kwargs
+
+    async def acomplete(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kw: Any,
+    ) -> LLMResult:
+        wire_messages = self._translate_messages(messages, system)
+        call_kwargs = self._build_kwargs(wire_messages, tools, **kw)
 
         try:
             response = await litellm.acompletion(**call_kwargs)
