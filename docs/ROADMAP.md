@@ -97,7 +97,8 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 > against a scripted provider (and is wired for Ollama/OpenAI via litellm); `read_file`,
 > `write_file`, `list_dir`, `glob`, `grep`, `bash` are live; sessions persist atomically and
 > resume; `zakcode chat` works as a thin REPL; **216 tests pass; ruff + mypy clean** (M0 +
-> a hardening pass: a doom-loop guard, a fixed `glob` path-escape leak, and ~120 edge tests). Live
+> a hardening pass: a doom-loop guard, a fixed `glob` path-escape leak, and ~120 edge tests;
+> source commit `8bfb23c`). Live
 > Ollama/OpenAI end-to-end was not exercised in CI (no local Ollama running / no key in the
 > build env) — the loop is verified with a hermetic scripted provider; first live run is a
 > follow-up. Next: **M1 — streaming + rich TUI.**
