@@ -50,6 +50,12 @@ Work proceeds in **phases**, each producing a milestone from [`ROADMAP.md`](ROAD
   own git worktree to avoid conflicts; the orchestrator integrates.
 - **Loop-until-dry / completeness critic** — for audits and parity sweeps, keep going until
   no new gaps surface.
+- **Orchestrator re-verifies, never trusts self-reports** — build agents report their own
+  test results, but the orchestrator independently re-runs the full gate (`ruff`/`mypy`/
+  `pytest`), diffs frozen contract files against HEAD to catch any accidental overwrite, greps
+  for guardrail violations (e.g. vendor imports out of place), and runs an end-to-end smoke
+  before committing. (In the M0 run a builder did a stray `git restore` mid-flight; this
+  re-verification is what confirmed the repair was clean.)
 
 ## Verification discipline
 
@@ -79,4 +85,4 @@ A short, append-only record of orchestration runs (newest at bottom).
 | --- | --- | --- | --- | --- |
 | 2026-05-30 | `zakcode-foundation` | `wf_efd14b18-b4c` | Mine prior art (claw-code/Hermes/goose/litellm/best-practices) → draft ARCHITECTURE/ROADMAP/PARITY/GUARDRAILS+RISKS | ✅ Done — 10 agents, ~995K tokens. Wrote full ARCHITECTURE, ROADMAP, PARITY, GUARDRAILS, RISKS + 6 reference digests in `docs/references/`. |
 | 2026-05-30 | _(orchestrator, manual)_ | — | M0 Phase A: hand-write & freeze the shared contracts (messages, usage, provider ABC, tool registry, PermissionTier) before fan-out | ✅ Done — commit `e2db020`; 18 tests green; ruff + mypy clean. |
-| 2026-05-30 | `zakcode-m0` | `wf_c46105ce-6ea` | Build M0 against the frozen contracts: leaf modules (provider, builtins, session, prompt) in parallel → integrate loop + public `Agent` API → CLI `chat` → adversarial review | _in progress_ |
+| 2026-05-30 | `zakcode-m0` | `wf_c46105ce-6ea` | Build M0 against the frozen contracts: leaf modules (provider, builtins, session, prompt) in parallel → integrate loop + public `Agent` API → CLI `chat` → adversarial review | ✅ Done — 7 agents, ~931K tokens. Committed `5ba12fc`. Orchestrator independently verified: contracts byte-intact, vendor-agnostic holds, ruff+mypy clean, 93 tests, end-to-end smoke wrote a real file via the loop. One in-run `git restore` mishap by a builder was detected and fully repaired (no scar). |

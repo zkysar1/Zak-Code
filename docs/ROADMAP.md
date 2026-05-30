@@ -91,7 +91,15 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M0 — Runnable minimal agent loop (P0)
+### M0 — Runnable minimal agent loop (P0) — ✅ DONE (2026-05-30, commit `5ba12fc`)
+
+> **Status: shipped.** All exit criteria met. The loop drives real tool calls end-to-end
+> against a scripted provider (and is wired for Ollama/OpenAI via litellm); `read_file`,
+> `write_file`, `list_dir`, `glob`, `grep`, `bash` are live; sessions persist atomically and
+> resume; `zakcode chat` works as a thin REPL; **93 tests pass; ruff + mypy clean.** Live
+> Ollama/OpenAI end-to-end was not exercised in CI (no local Ollama running / no key in the
+> build env) — the loop is verified with a hermetic scripted provider; first live run is a
+> follow-up. Next: **M1 — streaming + rich TUI.**
 
 **Goal:** A runnable, minimal agent loop driven via litellm against **both Ollama (local, default for dev) and OpenAI**, with a small sharp tool set, a working Typer CLI (`zakcode chat`), sessions, and tests.
 

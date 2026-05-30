@@ -63,6 +63,14 @@ row here is `yes` (this matrix only tracks parity against things Claude Code act
 One row per Claude Code model-facing tool (sub-tool families such as the Task* and Team*
 groups are listed individually; pure helpers are noted at the end).
 
+> **M0 delivered (2026-05-30, commit `5ba12fc`).** The P0 read/edit/search/run core is live
+> as Zak Code tools: **`read_file`** (≈ FileReadTool), **`write_file`** (≈ FileWriteTool),
+> **`glob`** (≈ GlobTool), **`grep`** (≈ GrepTool), **`bash`** (≈ BashTool), plus a
+> **`list_dir`** convenience tool. All are workspace-scoped (path-escape-rejecting), never
+> raise (errors → structured `ToolResult`), and run through the live `AgentLoop`. Still P0 and
+> **not yet built**: **`edit`** (≈ FileEditTool — exact-string edit; today only whole-file
+> `write_file`), `PowerShellTool`, and `TodoWriteTool`.
+
 | Tool | Purpose | Claude Code? | Zak Code status | Priority tier | Target milestone | Notes |
 |------|---------|--------------|-----------------|---------------|------------------|-------|
 | FileReadTool (Read) | Read a file incl. image processing, with size/line limits (`file_path`, `offset`, `limit`) | yes | Planned | P0 | M1 | FS. Core read primitive; required for the loop. |

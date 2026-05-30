@@ -70,7 +70,17 @@ uv run zakcode --help     # see available commands
 uv run zakcode info       # show resolved config & detected providers
 ```
 
-A working `zakcode chat` (the agent loop) arrives in **Milestone M0** — see the roadmap.
+As of **M0** the agent loop runs: `zakcode chat` drives an interactive session, and the core
+is usable as a library:
+
+```python
+from zakcode import Agent
+result = Agent().run_turn("read pyproject.toml and summarize the dependencies")
+print(result.assistant_messages[-1].text)
+```
+
+It ships with a small, sharp tool set — `read_file`, `write_file`, `list_dir`, `glob`,
+`grep`, `bash` — all scoped to the workspace. Streaming + a richer TUI land in **M1**.
 
 ## Documentation
 
