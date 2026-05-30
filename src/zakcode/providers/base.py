@@ -12,8 +12,10 @@ M0 implements the non-streaming path (:meth:`Provider.acomplete`); streaming
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
-from typing import Any
+from collections.abc import AsyncIterator
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -59,6 +61,55 @@ class Capabilities(BaseModel):
     supports_caching: bool = False
     context_window: int = 8192
     max_output: int | None = None
+
+
+# ── Streaming events (yielded by Provider.astream) ───────────────────────────
+# Added in M1. These describe the *provider*-level token stream; the agent loop
+# consumes them and re-emits its own client-facing AgentEvent stream (see
+# zakcode.events). Discriminated on ``event`` so a heterogeneous stream is
+# trivially (de)serializable for the future HTTP/SSE transport.
+
+
+class StreamTextDelta(BaseModel):
+    """An incremental chunk of assistant text."""
+
+    event: Literal["text_delta"] = "text_delta"
+    text: str
+
+
+class StreamToolCallDelta(BaseModel):
+    """An incremental fragment of a tool call, keyed by ``index``.
+
+    Only the first fragment for a given ``index`` carries ``id``/``name``; later
+    fragments carry partial ``arguments_delta`` strings to be concatenated and
+    JSON-parsed once the call is complete (the streaming-accumulator's job).
+    """
+
+    event: Literal["tool_call_delta"] = "tool_call_delta"
+    index: int
+    id: str | None = None
+    name: str | None = None
+    arguments_delta: str = ""
+
+
+class StreamUsage(BaseModel):
+    """Token/cost usage for the streamed turn (typically the final chunk)."""
+
+    event: Literal["usage"] = "usage"
+    usage: Usage = Field(default_factory=Usage)
+
+
+class StreamDone(BaseModel):
+    """Terminal event: the model finished this streamed response."""
+
+    event: Literal["done"] = "done"
+    finish_reason: str | None = None
+
+
+ProviderStreamEvent = Annotated[
+    StreamTextDelta | StreamToolCallDelta | StreamUsage | StreamDone,
+    Field(discriminator="event"),
+]
 
 
 # ── Error taxonomy ───────────────────────────────────────────────────────────
@@ -131,11 +182,45 @@ class Provider(ABC):
         """Return static capabilities for the configured model."""
         raise NotImplementedError
 
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        """Stream a completion as a sequence of :data:`ProviderStreamEvent`.
+
+        The default implementation is **non-streaming**: it awaits
+        :meth:`acomplete` and emits the whole result as one text delta (if any),
+        one :class:`StreamToolCallDelta` per complete tool call, a usage event,
+        and a done event. This makes streaming work for every provider out of the
+        box; a concrete provider should override it with true token streaming.
+        """
+        result = await self.acomplete(messages, system=system, tools=tools, **kwargs)
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        for index, call in enumerate(result.tool_calls):
+            yield StreamToolCallDelta(
+                index=index,
+                id=call.id,
+                name=call.name,
+                arguments_delta=json.dumps(call.arguments),
+            )
+        yield StreamUsage(usage=result.usage)
+        yield StreamDone(finish_reason=result.finish_reason)
+
 
 __all__ = [
     "ToolCall",
     "LLMResult",
     "Capabilities",
+    "StreamTextDelta",
+    "StreamToolCallDelta",
+    "StreamUsage",
+    "StreamDone",
+    "ProviderStreamEvent",
     "ProviderError",
     "AuthError",
     "ContextWindowExceeded",
