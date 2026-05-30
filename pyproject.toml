@@ -1,0 +1,81 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zakcode"
+version = "0.0.1"
+description = "Zak Code — a clean-room, vendor-agnostic, API-first agentic coding tool."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Zachary Kysar" }]
+keywords = ["ai", "agent", "coding-agent", "cli", "llm", "litellm", "vendor-agnostic"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Code Generators",
+]
+
+# Core engine dependencies (the importable library + CLI).
+dependencies = [
+  "litellm>=1.55",          # vendor-agnostic LLM layer (Ollama, OpenAI, + ~100 providers)
+  "pydantic>=2.7",          # typed models for tools, messages, config
+  "pydantic-settings>=2.3", # 12-factor config from env / .env
+  "python-dotenv>=1.0",     # .env loading for pydantic-settings
+  "typer>=0.12",            # CLI framework
+  "rich>=13.7",             # terminal rendering
+]
+
+[project.optional-dependencies]
+# API server layer (FastAPI exposing the core over HTTP / SSE / WebSocket).
+server = [
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "sse-starlette>=2.1",
+  "websockets>=12.0",
+]
+# Model Context Protocol client (external tool/extension support).
+mcp = ["mcp>=1.0"]
+# Developer tooling.
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "mypy>=1.10",
+]
+all = ["zakcode[server,mcp,dev]"]
+
+[project.scripts]
+zakcode = "zakcode.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/zkysar1/Zak-Code"
+Repository = "https://github.com/zkysar1/Zak-Code"
+Issues = "https://github.com/zkysar1/Zak-Code/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zakcode"]
+# Ship the PEP 561 marker so downstream type-checkers see zakcode as typed.
+artifacts = ["src/zakcode/py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["zakcode"]
+ignore_missing_imports = true
+warn_unused_ignores = true

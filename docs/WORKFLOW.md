@@ -1,0 +1,72 @@
+# How the Zak Code build is orchestrated
+
+Zak Code is built by an **orchestrated team of AI agents**, coordinated by a lead
+orchestrator. This document is the operating manual: how we plan, fan out work, verify it,
+and keep documentation coherent across a long, high-token initiative.
+
+## Roles
+
+- **Orchestrator (lead).** Owns the plan, the docs, and the git history. Decides phase
+  scope, launches workflows, reviews returned work, writes/commits the canonical files.
+- **Build subagents.** Spawned per phase to implement, research, or verify within a tightly
+  scoped boundary. They return their work to the orchestrator; they do not own the repo.
+
+## Documentation control (important)
+
+The orchestrator owns the canonical docs in `docs/`. Subagents may *draft* content and
+*return* it, but the orchestrator integrates and commits it. This keeps a single coherent
+voice and prevents parallel agents from clobbering each other's files. Rule of thumb:
+**agents return content; the orchestrator writes files.**
+
+When behavior changes, the matching doc changes in the same commit. Stale docs are bugs.
+
+## The phase model
+
+Work proceeds in **phases**, each producing a milestone from [`ROADMAP.md`](ROADMAP.md):
+
+1. **Understand** — parallel readers map the problem / prior art → structured digests.
+2. **Design** — synthesize digests into specs (architecture, parity, interfaces).
+3. **Implement** — per-subsystem pipelines build the milestone, isolated by module.
+4. **Verify** — adversarial review + tests run/pass; the milestone's exit criteria are met.
+5. **Integrate** — orchestrator merges, updates docs, commits, and demos.
+
+## Orchestration patterns we use
+
+- **Fan-out research** — many readers, each on a different source/subsystem; barrier;
+  synthesize. (Used for the foundation phase.)
+- **Per-subsystem implementation pipeline** — each subsystem flows build → self-test →
+  adversarial review independently (no needless barriers).
+- **Adversarial verification** — independent skeptics try to refute a change before it's
+  accepted; tests are the tie-breaker.
+- **Worktree isolation** — when multiple agents mutate files in parallel, each runs in its
+  own git worktree to avoid conflicts; the orchestrator integrates.
+- **Loop-until-dry / completeness critic** — for audits and parity sweeps, keep going until
+  no new gaps surface.
+
+## Verification discipline
+
+A milestone is **not done** until, from a clean checkout:
+
+```bash
+uv run ruff check .
+uv run mypy
+uv run pytest
+```
+
+all pass, **and** the milestone's exit criteria in [`ROADMAP.md`](ROADMAP.md) are
+demonstrably met (a real task completed end-to-end where applicable).
+
+## Guardrails for the team
+
+All subagents inherit the rules in [`../CLAUDE.md`](../CLAUDE.md) and
+[`GUARDRAILS.md`](GUARDRAILS.md): clean-room, vendor-agnostic, core/interface separation,
+no secret leakage, docs-with-code. Work outside your assigned module boundary only by
+escalating to the orchestrator.
+
+## Run log
+
+A short, append-only record of orchestration runs (newest at bottom).
+
+| Date | Workflow | Run ID | Purpose | Outcome |
+| --- | --- | --- | --- | --- |
+| 2026-05-30 | `zakcode-foundation` | `wf_efd14b18-b4c` | Mine prior art (claw-code/Hermes/goose/litellm/best-practices) → draft ARCHITECTURE/ROADMAP/PARITY/GUARDRAILS+RISKS | _in progress_ |
