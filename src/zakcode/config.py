@@ -57,6 +57,23 @@ class Settings(BaseSettings):
     # ── Local (Ollama) ──────────────────────────────────────────────────────
     ollama_base_url: str = Field(default="http://localhost:11434")
 
+    # ── Generic endpoint override (any OpenAI-compatible server) ─────────────
+    # Lets you point at a local llama.cpp / llama-cpp-python / vLLM / LM Studio server
+    # (or any OpenAI-compatible gateway) by config alone — e.g. set
+    # ZAKCODE_DEFAULT_MODEL=openai/qwen2.5-coder and ZAKCODE_API_BASE=http://127.0.0.1:8000/v1.
+    # When unset, the provider derives a base only for Ollama (from ollama_base_url).
+    api_base: str | None = Field(
+        default=None,
+        description="Override the provider endpoint URL (any OpenAI-compatible server).",
+    )
+    # Many local servers ignore the key but litellm's openai route still requires one to be
+    # present; this is a non-secret placeholder knob, not a vault. Real cloud keys still come
+    # from the standard env vars (e.g. OPENAI_API_KEY) — see the module docstring.
+    api_key: str | None = Field(
+        default=None,
+        description="Optional API key to pass through (e.g. a dummy for a local server).",
+    )
+
     # ── Agent behavior ──────────────────────────────────────────────────────
     max_iterations: int = Field(
         default=50, ge=1, description="Hard cap on agent-loop iterations per turn."

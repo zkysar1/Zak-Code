@@ -48,6 +48,7 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = [
         ("Model", settings.default_model),
         ("Provider", settings.provider),
+        ("API base", settings.api_base or "(default for provider)"),
         ("Fallback model", settings.fallback_model or "(none)"),
         ("Temperature", str(settings.temperature)),
         ("Ollama base URL", settings.ollama_base_url),
