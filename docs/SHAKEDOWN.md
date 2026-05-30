@@ -66,7 +66,26 @@ Code never even gets a connection to make a request).
    set CC=gcc & set CXX=g++ & set FORCE_CMAKE=1
    uv pip install --no-binary llama-cpp-python --force-reinstall --no-cache-dir llama-cpp-python
    ```
-   _(Result recorded once the build completes. mingw↔CPython ABI mixing on Windows is the risk.)_
+   ❌ **Failed** at the CMake configure/compile step (`cmake.exe failed with exit code 1`).
+   Native Windows builds of llama.cpp officially require the **MSVC Build Tools**, which are
+   not installed on this host (only mingw-w64 `gcc`/`g++`, which has known ABI friction with
+   CPython on Windows). Disabling AVX2 is the *right* flag set for this CPU, but the build
+   toolchain isn't viable here. Getting this to link would mean installing MSVC Build Tools —
+   at which point the wheel route is moot anyway.
+
+## Decision (2026-05-30)
+
+Three real install paths were attempted (prebuilt wheel on py3.11 and py3.12; AVX2-off source
+rebuild) and all are blocked by this host's combination of **no AVX2** + **no MSVC**. The
+shakedown is therefore **environment-blocked, not code-blocked** — Zak Code's provider/loop
+path is verified as far as the box allows (221 hermetic tests + the endpoint-config feature),
+and a real run is a clean follow-up the moment any of the paths below is available. Per the
+build plan, work proceeds to **M1**; this doc flips to PASSED after the first real run.
+
+**Lowest-friction path on THIS machine: install [Ollama](https://ollama.com).** Its bundled
+llama.cpp ships non-AVX2 fallback builds that run on the FX-8320E, and Zak Code already treats
+`ollama_chat/<model>` as first-class (`ZAKCODE_DEFAULT_MODEL=ollama_chat/qwen2.5-coder`, no
+extra config). That is the recommended way to see Zak Code drive a real local model here.
 
 ## Recommended paths to a real run (any one suffices)
 
