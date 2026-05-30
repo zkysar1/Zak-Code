@@ -68,3 +68,6 @@ desktop.ini
 .vscode/
 *.swp
 *~
+
+# Claude Code local session state (not project config)
+.claude/
