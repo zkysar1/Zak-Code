@@ -1,11 +1,27 @@
-"""The agent loop.
+"""The agent runtime: the ReAct loop, system-prompt assembly, and orchestration glue.
 
-Responsibilities: assemble the prompt, call the model via the provider layer, parse the
-response, extract and execute tool calls, append results, and decide whether to iterate
-or stop.
-
-Planned modules: ``loop.py`` (the turn loop), ``prompt.py`` (system prompt + memory/
-CLAUDE.md-style discovery), ``compact.py`` (context compaction).
-
-Status: scaffolded; implemented in milestone M0. See ``docs/ARCHITECTURE.md``.
+The concrete types live in :mod:`zakcode.agent.loop` and :mod:`zakcode.agent.prompt`;
+this package re-exports them for convenience. See ``docs/ARCHITECTURE.md``.
 """
+
+from zakcode.agent.loop import DEFAULT_MAX_ITERATIONS, AgentLoop, TurnResult
+from zakcode.agent.prompt import (
+    DYNAMIC_BOUNDARY,
+    MAX_MEMORY_FILE_CHARS,
+    MAX_MEMORY_TOTAL_CHARS,
+    MEMORY_FILENAME,
+    SystemPromptBuilder,
+    discover_memory,
+)
+
+__all__ = [
+    "DEFAULT_MAX_ITERATIONS",
+    "DYNAMIC_BOUNDARY",
+    "MAX_MEMORY_FILE_CHARS",
+    "MAX_MEMORY_TOTAL_CHARS",
+    "MEMORY_FILENAME",
+    "AgentLoop",
+    "SystemPromptBuilder",
+    "TurnResult",
+    "discover_memory",
+]

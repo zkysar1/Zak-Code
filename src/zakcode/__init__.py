@@ -1,11 +1,78 @@
 """Zak Code — a clean-room, vendor-agnostic, API-first agentic coding tool.
 
-The :mod:`zakcode` package is the *core engine*: an importable library exposing the
-agent loop, tools, sessions, context management, providers, and extension surfaces.
-The CLI (:mod:`zakcode.cli`) and HTTP server (:mod:`zakcode.server`) are thin clients
-of this core. See ``docs/ARCHITECTURE.md``.
+The public entry point is :class:`Agent`: a thin facade that wires settings, a
+provider, the built-in tool registry, a session, and the ReAct
+:class:`~zakcode.agent.loop.AgentLoop` together, then exposes ``run_turn`` /
+``arun_turn``.
+
+Vendor isolation is structural, not import-order based: ``litellm`` is imported
+only under :mod:`zakcode.providers` (the one place allowed to touch a vendor SDK).
+Nothing here triggers network activity at import time — only an actual
+``run_turn`` call reaches the model.
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from zakcode.agent.loop import AgentLoop, TurnResult
+from zakcode.agent.prompt import SystemPromptBuilder
+from zakcode.config import Settings, load_settings
+from zakcode.messages import Message
+from zakcode.session.store import Session, SessionStore
+from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
 
-__all__ = ["__version__"]
+__all__ = ["Agent", "AgentLoop", "Message", "TurnResult", "__version__"]
+
+
+class Agent:
+    """High-level facade over the agent loop.
+
+    Construct with defaults (settings come from env / ``.env``) or pass an
+    explicit :class:`Settings`, :class:`Session`, or :class:`SessionStore`.
+    Keyword overrides are forwarded to :func:`~zakcode.config.load_settings`.
+    """
+
+    def __init__(
+        self,
+        *,
+        settings: Settings | None = None,
+        session: Session | None = None,
+        session_store: SessionStore | None = None,
+        prompt_builder: SystemPromptBuilder | None = None,
+        **setting_overrides: Any,
+    ) -> None:
+        from zakcode.providers.litellm_provider import LiteLLMProvider
+
+        self.settings = settings or load_settings(**setting_overrides)
+        self.provider = LiteLLMProvider(self.settings)
+        self.registry = default_registry()
+        self.store = session_store
+        self.session = session or Session(
+            cwd=str(self.settings.workspace_root),
+            model=self.settings.default_model,
+        )
+        self.loop = AgentLoop(
+            self.provider,
+            self.registry,
+            self.session,
+            prompt_builder=prompt_builder,
+            settings=self.settings,
+            store=self.store,
+            workspace_root=self.settings.workspace_root,
+        )
+
+    async def arun_turn(self, user_text: str) -> TurnResult:
+        """Run one user turn asynchronously."""
+        return await self.loop.arun_turn(user_text)
+
+    def run_turn(self, user_text: str) -> TurnResult:
+        """Run one user turn synchronously (wraps :meth:`arun_turn`)."""
+        return self.loop.run_turn(user_text)
+
+    @classmethod
+    def for_workspace(cls, path: str | Path, **setting_overrides: Any) -> Agent:
+        """Construct an :class:`Agent` pinned to ``path`` as the workspace root."""
+        return cls(workspace_root=Path(path), **setting_overrides)

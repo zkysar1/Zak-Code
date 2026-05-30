@@ -1,11 +1,8 @@
-"""Tool registry and built-in tools.
+"""Tooling subsystem: the tool contract, the registry, and built-in tools.
 
-A small, sharp, composable tool set the agent uses to act on the workspace (read/write
-files, run commands, search code). :mod:`zakcode.tools.base` defines the Tool contract,
-JSON-schema exposure, and the registry; concrete tools live in ``builtins/``.
-
-Status: contracts implemented (M0 Phase A); the built-in tools land next. See
-``docs/ARCHITECTURE.md`` and ``docs/PARITY.md``.
+The contract lives in :mod:`zakcode.tools.base` and the assembled default tool set in
+:mod:`zakcode.tools.builtins.default_registry`; both are re-exported here for convenience.
+See ``docs/ARCHITECTURE.md``.
 """
 
 from zakcode.tools.base import (
@@ -16,6 +13,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from zakcode.tools.builtins.default_registry import default_registry
 
 __all__ = [
     "ConcurrencyClass",
@@ -24,4 +22,5 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
     "ToolSpec",
+    "default_registry",
 ]

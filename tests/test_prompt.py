@@ -1,0 +1,151 @@
+"""Tests for the ordered system-prompt builder and ZAK.md memory discovery."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from zakcode.agent import DYNAMIC_BOUNDARY, SystemPromptBuilder
+from zakcode.agent.prompt import (
+    MAX_MEMORY_FILE_CHARS,
+    MAX_MEMORY_TOTAL_CHARS,
+    discover_memory,
+)
+from zakcode.config import load_settings
+from zakcode.tools.base import ConcurrencyClass, ToolSpec
+
+# ── structure ──────────────────────────────────────────────────────────────────
+
+
+def test_prompt_has_identity_and_boundary(tmp_path: Path) -> None:
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder().build(settings)
+    assert "You are Zak Code, a vendor-agnostic AI coding assistant" in prompt
+    assert DYNAMIC_BOUNDARY in prompt
+
+
+def test_stable_precedes_boundary_and_context_follows(tmp_path: Path) -> None:
+    settings = load_settings(workspace_root=tmp_path, default_model="openai/gpt-4o")
+    prompt = SystemPromptBuilder().build(settings)
+
+    boundary_at = prompt.index(DYNAMIC_BOUNDARY)
+    stable, context = prompt[:boundary_at], prompt[boundary_at:]
+
+    # Stable identity/safety live above the boundary.
+    assert "You are Zak Code" in stable
+    assert "untrusted" in stable.lower()
+    assert "exfiltrate" in stable.lower()
+
+    # Environment (and any memory) live below the boundary.
+    assert "Environment:" in context
+    assert str(tmp_path) in context
+    assert "openai/gpt-4o" in context
+    assert "Environment:" not in stable
+
+
+def test_tool_specs_are_summarized(tmp_path: Path) -> None:
+    settings = load_settings(workspace_root=tmp_path)
+    tools = [
+        ToolSpec(
+            name="read_file",
+            description="Read a file from the workspace.\nSecond line ignored.",
+        ),
+        ToolSpec(
+            name="run_bash",
+            description="Run a shell command.",
+            concurrency=ConcurrencyClass.NEVER_PARALLEL,
+        ),
+    ]
+    prompt = SystemPromptBuilder().build(settings, tools=tools)
+
+    assert "Available tools:" in prompt
+    assert "read_file: Read a file from the workspace." in prompt
+    assert "run_bash: Run a shell command." in prompt
+    # Only the first description line is summarized (dense tool descriptions).
+    assert "Second line ignored." not in prompt
+
+
+def test_no_tools_omits_tool_section(tmp_path: Path) -> None:
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder().build(settings, tools=[])
+    assert "Available tools:" not in prompt
+
+
+def test_extra_context_lands_in_dynamic_section(tmp_path: Path) -> None:
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder().build(settings, extra_context="PROJECT_FACT_XYZ")
+    boundary_at = prompt.index(DYNAMIC_BOUNDARY)
+    assert "PROJECT_FACT_XYZ" in prompt[boundary_at:]
+
+
+# ── memory discovery ───────────────────────────────────────────────────────────
+
+
+def test_zak_md_is_discovered_and_appears_in_prompt(tmp_path: Path) -> None:
+    (tmp_path / "ZAK.md").write_text("Use tabs, not spaces. MEMORY_MARKER_42", encoding="utf-8")
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder().build(settings)
+
+    assert "MEMORY_MARKER_42" in prompt
+    boundary_at = prompt.index(DYNAMIC_BOUNDARY)
+    assert "MEMORY_MARKER_42" in prompt[boundary_at:]  # memory is dynamic context
+
+
+def test_discover_memory_walks_ancestor_chain_root_to_cwd(tmp_path: Path) -> None:
+    parent = tmp_path
+    child = tmp_path / "sub"
+    child.mkdir()
+    (parent / "ZAK.md").write_text("PARENT_RULES", encoding="utf-8")
+    (child / "ZAK.md").write_text("CHILD_RULES", encoding="utf-8")
+
+    discovered = discover_memory(child)
+    contents = [c for _, c in discovered]
+
+    assert "PARENT_RULES" in contents
+    assert "CHILD_RULES" in contents
+    # Outermost (ancestor) first, deepest (cwd) last.
+    assert contents.index("PARENT_RULES") < contents.index("CHILD_RULES")
+
+
+def test_discover_memory_dedupes_identical_content(tmp_path: Path) -> None:
+    parent = tmp_path
+    child = tmp_path / "sub"
+    child.mkdir()
+    same = "IDENTICAL_MEMORY_BODY"
+    (parent / "ZAK.md").write_text(same, encoding="utf-8")
+    (child / "ZAK.md").write_text(same, encoding="utf-8")
+
+    discovered = discover_memory(child)
+    bodies = [c for _, c in discovered]
+    assert bodies.count(same) == 1  # kept once, at its shallowest occurrence
+    assert discovered[0][0] == parent / "ZAK.md"
+
+
+def test_discover_memory_caps_per_file(tmp_path: Path) -> None:
+    (tmp_path / "ZAK.md").write_text("x" * (MAX_MEMORY_FILE_CHARS * 2), encoding="utf-8")
+    discovered = discover_memory(tmp_path)
+    assert len(discovered) == 1
+    assert len(discovered[0][1]) == MAX_MEMORY_FILE_CHARS
+
+
+def test_discover_memory_caps_total(tmp_path: Path) -> None:
+    # Build a deep chain of distinct large files exceeding the total budget.
+    current = tmp_path
+    for i in range(10):
+        (current / "ZAK.md").write_text(
+            f"block{i}-" + "y" * MAX_MEMORY_FILE_CHARS, encoding="utf-8"
+        )
+        current = current / "d"
+        current.mkdir()
+
+    discovered = discover_memory(current.parent)
+    total = sum(len(c) for _, c in discovered)
+    assert total <= MAX_MEMORY_TOTAL_CHARS
+
+
+def test_discover_memory_skips_empty_and_missing(tmp_path: Path) -> None:
+    (tmp_path / "ZAK.md").write_text("   \n  ", encoding="utf-8")  # whitespace only
+    assert discover_memory(tmp_path) == []
+
+    empty_dir = tmp_path / "nothing"
+    empty_dir.mkdir()
+    assert discover_memory(empty_dir) == []

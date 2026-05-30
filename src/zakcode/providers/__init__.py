@@ -1,13 +1,9 @@
-"""Vendor-agnostic LLM provider layer.
+"""Provider abstraction: the vendor-agnostic seam between the agent loop and any LLM
+backend.
 
-All model access in Zak Code flows through this package, built on top of ``litellm`` so
-the same agent runs on ~100 providers (first-class, tested: Ollama and OpenAI). The agent
-loop must never embed a provider-specific request shape — switching providers is a
-configuration change only.
-
-:mod:`zakcode.providers.base` defines the :class:`Provider` ABC and the canonical
-request/response value objects. The concrete litellm-backed provider lands next.
-See ``docs/ARCHITECTURE.md``.
+Only modules in this package may import ``litellm`` or a vendor SDK (see
+``docs/GUARDRAILS.md``). The agent loop depends solely on the base contracts re-exported
+here.
 """
 
 from zakcode.providers.base import (
@@ -21,15 +17,19 @@ from zakcode.providers.base import (
     RequestFailed,
     ToolCall,
 )
+from zakcode.providers.litellm_provider import LiteLLMProvider
+from zakcode.providers.registry import get_capabilities
 
 __all__ = [
     "AuthError",
     "Capabilities",
     "ContextWindowExceeded",
     "LLMResult",
+    "LiteLLMProvider",
     "Provider",
     "ProviderError",
     "RateLimited",
     "RequestFailed",
     "ToolCall",
+    "get_capabilities",
 ]
