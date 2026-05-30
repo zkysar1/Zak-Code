@@ -91,7 +91,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M0 — Runnable minimal agent loop (P0) — ✅ DONE (2026-05-30, commit `5ba12fc`)
+### M0 — Runnable minimal agent loop (P0) — ✅ DONE (2026-05-30, commit `0d4b9fd`)
 
 > **Status: shipped.** All exit criteria met. The loop drives real tool calls end-to-end
 > against a scripted provider (and is wired for Ollama/OpenAI via litellm); `read_file`,

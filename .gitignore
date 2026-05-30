@@ -51,10 +51,12 @@ _research/
 _zakcode_research/
 **/claw-code-main/
 
-# One-shot helper scripts (recovery/extraction); never committed
-_recover_docs.py
-_extract_docs.py
-_cleanup_entities.py
+# One-shot orchestrator scratch (recovery/extraction/smoke helpers); never committed.
+# Root-level files starting with "_" are working scratch, not project files.
+/_*.py
+/_*.txt
+/_*.out
+COMMIT_MSG.tmp
 
 # OS noise
 .DS_Store
