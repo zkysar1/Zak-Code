@@ -7,10 +7,12 @@ app is exercised through FastAPI's ``TestClient``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -206,6 +208,50 @@ def test_chat_reuses_existing_session(client: TestClient) -> None:
 def test_chat_unknown_session_404(client: TestClient) -> None:
     resp = client.post("/chat", json={"message": "hi", "session_id": "does-not-exist"})
     assert resp.status_code == 404
+
+
+async def test_chat_rejects_concurrent_turn_on_same_session(tmp_path: Path) -> None:
+    """A second turn on a session that already has one in flight is refused (409).
+
+    Without this guard two overlapping turns would race on the same session's
+    message list and ``store.save`` and corrupt the transcript — exactly the
+    failure M4's session-sharing sub-agents would otherwise hit.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingAgent:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def arun_turn(self, user_text: str) -> TurnResult:
+            started.set()
+            await release.wait()
+            return TurnResult(stop_reason="completed", iterations=1)
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:  # pragma: no cover
+            started.set()
+            await release.wait()
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(settings=settings, store=store, agent_factory=lambda s, m, p: _BlockingAgent(s))
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        sid = (await ac.post("/sessions")).json()["id"]
+        # Start a turn that blocks inside the agent — the session is now in flight.
+        first = asyncio.create_task(ac.post("/chat", json={"message": "a", "session_id": sid}))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        # A concurrent turn on the SAME session is refused…
+        second = await ac.post("/chat", json={"message": "b", "session_id": sid})
+        assert second.status_code == 409
+        # …and releasing the first frees the session for a later turn.
+        release.set()
+        assert (await first).status_code == 200
+        third = await ac.post("/chat", json={"message": "c", "session_id": sid})
+        assert third.status_code == 200
 
 
 # ── chat (SSE stream) ────────────────────────────────────────────────────────────

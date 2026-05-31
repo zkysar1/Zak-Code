@@ -156,6 +156,14 @@ def create_app(
         summary="Vendor-agnostic agentic coding engine over HTTP.",
     )
 
+    # Session ids with a turn currently in flight. Two overlapping turns on one
+    # session would both mutate Session.messages and race on store.save (the store
+    # is last-writer-wins, with no cross-request lock), corrupting the transcript —
+    # so REST/SSE refuse a second turn with 409 while one is running. In asyncio the
+    # check-then-add in each endpoint is atomic (no await between them). The WS
+    # channel enforces the same one-turn-at-a-time rule per connection separately.
+    inflight: set[str] = set()
+
     # ── helpers ────────────────────────────────────────────────────────────────
 
     def _get_or_create_session(session_id: str | None, model: str | None) -> Session:
@@ -232,17 +240,31 @@ def create_app(
 
     # ── chat ───────────────────────────────────────────────────────────────────
 
+    def _claim_session(session: Session) -> None:
+        """Reserve a session for a turn, or 409 if one is already in flight."""
+        if session.id in inflight:
+            raise HTTPException(
+                status_code=409,
+                detail=f"a turn is already running for session {session.id!r}",
+            )
+        inflight.add(session.id)
+
     @app.post("/chat")
     async def chat(request: ChatRequest) -> ChatResponse:
         session = _get_or_create_session(request.session_id, request.model)
-        agent = resolved_factory(session, request.model, None)
-        result = await agent.arun_turn(request.message)
-        resolved_store.save(agent.session)
-        return ChatResponse.from_turn(agent.session.id, result)
+        _claim_session(session)
+        try:
+            agent = resolved_factory(session, request.model, None)
+            result = await agent.arun_turn(request.message)
+            resolved_store.save(agent.session)
+            return ChatResponse.from_turn(agent.session.id, result)
+        finally:
+            inflight.discard(session.id)
 
     @app.post("/chat/stream")
     async def chat_stream(request: ChatRequest) -> EventSourceResponse:
         session = _get_or_create_session(request.session_id, request.model)
+        _claim_session(session)
         agent = resolved_factory(session, request.model, None)
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
@@ -251,8 +273,10 @@ def create_app(
                     yield {"data": json.dumps(event_to_dict(event))}
             finally:
                 # Persist whatever state the turn produced, even if the client
-                # disconnects mid-stream (EventSourceResponse cancels us).
+                # disconnects mid-stream (EventSourceResponse cancels us), and
+                # always release the in-flight reservation.
                 resolved_store.save(agent.session)
+                inflight.discard(session.id)
 
         return EventSourceResponse(event_source())
 
