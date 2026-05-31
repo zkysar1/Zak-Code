@@ -214,12 +214,70 @@ def build_extension_manager(
     return manager, errors
 
 
+class ServerInspection(BaseModel):
+    """The result of probing one MCP server (for the ``/mcp`` command).
+
+    ``status`` is ``ok`` (connected, tools listed), ``config_error`` (bad config —
+    never spawned), or ``connect_error`` (spawned/queried but failed). ``tools`` are
+    the qualified names that *would* be registered.
+    """
+
+    name: str
+    status: Literal[ok, config_error, connect_error]
+    tools: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+async def inspect_servers(
+    servers: list[McpServerConfig], *, allowlist: list[str] | None = None
+) -> list[ServerInspection]:
+    """Probe each server once (spawn → list tools → close) and report status.
+
+    Each server is connected in isolation and torn down before returning, so this is
+    safe to call from a one-shot ``asyncio.run`` (e.g. the ``/mcp`` command). A
+    disabled server is skipped; a config or connection failure is captured as a
+    status rather than raised.
+    """
+    inspections: list[ServerInspection] = []
+    for cfg in servers:
+        if not cfg.enabled:
+            continue
+        try:
+            transport = build_transport(cfg, allowlist=allowlist)
+        except McpConfigError as exc:
+            inspections.append(
+                ServerInspection(name=cfg.name, status="config_error", error=str(exc))
+            )
+            continue
+        client = MCPClient(transport)
+        registry = ToolRegistry()
+        manager = ExtensionManager()
+        manager.add_client(cfg.name, client)
+        try:
+            report = await manager.discover_into(registry)
+        finally:
+            await manager.aclose()
+        if cfg.name in report.failed:
+            inspections.append(
+                ServerInspection(
+                    name=cfg.name, status="connect_error", error=report.failed[cfg.name]
+                )
+            )
+        else:
+            inspections.append(
+                ServerInspection(name=cfg.name, status="ok", tools=report.registered)
+            )
+    return inspections
+
+
 __all__ = [
     "McpClientProtocol",
     "McpTool",
     "ExtensionManager",
     "DiscoveryReport",
     "build_extension_manager",
+    "ServerInspection",
+    "inspect_servers",
     "qualified_tool_name",
     "parse_qualified_name",
     "MAX_TOOL_NAME_LEN",
