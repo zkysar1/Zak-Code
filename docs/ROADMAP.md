@@ -271,7 +271,19 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M4 — Sub-agents / Task tool (P1)
+### M4 — Sub-agents / Task tool (P1) — ✅ DONE (2026-05-31, commits `1259cec`…`72cada1`)
+
+> **Status: shipped (2026-05-31), commits `1259cec`…`72cada1`.** Sub-agents are isolated child
+> `AgentLoop`s (fresh `Session`, filtered tool registry via `ToolRegistry.subset`, an isolated
+> context) sharing one `IterationBudget` (consume-only + child cap; one-level nesting enforced by
+> building children with no spawner). The `task` tool (`tools/builtins/task.py`) runs subtasks
+> concurrently via `asyncio.gather` and returns condensed summaries, not transcripts. **Plan Mode**
+> is schema-enforced: the read-only `plan` sub-agent's registry omits `write_file`/`edit_file`/`bash`
+> entirely, so they are absent from the tool schema the planner is given (not refused at runtime).
+> CLI `/plan <task>` drafts a plan (no auto-execute) and `/agents` lists the types. Delegation is
+> opt-in via `Agent(enable_subagents=True)`. **456 tests pass, 1 skipped; ruff + format + mypy
+> clean.** (Note: the shared budget uses lazy per-iteration consume; the originally-planned
+> reserve/refund + depth model was dropped as dead code after the M4 fresh-eyes review.)
 
 **Goal:** Isolated, parallel sub-agents for delegation, returning condensed summaries.
 
