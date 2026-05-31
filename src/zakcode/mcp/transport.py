@@ -124,11 +124,7 @@ class StdioTransport:
         if proc is None:
             return
         self._proc = None
-        if self._stderr_task is not None:
-            self._stderr_task.cancel()
-            with contextlib.suppress(Exception):
-                await self._stderr_task
-            self._stderr_task = None
+        # Close stdin (signals the server to stop), then ask the process to exit.
         with contextlib.suppress(Exception):
             if proc.stdin is not None:
                 proc.stdin.close()
@@ -136,11 +132,20 @@ class StdioTransport:
             proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE_SECONDS)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
+        # The process has now exited, so the child's stderr is at EOF and the drain
+        # task has (or is about to) finish on its own. Cancel + await it to be sure,
+        # suppressing CancelledError explicitly — contextlib.suppress(Exception) does
+        # NOT catch it (asyncio.CancelledError is a BaseException in 3.11+).
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._stderr_task
+            self._stderr_task = None
 
 
 __all__ = ["Transport", "StdioTransport"]
