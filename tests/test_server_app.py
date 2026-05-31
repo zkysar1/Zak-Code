@@ -229,14 +229,18 @@ async def test_chat_rejects_concurrent_turn_on_same_session(tmp_path: Path) -> N
             await release.wait()
             return TurnResult(stop_reason="completed", iterations=1)
 
-        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:  # pragma: no cover
+        async def astream_turn(
+            self, user_text: str
+        ) -> AsyncIterator[AgentEvent]:  # pragma: no cover
             started.set()
             await release.wait()
             yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
 
     settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
-    app = create_app(settings=settings, store=store, agent_factory=lambda s, m, p: _BlockingAgent(s))
+    app = create_app(
+        settings=settings, store=store, agent_factory=lambda s, m, p: _BlockingAgent(s)
+    )
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:

@@ -16,7 +16,9 @@ from pathlib import Path
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.loop import AgentLoop
 from zakcode.events import AgentDone
+from zakcode.messages import Message
 from zakcode.providers.base import (
+    Capabilities,
     LLMResult,
     Provider,
     ProviderStreamEvent,
@@ -52,6 +54,12 @@ class _AlwaysToolProvider(Provider):
         self.calls += 1
         yield StreamToolCallDelta(index=0, id=f"c{self.calls}", name="noop", arguments_delta="{}")
         yield StreamDone()
+
+    def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
 
 
 class _NoopTool(Tool):
