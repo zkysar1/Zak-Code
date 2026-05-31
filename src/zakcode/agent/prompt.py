@@ -82,7 +82,16 @@ _SAFETY = (
 
 
 class SystemPromptBuilder:
-    """Assembles the ordered system prompt from settings, tools, and discovered memory."""
+    """Assembles the ordered system prompt from settings, tools, and discovered memory.
+
+    ``extra_instructions`` (optional) is specialization text appended to the stable
+    (cacheable) tier — used by sub-agents to scope their behavior (e.g. a planner
+    told to produce a plan rather than edit files). It is constant for the builder's
+    lifetime, so it belongs in the cacheable prefix, not the dynamic suffix.
+    """
+
+    def __init__(self, *, extra_instructions: str | None = None) -> None:
+        self.extra_instructions = extra_instructions
 
     def build(
         self,
@@ -115,6 +124,8 @@ class SystemPromptBuilder:
         tool_section = self._summarize_tools(tools)
         if tool_section:
             sections.append(tool_section)
+        if self.extra_instructions and self.extra_instructions.strip():
+            sections.append(self.extra_instructions.strip())
         return "\n\n".join(sections)
 
     @staticmethod

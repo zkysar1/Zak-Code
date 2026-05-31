@@ -150,6 +150,9 @@ class AgentLoop:
         # iteration count is bounded by a single pool. ``None`` ⇒ unchanged
         # behavior (the local cap is the only bound).
         self.budget = budget
+        # Delegation seam (M4): placed in every ToolContext so the ``task`` tool can
+        # launch sub-agents. Child sub-agent loops get spawner=None (one-level nesting).
+        self.spawner = spawner
         # The security gate is INJECTED, not assumed. A bare AgentLoop with no
         # policy is ungated (a pure mechanism, convenient for library/tests); the
         # Agent facade — the real entry point — always injects a policy built from
