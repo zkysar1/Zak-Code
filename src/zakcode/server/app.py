@@ -77,23 +77,36 @@ class AgentLike(Protocol):
 AgentFactory = Callable[[Session, str | None, PermissionPrompter | None], AgentLike]
 
 
-def _default_agent_factory(settings: Settings) -> AgentFactory:
+def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFactory:
     """Build the production factory: a real :class:`~zakcode.Agent` per request.
 
     Bound to ``settings`` so every agent shares the operator's configured posture
-    (model, permission mode, …). A per-request ``model`` override rebuilds settings
-    with that model. A ``prompter`` (from the WebSocket bridge) makes ``ask`` mode
-    interactive; with none, ``ask`` fails closed (writes/shell denied) — the safe
-    default for headless REST/SSE.
+    (model, permission mode, workspace root, …) and to ``store`` so a turn persists
+    incrementally at message boundaries — the same durability the in-process CLI
+    agent gets.
+
+    A per-request ``model`` override swaps **only** the model via
+    :meth:`Settings.model_copy`, preserving the rest of the posture; rebuilding
+    ``Settings`` from the environment would silently drop ``permission_mode`` /
+    ``workspace_root`` and change the security stance of the turn. A ``prompter``
+    (from the WebSocket bridge) makes ``ask`` mode interactive; with none, ``ask``
+    fails closed (writes/shell denied) — the safe default for headless REST/SSE.
     """
     from zakcode import Agent
 
     def factory(
         session: Session, model: str | None, prompter: PermissionPrompter | None
     ) -> AgentLike:
+        # model_copy (not dump+rebuild) so excluded fields like api_key survive.
+        agent_settings: Settings = settings
         if model:
-            return Agent(session=session, default_model=model, prompter=prompter)
-        return Agent(session=session, settings=settings, prompter=prompter)
+            agent_settings = settings.model_copy(update={"default_model": model})
+        return Agent(
+            session=session,
+            settings=agent_settings,
+            session_store=store,
+            prompter=prompter,
+        )
 
     return factory
 
@@ -134,7 +147,7 @@ def create_app(
     """
     resolved_settings = settings or load_settings()
     resolved_store = store or SessionStore()
-    resolved_factory = agent_factory or _default_agent_factory(resolved_settings)
+    resolved_factory = agent_factory or _default_agent_factory(resolved_settings, resolved_store)
     resolved_registry = tool_registry or default_registry()
 
     app = FastAPI(

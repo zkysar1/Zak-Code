@@ -116,6 +116,35 @@ def test_config_omits_api_key_even_when_set(tmp_path: Path) -> None:
     assert settings.api_key == "super-secret-token"
 
 
+def test_default_factory_model_override_preserves_posture(tmp_path: Path) -> None:
+    """A per-request model override swaps the model but keeps the operator posture.
+
+    Regression guard for the bug where overriding ``model`` rebuilt Settings from
+    the environment, silently dropping ``permission_mode`` / ``workspace_root``.
+    """
+    from zakcode import Agent
+    from zakcode.server.app import _default_agent_factory
+
+    settings = Settings(
+        default_model="configured/base", permission_mode="allow", workspace_root=tmp_path
+    )
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    factory = _default_agent_factory(settings, store)
+    session = Session(cwd=str(tmp_path), model="configured/base")
+
+    overridden = factory(session, "override/model", None)
+    assert isinstance(overridden, Agent)
+    assert overridden.settings.default_model == "override/model"  # model swapped…
+    assert overridden.settings.permission_mode == "allow"  # …posture preserved
+    assert str(overridden.settings.workspace_root) == str(tmp_path)
+    assert overridden.store is store  # store wired in for incremental persistence
+
+    # With no override the exact configured Settings object is reused (no copy).
+    plain = factory(session, None, None)
+    assert isinstance(plain, Agent)
+    assert plain.settings is settings
+
+
 def test_tools_lists_builtins(client: TestClient) -> None:
     resp = client.get("/tools")
     assert resp.status_code == 200
