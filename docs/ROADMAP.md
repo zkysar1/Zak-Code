@@ -172,7 +172,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M2 — Permissions + hooks runtime (P1) — ✅ DONE (2026-05-30, commits `a8933d8`…`79e9c63`)
+### M2 — Permissions + hooks runtime (P1) — ✅ DONE (2026-05-30, commits `a8933d8`…`3cbe12f`, docs `2ee2c80`)
 
 > **Status: shipped.** Deny-first permissioning enforced in the **core** (a code path the
 > model cannot reach) plus a real lifecycle-hook runtime. `permissions.py`: `PermissionMode`
