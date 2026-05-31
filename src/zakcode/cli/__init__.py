@@ -302,6 +302,31 @@ def chat(
             continue
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
+    port: int = typer.Option(8000, "--port", "-p", help="Bind port."),
+) -> None:
+    """Run the Zak Code HTTP API server (FastAPI over the same core).
+
+    Exposes REST + SSE + a WebSocket channel — see ``docs/ARCHITECTURE.md``. Requires
+    the ``server`` extra (``pip install 'zakcode[server]'``).
+    """
+    try:
+        import uvicorn
+
+        from zakcode.server.app import create_app
+    except ImportError as exc:  # pragma: no cover - depends on optional extra
+        console.print(
+            "[red]The server extra is not installed.[/red] "
+            "Install it with: [bold]pip install 'zakcode[server]'[/bold]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[bold]Zak Code[/bold] {__version__} — serving on http://{host}:{port}")
+    uvicorn.run(create_app(), host=host, port=port)
+
+
 def main() -> None:
     """Console-script entry point (see ``[project.scripts]`` in pyproject.toml)."""
     app()

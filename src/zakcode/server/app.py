@@ -27,27 +27,39 @@ is added in a later increment; this module is REST + SSE only.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
-from collections.abc import AsyncIterator, Callable
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Protocol
 
-from fastapi import FastAPI, HTTPException
+import pydantic
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from sse_starlette.sse import EventSourceResponse
 
 from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
+from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.server.wire import (
     ChatRequest,
     ChatResponse,
     SessionInfo,
     ToolInfo,
+    WSActionRequired,
+    WSApproval,
+    WSInterrupt,
+    WSUserInput,
+    client_message_from_dict,
     event_to_dict,
 )
 from zakcode.session.store import Session, SessionNotFound, SessionStore
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
+
+logger = logging.getLogger("zakcode.server")
 
 
 class AgentLike(Protocol):
@@ -59,8 +71,10 @@ class AgentLike(Protocol):
     def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]: ...
 
 
-#: How the server builds an agent for a given session + optional model override.
-AgentFactory = Callable[[Session, str | None], AgentLike]
+#: How the server builds an agent for a given session, optional model override, and
+#: an optional permission prompter (the WebSocket channel supplies one so escalations
+#: can be approved interactively; REST/SSE pass ``None`` and ``ask`` fails closed).
+AgentFactory = Callable[[Session, str | None, PermissionPrompter | None], AgentLike]
 
 
 def _default_agent_factory(settings: Settings) -> AgentFactory:
@@ -68,18 +82,42 @@ def _default_agent_factory(settings: Settings) -> AgentFactory:
 
     Bound to ``settings`` so every agent shares the operator's configured posture
     (model, permission mode, …). A per-request ``model`` override rebuilds settings
-    with that model. The server passes no interactive prompter, so ``ask`` mode
-    fails closed (writes/shell denied) — the safe default for headless REST/SSE;
-    the WebSocket channel adds the interactive approval bridge.
+    with that model. A ``prompter`` (from the WebSocket bridge) makes ``ask`` mode
+    interactive; with none, ``ask`` fails closed (writes/shell denied) — the safe
+    default for headless REST/SSE.
     """
     from zakcode import Agent
 
-    def factory(session: Session, model: str | None) -> AgentLike:
+    def factory(
+        session: Session, model: str | None, prompter: PermissionPrompter | None
+    ) -> AgentLike:
         if model:
-            return Agent(session=session, default_model=model)
-        return Agent(session=session, settings=settings)
+            return Agent(session=session, default_model=model, prompter=prompter)
+        return Agent(session=session, settings=settings, prompter=prompter)
 
     return factory
+
+
+class WebSocketPermissionPrompter:
+    """A :class:`~zakcode.permissions.PermissionPrompter` that asks over a WebSocket.
+
+    When the core escalates a tool call, :meth:`confirm` sends a
+    :class:`~zakcode.server.wire.WSActionRequired` frame to the client and awaits a
+    matching ``approval`` message (delivered by the connection's receive loop via
+    ``await_approval``). The core stays UI-agnostic; this is just the transport.
+    """
+
+    def __init__(
+        self,
+        send: Callable[[dict[str, Any]], Awaitable[None]],
+        await_approval: Callable[[], Awaitable[PermissionOutcome]],
+    ) -> None:
+        self._send = send
+        self._await_approval = await_approval
+
+    async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
+        await self._send(WSActionRequired.from_request(request).model_dump(mode="json"))
+        return await self._await_approval()
 
 
 def create_app(
@@ -183,7 +221,7 @@ def create_app(
     @app.post("/chat")
     async def chat(request: ChatRequest) -> ChatResponse:
         session = _get_or_create_session(request.session_id, request.model)
-        agent = resolved_factory(session, request.model)
+        agent = resolved_factory(session, request.model, None)
         result = await agent.arun_turn(request.message)
         resolved_store.save(agent.session)
         return ChatResponse.from_turn(agent.session.id, result)
@@ -191,7 +229,7 @@ def create_app(
     @app.post("/chat/stream")
     async def chat_stream(request: ChatRequest) -> EventSourceResponse:
         session = _get_or_create_session(request.session_id, request.model)
-        agent = resolved_factory(session, request.model)
+        agent = resolved_factory(session, request.model, None)
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             try:
@@ -203,6 +241,82 @@ def create_app(
                 resolved_store.save(agent.session)
 
         return EventSourceResponse(event_source())
+
+    # ── WebSocket: bidirectional input + interrupt + permission approval ────────
+
+    @app.websocket("/ws/{session_id}")
+    async def ws_chat(websocket: WebSocket, session_id: str) -> None:
+        await websocket.accept()
+        try:
+            session = resolved_store.load(session_id)
+        except SessionNotFound:
+            await websocket.send_json({"type": "error", "detail": f"no session {session_id!r}"})
+            await websocket.close()
+            return
+
+        send_lock = asyncio.Lock()
+        # Holds the future the prompter is currently waiting on (one at a time).
+        approval: dict[str, asyncio.Future[PermissionOutcome]] = {}
+
+        async def send(payload: dict[str, Any]) -> None:
+            # Serialize sends so a turn's events and an action_required prompt never
+            # interleave on the wire.
+            async with send_lock:
+                await websocket.send_json(payload)
+
+        async def await_approval() -> PermissionOutcome:
+            fut: asyncio.Future[PermissionOutcome] = asyncio.get_running_loop().create_future()
+            approval["fut"] = fut
+            try:
+                return await fut
+            finally:
+                approval.pop("fut", None)
+
+        prompter = WebSocketPermissionPrompter(send, await_approval)
+        agent = resolved_factory(session, None, prompter)
+        current_turn: asyncio.Task[None] | None = None
+
+        async def run_turn(text: str) -> None:
+            try:
+                async for event in agent.astream_turn(text):
+                    await send(event_to_dict(event))
+            except asyncio.CancelledError:
+                await send({"event": "status", "message": "interrupted"})
+                raise
+            except Exception as exc:  # noqa: BLE001 — surface, never crash the socket
+                await send({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+            finally:
+                resolved_store.save(agent.session)
+
+        try:
+            while True:
+                raw = await websocket.receive_json()
+                try:
+                    msg = client_message_from_dict(raw)
+                except pydantic.ValidationError:
+                    await send({"type": "error", "detail": "unrecognized message"})
+                    continue
+
+                if isinstance(msg, WSUserInput):
+                    if current_turn is not None and not current_turn.done():
+                        await send({"type": "error", "detail": "a turn is already running"})
+                        continue
+                    current_turn = asyncio.create_task(run_turn(msg.message))
+                elif isinstance(msg, WSInterrupt):
+                    if current_turn is not None and not current_turn.done():
+                        current_turn.cancel()
+                elif isinstance(msg, WSApproval):
+                    fut = approval.get("fut")
+                    if fut is not None and not fut.done():
+                        try:
+                            fut.set_result(PermissionOutcome(msg.outcome))
+                        except ValueError:
+                            fut.set_result(PermissionOutcome.DENY_ONCE)
+        except WebSocketDisconnect:
+            if current_turn is not None and not current_turn.done():
+                current_turn.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await current_turn
 
     return app
 

@@ -238,3 +238,15 @@ class SessionStore:
     def resume(self, session_id: str) -> Session:
         """Load a previously saved session so work can continue."""
         return self.load(session_id)
+
+    def delete(self, session_id: str) -> bool:
+        """Delete the session stored under ``session_id``.
+
+        Returns ``True`` if a session file was removed, ``False`` if none existed.
+        Never raises for a missing session, so a double-delete is harmless.
+        """
+        try:
+            self._path_for(session_id).unlink()
+            return True
+        except FileNotFoundError:
+            return False

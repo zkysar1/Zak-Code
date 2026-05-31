@@ -64,7 +64,7 @@ class _FakeAgent:
             yield event
 
 
-def _factory(session: Session, model: str | None) -> _FakeAgent:  # noqa: ARG001
+def _factory(session: Session, model: str | None, prompter: object = None) -> _FakeAgent:  # noqa: ARG001
     return _FakeAgent(session)
 
 
