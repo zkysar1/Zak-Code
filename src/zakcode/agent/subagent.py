@@ -114,13 +114,7 @@ class SubAgentRunner:
         """The system-prompt builder for a child (specialized iff a suffix is set)."""
         return SystemPromptBuilder(extra_instructions=definition.system_suffix)
 
-    async def run(
-        self,
-        definition: SubAgentDefinition,
-        prompt: str,
-        *,
-        depth: int = 1,
-    ) -> SubAgentResult:
+    async def run(self, definition: SubAgentDefinition, prompt: str) -> SubAgentResult:
         """Run one sub-agent to completion and return its condensed summary.
 
         Counts the spawn against the shared budget's child cap (raising

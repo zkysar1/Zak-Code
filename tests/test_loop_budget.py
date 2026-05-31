@@ -129,13 +129,12 @@ async def test_shared_budget_bounds_two_loops_combined(tmp_path: Path) -> None:
     assert r2.stop_reason == "max_iterations"
 
 
-async def test_refunded_iterations_are_reusable_by_a_later_loop(tmp_path: Path) -> None:
+async def test_partially_consumed_pool_bounds_a_later_loop(tmp_path: Path) -> None:
     budget = IterationBudget(5)
-    budget.reserve(5)  # pretend a sibling reserved the whole pool…
-    budget.refund(2)  # …then returned 2 unused
+    budget.consume(3)  # a sibling already drew 3 of the shared pool
     loop = _loop(tmp_path, max_iterations=100, budget=budget)
     result = await loop.arun_turn("go")
-    assert result.iterations == 2  # exactly the refunded headroom
+    assert result.iterations == 2  # exactly the remaining headroom
 
 
 async def test_budget_bounds_the_streaming_path_too(tmp_path: Path) -> None:
