@@ -11,7 +11,7 @@ from zakcode.agent.compact import (
     Compactor,
     is_summary,
 )
-from zakcode.messages import Message, Role, ToolResultBlock, ToolUseBlock
+from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
 
 
 async def _summarize(messages: list[Message]) -> str:
@@ -70,7 +70,7 @@ def test_summary_message_shape() -> None:
         c = Compactor(CompactionConfig(preserve_recent=2))
         result = await c.compact(_convo(6), summarize=_summarize)
         head = result.messages[0]
-        assert head.role == Role.SYSTEM
+        assert head.role == "system"
         assert head.text.startswith(SUMMARY_MARKER)
         assert CONTINUATION_NOTE.strip() in head.text
         assert "summary of 4 messages" in head.text
@@ -100,14 +100,14 @@ def test_never_splits_tool_pair() -> None:
         msgs = [
             Message.user("do a thing"),
             Message.assistant_text("calling tool"),
-            Message(role=Role.ASSISTANT, blocks=[ToolUseBlock(id="t1", name="x", arguments={})]),
+            Message(role="assistant", blocks=[ToolUseBlock(id="t1", name="x", input={})]),
             Message.tool_results([ToolResultBlock(tool_use_id="t1", output="ok")]),
         ]
         c = Compactor(CompactionConfig(preserve_recent=1))
         result = await c.compact(msgs, summarize=_summarize)
         assert result.compacted is True
         # the tail must NOT begin with a tool message
-        assert result.messages[1].role != Role.TOOL
+        assert result.messages[1].role != "tool"
 
     asyncio.run(scenario())
 

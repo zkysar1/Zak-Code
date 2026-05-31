@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel
 
-from zakcode.messages import Message, Role
+from zakcode.messages import Message
 
 #: Prefix that marks a system message as a compaction summary (used to detect and
 #: fold a prior summary on re-compaction).
@@ -64,7 +64,7 @@ class CompactionResult(BaseModel):
 
 def is_summary(message: Message) -> bool:
     """True if ``message`` is a compaction summary produced by this module."""
-    return message.role == Role.SYSTEM and message.text.startswith(SUMMARY_MARKER)
+    return message.role == "system" and message.text.startswith(SUMMARY_MARKER)
 
 
 class Compactor:
@@ -99,13 +99,11 @@ class Compactor:
         if n <= keep:
             return 0
         idx = n - keep
-        while idx > 0 and messages[idx].role == Role.TOOL:
+        while idx > 0 and messages[idx].role == "tool":
             idx -= 1
         return idx
 
-    async def compact(
-        self, messages: list[Message], *, summarize: Summarize
-    ) -> CompactionResult:
+    async def compact(self, messages: list[Message], *, summarize: Summarize) -> CompactionResult:
         """Replace older messages with one summary; keep the recent tail verbatim.
 
         A prior leading summary is folded into the new summary (idempotent). Returns
