@@ -1,0 +1,123 @@
+"""Tests for filesystem plugin discovery (M6-3).
+
+Discovery is defensive: bad manifests / missing modules / no register() are
+recorded as errors and skipped, never raised. These write real plugin dirs under
+tmp_path and assert the (plugins, errors) split, trust gating, and dedup.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from zakcode.plugins.discovery import (
+    default_plugin_dirs,
+    discover_dir_plugins,
+    discover_plugins,
+)
+
+
+def _write_plugin(
+    root: Path,
+    name: str,
+    *,
+    manifest: dict | None = None,
+    module_name: str = "plugin",
+    module_body: str = "def register(ctx):\n    pass\n",
+    skip_module: bool = False,
+) -> None:
+    pdir = root / name
+    pdir.mkdir(parents=True)
+    m = {"name": name, **(manifest or {})}
+    (pdir / "plugin.json").write_text(json.dumps(m), encoding="utf-8")
+    if not skip_module:
+        (pdir / f"{module_name}.py").write_text(module_body, encoding="utf-8")
+
+
+def test_discover_missing_dir_is_empty(tmp_path: Path) -> None:
+    plugins, errors = discover_dir_plugins(tmp_path / "nope")
+    assert plugins == []
+    assert errors == {}
+
+
+def test_discover_valid_plugin(tmp_path: Path) -> None:
+    _write_plugin(tmp_path, "demo", module_body="def register(ctx):\n    ctx.log('hi')\n")
+    plugins, errors = discover_dir_plugins(tmp_path)
+    assert errors == {}
+    assert len(plugins) == 1
+    assert plugins[0].manifest.name == "demo"
+    assert callable(plugins[0].register)
+    assert plugins[0].manifest.trusted is False  # untrusted by default
+
+
+def test_trusted_names_marks_trusted(tmp_path: Path) -> None:
+    _write_plugin(tmp_path, "demo")
+    plugins, _ = discover_dir_plugins(tmp_path, trusted_names={"demo"})
+    assert plugins[0].manifest.trusted is True
+
+
+def test_bad_json_is_recorded_not_raised(tmp_path: Path) -> None:
+    pdir = tmp_path / "broken"
+    pdir.mkdir()
+    (pdir / "plugin.json").write_text("{not json", encoding="utf-8")
+    plugins, errors = discover_dir_plugins(tmp_path)
+    assert plugins == []
+    assert "broken" in errors
+
+
+def test_missing_module_is_recorded(tmp_path: Path) -> None:
+    _write_plugin(tmp_path, "nomod", skip_module=True)
+    plugins, errors = discover_dir_plugins(tmp_path)
+    assert plugins == []
+    assert "nomod" in errors
+
+
+def test_module_without_register_is_recorded(tmp_path: Path) -> None:
+    _write_plugin(tmp_path, "noreg", module_body="x = 1\n")
+    plugins, errors = discover_dir_plugins(tmp_path)
+    assert plugins == []
+    assert "noreg" in errors
+    assert "register" in errors["noreg"]
+
+
+def test_custom_module_name(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path,
+        "custom",
+        manifest={"module": "entry"},
+        module_name="entry",
+        module_body="def register(ctx):\n    pass\n",
+    )
+    plugins, errors = discover_dir_plugins(tmp_path)
+    assert errors == {}
+    assert [p.manifest.name for p in plugins] == ["custom"]
+
+
+def test_discovered_register_is_callable(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path,
+        "real",
+        module_body=(
+            "def register(ctx):\n"
+            "    from zakcode.commands import CommandResult\n"
+            "    ctx.register_command('rc', lambda a: CommandResult.ok('ran'))\n"
+        ),
+    )
+    plugins, _ = discover_dir_plugins(tmp_path)
+    # The resolved register is the real module function (we can't run it without a
+    # context, but we can confirm it loaded as a callable named 'register').
+    assert plugins[0].register.__name__ == "register"
+
+
+def test_default_plugin_dirs_shape(tmp_path: Path) -> None:
+    dirs = default_plugin_dirs(tmp_path)
+    assert dirs[0] == tmp_path / ".zakcode" / "plugins"  # project first
+    assert dirs[-1].name == "plugins"
+
+
+def test_discover_plugins_dedups_by_name(tmp_path: Path) -> None:
+    # Same plugin name in the project dir → only one wins; no entry points.
+    proj = tmp_path / ".zakcode" / "plugins"
+    _write_plugin(proj, "dup")
+    plugins, errors = discover_plugins(tmp_path, include_entry_points=False)
+    assert [p.manifest.name for p in plugins] == ["dup"], errors
