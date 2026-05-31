@@ -333,7 +333,6 @@ class AgentLoop:
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
 
-        tool_defs = self.registry.definitions()
         ctx = ToolContext(workspace_root=self.workspace_root, spawner=self.spawner)
 
         while True:
@@ -342,6 +341,10 @@ class AgentLoop:
                 break
             iterations += 1
             system = self._build_system()
+            # Recompute exposed tools each iteration so a tool activated mid-turn
+            # (e.g. via tool_search) is offered in the same turn and stays consistent
+            # with the system prompt's tool summary (both read active_names()).
+            tool_defs = self.registry.definitions()
 
             result = await self.provider.acomplete(
                 self.session.messages,
@@ -446,7 +449,6 @@ class AgentLoop:
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
 
-        tool_defs = self.registry.definitions()
         ctx = ToolContext(workspace_root=self.workspace_root, spawner=self.spawner)
 
         try:
@@ -456,6 +458,9 @@ class AgentLoop:
                     break
                 iterations += 1
                 system = self._build_system()
+                # Recompute exposed tools each iteration (see _run_turn) so mid-turn
+                # tool activations are offered in the same turn.
+                tool_defs = self.registry.definitions()
 
                 text_parts: list[str] = []
                 accumulator = ToolCallAccumulator()
