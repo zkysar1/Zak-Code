@@ -404,7 +404,7 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         try:
             _run_streamed_turn(
                 console,
-                lambda: _server_turn_stream(base_url, stripped, session_id),
+                lambda s=stripped: _server_turn_stream(base_url, s, session_id),
                 renderer,
             )
         except httpx.HTTPError as exc:

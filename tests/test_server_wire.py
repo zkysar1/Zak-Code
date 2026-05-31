@@ -30,7 +30,6 @@ from zakcode.session.store import Session
 from zakcode.tools.base import ConcurrencyClass, ToolSpec
 from zakcode.usage import Usage
 
-
 # ── AgentEvent round-trips (every member) ─────────────────────────────────────
 
 
