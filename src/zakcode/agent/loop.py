@@ -74,7 +74,7 @@ from zakcode.providers.base import (
     ToolCall,
 )
 from zakcode.session.store import Session, SessionStore
-from zakcode.tools.base import ToolContext, ToolRegistry, ToolSpec
+from zakcode.tools.base import SubAgentSpawner, ToolContext, ToolRegistry, ToolSpec
 from zakcode.usage import Usage
 
 #: Fallback iteration budget when neither an explicit value nor settings provide one.
@@ -133,6 +133,7 @@ class AgentLoop:
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
         budget: IterationBudget | None = None,
+        spawner: SubAgentSpawner | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -327,7 +328,7 @@ class AgentLoop:
         repeat_count = 0
 
         tool_defs = self.registry.definitions()
-        ctx = ToolContext(workspace_root=self.workspace_root)
+        ctx = ToolContext(workspace_root=self.workspace_root, spawner=self.spawner)
 
         while True:
             if not self._grant_iteration(iterations):
@@ -440,7 +441,7 @@ class AgentLoop:
         repeat_count = 0
 
         tool_defs = self.registry.definitions()
-        ctx = ToolContext(workspace_root=self.workspace_root)
+        ctx = ToolContext(workspace_root=self.workspace_root, spawner=self.spawner)
 
         try:
             while True:

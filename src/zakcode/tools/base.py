@@ -21,11 +21,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
 from zakcode.config import PermissionTier
+
+if TYPE_CHECKING:
+    # Only for the spawner's return annotation. Importing at runtime would be a
+    # cycle (subagent.py imports this module); under `from __future__ import
+    # annotations` the annotation is a string, so this type-only import suffices.
+    from zakcode.agent.subagent import SubAgentResult
 
 
 class ConcurrencyClass(StrEnum):
@@ -72,17 +78,37 @@ class ToolSpec(BaseModel):
         }
 
 
+@runtime_checkable
+class SubAgentSpawner(Protocol):
+    """Runs a named sub-agent on a prompt and returns its condensed result (M4).
+
+    The loop injects a concrete spawner into :class:`ToolContext` when delegation
+    is enabled, and the ``task`` tool calls it. Child loops are built **without** a
+    spawner — that absence is what enforces one-level nesting (a sub-agent cannot
+    itself delegate). ``runtime_checkable`` so pydantic can validate the field by
+    structural ``isinstance``.
+    """
+
+    async def spawn(self, *, type_name: str, prompt: str) -> SubAgentResult: ...
+
+    def available_types(self) -> list[str]:
+        """Names of the sub-agent types this spawner can launch."""
+        ...
+
+
 class ToolContext(BaseModel):
     """Ambient state handed to a tool at execution time.
 
     Carries the workspace root so file tools can scope and validate paths against it
-    (see ``docs/GUARDRAILS.md`` §4). Extended in later milestones (permission decisions,
-    cancellation token, event sink).
+    (see ``docs/GUARDRAILS.md`` §4) and, when delegation is enabled, a
+    :class:`SubAgentSpawner` the ``task`` tool uses to launch sub-agents. ``spawner``
+    is ``None`` for ordinary turns and for every sub-agent (one-level nesting).
     """
 
     model_config = {"arbitrary_types_allowed": True}
 
     workspace_root: Path
+    spawner: SubAgentSpawner | None = None
 
 
 class ToolResult(BaseModel):
@@ -202,6 +228,7 @@ __all__ = [
     "ConcurrencyClass",
     "ToolSpec",
     "ToolContext",
+    "SubAgentSpawner",
     "ToolResult",
     "Tool",
     "ToolRegistry",
