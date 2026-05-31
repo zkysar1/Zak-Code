@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -25,6 +26,7 @@ from zakcode.version import __version__
 
 if TYPE_CHECKING:
     from zakcode import Agent
+    from zakcode.events import AgentEvent
 
 app = typer.Typer(
     name="zakcode",
@@ -182,17 +184,26 @@ def _print_banner(console: Console, agent: Agent) -> None:
     console.print("[dim]Type /help for commands, /exit to quit.[/dim]\n")
 
 
-async def _drive_stream(agent: Agent, line: str, renderer: StreamRenderer) -> None:
-    """Drive one streamed turn through the renderer so tokens appear live.
+#: A factory that produces one turn's event stream. The CLI is agnostic to where
+#: the stream comes from — a local in-process ``Agent`` or a remote ``ServerClient``
+#: — so the same cancellable runner and renderer drive both.
+StreamFactory = Callable[[], "AsyncIterator[AgentEvent]"]
 
-    The agent's :meth:`astream_turn` yields :class:`~zakcode.events.AgentEvent`s;
-    the renderer writes them to the console incrementally (text deltas, tool
-    lines, footer). Kept tiny and rendering-free so the core stays UI-agnostic.
+
+async def _drive_stream(make_stream: StreamFactory, renderer: StreamRenderer) -> None:
+    """Render one streamed turn live.
+
+    ``make_stream()`` yields :class:`~zakcode.events.AgentEvent`s (from a local
+    agent or a remote server); the renderer writes them to the console
+    incrementally. The stream is created here, inside the task's event loop, so a
+    loop-bound transport (e.g. httpx) is constructed on the right loop.
     """
-    await renderer.render(agent.astream_turn(line))
+    await renderer.render(make_stream())
 
 
-def _run_streamed_turn(console: Console, agent: Agent, line: str, renderer: StreamRenderer) -> bool:
+def _run_streamed_turn(
+    console: Console, make_stream: StreamFactory, renderer: StreamRenderer
+) -> bool:
     """Run a streamed turn on a private event loop; cancellable via Ctrl-C.
 
     Returns ``True`` if the turn completed, ``False`` if the user interrupted it.
@@ -202,7 +213,7 @@ def _run_streamed_turn(console: Console, agent: Agent, line: str, renderer: Stre
     """
     loop = asyncio.new_event_loop()
     try:
-        task = loop.create_task(_drive_stream(agent, line, renderer))
+        task = loop.create_task(_drive_stream(make_stream, renderer))
         try:
             loop.run_until_complete(task)
             return True
@@ -219,6 +230,40 @@ def _run_streamed_turn(console: Console, agent: Agent, line: str, renderer: Stre
         asyncio.set_event_loop(None)
 
 
+async def _server_turn_stream(
+    base_url: str, message: str, session_id: str | None
+) -> AsyncIterator[AgentEvent]:
+    """Stream one turn from a remote server, creating + closing a client per turn.
+
+    A fresh :class:`~zakcode.server.client.ServerClient` (and its httpx client) is
+    built inside the consuming event loop and closed when the turn ends, which
+    keeps the loop-bound httpx client valid across the REPL's per-turn loops.
+    """
+    from zakcode.server.client import ServerClient
+
+    client = ServerClient(base_url)
+    try:
+        async for event in client.astream_turn(message, session_id):
+            yield event
+    finally:
+        await client.aclose()
+
+
+def _create_remote_session(base_url: str) -> str:
+    """Create a session on the remote server and return its id (one-shot)."""
+
+    async def _go() -> str:
+        from zakcode.server.client import ServerClient
+
+        client = ServerClient(base_url)
+        try:
+            return await client.create_session()
+        finally:
+            await client.aclose()
+
+    return asyncio.run(_go())
+
+
 @app.command()
 def chat(
     model: str = typer.Option(None, "--model", "-m", help="Override the model id."),
@@ -231,8 +276,25 @@ def chat(
     workspace: str = typer.Option(
         None, "--workspace", "-w", help="Workspace root for tools and the session."
     ),
+    server: str = typer.Option(
+        None,
+        "--server",
+        help="Drive a remote zakcode server (e.g. http://127.0.0.1:8000) instead of "
+        "running the engine in-process. Proves the client/server boundary.",
+    ),
 ) -> None:
-    """Start an interactive agent session (a thin REPL over the core engine)."""
+    """Start an interactive agent session.
+
+    By default the engine runs **in-process**. With ``--server <url>`` the CLI is a
+    thin client of a remote server, streaming the same ``AgentEvent``s over SSE — the
+    same renderer displays either. (Server mode is headless: the server runs turns
+    without an interactive permission prompter, so ``ask`` mode fails closed there;
+    use the WebSocket channel for interactive approval.)
+    """
+    if server:
+        _run_server_chat(server, model)
+        return
+
     from zakcode import Agent
 
     overrides: dict[str, Any] = {}
@@ -296,9 +358,57 @@ def chat(
         # renderer per turn keeps the text/usage buffers from leaking across turns.
         renderer = StreamRenderer(console=console)
         try:
-            _run_streamed_turn(console, agent, stripped, renderer)
+            _run_streamed_turn(console, lambda: agent.astream_turn(stripped), renderer)
         except ProviderError as exc:
             console.print(f"[red]Provider error:[/red] {exc}")
+            continue
+
+
+def _run_server_chat(base_url: str, model: str | None) -> None:
+    """REPL that drives a remote server over SSE (the ``chat --server`` path)."""
+    try:
+        import httpx
+    except ImportError as exc:  # pragma: no cover - depends on optional extra
+        console.print(
+            "[red]The server extra is not installed.[/red] "
+            "Install it with: [bold]pip install 'zakcode[server]'[/bold]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        session_id = _create_remote_session(base_url)
+    except (httpx.HTTPError, OSError) as exc:
+        console.print(f"[red]Could not reach server at {base_url}:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[bold]Zak Code[/bold] {__version__} — connected to {base_url}")
+    console.print(f"[dim]session[/dim]  {session_id}")
+    if model:
+        console.print(f"[dim]model[/dim]    {model} [dim](per-request override)[/dim]")
+    console.print("[dim]Type /exit to quit. (Server mode: turns run headless.)[/dim]\n")
+
+    while True:
+        try:
+            line = console.input("[bold cyan]›[/bold cyan] ")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/dim]")
+            break
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.lower() in ("/exit", "/quit"):
+            console.print("[dim]Bye.[/dim]")
+            break
+
+        renderer = StreamRenderer(console=console)
+        try:
+            _run_streamed_turn(
+                console,
+                lambda: _server_turn_stream(base_url, stripped, session_id),
+                renderer,
+            )
+        except httpx.HTTPError as exc:
+            console.print(f"[red]Server error:[/red] {exc}")
             continue
 
 
