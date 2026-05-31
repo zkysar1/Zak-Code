@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -155,6 +156,9 @@ class AgentLoop:
         # Delegation seam (M4): placed in every ToolContext so the ``task`` tool can
         # launch sub-agents. Child sub-agent loops get spawner=None (one-level nesting).
         self.spawner = spawner
+        # M8: optional context compactor. When set, the loop auto-compacts the session
+        # before each turn once it exceeds the provider's context-window threshold.
+        self.compactor = compactor
         # The security gate is INJECTED, not assumed. A bare AgentLoop with no
         # policy is ungated (a pure mechanism, convenient for library/tests); the
         # Agent facade — the real entry point — always injects a policy built from

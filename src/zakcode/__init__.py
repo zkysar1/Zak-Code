@@ -73,6 +73,7 @@ class Agent:
         enable_plugins: bool = False,
         trusted_plugins: list[str] | None = None,
         enable_skills: bool = False,
+        enable_compaction: bool = False,
         **setting_overrides: Any,
     ) -> None:
         from zakcode.providers.litellm_provider import LiteLLMProvider

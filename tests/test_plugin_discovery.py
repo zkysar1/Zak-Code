@@ -46,7 +46,10 @@ def test_discover_valid_plugin(tmp_path: Path) -> None:
     assert errors == {}
     assert len(plugins) == 1
     assert plugins[0].manifest.name == "demo"
-    assert callable(plugins[0].register)
+    # B1 security: the module is NOT imported at discovery, so `.register` is None and
+    # `.loader` is set; resolve() imports on demand and returns the register callable.
+    assert plugins[0].register is None
+    assert callable(plugins[0].resolve())
     assert plugins[0].manifest.trusted is False  # untrusted by default
 
 
@@ -111,7 +114,7 @@ def test_discovered_register_is_callable(tmp_path: Path) -> None:
     plugins, _ = discover_dir_plugins(tmp_path)
     # The resolved register is the real module function (we can't run it without a
     # context, but we can confirm it loaded as a callable named 'register').
-    assert plugins[0].register.__name__ == "register"
+    assert plugins[0].resolve().__name__ == "register"
 
 
 def test_default_plugin_dirs_shape(tmp_path: Path) -> None:

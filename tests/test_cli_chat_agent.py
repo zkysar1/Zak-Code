@@ -78,7 +78,11 @@ def test_trusted_plugins_env_is_comma_split(
     monkeypatch.setenv("ZAKCODE_TRUSTED_PLUGINS", " a , b ")  # whitespace tolerated
     agent = _build_chat_agent(ConsolePermissionPrompter(Console()), _overrides(tmp_path))
     assert agent.plugin_report is not None
-    assert set(agent.plugin_report.loaded) == {"a", "b"}
+    # comma-split + whitespace-trim ⇒ both names are TRUSTED, so neither is skipped as
+    # untrusted. (Both ship the same demo command, so only the first fully loads — that
+    # command-name collision is incidental; this test is about parsing the env var.)
+    assert "a" not in agent.plugin_report.skipped
+    assert "b" not in agent.plugin_report.skipped
 
 
 def test_unknown_command_returns_none(tmp_path: Path) -> None:

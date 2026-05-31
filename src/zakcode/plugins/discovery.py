@@ -108,13 +108,17 @@ def discover_dir_plugins(
             errors[entry.name] = f"{type(exc).__name__}: {exc}"
             logger.warning("skipping plugin dir %s: %s", entry, exc)
             continue
+
         # SECURITY: do NOT import the module here — importing runs its top-level code.
         # Defer it behind a lazy loader so the module is imported only if the plugin
         # passes the trust gate in ``PluginManager.load_into`` (resolve()).
+        def _loader(mp: Path = module_path, nm: str = manifest.name) -> Any:
+            return _load_register_from_file(mp, nm)
+
         plugins.append(
             Plugin(
                 manifest=_apply_trust(manifest, trusted_names),
-                loader=lambda mp=module_path, nm=manifest.name: _load_register_from_file(mp, nm),
+                loader=_loader,
                 origin=str(entry),
             )
         )
