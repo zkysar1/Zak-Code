@@ -172,7 +172,27 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M2 — Permissions + hooks runtime (P1)
+### M2 — Permissions + hooks runtime (P1) — ✅ DONE (2026-05-30, commits `a8933d8`…`79e9c63`)
+
+> **Status: shipped.** Deny-first permissioning enforced in the **core** (a code path the
+> model cannot reach) plus a real lifecycle-hook runtime. `permissions.py`: `PermissionMode`
+> (deny/ask/acceptEdits/allow), a pure tier×mode `decide()` + stateful `authorize()` with
+> per-session allow/deny memory and an injected `PermissionPrompter`; unknown tools fail closed;
+> a `DANGEROUS_PATTERNS` blocklist (rm -rf /, sudo, mkfs, fork bomb, dd-to-device, DROP TABLE,
+> git force-push, curl|sh, …) that only ever *tightens* a verdict. `hooks/`: PreToolUse/PostToolUse
+> runtime — shell hooks as argv arrays (no injection) with JSON-on-stdin + exit-code protocol
+> (0=allow/2=block/other=warn) plus in-process callbacks, every failure error-isolated.
+> `AgentLoop._execute_tool_call` is the **single seam** both the buffered and streaming paths run
+> through: permission authorize → PreToolUse (veto/mutate) → execute → PostToolUse; a denial/veto
+> becomes a recoverable error result. CLI: `/permissions`, `/hooks`, and a console prompter that
+> shows the exact command. **372 tests pass; ruff + mypy clean.** All exit criteria met
+> (dangerous-command block independent of the model; fail-closed unknown tool; hook veto + arg
+> mutation + bad-hook isolation; session-approval persistence — all test-verified on both paths).
+> Next: **M3 — FastAPI server (SSE/WS).**
+>
+> _Trust note:_ permission is decided on the model's requested arguments; a PreToolUse hook may
+> then rewrite them before execution. Hooks are **operator-configured, trusted** code (like a
+> shell rc) — this is intended (a hook can both veto and adjust), not a model-reachable bypass.
 
 **Goal:** Defense-in-depth, deny-first permissioning with a real lifecycle-hook runtime.
 
