@@ -353,7 +353,22 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M6 — Plugins (P2)
+### M6 — Plugins (P2) — ✅ DONE (2026-05-31, commits `8f72972`…`4c470f9`)
+
+> **Status: shipped (Python plugin path).** A plugin is a `plugin.json` manifest + a `register(ctx)`
+> entrypoint that contributes tools/hooks/commands through a **narrow** `PluginContext` — never
+> touching core files. `commands/CommandRegistry` is the slash-command table; `plugins/` holds the
+> contract + `PluginManager.load_into` (trust+enable-gated, error-isolated, records contributions);
+> `plugins/discovery.py` finds plugins in `.zakcode/plugins` (project) + `~/.config/zakcode/plugins`
+> (user) + the `zakcode.plugins` entry-point group. **Security:** a plugin's module is **not imported
+> until after the trust gate passes** (deferred lazy loader), so an untrusted workspace plugin can
+> never run code at discovery; trust is explicit (`ZAKCODE_TRUSTED_PLUGINS` / `trusted_plugins=`).
+> The `Agent` facade wires it opt-in (`enable_plugins=True`); the CLI exposes `/plugins` and now
+> dispatches plugin-registered slash commands. **584 tests pass, 1 skipped; ruff + format + mypy
+> clean.** A fresh-eyes review's blocker (import-before-trust) and both MAJORs (dead command surface,
+> no CLI trust path) were fixed. _Deferred (tracked in `RISKS.md`): the language-agnostic subprocess
+> tool contract, `/reload-plugins`, a shipped sample-plugin fixture + author guide, and the
+> `pre_llm_call` cache-safe hook (the hook enum currently has only PreToolUse/PostToolUse)._
 
 **Goal:** A first-party extension surface (`register(ctx)`) that never touches core files.
 

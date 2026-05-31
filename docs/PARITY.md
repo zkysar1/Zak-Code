@@ -254,7 +254,7 @@ of each subsystem Zak Code plans to build vs. defer.
 | Output styles | Load output styles from a directory | yes | Planned | P1 | M2 | |
 | SessionMemory | Persistent session memory + prompts; cross-session recall | yes | Planned | P1 | M2 | Frozen-snapshot memory + FTS5 search; MemoryProvider ABC. |
 | Prompt suggestion | PromptSuggestion (+ speculation) service | yes | Planned | P1 | M2 | |
-| Plugins | Loader + marketplace + `services/plugins` (install/enable/disable/update/trust); contribute hooks/tools/commands/MCP | yes | Planned | P2 | M3 | Net-new build (absent in the port). `register(ctx)` entrypoint; subprocess tool contract (JSON via stdin + env). |
+| Plugins | Loader + marketplace + `services/plugins` (install/enable/disable/update/trust); contribute hooks/tools/commands/MCP | yes | Done | P2 | M6 | Shipped (M6): `register(ctx)` entrypoint, dir + entry-point discovery, trust+enable gating (import deferred until trusted), narrow `PluginContext` contributing tools/hooks/commands, `/plugins`. Deferred: marketplace/install, subprocess tool contract (JSON via stdin+env), `/reload-plugins`. |
 | Migrations | Settings/model migrations (auto-update, permission, model renames, repl-bridge → remote-control) | yes | Planned | P2 | M3 | |
 | State + bootstrap | AppState/AppStateStore/selectors; startup bootstrapping | yes | Planned | P2 | M3 | Eager construction at startup; validate config/creds up front. |
 | CLI: structured/remote I/O + transports | structuredIO, remoteIO, print, ndjson, handlers; HybridTransport/SSE/WebSocket/uploaders/ccrClient | yes | Planned | P2 | M4 | Foundations may start in M3; full transport stack in M4. |
