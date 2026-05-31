@@ -97,6 +97,25 @@ def test_config_has_no_secret_key(client: TestClient, monkeypatch: pytest.Monkey
     assert body["default_model"] == "scripted/test"
 
 
+def test_config_omits_api_key_even_when_set(tmp_path: Path) -> None:
+    """The Settings.api_key field is excluded from /config even when populated.
+
+    Directly sets the (only) secret-bearing Settings field and asserts neither the
+    key nor its value ever reaches the wire — i.e. the exclude=True convention
+    holds, not just the defensive pop.
+    """
+    settings = Settings(
+        default_model="scripted/test", workspace_root=tmp_path, api_key="super-secret-token"
+    )
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(settings=settings, store=store, agent_factory=_factory)
+    body = TestClient(app).get("/config").json()
+    assert "api_key" not in body
+    assert "super-secret-token" not in json.dumps(body)
+    # The attribute itself is still readable in-process (providers rely on it).
+    assert settings.api_key == "super-secret-token"
+
+
 def test_tools_lists_builtins(client: TestClient) -> None:
     resp = client.get("/tools")
     assert resp.status_code == 200

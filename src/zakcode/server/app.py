@@ -167,9 +167,10 @@ def create_app(
 
     @app.get("/config")
     def get_config() -> dict[str, Any]:
-        # Settings hold no secrets (provider keys live in env, read by litellm), so
-        # the whole model is safe to expose. api_key, if ever set, is the only
-        # sensitive field — drop it defensively.
+        # Provider keys live in env (read by litellm), never in Settings. The only
+        # secret-bearing field, ``api_key``, is marked ``exclude=True`` in
+        # ``Settings`` so ``model_dump`` already omits it; the explicit pop is
+        # belt-and-suspenders in case that field convention is ever changed.
         data = resolved_settings.model_dump(mode="json")
         data.pop("api_key", None)
         return data

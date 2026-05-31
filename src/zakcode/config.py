@@ -69,8 +69,14 @@ class Settings(BaseSettings):
     # Many local servers ignore the key but litellm's openai route still requires one to be
     # present; this is a non-secret placeholder knob, not a vault. Real cloud keys still come
     # from the standard env vars (e.g. OPENAI_API_KEY) — see the module docstring.
+    #
+    # ``exclude=True`` keeps this field out of every ``model_dump()`` (e.g. the server's
+    # ``GET /config``) so it can never leak by serialization, while attribute access
+    # (``settings.api_key``, used by the provider) still works. CONVENTION: any future
+    # secret-bearing Settings field MUST set ``exclude=True`` for the same reason.
     api_key: str | None = Field(
         default=None,
+        exclude=True,
         description="Optional API key to pass through (e.g. a dummy for a local server).",
     )
 
