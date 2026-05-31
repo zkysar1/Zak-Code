@@ -358,7 +358,7 @@ def chat(
         # renderer per turn keeps the text/usage buffers from leaking across turns.
         renderer = StreamRenderer(console=console)
         try:
-            _run_streamed_turn(console, lambda: agent.astream_turn(stripped), renderer)
+            _run_streamed_turn(console, functools.partial(agent.astream_turn, stripped), renderer)
         except ProviderError as exc:
             console.print(f"[red]Provider error:[/red] {exc}")
             continue
@@ -404,7 +404,7 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         try:
             _run_streamed_turn(
                 console,
-                lambda s=stripped: _server_turn_stream(base_url, s, session_id),
+                functools.partial(_server_turn_stream, base_url, stripped, session_id),
                 renderer,
             )
         except httpx.HTTPError as exc:
