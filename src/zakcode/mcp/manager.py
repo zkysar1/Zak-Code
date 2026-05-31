@@ -22,7 +22,8 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from zakcode.config import PermissionTier
-from zakcode.mcp.client import McpCallResult, McpToolDef
+from zakcode.mcp.client import McpCallResult, MCPClient, McpToolDef
+from zakcode.mcp.config import McpConfigError, McpServerConfig, build_transport
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 
 #: MCP tool names must match ``^[a-zA-Z0-9_-]{1,64}$``; we enforce the charset + length.
@@ -184,11 +185,41 @@ class ExtensionManager:
                 await client.close()
 
 
+def build_extension_manager(
+    servers: list[McpServerConfig],
+    *,
+    allowlist: list[str] | None = None,
+    mcp_permission_tier: PermissionTier = PermissionTier.DANGER_FULL_ACCESS,
+) -> tuple[ExtensionManager, dict[str, str]]:
+    """Build an :class:`ExtensionManager` with one client per *enabled* server.
+
+    Each server's transport is *constructed* (not started) via
+    :func:`~zakcode.mcp.config.build_transport`; a config error (missing command,
+    blocked by ``allowlist``, missing ``${VAR}`` secret) is collected into the
+    returned ``errors`` map instead of raising — so one bad server entry never stops
+    the others from being wired. Nothing is spawned until
+    :meth:`ExtensionManager.discover_into` runs.
+    """
+    manager = ExtensionManager(mcp_permission_tier=mcp_permission_tier)
+    errors: dict[str, str] = {}
+    for cfg in servers:
+        if not cfg.enabled:
+            continue
+        try:
+            transport = build_transport(cfg, allowlist=allowlist)
+        except McpConfigError as exc:
+            errors[cfg.name] = str(exc)
+            continue
+        manager.add_client(cfg.name, MCPClient(transport))
+    return manager, errors
+
+
 __all__ = [
     "McpClientProtocol",
     "McpTool",
     "ExtensionManager",
     "DiscoveryReport",
+    "build_extension_manager",
     "qualified_tool_name",
     "parse_qualified_name",
     "MAX_TOOL_NAME_LEN",

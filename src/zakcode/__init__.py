@@ -40,7 +40,8 @@ class Agent:
     Keyword overrides are forwarded to :func:`~zakcode.config.load_settings`.
 
     Pass ``enable_subagents=True`` to expose the ``task`` delegation tool and a
-    shared iteration budget (off by default).
+    shared iteration budget (off by default). Pass ``enable_mcp=True`` to wire
+    configured MCP servers; their tools register on ``await connect_mcp()``.
     """
 
     def __init__(
@@ -55,6 +56,9 @@ class Agent:
         hook_manager: HookManager | None = None,
         budget: IterationBudget | None = None,
         enable_subagents: bool = False,
+        enable_mcp: bool = False,
+        mcp_servers: list[McpServerConfig] | None = None,
+        mcp_command_allowlist: list[str] | None = None,
         **setting_overrides: Any,
     ) -> None:
         from zakcode.providers.litellm_provider import LiteLLMProvider
@@ -108,6 +112,25 @@ class Agent:
             spawner = SubAgentManager(runner, [GENERAL_PURPOSE, PLAN], default=GENERAL_PURPOSE.name)
             self.registry.register(TaskTool())
 
+        # MCP (M5), opt-in. Build (but do NOT start) a client per configured server;
+        # __init__ stays side-effect-free. The servers are spawned and their tools
+        # discovered into ``self.registry`` only when the caller awaits ``connect_mcp``.
+        self.extension_manager: ExtensionManager | None = None
+        self.mcp_config_errors: dict[str, str] = {}
+        self.mcp_report: DiscoveryReport | None = None
+        if enable_mcp:
+            from zakcode.mcp.config import discover_config
+            from zakcode.mcp.manager import build_extension_manager
+
+            servers = (
+                mcp_servers
+                if mcp_servers is not None
+                else discover_config(self.settings.workspace_root)
+            )
+            self.extension_manager, self.mcp_config_errors = build_extension_manager(
+                servers, allowlist=mcp_command_allowlist
+            )
+
         self.loop = AgentLoop(
             self.provider,
             self.registry,
@@ -138,6 +161,25 @@ class Agent:
         is the incremental counterpart to :meth:`run_turn` / :meth:`arun_turn`.
         """
         return self.loop.astream_turn(user_text)
+
+    async def connect_mcp(self) -> DiscoveryReport | None:
+        """Spawn configured MCP servers and register their tools into the registry.
+
+        Returns the discovery report (registered qualified tool names + per-server
+        failures), or ``None`` if MCP was not enabled. Call once before the first
+        turn; a failed server is reported in the result, never fatal. Tools register
+        into the same ``self.registry`` the loop already holds, so they become
+        available to the next turn with no further wiring.
+        """
+        if self.extension_manager is None:
+            return None
+        self.mcp_report = await self.extension_manager.discover_into(self.registry)
+        return self.mcp_report
+
+    async def aclose_mcp(self) -> None:
+        """Close any open MCP server connections (best-effort)."""
+        if self.extension_manager is not None:
+            await self.extension_manager.aclose()
 
     @classmethod
     def for_workspace(cls, path: str | Path, **setting_overrides: Any) -> Agent:
