@@ -220,7 +220,24 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M3 — FastAPI server + SSE/WS (Layer 2, P1)
+### M3 — FastAPI server + SSE/WS (Layer 2, P1) — ✅ DONE (2026-05-31, commits `19d9bcc`…`6a7d1c2`)
+
+> **Status: shipped.** The core is now drivable over HTTP. `server/wire.py` is the pure JSON
+> contract (AgentEvent (de)serialization + request/response + WS control frames). `server/app.py`
+> `create_app()` exposes `/health`, `/config` (secret-free), `/tools`, `/sessions` CRUD,
+> `POST /chat` (buffered) and `POST /chat/stream` (SSE), plus **`WS /ws/{id}`** — bidirectional
+> input/interrupt with a `WebSocketPermissionPrompter` that bridges `action_required` approvals to
+> the client (so `ask` mode is interactive over the socket; REST/SSE run headless = fail-closed).
+> `server/client.py` `ServerClient` + `zakcode serve` and `chat --server <url>` make the CLI a thin
+> client. **The parity exit criterion is met:** in-process vs over-server transcripts are
+> byte-identical once serialized (test-verified). **410 tests pass, 1 skipped; ruff + mypy clean.**
+> Same `AgentEvent` stream across CLI-in-process / SSE / WS — a future web client is a renderer,
+> not a fork. (`PATCH /config` deferred — config is read-only over HTTP for now.) Next: **M4 —
+> sub-agents / Task tool.**
+>
+> _Security note (self-reviewed):_ no auth yet — bind to localhost (`zakcode serve` defaults to
+> `127.0.0.1`); the deny-first permission gate still runs in the core for every served turn, and
+> `/config` strips `api_key`. Network auth (token/JWT) is a follow-up before any non-local bind.
 
 **Goal:** Expose the core over HTTP with streaming, enabling remote/headless use and future web clients.
 
