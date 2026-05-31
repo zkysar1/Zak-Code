@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from zakcode.agent.budget import IterationBudget
+from zakcode.agent.compact import Compactor
 from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
@@ -192,12 +193,16 @@ class Agent:
         if enable_skills:
             from zakcode.skills import discover_skills
 
-            self.skill_registry, self.skill_errors = discover_skills(
-                self.settings.workspace_root
-            )
+            self.skill_registry, self.skill_errors = discover_skills(self.settings.workspace_root)
             catalog = self.skill_registry.render_catalog()
             if prompt_builder is None and catalog:
                 prompt_builder = SystemPromptBuilder(extra_instructions=catalog)
+
+        # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
+        # before a turn once it exceeds the provider's context-window threshold.
+        self.compactor: Compactor | None = None
+        if enable_compaction:
+            self.compactor = Compactor()
 
         self.loop = AgentLoop(
             self.provider,
@@ -211,6 +216,7 @@ class Agent:
             hook_manager=self.hook_manager,
             budget=shared_budget,
             spawner=spawner,
+            compactor=self.compactor,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:

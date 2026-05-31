@@ -50,6 +50,7 @@ from pydantic import BaseModel, Field
 
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
+from zakcode.agent.compact import Compactor
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import (
@@ -134,6 +135,7 @@ class AgentLoop:
         hook_manager: HookManager | None = None,
         budget: IterationBudget | None = None,
         spawner: SubAgentSpawner | None = None,
+        compactor: Compactor | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -170,6 +172,61 @@ class AgentLoop:
     def _persist(self) -> None:
         if self.store is not None:
             self.store.save(self.session)
+
+    async def _summarize_for_compaction(self, messages: list[Message]) -> str:
+        """Summarize older messages via the model (the compactor's summarize callback)."""
+        instruction = (
+            "You are compacting a long conversation to fit a context window. Summarize "
+            "the exchange below, preserving goals, decisions, key facts, file paths, and "
+            "any unfinished work. Be concise but complete; omit pleasantries. Output only "
+            "the summary."
+        )
+        result = await self.provider.acomplete(messages, system=instruction)
+        return result.text.strip()
+
+    async def _maybe_compact(self) -> None:
+        """Auto-compact the session if a compactor is set and the threshold is exceeded.
+
+        Best-effort: summarization failures are swallowed so a turn never dies because
+        compaction couldn't run (the turn just proceeds with the full history).
+        """
+        if self.compactor is None:
+            return
+        window = self.provider.capabilities().context_window
+        if not self.compactor.should_compact(
+            self.session.messages,
+            context_window=window,
+            count_tokens=lambda m: self.provider.count_tokens(m),
+        ):
+            return
+        try:
+            result = await self.compactor.compact(
+                self.session.messages, summarize=self._summarize_for_compaction
+            )
+        except Exception:  # noqa: BLE001 — compaction is best-effort; never break a turn
+            logging.getLogger(__name__).warning(
+                "compaction failed; continuing with full history", exc_info=True
+            )
+            return
+        if result.compacted:
+            self.session.messages[:] = result.messages
+            self._persist()
+
+    async def compact_now(self) -> bool:
+        """Force a compaction regardless of threshold (the ``/compact`` command).
+
+        Returns True if the transcript was compacted. No-op if no compactor is set or
+        there was nothing old enough to summarize.
+        """
+        if self.compactor is None:
+            return False
+        result = await self.compactor.compact(
+            self.session.messages, summarize=self._summarize_for_compaction
+        )
+        if result.compacted:
+            self.session.messages[:] = result.messages
+            self._persist()
+        return result.compacted
 
     def _grant_iteration(self, iterations_done: int) -> bool:
         """Whether the loop may run another iteration (and reserve it if so).
@@ -319,6 +376,7 @@ class AgentLoop:
             raise
 
     async def _run_turn(self, user_text: str) -> TurnResult:
+        await self._maybe_compact()
         self.session.add_message(Message.user(user_text))
         self._persist()
 
@@ -438,6 +496,7 @@ class AgentLoop:
         re-raised after a best-effort persist (matching :meth:`arun_turn`), so a
         cancelled stream never reports a normal stop.
         """
+        await self._maybe_compact()
         self.session.add_message(Message.user(user_text))
         self._persist()
 
