@@ -20,9 +20,12 @@ Endpoints (see ``docs/ARCHITECTURE.md`` — Server API surface):
 * ``DELETE /sessions/{id}``   — delete a session
 * ``POST /chat``              — run one buffered turn → :class:`ChatResponse`
 * ``POST /chat/stream``       — run one turn, streaming ``AgentEvent``s as SSE
+* ``WS   /ws/{session_id}``   — bidirectional: input, interrupt, permission approval
 
-The WebSocket channel (bidirectional input + interrupt + permission approval)
-is added in a later increment; this module is REST + SSE only.
+``/chat`` and ``/chat/stream`` refuse a second turn on a session that already has
+one in flight (HTTP 409); the WebSocket enforces the same one-turn-at-a-time rule
+per connection. Secrets never leave the process: ``GET /config`` dumps settings
+with the only secret-bearing field (``api_key``) excluded at the model level.
 """
 
 from __future__ import annotations

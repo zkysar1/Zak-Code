@@ -230,7 +230,15 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 > the client (so `ask` mode is interactive over the socket; REST/SSE run headless = fail-closed).
 > `server/client.py` `ServerClient` + `zakcode serve` and `chat --server <url>` make the CLI a thin
 > client. **The parity exit criterion is met:** in-process vs over-server transcripts are
-> byte-identical once serialized (test-verified). **402 tests pass, 1 skipped; ruff + mypy clean.**
+> byte-identical once serialized (test-verified). **401 tests pass, 1 skipped; ruff + format + mypy clean.**
+>
+> **M3-hardening (2026-05-31, commits `8d8f9a8`/`9f1b8c4`/`1c4d2f7`)** — acted on two independent
+> fresh-eyes reviews (no blockers). (A) `Settings.api_key` is now `exclude=True` so `/config`
+> cannot leak a secret by serialization; (B) a per-request `model` override preserves the operator's
+> permission/workspace posture (model-only `model_copy`) and server agents get the `SessionStore`
+> wired in for incremental persistence; (C) `/chat` + `/chat/stream` refuse a second concurrent turn
+> on one session (409). Remaining review nits (WS error frames untyped/raw, cross-channel
+> concurrency, `PATCH /config`/`tools` filter) are logged in `RISKS.md` as future work.
 > Same `AgentEvent` stream across CLI-in-process / SSE / WS — a future web client is a renderer,
 > not a fork. (`PATCH /config` deferred — config is read-only over HTTP for now.) Next: **M4 —
 > sub-agents / Task tool.**
