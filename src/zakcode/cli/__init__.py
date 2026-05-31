@@ -374,6 +374,29 @@ def _create_remote_session(base_url: str) -> str:
     return asyncio.run(_go())
 
 
+def _build_chat_agent(prompter: ConsolePermissionPrompter, overrides: dict[str, Any]) -> Agent:
+    """Build the in-process chat Agent with every interactive feature enabled.
+
+    One builder for both the initial session and ``/clear`` so they never drift.
+    Trusted plugins come from ``ZAKCODE_TRUSTED_PLUGINS`` (comma-separated names);
+    a discovered plugin runs only if it is named there (else it is listed by
+    ``/plugins`` as skipped/untrusted).
+    """
+    from zakcode import Agent
+
+    trusted = [
+        n.strip() for n in os.environ.get("ZAKCODE_TRUSTED_PLUGINS", "").split(",") if n.strip()
+    ]
+    return Agent(
+        prompter=prompter,
+        enable_subagents=True,
+        enable_mcp=True,
+        enable_plugins=True,
+        trusted_plugins=trusted,
+        **overrides,
+    )
+
+
 @app.command()
 def chat(
     model: str = typer.Option(None, "--model", "-m", help="Override the model id."),
@@ -417,13 +440,7 @@ def chat(
     # so 'ask' mode is usable interactively (rather than failing closed). The gate
     # itself still lives in the core; the CLI only renders the prompt.
     prompter = ConsolePermissionPrompter(console)
-    agent = Agent(
-        prompter=prompter,
-        enable_subagents=True,
-        enable_mcp=True,
-        enable_plugins=True,
-        **overrides,
-    )
+    agent = _build_chat_agent(prompter, overrides)
     _print_banner(console, agent)
 
     while True:
@@ -455,9 +472,7 @@ def chat(
                 _render_hooks(console, agent)
                 continue
             if command == "/clear":
-                agent = Agent(
-                    prompter=prompter, enable_subagents=True, enable_mcp=True, **overrides
-                )
+                agent = _build_chat_agent(prompter, overrides)
                 console.print("[dim]Started a fresh session.[/dim]")
                 continue
             if command == "/cost":
@@ -477,6 +492,17 @@ def chat(
                 continue
             if command == "/mcp":
                 _render_mcp(console, agent, stripped[len("/mcp") :].strip())
+                continue
+            if command == "/plugins":
+                _render_plugins(console, agent)
+                continue
+            # Fall through to plugin-registered commands before giving up.
+            cmd_result = agent.command_registry.run(command, stripped[len(command) :].strip())
+            if cmd_result is not None:
+                style = "red" if cmd_result.is_error else ""
+                console.print(
+                    f"[{style}]{cmd_result.output}[/{style}]" if style else cmd_result.output
+                )
                 continue
             console.print(f"[dim]{command} is not yet supported.[/dim]")
             continue
