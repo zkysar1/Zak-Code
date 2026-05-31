@@ -241,7 +241,7 @@ class ServerInspection(BaseModel):
     """
 
     name: str
-    status: Literal[ok, config_error, connect_error]
+    status: Literal["ok", "config_error", "connect_error"]
     tools: list[str] = Field(default_factory=list)
     error: str = ""
 

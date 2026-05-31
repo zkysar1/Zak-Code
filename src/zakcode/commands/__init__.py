@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 #: A command handler: given the argument string (everything after the command name),
 #: return a :class:`CommandResult`. Handlers should be synchronous and quick.
