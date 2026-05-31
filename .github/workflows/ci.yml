@@ -28,7 +28,7 @@ jobs:
           enable-cache: true
 
       - name: Sync (dev extras)
-        run: uv sync --extra dev --python ${{ matrix.python-version }}
+        run: uv sync --extra dev --extra server --python ${{ matrix.python-version }}
 
       - name: Ruff (lint)
         run: uv run ruff check .

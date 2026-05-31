@@ -1,0 +1,194 @@
+"""Tests for the FastAPI app (REST + SSE), driven by a scripted agent factory.
+
+Fully hermetic: a ``_FakeAgent`` stands in for the real Agent (no provider, no
+network, no model), and a tmp-dir :class:`SessionStore` isolates persistence. The
+app is exercised through FastAPI's ``TestClient``.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from zakcode.agent.loop import TurnResult
+from zakcode.config import Settings
+from zakcode.events import AgentDone, AgentEvent, AgentTextDelta, AgentToolCall, AgentToolResult
+from zakcode.messages import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from zakcode.server.app import create_app
+from zakcode.server.wire import event_from_dict
+from zakcode.session.store import Session, SessionStore
+from zakcode.usage import Usage
+
+CANNED = "Hello from the fake agent."
+
+
+class _FakeAgent:
+    """Minimal AgentLike: mutates the session and emits canned output."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    async def arun_turn(self, user_text: str) -> TurnResult:
+        self.session.add_message(Message.user(user_text))
+        assistant = Message(
+            role="assistant",
+            blocks=[
+                TextBlock(text=CANNED),
+                ToolUseBlock(id="c1", name="write_file", input={"path": "n.txt"}),
+            ],
+        )
+        self.session.add_message(assistant)
+        usage = Usage(prompt_tokens=4, completion_tokens=6, total_tokens=10, cost_usd=0.01)
+        self.session.add_usage(usage)
+        return TurnResult(
+            assistant_messages=[assistant],
+            tool_results=[ToolResultBlock(tool_use_id="c1", output="wrote n.txt")],
+            iterations=2,
+            usage=usage,
+            stop_reason="completed",
+        )
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self.session.add_message(Message.user(user_text))
+        events: list[AgentEvent] = [
+            AgentTextDelta(text=CANNED),
+            AgentToolCall(id="c1", name="write_file", arguments={"path": "n.txt"}),
+            AgentToolResult(tool_use_id="c1", output="wrote n.txt", is_error=False),
+            AgentDone(stop_reason="completed", iterations=2, usage=Usage(total_tokens=10)),
+        ]
+        for event in events:
+            yield event
+
+
+def _factory(session: Session, model: str | None) -> _FakeAgent:  # noqa: ARG001
+    return _FakeAgent(session)
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> TestClient:
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(settings=settings, store=store, agent_factory=_factory)
+    return TestClient(app)
+
+
+# ── meta ───────────────────────────────────────────────────────────────────────
+
+
+def test_health(client: TestClient) -> None:
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["version"]
+
+
+def test_config_has_no_secret_key(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-must-not-leak")
+    resp = client.get("/config")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "api_key" not in body
+    assert "sk-must-not-leak" not in json.dumps(body)
+    assert body["default_model"] == "scripted/test"
+
+
+def test_tools_lists_builtins(client: TestClient) -> None:
+    resp = client.get("/tools")
+    assert resp.status_code == 200
+    names = {t["name"] for t in resp.json()}
+    assert {"read_file", "write_file", "edit_file", "bash", "glob", "grep"} <= names
+    bash = next(t for t in resp.json() if t["name"] == "bash")
+    assert bash["required_permission"] == "DANGER_FULL_ACCESS"
+
+
+# ── session CRUD ────────────────────────────────────────────────────────────────
+
+
+def test_session_crud(client: TestClient) -> None:
+    created = client.post("/sessions")
+    assert created.status_code == 201
+    sid = created.json()["id"]
+
+    listed = client.get("/sessions")
+    assert sid in {s["id"] for s in listed.json()}
+
+    got = client.get(f"/sessions/{sid}")
+    assert got.status_code == 200
+    assert got.json()["id"] == sid
+
+    deleted = client.delete(f"/sessions/{sid}")
+    assert deleted.status_code == 204
+
+    assert client.get(f"/sessions/{sid}").status_code == 404
+    assert client.delete(f"/sessions/{sid}").status_code == 404
+
+
+# ── chat (buffered) ──────────────────────────────────────────────────────────────
+
+
+def test_chat_creates_session_and_returns_response(client: TestClient) -> None:
+    resp = client.post("/chat", json={"message": "hello"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["text"] == CANNED
+    assert body["stop_reason"] == "completed"
+    assert body["iterations"] == 2
+    assert body["usage"]["total_tokens"] == 10
+    assert body["cost_usd"] == pytest.approx(0.01)
+    assert body["tool_results"][0]["output"] == "wrote n.txt"
+    assert body["session_id"]  # a session was created
+
+
+def test_chat_reuses_existing_session(client: TestClient) -> None:
+    sid = client.post("/sessions").json()["id"]
+    r1 = client.post("/chat", json={"message": "one", "session_id": sid})
+    r2 = client.post("/chat", json={"message": "two", "session_id": sid})
+    assert r1.json()["session_id"] == sid
+    assert r2.json()["session_id"] == sid
+    # Both turns persisted onto the same session (2 user + 2 assistant messages).
+    info = client.get(f"/sessions/{sid}").json()
+    assert info["message_count"] == 4
+
+
+def test_chat_unknown_session_404(client: TestClient) -> None:
+    resp = client.post("/chat", json={"message": "hi", "session_id": "does-not-exist"})
+    assert resp.status_code == 404
+
+
+# ── chat (SSE stream) ────────────────────────────────────────────────────────────
+
+
+def _sse_events(text: str) -> list[dict]:
+    """Extract the JSON payloads from SSE ``data:`` lines."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("data:"):
+            out.append(json.loads(line[len("data:") :].strip()))
+    return out
+
+
+def test_chat_stream_emits_agent_events(client: TestClient) -> None:
+    resp = client.post("/chat/stream", json={"message": "go"})
+    assert resp.status_code == 200
+    payloads = _sse_events(resp.text)
+    kinds = [p["event"] for p in payloads]
+    assert kinds == ["text", "tool_call", "tool_result", "done"]
+    # Each frame parses back into a real AgentEvent (wire contract holds).
+    parsed = [event_from_dict(p) for p in payloads]
+    assert isinstance(parsed[0], AgentTextDelta)
+    assert parsed[0].text == CANNED
+    assert isinstance(parsed[-1], AgentDone)
+    assert parsed[-1].stop_reason == "completed"
+
+
+def test_chat_stream_persists_session(client: TestClient) -> None:
+    sid = client.post("/sessions").json()["id"]
+    client.post("/chat/stream", json={"message": "go", "session_id": sid})
+    info = client.get(f"/sessions/{sid}").json()
+    # The streamed turn added the user message to the persisted session.
+    assert info["message_count"] >= 1
