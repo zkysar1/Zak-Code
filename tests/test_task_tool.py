@@ -36,6 +36,9 @@ class _FakeSpawner:
     def available_types(self) -> list[str]:
         return self.types
 
+    def default_type(self) -> str:
+        return self.types[0]
+
 
 def _ctx(tmp_path: Path, spawner: object | None) -> ToolContext:
     return ToolContext(workspace_root=tmp_path, spawner=spawner)
@@ -47,7 +50,9 @@ async def test_single_task_returns_summary(tmp_path: Path) -> None:
     assert not result.is_error
     assert "do X!" in result.output
     assert spawner.calls == [("general-purpose", "do X")]
-    assert result.data == {"count": 1, "errors": 0}
+    assert result.data["count"] == 1
+    assert result.data["errors"] == 0
+    assert result.data["child_total_tokens"] == 1  # the fake reports 1 token/child
 
 
 async def test_batch_runs_concurrently(tmp_path: Path) -> None:
@@ -124,4 +129,5 @@ async def test_partial_failure_keeps_successes(tmp_path: Path) -> None:
     assert not result.is_error  # not ALL failed
     assert "good-ok" in result.output
     assert "ERROR: RuntimeError: boom" in result.output
-    assert result.data == {"count": 2, "errors": 1}
+    assert result.data["count"] == 2
+    assert result.data["errors"] == 1

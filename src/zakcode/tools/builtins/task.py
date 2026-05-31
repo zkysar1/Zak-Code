@@ -80,7 +80,8 @@ class TaskTool(Tool):
             )
 
         available = spawner.available_types()
-        default_type = available[0] if available else "general-purpose"
+        # The spawner names its own default explicitly (no reliance on list order).
+        default_type = spawner.default_type()
 
         prepared: list[tuple[str, str]] = []
         for i, task in enumerate(tasks):
@@ -103,6 +104,8 @@ class TaskTool(Tool):
 
         lines: list[str] = []
         errors = 0
+        total_tokens = 0
+        total_cost = 0.0
         for i, (type_name, _prompt) in enumerate(prepared):
             res = results[i]
             if isinstance(res, BaseException):
@@ -111,11 +114,20 @@ class TaskTool(Tool):
             elif isinstance(res, SubAgentResult):
                 note = "" if res.stop_reason == "completed" else f" (stopped: {res.stop_reason})"
                 lines.append(f"[task {i + 1}] {res.name}{note}:\n{res.summary}")
+                total_tokens += res.usage.total_tokens
+                total_cost += res.usage.cost_usd
 
+        # Surface child token/cost spend in the structured result so it is visible to
+        # the parent (the children's usage is otherwise invisible to the parent turn).
         return ToolResult(
             output="\n\n".join(lines),
             is_error=errors == len(results),
-            data={"count": len(results), "errors": errors},
+            data={
+                "count": len(results),
+                "errors": errors,
+                "child_total_tokens": total_tokens,
+                "child_cost_usd": total_cost,
+            },
         )
 
 

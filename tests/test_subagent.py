@@ -18,14 +18,16 @@ from pathlib import Path
 import pytest
 
 from zakcode.agent.budget import ChildLimitExceeded, IterationBudget
+from zakcode.agent.loop import TurnResult
 from zakcode.agent.subagent import (
     GENERAL_PURPOSE,
     SubAgentDefinition,
+    SubAgentManager,
     SubAgentResult,
     SubAgentRunner,
 )
 from zakcode.config import Settings
-from zakcode.messages import Message
+from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import (
     Capabilities,
     LLMResult,
@@ -193,3 +195,84 @@ def test_prompt_builder_carries_system_suffix(tmp_path: Path) -> None:
     definition = SubAgentDefinition(name="planner", system_suffix="Produce a plan; do not edit.")
     builder = runner.prompt_builder_for(definition)
     assert builder.extra_instructions == "Produce a plan; do not edit."
+
+
+# ── summary fallback (M4-review MAJOR-2) ─────────────────────────────────────────
+
+
+def test_summarize_prefers_assistant_text() -> None:
+    result = TurnResult(
+        assistant_messages=[Message.assistant_text("the final answer")],
+        stop_reason="completed",
+    )
+    assert SubAgentRunner._summarize(result) == "the final answer"
+
+
+def test_summarize_falls_back_to_last_tool_result() -> None:
+    # A child that stopped mid-tool-loop (no final assistant text) still hands back
+    # something useful: its last tool output.
+    result = TurnResult(
+        assistant_messages=[],
+        tool_results=[ToolResultBlock(tool_use_id="t1", output="found 3 matches")],
+        stop_reason="max_iterations",
+        iterations=3,
+    )
+    assert SubAgentRunner._summarize(result) == "found 3 matches"
+
+
+def test_summarize_falls_back_to_status_line() -> None:
+    result = TurnResult(assistant_messages=[], stop_reason="max_iterations", iterations=4)
+    summary = SubAgentRunner._summarize(result)
+    assert "no final text" in summary
+    assert "max_iterations" in summary
+
+
+# ── SubAgentManager (the concrete spawner, M4-4c-2) ──────────────────────────────
+
+
+def _manager(tmp_path: Path, provider: Provider, defs: list, default: str) -> SubAgentManager:
+    runner = _runner(tmp_path, provider, _registry(), IterationBudget(10))
+    return SubAgentManager(runner, defs, default=default)
+
+
+def test_manager_reports_types_and_explicit_default(tmp_path: Path) -> None:
+    mgr = _manager(
+        tmp_path,
+        _OneShotProvider("hi"),
+        [GENERAL_PURPOSE, SubAgentDefinition(name="plan")],
+        default="general-purpose",
+    )
+    assert mgr.available_types() == ["general-purpose", "plan"]
+    assert mgr.default_type() == "general-purpose"
+
+
+async def test_manager_spawn_runs_the_named_definition(tmp_path: Path) -> None:
+    mgr = _manager(tmp_path, _OneShotProvider("answer"), [GENERAL_PURPOSE], "general-purpose")
+    res = await mgr.spawn(type_name="general-purpose", prompt="q")
+    assert isinstance(res, SubAgentResult)
+    assert res.summary == "answer"
+
+
+async def test_manager_unknown_type_raises(tmp_path: Path) -> None:
+    mgr = _manager(tmp_path, _OneShotProvider("x"), [GENERAL_PURPOSE], "general-purpose")
+    with pytest.raises(KeyError):
+        await mgr.spawn(type_name="nope", prompt="q")
+
+
+def test_manager_rejects_empty_definitions(tmp_path: Path) -> None:
+    runner = _runner(tmp_path, _OneShotProvider("x"), _registry(), IterationBudget(10))
+    with pytest.raises(ValueError):
+        SubAgentManager(runner, [], default="x")
+
+
+def test_manager_rejects_default_not_in_definitions(tmp_path: Path) -> None:
+    runner = _runner(tmp_path, _OneShotProvider("x"), _registry(), IterationBudget(10))
+    with pytest.raises(ValueError):
+        SubAgentManager(runner, [GENERAL_PURPOSE], default="missing")
+
+
+def test_manager_satisfies_spawner_protocol(tmp_path: Path) -> None:
+    from zakcode.tools.base import SubAgentSpawner
+
+    mgr = _manager(tmp_path, _OneShotProvider("x"), [GENERAL_PURPOSE], "general-purpose")
+    assert isinstance(mgr, SubAgentSpawner)

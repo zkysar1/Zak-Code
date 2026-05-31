@@ -95,6 +95,10 @@ class SubAgentSpawner(Protocol):
         """Names of the sub-agent types this spawner can launch."""
         ...
 
+    def default_type(self) -> str:
+        """The sub-agent type used when a caller does not name one explicitly."""
+        ...
+
 
 class ToolContext(BaseModel):
     """Ambient state handed to a tool at execution time.

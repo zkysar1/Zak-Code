@@ -44,6 +44,9 @@ class _FakeSpawner:
     def available_types(self) -> list[str]:
         return ["general-purpose"]
 
+    def default_type(self) -> str:
+        return "general-purpose"
+
 
 class _CaptureTool(Tool):
     """Records the ``spawner`` it saw on the context at execution time."""

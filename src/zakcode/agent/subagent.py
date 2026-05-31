@@ -28,7 +28,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from zakcode.agent.budget import IterationBudget
-from zakcode.agent.loop import AgentLoop
+from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings
 from zakcode.hooks import HookManager
@@ -141,13 +141,34 @@ class SubAgentRunner:
             workspace_root=self.workspace_root,
         )
         result = await loop.arun_turn(prompt)
-        summary = "\n".join(m.text for m in result.assistant_messages if m.text).strip()
+        summary = self._summarize(result)
         return SubAgentResult(
             name=definition.name,
             summary=summary,
             stop_reason=result.stop_reason,
             iterations=result.iterations,
             usage=result.usage,
+        )
+
+    @staticmethod
+    def _summarize(result: TurnResult) -> str:
+        """Condense a child turn into a handoff string for the parent.
+
+        Prefers the child's final assistant text. When there is none (e.g. the
+        child stopped mid-tool-loop at the shared budget), it falls back to the
+        last tool result, then to a terse status line — so the parent is never
+        handed an empty summary for a child that actually did work.
+        """
+        text = "\n".join(m.text for m in result.assistant_messages if m.text).strip()
+        if text:
+            return text
+        if result.tool_results:
+            last = result.tool_results[-1].output.strip()
+            if last:
+                return last
+        return (
+            f"(sub-agent produced no final text; stop_reason={result.stop_reason}, "
+            f"iterations={result.iterations})"
         )
 
 
