@@ -17,6 +17,7 @@ import pytest
 from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta, AgentToolCall, AgentToolResult
+from zakcode.messages import Message
 from zakcode.server.app import create_app
 from zakcode.server.client import ServerClient
 from zakcode.session.store import Session, SessionStore
@@ -43,6 +44,10 @@ class _ScriptedAgent:
         return TurnResult(stop_reason="completed", iterations=3)
 
     async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        # Mirror the real loop: record the user message on the session so the
+        # server's post-turn persist has something to save (proving the streamed
+        # turn lands on the addressed session).
+        self.session.add_message(Message.user(user_text))
         for event in SCRIPT:
             yield event
 
