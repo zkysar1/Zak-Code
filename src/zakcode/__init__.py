@@ -183,6 +183,22 @@ class Agent:
                 settings=self.settings,
             )
 
+        # Skills (M7), opt-in. Discover SKILL.md skills (bundled + user + project) and
+        # surface their L0 catalog (name + description) in the cacheable system-prompt
+        # tier; bodies stay lazy until a skill is invoked. A bad skill is recorded,
+        # never fatal.
+        self.skill_registry: SkillRegistry | None = None
+        self.skill_errors: dict[str, str] = {}
+        if enable_skills:
+            from zakcode.skills import discover_skills
+
+            self.skill_registry, self.skill_errors = discover_skills(
+                self.settings.workspace_root
+            )
+            catalog = self.skill_registry.render_catalog()
+            if prompt_builder is None and catalog:
+                prompt_builder = SystemPromptBuilder(extra_instructions=catalog)
+
         self.loop = AgentLoop(
             self.provider,
             self.registry,
