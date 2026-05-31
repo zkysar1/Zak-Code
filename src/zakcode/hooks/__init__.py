@@ -174,9 +174,14 @@ class HookManager:
             return (decision, messages, arguments, mutated)
         if one.message:
             messages.append(one.message)
-        # PostToolUse cannot block (the tool already ran) — downgrade to warn.
-        if one.decision is HookDecision.BLOCK and event is HookEvent.PRE_TOOL_USE:
-            decision = HookDecision.BLOCK
+        # Only PreToolUse can actually block (the tool hasn't run yet). A BLOCK from
+        # any other event (e.g. PostToolUse) can't undo the call, so it is surfaced
+        # as a warning instead of being silently dropped. A WARN is also a warning.
+        if one.decision is HookDecision.BLOCK:
+            if event is HookEvent.PRE_TOOL_USE:
+                decision = HookDecision.BLOCK
+            elif decision is HookDecision.ALLOW:
+                decision = HookDecision.WARN
         elif one.decision is HookDecision.WARN and decision is HookDecision.ALLOW:
             decision = HookDecision.WARN
         # Only PreToolUse mutations are honored.
@@ -243,7 +248,7 @@ class HookManager:
             stdout, _stderr = await asyncio.wait_for(
                 proc.communicate(stdin_bytes), timeout=spec.timeout
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             with _suppress():
                 proc.kill()
                 await proc.wait()

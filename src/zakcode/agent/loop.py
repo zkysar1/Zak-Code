@@ -60,7 +60,9 @@ from zakcode.events import (
     AgentToolResult,
     AgentUsage,
 )
+from zakcode.hooks import HookEvent, HookManager, HookPayload
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
+from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import (
     LLMResult,
     Provider,
@@ -127,6 +129,8 @@ class AgentLoop:
         store: SessionStore | None = None,
         max_iterations: int | None = None,
         workspace_root: Path | None = None,
+        permission_policy: PermissionPolicy | None = None,
+        hook_manager: HookManager | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -135,6 +139,13 @@ class AgentLoop:
         self.settings = settings or load_settings()
         self.store = store
         self.workspace_root = workspace_root or self.settings.workspace_root
+        # The security gate is INJECTED, not assumed. A bare AgentLoop with no
+        # policy is ungated (a pure mechanism, convenient for library/tests); the
+        # Agent facade — the real entry point — always injects a policy built from
+        # settings.permission_mode (deny-first). ``hook_manager`` defaults to an
+        # empty (no-op) manager so the hook calls are always safe to make.
+        self.permission_policy = permission_policy
+        self.hook_manager = hook_manager or HookManager()
         if max_iterations is not None:
             self.max_iterations = max_iterations
         else:
@@ -170,6 +181,84 @@ class AgentLoop:
         for call in result.tool_calls:
             blocks.append(ToolUseBlock(id=call.id, name=call.name, input=call.arguments))
         return Message(role="assistant", blocks=blocks)
+
+    async def _execute_tool_call(self, call: ToolCall, ctx: ToolContext) -> ToolResultBlock:
+        """Run one tool call through the full gate, returning its result block.
+
+        The single seam both the buffered (:meth:`_run_turn`) and streaming
+        (:meth:`astream_turn`) paths funnel through, so they gate identically. The
+        stages, in order:
+
+        1. **Permission** — :meth:`PermissionPolicy.authorize` (deny-first, decided
+           here where the model cannot reach it). Only runs if a policy was injected.
+        2. **PreToolUse hooks** — may veto the call or rewrite its arguments.
+        3. **Execute** — :meth:`ToolRegistry.execute` (which itself never raises).
+        4. **PostToolUse hooks** — observe-only; any note is appended as feedback.
+
+        A permission denial or hook veto is returned as an *error*
+        :class:`ToolResultBlock` (never an exception), so the turn continues and the
+        model sees the feedback and can adapt.
+        """
+        tool = self.registry.get(call.name)
+        spec = tool.spec if tool is not None else None
+        cwd = str(self.workspace_root)
+
+        # 1. Permission gate (only when a policy is injected; see __init__).
+        if self.permission_policy is not None:
+            allowed, reason = await self.permission_policy.authorize(spec, call.arguments)
+            if not allowed:
+                return ToolResultBlock(
+                    tool_use_id=call.id,
+                    output=f"Permission denied for {call.name!r}: {reason}",
+                    is_error=True,
+                    data={"permission_denied": True, "reason": reason},
+                )
+
+        arguments = call.arguments
+
+        # 2. PreToolUse hooks (veto or argument rewrite).
+        pre = await self.hook_manager.run(
+            HookPayload(
+                event=HookEvent.PRE_TOOL_USE,
+                tool_name=call.name,
+                arguments=arguments,
+                cwd=cwd,
+            )
+        )
+        if pre.blocked:
+            return ToolResultBlock(
+                tool_use_id=call.id,
+                output=f"Blocked by hook for {call.name!r}: {pre.message}",
+                is_error=True,
+                data={"hook_blocked": True, "reason": pre.message},
+            )
+        if pre.mutated_arguments is not None:
+            arguments = pre.mutated_arguments
+
+        # 3. Execute (registry.execute wraps any failure into an error ToolResult).
+        tool_res = await self.registry.execute(call.name, arguments, ctx)
+
+        # 4. PostToolUse hooks (observe-only; their notes are appended as feedback).
+        post = await self.hook_manager.run(
+            HookPayload(
+                event=HookEvent.POST_TOOL_USE,
+                tool_name=call.name,
+                arguments=arguments,
+                cwd=cwd,
+                output=tool_res.output,
+                is_error=tool_res.is_error,
+            )
+        )
+        output = tool_res.output
+        if post.message:
+            output = f"{output}\n[hook] {post.message}" if output else f"[hook] {post.message}"
+
+        return ToolResultBlock(
+            tool_use_id=call.id,
+            output=output,
+            is_error=tool_res.is_error,
+            data=tool_res.data,
+        )
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -250,15 +339,10 @@ class AgentLoop:
 
             result_blocks: list[ToolResultBlock] = []
             for call in result.tool_calls:
-                # A tool that returns is_error does NOT abort the turn: the error
-                # result is fed back so the model can see it and recover.
-                tool_res = await self.registry.execute(call.name, call.arguments, ctx)
-                block = ToolResultBlock(
-                    tool_use_id=call.id,
-                    output=tool_res.output,
-                    is_error=tool_res.is_error,
-                    data=tool_res.data,
-                )
+                # Each call runs through the permission + hook gate. A denial,
+                # veto, or tool error becomes an error result that is fed back so
+                # the model can recover — it never aborts the turn.
+                block = await self._execute_tool_call(call, ctx)
                 result_blocks.append(block)
                 turn_tool_results.append(block)
 
@@ -376,24 +460,17 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: repeated identical tool calls")
                     break
 
-                # Execute each call sequentially, surfacing call + result events.
+                # Execute each call sequentially through the SAME gate as the
+                # buffered path (_execute_tool_call), surfacing call + result events.
                 result_blocks: list[ToolResultBlock] = []
                 for call in tool_calls:
                     yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
-                    # A tool that returns is_error does NOT abort the turn: the
-                    # error result is fed back so the model can see it and recover.
-                    tool_res = await self.registry.execute(call.name, call.arguments, ctx)
-                    block = ToolResultBlock(
-                        tool_use_id=call.id,
-                        output=tool_res.output,
-                        is_error=tool_res.is_error,
-                        data=tool_res.data,
-                    )
+                    block = await self._execute_tool_call(call, ctx)
                     result_blocks.append(block)
                     yield AgentToolResult(
-                        tool_use_id=call.id,
-                        output=tool_res.output,
-                        is_error=tool_res.is_error,
+                        tool_use_id=block.tool_use_id,
+                        output=block.output,
+                        is_error=block.is_error,
                     )
 
                 self.session.add_message(Message.tool_results(result_blocks))

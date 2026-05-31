@@ -21,7 +21,9 @@ from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
+from zakcode.hooks import HookManager
 from zakcode.messages import Message
+from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
@@ -44,6 +46,9 @@ class Agent:
         session: Session | None = None,
         session_store: SessionStore | None = None,
         prompt_builder: SystemPromptBuilder | None = None,
+        prompter: PermissionPrompter | None = None,
+        permission_policy: PermissionPolicy | None = None,
+        hook_manager: HookManager | None = None,
         **setting_overrides: Any,
     ) -> None:
         from zakcode.providers.litellm_provider import LiteLLMProvider
@@ -56,6 +61,14 @@ class Agent:
             cwd=str(self.settings.workspace_root),
             model=self.settings.default_model,
         )
+        # Deny-first by construction: the facade always builds a permission policy
+        # from settings.permission_mode (default 'ask'). An interactive client may
+        # pass a ``prompter`` so escalations can be approved; with none, 'ask'
+        # fails closed (writes/shell denied) — safe for non-interactive use.
+        self.permission_policy = permission_policy or PermissionPolicy(
+            self.settings.permission_mode, prompter=prompter
+        )
+        self.hook_manager = hook_manager or HookManager()
         self.loop = AgentLoop(
             self.provider,
             self.registry,
@@ -64,6 +77,8 @@ class Agent:
             settings=self.settings,
             store=self.store,
             workspace_root=self.settings.workspace_root,
+            permission_policy=self.permission_policy,
+            hook_manager=self.hook_manager,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:
