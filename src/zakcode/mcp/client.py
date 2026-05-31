@@ -32,6 +32,11 @@ from zakcode.version import __version__
 #: support; we record theirs but do not hard-fail on a mismatch.
 PROTOCOL_VERSION = "2025-06-18"
 
+#: Default per-request timeout (seconds). An external, possibly-misbehaving MCP
+#: server must never be able to hang a turn indefinitely, so requests time out by
+#: default; pass ``request_timeout=None`` to opt out explicitly.
+DEFAULT_REQUEST_TIMEOUT = 60.0
+
 
 class McpToolDef(BaseModel):
     """A tool definition as advertised by an MCP server (``tools/list``)."""
@@ -70,7 +75,7 @@ class MCPClient:
         client_name: str = "zakcode",
         client_version: str = __version__,
         protocol_version: str = PROTOCOL_VERSION,
-        request_timeout: float | None = None,
+        request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
     ) -> None:
         self._transport = transport
         self._client_name = client_name
