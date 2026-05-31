@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import os
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
