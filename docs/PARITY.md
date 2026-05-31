@@ -67,9 +67,13 @@ groups are listed individually; pure helpers are noted at the end).
 > as Zak Code tools: **`read_file`** (≈ FileReadTool), **`write_file`** (≈ FileWriteTool),
 > **`glob`** (≈ GlobTool), **`grep`** (≈ GrepTool), **`bash`** (≈ BashTool), plus a
 > **`list_dir`** convenience tool. All are workspace-scoped (path-escape-rejecting), never
-> raise (errors → structured `ToolResult`), and run through the live `AgentLoop`. Still P0 and
-> **not yet built**: **`edit`** (≈ FileEditTool — exact-string edit; today only whole-file
-> `write_file`), `PowerShellTool`, and `TodoWriteTool`.
+> raise (errors → structured `ToolResult`), and run through the live `AgentLoop`.
+>
+> **M1 delivered (2026-05-30, commits `948eada`…`7900327`).** Added the deferred
+> **`edit_file`** (≈ FileEditTool — exact-string replace, unique-match-or-error, `replace_all`,
+> atomic), plus live **streaming** end to end: `LiteLLMProvider.astream` → typed `AgentEvent`
+> loop stream → fence-safe rich TUI; `zakcode chat` streams by default with cooperative Ctrl-C
+> cancel. Still P0 and **not yet built**: `PowerShellTool` and `TodoWriteTool`.
 
 | Tool | Purpose | Claude Code? | Zak Code status | Priority tier | Target milestone | Notes |
 |------|---------|--------------|-----------------|---------------|------------------|-------|

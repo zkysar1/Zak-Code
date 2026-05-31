@@ -136,16 +136,17 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M1 — Streaming + rich TUI (P1) — ✅ DONE (2026-05-30, commit `9f9c1aa`)
+### M1 — Streaming + rich TUI (P1) — ✅ DONE (2026-05-30, commits `948eada`…`7900327`)
 
 > **Status: shipped.** Live token streaming end to end (`LiteLLMProvider.astream` →
 > `ToolCallAccumulator` reassembles tool-call arg fragments by index → `AgentLoop.astream_turn`
 > emits the typed `AgentEvent` stream with the same stop semantics as `arun_turn`), a fence-safe
 > rich `StreamRenderer`, `zakcode chat` streaming by default with **Ctrl-C cancelling the
-> in-flight turn cleanly**, and the deferred exact-string **`edit_file`** tool. **306 tests pass;
-> ruff + mypy clean.** Verified independently (full gate + frozen-contracts diff + an end-to-end
-> streaming smoke); a facade seam bug (`Agent.astream_turn` missing) was caught and fixed +
-> regression-tested. Next: **M2 — permissions + hooks.**
+> in-flight turn cleanly**, and the deferred exact-string **`edit_file`** tool. Final green state
+> **288 tests pass + 1 skipped; ruff + mypy clean.** Feature commit `948eada`; integration
+> follow-ups `2de36e9`/`7900327` (the feature commit briefly went in red — a duplicate
+> `Agent.astream_turn` and a stale registry test — both caught by the orchestrator's independent
+> verification and fixed, with a facade regression test added). Next: **M2 — permissions + hooks.**
 
 **Goal:** Live token-by-token streaming and a polished terminal experience, on the same loop.
 
