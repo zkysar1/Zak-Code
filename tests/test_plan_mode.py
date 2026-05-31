@@ -56,7 +56,7 @@ def test_planner_schema_offers_no_write_tools(tmp_path: Path) -> None:
 
 def test_general_purpose_still_has_write_tools(tmp_path: Path) -> None:
     names = set(_runner(tmp_path).child_registry(GENERAL_PURPOSE).names())
-    assert _WRITE_TOOLS <= names
+    assert names >= _WRITE_TOOLS
 
 
 def test_facade_exposes_plan_subagent_type(tmp_path: Path) -> None:

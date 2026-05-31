@@ -105,9 +105,7 @@ class Agent:
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
             # subset omits write tools, so Plan Mode is schema-enforced).
-            spawner = SubAgentManager(
-                runner, [GENERAL_PURPOSE, PLAN], default=GENERAL_PURPOSE.name
-            )
+            spawner = SubAgentManager(runner, [GENERAL_PURPOSE, PLAN], default=GENERAL_PURPOSE.name)
             self.registry.register(TaskTool())
 
         self.loop = AgentLoop(
