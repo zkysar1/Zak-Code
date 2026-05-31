@@ -137,7 +137,8 @@ class McpTool(Tool):
 class DiscoveryReport(BaseModel):
     """What an :meth:`ExtensionManager.discover_into` pass registered and what failed."""
 
-    registered: list[str] = Field(default_factory=list)  # qualified tool names
+    registered: list[str] = Field(default_factory=list)  # qualified names, exposed (active)
+    deferred: list[str] = Field(default_factory=list)  # qualified names, registered but hidden
     failed: dict[str, str] = Field(default_factory=dict)  # server name -> error string
 
 
@@ -158,12 +159,18 @@ class ExtensionManager:
     def server_names(self) -> list[str]:
         return list(self._clients)
 
-    async def discover_into(self, registry: Any) -> DiscoveryReport:
+    async def discover_into(self, registry: Any, *, budget: int | None = None) -> DiscoveryReport:
         """List each server's tools and register them as :class:`McpTool` s.
 
         A server whose ``list_tools`` fails is recorded in the report's ``failed`` map
         and skipped — discovery of the other servers continues (graceful degradation).
         ``registry`` is a :class:`~zakcode.tools.base.ToolRegistry`.
+
+        With ``budget`` set, MCP tools are registered **active** only while the
+        registry's total active-tool count is below ``budget``; once the cap is
+        reached the rest are registered **inactive** (``report.deferred``) so they are
+        dispatchable and discoverable via ``tool_search`` but kept out of the prompt.
+        ``budget=None`` exposes every discovered tool (the default).
         """
         report = DiscoveryReport()
         for server, client in self._clients.items():
@@ -181,8 +188,12 @@ class ExtensionManager:
                 )
                 if registry.get(tool.spec.name) is not None:
                     continue  # already present (idempotent re-discovery / collision)
-                registry.register(tool)
-                report.registered.append(tool.spec.name)
+                within_budget = budget is None or len(registry.active_names()) < budget
+                registry.register(tool, active=within_budget)
+                if within_budget:
+                    report.registered.append(tool.spec.name)
+                else:
+                    report.deferred.append(tool.spec.name)
         return report
 
     async def aclose(self) -> None:

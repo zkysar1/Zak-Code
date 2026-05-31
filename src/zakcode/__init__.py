@@ -66,6 +66,7 @@ class Agent:
         enable_mcp: bool = False,
         mcp_servers: list[McpServerConfig] | None = None,
         mcp_command_allowlist: list[str] | None = None,
+        mcp_tool_budget: int | None = None,
         **setting_overrides: Any,
     ) -> None:
         from zakcode.providers.litellm_provider import LiteLLMProvider
@@ -125,10 +126,15 @@ class Agent:
         self.extension_manager: ExtensionManager | None = None
         self.mcp_config_errors: dict[str, str] = {}
         self.mcp_report: DiscoveryReport | None = None
+        self._mcp_tool_budget = 0
         if enable_mcp:
             from zakcode.mcp.config import discover_config
             from zakcode.mcp.manager import build_extension_manager
+            from zakcode.tools.builtins.tool_search import DEFAULT_TOOL_BUDGET, ToolSearchTool
 
+            self._mcp_tool_budget = (
+                mcp_tool_budget if mcp_tool_budget is not None else DEFAULT_TOOL_BUDGET
+            )
             servers = (
                 mcp_servers
                 if mcp_servers is not None
@@ -137,6 +143,9 @@ class Agent:
             self.extension_manager, self.mcp_config_errors = build_extension_manager(
                 servers, allowlist=mcp_command_allowlist
             )
+            # tool_search lets the model surface MCP tools that the budget kept hidden;
+            # it holds the live registry so activations are visible to the next turn.
+            self.registry.register(ToolSearchTool(self.registry, budget=self._mcp_tool_budget))
 
         self.loop = AgentLoop(
             self.provider,
@@ -180,7 +189,11 @@ class Agent:
         """
         if self.extension_manager is None:
             return None
-        self.mcp_report = await self.extension_manager.discover_into(self.registry)
+        # ``tool_search`` is already active and counts toward the exposed budget, so
+        # MCP tools beyond the budget register hidden and are surfaced on demand.
+        self.mcp_report = await self.extension_manager.discover_into(
+            self.registry, budget=self._mcp_tool_budget or None
+        )
         return self.mcp_report
 
     async def aclose_mcp(self) -> None:

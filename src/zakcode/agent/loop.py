@@ -192,8 +192,11 @@ class AgentLoop:
         return True
 
     def _tool_specs(self) -> list[ToolSpec]:
+        # Only ACTIVE (exposed) tools, so the system-prompt tool summary matches the
+        # schemas sent via ``definitions()`` — lazily-registered MCP tools stay out
+        # of the prompt until surfaced (M5 lazy discovery / tool budget).
         specs: list[ToolSpec] = []
-        for name in self.registry.names():
+        for name in self.registry.active_names():
             tool = self.registry.get(name)
             if tool is not None:
                 specs.append(tool.spec)
