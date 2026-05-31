@@ -185,7 +185,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 > `AgentLoop._execute_tool_call` is the **single seam** both the buffered and streaming paths run
 > through: permission authorize → PreToolUse (veto/mutate) → execute → PostToolUse; a denial/veto
 > becomes a recoverable error result. CLI: `/permissions`, `/hooks`, and a console prompter that
-> shows the exact command. **372 tests pass; ruff + mypy clean.** All exit criteria met
+> shows the exact command. **365 tests pass; ruff + mypy clean.** All exit criteria met
 > (dangerous-command block independent of the model; fail-closed unknown tool; hook veto + arg
 > mutation + bad-hook isolation; session-approval persistence — all test-verified on both paths).
 > Next: **M3 — FastAPI server (SSE/WS).**
