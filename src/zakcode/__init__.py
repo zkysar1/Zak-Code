@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from zakcode.agent.budget import IterationBudget
 from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
@@ -28,7 +29,7 @@ from zakcode.session.store import Session, SessionStore
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
 
-__all__ = ["Agent", "AgentLoop", "Message", "TurnResult", "__version__"]
+__all__ = ["Agent", "AgentLoop", "IterationBudget", "Message", "TurnResult", "__version__"]
 
 
 class Agent:
@@ -49,6 +50,7 @@ class Agent:
         prompter: PermissionPrompter | None = None,
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
+        budget: IterationBudget | None = None,
         **setting_overrides: Any,
     ) -> None:
         from zakcode.providers.litellm_provider import LiteLLMProvider
@@ -79,6 +81,7 @@ class Agent:
             workspace_root=self.settings.workspace_root,
             permission_policy=self.permission_policy,
             hook_manager=self.hook_manager,
+            budget=budget,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:

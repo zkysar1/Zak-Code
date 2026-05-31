@@ -49,6 +49,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from zakcode.agent._stream import ToolCallAccumulator
+from zakcode.agent.budget import IterationBudget
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import (
@@ -131,6 +132,7 @@ class AgentLoop:
         workspace_root: Path | None = None,
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
+        budget: IterationBudget | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -139,6 +141,14 @@ class AgentLoop:
         self.settings = settings or load_settings()
         self.store = store
         self.workspace_root = workspace_root or self.settings.workspace_root
+        # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
+        # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
+        # one unit from the shared pool, and the turn stops with
+        # ``stop_reason="max_iterations"`` when the pool is empty. A parent and its
+        # sub-agents share one budget instance so the whole delegation tree's
+        # iteration count is bounded by a single pool. ``None`` ⇒ unchanged
+        # behavior (the local cap is the only bound).
+        self.budget = budget
         # The security gate is INJECTED, not assumed. A bare AgentLoop with no
         # policy is ungated (a pure mechanism, convenient for library/tests); the
         # Agent facade — the real entry point — always injects a policy built from
@@ -156,6 +166,26 @@ class AgentLoop:
     def _persist(self) -> None:
         if self.store is not None:
             self.store.save(self.session)
+
+    def _grant_iteration(self, iterations_done: int) -> bool:
+        """Whether the loop may run another iteration (and reserve it if so).
+
+        Two independent bounds, both of which must allow the iteration:
+
+        1. The per-turn ``max_iterations`` cap (always applies).
+        2. The shared :class:`IterationBudget`, if one was injected — one unit is
+           consumed from the shared pool here, so a parent and its sub-agents
+           cannot collectively exceed it. When the pool is empty this returns
+           ``False`` without consuming anything.
+
+        Returning ``False`` is the loop's signal to stop with
+        ``stop_reason="max_iterations"``.
+        """
+        if iterations_done >= self.max_iterations:
+            return False
+        if self.budget is not None:
+            return self.budget.try_consume(1)
+        return True
 
     def _tool_specs(self) -> list[ToolSpec]:
         specs: list[ToolSpec] = []
