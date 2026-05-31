@@ -83,14 +83,6 @@ class Agent:
         """
         return self.loop.astream_turn(user_text)
 
-    def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
-        """Stream one user turn as :class:`~zakcode.events.AgentEvent`s.
-
-        Thin pass-through to :meth:`AgentLoop.astream_turn`; the incremental twin
-        of :meth:`arun_turn` for live (token-by-token) clients like the CLI.
-        """
-        return self.loop.astream_turn(user_text)
-
     @classmethod
     def for_workspace(cls, path: str | Path, **setting_overrides: Any) -> Agent:
         """Construct an :class:`Agent` pinned to ``path`` as the workspace root."""

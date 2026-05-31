@@ -156,14 +156,16 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
     assert set(reg.names()) == {
         "read_file",
         "write_file",
+        "edit_file",
         "list_dir",
         "glob",
         "grep",
         "bash",
     }
-    # Aliases resolve to the canonical tools.
+    # Aliases resolve to the canonical tools (M1 added "edit" -> edit_file).
     assert reg.get("read") is reg.get("read_file")
     assert reg.get("write") is reg.get("write_file")
+    assert reg.get("edit") is reg.get("edit_file")
     assert reg.get("ls") is reg.get("list_dir")
     assert reg.get("bash") is reg.get("bash")
 
