@@ -161,14 +161,29 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._aliases: dict[str, str] = {}
+        # Canonical names currently EXPOSED to the model (their schemas go into
+        # ``definitions()``). A tool can be registered inactive (lazy) so it is
+        # dispatchable but its schema stays out of the prompt until activated — the
+        # mechanism behind MCP's lazy tool discovery / tool budget (M5). Tools
+        # registered ``active=True`` (the default) behave exactly as before.
+        self._active: set[str] = set()
 
-    def register(self, tool: Tool, *, aliases: list[str] | None = None) -> None:
-        """Add a tool to the registry, optionally under friendly aliases."""
+    def register(
+        self, tool: Tool, *, aliases: list[str] | None = None, active: bool = True
+    ) -> None:
+        """Add a tool to the registry, optionally under friendly aliases.
+
+        ``active=False`` registers the tool as **dispatchable but not exposed**: it
+        will not appear in :meth:`definitions` until :meth:`activate` is called. The
+        default keeps every tool exposed, so existing callers are unaffected.
+        """
         if tool.name in self._tools:
             raise ValueError(f"tool already registered: {tool.name!r}")
         self._tools[tool.name] = tool
         for alias in aliases or []:
             self._aliases[alias] = tool.name
+        if active:
+            self._active.add(tool.name)
 
     def _canonical(self, name: str) -> str:
         return self._aliases.get(name, name)
@@ -181,14 +196,39 @@ class ToolRegistry:
         """All registered canonical tool names, in registration order."""
         return list(self._tools)
 
+    def active_names(self) -> list[str]:
+        """Canonical names currently exposed to the model, in registration order."""
+        return [name for name in self._tools if name in self._active]
+
+    def is_active(self, name: str) -> bool:
+        """Whether ``name`` (canonical or alias) is currently exposed."""
+        return self._canonical(name) in self._active
+
+    def activate(self, name: str) -> bool:
+        """Expose a registered tool. Returns ``True`` if it exists, else ``False``."""
+        canonical = self._canonical(name)
+        if canonical not in self._tools:
+            return False
+        self._active.add(canonical)
+        return True
+
+    def deactivate(self, name: str) -> bool:
+        """Hide a registered tool from the model. Returns ``True`` if it existed."""
+        canonical = self._canonical(name)
+        if canonical not in self._tools:
+            return False
+        self._active.discard(canonical)
+        return True
+
     def definitions(self, allowed: list[str] | None = None) -> list[dict[str, Any]]:
         """OpenAI-shaped tool definitions to send to the model.
 
-        ``allowed`` (canonical names or aliases) optionally restricts the exposed set;
-        ``None`` exposes everything registered.
+        ``allowed`` (canonical names or aliases) restricts the exposed set; ``None``
+        exposes the currently **active** tools (every tool, unless some were
+        registered inactive for lazy discovery — see :meth:`register`).
         """
         if allowed is None:
-            chosen = list(self._tools.values())
+            chosen = [t for name, t in self._tools.items() if name in self._active]
         else:
             wanted = {self._canonical(a) for a in allowed}
             chosen = [t for name, t in self._tools.items() if name in wanted]
