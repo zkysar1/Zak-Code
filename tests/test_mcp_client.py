@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from zakcode.mcp.client import MCPClient, McpCallResult, McpToolDef
+from zakcode.mcp.client import McpCallResult, MCPClient, McpToolDef
 from zakcode.mcp.jsonrpc import JSONRPCError, MCPProtocolError
 from zakcode.mcp.transport import StdioTransport
 

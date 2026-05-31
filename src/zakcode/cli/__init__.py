@@ -207,6 +207,50 @@ def _run_plan(console: Console, agent: Agent, task: str) -> None:
     console.print(result.summary or "[dim](the planner produced no plan)[/dim]")
 
 
+def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
+    """Show or connect MCP servers (the /mcp command).
+
+    ``/mcp`` (or ``/mcp list``) lists configured servers and any config errors.
+    ``/mcp connect`` spawns the servers and registers their tools into the live
+    session — gated, so nothing connects until the operator asks. MCP is opt-in;
+    with none configured this is a no-op notice.
+    """
+    manager = agent.extension_manager
+    if manager is None:
+        console.print("[dim]MCP is not enabled for this session.[/dim]")
+        return
+    action = (arg.strip().split(maxsplit=1) or ["list"])[0] if arg.strip() else "list"
+    if action == "connect":
+        console.print("[dim]connecting MCP servers...[/dim]")
+        report = asyncio.run(agent.connect_mcp())
+        if report is None:
+            console.print("[dim]MCP is not enabled.[/dim]")
+            return
+        if report.registered:
+            console.print(f"[green]registered {len(report.registered)} tool(s):[/green]")
+            for name in report.registered:
+                console.print(f"    [green]+[/green] {name}")
+        if report.deferred:
+            console.print(
+                f"[dim]{len(report.deferred)} more tool(s) registered but hidden "
+                "(use tool_search to surface them).[/dim]"
+            )
+        for server, err in report.failed.items():
+            console.print(f"    [red]x[/red] {server}: {err}")
+        if not report.registered and not report.deferred and not report.failed:
+            console.print("[dim]no MCP tools discovered.[/dim]")
+        return
+    names = manager.server_names
+    if not names and not agent.mcp_config_errors:
+        console.print("[dim]no MCP servers configured.[/dim]")
+        return
+    for name in names:
+        console.print(f"  [bold]{name}[/bold]")
+    for server, err in agent.mcp_config_errors.items():
+        console.print(f"  [red]{server}[/red]: {err}")
+    console.print("[dim]use /mcp connect to spawn servers and register their tools.[/dim]")
+
+
 def _print_banner(console: Console, agent: Agent) -> None:
     """Print the one-shot session banner (model, provider, workspace, perms)."""
     settings = agent.settings
