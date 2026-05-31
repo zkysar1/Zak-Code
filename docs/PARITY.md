@@ -90,7 +90,7 @@ groups are listed individually; pure helpers are noted at the end).
 | ExitPlanModeV2Tool | Exit plan mode and present the plan for approval (`plan`) | yes | Planned | P1 | M2 | Surface plan as editable artifact; explicit approval to execute. |
 | WebFetchTool | Fetch a URL and process its content, with preapproved-host list (`url`, `prompt`) | yes | Planned | P1 | M2 | NET. Honor egress allowlist. |
 | WebSearchTool | Web search returning results (`query`, allow/block domains) | yes | Planned | P1 | M2 | NET. |
-| MCPTool | Invoke a tool exposed by a connected MCP server (collapse classification) | yes | Planned | P1 | M2 | Indirect NET. Route by qualified `mcp__<server>__<tool>` name into the flat registry. |
+| MCPTool | Invoke a tool exposed by a connected MCP server (collapse classification) | yes | Done | P1 | M5 | Routed by qualified `mcp__<server>__<tool>` name in the flat registry; permission-gated; stdio shipped (HTTP deferred). |
 | ListMcpResourcesTool | List resources available from MCP servers (optional `server`) | yes | Planned | P1 | M2 | NET. |
 | ReadMcpResourceTool | Read a specific MCP resource (`server`, `uri`) | yes | Planned | P1 | M2 | NET. |
 | McpAuthTool | Authenticate to an MCP server (OAuth) | yes | Planned | P1 | M2 | NET. Tri-state auth + token cache. |
@@ -146,7 +146,7 @@ steps, plugin sub-views, and `index/*` duplicates folded into their parent comma
 | `/resume` | Resume a previous conversation | yes | Planned | P0 | M1 | Cumulative usage reconstructable on resume. |
 | `/version` | Show version | yes | Planned | P0 | M1 | |
 | `/agents` | Manage/select custom and built-in sub-agents | yes | Planned | P1 | M2 | |
-| `/mcp` | Manage MCP servers (add, list, IdP/xaa auth) | yes | Planned | P1 | M2 | |
+| `/mcp` | Manage MCP servers (add, list, IdP/xaa auth) | yes | Done | P1 | M5 | `/mcp` lists configured servers; `/mcp connect` spawns + registers tools. OAuth/IdP auth deferred. |
 | `/skills` | List/manage skills | yes | Planned | P1 | M2 | |
 | `/hooks` | View/manage hooks configuration | yes | Planned | P1 | M2 | Net-new vs. port: needs runtime hook execution. |
 | `/plan` | Enter/manage plan mode | yes | Planned | P1 | M2 | |
@@ -246,7 +246,7 @@ of each subsystem Zak Code plans to build vs. defer.
 | Memory: memdir basics | CLAUDE.md memory discovery (ancestor chain), dedup, budgets; team memory deferred | yes | Planned | P0 | M1 | Root→cwd discovery with content-hash dedup + per-file/total char budgets; unify memory roots. |
 | Sessions / persistence | Versioned, resumable session documents with inline per-message usage | yes | Planned | P0 | M1 | Atomic write (temp + rename); UUID ids; structured (dict) tool I/O; persist after every turn/mutating command. |
 | TUI essentials | Minimal Ink/React-equivalent terminal UI: App, REPL, core dialogs | yes | Planned | P0 | M1 | Stream-safe-boundary markdown flushing; live status line (iterations, tokens, compaction, model). |
-| Services: mcp | MCP connection manager + tool routing into the live registry | yes | Planned | P1 | M2 | Qualified `mcp__<server>__<tool>` names; lazy spawn + initialize-once; stdio + streamable-HTTP; actually connect MCP tools into the loop. |
+| Services: mcp | MCP connection manager + tool routing into the live registry | yes | Done | P1 | M5 | `ExtensionManager` + `MCPClient`; qualified `mcp__<server>__<tool>` names; lazy spawn + initialize-once; stdio shipped (streamable-HTTP deferred); tools connected into the loop with lazy `tool_search` + budget. |
 | Sub-agents / coordinator (single) | `coordinatorMode`; single sub-agent delegation with isolated context | yes | Planned | P1 | M2 | First-class async task with structured handoff + condensed summaries; shared IterationBudget; max-iterations cap (not unbounded). |
 | Hooks runtime | PreToolUse/PostToolUse lifecycle hook execution (currently config-only in the port) | yes | **Done** | P1 | M2 | ✅ Exit-code protocol (0=allow/2=block/other=warn), JSON-on-stdin, argv arrays (no shell injection) + in-process callbacks; every failure error-isolated. Commit `3cbe12f`. |
 | Skills registry + bundled | `loadSkillsDir`, bundled skills, MCP skill-builders; `/skills` surface | yes | Planned | P1 | M2 | Markdown SKILL.md with progressive disclosure; start manual-authored; defer autonomous curator. |

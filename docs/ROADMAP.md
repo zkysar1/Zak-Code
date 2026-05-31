@@ -310,12 +310,28 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M5 — MCP client (extensions) (P1)
+### M5 — MCP client (extensions) (P1) — ✅ DONE (2026-05-31, commits `48f109b`…`3f9b2e1`)
+
+> **Status: shipped.** Zak Code is now an MCP host. A clean-room, no-SDK client speaks
+> newline-delimited JSON-RPC 2.0 over a pluggable transport (`mcp/jsonrpc.py`, `mcp/transport.py`
+> `StdioTransport`, `mcp/client.py` `MCPClient` — initialize-once, list/call/close). `mcp/manager.py`
+> adapts each MCP tool into a plain `Tool` (`McpTool`) registered under the qualified name
+> `mcp__<server>__<tool>` in the **same** `ToolRegistry`, so the loop dispatches and permission-gates
+> it exactly like a builtin (MCP tools default to the `DANGER_FULL_ACCESS` tier). `mcp/config.py`
+> declares servers in JSON (`mcpServers`/`servers`), resolves secrets via `${VAR}` env refs (never
+> stored in config), and enforces a command allowlist. The `Agent` facade wires it opt-in
+> (`enable_mcp=True`; `connect_mcp()` spawns + discovers, `__init__` stays side-effect-free), and the
+> CLI `/mcp` lists/connects servers. **Lazy discovery**: a `tool_search` builtin + a tool budget
+> (~25) — `ToolRegistry` gained an active-set so MCP tools beyond the budget register *hidden* and are
+> surfaced on demand, keeping schemas out of the base prompt. Graceful degradation throughout (a bad
+> server is recorded, never fatal). **551 tests pass, 1 skipped; ruff + format + mypy clean.**
+> _Deferred (tracked in `RISKS.md`): streamable-HTTP transport, MCP resources/prompts, OAuth
+> (`McpAuthTool`); only stdio + tools shipped._
 
 **Goal:** Connect external capability via MCP, slotting MCP tools into the same registry and loop.
 
 **Scope**
-- MCP host/client + `ExtensionManager` (name→client; discover/init/dispatch). Transports: **stdio** (Content-Length JSON-RPC framing, lazy spawn + initialize-once + reuse) and **streamable-HTTP/SSE**; record unsupported transports as data (graceful degradation).
+- MCP host/client + `ExtensionManager` (name→client; discover/init/dispatch). Transports: **stdio** (newline-delimited JSON-RPC 2.0 framing — one JSON object per line, *not* LSP `Content-Length`; lazy spawn + initialize-once + reuse) and **streamable-HTTP/SSE** _(HTTP deferred; stdio shipped)_; record unsupported transports as data (graceful degradation).
 - **Qualified tool names** `mcp__<server>__<tool>` with a central routing index; MCP tool defs merged into `definitions()` and dispatched by qualified name — indistinguishable from builtins to the loop. Match MCP name regex; mind the 64-char limit.
 - Lazy/just-in-time discovery: a `tool_search` surface so large MCP schemas don't bloat the base prompt; activation gated behind user approval; tool-budget filter (keep exposed set small, ~25).
 - Security: secrets via prompted env-keys (never inlined), command allowlist for auto-installed stdio servers, optional URL allowlist for HTTP servers.
