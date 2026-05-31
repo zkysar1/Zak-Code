@@ -97,6 +97,7 @@ _CHAT_HELP = """\
   /plan <task>   draft a plan with the read-only planner (does not execute)
   /mcp [connect] list MCP servers, or connect them and register their tools
   /plugins       list discovered plugins (loaded / skipped / failed)
+  /skills        list discovered skills (invoke one with /<skill-name>)
   /clear         start a fresh session (clears the transcript)
   /exit, /quit   leave the chat
 Anything else is sent to the agent as a turn.\
@@ -279,6 +280,39 @@ def _render_plugins(console: Console, agent: Agent) -> None:
         console.print(f"  [red]✗[/red] {name} [dim](discovery: {err})[/dim]")
 
 
+def _render_skills(console: Console, agent: Agent) -> None:
+    """List discovered skills + any discovery errors (the /skills cmd)."""
+    registry = getattr(agent, "skill_registry", None)
+    if registry is None or len(registry) == 0:
+        console.print("[dim]no skills discovered.[/dim]")
+    else:
+        for name, desc in registry.catalog():
+            console.print(f"  [bold]{name}[/bold]" + (f" [dim]— {desc}[/dim]" if desc else ""))
+        console.print("[dim]invoke a skill with /<name> to load its instructions.[/dim]")
+    for name, err in getattr(agent, "skill_errors", {}).items():
+        console.print(f"  [red]{name}[/red] [dim]({err})[/dim]")
+
+
+def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
+    """If ``name`` is a skill, load its body into the session and return True.
+
+    The L1 body is read on demand (not at startup) and added to the conversation as
+    a user message — ephemeral, cache-safe context the next turn naturally includes.
+    """
+    registry = getattr(agent, "skill_registry", None)
+    skill = registry.get(name) if registry is not None else None
+    if skill is None:
+        return False
+    from zakcode.messages import Message
+
+    body = skill.body()
+    agent.session.add_message(Message.user(f"[skill: {skill.name}]\n{body}"))
+    console.print(
+        f"[dim]loaded skill [bold]{skill.name}[/bold]; describe your task and it will apply.[/dim]"
+    )
+    return True
+
+
 def _print_banner(console: Console, agent: Agent) -> None:
     """Print the one-shot session banner (model, provider, workspace, perms)."""
     settings = agent.settings
@@ -393,6 +427,7 @@ def _build_chat_agent(prompter: ConsolePermissionPrompter, overrides: dict[str, 
         enable_mcp=True,
         enable_plugins=True,
         trusted_plugins=trusted,
+        enable_skills=True,
         **overrides,
     )
 
@@ -493,6 +528,12 @@ def chat(
                 continue
             if command == "/plugins":
                 _render_plugins(console, agent)
+                continue
+            if command == "/skills":
+                _render_skills(console, agent)
+                continue
+            # A bare /<skill-name> invokes a discovered skill (loads its body).
+            if _invoke_skill(console, agent, command.lstrip("/")):
                 continue
             # Fall through to plugin-registered commands before giving up. ``getattr``
             # because the live agent may be any AgentLike (a thin/remote one without a

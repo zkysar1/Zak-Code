@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from zakcode.mcp.config import McpServerConfig
     from zakcode.mcp.manager import DiscoveryReport, ExtensionManager
     from zakcode.plugins import PluginLoadReport
+    from zakcode.skills import SkillRegistry
 
 __all__ = ["Agent", "AgentLoop", "IterationBudget", "Message", "TurnResult", "__version__"]
 
@@ -70,6 +71,7 @@ class Agent:
         mcp_tool_budget: int | None = None,
         enable_plugins: bool = False,
         trusted_plugins: list[str] | None = None,
+        enable_skills: bool = False,
         **setting_overrides: Any,
     ) -> None:
         from zakcode.providers.litellm_provider import LiteLLMProvider
