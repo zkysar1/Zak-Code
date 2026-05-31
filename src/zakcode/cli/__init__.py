@@ -93,6 +93,8 @@ _CHAT_HELP = """\
   /permissions   show the permission mode and session grants
   /hooks         list configured lifecycle hooks
   /cost          show cumulative token usage and cost this session
+  /agents        list the sub-agent types available for delegation
+  /plan <task>   draft a plan with the read-only planner (does not execute)
   /clear         start a fresh session (clears the transcript)
   /exit, /quit   leave the chat
 Anything else is sent to the agent as a turn.\
@@ -168,6 +170,40 @@ def _render_hooks(console: Console, agent: Agent) -> None:
         console.print(f"[dim]{spec.event.value}[/dim] [{spec.matcher}] -> {' '.join(spec.command)}")
     if in_proc:
         console.print(f"[dim]{in_proc} in-process hook(s) registered.[/dim]")
+
+
+def _render_agents(console: Console, agent: Agent) -> None:
+    """List the sub-agent types available for delegation (the /agents cmd)."""
+    spawner = agent.loop.spawner
+    if spawner is None:
+        console.print("[dim]delegation is not enabled for this session.[/dim]")
+        return
+    default = spawner.default_type()
+    for name in spawner.available_types():
+        marker = " [dim](default)[/dim]" if name == default else ""
+        console.print(f"  [bold]{name}[/bold]{marker}")
+
+
+def _run_plan(console: Console, agent: Agent, task: str) -> None:
+    """Run the read-only planner sub-agent and print its plan (the /plan cmd).
+
+    Plan Mode never edits: the planner's tool schema omits write tools. The plan is
+    printed for the operator to review; it is NOT auto-executed.
+    """
+    spawner = agent.loop.spawner
+    if spawner is None:
+        console.print("[dim]delegation is not enabled for this session.[/dim]")
+        return
+    if not task:
+        console.print("[dim]usage: /plan <what you want planned>[/dim]")
+        return
+    console.print("[dim]planning (read-only)...[/dim]")
+    try:
+        result = asyncio.run(spawner.spawn(type_name="plan", prompt=task))
+    except ProviderError as exc:
+        console.print(f"[red]Provider error:[/red] {exc}")
+        return
+    console.print(result.summary or "[dim](the planner produced no plan)[/dim]")
 
 
 def _print_banner(console: Console, agent: Agent) -> None:
@@ -308,7 +344,7 @@ def chat(
     # so 'ask' mode is usable interactively (rather than failing closed). The gate
     # itself still lives in the core; the CLI only renders the prompt.
     prompter = ConsolePermissionPrompter(console)
-    agent = Agent(prompter=prompter, **overrides)
+    agent = Agent(prompter=prompter, enable_subagents=True, **overrides)
     _print_banner(console, agent)
 
     while True:
@@ -340,7 +376,7 @@ def chat(
                 _render_hooks(console, agent)
                 continue
             if command == "/clear":
-                agent = Agent(prompter=prompter, **overrides)
+                agent = Agent(prompter=prompter, enable_subagents=True, **overrides)
                 console.print("[dim]Started a fresh session.[/dim]")
                 continue
             if command == "/cost":
