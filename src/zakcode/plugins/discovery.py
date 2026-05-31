@@ -104,15 +104,17 @@ def discover_dir_plugins(
             module_path = entry / f"{manifest.module}.py"
             if not module_path.is_file():
                 raise FileNotFoundError(f"missing module {module_path.name}")
-            register = _load_register_from_file(module_path, manifest.name)
         except Exception as exc:  # noqa: BLE001 — a bad plugin is data, not a crash
             errors[entry.name] = f"{type(exc).__name__}: {exc}"
             logger.warning("skipping plugin dir %s: %s", entry, exc)
             continue
+        # SECURITY: do NOT import the module here — importing runs its top-level code.
+        # Defer it behind a lazy loader so the module is imported only if the plugin
+        # passes the trust gate in ``PluginManager.load_into`` (resolve()).
         plugins.append(
             Plugin(
                 manifest=_apply_trust(manifest, trusted_names),
-                register=register,
+                loader=lambda mp=module_path, nm=manifest.name: _load_register_from_file(mp, nm),
                 origin=str(entry),
             )
         )
@@ -139,18 +141,16 @@ def discover_entrypoint_plugins(
         return plugins, errors
     for ep in eps:
         try:
-            register = ep.load()
-            if not callable(register):
-                raise TypeError(f"entry point {ep.name!r} is not callable")
             manifest = _apply_trust(
                 PluginManifest(name=ep.name, module=getattr(ep, "value", "")), trusted_names
             )
         except Exception as exc:  # noqa: BLE001
             errors[ep.name] = f"{type(exc).__name__}: {exc}"
             continue
-        plugins.append(
-            Plugin(manifest=manifest, register=register, origin=f"entry-point:{ep.name}")
-        )
+        # SECURITY: defer ``ep.load()`` (which imports the package) behind the loader,
+        # so an untrusted entry-point package is not imported until the trust gate
+        # passes. A non-callable target surfaces as a load failure, not a crash.
+        plugins.append(Plugin(manifest=manifest, loader=ep.load, origin=f"entry-point:{ep.name}"))
     return plugins, errors
 
 

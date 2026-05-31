@@ -147,9 +147,9 @@ class PluginManager:
         """Run each trusted+enabled plugin's ``register(ctx)`` against the live engine.
 
         Skipped: a plugin that is disabled or not trusted (recorded with a reason,
-        never loaded). Failed: a plugin whose ``register`` raises (recorded; the
-        other plugins still load). On success the plugin's contributions are recorded
-        for provenance.
+        never loaded — and, for a directory plugin, never even imported). Failed: a
+        plugin whose import or ``register`` raises (recorded; the others still load).
+        On success the plugin's contributions are recorded for provenance.
         """
         report = PluginLoadReport()
         for plugin in self._plugins:
@@ -168,7 +168,10 @@ class PluginManager:
                 settings=settings,
             )
             try:
-                plugin.register(ctx)
+                # resolve() imports the module for a directory plugin — done HERE,
+                # after the trust gate above, so untrusted modules are never imported.
+                register_fn = plugin.resolve()
+                register_fn(ctx)
             except Exception as exc:  # noqa: BLE001 — one bad plugin must not crash startup
                 report.failed[name] = f"{type(exc).__name__}: {exc}"
                 logger.warning("plugin %r failed to register: %s", name, exc)

@@ -72,12 +72,17 @@ def test_missing_module_is_recorded(tmp_path: Path) -> None:
     assert "nomod" in errors
 
 
-def test_module_without_register_is_recorded(tmp_path: Path) -> None:
+def test_module_without_register_discovers_but_fails_to_resolve(tmp_path: Path) -> None:
+    # The module is NOT imported at discovery (security), so "no register()" is not a
+    # discovery error — the plugin is discovered, and resolve() fails at load time.
     _write_plugin(tmp_path, "noreg", module_body="x = 1\n")
     plugins, errors = discover_dir_plugins(tmp_path)
-    assert plugins == []
-    assert "noreg" in errors
-    assert "register" in errors["noreg"]
+    assert [p.manifest.name for p in plugins] == ["noreg"]
+    assert errors == {}
+    import pytest
+
+    with pytest.raises(AttributeError):
+        plugins[0].resolve()
 
 
 def test_custom_module_name(tmp_path: Path) -> None:
