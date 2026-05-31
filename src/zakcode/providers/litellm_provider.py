@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 import litellm
@@ -32,8 +33,13 @@ from zakcode.providers.base import (
     LLMResult,
     Provider,
     ProviderError,
+    ProviderStreamEvent,
     RateLimited,
     RequestFailed,
+    StreamDone,
+    StreamTextDelta,
+    StreamToolCallDelta,
+    StreamUsage,
     ToolCall,
 )
 from zakcode.providers.registry import get_capabilities
@@ -429,6 +435,109 @@ class LiteLLMProvider(Provider):
             raise self._map_error(exc) from exc
 
         return self._normalize(response)
+
+    # ------------------------------------------------------------------
+    # Streaming: litellm chunk stream -> ProviderStreamEvent stream
+    # ------------------------------------------------------------------
+    @classmethod
+    def _parse_chunk(cls, chunk: Any) -> tuple[list[ProviderStreamEvent], str | None]:
+        """Translate one raw litellm stream chunk into provider events.
+
+        Returns ``(events, finish_reason)`` where ``events`` is the (possibly
+        empty) list of :data:`ProviderStreamEvent` to yield for this chunk and
+        ``finish_reason`` is the choice's finish reason if present on this chunk
+        (``None`` otherwise). Every field is read via :func:`_get` so the chunk
+        may be a pydantic-like object or a plain dict. Nothing here raises: a
+        malformed chunk simply yields no events.
+
+        Ordering within a chunk is text -> tool-call fragments -> usage, mirroring
+        how a single OpenAI-shaped delta is laid out. ``StreamDone`` is emitted by
+        the caller after the loop, never here.
+        """
+        events: list[ProviderStreamEvent] = []
+        finish_reason: str | None = None
+
+        choices = _get(chunk, "choices")
+        first = None
+        if isinstance(choices, list | tuple) and choices:
+            first = choices[0]
+
+        if first is not None:
+            delta = _get(first, "delta")
+
+            content = _get(delta, "content")
+            if isinstance(content, str) and content:
+                events.append(StreamTextDelta(text=content))
+
+            raw_tool_calls = _get(delta, "tool_calls")
+            if raw_tool_calls:
+                for tc in raw_tool_calls:
+                    index = _get(tc, "index")
+                    index = index if isinstance(index, int) and not isinstance(index, bool) else 0
+                    tc_id = _get(tc, "id")
+                    fn = _get(tc, "function")
+                    name = _get(fn, "name")
+                    raw_args = _get(fn, "arguments")
+                    # Fragments pass through verbatim; the loop reassembles them.
+                    args_delta = raw_args if isinstance(raw_args, str) else ""
+                    events.append(
+                        StreamToolCallDelta(
+                            index=index,
+                            id=tc_id if isinstance(tc_id, str) else None,
+                            name=name if isinstance(name, str) else None,
+                            arguments_delta=args_delta,
+                        )
+                    )
+
+            fr = _get(first, "finish_reason")
+            if fr is not None:
+                finish_reason = str(fr)
+
+        # Usage typically rides the final chunk (stream_options include_usage).
+        if _get(chunk, "usage") is not None:
+            events.append(StreamUsage(usage=cls._extract_usage(chunk)))
+
+        return events, finish_reason
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kw: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        """Stream a completion as true per-token :data:`ProviderStreamEvent`s.
+
+        Overrides the base (acomplete-wrapping) default with real streaming:
+        requests ``stream=True`` with ``include_usage`` so the final chunk carries
+        token/cost usage, then translates each chunk via :meth:`_parse_chunk`.
+        Tool-call argument fragments are passed through verbatim, keyed by index,
+        for the loop's streaming accumulator to reassemble. A :class:`StreamDone`
+        is always emitted last, even on an empty stream. Any litellm exception —
+        whether raised by the setup call or during async iteration — is mapped
+        through the error taxonomy; a raw vendor exception never escapes.
+        """
+        wire_messages = self._translate_messages(messages, system)
+        call_kwargs = self._build_kwargs(wire_messages, tools, **kw)
+        call_kwargs["stream"] = True
+        call_kwargs["stream_options"] = {"include_usage": True}
+
+        finish_reason: str | None = None
+        try:
+            resp = await litellm.acompletion(**call_kwargs)
+            async for chunk in resp:
+                events, fr = self._parse_chunk(chunk)
+                if fr is not None:
+                    finish_reason = fr
+                for event in events:
+                    yield event
+        except ProviderError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
+            raise self._map_error(exc) from exc
+
+        yield StreamDone(finish_reason=finish_reason)
 
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
         wire_messages = self._translate_messages(messages, system)

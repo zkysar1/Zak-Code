@@ -5,9 +5,18 @@ for a completion, executes any requested tools sequentially, feeds the results
 back, and stops when the model emits no further tool calls (or a stop condition
 fires — the iteration budget, a doom loop, or cancellation).
 
+:meth:`AgentLoop.astream_turn` is the *incremental* view of the same turn: it
+consumes the provider's token stream (:meth:`Provider.astream`) instead of one
+buffered completion and yields a sequence of :data:`~zakcode.events.AgentEvent`
+(live text deltas, tool calls, tool results, a cumulative usage event, and a
+terminal ``AgentDone``). It reuses every other piece of the buffered path — the
+system-prompt build, sequential tool execution, the doom-loop guard, the
+iteration budget, persistence, and the cancellation contract — so its
+stop-reason / iteration semantics match :meth:`arun_turn` exactly.
+
 The loop is provider- and tool-agnostic: it speaks only the frozen contracts in
-:mod:`zakcode.messages`, :mod:`zakcode.providers.base`, and
-:mod:`zakcode.tools.base`.
+:mod:`zakcode.messages`, :mod:`zakcode.providers.base`,
+:mod:`zakcode.tools.base`, and the client-facing :mod:`zakcode.events`.
 
 Stop conditions
 ---------------
@@ -34,14 +43,33 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
+from zakcode.events import (
+    AgentDone,
+    AgentEvent,
+    AgentStatus,
+    AgentTextDelta,
+    AgentToolCall,
+    AgentToolResult,
+    AgentUsage,
+)
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
-from zakcode.providers.base import LLMResult, Provider, ToolCall
+from zakcode.providers.base import (
+    LLMResult,
+    Provider,
+    StreamDone,
+    StreamTextDelta,
+    StreamToolCallDelta,
+    StreamUsage,
+    ToolCall,
+)
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import ToolContext, ToolRegistry, ToolSpec
 from zakcode.usage import Usage
@@ -258,3 +286,142 @@ class AgentLoop:
         raise RuntimeError(
             "run_turn() cannot be called from a running event loop; await arun_turn() instead."
         )
+
+    # ── streaming API ──────────────────────────────────────────────────────────
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        """Run one user turn, yielding :data:`AgentEvent`s as the turn unfolds.
+
+        This is the incremental twin of :meth:`arun_turn`: it consumes
+        :meth:`Provider.astream` and re-emits a client-facing event stream while
+        driving the exact same cycle (system prompt, sequential tool execution,
+        doom-loop guard, iteration budget, persistence). Stop-reason and iteration
+        semantics match the buffered path.
+
+        Event order per turn:
+
+        * a live ``AgentTextDelta`` for each streamed text chunk;
+        * one ``AgentToolCall`` then one ``AgentToolResult`` for each tool the
+          model requested, in order;
+        * possibly an ``AgentStatus`` notice (e.g. the doom-loop stop);
+        * always a final ``AgentUsage`` (cumulative) immediately followed by an
+          ``AgentDone`` carrying the same usage plus ``stop_reason``/``iterations``.
+
+        ``asyncio.CancelledError`` is never converted to an ``AgentDone``: it is
+        re-raised after a best-effort persist (matching :meth:`arun_turn`), so a
+        cancelled stream never reports a normal stop.
+        """
+        self.session.add_message(Message.user(user_text))
+        self._persist()
+
+        turn_usage = Usage()
+        iterations = 0
+        stop_reason = "max_iterations"
+
+        # Doom-loop tracking (identical semantics to the buffered path).
+        last_signature: tuple[tuple[str, str], ...] | None = None
+        repeat_count = 0
+
+        tool_defs = self.registry.definitions()
+        ctx = ToolContext(workspace_root=self.workspace_root)
+
+        try:
+            while iterations < self.max_iterations:
+                iterations += 1
+                system = self._build_system()
+
+                text_parts: list[str] = []
+                accumulator = ToolCallAccumulator()
+
+                async for ev in self.provider.astream(
+                    self.session.messages,
+                    system=system,
+                    tools=tool_defs or None,
+                ):
+                    if isinstance(ev, StreamTextDelta):
+                        text_parts.append(ev.text)
+                        yield AgentTextDelta(text=ev.text)
+                    elif isinstance(ev, StreamToolCallDelta):
+                        accumulator.add(ev)
+                    elif isinstance(ev, StreamUsage):
+                        turn_usage = turn_usage + ev.usage
+                        self.session.add_usage(ev.usage)
+                    elif isinstance(ev, StreamDone):
+                        # finish_reason is advisory here; the loop's own stop
+                        # conditions decide the turn's stop_reason. Break the inner
+                        # stream and assemble the assistant message.
+                        break
+
+                tool_calls = accumulator.finalize()
+                assistant_text = "".join(text_parts)
+
+                assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
+                self.session.add_message(assistant_msg)
+                self._persist()
+
+                # No tool calls → the turn is complete.
+                if not tool_calls:
+                    stop_reason = "completed"
+                    break
+
+                # Doom-loop guard — identical to the buffered path.
+                signature = _batch_signature(tool_calls)
+                if signature == last_signature:
+                    repeat_count += 1
+                else:
+                    repeat_count = 1
+                    last_signature = signature
+                if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
+                    stop_reason = "doom_loop"
+                    yield AgentStatus(message="stopping: repeated identical tool calls")
+                    break
+
+                # Execute each call sequentially, surfacing call + result events.
+                result_blocks: list[ToolResultBlock] = []
+                for call in tool_calls:
+                    yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
+                    # A tool that returns is_error does NOT abort the turn: the
+                    # error result is fed back so the model can see it and recover.
+                    tool_res = await self.registry.execute(call.name, call.arguments, ctx)
+                    block = ToolResultBlock(
+                        tool_use_id=call.id,
+                        output=tool_res.output,
+                        is_error=tool_res.is_error,
+                        data=tool_res.data,
+                    )
+                    result_blocks.append(block)
+                    yield AgentToolResult(
+                        tool_use_id=call.id,
+                        output=tool_res.output,
+                        is_error=tool_res.is_error,
+                    )
+
+                self.session.add_message(Message.tool_results(result_blocks))
+                self._persist()
+        except asyncio.CancelledError:
+            # Cancellation is a control signal, not a stop reason. State has only
+            # been mutated + persisted at message boundaries, so it is consistent.
+            # Best-effort persist (swallow save errors) then re-raise so the
+            # CancelledError propagates rather than becoming a normal AgentDone.
+            with contextlib.suppress(Exception):
+                self._persist()
+            raise
+
+        yield AgentUsage(usage=turn_usage)
+        yield AgentDone(stop_reason=stop_reason, iterations=iterations, usage=turn_usage)
+
+    @staticmethod
+    def _stream_assistant_message(text: str, tool_calls: list[ToolCall]) -> Message:
+        """Build the assistant message from streamed text + accumulated tool calls.
+
+        Mirrors :meth:`_assistant_message` (the buffered builder): a leading
+        :class:`TextBlock` when any text streamed, then one :class:`ToolUseBlock`
+        per finalized call. A response with neither yields an empty-blocks message
+        (the turn still ends cleanly).
+        """
+        blocks: list[ContentBlock] = []
+        if text:
+            blocks.append(TextBlock(text=text))
+        for call in tool_calls:
+            blocks.append(ToolUseBlock(id=call.id, name=call.name, input=call.arguments))
+        return Message(role="assistant", blocks=blocks)

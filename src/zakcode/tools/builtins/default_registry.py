@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.bash import BashTool
+from zakcode.tools.builtins.edit import EditFileTool
 from zakcode.tools.builtins.glob import GlobTool
 from zakcode.tools.builtins.grep import GrepTool
 from zakcode.tools.builtins.list_dir import ListDirTool
@@ -20,6 +21,7 @@ def default_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(ReadFileTool(), aliases=["read"])
     registry.register(WriteFileTool(), aliases=["write"])
+    registry.register(EditFileTool(), aliases=["edit"])
     registry.register(ListDirTool(), aliases=["ls"])
     registry.register(GlobTool())
     registry.register(GrepTool())

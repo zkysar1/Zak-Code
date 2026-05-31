@@ -1,0 +1,15 @@
+﻿            "glob",
+            "grep",
+            "bash",
+        }
+E       AssertionError: assert {'bash', 'edi...ad_file', ...} == {'bash', 'glo... 'write_file'}
+E         
+E         Extra items in the left set:
+E         'edit_file'
+E         Use -v to get more diff
+
+tests\test_builtins.py:156: AssertionError
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_builtins_edge.py:62: symlink creation needs privilege on Windows
+FAILED tests/test_builtins.py::test_default_registry_has_all_tools_and_aliases
+1 failed, 284 passed, 1 skipped in 20.18s

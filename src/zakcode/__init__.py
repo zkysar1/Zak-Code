@@ -13,12 +13,14 @@ Nothing here triggers network activity at import time — only an actual
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
+from zakcode.events import AgentEvent
 from zakcode.messages import Message
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.builtins.default_registry import default_registry
@@ -71,6 +73,23 @@ class Agent:
     def run_turn(self, user_text: str) -> TurnResult:
         """Run one user turn synchronously (wraps :meth:`arun_turn`)."""
         return self.loop.run_turn(user_text)
+
+    def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        """Stream one user turn as a sequence of :class:`~zakcode.events.AgentEvent`.
+
+        Returns the loop's async iterator directly (no ``await`` needed to obtain
+        it), so callers can ``async for event in agent.astream_turn(text)``. This
+        is the incremental counterpart to :meth:`run_turn` / :meth:`arun_turn`.
+        """
+        return self.loop.astream_turn(user_text)
+
+    def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        """Stream one user turn as :class:`~zakcode.events.AgentEvent`s.
+
+        Thin pass-through to :meth:`AgentLoop.astream_turn`; the incremental twin
+        of :meth:`arun_turn` for live (token-by-token) clients like the CLI.
+        """
+        return self.loop.astream_turn(user_text)
 
     @classmethod
     def for_workspace(cls, path: str | Path, **setting_overrides: Any) -> Agent:

@@ -8,6 +8,8 @@ engine — this module never decides what to do, only how to show it.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -15,13 +17,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from zakcode.cli.render import StreamRenderer
 from zakcode.config import Settings, load_settings
 from zakcode.providers.base import ProviderError
 from zakcode.version import __version__
 
 if TYPE_CHECKING:
-    from zakcode import Agent, TurnResult
-    from zakcode.messages import ToolUseBlock
+    from zakcode import Agent
 
 app = typer.Typer(
     name="zakcode",
@@ -91,19 +93,6 @@ Anything else is sent to the agent as a turn.\
 """
 
 
-def _abbreviate(value: object, *, limit: int = 60) -> str:
-    """Render ``value`` as a single short line for a tool-call summary."""
-    text = str(value).replace("\n", " ").replace("\r", " ")
-    if len(text) > limit:
-        text = text[: limit - 1] + "…"
-    return text
-
-
-def _format_tool_args(args: dict[str, Any]) -> str:
-    """Render a tool's input dict as ``k=v, k=v`` (abbreviated, secret-free)."""
-    return ", ".join(f"{key}={_abbreviate(val)}" for key, val in args.items())
-
-
 def _print_banner(console: Console, agent: Agent) -> None:
     """Print the one-shot session banner (model, provider, workspace, perms)."""
     settings = agent.settings
@@ -113,37 +102,47 @@ def _print_banner(console: Console, agent: Agent) -> None:
     console.print(f"[dim]workspace[/dim]  {settings.workspace_root}")
     console.print(f"[dim]perms[/dim]      {settings.permission_mode}")
     console.print(f"[dim]session[/dim]    {agent.session.id}")
+    console.print(
+        "[dim]Tools: edit_file (+ read/write/glob/grep/bash). Ctrl-C interrupts a reply.[/dim]"
+    )
     console.print("[dim]Type /help for commands, /exit to quit.[/dim]\n")
 
 
-def _render_turn(console: Console, result: TurnResult) -> None:
-    """Render one :class:`TurnResult`: assistant text, tool lines, footer."""
-    # Pair each tool_use (from the assistant messages) with its result block.
-    tool_uses: list[ToolUseBlock] = []
-    for message in result.assistant_messages:
-        tool_uses.extend(message.tool_uses)
-    results_by_id = {block.tool_use_id: block for block in result.tool_results}
+async def _drive_stream(agent: Agent, line: str, renderer: StreamRenderer) -> None:
+    """Drive one streamed turn through the renderer so tokens appear live.
 
-    for use in tool_uses:
-        res = results_by_id.get(use.id)
-        status = "ok"
-        if res is None:
-            status = "…"
-        elif res.is_error:
-            status = "err"
-        console.print(f"[dim]tool {use.name}({_format_tool_args(use.input)}) -> {status}[/dim]")
+    The agent's :meth:`astream_turn` yields :class:`~zakcode.events.AgentEvent`s;
+    the renderer writes them to the console incrementally (text deltas, tool
+    lines, footer). Kept tiny and rendering-free so the core stays UI-agnostic.
+    """
+    await renderer.render(agent.astream_turn(line))
 
-    text = "\n".join(m.text for m in result.assistant_messages if m.text).strip()
-    if text:
-        console.print(text)
 
-    usage = result.usage
-    footer = (
-        f"[dim]· {result.iterations} iter · "
-        f"{usage.total_tokens} tok"
-        f"{f' · ${usage.cost_usd:.4f}' if usage.cost_usd else ''}[/dim]"
-    )
-    console.print(footer)
+def _run_streamed_turn(console: Console, agent: Agent, line: str, renderer: StreamRenderer) -> bool:
+    """Run a streamed turn on a private event loop; cancellable via Ctrl-C.
+
+    Returns ``True`` if the turn completed, ``False`` if the user interrupted it.
+    On interrupt the in-flight task is cancelled cleanly (so the session is left
+    consistent — the loop persists at message boundaries), a dim ``interrupted``
+    notice is printed, and control returns to the REPL prompt without exiting.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(_drive_stream(agent, line, renderer))
+        try:
+            loop.run_until_complete(task)
+            return True
+        except KeyboardInterrupt:
+            task.cancel()
+            # Pump the loop so the task observes the cancellation and unwinds
+            # (its CancelledError handler persists state and re-raises).
+            with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
+                loop.run_until_complete(task)
+            console.print("\n[dim]interrupted[/dim]")
+            return False
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 @app.command()
@@ -209,13 +208,14 @@ def chat(
             console.print(f"[dim]{command} is not yet supported.[/dim]")
             continue
 
+        # Stream the model response token by token through the renderer. A fresh
+        # renderer per turn keeps the text/usage buffers from leaking across turns.
+        renderer = StreamRenderer(console=console)
         try:
-            result = agent.run_turn(stripped)
+            _run_streamed_turn(console, agent, stripped, renderer)
         except ProviderError as exc:
             console.print(f"[red]Provider error:[/red] {exc}")
             continue
-
-        _render_turn(console, result)
 
 
 def main() -> None:
