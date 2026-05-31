@@ -220,7 +220,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M3 — FastAPI server + SSE/WS (Layer 2, P1) — ✅ DONE (2026-05-31, commits `19d9bcc`…`6a7d1c2`)
+### M3 — FastAPI server + SSE/WS (Layer 2, P1) — ✅ DONE (2026-05-31, commits `19d9bcc`…`8512baa`)
 
 > **Status: shipped.** The core is now drivable over HTTP. `server/wire.py` is the pure JSON
 > contract (AgentEvent (de)serialization + request/response + WS control frames). `server/app.py`
@@ -230,7 +230,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 > the client (so `ask` mode is interactive over the socket; REST/SSE run headless = fail-closed).
 > `server/client.py` `ServerClient` + `zakcode serve` and `chat --server <url>` make the CLI a thin
 > client. **The parity exit criterion is met:** in-process vs over-server transcripts are
-> byte-identical once serialized (test-verified). **410 tests pass, 1 skipped; ruff + mypy clean.**
+> byte-identical once serialized (test-verified). **402 tests pass, 1 skipped; ruff + mypy clean.**
 > Same `AgentEvent` stream across CLI-in-process / SSE / WS — a future web client is a renderer,
 > not a fork. (`PATCH /config` deferred — config is read-only over HTTP for now.) Next: **M4 —
 > sub-agents / Task tool.**
