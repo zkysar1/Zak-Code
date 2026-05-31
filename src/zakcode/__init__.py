@@ -85,7 +85,12 @@ class Agent:
         shared_budget = budget
         spawner = None
         if enable_subagents:
-            from zakcode.agent.subagent import GENERAL_PURPOSE, SubAgentManager, SubAgentRunner
+            from zakcode.agent.subagent import (
+                GENERAL_PURPOSE,
+                PLAN,
+                SubAgentManager,
+                SubAgentRunner,
+            )
             from zakcode.tools.builtins.task import TaskTool
 
             shared_budget = budget or IterationBudget(self.settings.max_iterations)
@@ -98,7 +103,11 @@ class Agent:
                 hook_manager=self.hook_manager,
                 workspace_root=self.settings.workspace_root,
             )
-            spawner = SubAgentManager(runner, [GENERAL_PURPOSE], default=GENERAL_PURPOSE.name)
+            # general-purpose (full toolset) + plan (read-only planner whose registry
+            # subset omits write tools, so Plan Mode is schema-enforced).
+            spawner = SubAgentManager(
+                runner, [GENERAL_PURPOSE, PLAN], default=GENERAL_PURPOSE.name
+            )
             self.registry.register(TaskTool())
 
         self.loop = AgentLoop(

@@ -69,10 +69,33 @@ class SubAgentResult(BaseModel):
     usage: Usage = Field(default_factory=Usage)
 
 
+#: The read-only built-in tools (those that never mutate the workspace). The planner
+#: (Plan Mode) is restricted to exactly these, so the write tools (write_file /
+#: edit_file / bash) are ABSENT from its tool schema entirely: the model is never
+#: offered them, rather than being offered them and refused at runtime. This is the
+#: structural, schema-level guarantee behind "a planner literally cannot edit" (see
+#: docs/ROADMAP.md M4 exit criteria).
+READ_ONLY_TOOLS = ["read_file", "list_dir", "glob", "grep"]
+
 #: A general-purpose sub-agent with the parent's full toolset (the default delegate).
 GENERAL_PURPOSE = SubAgentDefinition(
     name="general-purpose",
     description="A capable agent with the full toolset for self-contained subtasks.",
+)
+
+#: The planner used by Plan Mode: read-only tools only, instructed to investigate and
+#: return a step-by-step plan rather than make changes. Because its registry is a
+#: subset over READ_ONLY_TOOLS, every write tool is absent from the schema it is given.
+PLAN = SubAgentDefinition(
+    name="plan",
+    description="A read-only planner: investigates and returns a step-by-step plan, never edits.",
+    allowed_tools=READ_ONLY_TOOLS,
+    system_suffix=(
+        "You are in PLAN MODE. You have read-only tools only and cannot modify the "
+        "workspace. Investigate the request, then return a clear, ordered, step-by-step "
+        "plan describing exactly what changes should be made and why. Do not attempt to "
+        "make changes yourself; produce the plan as your final answer."
+    ),
 )
 
 
@@ -216,4 +239,6 @@ __all__ = [
     "SubAgentRunner",
     "SubAgentManager",
     "GENERAL_PURPOSE",
+    "PLAN",
+    "READ_ONLY_TOOLS",
 ]
