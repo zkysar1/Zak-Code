@@ -84,6 +84,33 @@ async def test_tool_search_respects_budget(tmp_path: Path) -> None:
     assert result.data is not None and len(result.data["activated"]) == 1
 
 
+async def test_tool_search_evicts_mcp_to_make_room(tmp_path: Path) -> None:
+    # Budget full (builtin + an active MCP tool); searching for a different tool must
+    # NOT dead-end — it evicts the non-matching MCP tool to surface the needed one.
+    reg = ToolRegistry()
+    reg.register(_Tool("builtin"))  # never evictable
+    reg.register(_Tool("mcp__a__old", "old capability"))  # active MCP, not a match
+    reg.register(_Tool("mcp__a__needed", "database query"), active=False)
+    result = await ToolSearchTool(reg, budget=2).execute({"query": "database"}, _ctx(tmp_path))
+    assert reg.is_active("mcp__a__needed") is True  # surfaced despite a full budget
+    assert reg.is_active("mcp__a__old") is False  # evicted to make room
+    assert reg.is_active("builtin") is True  # builtins are never evicted
+    assert result.data is not None and result.data["evicted"] == ["mcp__a__old"]
+
+
+async def test_tool_search_does_not_evict_when_only_builtins_active(tmp_path: Path) -> None:
+    # If the budget is full of builtins (nothing evictable), degrade gracefully:
+    # activate what fits, defer the rest — never evict a builtin.
+    reg = ToolRegistry()
+    reg.register(_Tool("b1"))
+    reg.register(_Tool("b2"))
+    reg.register(_Tool("mcp__a__needed", "database query"), active=False)
+    result = await ToolSearchTool(reg, budget=2).execute({"query": "database"}, _ctx(tmp_path))
+    assert reg.is_active("b1") and reg.is_active("b2")  # builtins untouched
+    assert reg.is_active("mcp__a__needed") is False  # deferred (no room)
+    assert result.data is not None and result.data["deferred"] == ["mcp__a__needed"]
+
+
 async def search_result(reg: ToolRegistry, query: str, tmp_path: Path) -> ToolResult:
     return await ToolSearchTool(reg).execute({"query": query}, _ctx(tmp_path))
 

@@ -94,6 +94,18 @@ class ToolSearchTool(Tool):
             )
 
         available = max(0, self._budget - len(active))
+        # If the budget is full, make room by evicting previously-surfaced MCP tools
+        # that aren't part of this match — so the model is never wedged, unable to
+        # reach a needed tool. Builtins (no ``mcp__`` prefix) are never evicted.
+        evicted: list[str] = []
+        need = len(matched) - available
+        if need > 0:
+            evictable = [n for n in active if n.startswith("mcp__") and n not in matched]
+            for name in evictable[:need]:
+                self._registry.deactivate(name)
+                evicted.append(name)
+            available += len(evicted)
+
         activated = matched[:available]
         deferred = matched[available:]
         for name in activated:
@@ -106,12 +118,20 @@ class ToolSearchTool(Tool):
                 tool = self._registry.get(name)
                 desc = _first_line(tool.spec.description) if tool is not None else ""
                 lines.append(f"  - {name}: {desc}" if desc else f"  - {name}")
+        if evicted:
+            lines.append(
+                f"(made room by hiding {len(evicted)} previously-surfaced tool(s); "
+                "search again to bring them back)"
+            )
         if deferred:
             lines.append(
-                f"{len(deferred)} more matched but the tool budget ({self._budget}) is full; "
-                "narrow your query or finish with the active tools."
+                f"{len(deferred)} more matched but the tool budget ({self._budget}) is full of "
+                "built-in / in-use tools; finish with the active tools or refine your query."
             )
-        return ToolResult.ok("\n".join(lines), data={"activated": activated, "deferred": deferred})
+        return ToolResult.ok(
+            "\n".join(lines),
+            data={"activated": activated, "deferred": deferred, "evicted": evicted},
+        )
 
 
 __all__ = ["ToolSearchTool", "DEFAULT_TOOL_BUDGET"]
