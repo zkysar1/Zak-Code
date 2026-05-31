@@ -418,7 +418,20 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M8 — Advanced context compaction (P1/P2)
+### M8 — Advanced context compaction (P1/P2) — ✅ DONE (commits `e5b549c`, `9aef1ed`, `96ec1cb`)
+
+Auto-compaction shipped: `src/zakcode/agent/compact.py` `Compactor` triggers at a configurable
+fraction (default 0.8) of the **real** context window (`provider.capabilities().context_window` +
+`provider.count_tokens`), preserves the last N turns verbatim, and collapses older history into a
+single leading system summary written by the model. The summary boundary is tool-pair-safe (never
+splits an assistant tool-call from its result) and re-compaction is idempotent (a prior summary is
+folded in, never stacked), with a "resume directly, don't re-acknowledge" continuation note. The
+loop calls `_maybe_compact()` before each turn (buffered + streaming); `compact_now()` backs the
+`/compact` command; `Agent(enable_compaction=True)` opts in. Best-effort: a summarization failure is
+logged and the turn proceeds with full history. Tests: `tests/test_compact.py` (8),
+`tests/test_compact_facade.py` (3). Deferred: per-tool-type result truncation, large-output offload
+to temp-file handles, and end-of-context TODO re-injection.
+
 
 **Goal:** Keep long sessions alive with real token counting, auto-compaction, and LLM-written summaries.
 
