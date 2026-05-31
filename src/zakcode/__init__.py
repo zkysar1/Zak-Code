@@ -38,6 +38,9 @@ class Agent:
     Construct with defaults (settings come from env / ``.env``) or pass an
     explicit :class:`Settings`, :class:`Session`, or :class:`SessionStore`.
     Keyword overrides are forwarded to :func:`~zakcode.config.load_settings`.
+
+    Pass ``enable_subagents=True`` to expose the ``task`` delegation tool and a
+    shared iteration budget (off by default).
     """
 
     def __init__(
@@ -51,6 +54,7 @@ class Agent:
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
         budget: IterationBudget | None = None,
+        enable_subagents: bool = False,
         **setting_overrides: Any,
     ) -> None:
         from zakcode.providers.litellm_provider import LiteLLMProvider
@@ -71,6 +75,32 @@ class Agent:
             self.settings.permission_mode, prompter=prompter
         )
         self.hook_manager = hook_manager or HookManager()
+
+        # Delegation (M4), opt-in. When enabled, the parent gets the ``task`` tool and
+        # a shared :class:`IterationBudget`, and a :class:`SubAgentManager` is placed
+        # on the loop so ``task`` can launch sub-agents. Sub-agents are built (in the
+        # runner) with a task-FREE registry and NO spawner, so one-level nesting is
+        # structural: a child can neither see nor call ``task``. Disabled by default,
+        # so an ordinary ``Agent`` is byte-for-byte unchanged.
+        shared_budget = budget
+        spawner = None
+        if enable_subagents:
+            from zakcode.agent.subagent import GENERAL_PURPOSE, SubAgentManager, SubAgentRunner
+            from zakcode.tools.builtins.task import TaskTool
+
+            shared_budget = budget or IterationBudget(self.settings.max_iterations)
+            runner = SubAgentRunner(
+                provider=self.provider,
+                registry=default_registry(),  # task-free registry for children
+                settings=self.settings,
+                budget=shared_budget,
+                permission_policy=self.permission_policy,
+                hook_manager=self.hook_manager,
+                workspace_root=self.settings.workspace_root,
+            )
+            spawner = SubAgentManager(runner, [GENERAL_PURPOSE], default=GENERAL_PURPOSE.name)
+            self.registry.register(TaskTool())
+
         self.loop = AgentLoop(
             self.provider,
             self.registry,
@@ -81,7 +111,8 @@ class Agent:
             workspace_root=self.settings.workspace_root,
             permission_policy=self.permission_policy,
             hook_manager=self.hook_manager,
-            budget=budget,
+            budget=shared_budget,
+            spawner=spawner,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:

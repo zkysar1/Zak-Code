@@ -172,9 +172,48 @@ class SubAgentRunner:
         )
 
 
+class SubAgentManager:
+    """A concrete :class:`~zakcode.tools.base.SubAgentSpawner` over a runner + type table.
+
+    Maps named sub-agent *types* (a registry of :class:`SubAgentDefinition`) to the
+    :class:`SubAgentRunner` that launches them. This is the object the ``Agent``
+    facade places on the loop so the ``task`` tool can delegate. One named type is
+    the explicit default (returned by :meth:`default_type`), so the ``task`` tool
+    never has to guess from list ordering.
+    """
+
+    def __init__(
+        self,
+        runner: SubAgentRunner,
+        definitions: list[SubAgentDefinition],
+        *,
+        default: str,
+    ) -> None:
+        if not definitions:
+            raise ValueError("a SubAgentManager needs at least one sub-agent definition")
+        self._runner = runner
+        self._defs: dict[str, SubAgentDefinition] = {d.name: d for d in definitions}
+        if default not in self._defs:
+            raise ValueError(f"default type {default!r} is not among the definitions")
+        self._default = default
+
+    async def spawn(self, *, type_name: str, prompt: str) -> SubAgentResult:
+        definition = self._defs.get(type_name)
+        if definition is None:
+            raise KeyError(f"unknown sub-agent type {type_name!r}")
+        return await self._runner.run(definition, prompt)
+
+    def available_types(self) -> list[str]:
+        return list(self._defs)
+
+    def default_type(self) -> str:
+        return self._default
+
+
 __all__ = [
     "SubAgentDefinition",
     "SubAgentResult",
     "SubAgentRunner",
+    "SubAgentManager",
     "GENERAL_PURPOSE",
 ]
