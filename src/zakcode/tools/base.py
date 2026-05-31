@@ -179,6 +179,24 @@ class ToolRegistry:
         except Exception as exc:  # noqa: BLE001 — handlers must never crash the loop
             return ToolResult.error(f"{type(exc).__name__}: {exc}")
 
+    def subset(self, names: list[str]) -> ToolRegistry:
+        """Return a new registry exposing only ``names`` (canonical names or aliases).
+
+        The returned registry shares the *same* tool instances (tools are stateless
+        handlers) but exposes a restricted set — the mechanism behind a sub-agent's
+        "filtered tool access" (M4). Unknown names are silently skipped, so a caller
+        can pass an over-broad allow-list without error; an alias resolves to its
+        canonical tool, and that tool's original aliases are preserved in the subset.
+        Order follows this registry's registration order, not the ``names`` order.
+        """
+        wanted = {self._canonical(n) for n in names}
+        sub = ToolRegistry()
+        for canonical, tool in self._tools.items():
+            if canonical in wanted:
+                aliases = [a for a, target in self._aliases.items() if target == canonical]
+                sub.register(tool, aliases=aliases)
+        return sub
+
 
 __all__ = [
     "ConcurrencyClass",
