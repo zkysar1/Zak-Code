@@ -10,6 +10,7 @@ sub-agent delegation will rely on.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -33,7 +34,13 @@ from zakcode.usage import Usage
 
 class _AlwaysToolProvider(Provider):
     """Always requests a (harmless) tool call, so the turn only ever ends on a
-    cap/budget bound — never on a natural ``completed``."""
+    cap/budget bound — never on a natural ``completed``.
+
+    Each call carries a *distinct* argument (the running call index) so the loop's
+    doom-loop guard — which stops on three byte-identical tool-call batches in a
+    row — never fires; that isolates the iteration *budget/cap* as the sole stop
+    condition under test.
+    """
 
     def __init__(self) -> None:
         self.calls = 0
@@ -44,7 +51,7 @@ class _AlwaysToolProvider(Provider):
         self.calls += 1
         return LLMResult(
             text="",
-            tool_calls=[ToolCall(id=f"c{self.calls}", name="noop", arguments={})],
+            tool_calls=[ToolCall(id=f"c{self.calls}", name="noop", arguments={"n": self.calls})],
             usage=Usage(total_tokens=1),
         )
 
@@ -52,7 +59,12 @@ class _AlwaysToolProvider(Provider):
         self, messages: list, *, tools: list | None = None, system: str | None = None
     ) -> AsyncIterator[ProviderStreamEvent]:
         self.calls += 1
-        yield StreamToolCallDelta(index=0, id=f"c{self.calls}", name="noop", arguments_delta="{}")
+        yield StreamToolCallDelta(
+            index=0,
+            id=f"c{self.calls}",
+            name="noop",
+            arguments_delta=json.dumps({"n": self.calls}),
+        )
         yield StreamDone()
 
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
