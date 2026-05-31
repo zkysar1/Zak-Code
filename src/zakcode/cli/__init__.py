@@ -95,6 +95,7 @@ _CHAT_HELP = """\
   /cost          show cumulative token usage and cost this session
   /agents        list the sub-agent types available for delegation
   /plan <task>   draft a plan with the read-only planner (does not execute)
+  /mcp [connect] list MCP servers, or connect them and register their tools
   /clear         start a fresh session (clears the transcript)
   /exit, /quit   leave the chat
 Anything else is sent to the agent as a turn.\
@@ -344,7 +345,7 @@ def chat(
     # so 'ask' mode is usable interactively (rather than failing closed). The gate
     # itself still lives in the core; the CLI only renders the prompt.
     prompter = ConsolePermissionPrompter(console)
-    agent = Agent(prompter=prompter, enable_subagents=True, **overrides)
+    agent = Agent(prompter=prompter, enable_subagents=True, enable_mcp=True, **overrides)
     _print_banner(console, agent)
 
     while True:
@@ -376,7 +377,9 @@ def chat(
                 _render_hooks(console, agent)
                 continue
             if command == "/clear":
-                agent = Agent(prompter=prompter, enable_subagents=True, **overrides)
+                agent = Agent(
+                    prompter=prompter, enable_subagents=True, enable_mcp=True, **overrides
+                )
                 console.print("[dim]Started a fresh session.[/dim]")
                 continue
             if command == "/cost":
@@ -387,6 +390,15 @@ def chat(
                     f"total={usage.total_tokens} "
                     f"cost=${usage.cost_usd:.4f}[/dim]"
                 )
+                continue
+            if command == "/agents":
+                _render_agents(console, agent)
+                continue
+            if command == "/plan":
+                _run_plan(console, agent, stripped[len("/plan") :].strip())
+                continue
+            if command == "/mcp":
+                _render_mcp(console, agent, stripped[len("/mcp") :].strip())
                 continue
             console.print(f"[dim]{command} is not yet supported.[/dim]")
             continue

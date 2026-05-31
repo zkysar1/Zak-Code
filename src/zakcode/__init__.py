@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.loop import AgentLoop, TurnResult
@@ -28,6 +28,13 @@ from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
+
+if TYPE_CHECKING:
+    # Type-only imports for MCP annotations. Kept out of the runtime import graph so
+    # importing ``zakcode`` never pulls in the MCP subsystem; the concrete imports
+    # happen inside ``__init__`` only when ``enable_mcp=True``.
+    from zakcode.mcp.config import McpServerConfig
+    from zakcode.mcp.manager import DiscoveryReport, ExtensionManager
 
 __all__ = ["Agent", "AgentLoop", "IterationBudget", "Message", "TurnResult", "__version__"]
 

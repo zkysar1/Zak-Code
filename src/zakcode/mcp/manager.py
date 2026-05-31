@@ -17,14 +17,21 @@ import contextlib
 import hashlib
 import json
 import re
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
 from zakcode.config import PermissionTier
 from zakcode.mcp.client import McpCallResult, MCPClient, McpToolDef
 from zakcode.mcp.config import McpConfigError, McpServerConfig, build_transport
-from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
+from zakcode.tools.base import (
+    ConcurrencyClass,
+    Tool,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+    ToolSpec,
+)
 
 #: MCP tool names must match ``^[a-zA-Z0-9_-]{1,64}$``; we enforce the charset + length.
 MAX_TOOL_NAME_LEN = 64
