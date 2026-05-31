@@ -353,7 +353,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M6 — Plugins (P2) — ✅ DONE (2026-05-31, commits `8f72972`…`4c470f9`)
+### M6 — Plugins (P2) — ✅ DONE (2026-05-31, commits `8f72972`…`e9b5f34`)
 
 > **Status: shipped (Python plugin path).** A plugin is a `plugin.json` manifest + a `register(ctx)`
 > entrypoint that contributes tools/hooks/commands through a **narrow** `PluginContext` — never
