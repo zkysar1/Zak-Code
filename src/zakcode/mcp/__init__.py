@@ -17,6 +17,13 @@ subprocess or touches the network.
 from __future__ import annotations
 
 from zakcode.mcp.client import McpCallResult, MCPClient, McpToolDef
+from zakcode.mcp.config import (
+    McpConfigError,
+    McpServerConfig,
+    build_transport,
+    discover_config,
+    load_mcp_config,
+)
 from zakcode.mcp.jsonrpc import JSONRPCError, MCPError, MCPProtocolError
 from zakcode.mcp.manager import (
     DiscoveryReport,
@@ -43,4 +50,9 @@ __all__ = [
     "DiscoveryReport",
     "qualified_tool_name",
     "parse_qualified_name",
+    "McpServerConfig",
+    "McpConfigError",
+    "build_transport",
+    "load_mcp_config",
+    "discover_config",
 ]
