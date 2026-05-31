@@ -19,6 +19,7 @@ from rich.table import Table
 
 from zakcode.cli.render import StreamRenderer
 from zakcode.config import Settings, load_settings
+from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
 from zakcode.version import __version__
 
@@ -86,11 +87,84 @@ _CHAT_HELP = """\
 [bold]Slash commands[/bold]
   /help          show this help
   /model         show the active model
+  /permissions   show the permission mode and session grants
+  /hooks         list configured lifecycle hooks
   /cost          show cumulative token usage and cost this session
   /clear         start a fresh session (clears the transcript)
   /exit, /quit   leave the chat
 Anything else is sent to the agent as a turn.\
 """
+
+
+def _abbrev(value: object, *, limit: int = 80) -> str:
+    """One-line, length-capped rendering of an argument value for a prompt."""
+    text = str(value).replace("\n", " ").replace("\r", " ")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+class ConsolePermissionPrompter:
+    """Asks the operator to confirm an escalated tool call at the terminal.
+
+    Implements the :class:`~zakcode.permissions.PermissionPrompter` protocol. It
+    shows the tool, the *exact* arguments (so the operator approves the real action,
+    not a summary — see ``docs/GUARDRAILS.md`` §3), and the reason it was escalated,
+    then offers allow-once / allow-session / deny. A non-interactive or
+    unrecognized answer defaults to **deny** (fail toward safe).
+    """
+
+    def __init__(self, console: Console) -> None:
+        self.console = console
+
+    async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
+        self.console.print()
+        self.console.print(
+            f"[yellow]⚠ permission required[/yellow] for "
+            f"[bold]{request.tool_name}[/bold] [dim]({request.tier.name})[/dim]"
+        )
+        if request.reason:
+            self.console.print(f"  [dim]{request.reason}[/dim]")
+        for key, val in request.arguments.items():
+            self.console.print(f"  [dim]{key}=[/dim]{_abbrev(val)}")
+        self.console.print("  [dim]allow once [y] · allow for session [a] · deny [n][/dim]")
+        try:
+            answer = self.console.input("  [bold cyan]permit?[/bold cyan] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("  [dim]denied[/dim]")
+            return PermissionOutcome.DENY_ONCE
+
+        if answer in ("y", "yes"):
+            return PermissionOutcome.ALLOW_ONCE
+        if answer in ("a", "always", "session"):
+            return PermissionOutcome.ALLOW_SESSION
+        return PermissionOutcome.DENY_ONCE
+
+
+def _render_permissions(console: Console, agent: Agent) -> None:
+    """Render the active permission mode and any session grants (the /permissions cmd)."""
+    policy = agent.permission_policy
+    console.print(f"[dim]permission mode[/dim]  {policy.mode.value}")
+    allow = sorted(policy._session_allow)
+    deny = sorted(policy._session_deny)
+    console.print(f"[dim]session allow[/dim]    {len(allow)} grant(s)")
+    for key in allow:
+        console.print(f"    [green]+[/green] {key}")
+    console.print(f"[dim]session deny[/dim]     {len(deny)} block(s)")
+    for key in deny:
+        console.print(f"    [red]-[/red] {key}")
+
+
+def _render_hooks(console: Console, agent: Agent) -> None:
+    """List configured lifecycle hooks (the /hooks cmd)."""
+    manager = agent.hook_manager
+    shell = manager.shell_hooks
+    in_proc = sum(len(v) for v in manager.in_process.values())
+    if not shell and not in_proc:
+        console.print("[dim]no hooks configured.[/dim]")
+        return
+    for spec in shell:
+        console.print(f"[dim]{spec.event.value}[/dim] [{spec.matcher}] -> {' '.join(spec.command)}")
+    if in_proc:
+        console.print(f"[dim]{in_proc} in-process hook(s) registered.[/dim]")
 
 
 def _print_banner(console: Console, agent: Agent) -> None:
@@ -167,7 +241,11 @@ def chat(
     if workspace:
         overrides["workspace_root"] = workspace
 
-    agent = Agent(**overrides)
+    # A console prompter lets the in-core permission gate escalate to the operator,
+    # so 'ask' mode is usable interactively (rather than failing closed). The gate
+    # itself still lives in the core; the CLI only renders the prompt.
+    prompter = ConsolePermissionPrompter(console)
+    agent = Agent(prompter=prompter, **overrides)
     _print_banner(console, agent)
 
     while True:
@@ -192,8 +270,14 @@ def chat(
             if command == "/model":
                 console.print(agent.settings.default_model)
                 continue
+            if command == "/permissions":
+                _render_permissions(console, agent)
+                continue
+            if command == "/hooks":
+                _render_hooks(console, agent)
+                continue
             if command == "/clear":
-                agent = Agent(**overrides)
+                agent = Agent(prompter=prompter, **overrides)
                 console.print("[dim]Started a fresh session.[/dim]")
                 continue
             if command == "/cost":

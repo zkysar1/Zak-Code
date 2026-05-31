@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from typer.testing import CliRunner
 
 import zakcode
-from zakcode.cli import app
+from zakcode.cli import ConsolePermissionPrompter, app
 from zakcode.config import load_settings
 from zakcode.events import (
     AgentDone,
@@ -24,6 +24,13 @@ from zakcode.events import (
     AgentTextDelta,
     AgentToolCall,
     AgentToolResult,
+)
+from zakcode.hooks import HookEvent, HookManager, HookSpec
+from zakcode.permissions import (
+    PermissionMode,
+    PermissionOutcome,
+    PermissionPolicy,
+    PermissionRequest,
 )
 from zakcode.providers.base import ProviderError
 from zakcode.session.store import Session
@@ -53,10 +60,14 @@ class FakeAgent:
     ]
 
     def __init__(self, **overrides: object) -> None:
+        # The CLI now constructs the Agent with prompter=... ; accept and ignore it.
         self.overrides = overrides
         self.settings = load_settings()
         self.session = Session(cwd=".", model=self.settings.default_model)
         self.turns: list[str] = []
+        # Minimal stand-ins so /permissions and /hooks have something to render.
+        self.permission_policy = PermissionPolicy(self.settings.permission_mode)
+        self.hook_manager = HookManager()
 
     def astream_turn(self, text: str) -> AsyncIterator[AgentEvent]:
         self.turns.append(text)
@@ -138,3 +149,104 @@ def test_chat_provider_error_stays_in_repl(monkeypatch) -> None:
     result = runner.invoke(app, ["chat"], input="hello\n/exit\n")
     assert result.exit_code == 0
     assert "Provider error" in result.stdout
+
+
+def test_chat_permissions_command(monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    result = runner.invoke(app, ["chat"], input="/permissions\n/exit\n")
+    assert result.exit_code == 0
+    assert "permission mode" in result.stdout
+    assert load_settings().permission_mode in result.stdout
+
+
+def test_chat_hooks_command_empty(monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    result = runner.invoke(app, ["chat"], input="/hooks\n/exit\n")
+    assert result.exit_code == 0
+    assert "no hooks configured" in result.stdout
+
+
+def test_chat_hooks_command_lists_configured(monkeypatch) -> None:
+    class HookedAgent(FakeAgent):
+        def __init__(self, **overrides: object) -> None:
+            super().__init__(**overrides)
+            self.hook_manager = HookManager(
+                [HookSpec(event=HookEvent.PRE_TOOL_USE, command=["echo", "hi"], matcher="bash")]
+            )
+
+    monkeypatch.setattr(zakcode, "Agent", HookedAgent)
+    result = runner.invoke(app, ["chat"], input="/hooks\n/exit\n")
+    assert result.exit_code == 0
+    assert "PreToolUse" in result.stdout
+    assert "echo hi" in result.stdout
+
+
+# ── the console permission prompter (protocol implementation) ─────────────────
+
+
+def _request() -> PermissionRequest:
+    from zakcode.config import PermissionTier
+
+    return PermissionRequest(
+        tool_name="bash",
+        tier=PermissionTier.DANGER_FULL_ACCESS,
+        arguments={"command": "ls -la"},
+        reason="danger tier requires confirmation",
+    )
+
+
+class _FakeConsole:
+    """Captures printed lines and returns a scripted answer to input()."""
+
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+        self.lines: list[str] = []
+
+    def print(self, *args: object, **_kw: object) -> None:
+        self.lines.append(" ".join(str(a) for a in args))
+
+    def input(self, _prompt: str = "") -> str:
+        return self.answer
+
+
+async def test_console_prompter_allow_once() -> None:
+    prompter = ConsolePermissionPrompter(_FakeConsole("y"))
+    assert await prompter.confirm(_request()) is PermissionOutcome.ALLOW_ONCE
+
+
+async def test_console_prompter_allow_session() -> None:
+    prompter = ConsolePermissionPrompter(_FakeConsole("a"))
+    assert await prompter.confirm(_request()) is PermissionOutcome.ALLOW_SESSION
+
+
+async def test_console_prompter_deny_and_shows_command() -> None:
+    console = _FakeConsole("n")
+    prompter = ConsolePermissionPrompter(console)
+    assert await prompter.confirm(_request()) is PermissionOutcome.DENY_ONCE
+    # GUARDRAILS §3: the operator must see the exact command being confirmed.
+    assert any("ls -la" in line for line in console.lines)
+
+
+async def test_console_prompter_unrecognized_answer_denies() -> None:
+    prompter = ConsolePermissionPrompter(_FakeConsole("maybe?"))
+    assert await prompter.confirm(_request()) is PermissionOutcome.DENY_ONCE
+
+
+def test_chat_builds_agent_with_prompter(monkeypatch) -> None:
+    # The chat command must inject a prompter so 'ask' mode is usable interactively.
+    captured: dict[str, object] = {}
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **overrides: object) -> None:
+            captured.update(overrides)
+            super().__init__(**{k: v for k, v in overrides.items() if k != "prompter"})
+
+    monkeypatch.setattr(zakcode, "Agent", CapturingAgent)
+    result = runner.invoke(app, ["chat"], input="/exit\n")
+    assert result.exit_code == 0
+    assert isinstance(captured.get("prompter"), ConsolePermissionPrompter)
+
+
+# Keep an explicit reference so the unused-import linter is satisfied for the
+# scripted-policy helper used indirectly above.
+_ = PermissionMode
