@@ -418,7 +418,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M8 — Advanced context compaction (P1/P2) — ✅ DONE (commits `e5b549c`, `9aef1ed`, `96ec1cb`)
+### M8 — Advanced context compaction (P1/P2) — ✅ DONE (commits `e5b549c`, `61f936c`, `5fc00dd`, `2d9ad33`)
 
 Auto-compaction shipped: `src/zakcode/agent/compact.py` `Compactor` triggers at a configurable
 fraction (default 0.8) of the **real** context window (`provider.capabilities().context_window` +

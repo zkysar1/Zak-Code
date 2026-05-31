@@ -98,6 +98,7 @@ _CHAT_HELP = """\
   /mcp [connect] list MCP servers, or connect them and register their tools
   /plugins       list discovered plugins (loaded / skipped / failed)
   /skills        list discovered skills (invoke one with /<skill-name>)
+  /compact       summarize older history now to free up context
   /clear         start a fresh session (clears the transcript)
   /exit, /quit   leave the chat
 Anything else is sent to the agent as a turn.\
@@ -428,6 +429,7 @@ def _build_chat_agent(prompter: ConsolePermissionPrompter, overrides: dict[str, 
         enable_plugins=True,
         trusted_plugins=trusted,
         enable_skills=True,
+        enable_compaction=True,
         **overrides,
     )
 
@@ -531,6 +533,14 @@ def chat(
                 continue
             if command == "/skills":
                 _render_skills(console, agent)
+                continue
+            if command == "/compact":
+                did = asyncio.run(agent.loop.compact_now())
+                console.print(
+                    "[dim]compacted older history into a summary.[/dim]"
+                    if did
+                    else "[dim]nothing to compact yet.[/dim]"
+                )
                 continue
             # A bare /<skill-name> invokes a discovered skill (loads its body).
             if _invoke_skill(console, agent, command.lstrip("/")):
