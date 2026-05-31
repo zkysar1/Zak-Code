@@ -310,7 +310,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M5 — MCP client (extensions) (P1) — ✅ DONE (2026-05-31, commits `48f109b`…`6a3f1bc`)
+### M5 — MCP client (extensions) (P1) — ✅ DONE (2026-05-31, commits `48f109b`…`6005f9d`)
 
 > **Status: shipped.** Zak Code is now an MCP host. A clean-room, no-SDK client speaks
 > newline-delimited JSON-RPC 2.0 over a pluggable transport (`mcp/jsonrpc.py`, `mcp/transport.py`
