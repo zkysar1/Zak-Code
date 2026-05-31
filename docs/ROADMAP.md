@@ -306,7 +306,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 3. Build Plan Mode with schema-filtered planner; wire `/plan`, `/agents`.
 4. `/code-review`; behavioral tests; update docs.
 
-**Definition of done:** delegation + parallel fan-out work, plan/execute is schema-enforced and approval-gated, tests pass, docs updated.
+**Definition of done:** delegation + parallel fan-out work, plan mode is schema-enforced (the planner's write tools are absent from its schema), tests pass, docs updated. _Shipped scope note: `/plan` drafts and prints a read-only plan (it is never auto-executed); a formal editable-artifact + approval→execute handoff is deferred (tracked in `RISKS.md`)._
 
 ---
 
