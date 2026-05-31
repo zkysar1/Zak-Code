@@ -69,7 +69,7 @@ groups are listed individually; pure helpers are noted at the end).
 > **`list_dir`** convenience tool. All are workspace-scoped (path-escape-rejecting), never
 > raise (errors → structured `ToolResult`), and run through the live `AgentLoop`.
 >
-> **M1 delivered (2026-05-30, commits `948eada`…`7900327`).** Added the deferred
+> **M1 delivered (2026-05-30, commits `948eada`…`4c6f9a4`).** Added the deferred
 > **`edit_file`** (≈ FileEditTool — exact-string replace, unique-match-or-error, `replace_all`,
 > atomic), plus live **streaming** end to end: `LiteLLMProvider.astream` → typed `AgentEvent`
 > loop stream → fence-safe rich TUI; `zakcode chat` streams by default with cooperative Ctrl-C

@@ -136,7 +136,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M1 — Streaming + rich TUI (P1) — ✅ DONE (2026-05-30, commits `948eada`…`7900327`)
+### M1 — Streaming + rich TUI (P1) — ✅ DONE (2026-05-30, commits `948eada`…`4c6f9a4`)
 
 > **Status: shipped.** Live token streaming end to end (`LiteLLMProvider.astream` →
 > `ToolCallAccumulator` reassembles tool-call arg fragments by index → `AgentLoop.astream_turn`
@@ -144,7 +144,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 > rich `StreamRenderer`, `zakcode chat` streaming by default with **Ctrl-C cancelling the
 > in-flight turn cleanly**, and the deferred exact-string **`edit_file`** tool. Final green state
 > **288 tests pass + 1 skipped; ruff + mypy clean.** Feature commit `948eada`; integration
-> follow-ups `2de36e9`/`7900327` (the feature commit briefly went in red — a duplicate
+> follow-ups `2de36e9`/`4c6f9a4` (the feature commit briefly went in red — a duplicate
 > `Agent.astream_turn` and a stale registry test — both caught by the orchestrator's independent
 > verification and fixed, with a facade regression test added). Next: **M2 — permissions + hooks.**
 
