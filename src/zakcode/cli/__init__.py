@@ -96,6 +96,7 @@ _CHAT_HELP = """\
   /agents        list the sub-agent types available for delegation
   /plan <task>   draft a plan with the read-only planner (does not execute)
   /mcp [connect] list MCP servers, or connect them and register their tools
+  /plugins       list discovered plugins (loaded / skipped / failed)
   /clear         start a fresh session (clears the transcript)
   /exit, /quit   leave the chat
 Anything else is sent to the agent as a turn.\
@@ -251,6 +252,33 @@ def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
     console.print("[dim]use /mcp connect to spawn servers and register their tools.[/dim]")
 
 
+def _render_plugins(console: Console, agent: Agent) -> None:
+    """List discovered plugins: what loaded, was skipped, or failed (the /plugins cmd)."""
+    report = agent.plugin_report
+    errors = agent.plugin_discovery_errors
+    if report is None:
+        console.print("[dim]plugins are not enabled for this session.[/dim]")
+        return
+    if not report.loaded and not report.skipped and not report.failed and not errors:
+        console.print("[dim]no plugins discovered.[/dim]")
+        return
+    for name in report.loaded:
+        contrib = report.contributions.get(name, {})
+        parts = [
+            f"{len(contrib.get(kind, []))} {kind}"
+            for kind in ("tools", "commands", "hooks")
+            if contrib.get(kind)
+        ]
+        suffix = f" [dim]({', '.join(parts)})[/dim]" if parts else ""
+        console.print(f"  [green]✓[/green] {name}{suffix}")
+    for name, reason in report.skipped.items():
+        console.print(f"  [yellow]–[/yellow] {name} [dim]({reason})[/dim]")
+    for name, err in report.failed.items():
+        console.print(f"  [red]✗[/red] {name} [dim]({err})[/dim]")
+    for name, err in errors.items():
+        console.print(f"  [red]✗[/red] {name} [dim](discovery: {err})[/dim]")
+
+
 def _print_banner(console: Console, agent: Agent) -> None:
     """Print the one-shot session banner (model, provider, workspace, perms)."""
     settings = agent.settings
@@ -389,7 +417,13 @@ def chat(
     # so 'ask' mode is usable interactively (rather than failing closed). The gate
     # itself still lives in the core; the CLI only renders the prompt.
     prompter = ConsolePermissionPrompter(console)
-    agent = Agent(prompter=prompter, enable_subagents=True, enable_mcp=True, **overrides)
+    agent = Agent(
+        prompter=prompter,
+        enable_subagents=True,
+        enable_mcp=True,
+        enable_plugins=True,
+        **overrides,
+    )
     _print_banner(console, agent)
 
     while True:
