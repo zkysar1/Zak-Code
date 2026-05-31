@@ -53,12 +53,28 @@ RegisterFn = Callable[["PluginContext"], None]
 
 @dataclass
 class Plugin:
-    """A discovered plugin: its manifest plus the resolved ``register`` callable."""
+    """A discovered plugin: its manifest plus a way to obtain its ``register`` callable.
+
+    Either ``register`` (already resolved — entry points and tests) or ``loader`` (a
+    thunk that imports + returns it — directory plugins) is set. Directory plugins use
+    ``loader`` so the plugin's **module is not imported until the trust gate passes**
+    (importing runs top-level code, a code-exec vector for an untrusted workspace
+    plugin). :meth:`resolve` does that step; callers invoke it only after trust+enable.
+    """
 
     manifest: PluginManifest
-    register: RegisterFn
+    register: RegisterFn | None = None
+    loader: Callable[[], RegisterFn] | None = None
     #: Where it came from (directory path or entry-point name) — for provenance.
     origin: str = ""
+
+    def resolve(self) -> RegisterFn:
+        """Return the ``register`` callable, importing the module now if it was lazy."""
+        if self.register is not None:
+            return self.register
+        if self.loader is not None:
+            return self.loader()
+        raise ValueError(f"plugin {self.manifest.name!r} has neither register nor loader")
 
 
 class PluginContext:

@@ -428,8 +428,6 @@ def chat(
         _run_server_chat(server, model)
         return
 
-    from zakcode import Agent
-
     overrides: dict[str, Any] = {}
     if model:
         overrides["default_model"] = model
@@ -496,8 +494,15 @@ def chat(
             if command == "/plugins":
                 _render_plugins(console, agent)
                 continue
-            # Fall through to plugin-registered commands before giving up.
-            cmd_result = agent.command_registry.run(command, stripped[len(command) :].strip())
+            # Fall through to plugin-registered commands before giving up. ``getattr``
+            # because the live agent may be any AgentLike (a thin/remote one without a
+            # command registry); a missing registry just means no plugin commands.
+            registry = getattr(agent, "command_registry", None)
+            cmd_result = (
+                registry.run(command, stripped[len(command) :].strip())
+                if registry is not None
+                else None
+            )
             if cmd_result is not None:
                 style = "red" if cmd_result.is_error else ""
                 console.print(
