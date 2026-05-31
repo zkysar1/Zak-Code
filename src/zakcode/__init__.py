@@ -30,11 +30,12 @@ from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
 
 if TYPE_CHECKING:
-    # Type-only imports for MCP annotations. Kept out of the runtime import graph so
-    # importing ``zakcode`` never pulls in the MCP subsystem; the concrete imports
-    # happen inside ``__init__`` only when ``enable_mcp=True``.
+    # Type-only imports for MCP/plugin annotations. Kept out of the runtime import
+    # graph so importing ``zakcode`` never pulls in those subsystems; the concrete
+    # imports happen inside ``__init__`` only when the feature is enabled.
     from zakcode.mcp.config import McpServerConfig
     from zakcode.mcp.manager import DiscoveryReport, ExtensionManager
+    from zakcode.plugins import PluginLoadReport
 
 __all__ = ["Agent", "AgentLoop", "IterationBudget", "Message", "TurnResult", "__version__"]
 
@@ -67,6 +68,8 @@ class Agent:
         mcp_servers: list[McpServerConfig] | None = None,
         mcp_command_allowlist: list[str] | None = None,
         mcp_tool_budget: int | None = None,
+        enable_plugins: bool = False,
+        trusted_plugins: list[str] | None = None,
         **setting_overrides: Any,
     ) -> None:
         from zakcode.providers.litellm_provider import LiteLLMProvider
@@ -87,6 +90,11 @@ class Agent:
             self.settings.permission_mode, prompter=prompter
         )
         self.hook_manager = hook_manager or HookManager()
+        # Slash-command registry (M6) — plugins register commands here; clients
+        # (the CLI) consult it for any slash command they do not handle themselves.
+        from zakcode.commands import CommandRegistry
+
+        self.command_registry = CommandRegistry()
 
         # Delegation (M4), opt-in. When enabled, the parent gets the ``task`` tool and
         # a shared :class:`IterationBudget`, and a :class:`SubAgentManager` is placed
@@ -146,6 +154,32 @@ class Agent:
             # tool_search lets the model surface MCP tools that the budget kept hidden;
             # it holds the live registry so activations are visible to the next turn.
             self.registry.register(ToolSearchTool(self.registry, budget=self._mcp_tool_budget))
+
+        # Plugins (M6), opt-in. Discover plugins (project + user dirs + entry points)
+        # and run each trusted+enabled one's register(ctx) against the live
+        # registry/hooks/commands. Trust is explicit: a plugin runs only if its
+        # manifest is trusted, which ``trusted_plugins`` (an allowlist) grants by name.
+        # Discovery + load are synchronous and side-effect-light (importing a module +
+        # calling register), so they run here; a bad plugin is recorded, never fatal.
+        self.plugin_report: PluginLoadReport | None = None
+        self.plugin_discovery_errors: dict[str, str] = {}
+        if enable_plugins:
+            from zakcode.plugins import PluginManager
+            from zakcode.plugins.discovery import discover_plugins
+
+            trusted = set(trusted_plugins or [])
+            found, self.plugin_discovery_errors = discover_plugins(
+                self.settings.workspace_root, trusted_names=trusted
+            )
+            manager = PluginManager()
+            for plugin in found:
+                manager.add(plugin)
+            self.plugin_report = manager.load_into(
+                registry=self.registry,
+                hook_manager=self.hook_manager,
+                command_registry=self.command_registry,
+                settings=self.settings,
+            )
 
         self.loop = AgentLoop(
             self.provider,
