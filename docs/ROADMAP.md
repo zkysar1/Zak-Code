@@ -232,7 +232,7 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 > client. **The parity exit criterion is met:** in-process vs over-server transcripts are
 > byte-identical once serialized (test-verified). **401 tests pass, 1 skipped; ruff + format + mypy clean.**
 >
-> **M3-hardening (2026-05-31, commits `8d8f9a8`/`9f1b8c4`/`1c4d2f7`)** — acted on two independent
+> **M3-hardening (2026-05-31, commits `2bccb74`/`c386f78`/`2fb7cff`)** — acted on two independent
 > fresh-eyes reviews (no blockers). (A) `Settings.api_key` is now `exclude=True` so `/config`
 > cannot leak a secret by serialization; (B) a per-request `model` override preserves the operator's
 > permission/workspace posture (model-only `model_copy`) and server agents get the `SessionStore`
