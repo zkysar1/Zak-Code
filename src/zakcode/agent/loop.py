@@ -329,7 +329,10 @@ class AgentLoop:
         tool_defs = self.registry.definitions()
         ctx = ToolContext(workspace_root=self.workspace_root)
 
-        while iterations < self.max_iterations:
+        while True:
+            if not self._grant_iteration(iterations):
+                stop_reason = "max_iterations"
+                break
             iterations += 1
             system = self._build_system()
 
@@ -440,7 +443,10 @@ class AgentLoop:
         ctx = ToolContext(workspace_root=self.workspace_root)
 
         try:
-            while iterations < self.max_iterations:
+            while True:
+                if not self._grant_iteration(iterations):
+                    stop_reason = "max_iterations"
+                    break
                 iterations += 1
                 system = self._build_system()
 
