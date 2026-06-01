@@ -26,6 +26,7 @@ from zakcode.events import AgentEvent
 from zakcode.hooks import HookManager
 from zakcode.messages import Message
 from zakcode.permissions import PermissionPolicy, PermissionPrompter
+from zakcode.providers.base import Provider
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
@@ -58,6 +59,7 @@ class Agent:
         self,
         *,
         settings: Settings | None = None,
+        provider: Provider | None = None,
         session: Session | None = None,
         session_store: SessionStore | None = None,
         prompt_builder: SystemPromptBuilder | None = None,
@@ -76,10 +78,17 @@ class Agent:
         enable_compaction: bool = False,
         **setting_overrides: Any,
     ) -> None:
-        from zakcode.providers.litellm_provider import LiteLLMProvider
-
         self.settings = settings or load_settings(**setting_overrides)
-        self.provider = LiteLLMProvider(self.settings)
+        # The provider is normally built from settings (litellm — the one vendor seam),
+        # but a caller may inject any ``Provider`` (the eval harness drives the loop with
+        # a no-network ScriptedProvider this way). Importing litellm lazily keeps the
+        # vendor SDK out of the import graph when an explicit provider is supplied.
+        if provider is not None:
+            self.provider = provider
+        else:
+            from zakcode.providers.litellm_provider import LiteLLMProvider
+
+            self.provider = LiteLLMProvider(self.settings)
         self.registry = default_registry()
         self.store = session_store
         self.session = session or Session(
