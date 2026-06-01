@@ -394,7 +394,17 @@ Each milestone defines **Goal**, **Scope** (deliverables), **Exit criteria** (te
 
 ---
 
-### M7 — Skills (P2)
+### M7 — Skills (P2) — ✅ DONE (commits `302edaa`, `c4700dd`, green-fix `1e5a7d5`)
+
+Progressive-disclosure skills shipped: `src/zakcode/skills/__init__.py` parses `SKILL.md` frontmatter
+(hand-rolled YAML subset — no PyYAML dependency) with three disclosure levels — L0 (name+description)
+folded into the cacheable system-prompt tier, L1 (body) read lazily only on invocation (`body_loaded`
+stays False until used), L2 (sibling files) reachable from the skill directory. `discover_skills`
+merges bundled → user (`~/.config/zakcode/skills`) → project (`.zakcode/skills`), project overriding;
+a malformed `SKILL.md` is recorded and skipped, never raised. `Agent(enable_skills=True)` wires the
+registry; the CLI adds `/skills` (list) and bare `/<skill-name>` (invoke → injects the body as a
+cache-safe next-turn user message). Tests: `tests/test_skills.py`, `tests/test_skills_facade.py`.
+Deferred: an autonomous skill-authoring curator.
 
 **Goal:** Progressive-disclosure, markdown-defined skills (manually authored first).
 

@@ -85,6 +85,20 @@ def test_invoke_skill_injects_body(tmp_path: Path) -> None:
     assert "loaded skill" in buf.getvalue()
 
 
+def test_invoke_skill_body_unreadable_is_handled(tmp_path: Path) -> None:
+    # A skill discovered at startup whose SKILL.md vanishes before invocation must not
+    # crash the REPL: _invoke_skill reports the error and returns True (it WAS a skill).
+    _write_skill(tmp_path, "g")
+    agent = _agent(tmp_path, enable_skills=True)
+    (tmp_path / ".zakcode" / "skills" / "g" / "SKILL.md").unlink()
+    before = len(agent.session.messages)
+    console, buf = _console()
+    handled = _invoke_skill(console, agent, "greeter")
+    assert handled is True  # still a skill name; do not fall through to plugin dispatch
+    assert len(agent.session.messages) == before  # nothing injected
+    assert "could not load skill" in buf.getvalue()
+
+
 def test_invoke_unknown_skill_returns_false(tmp_path: Path) -> None:
     agent = _agent(tmp_path, enable_skills=True)
     console, _ = _console()

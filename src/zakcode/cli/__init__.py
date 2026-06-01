@@ -306,7 +306,13 @@ def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
         return False
     from zakcode.messages import Message
 
-    body = skill.body()
+    # The body is read here (lazily). The file may have changed/vanished since
+    # discovery, so failing to read it must not crash the REPL — report and move on.
+    try:
+        body = skill.body()
+    except Exception as exc:  # noqa: BLE001 — a bad skill file is a UX error, not a crash
+        console.print(f"[red]could not load skill [bold]{skill.name}[/bold]: {exc}[/red]")
+        return True
     agent.session.add_message(Message.user(f"[skill: {skill.name}]\n{body}"))
     console.print(
         f"[dim]loaded skill [bold]{skill.name}[/bold]; describe your task and it will apply.[/dim]"
