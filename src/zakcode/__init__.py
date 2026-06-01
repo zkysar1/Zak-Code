@@ -87,8 +87,14 @@ class Agent:
             self.provider = provider
         else:
             from zakcode.providers.litellm_provider import LiteLLMProvider
+            from zakcode.providers.text_tools import TextToolCallingProvider
 
-            self.provider = LiteLLMProvider(self.settings)
+            # Wrap the vendor provider so tool-less local models still get
+            # tool-calling via a text protocol (a no-op passthrough in "native"
+            # mode). See zakcode.providers.text_tools.
+            self.provider = TextToolCallingProvider(
+                LiteLLMProvider(self.settings), mode=self.settings.tool_calling_mode
+            )
         self.registry = default_registry()
         self.store = session_store
         self.session = session or Session(

@@ -117,9 +117,11 @@ def test_injected_provider_can_drive_a_tool(tmp_path: Path) -> None:
 
 
 def test_default_agent_still_builds_litellm(tmp_path: Path) -> None:
-    # No provider injected → the facade builds its normal provider (no network at init).
+    # No provider injected → the facade builds its normal provider (no network at init),
+    # wrapped in the text tool-calling fallback so tool-less local models still work.
     agent = Agent(default_model="ollama/llama3", workspace_root=str(tmp_path))
-    assert type(agent.provider).__name__ == "LiteLLMProvider"
+    assert type(agent.provider).__name__ == "TextToolCallingProvider"
+    assert type(agent.provider.inner).__name__ == "LiteLLMProvider"  # type: ignore[attr-defined]
 
 
 # ── runner ───────────────────────────────────────────────────────────────────────

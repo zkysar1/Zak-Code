@@ -19,6 +19,12 @@ from zakcode.providers.base import (
 )
 from zakcode.providers.litellm_provider import LiteLLMProvider
 from zakcode.providers.registry import get_capabilities
+from zakcode.providers.text_tools import (
+    TextToolCallingProvider,
+    parse_text_tool_calls,
+    render_tool_protocol,
+    textify_messages,
+)
 
 __all__ = [
     "AuthError",
@@ -30,6 +36,10 @@ __all__ = [
     "ProviderError",
     "RateLimited",
     "RequestFailed",
+    "TextToolCallingProvider",
     "ToolCall",
     "get_capabilities",
+    "parse_text_tool_calls",
+    "render_tool_protocol",
+    "textify_messages",
 ]
