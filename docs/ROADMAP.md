@@ -513,7 +513,26 @@ remaining glue)._
 
 ---
 
-### M10+ — Web client & beyond (P2)
+### M10+ — Web client & beyond (P2) — ✅ web client DONE (commits `4ecea94`, `<m10-2>`)
+
+> **Web client shipped.** A dependency-free single-page client (`src/zakcode/server/static/index.html`
+> — vanilla HTML/CSS/JS, no build step) is served by the same M3 server at `/` (and mounted at `/app`).
+> It is a **pure renderer of the `AgentEvent` stream with no agent logic**: it creates a session
+> (`POST /sessions`), opens `WS /ws/{id}`, sends `{type:"input"}`, renders every event type
+> (text / tool_call / tool_result / status / usage / done), and drives the **permission-approval
+> bridge** (renders the server's `action_required` frame and replies `{type:"approval", outcome:…}`).
+> The server publishes the contract at **`GET /schema/events`** (JSON Schema generated from the same
+> adapter that serializes frames, so it cannot drift) plus `wire.event_type_names()`. The DoD's
+> "shared wire schema contract test" is `tests/test_webclient_contract.py` (7): the client's declared
+> `EVENT_TYPES` must equal the server's set, every event type has a render case, the WS verbs +
+> approval outcomes are valid, and no provider/agent logic leaked into the client. Loopback-only
+> posture unchanged (no CORS, no auth). Server surface tests: `tests/test_server_webclient.py` (5).
+>
+> **Deferred (opt-in, each its own future mini-milestone with the same DoD):** session list/resume &
+> cost/context visualization in the UI; agent-authored skills + curator; OS-level sandboxing;
+> multi-agent teams / coordinator / cron / recipes; additional providers (Anthropic/Bedrock/Vertex —
+> just new litellm prefixes, no loop changes); plus the M9 deferrals (Git-undo, JSON phase events,
+> the CI workflow file).
 
 **Goal:** A thin web client on the M3 server, plus deferred advanced surfaces.
 
