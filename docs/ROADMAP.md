@@ -513,7 +513,7 @@ remaining glue)._
 
 ---
 
-### M10+ — Web client & beyond (P2) — ✅ web client DONE (commits `4ecea94`, `<m10-2>`)
+### M10+ — Web client & beyond (P2) — ✅ web client DONE (commits `4ecea94`, `2ff57be`)
 
 > **Web client shipped.** A dependency-free single-page client (`src/zakcode/server/static/index.html`
 > — vanilla HTML/CSS/JS, no build step) is served by the same M3 server at `/` (and mounted at `/app`).
