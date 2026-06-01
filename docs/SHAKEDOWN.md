@@ -3,10 +3,20 @@
 Validating Zak Code's provider/agent loop against a **real** local model (not just the
 hermetic scripted-provider tests), per the M0 → live-shakedown → M1 plan.
 
-> **Status (2026-05-30): blocked by host CPU; provider wiring verified, real inference pending.**
-> A genuine attempt to run a local model on this machine hit a hardware wall (details below).
-> The code path is proven as far as the environment allows; a clean run is a follow-up on
-> AVX2-capable hardware (or once a CPU-matched llama.cpp binary builds).
+> **Status (2026-06-01): ✅ RESOLVED — real local inference works, end to end.**
+> The original CPU/AVX2 wall (this host's FX-8320E predates AVX2) turned out to be moot:
+> the machine also has an **NVIDIA RTX 4070 (12 GB)**, so Ollama runs inference on **CUDA**,
+> not the old CPU. Installed Ollama (`winget install Ollama.Ollama`), imported a Qwen 3.5
+> GGUF, and pulled a tool-capable `qwen2.5:3b`. Zak Code drove a real agentic task on the
+> local model — `ollama_chat/qwen2.5:3b` → `write_file` → a working `greet.py`
+> (`greet("Zak") == "Hello, Zak!"`), turn `stop_reason="completed"` in 2 iterations. The
+> gated live-provider smoke suite (`tests/test_live_provider_smoke.py`, `LIVE_TESTS=1`)
+> passes against **both** the local model and OpenAI `gpt-4o-mini`. Notes: tiny GGUFs
+> without a tool template (e.g. the raw Qwen3.5-0.8B import) are chat-only — Ollama reports
+> `does not support tools` and Zak Code surfaces that cleanly; use a tool-capable model
+> (qwen2.5, llama3.1, etc.) for the agentic loop. A pre-existing Ollama service owns
+> `127.0.0.1:11434` with the default models dir, so import models there (don't override
+> `OLLAMA_MODELS` for a second `serve`).
 
 ## Goal
 
