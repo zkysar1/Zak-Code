@@ -468,7 +468,7 @@ to temp-file handles, and end-of-context TODO re-injection.
 
 ---
 
-### M9 — Evaluation harness (P2) — ✅ DONE (commits `46732b6`, `41e6eae`, `<m9-3>`)
+### M9 — Evaluation harness (P2) — ✅ DONE (commits `46732b6`, `41e6eae`, `cfe47e7`)
 
 Behavioral eval harness shipped in `src/zakcode/evals/`. It drives the **real** agent loop with
 deterministic, no-network `ScriptedProvider`s (a real `Provider` whose completions come from a fixed
