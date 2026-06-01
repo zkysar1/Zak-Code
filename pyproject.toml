@@ -58,8 +58,9 @@ Issues = "https://github.com/zkysar1/Zak-Code/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zakcode"]
-# Ship the PEP 561 marker so downstream type-checkers see zakcode as typed.
-artifacts = ["src/zakcode/py.typed"]
+# Ship the PEP 561 marker so downstream type-checkers see zakcode as typed,
+# and the bundled web-client static assets (served at "/" by the FastAPI app).
+artifacts = ["src/zakcode/py.typed", "src/zakcode/server/static/**"]
 
 [tool.ruff]
 line-length = 100

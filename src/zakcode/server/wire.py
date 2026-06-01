@@ -18,7 +18,7 @@ The single source of truth for the *event* shapes remains
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BaseModel, Field, TypeAdapter
 
@@ -48,6 +48,31 @@ def event_from_dict(data: dict[str, Any]) -> AgentEvent:
     a client never silently accepts a malformed frame.
     """
     return _EVENT_ADAPTER.validate_python(data)
+
+
+def events_schema() -> dict[str, Any]:
+    """The JSON Schema of the :data:`AgentEvent` union (the published wire contract).
+
+    Generated from the same :data:`_EVENT_ADAPTER` that serializes/parses every frame,
+    so it can never drift from the actual wire form. Served at ``GET /schema/events``
+    and used by the web-client contract test to assert the client and server agree on
+    the event vocabulary.
+    """
+    return _EVENT_ADAPTER.json_schema()
+
+
+def event_type_names() -> list[str]:
+    """The sorted set of ``event`` discriminator values (e.g. ``["done", "text", ...]``).
+
+    A tiny, stable contract surface: the web client must handle exactly these, and the
+    contract test asserts the renderer and the server share this set.
+    """
+    names: set[str] = set()
+    for member in get_args(get_args(AgentEvent)[0]):
+        field = member.model_fields.get("event")
+        if field is not None and field.default is not None:
+            names.add(str(field.default))
+    return sorted(names)
 
 
 # ── REST request / response models ────────────────────────────────────────────

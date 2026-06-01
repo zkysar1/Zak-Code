@@ -35,10 +35,13 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 import pydantic
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from zakcode.agent.loop import TurnResult
@@ -56,6 +59,7 @@ from zakcode.server.wire import (
     WSUserInput,
     client_message_from_dict,
     event_to_dict,
+    events_schema,
 )
 from zakcode.session.store import Session, SessionNotFound, SessionStore
 from zakcode.tools.base import ToolRegistry
@@ -358,6 +362,29 @@ def create_app(
                 current_turn.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await current_turn
+
+    # ── wire-schema contract + web client ────────────────────────────────────────
+
+    @app.get("/schema/events")
+    def get_events_schema() -> dict[str, Any]:
+        """Publish the AgentEvent JSON Schema (the wire contract the web client renders).
+
+        Generated from the same adapter that serializes every frame, so it cannot drift
+        from the actual stream. The bundled web client fetches this to stay in lockstep.
+        """
+        return events_schema()
+
+    # Serve the bundled thin web client (a pure AgentEvent renderer — no agent logic).
+    # Mounted LAST so it never shadows the API routes above; ``html=True`` serves
+    # ``index.html`` at ``/``. Absent in some checkouts, so guard the mount.
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.is_dir():
+
+        @app.get("/")
+        def index() -> FileResponse:
+            return FileResponse(static_dir / "index.html")
+
+        app.mount("/app", StaticFiles(directory=static_dir, html=True), name="webclient")
 
     return app
 
