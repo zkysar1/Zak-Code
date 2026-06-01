@@ -39,7 +39,9 @@ server = [
 ]
 # Model Context Protocol client (external tool/extension support).
 mcp = ["mcp>=1.0"]
-# Developer tooling.
+# Developer tooling. Kept as an extra for back-compat (`uv sync --extra dev`, and the
+# `all` extra below); but the canonical install is plain `uv sync`, which installs the
+# `dev` dependency-group (defined below) automatically.
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
@@ -47,6 +49,18 @@ dev = [
   "mypy>=1.10",
 ]
 all = ["zakcode[server,mcp,dev]"]
+
+# Dependency group (PEP 735). uv installs the `dev` group by DEFAULT on every
+# `uv sync` and — unlike an extra — it is NOT dropped when you add `--extra server`.
+# This is what makes `uv sync` and `uv sync --extra server` both keep the dev tools
+# (the earlier footgun where `--extra server` silently uninstalled ruff/pytest/mypy).
+[dependency-groups]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "mypy>=1.10",
+]
 
 [project.scripts]
 zakcode = "zakcode.cli:main"

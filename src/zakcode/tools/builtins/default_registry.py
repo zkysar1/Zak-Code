@@ -8,6 +8,7 @@ from zakcode.tools.builtins.edit import EditFileTool
 from zakcode.tools.builtins.glob import GlobTool
 from zakcode.tools.builtins.grep import GrepTool
 from zakcode.tools.builtins.list_dir import ListDirTool
+from zakcode.tools.builtins.powershell import PowerShellTool
 from zakcode.tools.builtins.read_file import ReadFileTool
 from zakcode.tools.builtins.write_file import WriteFileTool
 
@@ -26,4 +27,5 @@ def default_registry() -> ToolRegistry:
     registry.register(GlobTool())
     registry.register(GrepTool())
     registry.register(BashTool())
+    registry.register(PowerShellTool(), aliases=["pwsh"])
     return registry

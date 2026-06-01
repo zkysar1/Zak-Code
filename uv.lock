@@ -2647,6 +2647,14 @@ server = [
     { name = "websockets" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.111" },
@@ -2667,6 +2675,14 @@ requires-dist = [
     { name = "zakcode", extras = ["server", "mcp", "dev"], marker = "extra == 'all'" },
 ]
 provides-extras = ["server", "mcp", "dev", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pytest", specifier = ">=8.2" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "ruff", specifier = ">=0.5" },
+]
 
 [[package]]
 name = "zipp"

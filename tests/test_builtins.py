@@ -161,6 +161,7 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "glob",
         "grep",
         "bash",
+        "powershell",
     }
     # Aliases resolve to the canonical tools (M1 added "edit" -> edit_file).
     assert reg.get("read") is reg.get("read_file")
@@ -168,6 +169,7 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
     assert reg.get("edit") is reg.get("edit_file")
     assert reg.get("ls") is reg.get("list_dir")
     assert reg.get("bash") is reg.get("bash")
+    assert reg.get("pwsh") is reg.get("powershell")  # M10: PowerShell tool + alias
 
 
 def test_specs_have_expected_permissions_and_concurrency() -> None:

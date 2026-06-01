@@ -139,6 +139,30 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bcurl\b.*\|\s*(sudo\s+)?(ba)?sh\b|\bwget\b.*\|\s*(ba)?sh\b"),
         "pipe-to-shell of remote content",
     ),
+    # ── PowerShell equivalents (the powershell tool shares this blocklist) ──────
+    (
+        # Recursive Remove-Item of a drive root or profile (e.g. Remove-Item -Recurse
+        # -Force C:\ or $HOME). Requires -Recurse; a single-file Remove-Item is benign.
+        re.compile(
+            r"\b(Remove-Item|ri|rd|rmdir|del|erase)\b[^\n]*-Recurse\b[^\n]*"
+            r"([A-Za-z]:\\?(\s|$|\\\*)|\$HOME|\$env:USERPROFILE|~)",
+            re.IGNORECASE,
+        ),
+        "recursive Remove-Item of a drive root or home path",
+    ),
+    (
+        re.compile(r"\b(Format-Volume|Clear-Disk|Remove-Partition)\b", re.IGNORECASE),
+        "destructive disk operation (format / clear / remove-partition)",
+    ),
+    (
+        # Download-and-execute: iwr/curl/Invoke-WebRequest piped into iex/Invoke-Expression.
+        re.compile(
+            r"\b(iwr|curl|Invoke-WebRequest|Invoke-RestMethod|irm)\b[^\n]*\|\s*"
+            r"(iex|Invoke-Expression)\b",
+            re.IGNORECASE,
+        ),
+        "download-and-execute (web request piped to Invoke-Expression)",
+    ),
 ]
 
 #: Argument keys whose string values are scanned against DANGEROUS_PATTERNS.

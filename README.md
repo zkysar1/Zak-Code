@@ -71,10 +71,13 @@ Requires [`uv`](https://docs.astral.sh/uv/) (it manages the Python toolchain for
 ```bash
 git clone https://github.com/zkysar1/Zak-Code.git
 cd Zak-Code
-uv sync --extra dev        # creates the venv, fetches Python 3.11, installs everything
+uv sync                    # creates the venv, fetches Python 3.11, installs deps + dev tools
 uv run zakcode --help      # list commands
 uv run zakcode info        # show resolved config + which provider keys are present
 ```
+
+> Plain `uv sync` installs the core **and** the dev tools (the `dev` dependency group is
+> on by default). Add the server with `uv sync --extra server` — the dev tools stay put.
 
 ### Point it at a model
 
@@ -132,8 +135,9 @@ no agent logic.
 - **Agent loop** — ReAct-style tool-use loop with layered stop conditions (completion,
   iteration cap, shared budget, and a **doom-loop guard** that halts identical repeated
   calls). Buffered and streaming paths.
-- **Tools** — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`
-  — all scoped to the workspace, with path-escape protection.
+- **Tools** — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`,
+  and **`powershell`** (Windows-first; uses `pwsh`/`powershell.exe`) — all scoped to the
+  workspace, with path-escape protection.
 - **Vendor-agnostic providers** — litellm; Ollama + OpenAI are first-class and live-tested.
 - **Streaming + rich TUI** — token-by-token output, tool calls, and usage in the terminal.
 - **Permissions** — deny-first gate enforced **in the core** (4 modes × 3 tiers) plus a
@@ -168,9 +172,12 @@ Pure-Python; runs anywhere `uv` + Python 3.11+ run — **Windows, macOS, Linux.*
 caveat to know:
 
 > The `bash` tool runs commands through the **platform shell** (`subprocess(shell=True)`):
-> `/bin/sh` on macOS/Linux, **`cmd.exe` on Windows**. The agent sees the host OS and adapts
-> its commands, but there is **no dedicated PowerShell tool yet** (planned). On Windows the
-> `bash` tool is really "run via `cmd.exe`."
+> `/bin/sh` on macOS/Linux, **`cmd.exe` on Windows**. For PowerShell cmdlets and syntax,
+> use the dedicated **`powershell`** tool (prefers `pwsh`, falls back to `powershell.exe`;
+> returns a clean error on a host with neither). The agent is told the host OS and picks
+> the right shell tool. Both shells go through the same deny-first permission gate and
+> catastrophic-command blocklist (which covers PowerShell idioms like
+> `Remove-Item -Recurse -Force` and `Format-Volume`).
 
 ## How it compares to Claude Code
 
@@ -181,9 +188,9 @@ loop, a built-in eval harness) goes a bit further than the studied reference. Se
 [`docs/PARITY.md`](docs/PARITY.md) for the full matrix.
 
 **Honest gaps vs. Claude Code (deferred, not hidden):** no `WebFetch`/`WebSearch` tools,
-no dedicated PowerShell tool, no git-checkpoint/`/undo`, and no autonomous
-skill-extraction/curator. These are tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) (M10+)
-as opt-in follow-ons; none affect the core loop.
+no git-checkpoint/`/undo`, and no autonomous skill-extraction/curator. These are tracked
+in [`docs/ROADMAP.md`](docs/ROADMAP.md) (M10+) as opt-in follow-ons; none affect the core
+loop.
 
 ## Documentation
 

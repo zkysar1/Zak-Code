@@ -73,7 +73,8 @@ groups are listed individually; pure helpers are noted at the end).
 > **`edit_file`** (≈ FileEditTool — exact-string replace, unique-match-or-error, `replace_all`,
 > atomic), plus live **streaming** end to end: `LiteLLMProvider.astream` → typed `AgentEvent`
 > loop stream → fence-safe rich TUI; `zakcode chat` streams by default with cooperative Ctrl-C
-> cancel. Still P0 and **not yet built**: `PowerShellTool` and `TodoWriteTool`.
+> cancel. `PowerShellTool` is now built (Windows-first, `pwsh`/`powershell.exe`, shares the
+> deny-first gate + blocklist). Still not built: `TodoWriteTool`.
 
 | Tool | Purpose | Claude Code? | Zak Code status | Priority tier | Target milestone | Notes |
 |------|---------|--------------|-----------------|---------------|------------------|-------|
@@ -83,7 +84,7 @@ groups are listed individually; pure helpers are noted at the end).
 | GlobTool | Fast filename pattern matching (`pattern`, `path`) | yes | Planned | P0 | M1 | FS. Read-only; parallel-safe. |
 | GrepTool | Ripgrep-based content search (`pattern`, `glob/type`, `output_mode`, context flags) | yes | Planned | P0 | M1 | FS. Read-only; parallel-safe. |
 | BashTool | Run a shell command with sandbox/permission/security/destructive-command/read-only/path validation (`command`, `timeout`, `description`, `run_in_background`) | yes | Planned | P0 | M1 | FS/NET/PROC. DangerFullAccess tier; DANGEROUS_PATTERNS blocklist + background promotion. |
-| PowerShellTool | Windows PowerShell equivalent of Bash (CLM types, git-safety, common-parameters, security/permission validation) | yes | Planned | P0 | M1 | FS/NET/PROC. Co-P0 with Bash — primary shell on the Windows target environment. |
+| PowerShellTool | Windows PowerShell equivalent of Bash (CLM types, git-safety, common-parameters, security/permission validation) | yes | Done | M10 | M1 | Shipped: `pwsh`/`powershell.exe` (prefers pwsh), workspace cwd, 60s cap, combined streams, graceful missing-PS error; shares the deny-first gate + PowerShell-aware blocklist (Remove-Item -Recurse, Format-Volume, iwr\|iex). |
 | TodoWriteTool | Maintain the in-session todo list (`todos[]`: content, status, activeForm) | yes | Planned | P0 | M1 | State (FS). Re-inject live TODO at end of context to fight instruction fade-out. |
 | AgentTool (Task) | Spawn a sub-agent to autonomously run a sub-task; built-in types (general-purpose, explore, plan, verification, claude-code-guide, statusline-setup), fork/resume/run, agent memory/color (`description`, `prompt`, `subagent_type`) | yes | Planned | P1 | M2 | Indirect FS/NET/PROC. Start with general-purpose/explore/plan; sub-agents return condensed summaries. |
 | EnterPlanModeTool | Enter plan mode (model plans before acting) | yes | Planned | P1 | M2 | Read-only Planner; write tools absent from planner schema. |
