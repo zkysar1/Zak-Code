@@ -68,6 +68,10 @@ from zakcode.version import __version__
 
 logger = logging.getLogger("zakcode.server")
 
+#: How long the WebSocket permission bridge waits for a client's approval before
+#: failing closed (deny-once). Bounds a stuck/disconnected client from hanging a turn.
+APPROVAL_TIMEOUT_SECONDS = 120.0
+
 
 class AgentLike(Protocol):
     """The surface the server needs from an agent (so a fake can stand in)."""
@@ -313,7 +317,13 @@ def create_app(
             fut: asyncio.Future[PermissionOutcome] = asyncio.get_running_loop().create_future()
             approval["fut"] = fut
             try:
-                return await fut
+                # Fail CLOSED if the client never answers: a disconnected or unresponsive
+                # client must not hang the turn (and the server resources behind it)
+                # forever. On timeout we deny once — the model sees the denial and the
+                # turn proceeds; the operator can retry.
+                return await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT_SECONDS)
+            except TimeoutError:
+                return PermissionOutcome.DENY_ONCE
             finally:
                 approval.pop("fut", None)
 

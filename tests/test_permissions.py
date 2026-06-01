@@ -98,6 +98,8 @@ def test_unknown_tool_is_fail_closed() -> None:
     [
         "rm -rf /",
         "rm -rf ~/stuff",
+        "rm -fr /",  # flag order doesn't matter: -fr is still recursive
+        "rm -r /etc",  # recursive without -f is still the footgun
         "sudo rm file",
         "mkfs.ext4 /dev/sda1",
         ":(){ :|:& };:",
@@ -128,6 +130,23 @@ def test_dangerous_command_hard_denied_in_deny_mode() -> None:
 def test_benign_command_not_flagged() -> None:
     policy = PermissionPolicy(PermissionMode.ALLOW)
     decision, _ = policy.decide(BASH, {"command": "git status"})
+    assert decision is PermissionDecision.ALLOW
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -f /home/user/file.txt",  # force, NON-recursive: a single file → benign
+        "rm -f /tmp/build.log",
+        "rm /home/user/file.txt",  # plain rm of one path
+        "rm -i ~/notes.md",  # interactive
+    ],
+)
+def test_non_recursive_rm_not_flagged(command: str) -> None:
+    # Regression: ``rm -f <file>`` must NOT escalate — only RECURSIVE removal of a
+    # root/home path is the footgun. (The blocklist previously matched -f alone.)
+    policy = PermissionPolicy(PermissionMode.ALLOW)
+    decision, _ = policy.decide(BASH, {"command": command})
     assert decision is PermissionDecision.ALLOW
 
 

@@ -116,8 +116,12 @@ _ABOVE_CEILING: dict[PermissionMode, PermissionDecision] = {
 #: false-positive on benign commands; the tier/mode gate is the primary control.
 DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
-        re.compile(r"\brm\s+(-[a-z]*r[a-z]*\s+|-[a-z]*f[a-z]*\s+).*(/|~|\$HOME)"),
-        "recursive/force remove of a root or home path",
+        # Only RECURSIVE removal of a root/home path is the footgun (``rm -rf /``,
+        # ``rm -r ~``). Plain ``rm -f <file>`` (force, no recursion) is benign and must
+        # NOT escalate — the flag group requires an ``r``, so ``-r``/``-rf``/``-fr`` match
+        # but ``-f`` alone does not.
+        re.compile(r"\brm\s+-[a-z]*r[a-z]*\s+.*(/|~|\$HOME)"),
+        "recursive remove of a root or home path",
     ),
     (re.compile(r"(^|\s)sudo(\s|$)"), "privilege escalation (sudo)"),
     (re.compile(r"\bmkfs\b|\bformat\s+[a-z]:"), "filesystem format"),

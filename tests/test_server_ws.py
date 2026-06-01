@@ -140,6 +140,26 @@ def test_ws_permission_denied_by_default_outcome(tmp_path: Path) -> None:
         assert text["text"] == "outcome:deny_once"
 
 
+def test_ws_permission_times_out_fail_closed(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # Regression: if the client never answers an approval prompt, the turn must NOT
+    # hang forever — the bridge times out and fails CLOSED (deny_once). We shrink the
+    # timeout so the test is fast; the production default is 120s.
+    import zakcode.server.app as appmod
+
+    monkeypatch.setattr(appmod, "APPROVAL_TIMEOUT_SECONDS", 0.5)
+    client, store = _client(tmp_path, lambda s, m, p: _ApprovalAgent(s, p))
+    sid = _make_session(store)
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.send_json({"type": "input", "message": "run ls"})
+        assert ws.receive_json()["type"] == "action_required"
+        # Deliberately send NO approval. The server times out and the agent resumes
+        # with a deny — proving the turn completes rather than deadlocking.
+        text = ws.receive_json()
+        assert text["event"] == "text"
+        assert text["text"] == "outcome:deny_once"
+        assert ws.receive_json()["event"] == "done"
+
+
 # ── cooperative interrupt ───────────────────────────────────────────────────────
 
 

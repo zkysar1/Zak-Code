@@ -248,3 +248,32 @@ async def test_stdio_transport_against_real_subprocess(tmp_path: Path) -> None:
         assert result.text == "round-trip"
     finally:
         await client.close()
+
+
+# A server whose FIRST stdout line is raw non-UTF-8 bytes, then a valid JSON line.
+_BAD_BYTES_SERVER_SCRIPT = """\
+import sys, json
+# Emit invalid UTF-8 bytes followed by a newline, on the raw stdout buffer.
+sys.stdout.buffer.write(b"\\xff\\xfe garbage\\n")
+sys.stdout.buffer.flush()
+# Then a well-formed JSON-RPC message.
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}) + "\\n")
+sys.stdout.flush()
+"""
+
+
+async def test_stdio_transport_survives_non_utf8_bytes(tmp_path: Path) -> None:
+    # Regression: a misbehaving server emitting non-UTF-8 bytes must NOT crash the
+    # transport with UnicodeDecodeError. The bad line degrades to a recoverable
+    # MCPProtocolError (invalid JSON), and the NEXT, valid line still parses.
+    script = tmp_path / "bad_bytes_server.py"
+    script.write_text(_BAD_BYTES_SERVER_SCRIPT, encoding="utf-8")
+    transport = StdioTransport(sys.executable, [str(script)])
+    try:
+        await transport.start()
+        with pytest.raises(MCPProtocolError):
+            await transport.receive()  # the garbage line: invalid JSON, not a crash
+        msg = await transport.receive()  # the following valid line parses fine
+        assert msg == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    finally:
+        await transport.close()

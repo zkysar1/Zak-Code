@@ -108,7 +108,10 @@ class StdioTransport:
             line = await self._proc.stdout.readline()
             if not line:
                 return None  # EOF: the server closed stdout / exited
-            text = line.decode("utf-8").strip()
+            # ``errors="replace"`` so a misbehaving server emitting non-UTF-8 bytes
+            # degrades to a JSON-parse error (recoverable) rather than crashing the
+            # transport — consistent with the file/shell tools' decode sites.
+            text = line.decode("utf-8", errors="replace").strip()
             if not text:
                 continue  # tolerate blank lines between messages
             try:
