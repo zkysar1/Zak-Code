@@ -84,6 +84,49 @@ def info() -> None:
     console.print("[dim]Start the interactive agent with [bold]zakcode chat[/bold].[/dim]")
 
 
+@app.command(name="eval")
+def eval_(
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show each probe's detail/error line."
+    ),
+) -> None:
+    """Run the behavioral eval suite against the agent (offline, scripted providers).
+
+    Drives the real agent loop with deterministic no-network providers and checks the
+    invariants the project must never regress (completion detection, safety rejection,
+    plan-mode read-only, doom-loop halting, partial-failure recovery, long-horizon
+    compaction). Exits non-zero if any probe fails, so it can gate CI.
+    """
+    import tempfile
+
+    from zakcode.evals import hermetic_env, run_evals_sync
+    from zakcode.evals.probes import build_default_suite
+
+    with tempfile.TemporaryDirectory(prefix="zakcode-eval-") as workspace, hermetic_env():
+        report = run_evals_sync(build_default_suite(workspace))
+
+    table = Table(title="Zak Code - behavioral evals", show_header=True)
+    table.add_column("probe")
+    table.add_column("result")
+    if verbose:
+        table.add_column("detail")
+    for r in report.results:
+        mark = "[green]PASS[/green]" if r.passed else "[red]FAIL[/red]"
+        row = [r.name, mark]
+        if verbose:
+            row.append(r.detail if r.passed else f"[red]{r.error}[/red]")
+        table.add_row(*row)
+    console.print(table)
+    # ASCII-only summary line: the Windows console default (cp1252) cannot encode
+    # marks like U+2713, which would crash rendering on a plain terminal.
+    summary = f"{report.passed}/{report.total} passed"
+    if report.ok:
+        console.print(f"[green]OK: {summary}[/green]")
+    else:
+        console.print(f"[red]FAIL: {summary} - {report.failed} failed[/red]")
+        raise typer.Exit(code=1)
+
+
 # ── chat: interactive REPL (thin client) ──────────────────────────────────────
 
 _CHAT_HELP = """\

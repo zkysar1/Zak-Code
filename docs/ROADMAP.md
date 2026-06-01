@@ -468,7 +468,27 @@ to temp-file handles, and end-of-context TODO re-injection.
 
 ---
 
-### M9 — Evaluation harness (P2)
+### M9 — Evaluation harness (P2) — ✅ DONE (commits `46732b6`, `41e6eae`, `<m9-3>`)
+
+Behavioral eval harness shipped in `src/zakcode/evals/`. It drives the **real** agent loop with
+deterministic, no-network `ScriptedProvider`s (a real `Provider` whose completions come from a fixed
+script or a dynamic responder; history-growing `count_tokens` + configurable `context_window` so
+compaction thresholds are crossed cheaply) and asserts the invariants that must never regress, via
+six probes (`evals/probes.py`): **completion-detection**, **safety-rejection** (privileged call fails
+closed at the core gate; nothing executes), **plan-mode-readonly** (planner registry has no
+write/exec tools — schema-enforced), **doom-loop-halt** (`stop_reason="doom_loop"`),
+**partial-failure-recovery** (a flaky tool's error surfaces as recoverable feedback; the model
+retries), and **long-horizon-compaction** (history crosses the window → LLM summary → turn still
+completes). `EvalCase/EvalResult/EvalReport` + `run_evals` (a probe failure is recorded, never aborts
+the suite); `make_agent()` drives the real `Agent`; `hermetic_env()` scrubs provider keys + pins
+`TZ=UTC`. To enable injection without a network, the `Agent` facade gained an additive `provider=`
+parameter (litellm still built lazily when omitted). Runnable as **`zakcode eval`** (`-v` for
+details), which exits non-zero if any probe fails — a CI gate. Tests:
+`tests/test_evals_harness.py` (12), `tests/test_evals_probes.py` (9), `tests/test_cli_eval.py` (3).
+_Deferred: Git-snapshot undo per step, structured JSON phase-event logging, and a GitHub Actions
+workflow wiring `zakcode eval` + the pytest gate (the harness is CI-ready; the workflow file is the
+remaining glue)._
+
 
 **Goal:** Test the agent like software — behavioral E2E suites gating Zak Code's own changes.
 
