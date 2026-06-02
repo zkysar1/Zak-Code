@@ -118,6 +118,8 @@ class Agent:
             extra_dangerous_patterns=compile_deny_patterns(self.settings.denied_commands),
         )
         self.hook_manager = hook_manager or HookManager()
+        # One-shot guard so aclose() (and its SESSION_END encode step) runs at most once.
+        self._closed = False
         # Slash-command registry (M6) — plugins register commands here; clients
         # (the CLI) consult it for any slash command they do not handle themselves.
         from zakcode.commands import CommandRegistry
@@ -333,6 +335,36 @@ class Agent:
         """Close any open MCP server connections (best-effort)."""
         if self.extension_manager is not None:
             await self.extension_manager.aclose()
+
+    async def aclose(self) -> None:
+        """End the session: fire ``SESSION_END`` then release resources.
+
+        Fires the ``SESSION_END`` lifecycle hook (a host's encode/serialize step),
+        closes the memory store, and closes any MCP connections. Best-effort and
+        idempotent — a second call is a no-op (so the encode step never double-runs),
+        and every step is isolated so a failing one never blocks the rest.
+        """
+        import contextlib
+
+        from zakcode.hooks import HookEvent, LifecyclePayload
+
+        if self._closed:
+            return
+        self._closed = True
+
+        if self.hook_manager.has_lifecycle_hooks(HookEvent.SESSION_END):
+            with contextlib.suppress(Exception):
+                await self.hook_manager.fire(
+                    LifecyclePayload(
+                        event=HookEvent.SESSION_END,
+                        session_id=self.session.id,
+                        cwd=str(self.settings.workspace_root),
+                    )
+                )
+        if self.memory is not None:
+            with contextlib.suppress(Exception):
+                self.memory.close()
+        await self.aclose_mcp()
 
     @classmethod
     def for_workspace(cls, path: str | Path, **setting_overrides: Any) -> Agent:

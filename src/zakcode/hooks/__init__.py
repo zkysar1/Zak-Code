@@ -48,6 +48,12 @@ class HookEvent(StrEnum):
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
     PRE_LLM_CALL = "PreLLMCall"
+    # Session-lifecycle events. Observe-only (fire-and-forget side effects): a host
+    # automation (e.g. a self-learning framework's prime / encode / serialize step)
+    # registers here. They cannot block or rewrite anything — see HookManager.fire.
+    SESSION_START = "SessionStart"
+    SESSION_END = "SessionEnd"
+    PRE_COMPACT = "PreCompact"
 
 
 class HookDecision(StrEnum):
@@ -109,6 +115,20 @@ class LLMContextPayload(BaseModel):
     message_count: int = 0
 
 
+class LifecyclePayload(BaseModel):
+    """The JSON document handed to a session-lifecycle hook (stdin for shells).
+
+    Carries enough to locate the session's state — the ``session_id`` and ``cwd`` —
+    plus a free-form ``data`` map for event-specific extras. A lifecycle hook runs
+    for its side effects only.
+    """
+
+    event: HookEvent
+    session_id: str = ""
+    cwd: str = ""
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
 class HookSpec(BaseModel):
     """A configured shell hook: when to fire, what to run, and how long to wait."""
 
@@ -129,6 +149,10 @@ InProcessHook = Callable[[HookPayload], "HookResult | None | Awaitable[HookResul
 #: before a model call (None == nothing to add). May be sync or async.
 ContextHook = Callable[[LLMContextPayload], "str | None | Awaitable[str | None]"]
 
+#: An in-process lifecycle hook: ``(payload) -> None`` run for side effects only.
+#: May be sync or async; its return value is ignored.
+LifecycleHook = Callable[[LifecyclePayload], "None | Awaitable[None]"]
+
 
 class HookManager:
     """Runs the configured hooks for a lifecycle event, isolating every failure."""
@@ -144,6 +168,8 @@ class HookManager:
         self.in_process: dict[HookEvent, list[InProcessHook]] = dict(in_process or {})
         # PRE_LLM_CALL in-process context hooks (return text, not a decision).
         self.context_hooks: list[ContextHook] = list(context or [])
+        # Session-lifecycle in-process hooks, keyed by event (observe-only).
+        self.lifecycle_hooks: dict[HookEvent, list[LifecycleHook]] = {}
 
     def register(self, event: HookEvent, hook: InProcessHook) -> None:
         """Add an in-process hook (used by the plugin surface later)."""
@@ -158,6 +184,16 @@ class HookManager:
         if self.context_hooks:
             return True
         return any(h.event is HookEvent.PRE_LLM_CALL for h in self.shell_hooks)
+
+    def register_lifecycle(self, event: HookEvent, hook: LifecycleHook) -> None:
+        """Add an in-process session-lifecycle hook (observe-only)."""
+        self.lifecycle_hooks.setdefault(event, []).append(hook)
+
+    def has_lifecycle_hooks(self, event: HookEvent) -> bool:
+        """Whether any hook would fire for ``event`` (cheap pre-check)."""
+        if self.lifecycle_hooks.get(event):
+            return True
+        return any(h.event is event for h in self.shell_hooks)
 
     def has_hooks(self, event: HookEvent, tool_name: str) -> bool:
         """Whether any hook would fire for ``event`` on ``tool_name`` (cheap pre-check)."""
@@ -221,6 +257,21 @@ class HookManager:
             if text and text.strip():
                 collected.append(text.strip())
         return collected
+
+    async def fire(self, payload: LifecyclePayload) -> None:
+        """Fire a session-lifecycle event (observe-only; never blocks or rewrites).
+
+        Runs in-process lifecycle hooks for ``payload.event`` first, then shell hooks
+        whose event matches (the payload JSON on stdin; stdout/exit code are advisory
+        and ignored). Every failure is isolated — a lifecycle hook can never break a
+        turn or session. This is the seam a host's prime / encode / serialize
+        automation plugs into.
+        """
+        for hook in self.lifecycle_hooks.get(payload.event, []):
+            await self._run_lifecycle_in_process(hook, payload)
+        for spec in self.shell_hooks:
+            if spec.event is payload.event:
+                await self._run_lifecycle_shell(spec, payload)
 
     # ── aggregation helpers ───────────────────────────────────────────────────
 
@@ -336,6 +387,42 @@ class HookManager:
             return ctx if isinstance(ctx, str) and ctx.strip() else None
         return text
 
+    # ── lifecycle runners (observe-only; each fully error-isolated) ────────────
+
+    @staticmethod
+    async def _run_lifecycle_in_process(hook: LifecycleHook, payload: LifecyclePayload) -> None:
+        try:
+            outcome = hook(payload)
+            if asyncio.iscoroutine(outcome):
+                await outcome
+        except Exception as exc:  # noqa: BLE001 — a lifecycle hook never breaks a session
+            logger.warning("lifecycle hook raised %s: %s", type(exc).__name__, exc)
+
+    async def _run_lifecycle_shell(self, spec: HookSpec, payload: LifecyclePayload) -> None:
+        """Run one lifecycle shell hook for its side effects; output is advisory."""
+        if not spec.command:
+            return
+        stdin_bytes = payload.model_dump_json().encode("utf-8")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *spec.command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("lifecycle hook %r failed to start: %s", spec.command, exc)
+            return
+        try:
+            await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=spec.timeout)
+        except TimeoutError:
+            with _suppress():
+                proc.kill()
+                await proc.wait()
+            logger.warning("lifecycle hook %r timed out after %ss", spec.command, spec.timeout)
+        except Exception as exc:  # noqa: BLE001 — never propagate a lifecycle-hook failure
+            logger.warning("lifecycle hook %r errored: %s", spec.command, exc)
+
     # ── runners (each fully error-isolated) ───────────────────────────────────
 
     @staticmethod
@@ -449,9 +536,11 @@ __all__ = [
     "HookResult",
     "HookPayload",
     "LLMContextPayload",
+    "LifecyclePayload",
     "HookSpec",
     "HookManager",
     "InProcessHook",
     "ContextHook",
+    "LifecycleHook",
     "DEFAULT_HOOK_TIMEOUT",
 ]

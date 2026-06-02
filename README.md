@@ -6,16 +6,17 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-alpha-green.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-653%20passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-801%20passing-brightgreen.svg">
 </p>
 
 ---
 
-> **Status: alpha — feature-complete against the roadmap (M0–M10), validated live on
-> OpenAI _and_ local models.** The core engine, CLI, and HTTP API server are built and
-> tested (653 passing tests; `ruff` + `mypy` clean). It's a young project — expect rough
-> edges — but it really runs: it reads/writes files, runs commands, searches code, and
-> drives multi-step tasks to completion against a real model.
+> **Status: alpha — feature-complete against the roadmap (M0–M10) plus a
+> learning-substrate layer, validated live on OpenAI _and_ local models.** The core
+> engine, CLI, and HTTP API server are built and tested (801 passing tests; `ruff` +
+> `mypy` clean). It's a young project — expect rough edges — but it really runs: it
+> reads/writes files, runs commands, searches code, and drives multi-step tasks to
+> completion against a real model.
 
 ## What is Zak Code?
 
@@ -140,9 +141,24 @@ no agent logic.
   workspace, with path-escape protection.
 - **Vendor-agnostic providers** — litellm; Ollama + OpenAI are first-class and live-tested.
 - **Streaming + rich TUI** — token-by-token output, tool calls, and usage in the terminal.
+- **Local-model tool-calling** — a composable text-protocol fallback so models without
+  native function-calling (small local GGUFs) still call tools; `tool_calling_mode` =
+  `auto` (default) / `native` / `text`.
 - **Permissions** — deny-first gate enforced **in the core** (4 modes × 3 tiers) plus a
-  catastrophic-command blocklist; the gate is unreachable by the model.
-- **Hooks** — `PreToolUse` / `PostToolUse` with an exit-code protocol + in-process callbacks.
+  catastrophic-command blocklist; the gate is unreachable by the model. Operator deny
+  regexes (`denied_commands`) append to the baseline (tighten-only).
+- **Hooks** — `PreToolUse` / `PostToolUse` (exit-code protocol + in-process callbacks),
+  a cache-safe **`PreLLMCall`** context-injection seam, and **session-lifecycle** hooks
+  (`SessionStart` / `PreCompact` / `SessionEnd`).
+- **Read-only concurrency** — a wholly read-only tool batch runs in parallel
+  (order-preserving), guarded so only side-effect-free, prompt-free tools qualify.
+- **Rules** — always-on `.md` guidance (`.zakcode/rules` + `.claude/rules`) in the
+  cacheable prompt tier; sub-agents inherit them.
+- **Cross-session memory** — a `MemoryProvider` (local SQLite/FTS5 default, relocatable)
+  with `remember`/`recall` tools and per-turn recall injection; secrets redacted at the
+  store boundary.
+- **Learning substrate** — runtime skill authoring (`save_skill`) + the seams a
+  self-learning framework folds into; see [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 - **HTTP server** — FastAPI: REST, SSE, WebSocket; one `AgentEvent` stream across all clients.
 - **Sub-agents + Plan Mode** — isolated child agents via a `task` tool; a read-only planner
   whose registry has no write tools (schema-enforced).
@@ -187,10 +203,13 @@ hooks, and real-token compaction — and in a few areas (auto-compaction wired i
 loop, a built-in eval harness) goes a bit further than the studied reference. See
 [`docs/PARITY.md`](docs/PARITY.md) for the full matrix.
 
-**Honest gaps vs. Claude Code (deferred, not hidden):** no `WebFetch`/`WebSearch` tools,
-no git-checkpoint/`/undo`, and no autonomous skill-extraction/curator. These are tracked
-in [`docs/ROADMAP.md`](docs/ROADMAP.md) (M10+) as opt-in follow-ons; none affect the core
-loop.
+**Honest gaps vs. Claude Code (deferred, not hidden):** no `WebFetch`/`WebSearch` tools
+and no git-checkpoint/`/undo`. Cross-session memory and runtime skill authoring now
+exist as a **substrate**, but Zak Code ships no autonomous learning *policy* of its own —
+that is meant to be supplied by an external self-learning framework folded in through the
+documented seams ([`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)); the autonomous
+"never-terminate" loop is explicitly out of scope. Remaining gaps are tracked in
+[`docs/ROADMAP.md`](docs/ROADMAP.md) as opt-in follow-ons; none affect the core loop.
 
 ## Documentation
 
@@ -200,6 +219,7 @@ loop.
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design & module map |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones, exit criteria, deferred work |
 | [`docs/PARITY.md`](docs/PARITY.md) | Feature parity matrix vs. Claude Code |
+| [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) | Seams for folding in a self-learning framework |
 | [`docs/SHAKEDOWN.md`](docs/SHAKEDOWN.md) | Live-model validation (OpenAI + local) |
 | [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) | Safety, security & clean-room rules |
 | [`docs/RISKS.md`](docs/RISKS.md) | Risk register |
@@ -215,14 +235,15 @@ Zak-Code/
 │  ├─ agent/            # the agent loop, prompt assembly, context compaction
 │  ├─ tools/            # tool registry + built-in tools
 │  ├─ session/          # conversation state & persistence
-│  ├─ permissions.py    # the deny-first permission gate
-│  ├─ commands/ hooks/ plugins/ skills/   # extension surfaces
+│  ├─ permissions.py    # the deny-first permission gate (+ deny-rule grammar)
+│  ├─ secrets.py        # secret redaction at persistence boundaries
+│  ├─ commands/ hooks/ plugins/ skills/ rules/ memory/   # extension surfaces
 │  ├─ mcp/              # clean-room Model Context Protocol client
 │  ├─ evals/            # behavioral eval harness + probes
 │  ├─ server/           # FastAPI app + bundled web client (optional extra)
 │  └─ cli/              # the terminal client
 ├─ docs/                # living project documentation
-└─ tests/               # 653-test suite (incl. gated live-provider smoke tests)
+└─ tests/               # 805-test suite (incl. gated live-provider smoke tests)
 ```
 
 ## Acknowledgements & clean-room note

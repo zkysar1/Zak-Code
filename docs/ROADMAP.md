@@ -1,6 +1,6 @@
 # Zak Code — Engineering Roadmap
 
-> **Status:** Living document. Every milestone updates this file (see _Definition of done_). Last revised: 2026-05-30.
+> **Status:** Living document. Every milestone updates this file (see _Definition of done_). Last revised: 2026-06-01.
 > **Owner:** zkysar@gmail.com
 
 ---
@@ -556,6 +556,39 @@ remaining glue)._
 3. Layer deferred surfaces individually, each as its own mini-milestone with the same DoD discipline.
 
 **Definition of done:** a thin web client works against the server with zero agent logic; each deferred surface, when built, ships with tests and doc updates and does not modify the core loop.
+
+---
+
+### M11 — Learning substrate (P2) — ✅ DONE (2026-06-01, commits `7467420`…HEAD)
+
+> **Status: shipped.** Not a learning *policy* of its own — the **substrate seams** a
+> self-learning framework (e.g. Claude-Mind) folds into. Built in seven reviewed phases,
+> each adversarially fresh-eyes-reviewed and committed green:
+>
+> 1. **Text tool-calling fallback** (`providers/text_tools.py`) — tool-less local models
+>    get tool use via a `<tool_call>` text protocol; `tool_calling_mode` auto/native/text;
+>    untrusted tool output defanged in the rewritten history.
+> 2. **`PreLLMCall` context injection** (`hooks/`) — per-turn background context (memory/
+>    RAG/retrieval) folded in as an ephemeral, fenced-untrusted, **non-persisted** tail
+>    message → prompt-cache safe. In-process + shell hooks.
+> 3. **Rules** (`rules/`) — always-on `.md` guidance (`.zakcode/rules` + `.claude/rules`)
+>    in the cacheable tier; sub-agents inherit them; bounded render.
+> 4. **Cross-session memory** (`memory/`) — `MemoryProvider` ABC + SQLite/FTS5 default
+>    (relocatable), `remember`/`recall` tools, per-turn recall hook; secrets redacted at
+>    the store boundary (`secrets.py`).
+> 5. **Skill authoring** (`skills.save_skill` + `save_skill` tool, `.claude/skills`
+>    discovery) — runtime, path-traversal-safe skill creation.
+> 6. **Tier-2 items** — shared-budget refunds, real read-only tool concurrency
+>    (tier-guarded), operator deny-rule grammar (append/tighten-only), prompt-cache
+>    invariant test.
+> 7. **Lifecycle hooks + integration docs** — `SessionStart`/`PreCompact`/`SessionEnd`
+>    observe-only hooks; `Agent.aclose()`; [`docs/INTEGRATIONS.md`](INTEGRATIONS.md) maps
+>    every framework need to a seam.
+>
+> **801 passing tests; ruff + format + mypy clean.** **Deferred (see INTEGRATIONS.md):**
+> the autonomous "never-terminate" Stop-hook continuation loop, verbatim `settings.json`
+> hook ingestion, and managing a framework's background daemon — out of scope for a
+> coding agent; the safe fold-in is reader/assistant mode + the encode pass.
 
 ---
 

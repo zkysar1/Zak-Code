@@ -64,7 +64,13 @@ from zakcode.events import (
     AgentToolResult,
     AgentUsage,
 )
-from zakcode.hooks import HookEvent, HookManager, HookPayload, LLMContextPayload
+from zakcode.hooks import (
+    HookEvent,
+    HookManager,
+    HookPayload,
+    LifecyclePayload,
+    LLMContextPayload,
+)
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import (
@@ -196,6 +202,8 @@ class AgentLoop:
         # empty (no-op) manager so the hook calls are always safe to make.
         self.permission_policy = permission_policy
         self.hook_manager = hook_manager or HookManager()
+        # Fired once, lazily, on the first turn of this loop's lifetime (a session).
+        self._session_started = False
         if max_iterations is not None:
             self.max_iterations = max_iterations
         else:
@@ -233,6 +241,8 @@ class AgentLoop:
             count_tokens=lambda m: self.provider.count_tokens(m),
         ):
             return
+        # Let a host serialize learning/state before the transcript is compacted.
+        await self._fire_lifecycle(HookEvent.PRE_COMPACT, {"trigger": "auto"})
         try:
             result = await self.compactor.compact(
                 self.session.messages, summarize=self._summarize_for_compaction
@@ -254,6 +264,7 @@ class AgentLoop:
         """
         if self.compactor is None:
             return False
+        await self._fire_lifecycle(HookEvent.PRE_COMPACT, {"trigger": "manual"})
         result = await self.compactor.compact(
             self.session.messages, summarize=self._summarize_for_compaction
         )
@@ -469,6 +480,28 @@ class AgentLoop:
         if self.budget is not None:
             self.budget.refund(1)
 
+    async def _fire_lifecycle(
+        self, event: HookEvent, data: dict[str, object] | None = None
+    ) -> None:
+        """Fire a session-lifecycle hook (observe-only; cheap-checked, error-isolated)."""
+        if not self.hook_manager.has_lifecycle_hooks(event):
+            return
+        await self.hook_manager.fire(
+            LifecyclePayload(
+                event=event,
+                session_id=self.session.id,
+                cwd=str(self.workspace_root),
+                data=data or {},
+            )
+        )
+
+    async def _fire_session_start_once(self) -> None:
+        """Fire ``SESSION_START`` the first time a turn runs on this loop."""
+        if self._session_started:
+            return
+        self._session_started = True
+        await self._fire_lifecycle(HookEvent.SESSION_START)
+
     # ── public API ───────────────────────────────────────────────────────────
 
     async def arun_turn(self, user_text: str) -> TurnResult:
@@ -491,6 +524,7 @@ class AgentLoop:
             raise
 
     async def _run_turn(self, user_text: str) -> TurnResult:
+        await self._fire_session_start_once()
         await self._maybe_compact()
         self.session.add_message(Message.user(user_text))
         self._persist()
@@ -615,6 +649,7 @@ class AgentLoop:
         re-raised after a best-effort persist (matching :meth:`arun_turn`), so a
         cancelled stream never reports a normal stop.
         """
+        await self._fire_session_start_once()
         await self._maybe_compact()
         self.session.add_message(Message.user(user_text))
         self._persist()
