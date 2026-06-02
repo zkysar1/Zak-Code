@@ -109,3 +109,72 @@ def test_invoke_skill_no_registry_is_safe(tmp_path: Path) -> None:
     agent = _agent(tmp_path)  # skills disabled → no registry
     console, _ = _console()
     assert _invoke_skill(console, agent, "anything") is False
+
+
+# ── extra_skill_dirs (--skill-dir) ──────────────────────────────────────────────
+
+
+_EXT_SKILL = """\
+---
+name: ext-greeter
+description: Greet from an external directory.
+---
+# External Greeter
+Always greet with an external greeting.
+"""
+
+
+def _write_ext_skill(root: Path, name: str, text: str = _EXT_SKILL) -> None:
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(text, encoding="utf-8")
+
+
+def test_agent_extra_skill_dirs(tmp_path: Path) -> None:
+    ext = tmp_path / "external-skills"
+    _write_ext_skill(ext, "ext")
+    agent = _agent(tmp_path, enable_skills=True, extra_skill_dirs=[str(ext)])
+    assert agent.skill_registry is not None
+    assert "ext-greeter" in agent.skill_registry.names()
+    # L0 catalog includes the external skill
+    prompt = agent.loop.prompt_builder.build(agent.settings)
+    assert "ext-greeter" in prompt
+
+
+def test_agent_extra_skill_dir_body_is_lazy(tmp_path: Path) -> None:
+    ext = tmp_path / "external-skills"
+    _write_ext_skill(ext, "ext")
+    agent = _agent(tmp_path, enable_skills=True, extra_skill_dirs=[str(ext)])
+    skill = agent.skill_registry.get("ext-greeter")
+    assert skill is not None
+    assert skill.body_loaded is False
+    body = skill.body()
+    assert "external greeting" in body
+    assert skill.body_loaded is True
+
+
+def test_agent_extra_skill_dir_shadows_project(tmp_path: Path) -> None:
+    # Write a project skill and an external skill with the same name.
+    _write_skill(tmp_path, "g")  # name="greeter" in project .zakcode/skills
+    ext = tmp_path / "external-skills"
+    _write_ext_skill(
+        ext, "g2", "---\nname: greeter\ndescription: External wins.\n---\nbody\n"
+    )
+    agent = _agent(tmp_path, enable_skills=True, extra_skill_dirs=[str(ext)])
+    skill = agent.skill_registry.get("greeter")
+    assert skill is not None
+    assert skill.description == "External wins."
+
+
+def test_invoke_external_skill(tmp_path: Path) -> None:
+    ext = tmp_path / "external-skills"
+    _write_ext_skill(ext, "ext")
+    agent = _agent(tmp_path, enable_skills=True, extra_skill_dirs=[str(ext)])
+    console, buf = _console()
+    handled = _invoke_skill(console, agent, "ext-greeter")
+    assert handled is True
+    assert agent.skill_registry.get("ext-greeter").body_loaded is True
+    last = agent.session.messages[-1]
+    assert last.role == "user"
+    assert "external greeting" in last.text.lower()
+    assert "loaded skill" in buf.getvalue()

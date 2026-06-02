@@ -158,3 +158,48 @@ def test_discover_skills_project_overrides(tmp_path: Path) -> None:
     skill = registry.get("shared")
     assert skill is not None
     assert skill.description == "project version"
+
+
+# ── extra_skill_dirs (--skill-dir) ──────────────────────────────────────────────
+
+
+def test_discover_skills_extra_dirs(tmp_path: Path) -> None:
+    """Extra skill dirs are scanned and their skills appear in the registry."""
+    ext = tmp_path / "external-skills"
+    _write_skill(ext, "ext", "---\nname: ext-tool\ndescription: from external dir\n---\nbody\n")
+    registry, errors = discover_skills(tmp_path, extra_skill_dirs=[ext])
+    skill = registry.get("ext-tool")
+    assert skill is not None
+    assert skill.description == "from external dir"
+    assert errors == {}
+
+
+def test_discover_skills_extra_dir_shadows_project(tmp_path: Path) -> None:
+    """An extra skill dir is scanned AFTER project dirs, so it shadows same-named skills."""
+    proj = tmp_path / ".zakcode" / "skills"
+    _write_skill(proj, "s", "---\nname: shared\ndescription: project version\n---\nbody\n")
+    ext = tmp_path / "external-skills"
+    _write_skill(ext, "s", "---\nname: shared\ndescription: external version\n---\nbody\n")
+    registry, _ = discover_skills(tmp_path, extra_skill_dirs=[ext])
+    skill = registry.get("shared")
+    assert skill is not None
+    assert skill.description == "external version"
+
+
+def test_discover_skills_extra_dir_missing_is_harmless(tmp_path: Path) -> None:
+    """Passing a nonexistent extra skill dir produces no errors and no crash."""
+    registry, errors = discover_skills(
+        tmp_path, extra_skill_dirs=[tmp_path / "does-not-exist"]
+    )
+    # Should succeed with no skills from the missing dir (bundled may still be present).
+    assert errors == {}
+
+
+def test_discover_skills_multiple_extra_dirs(tmp_path: Path) -> None:
+    """Multiple extra dirs are scanned in order; later ones shadow earlier."""
+    ext1 = tmp_path / "skills-a"
+    ext2 = tmp_path / "skills-b"
+    _write_skill(ext1, "s", "---\nname: clash\ndescription: first\n---\nbody\n")
+    _write_skill(ext2, "s", "---\nname: clash\ndescription: second\n---\nbody\n")
+    registry, _ = discover_skills(tmp_path, extra_skill_dirs=[ext1, ext2])
+    assert registry.get("clash").description == "second"

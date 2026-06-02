@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -286,15 +287,24 @@ def save_skill(
     return md
 
 
-def discover_skills(workspace_root: str | Path) -> tuple[SkillRegistry, dict[str, str]]:
-    """Discover all skills (bundled → user → project) into a :class:`SkillRegistry`.
+def discover_skills(
+    workspace_root: str | Path,
+    *,
+    extra_skill_dirs: Sequence[str | Path] | None = None,
+) -> tuple[SkillRegistry, dict[str, str]]:
+    """Discover all skills (bundled -> user -> project [-> extra]) into a :class:`SkillRegistry`.
 
     Later sources override earlier ones by name (so a project skill shadows a bundled
-    one of the same name). Returns ``(registry, errors)``.
+    one of the same name). ``extra_skill_dirs``, when provided, are scanned *after* the
+    defaults — so an external skill directory (e.g. a claude-mind ``skills/`` tree)
+    shadows same-named project skills. Returns ``(registry, errors)``.
     """
     registry = SkillRegistry()
     all_errors: dict[str, str] = {}
-    for d in default_skill_dirs(workspace_root):
+    dirs = default_skill_dirs(workspace_root)
+    if extra_skill_dirs:
+        dirs.extend(Path(d) for d in extra_skill_dirs)
+    for d in dirs:
         skills, errors = discover_skill_dir(d)
         all_errors.update(errors)
         for skill in skills:

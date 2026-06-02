@@ -464,6 +464,7 @@ def _build_chat_agent(
     *,
     enable_memory: bool = True,
     enable_rules: bool = True,
+    extra_skill_dirs: list[str] | None = None,
 ) -> Agent:
     """Build the in-process chat Agent with every interactive feature enabled.
 
@@ -485,6 +486,7 @@ def _build_chat_agent(
         enable_plugins=True,
         trusted_plugins=trusted,
         enable_skills=True,
+        extra_skill_dirs=extra_skill_dirs,
         enable_rules=enable_rules,
         enable_memory=enable_memory,
         enable_compaction=True,
@@ -518,6 +520,14 @@ def chat(
     no_rules: bool = typer.Option(
         False, "--no-rules", help="Disable always-on rules (.zakcode/rules, .claude/rules)."
     ),
+    skill_dir: list[str] | None = typer.Option(  # noqa: B008 — typer convention
+        None,
+        "--skill-dir",
+        help=(
+            "Extra directory to scan for SKILL.md skills (one subdir per skill). "
+            "May be repeated. Later directories shadow earlier same-named skills."
+        ),
+    ),
 ) -> None:
     """Start an interactive agent session.
 
@@ -540,9 +550,14 @@ def chat(
     # A console prompter lets the in-core permission gate escalate to the operator,
     # so 'ask' mode is usable interactively (rather than failing closed). The gate
     # itself still lives in the core; the CLI only renders the prompt.
+    extra_skill_dirs = skill_dir if skill_dir else None
     prompter = ConsolePermissionPrompter(console)
     agent = _build_chat_agent(
-        prompter, overrides, enable_memory=not no_memory, enable_rules=not no_rules
+        prompter,
+        overrides,
+        enable_memory=not no_memory,
+        enable_rules=not no_rules,
+        extra_skill_dirs=extra_skill_dirs,
     )
     _print_banner(console, agent)
 
@@ -576,7 +591,11 @@ def chat(
                 continue
             if command == "/clear":
                 agent = _build_chat_agent(
-                    prompter, overrides, enable_memory=not no_memory, enable_rules=not no_rules
+                    prompter,
+                    overrides,
+                    enable_memory=not no_memory,
+                    enable_rules=not no_rules,
+                    extra_skill_dirs=extra_skill_dirs,
                 )
                 console.print("[dim]Started a fresh session.[/dim]")
                 continue

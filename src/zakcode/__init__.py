@@ -13,7 +13,7 @@ Nothing here triggers network activity at import time — only an actual
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -77,6 +77,7 @@ class Agent:
         enable_plugins: bool = False,
         trusted_plugins: list[str] | None = None,
         enable_skills: bool = False,
+        extra_skill_dirs: Sequence[str | Path] | None = None,
         enable_rules: bool = False,
         enable_memory: bool = False,
         memory_provider: MemoryProvider | None = None,
@@ -136,7 +137,9 @@ class Agent:
             from zakcode.skills import discover_skills, project_skills_dir
             from zakcode.tools.builtins.save_skill import SaveSkillTool
 
-            self.skill_registry, self.skill_errors = discover_skills(self.settings.workspace_root)
+            self.skill_registry, self.skill_errors = discover_skills(
+                self.settings.workspace_root, extra_skill_dirs=extra_skill_dirs
+            )
             skills_catalog = self.skill_registry.render_catalog()
             # Model-driven skill authoring (persisted to the project skills dir; the
             # new skill is discovered next session). save_skill validates the name so
