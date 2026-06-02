@@ -88,10 +88,15 @@ class SystemPromptBuilder:
     (cacheable) tier — used by sub-agents to scope their behavior (e.g. a planner
     told to produce a plan rather than edit files). It is constant for the builder's
     lifetime, so it belongs in the cacheable prefix, not the dynamic suffix.
+
+    ``rules`` (optional) is always-on, operator-authored guidance (see
+    :mod:`zakcode.rules`) rendered into the same stable tier. Like
+    ``extra_instructions`` it is constant per session, so it is cache-safe there.
     """
 
-    def __init__(self, *, extra_instructions: str | None = None) -> None:
+    def __init__(self, *, extra_instructions: str | None = None, rules: str | None = None) -> None:
         self.extra_instructions = extra_instructions
+        self.rules = rules
 
     def build(
         self,
@@ -124,6 +129,10 @@ class SystemPromptBuilder:
         tool_section = self._summarize_tools(tools)
         if tool_section:
             sections.append(tool_section)
+        # Always-on rules sit in the cacheable tier (constant per session), after the
+        # tool summary and before any sub-agent specialization text.
+        if self.rules and self.rules.strip():
+            sections.append(self.rules.strip())
         if self.extra_instructions and self.extra_instructions.strip():
             sections.append(self.extra_instructions.strip())
         return "\n\n".join(sections)

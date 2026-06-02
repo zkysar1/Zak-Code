@@ -118,6 +118,7 @@ class SubAgentRunner:
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
         workspace_root: Path | None = None,
+        rules: str | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -126,6 +127,9 @@ class SubAgentRunner:
         self.permission_policy = permission_policy
         self.hook_manager = hook_manager
         self.workspace_root = workspace_root or settings.workspace_root
+        # The parent's rendered always-on rules, threaded into every child's prompt so
+        # delegated work runs under the same standing guidance as the parent.
+        self.rules = rules
 
     def child_registry(self, definition: SubAgentDefinition) -> ToolRegistry:
         """The tool registry a child of ``definition`` will see (full, or a subset)."""
@@ -134,8 +138,13 @@ class SubAgentRunner:
         return self.registry.subset(definition.allowed_tools)
 
     def prompt_builder_for(self, definition: SubAgentDefinition) -> SystemPromptBuilder:
-        """The system-prompt builder for a child (specialized iff a suffix is set)."""
-        return SystemPromptBuilder(extra_instructions=definition.system_suffix)
+        """The system-prompt builder for a child (specialized iff a suffix is set).
+
+        The parent's always-on rules are carried through so a sub-agent obeys the
+        same operator guidance; the definition's ``system_suffix`` (e.g. Plan Mode)
+        coexists with them in the stable tier.
+        """
+        return SystemPromptBuilder(extra_instructions=definition.system_suffix, rules=self.rules)
 
     async def run(self, definition: SubAgentDefinition, prompt: str) -> SubAgentResult:
         """Run one sub-agent to completion and return its condensed summary.

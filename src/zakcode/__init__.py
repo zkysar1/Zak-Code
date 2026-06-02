@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from zakcode.mcp.config import McpServerConfig
     from zakcode.mcp.manager import DiscoveryReport, ExtensionManager
     from zakcode.plugins import PluginLoadReport
+    from zakcode.rules import RuleRegistry
     from zakcode.skills import SkillRegistry
 
 __all__ = ["Agent", "AgentLoop", "IterationBudget", "Message", "TurnResult", "__version__"]
@@ -75,6 +76,7 @@ class Agent:
         enable_plugins: bool = False,
         trusted_plugins: list[str] | None = None,
         enable_skills: bool = False,
+        enable_rules: bool = False,
         enable_compaction: bool = False,
         **setting_overrides: Any,
     ) -> None:
@@ -115,6 +117,43 @@ class Agent:
 
         self.command_registry = CommandRegistry()
 
+        # Stable-tier prompt content (skills catalog + always-on rules), discovered
+        # BEFORE delegation so sub-agents can inherit the same rules. Both are opt-in;
+        # a bad skill/rule file is recorded, never fatal.
+        self.skill_registry: SkillRegistry | None = None
+        self.skill_errors: dict[str, str] = {}
+        skills_catalog = ""
+        if enable_skills:
+            from zakcode.skills import discover_skills
+
+            self.skill_registry, self.skill_errors = discover_skills(self.settings.workspace_root)
+            skills_catalog = self.skill_registry.render_catalog()
+
+        # Rules: always-on guidance (bundled + user + project, incl. .claude/rules for
+        # Claude-Code/Claude-Mind compatibility) rendered into the cacheable tier.
+        self.rule_registry: RuleRegistry | None = None
+        self.rule_errors: dict[str, str] = {}
+        rules_text = ""
+        if enable_rules:
+            from zakcode.rules import discover_rules
+
+            self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
+            rules_text = self.rule_registry.render()
+
+        # Wire the discovered content into the prompt builder. With no injected
+        # builder, construct one; with an injected builder, fill any empty stable-tier
+        # slot so enable_skills/enable_rules are never silently no-ops.
+        if prompt_builder is None and (skills_catalog or rules_text):
+            prompt_builder = SystemPromptBuilder(
+                extra_instructions=skills_catalog or None,
+                rules=rules_text or None,
+            )
+        elif prompt_builder is not None:
+            if skills_catalog and not prompt_builder.extra_instructions:
+                prompt_builder.extra_instructions = skills_catalog
+            if rules_text and not prompt_builder.rules:
+                prompt_builder.rules = rules_text
+
         # Delegation (M4), opt-in. When enabled, the parent gets the ``task`` tool and
         # a shared :class:`IterationBudget`, and a :class:`SubAgentManager` is placed
         # on the loop so ``task`` can launch sub-agents. Sub-agents are built (in the
@@ -141,6 +180,7 @@ class Agent:
                 permission_policy=self.permission_policy,
                 hook_manager=self.hook_manager,
                 workspace_root=self.settings.workspace_root,
+                rules=rules_text or None,  # sub-agents inherit the parent's always-on rules
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
             # subset omits write tools, so Plan Mode is schema-enforced).
@@ -199,20 +239,6 @@ class Agent:
                 command_registry=self.command_registry,
                 settings=self.settings,
             )
-
-        # Skills (M7), opt-in. Discover SKILL.md skills (bundled + user + project) and
-        # surface their L0 catalog (name + description) in the cacheable system-prompt
-        # tier; bodies stay lazy until a skill is invoked. A bad skill is recorded,
-        # never fatal.
-        self.skill_registry: SkillRegistry | None = None
-        self.skill_errors: dict[str, str] = {}
-        if enable_skills:
-            from zakcode.skills import discover_skills
-
-            self.skill_registry, self.skill_errors = discover_skills(self.settings.workspace_root)
-            catalog = self.skill_registry.render_catalog()
-            if prompt_builder is None and catalog:
-                prompt_builder = SystemPromptBuilder(extra_instructions=catalog)
 
         # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
         # before a turn once it exceeds the provider's context-window threshold.
