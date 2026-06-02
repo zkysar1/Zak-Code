@@ -12,16 +12,13 @@ from zakcode.permissions import (
     PermissionPolicy,
     PermissionRequest,
 )
-from zakcode.tools.base import ConcurrencyClass, ToolSpec
+from zakcode.tools.base import ToolSpec
 
 
 def _spec(name: str, tier: PermissionTier) -> ToolSpec:
-    return ToolSpec(
-        name=name,
-        description=f"{name} tool",
-        required_permission=tier,
-        concurrency=ConcurrencyClass.READ_ONLY_SAFE,
-    )
+    # Concurrency is irrelevant to permission decisions; leave it defaulted (a
+    # READ_ONLY_SAFE tool must be READ_ONLY tier, enforced by ToolSpec).
+    return ToolSpec(name=name, description=f"{name} tool", required_permission=tier)
 
 
 READ = _spec("read_file", PermissionTier.READ_ONLY)

@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     permission_mode: str = Field(
         default="ask", description="One of: ask | acceptEdits | allow | deny."
     )
+    denied_commands: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra operator deny regexes (case-insensitive) appended to the built-in "
+            "dangerous-command blocklist; they only ever tighten the verdict."
+        ),
+    )
     workspace_root: Path = Field(
         default_factory=Path.cwd, description="Root directory the agent operates within."
     )

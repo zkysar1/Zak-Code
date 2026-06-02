@@ -34,6 +34,7 @@ Authorization combines two independent checks, and the stricter wins:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -168,6 +169,29 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 #: Argument keys whose string values are scanned against DANGEROUS_PATTERNS.
 _SHELL_ARG_KEYS = ("command", "cmd", "script")
 
+logger = logging.getLogger("zakcode.permissions")
+
+
+def compile_deny_patterns(specs: list[str]) -> list[tuple[re.Pattern[str], str]]:
+    """Compile operator-supplied deny regex strings into blocklist patterns.
+
+    This is the small "grammar" for adding project- or operator-specific denies
+    (e.g. from ``ZAKCODE_DENIED_COMMANDS``): each string is a case-insensitive
+    regex matched against shell-command arguments. Added patterns can only ever
+    *tighten* the verdict (they ride the same escalate-to-prompt / deny path as the
+    built-in blocklist and are never able to loosen it). An invalid regex is skipped
+    with a warning rather than raising.
+    """
+    compiled: list[tuple[re.Pattern[str], str]] = []
+    for spec in specs:
+        if not isinstance(spec, str) or not spec.strip():
+            continue
+        try:
+            compiled.append((re.compile(spec, re.IGNORECASE), f"operator deny rule: {spec}"))
+        except re.error as exc:
+            logger.warning("ignoring invalid deny pattern %r: %s", spec, exc)
+    return compiled
+
 
 class PermissionRequest(BaseModel):
     """What the operator is being asked to confirm (passed to a prompter)."""
@@ -215,12 +239,16 @@ class PermissionPolicy:
         *,
         prompter: PermissionPrompter | None = None,
         dangerous_patterns: list[tuple[re.Pattern[str], str]] | None = None,
+        extra_dangerous_patterns: list[tuple[re.Pattern[str], str]] | None = None,
     ) -> None:
         self.mode = PermissionMode.parse(mode)
         self.prompter = prompter
-        self.dangerous_patterns = (
-            DANGEROUS_PATTERNS if dangerous_patterns is None else dangerous_patterns
-        )
+        # ``dangerous_patterns`` REPLACES the baseline (advanced); the common path
+        # leaves it None and uses the built-in list. ``extra_dangerous_patterns`` is
+        # APPENDED, so operator/project deny rules (see ``compile_deny_patterns``)
+        # can only ever tighten the blocklist, never remove a built-in footgun.
+        base = DANGEROUS_PATTERNS if dangerous_patterns is None else dangerous_patterns
+        self.dangerous_patterns = [*base, *(extra_dangerous_patterns or [])]
         self._session_allow: set[str] = set()
         self._session_deny: set[str] = set()
 
@@ -326,4 +354,5 @@ __all__ = [
     "PermissionPrompter",
     "PermissionPolicy",
     "DANGEROUS_PATTERNS",
+    "compile_deny_patterns",
 ]

@@ -104,6 +104,24 @@ class IterationBudget:
                 f"need {n} iteration(s) but only {self.remaining} remain of {self._total}"
             )
 
+    def refund(self, n: int = 1) -> int:
+        """Return up to ``n`` consumed iterations to the shared pool.
+
+        Used when an iteration did no real work (an empty model completion, or a
+        tool batch that was entirely permission-denied / hook-vetoed), so wasted
+        iterations do not deplete a *shared* delegation budget at the expense of
+        siblings. Refunds only the shared pool — the per-turn ``max_iterations`` cap
+        is unaffected, so refunding can never turn a turn into an unbounded loop.
+        Capped at :attr:`consumed` (never goes negative); returns the amount actually
+        refunded. ``await``-free, so it is atomic against concurrently-scheduled
+        siblings, like :meth:`try_consume`.
+        """
+        if n < 0:
+            raise ValueError("cannot refund a negative amount")
+        refunded = min(n, self._consumed)
+        self._consumed -= refunded
+        return refunded
+
     # ── child accounting ─────────────────────────────────────────────────────
 
     def can_spawn_child(self) -> bool:

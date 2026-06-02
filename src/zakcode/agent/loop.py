@@ -54,7 +54,7 @@ from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
 from zakcode.agent.prompt import SystemPromptBuilder
-from zakcode.config import Settings, load_settings
+from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
     AgentEvent,
@@ -77,7 +77,13 @@ from zakcode.providers.base import (
     ToolCall,
 )
 from zakcode.session.store import Session, SessionStore
-from zakcode.tools.base import SubAgentSpawner, ToolContext, ToolRegistry, ToolSpec
+from zakcode.tools.base import (
+    ConcurrencyClass,
+    SubAgentSpawner,
+    ToolContext,
+    ToolRegistry,
+    ToolSpec,
+)
 from zakcode.usage import Usage
 
 #: Fallback iteration budget when neither an explicit value nor settings provide one.
@@ -406,6 +412,63 @@ class AgentLoop:
             data=tool_res.data,
         )
 
+    def _is_read_only_safe(self, call: ToolCall) -> bool:
+        """Whether ``call`` may join a concurrent batch.
+
+        Requires BOTH a ``READ_ONLY_SAFE`` concurrency class AND a ``READ_ONLY``
+        permission tier. The loop does not *trust* the concurrency declaration alone:
+        a tool mis-declared ``READ_ONLY_SAFE`` but writing/dangerous (e.g. a buggy
+        plugin spec) would, if parallelized, dodge ``PATH_SCOPED`` serialization and
+        could trigger interleaved permission prompts — so a non-read-only tier falls
+        to the sequential path by construction. An unknown tool is also not safe.
+        """
+        tool = self.registry.get(call.name)
+        return (
+            tool is not None
+            and tool.spec.concurrency is ConcurrencyClass.READ_ONLY_SAFE
+            and tool.spec.required_permission is PermissionTier.READ_ONLY
+        )
+
+    async def _execute_batch(
+        self, calls: list[ToolCall], ctx: ToolContext
+    ) -> list[ToolResultBlock]:
+        """Execute one iteration's tool-call batch, parallelizing when it is safe.
+
+        A batch of two-or-more calls that are *all* ``READ_ONLY_SAFE`` (no side
+        effects, and — being READ_ONLY tier — never escalated to a permission
+        prompt) runs concurrently via :func:`asyncio.gather`; anything else (a
+        write, a shell command, an unknown tool, a single call) runs sequentially.
+        Result order matches call order either way. This is where the long-declared
+        :class:`ConcurrencyClass` finally gates real parallelism.
+        """
+        if len(calls) > 1 and all(self._is_read_only_safe(c) for c in calls):
+            return list(await asyncio.gather(*(self._execute_tool_call(c, ctx) for c in calls)))
+        blocks: list[ToolResultBlock] = []
+        for call in calls:
+            blocks.append(await self._execute_tool_call(call, ctx))
+        return blocks
+
+    @staticmethod
+    def _batch_did_no_work(blocks: list[ToolResultBlock]) -> bool:
+        """True iff every result was a permission denial or hook veto (no tool ran).
+
+        Such an iteration accomplished nothing, so its shared-budget unit is refunded
+        — the model still gets the feedback and may retry within the per-turn cap.
+        """
+        if not blocks:
+            return False
+        return all(
+            b.is_error
+            and isinstance(b.data, dict)
+            and bool(b.data.get("permission_denied") or b.data.get("hook_blocked"))
+            for b in blocks
+        )
+
+    def _refund_iteration(self) -> None:
+        """Return one iteration to the shared budget (no-op without a shared budget)."""
+        if self.budget is not None:
+            self.budget.refund(1)
+
     # ── public API ───────────────────────────────────────────────────────────
 
     async def arun_turn(self, user_text: str) -> TurnResult:
@@ -472,6 +535,9 @@ class AgentLoop:
 
             # An empty completion (no text, no tool calls) ends the turn cleanly.
             if not result.has_tool_calls:
+                # A truly empty completion did no work — refund its shared-budget unit.
+                if not result.text:
+                    self._refund_iteration()
                 stop_reason = "completed"
                 break
 
@@ -491,14 +557,14 @@ class AgentLoop:
                 stop_reason = "doom_loop"
                 break
 
-            result_blocks: list[ToolResultBlock] = []
-            for call in result.tool_calls:
-                # Each call runs through the permission + hook gate. A denial,
-                # veto, or tool error becomes an error result that is fed back so
-                # the model can recover — it never aborts the turn.
-                block = await self._execute_tool_call(call, ctx)
-                result_blocks.append(block)
-                turn_tool_results.append(block)
+            # Each call runs through the permission + hook gate (a denial, veto, or
+            # tool error becomes an error result fed back so the model can recover —
+            # it never aborts the turn). A wholly read-only batch runs concurrently.
+            result_blocks = await self._execute_batch(result.tool_calls, ctx)
+            turn_tool_results.extend(result_blocks)
+            # If the whole batch was denied/vetoed, no work happened — refund the unit.
+            if self._batch_did_no_work(result_blocks):
+                self._refund_iteration()
 
             self.session.add_message(Message.tool_results(result_blocks))
             self._persist()
@@ -606,6 +672,8 @@ class AgentLoop:
 
                 # No tool calls → the turn is complete.
                 if not tool_calls:
+                    if not assistant_text:  # truly empty completion did no work
+                        self._refund_iteration()
                     stop_reason = "completed"
                     break
 
@@ -621,8 +689,10 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: repeated identical tool calls")
                     break
 
-                # Execute each call sequentially through the SAME gate as the
-                # buffered path (_execute_tool_call), surfacing call + result events.
+                # Execute each call sequentially through the SAME gate as the buffered
+                # path (_execute_tool_call), surfacing call + result events live. (The
+                # streaming path stays sequential to preserve interleaved event order;
+                # the buffered path parallelizes wholly-read-only batches.)
                 result_blocks: list[ToolResultBlock] = []
                 for call in tool_calls:
                     yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
@@ -633,6 +703,8 @@ class AgentLoop:
                         output=block.output,
                         is_error=block.is_error,
                     )
+                if self._batch_did_no_work(result_blocks):
+                    self._refund_iteration()
 
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()

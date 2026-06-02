@@ -110,8 +110,12 @@ class Agent:
         # from settings.permission_mode (default 'ask'). An interactive client may
         # pass a ``prompter`` so escalations can be approved; with none, 'ask'
         # fails closed (writes/shell denied) — safe for non-interactive use.
+        from zakcode.permissions import compile_deny_patterns
+
         self.permission_policy = permission_policy or PermissionPolicy(
-            self.settings.permission_mode, prompter=prompter
+            self.settings.permission_mode,
+            prompter=prompter,
+            extra_dangerous_patterns=compile_deny_patterns(self.settings.denied_commands),
         )
         self.hook_manager = hook_manager or HookManager()
         # Slash-command registry (M6) — plugins register commands here; clients

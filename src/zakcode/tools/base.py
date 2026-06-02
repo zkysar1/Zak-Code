@@ -23,7 +23,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from zakcode.config import PermissionTier
 
@@ -61,6 +61,31 @@ class ToolSpec(BaseModel):
     )
     required_permission: PermissionTier = PermissionTier.READ_ONLY
     concurrency: ConcurrencyClass = ConcurrencyClass.READ_ONLY_SAFE
+
+    @model_validator(mode="after")
+    def _check_concurrency_tier(self) -> ToolSpec:
+        """Reject an *explicitly* ``READ_ONLY_SAFE`` tool that is not ``READ_ONLY`` tier.
+
+        The scheduler parallelizes a batch only when every call is ``READ_ONLY_SAFE``,
+        on the assumption that such tools have no side effects and never prompt (true
+        only for ``READ_ONLY`` tier). Flagging the inconsistent combination at
+        construction gives a tool author immediate feedback instead of a silent
+        sequential fallback. Only an *explicit* ``concurrency=READ_ONLY_SAFE`` is
+        checked: the field's default is ``READ_ONLY_SAFE``, so a writing tool that
+        merely sets its tier and leaves concurrency defaulted is not rejected here
+        (the loop's own tier guard keeps it off the parallel path at runtime).
+        """
+        if (
+            "concurrency" in self.model_fields_set
+            and self.concurrency is ConcurrencyClass.READ_ONLY_SAFE
+            and self.required_permission is not PermissionTier.READ_ONLY
+        ):
+            raise ValueError(
+                "a READ_ONLY_SAFE tool must be READ_ONLY tier "
+                f"(tool {self.name!r} is {self.required_permission.name}); use PATH_SCOPED "
+                "or NEVER_PARALLEL for a writing/dangerous tool"
+            )
+        return self
 
     def to_openai(self) -> dict[str, Any]:
         """Render this spec as an OpenAI-shaped function-tool definition.
