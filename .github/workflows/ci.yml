@@ -27,17 +27,20 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Sync (dev extras)
+      - name: Sync (dev + server extras)
         run: uv sync --extra dev --extra server --python ${{ matrix.python-version }}
 
+      # Every step uses --no-sync so it runs against the env synced above and never
+      # re-syncs to the default (which would prune the optional `server` extra — i.e.
+      # uninstall fastapi — and break the server tests' collection).
       - name: Ruff (lint)
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
 
       - name: Ruff (format check)
-        run: uv run ruff format --check .
+        run: uv run --no-sync ruff format --check .
 
       - name: Mypy (type check)
-        run: uv run mypy
+        run: uv run --no-sync mypy
 
       - name: Pytest
-        run: uv run pytest -q
+        run: uv run --no-sync pytest -q
