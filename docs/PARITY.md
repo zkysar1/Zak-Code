@@ -10,9 +10,20 @@ Every row in the tables below corresponds to something Claude Code ships today
 board; this matrix is the single place where status, priority, and target milestone are
 tracked as Zak Code is built out.
 
-> Status note: Zak Code is at the planning stage. All items are `Planned`. As components
-> land, flip status to `In Progress` → `Done` (or `Partial` / `Deferred`) and keep the
-> milestone/notes columns honest.
+> **Status note (2026-06-02): M0–M11 have shipped** — the core loop, streaming, permissions,
+> HTTP server, sub-agents, MCP, plugins, skills, compaction, evals, the web client, and the
+> **M11 learning substrate** (text tool-calling fallback for local models, a cache-safe
+> `PreLLMCall` context-injection seam, session-lifecycle hooks, always-on rules, cross-session
+> memory, runtime skill authoring, an operator deny-rule grammar, and read-safe parallel tool
+> execution). [`ROADMAP.md`](ROADMAP.md) is the **canonical build record**.
+>
+> This parity matrix lags it on purpose: per-row status is flipped **only for rows that map to
+> the Claude Code reference surface, as they land**, so some rows below still read `Planned`
+> even though the underlying capability shipped (a full row-by-row reconciliation is a separate
+> pass). **When this matrix and ROADMAP disagree, ROADMAP wins.** Several M11 surfaces — most
+> notably the text fallback that lets *local* models call tools — are Zak-Code-beyond-reference
+> (Claude Code is native-tool-only), so they have no parity row here; see
+> [`INTEGRATIONS.md`](INTEGRATIONS.md).
 
 ---
 
@@ -22,7 +33,8 @@ tracked as Zak Code is built out.
 row here is `yes` (this matrix only tracks parity against things Claude Code actually ships).
 
 **Zak Code status**
-- `Planned` — Agreed for the roadmap, not started. (Current value for everything.)
+- `Planned` — Agreed for the roadmap, not started. (Note: per the status note above, some
+  rows still read `Planned` though the capability shipped — this matrix is reconciled lazily.)
 - `In Progress` — Actively being built.
 - `Partial` — Usable but incomplete vs. Claude Code behavior.
 - `Done` — At parity (or deliberately-scoped equivalent) and shipped.
@@ -96,7 +108,7 @@ groups are listed individually; pure helpers are noted at the end).
 | ReadMcpResourceTool | Read a specific MCP resource (`server`, `uri`) | yes | Planned | P1 | M2 | NET. |
 | McpAuthTool | Authenticate to an MCP server (OAuth) | yes | Planned | P1 | M2 | NET. Tri-state auth + token cache. |
 | ConfigTool | Read/write supported CLI settings programmatically (`setting`, `value`) | yes | Planned | P1 | M2 | FS (settings). Restrict to supportedSettings allowlist. |
-| SkillTool | Discover and execute a registered skill (`skill`, `args`) | yes | Planned | P1 | M2 | FS, indirect NET/PROC. Progressive disclosure of SKILL.md. |
+| SkillTool | Discover and execute a registered skill (`skill`, `args`) | yes | Partial | P1 | M2 | FS, indirect NET/PROC. Skills are discovered (L0 catalog) + invoked via `/<name>` (M7) and authored via the `save_skill` tool (M11); a dedicated model-facing `skill` *execute* tool is not separately shipped. |
 | NotebookEditTool | Edit Jupyter notebook cells (`notebook_path`, `cell_id`, `source`, `cell_type`, `edit_mode`) | yes | Planned | P1 | M2 | FS. |
 | ToolSearchTool | Search for / lazily load deferred tool schemas (`query`, `max_results`) | yes | Planned | P1 | M2 | Keeps base prompt small; load schemas on demand. |
 | AskUserQuestionTool | Pause and ask the user a structured multiple-choice question (`question`, `options/header`) | yes | Planned | P1 | M2 | Interactive — force sequential (never parallel). |
@@ -249,11 +261,11 @@ of each subsystem Zak Code plans to build vs. defer.
 | TUI essentials | Minimal Ink/React-equivalent terminal UI: App, REPL, core dialogs | yes | Planned | P0 | M1 | Stream-safe-boundary markdown flushing; live status line (iterations, tokens, compaction, model). |
 | Services: mcp | MCP connection manager + tool routing into the live registry | yes | Done | P1 | M5 | `ExtensionManager` + `MCPClient`; qualified `mcp__<server>__<tool>` names; lazy spawn + initialize-once; stdio shipped (streamable-HTTP deferred); tools connected into the loop with lazy `tool_search` + budget. |
 | Sub-agents / coordinator (single) | `coordinatorMode`; single sub-agent delegation with isolated context | yes | Planned | P1 | M2 | First-class async task with structured handoff + condensed summaries; shared IterationBudget; max-iterations cap (not unbounded). |
-| Hooks runtime | PreToolUse/PostToolUse lifecycle hook execution (currently config-only in the port) | yes | **Done** | P1 | M2 | ✅ Exit-code protocol (0=allow/2=block/other=warn), JSON-on-stdin, argv arrays (no shell injection) + in-process callbacks; every failure error-isolated. Commit `3cbe12f`. |
-| Skills registry + bundled | `loadSkillsDir`, bundled skills, MCP skill-builders; `/skills` surface | yes | Done | P1 | M7 | SKILL.md frontmatter + 3-level disclosure (L0 catalog in prompt, L1 body lazy, L2 files); `/skills` + `/<name>` invocation. Manual-authored; autonomous curator deferred. |
+| Hooks runtime | PreToolUse/PostToolUse lifecycle hook execution (currently config-only in the port) | yes | **Done** | P1 | M2 | ✅ Exit-code protocol (0=allow/2=block/other=warn), JSON-on-stdin, argv arrays (no shell injection) + in-process callbacks; every failure error-isolated (commit `3cbe12f`). **M11** added a cache-safe `PreLLMCall` context-injection seam and observe-only session-lifecycle hooks (`SessionStart`/`PreCompact`/`SessionEnd`). |
+| Skills registry + bundled | `loadSkillsDir`, bundled skills, MCP skill-builders; `/skills` surface | yes | Done | P1 | M7 | SKILL.md frontmatter + 3-level disclosure (L0 catalog in prompt, L1 body lazy, L2 files); `/skills` + `/<name>` invocation. **M11** added runtime authoring (`save_skill`, path-traversal-safe) + `.claude/skills` discovery; the autonomous *curator* (deciding when to forge) is left to an integrating framework — see [`INTEGRATIONS.md`](INTEGRATIONS.md). |
 | Keybindings | Default + user bindings, parser/matcher/resolver, schema, validation | yes | Planned | P1 | M2 | |
 | Output styles | Load output styles from a directory | yes | Planned | P1 | M2 | |
-| SessionMemory | Persistent session memory + prompts; cross-session recall | yes | Planned | P1 | M2 | Frozen-snapshot memory + FTS5 search; MemoryProvider ABC. |
+| SessionMemory | Persistent session memory + prompts; cross-session recall | yes | **Done** | P1 | M11 | ✅ `MemoryProvider` ABC + local SQLite/**FTS5** store (relocatable; default `<workspace>/.zakcode/memory.db`); `remember`/`recall` tools + a `PreLLMCall` recall hook injecting relevant memories per turn; secrets redacted at write + recall. |
 | Prompt suggestion | PromptSuggestion (+ speculation) service | yes | Planned | P1 | M2 | |
 | Plugins | Loader + marketplace + `services/plugins` (install/enable/disable/update/trust); contribute hooks/tools/commands/MCP | yes | Done | P2 | M6 | Shipped (M6): `register(ctx)` entrypoint, dir + entry-point discovery, trust+enable gating (import deferred until trusted), narrow `PluginContext` contributing tools/hooks/commands, `/plugins`. Deferred: marketplace/install, subprocess tool contract (JSON via stdin+env), `/reload-plugins`. |
 | Migrations | Settings/model migrations (auto-update, permission, model renames, repl-bridge → remote-control) | yes | Planned | P2 | M3 | |
@@ -295,3 +307,14 @@ services layer are net-new builds for Zak Code — plus real token counting + au
 execution, structured tool I/O and thinking-block persistence, one shared async event loop,
 atomic session writes, MCP tools actually connected into the loop, and safer permission
 defaults (deny-unknown, gated default mode, input-pattern rules).
+
+**Update (through M11):** of the above, the following have **shipped** — runtime hook
+execution (M2), the plugin subsystem (M6), real token counting + auto-compaction + LLM
+summaries (M8), read-safe parallel tool execution (M11), structured tool I/O + one shared
+event loop + atomic session writes (M0), MCP-into-the-loop (M5), and the safer permission
+defaults (M2). M11 also adds, **beyond** the Claude Code reference surface, a text
+tool-calling fallback (local models), a cache-safe `PreLLMCall` hook, session-lifecycle
+hooks, always-on rules, cross-session memory + FTS5 recall, runtime skill authoring, and an
+operator deny-rule grammar — the substrate a self-learning framework folds into
+([`INTEGRATIONS.md`](INTEGRATIONS.md)). Prompt `cache_control` and the remote/transport/SDK
+surface remain the main open items.
