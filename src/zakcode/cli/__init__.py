@@ -478,6 +478,8 @@ def _build_chat_agent(prompter: ConsolePermissionPrompter, overrides: dict[str, 
         enable_plugins=True,
         trusted_plugins=trusted,
         enable_skills=True,
+        enable_rules=True,
+        enable_memory=True,
         enable_compaction=True,
         **overrides,
     )

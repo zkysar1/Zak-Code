@@ -265,7 +265,13 @@ class Agent:
             from zakcode.memory.sqlite_store import SqliteMemoryProvider
             from zakcode.tools.builtins.memory import RecallTool, RememberTool
 
-            self.memory = memory_provider or SqliteMemoryProvider(self.settings.memory_db_path)
+            # Default the store to <workspace>/.zakcode/memory.db — per-project memory
+            # (no cross-project bleed; isolated under a tmp workspace in tests). An
+            # explicit memory_db_path (or ZAKCODE_MEMORY_DB_PATH) overrides it.
+            db_path = self.settings.memory_db_path or str(
+                Path(self.settings.workspace_root) / ".zakcode" / "memory.db"
+            )
+            self.memory = memory_provider or SqliteMemoryProvider(db_path)
             self.registry.register(RememberTool(self.memory, source=self.session.id))
             self.registry.register(
                 RecallTool(self.memory, default_limit=self.settings.memory_recall_limit)

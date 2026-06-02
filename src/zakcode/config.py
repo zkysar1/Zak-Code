@@ -110,7 +110,10 @@ class Settings(BaseSettings):
     # ── Cross-session memory (opt-in via Agent(enable_memory=True)) ──────────
     memory_db_path: str | None = Field(
         default=None,
-        description="Path to the cross-session memory SQLite DB (default ~/.zakcode/memory.db).",
+        description=(
+            "Path to the cross-session memory SQLite DB. When unset, the Agent "
+            "defaults it to <workspace>/.zakcode/memory.db (per-project memory)."
+        ),
     )
     memory_recall_limit: int = Field(
         default=5, ge=0, description="How many memories the recall hook injects per turn."
