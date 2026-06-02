@@ -17,6 +17,7 @@ from zakcode.hooks import (
     HookPayload,
     HookResult,
     HookSpec,
+    LLMContextPayload,
 )
 
 
@@ -226,3 +227,109 @@ def test_register_adds_in_process_hook() -> None:
     mgr = HookManager()
     mgr.register(HookEvent.PRE_TOOL_USE, lambda p: None)
     assert mgr.has_hooks(HookEvent.PRE_TOOL_USE, "bash") is True
+
+
+# ── PRE_LLM_CALL context hooks ────────────────────────────────────────────────
+
+
+def _ctx(**kw) -> LLMContextPayload:
+    base: dict = {"user_text": "fix the bug", "cwd": "/w", "iteration": 1}
+    base.update(kw)
+    return LLMContextPayload(**base)
+
+
+async def test_gather_context_in_process_returns_text() -> None:
+    mgr = HookManager()
+    mgr.register_context(lambda p: f"recalled: {p.user_text}")
+    texts = await mgr.gather_context(_ctx())
+    assert texts == ["recalled: fix the bug"]
+
+
+async def test_gather_context_skips_none_and_blank() -> None:
+    mgr = HookManager(context=[lambda p: None, lambda p: "   ", lambda p: "keep"])
+    assert await mgr.gather_context(_ctx()) == ["keep"]
+
+
+async def test_gather_context_async_hook_supported() -> None:
+    async def recall(p: LLMContextPayload) -> str:
+        return "async recall"
+
+    mgr = HookManager(context=[recall])
+    assert await mgr.gather_context(_ctx()) == ["async recall"]
+
+
+async def test_gather_context_isolates_raising_hook() -> None:
+    def boom(p: LLMContextPayload) -> str:
+        raise RuntimeError("kaboom")
+
+    mgr = HookManager(context=[boom, lambda p: "survived"])
+    # A raising context hook contributes nothing; it never breaks the turn.
+    assert await mgr.gather_context(_ctx()) == ["survived"]
+
+
+def test_has_context_hooks_precheck() -> None:
+    assert HookManager().has_context_hooks() is False
+    assert HookManager(context=[lambda p: "x"]).has_context_hooks() is True
+    spec = HookSpec(event=HookEvent.PRE_LLM_CALL, command=["x"])
+    assert HookManager([spec]).has_context_hooks() is True
+    # A tool-event shell hook does NOT count as a context hook.
+    tool_spec = HookSpec(event=HookEvent.PRE_TOOL_USE, command=["x"])
+    assert HookManager([tool_spec]).has_context_hooks() is False
+
+
+async def test_context_shell_hook_reads_payload_and_returns_stdout(tmp_path: Path) -> None:
+    # Echo the user_text (read from stdin) back as injected context.
+    body = (
+        "import sys, json\ndata = json.load(sys.stdin)\nprint('memory for ' + data['user_text'])\n"
+    )
+    cmd = _script(tmp_path, "recall.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.PRE_LLM_CALL, command=cmd)])
+    texts = await mgr.gather_context(_ctx(user_text="ship it"))
+    assert texts == ["memory for ship it"]
+
+
+async def test_context_shell_hook_json_context_key(tmp_path: Path) -> None:
+    body = "import sys, json\nprint(json.dumps({'context': 'from json'}))\n"
+    cmd = _script(tmp_path, "json_ctx.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.PRE_LLM_CALL, command=cmd)])
+    assert await mgr.gather_context(_ctx()) == ["from json"]
+
+
+async def test_context_shell_hook_nonzero_exit_contributes_nothing(tmp_path: Path) -> None:
+    body = "import sys; print('ignored'); sys.exit(1)\n"
+    cmd = _script(tmp_path, "fail.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.PRE_LLM_CALL, command=cmd)])
+    assert await mgr.gather_context(_ctx()) == []
+
+
+async def test_context_shell_hook_missing_command_is_isolated() -> None:
+    spec = HookSpec(event=HookEvent.PRE_LLM_CALL, command=["nonexistent_zzz_cmd"])
+    mgr = HookManager([spec])
+    assert await mgr.gather_context(_ctx()) == []  # never raises
+
+
+async def test_context_shell_hook_json_without_context_key_contributes_nothing(
+    tmp_path: Path,
+) -> None:
+    body = "import json\nprint(json.dumps({'note': 'no context key here'}))\n"
+    cmd = _script(tmp_path, "no_key.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.PRE_LLM_CALL, command=cmd)])
+    assert await mgr.gather_context(_ctx()) == []
+
+
+async def test_context_shell_hook_non_dict_json_used_as_text(tmp_path: Path) -> None:
+    body = "import json\nprint(json.dumps('plain string'))\n"
+    cmd = _script(tmp_path, "bare.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.PRE_LLM_CALL, command=cmd)])
+    # A bare JSON value is not unwrapped; it is used verbatim (quotes included).
+    assert await mgr.gather_context(_ctx()) == ['"plain string"']
+
+
+async def test_gather_context_in_process_before_shell_order(tmp_path: Path) -> None:
+    cmd = _script(tmp_path, "shelltext.py", "print('from-shell')\n")
+    mgr = HookManager(
+        [HookSpec(event=HookEvent.PRE_LLM_CALL, command=cmd)],
+        context=[lambda p: "from-inprocess"],
+    )
+    # In-process contributions come first, then shell contributions.
+    assert await mgr.gather_context(_ctx()) == ["from-inprocess", "from-shell"]

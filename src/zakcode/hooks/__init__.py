@@ -36,10 +36,18 @@ DEFAULT_HOOK_TIMEOUT = 10.0
 
 
 class HookEvent(StrEnum):
-    """Lifecycle points a hook can fire on. M2 implements the tool-use pair."""
+    """Lifecycle points a hook can fire on.
+
+    The tool-use pair (M2) gates each tool call. ``PRE_LLM_CALL`` fires before every
+    model completion and is the *context-injection* seam: its hooks return text that
+    is folded into the turn as an ephemeral tail message (never persisted, after all
+    cached content — so prompt caching is preserved). It is the plug a memory-recall
+    layer, a RAG step, or a self-learning framework's retrieval script uses.
+    """
 
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
+    PRE_LLM_CALL = "PreLLMCall"
 
 
 class HookDecision(StrEnum):
@@ -85,6 +93,22 @@ class HookPayload(BaseModel):
     is_error: bool | None = None
 
 
+class LLMContextPayload(BaseModel):
+    """The JSON document handed to a ``PRE_LLM_CALL`` context hook (stdin for shells).
+
+    Unlike :class:`HookPayload` (a tool-gate event), this carries the turn's
+    triggering ``user_text`` and the loop position, so a hook can decide what
+    background context to retrieve. A context hook returns *text to inject*, never
+    an allow/block decision.
+    """
+
+    event: HookEvent = HookEvent.PRE_LLM_CALL
+    user_text: str = ""
+    cwd: str = ""
+    iteration: int = 0
+    message_count: int = 0
+
+
 class HookSpec(BaseModel):
     """A configured shell hook: when to fire, what to run, and how long to wait."""
 
@@ -101,6 +125,10 @@ class HookSpec(BaseModel):
 #: May be sync or async; both are awaited safely by the manager.
 InProcessHook = Callable[[HookPayload], "HookResult | None | Awaitable[HookResult | None]"]
 
+#: An in-process context hook: ``(payload) -> str | None`` returning text to inject
+#: before a model call (None == nothing to add). May be sync or async.
+ContextHook = Callable[[LLMContextPayload], "str | None | Awaitable[str | None]"]
+
 
 class HookManager:
     """Runs the configured hooks for a lifecycle event, isolating every failure."""
@@ -110,13 +138,26 @@ class HookManager:
         shell_hooks: list[HookSpec] | None = None,
         *,
         in_process: dict[HookEvent, list[InProcessHook]] | None = None,
+        context: list[ContextHook] | None = None,
     ) -> None:
         self.shell_hooks = list(shell_hooks or [])
         self.in_process: dict[HookEvent, list[InProcessHook]] = dict(in_process or {})
+        # PRE_LLM_CALL in-process context hooks (return text, not a decision).
+        self.context_hooks: list[ContextHook] = list(context or [])
 
     def register(self, event: HookEvent, hook: InProcessHook) -> None:
         """Add an in-process hook (used by the plugin surface later)."""
         self.in_process.setdefault(event, []).append(hook)
+
+    def register_context(self, hook: ContextHook) -> None:
+        """Add an in-process ``PRE_LLM_CALL`` context hook (returns text to inject)."""
+        self.context_hooks.append(hook)
+
+    def has_context_hooks(self) -> bool:
+        """Whether any context hook would run (cheap pre-check before a model call)."""
+        if self.context_hooks:
+            return True
+        return any(h.event is HookEvent.PRE_LLM_CALL for h in self.shell_hooks)
 
     def has_hooks(self, event: HookEvent, tool_name: str) -> bool:
         """Whether any hook would fire for ``event`` on ``tool_name`` (cheap pre-check)."""
@@ -158,6 +199,28 @@ class HookManager:
                 return self._result(decision, messages, arguments, mutated)
 
         return self._result(decision, messages, arguments, mutated)
+
+    async def gather_context(self, payload: LLMContextPayload) -> list[str]:
+        """Run every ``PRE_LLM_CALL`` context hook and collect the text to inject.
+
+        In-process context hooks run first (cheap, trusted), then shell hooks whose
+        event is ``PRE_LLM_CALL`` (matcher is ignored — there is no tool name).
+        Returns the non-empty, stripped strings in run order. Every failure is
+        isolated to a skipped contribution; a context hook can never block or break
+        the turn (the worst case is no extra context).
+        """
+        collected: list[str] = []
+        for hook in self.context_hooks:
+            text = await self._run_context_in_process(hook, payload)
+            if text and text.strip():
+                collected.append(text.strip())
+        for spec in self.shell_hooks:
+            if spec.event is not HookEvent.PRE_LLM_CALL:
+                continue
+            text = await self._run_context_shell(spec, payload)
+            if text and text.strip():
+                collected.append(text.strip())
+        return collected
 
     # ── aggregation helpers ───────────────────────────────────────────────────
 
@@ -206,6 +269,72 @@ class HookManager:
             messages=messages,
             mutated_arguments=arguments if mutated else None,
         )
+
+    # ── context runners (PRE_LLM_CALL; each fully error-isolated) ──────────────
+
+    @staticmethod
+    async def _run_context_in_process(hook: ContextHook, payload: LLMContextPayload) -> str | None:
+        try:
+            outcome = hook(payload)
+            if asyncio.iscoroutine(outcome):
+                outcome = await outcome
+            if outcome is None or isinstance(outcome, str):
+                return outcome
+            logger.warning("context hook returned %r; ignoring", type(outcome))
+            return None
+        except Exception as exc:  # noqa: BLE001 — a bad context hook never breaks the loop
+            logger.warning("context hook raised %s: %s", type(exc).__name__, exc)
+            return None
+
+    async def _run_context_shell(self, spec: HookSpec, payload: LLMContextPayload) -> str | None:
+        """Run one ``PRE_LLM_CALL`` shell hook; its stdout is the text to inject.
+
+        Protocol: exit 0 = use stdout (plain text, or JSON ``{"context": "..."}``);
+        any non-zero exit, spawn failure, timeout, or weirdness contributes nothing.
+        A context hook can never block the turn.
+        """
+        if not spec.command:
+            return None
+        stdin_bytes = payload.model_dump_json().encode("utf-8")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *spec.command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("context hook %r failed to start: %s", spec.command, exc)
+            return None
+
+        try:
+            stdout, _stderr = await asyncio.wait_for(
+                proc.communicate(stdin_bytes), timeout=spec.timeout
+            )
+        except TimeoutError:
+            with _suppress():
+                proc.kill()
+                await proc.wait()
+            logger.warning("context hook %r timed out after %ss", spec.command, spec.timeout)
+            return None
+        except Exception as exc:  # noqa: BLE001 — never propagate a context-hook failure
+            logger.warning("context hook %r errored: %s", spec.command, exc)
+            return None
+
+        if proc.returncode != 0:
+            return None
+        text = (stdout or b"").decode("utf-8", errors="replace").strip()
+        if not text:
+            return None
+        # A JSON object may wrap the text under a "context" key; plain text is used as-is.
+        try:
+            doc = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return text
+        if isinstance(doc, dict):
+            ctx = doc.get("context")
+            return ctx if isinstance(ctx, str) and ctx.strip() else None
+        return text
 
     # ── runners (each fully error-isolated) ───────────────────────────────────
 
@@ -319,8 +448,10 @@ __all__ = [
     "HookDecision",
     "HookResult",
     "HookPayload",
+    "LLMContextPayload",
     "HookSpec",
     "HookManager",
     "InProcessHook",
+    "ContextHook",
     "DEFAULT_HOOK_TIMEOUT",
 ]
