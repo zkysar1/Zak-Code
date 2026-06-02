@@ -118,6 +118,17 @@ class Settings(BaseSettings):
     memory_recall_limit: int = Field(
         default=5, ge=0, description="How many memories the recall hook injects per turn."
     )
+    memory_recall_min_overlap: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "Relevance floor for auto-recall: a memory is injected only if it shares at "
+            "least this many distinctive (non-stopword) words with the user's turn — so a "
+            "memory that merely matched a common word like 'the' is dropped. 0 disables "
+            "the floor (inject every search match). Corpus-size-independent (unlike a raw "
+            "bm25 score, which collapses to ~0 in a small store)."
+        ),
+    )
 
     @property
     def provider(self) -> str:

@@ -458,13 +458,20 @@ def _create_remote_session(base_url: str) -> str:
     return asyncio.run(_go())
 
 
-def _build_chat_agent(prompter: ConsolePermissionPrompter, overrides: dict[str, Any]) -> Agent:
+def _build_chat_agent(
+    prompter: ConsolePermissionPrompter,
+    overrides: dict[str, Any],
+    *,
+    enable_memory: bool = True,
+    enable_rules: bool = True,
+) -> Agent:
     """Build the in-process chat Agent with every interactive feature enabled.
 
     One builder for both the initial session and ``/clear`` so they never drift.
-    Trusted plugins come from ``ZAKCODE_TRUSTED_PLUGINS`` (comma-separated names);
-    a discovered plugin runs only if it is named there (else it is listed by
-    ``/plugins`` as skipped/untrusted).
+    ``enable_memory`` / ``enable_rules`` mirror the ``--no-memory`` / ``--no-rules``
+    chat flags (on by default). Trusted plugins come from ``ZAKCODE_TRUSTED_PLUGINS``
+    (comma-separated names); a discovered plugin runs only if it is named there (else
+    it is listed by ``/plugins`` as skipped/untrusted).
     """
     from zakcode import Agent
 
@@ -478,8 +485,8 @@ def _build_chat_agent(prompter: ConsolePermissionPrompter, overrides: dict[str, 
         enable_plugins=True,
         trusted_plugins=trusted,
         enable_skills=True,
-        enable_rules=True,
-        enable_memory=True,
+        enable_rules=enable_rules,
+        enable_memory=enable_memory,
         enable_compaction=True,
         **overrides,
     )
@@ -502,6 +509,12 @@ def chat(
         "--server",
         help="Drive a remote zakcode server (e.g. http://127.0.0.1:8000) instead of "
         "running the engine in-process. Proves the client/server boundary.",
+    ),
+    no_memory: bool = typer.Option(
+        False, "--no-memory", help="Disable cross-session memory (remember/recall + auto-recall)."
+    ),
+    no_rules: bool = typer.Option(
+        False, "--no-rules", help="Disable always-on rules (.zakcode/rules, .claude/rules)."
     ),
 ) -> None:
     """Start an interactive agent session.
@@ -526,7 +539,9 @@ def chat(
     # so 'ask' mode is usable interactively (rather than failing closed). The gate
     # itself still lives in the core; the CLI only renders the prompt.
     prompter = ConsolePermissionPrompter(console)
-    agent = _build_chat_agent(prompter, overrides)
+    agent = _build_chat_agent(
+        prompter, overrides, enable_memory=not no_memory, enable_rules=not no_rules
+    )
     _print_banner(console, agent)
 
     while True:
@@ -558,7 +573,9 @@ def chat(
                 _render_hooks(console, agent)
                 continue
             if command == "/clear":
-                agent = _build_chat_agent(prompter, overrides)
+                agent = _build_chat_agent(
+                    prompter, overrides, enable_memory=not no_memory, enable_rules=not no_rules
+                )
                 console.print("[dim]Started a fresh session.[/dim]")
                 continue
             if command == "/cost":

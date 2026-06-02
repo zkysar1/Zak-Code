@@ -127,8 +127,9 @@ class _Payload:
 
 
 def test_recall_hook_renders_relevant_block() -> None:
+    # Floor off (min_overlap=0) to test the rendering path in isolation.
     provider = _CountingProvider([MemoryRecord(text="RECALL_BLOCK_MARKER", kind="fact")])
-    hook = MemoryRecallHook(provider, limit=3)
+    hook = MemoryRecallHook(provider, limit=3, min_overlap=0)
     out = hook(_Payload("anything"))
     assert out is not None
     assert "RECALL_BLOCK_MARKER" in out
@@ -149,6 +150,45 @@ def test_recall_hook_caches_per_turn() -> None:
     assert provider.searches == 1
     hook(_Payload("different query"))
     assert provider.searches == 2
+
+
+def test_recall_hook_floor_drops_distinctive_word_misses() -> None:
+    # The fake provider returns BOTH records (ignores the query); the floor keeps only
+    # the one sharing a distinctive (non-stopword) word with the turn.
+    provider = _CountingProvider(
+        [MemoryRecord(text="pytest is the test runner"), MemoryRecord(text="unrelated note")]
+    )
+    out = MemoryRecallHook(provider, min_overlap=1)(_Payload("how do we run pytest")) or ""
+    assert "pytest is the test runner" in out  # shares "pytest"
+    assert "unrelated note" not in out  # shares no distinctive word
+
+
+def test_recall_hook_floor_returns_none_when_nothing_distinctive_matches() -> None:
+    # Query HAS distinctive words, but none appear in the memory → filtered → None.
+    provider = _CountingProvider([MemoryRecord(text="some unrelated memory")])
+    assert MemoryRecallHook(provider, min_overlap=1)(_Payload("pytest pipeline deployment")) is None
+
+
+def test_recall_hook_floor_disabled_keeps_all() -> None:
+    provider = _CountingProvider([MemoryRecord(text="unrelated note")])
+    out = MemoryRecallHook(provider, min_overlap=0)(_Payload("pytest tests")) or ""
+    assert "unrelated note" in out  # floor off → inject every match
+
+
+def test_recall_hook_all_stopword_query_not_overfiltered() -> None:
+    # A query with no distinctive words → nothing to match on → don't filter the tail.
+    provider = _CountingProvider([MemoryRecord(text="some memory")])
+    out = MemoryRecallHook(provider, min_overlap=1)(_Payload("what is it")) or ""
+    assert "some memory" in out
+
+
+def test_recall_hook_floor_works_with_a_single_memory() -> None:
+    # The bm25-collapse case: a 1-memory store still recalls a real match under the floor.
+    p = SqliteMemoryProvider(":memory:")
+    p.add("the user prefers 4-space indentation in Python")
+    hook = MemoryRecallHook(p, min_overlap=1)
+    out = hook(_Payload("what indentation does the user prefer")) or ""
+    assert "indentation" in out  # shares "indentation" → kept despite tiny corpus
 
 
 # ── remember / recall tools ───────────────────────────────────────────────────

@@ -278,7 +278,11 @@ class Agent:
             )
             if self.settings.memory_recall_limit > 0:
                 self.hook_manager.register_context(
-                    MemoryRecallHook(self.memory, limit=self.settings.memory_recall_limit)
+                    MemoryRecallHook(
+                        self.memory,
+                        limit=self.settings.memory_recall_limit,
+                        min_overlap=self.settings.memory_recall_min_overlap,
+                    )
                 )
 
         # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session

@@ -25,11 +25,85 @@ model may use.
 
 from __future__ import annotations
 
+import re
 import uuid
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
+
+#: Common English function/query words ignored when measuring query↔memory overlap, so
+#: a memory that matched only on a word like "the" is not treated as relevant.
+_STOPWORDS = frozenset(
+    [
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "but",
+        "by",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "for",
+        "from",
+        "had",
+        "has",
+        "have",
+        "how",
+        "i",
+        "if",
+        "in",
+        "is",
+        "it",
+        "its",
+        "me",
+        "my",
+        "of",
+        "on",
+        "or",
+        "our",
+        "should",
+        "so",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "to",
+        "up",
+        "us",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+    ]
+)
+
+
+def _tokens(text: str) -> list[str]:
+    """Lowercase alphanumeric/underscore word tokens of ``text``."""
+    return re.findall(r"[a-z0-9_]+", text.lower())
 
 
 def _new_id() -> str:
@@ -109,9 +183,14 @@ class MemoryRecallHook:
     content is presented to the model as untrusted background, never instructions.
     """
 
-    def __init__(self, provider: MemoryProvider, *, limit: int = 5) -> None:
+    def __init__(self, provider: MemoryProvider, *, limit: int = 5, min_overlap: int = 1) -> None:
         self._provider = provider
         self._limit = limit
+        # Relevance floor: a recalled memory must share at least this many distinctive
+        # (non-stopword) words with the turn. Corpus-size-independent — unlike a raw
+        # bm25 score, which collapses to ~0 when the store holds only a few memories.
+        # 0 disables the floor.
+        self._min_overlap = min_overlap
         self._cache: dict[str, str] = {}
 
     def __call__(self, payload: object) -> str | None:
@@ -124,8 +203,23 @@ class MemoryRecallHook:
                 records = self._provider.search(user_text, limit=self._limit)
             except Exception:  # noqa: BLE001 — recall must never break a turn
                 records = []
+            records = self._apply_floor(user_text, records)
             self._cache[user_text] = self._render(records)
         return self._cache[user_text] or None
+
+    def _apply_floor(self, query: str, records: list[MemoryRecord]) -> list[MemoryRecord]:
+        """Keep only memories sharing >= min_overlap distinctive words with the query.
+
+        The store already ranks results (bm25, best first); this drops the spurious
+        tail that matched only on common words. If the query has no distinctive words
+        (all stopwords), nothing is filtered — there is nothing meaningful to match on.
+        """
+        if self._min_overlap <= 0:
+            return records
+        significant = {t for t in _tokens(query) if t not in _STOPWORDS}
+        if not significant:
+            return records
+        return [r for r in records if len(significant & set(_tokens(r.text))) >= self._min_overlap]
 
     @staticmethod
     def _render(records: list[MemoryRecord]) -> str:
