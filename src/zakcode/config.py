@@ -100,6 +100,15 @@ class Settings(BaseSettings):
         default_factory=Path.cwd, description="Root directory the agent operates within."
     )
 
+    # ── Cross-session memory (opt-in via Agent(enable_memory=True)) ──────────
+    memory_db_path: str | None = Field(
+        default=None,
+        description="Path to the cross-session memory SQLite DB (default ~/.zakcode/memory.db).",
+    )
+    memory_recall_limit: int = Field(
+        default=5, ge=0, description="How many memories the recall hook injects per turn."
+    )
+
     @property
     def provider(self) -> str:
         """The provider prefix of the configured model (text before the first '/')."""

@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     # imports happen inside ``__init__`` only when the feature is enabled.
     from zakcode.mcp.config import McpServerConfig
     from zakcode.mcp.manager import DiscoveryReport, ExtensionManager
+    from zakcode.memory import MemoryProvider
     from zakcode.plugins import PluginLoadReport
     from zakcode.rules import RuleRegistry
     from zakcode.skills import SkillRegistry
@@ -77,6 +78,8 @@ class Agent:
         trusted_plugins: list[str] | None = None,
         enable_skills: bool = False,
         enable_rules: bool = False,
+        enable_memory: bool = False,
+        memory_provider: MemoryProvider | None = None,
         enable_compaction: bool = False,
         **setting_overrides: Any,
     ) -> None:
@@ -239,6 +242,27 @@ class Agent:
                 command_registry=self.command_registry,
                 settings=self.settings,
             )
+
+        # Cross-session memory, opt-in. Wire a MemoryProvider (default: a local
+        # SQLite/FTS5 store), register the remember/recall tools, and — unless recall
+        # is disabled — add a PRE_LLM_CALL hook that injects relevant memories each
+        # turn (fenced as untrusted by the loop). Substrate only: WHAT to remember is
+        # the model's / an integrating framework's choice, not the store's.
+        self.memory: MemoryProvider | None = None
+        if enable_memory:
+            from zakcode.memory import MemoryRecallHook
+            from zakcode.memory.sqlite_store import SqliteMemoryProvider
+            from zakcode.tools.builtins.memory import RecallTool, RememberTool
+
+            self.memory = memory_provider or SqliteMemoryProvider(self.settings.memory_db_path)
+            self.registry.register(RememberTool(self.memory, source=self.session.id))
+            self.registry.register(
+                RecallTool(self.memory, default_limit=self.settings.memory_recall_limit)
+            )
+            if self.settings.memory_recall_limit > 0:
+                self.hook_manager.register_context(
+                    MemoryRecallHook(self.memory, limit=self.settings.memory_recall_limit)
+                )
 
         # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
         # before a turn once it exceeds the provider's context-window threshold.
