@@ -511,7 +511,9 @@ def chat(
         "running the engine in-process. Proves the client/server boundary.",
     ),
     no_memory: bool = typer.Option(
-        False, "--no-memory", help="Disable cross-session memory (remember/recall + auto-recall)."
+        False,
+        "--no-memory",
+        help="Disable cross-session memory (remember/recall tools + relevant-memory injection).",
     ),
     no_rules: bool = typer.Option(
         False, "--no-rules", help="Disable always-on rules (.zakcode/rules, .claude/rules)."

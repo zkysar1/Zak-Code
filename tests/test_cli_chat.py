@@ -247,6 +247,39 @@ def test_chat_builds_agent_with_prompter(monkeypatch) -> None:
     assert isinstance(captured.get("prompter"), ConsolePermissionPrompter)
 
 
+def _capture_builds(monkeypatch) -> list[dict]:
+    """Monkeypatch Agent with a capturer that records every construction's kwargs."""
+    builds: list[dict] = []
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **overrides: object) -> None:
+            builds.append(dict(overrides))
+            super().__init__(**{k: v for k, v in overrides.items() if k != "prompter"})
+
+    monkeypatch.setattr(zakcode, "Agent", CapturingAgent)
+    return builds
+
+
+def test_chat_clear_preserves_no_memory_and_no_rules(monkeypatch) -> None:
+    # The no-drift guarantee the single-builder design rests on: /clear must rebuild
+    # with the SAME flag choice, not silently re-enable memory/rules.
+    builds = _capture_builds(monkeypatch)
+    result = runner.invoke(app, ["chat", "--no-memory", "--no-rules"], input="/clear\n/exit\n")
+    assert result.exit_code == 0
+    assert len(builds) == 2  # initial build + the /clear rebuild
+    for b in builds:
+        assert b.get("enable_memory") is False
+        assert b.get("enable_rules") is False
+
+
+def test_chat_clear_default_keeps_memory_and_rules_on(monkeypatch) -> None:
+    builds = _capture_builds(monkeypatch)
+    result = runner.invoke(app, ["chat"], input="/clear\n/exit\n")
+    assert result.exit_code == 0
+    assert len(builds) == 2
+    assert all(b.get("enable_memory") is True and b.get("enable_rules") is True for b in builds)
+
+
 # Keep an explicit reference so the unused-import linter is satisfied for the
 # scripted-policy helper used indirectly above.
 _ = PermissionMode

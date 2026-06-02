@@ -177,10 +177,12 @@ class MemoryRecallHook:
     """A ``PRE_LLM_CALL`` context hook that injects memories relevant to the turn.
 
     Searches the provider for the turn's ``user_text`` and renders the hits as a
-    short block. The result is cached per ``user_text`` so a multi-iteration turn
-    queries the store only once. Returns ``None`` (inject nothing) when there are no
-    relevant memories. The loop fences/defangs whatever is returned, so recalled
-    content is presented to the model as untrusted background, never instructions.
+    short block. The rendered result is cached per distinct ``user_text`` for the
+    hook's lifetime (one small entry per turn — bounded by the user, not the loop),
+    so a multi-iteration turn queries the store only once. Returns ``None`` (inject
+    nothing) when no memory clears the relevance floor. The loop fences/defangs
+    whatever is returned, so recalled content is presented to the model as untrusted
+    background, never instructions.
     """
 
     def __init__(self, provider: MemoryProvider, *, limit: int = 5, min_overlap: int = 1) -> None:
@@ -213,6 +215,13 @@ class MemoryRecallHook:
         The store already ranks results (bm25, best first); this drops the spurious
         tail that matched only on common words. If the query has no distinctive words
         (all stopwords), nothing is filtered — there is nothing meaningful to match on.
+
+        Matching is exact-token (no stemming), so a memory whose only shared concept
+        appears in a different word form (``test`` vs ``tests``) can be dropped; bm25
+        ranking already favors stronger matches and ``min_overlap=1`` keeps this rare
+        for multi-word turns. A real stemmer is intentionally out of scope here — a
+        crude suffix-fold is inconsistent (``class`` vs ``classes``) and would add
+        misses of its own; raise/lower ``min_overlap`` to trade recall for precision.
         """
         if self._min_overlap <= 0:
             return records
