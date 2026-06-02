@@ -29,6 +29,7 @@ core takes on no YAML dependency.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -202,14 +203,87 @@ def discover_skill_dir(skills_dir: str | Path) -> tuple[list[Skill], dict[str, s
     return skills, errors
 
 
+def user_skills_dir() -> Path:
+    """The user-level skills root (``~/.config/zakcode/skills``)."""
+    return Path.home() / ".config" / "zakcode" / "skills"
+
+
+def project_skills_dir(workspace_root: str | Path) -> Path:
+    """The project-level skills root (``<workspace>/.zakcode/skills``).
+
+    This is where runtime-authored skills (see :func:`save_skill`) are written so
+    they travel with the repository and are discovered next session.
+    """
+    return Path(workspace_root) / ".zakcode" / "skills"
+
+
 def default_skill_dirs(workspace_root: str | Path) -> list[Path]:
-    """Candidate skill roots: bundled, then user, then project (project wins on clash)."""
+    """Candidate skill roots, in increasing precedence (later wins on a name clash).
+
+    Bundled → user → project ``.zakcode/skills`` → project ``.claude/skills`` (the
+    last for Claude-Code / Claude-Mind compatibility, mirroring rule discovery).
+    """
     bundled = Path(__file__).parent / "bundled"
     return [
         bundled,
-        Path.home() / ".config" / "zakcode" / "skills",
-        Path(workspace_root) / ".zakcode" / "skills",
+        user_skills_dir(),
+        project_skills_dir(workspace_root),
+        Path(workspace_root) / ".claude" / "skills",
     ]
+
+
+def _serialize_frontmatter(
+    name: str, description: str, allowed_tools: list[str] | None, version: str
+) -> str:
+    """Render a ``SKILL.md`` frontmatter block the project parser round-trips."""
+    lines = ["---", f"name: {name}"]
+    if description:
+        # Keep the description a single physical line (the parser is line-based and
+        # splits on CR, LF, AND CRLF), collapsing any newline run to one space.
+        single_line = re.sub(r"\s*[\r\n]+\s*", " ", description.strip())
+        lines.append(f"description: {single_line}")
+    if allowed_tools:
+        lines.append("allowed-tools: [" + ", ".join(allowed_tools) + "]")
+    lines.append(f"version: {version}")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def save_skill(
+    name: str,
+    description: str,
+    body: str,
+    *,
+    skills_dir: str | Path,
+    allowed_tools: list[str] | None = None,
+    version: str = "0.0.0",
+    overwrite: bool = False,
+) -> Path:
+    """Author a ``SKILL.md`` under ``skills_dir`` and return its path.
+
+    Writes ``<skills_dir>/<name>/SKILL.md`` with a frontmatter block this package's
+    own parser round-trips, followed by ``body``. ``name`` must be a safe, kebab-case
+    identifier (``[a-z0-9][a-z0-9-]{0,63}``) so it can never escape ``skills_dir`` via
+    path separators or ``..``. Raises :class:`SkillError` on a bad name, an empty
+    body, or an existing skill when ``overwrite`` is false.
+
+    This is the storage primitive a self-learning framework (or the ``save_skill``
+    tool) builds skill-extraction on; it makes no decision about *when* to author.
+    """
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name):
+        raise SkillError(
+            "skill name must be kebab-case ([a-z0-9-], <=64 chars) and contain no path separators"
+        )
+    if not body or not body.strip():
+        raise SkillError("skill body must be non-empty")
+    skill_dir = Path(skills_dir) / name
+    md = skill_dir / SKILL_FILENAME
+    if md.exists() and not overwrite:
+        raise SkillError(f"skill {name!r} already exists at {md} (pass overwrite=True to replace)")
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    frontmatter = _serialize_frontmatter(name, description, allowed_tools, version)
+    md.write_text(f"{frontmatter}\n{body.strip()}\n", encoding="utf-8")
+    return md
 
 
 def discover_skills(workspace_root: str | Path) -> tuple[SkillRegistry, dict[str, str]]:
@@ -238,4 +312,7 @@ __all__ = [
     "discover_skill_dir",
     "discover_skills",
     "default_skill_dirs",
+    "user_skills_dir",
+    "project_skills_dir",
+    "save_skill",
 ]

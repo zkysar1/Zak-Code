@@ -127,10 +127,15 @@ class Agent:
         self.skill_errors: dict[str, str] = {}
         skills_catalog = ""
         if enable_skills:
-            from zakcode.skills import discover_skills
+            from zakcode.skills import discover_skills, project_skills_dir
+            from zakcode.tools.builtins.save_skill import SaveSkillTool
 
             self.skill_registry, self.skill_errors = discover_skills(self.settings.workspace_root)
             skills_catalog = self.skill_registry.render_catalog()
+            # Model-driven skill authoring (persisted to the project skills dir; the
+            # new skill is discovered next session). save_skill validates the name so
+            # the write can never escape that directory.
+            self.registry.register(SaveSkillTool(project_skills_dir(self.settings.workspace_root)))
 
         # Rules: always-on guidance (bundled + user + project, incl. .claude/rules for
         # Claude-Code/Claude-Mind compatibility) rendered into the cacheable tier.
