@@ -4,6 +4,8 @@ Depends only on pydantic. No litellm, no vendor SDK, no network calls.
 Any Python 3.11+ environment can implement Provider.
 """
 
+from zds_llm_provider.bitnet import BitNetProvider
+from zds_llm_provider.claude_code import ClaudeCodeProvider, CompletionBridge
 from zds_llm_provider.messages import (
     ContentBlock,
     Message,
@@ -71,4 +73,9 @@ __all__ = [
     "parse_text_tool_calls",
     "render_tool_protocol",
     "textify_messages",
+    # claude code bridge (M-8)
+    "ClaudeCodeProvider",
+    "CompletionBridge",
+    # bitnet provider (M-9)
+    "BitNetProvider",
 ]
