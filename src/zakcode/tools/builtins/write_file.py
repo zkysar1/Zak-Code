@@ -14,7 +14,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins._safety import PathEscapeError, resolve_in_workspace
+from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
 
 
 class WriteFileTool(Tool):
@@ -54,7 +54,7 @@ class WriteFileTool(Tool):
             return ToolResult.error("'content' is required and must be a string.")
 
         try:
-            resolved = resolve_in_workspace(path, ctx.workspace_root)
+            resolved = resolve_path(path, ctx.workspace_root, ctx.extra_workspace_roots)
         except PathEscapeError as exc:
             return ToolResult.error(str(exc))
         except Exception as exc:  # noqa: BLE001 - handlers must never raise

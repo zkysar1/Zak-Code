@@ -45,6 +45,76 @@ if TYPE_CHECKING:
 __all__ = ["Agent", "AgentLoop", "IterationBudget", "Message", "TurnResult", "__version__"]
 
 
+def _find_repo_root(start: Path) -> Path | None:
+    """Walk up from ``start`` to find the nearest directory containing ``.git``."""
+    current = start.resolve()
+    for parent in [current, *current.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
+    """Parse a claude-mind-style ``local-paths.conf`` and return the external paths.
+
+    The file is a simple ``KEY=VALUE`` format (one per line, no quoting); this
+    function extracts ``WORLD_PATH`` and ``META_PATH`` values when present.
+    """
+    paths: list[Path] = []
+    if not conf_path.is_file():
+        return paths
+    try:
+        for raw_line in conf_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key in ("WORLD_PATH", "META_PATH") and value:
+                p = Path(value)
+                if p.is_absolute() and p.is_dir():
+                    paths.append(p)
+    except OSError:
+        pass
+    return paths
+
+
+def _infer_roots_from_skill_dir(skill_dir: Path) -> list[Path]:
+    """Infer extra workspace roots from a ``--skill-dir`` path.
+
+    1. Find the skill directory's owning git repo root (if any) and add it.
+    2. Look for ``agents/*/local-paths.conf`` under that repo root and parse
+       ``WORLD_PATH`` / ``META_PATH`` from each conf file found.
+
+    Returns a deduplicated list of existing directories.
+    """
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    repo_root = _find_repo_root(skill_dir)
+    if repo_root is not None:
+        resolved = repo_root.resolve()
+        if resolved not in seen:
+            roots.append(resolved)
+            seen.add(resolved)
+
+        # Scan for agent local-paths.conf files under the repo root.
+        agents_dir = repo_root / "agents"
+        if agents_dir.is_dir():
+            for child in agents_dir.iterdir():
+                conf = child / "local-paths.conf"
+                for p in _parse_local_paths_conf(conf):
+                    rp = p.resolve()
+                    if rp not in seen:
+                        roots.append(rp)
+                        seen.add(rp)
+
+    return roots
+
+
 class Agent:
     """High-level facade over the agent loop.
 
@@ -78,6 +148,7 @@ class Agent:
         trusted_plugins: list[str] | None = None,
         enable_skills: bool = False,
         extra_skill_dirs: Sequence[str | Path] | None = None,
+        extra_workspace_roots: Sequence[str | Path] | None = None,
         enable_rules: bool = False,
         enable_memory: bool = False,
         memory_provider: MemoryProvider | None = None,
@@ -294,6 +365,16 @@ class Agent:
         if enable_compaction:
             self.compactor = Compactor()
 
+        # Multi-root sandbox (M-3): compute extra workspace roots from explicit
+        # args plus auto-detected roots from --skill-dir (the skill directory's
+        # owning repo root, and any external paths declared in its local-paths.conf).
+        computed_extra_roots: list[Path] = []
+        if extra_workspace_roots:
+            computed_extra_roots.extend(Path(r) for r in extra_workspace_roots)
+        if extra_skill_dirs:
+            for sd in extra_skill_dirs:
+                computed_extra_roots.extend(_infer_roots_from_skill_dir(Path(sd)))
+
         self.loop = AgentLoop(
             self.provider,
             self.registry,
@@ -302,6 +383,7 @@ class Agent:
             settings=self.settings,
             store=self.store,
             workspace_root=self.settings.workspace_root,
+            extra_workspace_roots=computed_extra_roots,
             permission_policy=self.permission_policy,
             hook_manager=self.hook_manager,
             budget=shared_budget,

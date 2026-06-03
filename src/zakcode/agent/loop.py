@@ -168,6 +168,7 @@ class AgentLoop:
         store: SessionStore | None = None,
         max_iterations: int | None = None,
         workspace_root: Path | None = None,
+        extra_workspace_roots: list[Path] | None = None,
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
         budget: IterationBudget | None = None,
@@ -181,6 +182,7 @@ class AgentLoop:
         self.settings = settings or load_settings()
         self.store = store
         self.workspace_root = workspace_root or self.settings.workspace_root
+        self.extra_workspace_roots: list[Path] = extra_workspace_roots or []
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
         # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
         # one unit from the shared pool, and the turn stops with
@@ -540,7 +542,11 @@ class AgentLoop:
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
 
-        ctx = ToolContext(workspace_root=self.workspace_root, spawner=self.spawner)
+        ctx = ToolContext(
+            workspace_root=self.workspace_root,
+            extra_workspace_roots=self.extra_workspace_roots,
+            spawner=self.spawner,
+        )
 
         while True:
             if not self._grant_iteration(iterations):
@@ -662,7 +668,11 @@ class AgentLoop:
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
 
-        ctx = ToolContext(workspace_root=self.workspace_root, spawner=self.spawner)
+        ctx = ToolContext(
+            workspace_root=self.workspace_root,
+            extra_workspace_roots=self.extra_workspace_roots,
+            spawner=self.spawner,
+        )
 
         try:
             while True:

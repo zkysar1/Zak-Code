@@ -12,7 +12,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins._safety import PathEscapeError, resolve_in_workspace
+from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
 
 # Maximum number of matches to return.
 _MAX_RESULTS = 1000
@@ -64,7 +64,7 @@ class GlobTool(Tool):
         base = path if path else "."
 
         try:
-            resolved_base = resolve_in_workspace(base, ctx.workspace_root)
+            resolved_base = resolve_path(base, ctx.workspace_root, ctx.extra_workspace_roots)
         except PathEscapeError as exc:
             return ToolResult.error(str(exc))
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
@@ -85,18 +85,20 @@ class GlobTool(Tool):
                 # treat an un-matchable pattern as simply having no matches.
                 raw_matches = []
 
-            # Defensively drop anything that escaped the workspace root (e.g. via
+            # Defensively drop anything that escaped the workspace root(s) (e.g. via
             # a symlink the matcher followed, or a '../' pattern). We compare each
             # match by its fully resolved path and emit that canonical form, so a
             # self-referential match like 'base/../base' collapses to the base and
             # is skipped rather than leaking a confusing dotted path.
-            root = ctx.workspace_root.resolve()
+            resolved_roots = [r.resolve() for r in ctx.all_workspace_roots]
             kept: list[str] = []
             for p in raw_matches:
                 rp = p.resolve()
-                # Must live strictly under the root, and never be the base/root
-                # itself (a glob should not return its own search directory).
-                if root in rp.parents and rp != resolved_base:
+                # Must live strictly under at least one root, and never be the
+                # base/root itself (a glob should not return its own search dir).
+                if rp != resolved_base and any(
+                    root in rp.parents for root in resolved_roots
+                ):
                     kept.append(str(rp))
             matches = sorted(set(kept))
             total = len(matches)

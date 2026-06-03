@@ -465,6 +465,7 @@ def _build_chat_agent(
     enable_memory: bool = True,
     enable_rules: bool = True,
     extra_skill_dirs: list[str] | None = None,
+    extra_workspace_roots: list[str] | None = None,
 ) -> Agent:
     """Build the in-process chat Agent with every interactive feature enabled.
 
@@ -487,6 +488,7 @@ def _build_chat_agent(
         trusted_plugins=trusted,
         enable_skills=True,
         extra_skill_dirs=extra_skill_dirs,
+        extra_workspace_roots=extra_workspace_roots,
         enable_rules=enable_rules,
         enable_memory=enable_memory,
         enable_compaction=True,
@@ -525,7 +527,18 @@ def chat(
         "--skill-dir",
         help=(
             "Extra directory to scan for SKILL.md skills (one subdir per skill). "
-            "May be repeated. Later directories shadow earlier same-named skills."
+            "May be repeated. Later directories shadow earlier same-named skills. "
+            "The skill directory's owning repo root (and any external paths from "
+            "its local-paths.conf) are automatically added as extra workspace roots."
+        ),
+    ),
+    extra_root: list[str] | None = typer.Option(  # noqa: B008 — typer convention
+        None,
+        "--extra-root",
+        help=(
+            "Additional trusted workspace root for file tools. May be repeated. "
+            "File reads/writes under any extra root are allowed alongside the "
+            "primary workspace root."
         ),
     ),
 ) -> None:
@@ -551,6 +564,7 @@ def chat(
     # so 'ask' mode is usable interactively (rather than failing closed). The gate
     # itself still lives in the core; the CLI only renders the prompt.
     extra_skill_dirs = skill_dir if skill_dir else None
+    extra_roots = extra_root if extra_root else None
     prompter = ConsolePermissionPrompter(console)
     agent = _build_chat_agent(
         prompter,
@@ -558,6 +572,7 @@ def chat(
         enable_memory=not no_memory,
         enable_rules=not no_rules,
         extra_skill_dirs=extra_skill_dirs,
+        extra_workspace_roots=extra_roots,
     )
     _print_banner(console, agent)
 
@@ -596,6 +611,7 @@ def chat(
                     enable_memory=not no_memory,
                     enable_rules=not no_rules,
                     extra_skill_dirs=extra_skill_dirs,
+                    extra_workspace_roots=extra_roots,
                 )
                 console.print("[dim]Started a fresh session.[/dim]")
                 continue

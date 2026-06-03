@@ -132,12 +132,25 @@ class ToolContext(BaseModel):
     (see ``docs/GUARDRAILS.md`` §4) and, when delegation is enabled, a
     :class:`SubAgentSpawner` the ``task`` tool uses to launch sub-agents. ``spawner``
     is ``None`` for ordinary turns and for every sub-agent (one-level nesting).
+
+    ``extra_workspace_roots`` (M-3 multi-root sandbox) extends the sandbox to
+    additional trusted filesystem roots. When non-empty, file tools accept paths
+    under any of ``[workspace_root] + extra_workspace_roots``. This enables
+    cross-repo skill execution where a skill needs to read/write across the primary
+    workspace and one or more external directories (e.g. a claude-mind skill
+    accessing the mind repo, its world dir, and its meta dir).
     """
 
     model_config = {"arbitrary_types_allowed": True}
 
     workspace_root: Path
+    extra_workspace_roots: list[Path] = Field(default_factory=list)
     spawner: SubAgentSpawner | None = None
+
+    @property
+    def all_workspace_roots(self) -> list[Path]:
+        """All trusted roots: the primary workspace root followed by any extras."""
+        return [self.workspace_root, *self.extra_workspace_roots]
 
 
 class ToolResult(BaseModel):
