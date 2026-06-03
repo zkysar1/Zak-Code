@@ -21,6 +21,7 @@ classifiers = [
 
 # Core engine dependencies (the importable library + CLI).
 dependencies = [
+  "zds-llm-provider",       # extracted vendor-agnostic provider ABC (M-7, in-repo editable sub-package)
   "litellm>=1.55",          # vendor-agnostic LLM layer (Ollama, OpenAI, + ~100 providers)
   "pydantic>=2.7",          # typed models for tools, messages, config
   "pydantic-settings>=2.3", # 12-factor config from env / .env
@@ -69,6 +70,13 @@ zakcode = "zakcode.cli:main"
 Homepage = "https://github.com/zkysar1/Zak-Code"
 Repository = "https://github.com/zkysar1/Zak-Code"
 Issues = "https://github.com/zkysar1/Zak-Code/issues"
+
+[tool.uv.sources]
+# In-repo editable path dependency: the extracted vendor-agnostic provider package
+# (M-7). Editable so source edits under packages/zds-llm-provider are live without a
+# re-sync. This is the portability contract in dependency form — zds_llm_provider
+# depends only on pydantic, no vendor SDK.
+zds-llm-provider = { path = "packages/zds-llm-provider", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zakcode"]

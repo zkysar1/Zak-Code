@@ -2617,6 +2617,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "typer" },
+    { name = "zds-llm-provider" },
 ]
 
 [package.optional-dependencies]
@@ -2673,6 +2674,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.30" },
     { name = "websockets", marker = "extra == 'server'", specifier = ">=12.0" },
     { name = "zakcode", extras = ["server", "mcp", "dev"], marker = "extra == 'all'" },
+    { name = "zds-llm-provider", editable = "packages/zds-llm-provider" },
 ]
 provides-extras = ["server", "mcp", "dev", "all"]
 
@@ -2683,6 +2685,21 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.5" },
 ]
+
+[[package]]
+name = "zds-llm-provider"
+version = "0.1.0"
+source = { editable = "packages/zds-llm-provider" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", marker = "extra == 'bitnet'", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.7" },
+]
+provides-extras = ["bitnet"]
 
 [[package]]
 name = "zipp"
