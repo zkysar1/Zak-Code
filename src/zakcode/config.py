@@ -74,6 +74,14 @@ class Settings(BaseSettings):
             "results or leaking template tokens. Ignored on the native path."
         ),
     )
+    verify_writes: bool = Field(
+        default=True,
+        description=(
+            "After a successful write_file/edit_file, read the file back from disk and "
+            "inject the real content + a syntax check as a grounding observation, so a "
+            "weak model cannot hallucinate that a write did what it intended."
+        ),
+    )
 
     # ── Local (Ollama) ──────────────────────────────────────────────────────
     ollama_base_url: str = Field(default="http://localhost:11434")

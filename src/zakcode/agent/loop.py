@@ -53,6 +53,7 @@ from pydantic import BaseModel, Field
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
+from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
@@ -174,6 +175,7 @@ class AgentLoop:
         budget: IterationBudget | None = None,
         spawner: SubAgentSpawner | None = None,
         compactor: Compactor | None = None,
+        verify_writes: bool = False,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -197,6 +199,10 @@ class AgentLoop:
         # M8: optional context compactor. When set, the loop auto-compacts the session
         # before each turn once it exceeds the provider's context-window threshold.
         self.compactor = compactor
+        # Slice 1 grounding: after a successful write/edit, read the file back and inject
+        # the real on-disk content so a weak model cannot hallucinate that a write did
+        # what it intended. Off for a bare loop; the Agent facade enables it from settings.
+        self.verify_writes = verify_writes
         # The security gate is INJECTED, not assumed. A bare AgentLoop with no
         # policy is ungated (a pure mechanism, convenient for library/tests); the
         # Agent facade — the real entry point — always injects a policy built from
@@ -609,6 +615,12 @@ class AgentLoop:
             self.session.add_message(Message.tool_results(result_blocks))
             self._persist()
 
+            if self.verify_writes:
+                grounding = build_write_grounding(result.tool_calls, result_blocks)
+                if grounding is not None:
+                    self.session.add_message(grounding)
+                    self._persist()
+
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
@@ -753,6 +765,12 @@ class AgentLoop:
 
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()
+
+                if self.verify_writes:
+                    grounding = build_write_grounding(tool_calls, result_blocks)
+                    if grounding is not None:
+                        self.session.add_message(grounding)
+                        self._persist()
         except asyncio.CancelledError:
             # Cancellation is a control signal, not a stop reason. State has only
             # been mutated + persisted at message boundaries, so it is consistent.

@@ -419,6 +419,7 @@ class Agent:
             budget=shared_budget,
             spawner=spawner,
             compactor=self.compactor,
+            verify_writes=self.settings.verify_writes,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:
