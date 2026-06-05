@@ -11,6 +11,7 @@ token-by-token rendering path end to end. The CLI is exercised through Typer's
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
@@ -330,3 +331,57 @@ async def test_console_prompter_shows_key_hints_literally() -> None:
     blob = "\n".join(console.lines)
     assert "(y)" in blob and "(a)" in blob and "(n)" in blob
     assert "[y]" not in blob
+
+
+# ── session event loop (one loop per REPL, never one per turn) ─────────────────
+
+
+def test_run_async_reuses_session_loop_without_closing() -> None:
+    # The session-loop fix: _run_async runs on the installed loop and leaves it OPEN
+    # for reuse across turns (never a loop-per-call), so library background tasks
+    # (e.g. litellm's logging worker) stay bound to a live loop instead of being
+    # orphaned when a per-turn loop closes.
+    import zakcode.cli as cli
+
+    async def _coro() -> int:
+        return 42
+
+    loop = asyncio.new_event_loop()
+    prev = cli._SESSION_LOOP
+    cli._SESSION_LOOP = loop
+    try:
+        assert cli._run_async(_coro()) == 42
+        assert not loop.is_closed()  # reused, not torn down per call
+    finally:
+        cli._SESSION_LOOP = prev
+        loop.close()
+
+
+def test_run_async_falls_back_to_fresh_loop_when_no_session() -> None:
+    # Outside an interactive session (e.g. a handler called directly in a test),
+    # _run_async still works by falling back to asyncio.run.
+    import zakcode.cli as cli
+
+    async def _coro() -> int:
+        return 7
+
+    prev = cli._SESSION_LOOP
+    cli._SESSION_LOOP = None
+    try:
+        assert cli._run_async(_coro()) == 7
+    finally:
+        cli._SESSION_LOOP = prev
+
+
+def test_shutdown_session_loop_closes_and_clears() -> None:
+    import zakcode.cli as cli
+
+    loop = asyncio.new_event_loop()
+    prev = cli._SESSION_LOOP
+    cli._SESSION_LOOP = loop
+    try:
+        cli._shutdown_session_loop(loop)
+        assert loop.is_closed()
+        assert cli._SESSION_LOOP is None  # session reference cleared
+    finally:
+        cli._SESSION_LOOP = prev

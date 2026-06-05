@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import functools
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -278,7 +278,7 @@ def _run_plan(console: Console, agent: Agent, task: str) -> None:
         return
     console.print("[dim]planning (read-only)...[/dim]")
     try:
-        result = asyncio.run(spawner.spawn(type_name="plan", prompt=task))
+        result = _run_async(spawner.spawn(type_name="plan", prompt=task))
     except ProviderError as exc:
         console.print(f"[red]Provider error:[/red] {exc}")
         return
@@ -300,7 +300,7 @@ def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
     action = (arg.strip().split(maxsplit=1) or ["list"])[0] if arg.strip() else "list"
     if action == "connect":
         console.print("[dim]connecting MCP servers...[/dim]")
-        report = asyncio.run(agent.connect_mcp())
+        report = _run_async(agent.connect_mcp())
         if report is None:
             console.print("[dim]MCP is not enabled.[/dim]")
             return
@@ -424,44 +424,94 @@ async def _drive_stream(make_stream: StreamFactory, renderer: StreamRenderer) ->
     incrementally. The stream is created here, inside the task's event loop, so a
     loop-bound transport (e.g. httpx) is constructed on the right loop.
     """
-    await renderer.render(make_stream())
+    stream = make_stream()
+    try:
+        await renderer.render(stream)
+    finally:
+        # The renderer breaks out of the stream on AgentDone, leaving the underlying
+        # async generator suspended; close it now (if it supports aclose) so it does
+        # not pile up across turns until session shutdown. AsyncIterator does not
+        # guarantee aclose(), but our producers (agent/server astream) are async gens.
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+# ── session event loop (one per REPL, never one per turn) ──────────────────────
+# The whole REPL session runs on a single event loop. This keeps background tasks
+# that libraries spawn — notably litellm's logging worker — bound to a *live* loop,
+# instead of being orphaned when a per-turn loop closes (which surfaced as
+# "RuntimeError: Event loop is closed", "Task was destroyed but it is pending", and
+# "coroutine ... was never awaited" floods after a couple of turns). See
+# docs/ARCHITECTURE.md: "One async event loop for the whole session."
+_SESSION_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _run_async(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Run ``coro`` to completion on the active session loop, or a fresh loop if none.
+
+    Inside an interactive REPL the session loop (installed by ``chat`` /
+    ``_run_server_chat``) is reused so library background tasks stay valid across
+    calls; outside one — e.g. a unit test calling a handler directly — this falls
+    back to ``asyncio.run``.
+    """
+    loop = _SESSION_LOOP
+    if loop is not None and not loop.is_closed():
+        return loop.run_until_complete(coro)
+    return asyncio.run(coro)
+
+
+def _shutdown_session_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Drain and close the REPL's session loop (best-effort; never raises).
+
+    Closes async generators still suspended on the loop (the renderer breaks out of
+    each turn's stream on ``AgentDone``), then cancels any tasks still pending —
+    notably background workers libraries spawn (e.g. litellm's logging worker) — and
+    lets them unwind on the still-open loop, so nothing is destroyed on a closed
+    loop. Finally closes the loop and clears the session reference.
+    """
+    global _SESSION_LOOP
+    with contextlib.suppress(Exception):
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    pending = asyncio.all_tasks(loop)
+    for task in pending:
+        task.cancel()
+    if pending:
+        with contextlib.suppress(Exception):
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    with contextlib.suppress(Exception):
+        loop.close()
+    _SESSION_LOOP = None
+    asyncio.set_event_loop(None)
 
 
 def _run_streamed_turn(
     console: Console, make_stream: StreamFactory, renderer: StreamRenderer
 ) -> bool:
-    """Run a streamed turn on a private event loop; cancellable via Ctrl-C.
+    """Run a streamed turn on the session loop; cancellable via Ctrl-C.
 
-    Returns ``True`` if the turn completed, ``False`` if the user interrupted it.
-    On interrupt the in-flight task is cancelled cleanly (so the session is left
-    consistent — the loop persists at message boundaries), a dim ``interrupted``
-    notice is printed, and control returns to the REPL prompt without exiting.
+    Uses the REPL's session-wide loop (see :data:`_SESSION_LOOP`) — never a loop per
+    turn — so library background tasks stay bound to a live loop across turns.
+    Returns ``True`` if the turn completed, ``False`` if the user interrupted it
+    (Ctrl-C): the in-flight task is cancelled cleanly (the loop persists state at
+    message boundaries), a dim ``interrupted`` notice is printed, and control
+    returns to the REPL prompt without exiting.
     """
-    loop = asyncio.new_event_loop()
+    loop = _SESSION_LOOP
+    if loop is None:  # pragma: no cover — chat()/_run_server_chat always install one
+        raise RuntimeError("session loop not initialized")
+    task = loop.create_task(_drive_stream(make_stream, renderer))
     try:
-        task = loop.create_task(_drive_stream(make_stream, renderer))
-        try:
+        loop.run_until_complete(task)
+        return True
+    except KeyboardInterrupt:
+        task.cancel()
+        # Pump the loop so the task observes the cancellation and unwinds
+        # (its CancelledError handler persists state and re-raises).
+        with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
             loop.run_until_complete(task)
-            return True
-        except KeyboardInterrupt:
-            task.cancel()
-            # Pump the loop so the task observes the cancellation and unwinds
-            # (its CancelledError handler persists state and re-raises).
-            with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
-                loop.run_until_complete(task)
-            console.print("\n[dim]interrupted[/dim]")
-            return False
-    finally:
-        # Mirror asyncio.run(): close any async generators still suspended on this
-        # loop before closing it. The renderer breaks out of the event stream on
-        # AgentDone, leaving the agent/provider ``astream`` generators paused; without
-        # this their aclose() is orphaned and runs at GC time on a dead loop, which
-        # surfaces as "Task was destroyed but it is pending" / "coroutine method
-        # 'aclose' ... was never awaited" runtime warnings.
-        with contextlib.suppress(Exception):
-            loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
-        asyncio.set_event_loop(None)
+        console.print("\n[dim]interrupted[/dim]")
+        return False
 
 
 async def _server_turn_stream(
@@ -616,6 +666,12 @@ def chat(
     )
     _print_banner(console, agent)
 
+    # One event loop for the whole session (never one per turn) — see
+    # _SESSION_LOOP / _shutdown_session_loop.
+    global _SESSION_LOOP
+    _SESSION_LOOP = loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     while True:
         try:
             line = console.input("[bold cyan]›[/bold cyan] ")
@@ -680,7 +736,7 @@ def chat(
                 _render_skills(console, agent)
                 continue
             if command == "/compact":
-                did = asyncio.run(agent.loop.compact_now())
+                did = _run_async(agent.loop.compact_now())
                 console.print(
                     "[dim]compacted older history into a summary.[/dim]"
                     if did
@@ -717,6 +773,8 @@ def chat(
             console.print(f"[red]Provider error:[/red] {exc}")
             continue
 
+    _shutdown_session_loop(loop)
+
 
 def _run_server_chat(base_url: str, model: str | None) -> None:
     """REPL that drives a remote server over SSE (the ``chat --server`` path)."""
@@ -741,6 +799,12 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         console.print(f"[dim]model[/dim]    {model} [dim](per-request override)[/dim]")
     console.print("[dim]Type /exit to quit. (Server mode: turns run headless.)[/dim]\n")
 
+    # One event loop for the whole session (never one per turn) — see
+    # _SESSION_LOOP / _shutdown_session_loop.
+    global _SESSION_LOOP
+    _SESSION_LOOP = loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     while True:
         try:
             line = console.input("[bold cyan]›[/bold cyan] ")
@@ -764,6 +828,8 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         except httpx.HTTPError as exc:
             console.print(f"[red]Server error:[/red] {exc}")
             continue
+
+    _shutdown_session_loop(loop)
 
 
 @app.command()
