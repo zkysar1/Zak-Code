@@ -258,6 +258,30 @@ async def test_chat_rejects_concurrent_turn_on_same_session(tmp_path: Path) -> N
         assert third.status_code == 200
 
 
+def test_chat_stream_factory_error_does_not_strand_inflight(tmp_path: Path) -> None:
+    # audit2 #5: if the agent factory raises before the SSE stream starts, the per-session
+    # reservation must still be released — else the session 409s forever (per-session DoS
+    # reachable via a bad request.model). The factory raises once, then succeeds.
+    calls = {"n": 0}
+
+    def flaky_factory(session: Session, model: str | None, prompter: object = None) -> _FakeAgent:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("bad model string")
+        return _FakeAgent(session)
+
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(settings=settings, store=store, agent_factory=flaky_factory)
+    client = TestClient(app, raise_server_exceptions=False)
+    sid = client.post("/sessions").json()["id"]
+    first = client.post("/chat/stream", json={"message": "a", "session_id": sid})
+    assert first.status_code == 500  # the factory raised
+    # The reservation was released despite the error: a later turn is NOT 409'd.
+    second = client.post("/chat", json={"message": "b", "session_id": sid})
+    assert second.status_code == 200
+
+
 # ── chat (SSE stream) ────────────────────────────────────────────────────────────
 
 

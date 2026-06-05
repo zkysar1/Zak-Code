@@ -194,6 +194,31 @@ def test_ws_interrupt_cancels_in_flight_turn(tmp_path: Path) -> None:
         assert "interrupt" in cancelled["message"].lower()
 
 
+def test_ws_turn_reserves_session_against_concurrent_rest(tmp_path: Path) -> None:
+    # audit2 #4: a WS turn must hold the SAME per-session reservation REST uses, so a REST
+    # turn on the same session is refused while the WS turn runs (no transcript-clobbering
+    # interleave) — and the reservation is released when the WS turn ends.
+    from fastapi.testclient import TestClient
+
+    from zakcode.server.app import create_app
+
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(settings=settings, store=store, agent_factory=lambda s, m, p: _SlowAgent(s))
+    client = TestClient(app)
+    sid = _make_session(store)
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.send_json({"type": "input", "message": "go"})
+        assert ws.receive_json()["text"] == "working..."  # the WS turn is now in flight
+        # A REST turn on the SAME session is refused while the WS turn holds it.
+        resp = client.post("/chat", json={"message": "b", "session_id": sid})
+        assert resp.status_code == 409
+        ws.send_json({"type": "interrupt"})
+        assert ws.receive_json()["event"] == "status"  # interrupted -> releases the session
+    # Once the WS turn has ended, the session is free for a REST turn again.
+    assert client.post("/chat", json={"message": "c", "session_id": sid}).status_code == 200
+
+
 # ── store.delete (added for the REST DELETE endpoint / general API) ──────────────
 
 

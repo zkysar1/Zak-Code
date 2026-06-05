@@ -171,8 +171,9 @@ def create_app(
     # session would both mutate Session.messages and race on store.save (the store
     # is last-writer-wins, with no cross-request lock), corrupting the transcript —
     # so REST/SSE refuse a second turn with 409 while one is running. In asyncio the
-    # check-then-add in each endpoint is atomic (no await between them). The WS
-    # channel enforces the same one-turn-at-a-time rule per connection separately.
+    # check-then-add in each endpoint is atomic (no await between them). The WS channel
+    # honors the SAME per-session reservation (in addition to its per-connection guard),
+    # so a WS turn cannot overlap another WS client's or a REST turn on one session.
     inflight: set[str] = set()
 
     # ── helpers ────────────────────────────────────────────────────────────────
@@ -276,18 +277,28 @@ def create_app(
     async def chat_stream(request: ChatRequest) -> EventSourceResponse:
         session = _get_or_create_session(request.session_id, request.model)
         _claim_session(session)
-        agent = resolved_factory(session, request.model, None)
+        # Build the agent INSIDE a guard: the factory can raise (e.g. a bad request.model
+        # → provider/deny-pattern construction fails) before the stream generator exists,
+        # and its finally would then never run — permanently stranding the reservation and
+        # 409-ing the session until restart. Release it on a build failure. (audit2 #5)
+        try:
+            agent = resolved_factory(session, request.model, None)
+        except BaseException:
+            inflight.discard(session.id)
+            raise
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             try:
                 async for event in agent.astream_turn(request.message):
                     yield {"data": json.dumps(event_to_dict(event))}
             finally:
-                # Persist whatever state the turn produced, even if the client
-                # disconnects mid-stream (EventSourceResponse cancels us), and
-                # always release the in-flight reservation.
-                resolved_store.save(agent.session)
-                inflight.discard(session.id)
+                # Persist whatever state the turn produced, even if the client disconnects
+                # mid-stream (EventSourceResponse cancels us). Release the reservation in its
+                # OWN finally so a store.save error cannot strand it. (audit2 #5)
+                try:
+                    resolved_store.save(agent.session)
+                finally:
+                    inflight.discard(session.id)
 
         return EventSourceResponse(event_source())
 
@@ -341,7 +352,12 @@ def create_app(
             except Exception as exc:  # noqa: BLE001 — surface, never crash the socket
                 await send({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
             finally:
-                resolved_store.save(agent.session)
+                # Release the per-session reservation in its own finally so a save error
+                # cannot strand it (mirrors /chat/stream). (audit2 #4/#5)
+                try:
+                    resolved_store.save(agent.session)
+                finally:
+                    inflight.discard(session.id)
 
         try:
             while True:
@@ -353,9 +369,15 @@ def create_app(
                     continue
 
                 if isinstance(msg, WSUserInput):
-                    if current_turn is not None and not current_turn.done():
+                    # Honor the SAME per-session reservation REST uses: reject if a turn is
+                    # in flight on this connection OR on this session via any transport
+                    # (another WS client or a REST turn) — else two turns race on
+                    # Session.messages/store.save and clobber the transcript. (audit2 #4)
+                    turn_running = current_turn is not None and not current_turn.done()
+                    if turn_running or session.id in inflight:
                         await send({"type": "error", "detail": "a turn is already running"})
                         continue
+                    inflight.add(session.id)
                     current_turn = asyncio.create_task(run_turn(msg.message))
                 elif isinstance(msg, WSInterrupt):
                     if current_turn is not None and not current_turn.done():
