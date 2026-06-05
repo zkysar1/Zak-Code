@@ -55,7 +55,7 @@ from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
-from zakcode.agent.recipe import RecipeCursor, extract_acceptance
+from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_python_run
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -180,6 +180,7 @@ class AgentLoop:
         recipe_mode: bool = False,
         recipe_attempt_cap: int = 3,
         recipe_acceptance_compare: bool = False,
+        recipe_harness_run: bool = False,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -211,6 +212,7 @@ class AgentLoop:
         self.recipe_mode = recipe_mode
         self.recipe_attempt_cap = recipe_attempt_cap
         self.recipe_acceptance_compare = recipe_acceptance_compare
+        self.recipe_harness_run = recipe_harness_run
         # The security gate is INJECTED, not assumed. A bare AgentLoop with no
         # policy is ungated (a pure mechanism, convenient for library/tests); the
         # Agent facade — the real entry point — always injects a policy built from
@@ -439,6 +441,40 @@ class AgentLoop:
             data=tool_res.data,
         )
 
+    async def _try_harness_verify(self, cursor: RecipeCursor, ctx: ToolContext) -> bool:
+        """Issue a harness-side verification run of the pending file (Slice 2b-A).
+
+        Fires only when armed (``recipe_harness_run``), a target is pending, an interpreter
+        resolves, and — crucially — the synthetic ``bash`` would auto-allow WITHOUT a prompt
+        (allow-mode or a prior ``bash`` grant). Otherwise returns ``False`` so the caller
+        falls back to nudging the model (never an uninitiated prompt). The synthetic call
+        funnels through the SAME ``_execute_tool_call`` gate; the real output is fed to the
+        cursor and injected as a user message. Returns ``True`` if a run was issued.
+        """
+        if not self.recipe_harness_run:
+            return False
+        target = cursor.pending_target()
+        if target is None:
+            return False
+        command = resolve_python_run(target)
+        if command is None:
+            return False
+        call = ToolCall(
+            id=f"recipe_run_{cursor.harness_runs}", name="bash", arguments={"command": command}
+        )
+        if self.permission_policy is not None:
+            bash_tool = self.registry.get("bash")
+            bash_spec = bash_tool.spec if bash_tool is not None else None
+            if not self.permission_policy.auto_allows(bash_spec, call.arguments):
+                return False  # would prompt / is blocked -> fall back to the nudge
+        block = await self._execute_tool_call(call, ctx)
+        cursor.harness_runs += 1
+        cursor.observe([call], [block])
+        self.session.add_message(
+            Message.user(f"[harness] I ran the file to verify it:\n{block.output}")
+        )
+        return True
+
     def _is_read_only_safe(self, call: ToolCall) -> bool:
         """Whether ``call`` may join a concurrent batch.
 
@@ -598,12 +634,18 @@ class AgentLoop:
                 # has actually been run successfully. Nudge the model to verify; give up
                 # gracefully (recipe_stalled) once the attempt cap is hit.
                 if cursor.needs_verification():
-                    if cursor.can_nudge():
+                    if not cursor.can_nudge():
+                        stop_reason = "recipe_stalled"
+                        break
+                    # Prefer a harness-issued run (only when it would auto-allow without a
+                    # prompt); else nudge the model. Either way consumes one attempt, so an
+                    # unfixable file still stalls gracefully rather than looping.
+                    if await self._try_harness_verify(cursor, ctx):
+                        cursor.consume_attempt()
+                    else:
                         self.session.add_message(Message.user(cursor.nudge()))
-                        self._persist()
-                        continue
-                    stop_reason = "recipe_stalled"
-                    break
+                    self._persist()
+                    continue
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
@@ -760,15 +802,19 @@ class AgentLoop:
                 # No tool calls → the turn is complete.
                 if not tool_calls:
                     if cursor.needs_verification():
-                        if cursor.can_nudge():
+                        if not cursor.can_nudge():
+                            stop_reason = "recipe_stalled"
+                            yield AgentStatus(
+                                message="stopping: wrote a file but could not verify it runs"
+                            )
+                            break
+                        if await self._try_harness_verify(cursor, ctx):
+                            cursor.consume_attempt()
+                            yield AgentStatus(message="ran the file to verify it works")
+                        else:
                             self.session.add_message(Message.user(cursor.nudge()))
-                            self._persist()
-                            continue
-                        stop_reason = "recipe_stalled"
-                        yield AgentStatus(
-                            message="stopping: wrote a file but could not verify it runs"
-                        )
-                        break
+                        self._persist()
+                        continue
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
                     stop_reason = "completed"

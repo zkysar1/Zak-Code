@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
@@ -95,6 +96,20 @@ def _python_path(call: ToolCall, result: ToolResultBlock) -> str | None:
     return path if (path is not None and path.endswith(".py")) else None
 
 
+def resolve_python_run(path: str) -> str | None:
+    """A shell command to run ``path`` with an available interpreter, or None if none.
+
+    Tries ``py`` (the Windows launcher), then ``python3``, then ``python`` via
+    ``shutil.which``. Used by the harness-issued verification run (Slice 2b-A) so the
+    correct interpreter is chosen deterministically; returns None when none resolves so
+    the caller falls back to nudging the model rather than manufacturing a failing run.
+    """
+    for interpreter in ("py", "python3", "python"):
+        if shutil.which(interpreter):
+            return f'{interpreter} "{path}"'
+    return None
+
+
 class RecipeCursor:
     """Per-turn 'verify what you wrote before finishing' gate (see the module docstring)."""
 
@@ -106,8 +121,10 @@ class RecipeCursor:
         self.acceptance = acceptance  # required substring in the run output, or None
         self.wrote_runnable = False  # a .py was created/edited this turn
         self.verified = False  # ...and then run successfully (command referenced it)
-        self.nudges = 0  # how many times we have pushed the model to verify
+        self.nudges = 0  # verification attempts spent (nudges + harness runs) toward the cap
         self._targets: set[str] = set()  # basenames of .py files written this turn
+        self._abs_targets: list[str] = []  # their paths, in write order (for the harness run)
+        self.harness_runs = 0  # how many harness-issued verification runs were issued
 
     def observe(self, calls: list[ToolCall], results: list[ToolResultBlock]) -> None:
         """Update state from one iteration's *successful* tool calls."""
@@ -124,6 +141,7 @@ class RecipeCursor:
                     self.wrote_runnable = True
                     self.verified = False  # a fresh write must be re-verified
                     self._targets.add(os.path.basename(path))
+                    self._abs_targets.append(path)
             elif call.name in _RUN_TOOLS and self.wrote_runnable:
                 command = call.arguments.get("command")
                 ran_it = isinstance(command, str) and any(t and t in command for t in self._targets)
@@ -141,8 +159,18 @@ class RecipeCursor:
         return self.enabled and self.wrote_runnable and not self.verified
 
     def can_nudge(self) -> bool:
-        """Whether another corrective nudge is allowed before giving up (recipe_stalled)."""
+        """Whether another verification attempt is allowed before giving up (recipe_stalled)."""
         return self.nudges < self.attempt_cap
+
+    def pending_target(self) -> str | None:
+        """The most-recently-written runnable .py still needing verification, else None."""
+        if self.verified or not self._abs_targets:
+            return None
+        return self._abs_targets[-1]
+
+    def consume_attempt(self) -> None:
+        """Count one verification attempt (e.g. a harness-issued run) toward the cap."""
+        self.nudges += 1
 
     def nudge(self) -> str:
         """Consume one attempt and return the one-step corrective instruction to inject."""

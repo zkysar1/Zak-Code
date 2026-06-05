@@ -104,6 +104,14 @@ class Settings(BaseSettings):
             "but prints the wrong thing). Off by default; extraction is high-precision."
         ),
     )
+    recipe_harness_run: bool = Field(
+        default=False,
+        description=(
+            "Recipe mode: let the harness RUN the written .py itself to verify it (instead "
+            "of only nudging the model), but ONLY when that run would auto-allow without a "
+            "prompt (allow mode or a prior bash grant). Off by default; requires recipe_mode."
+        ),
+    )
 
     # ── Local (Ollama) ──────────────────────────────────────────────────────
     ollama_base_url: str = Field(default="http://localhost:11434")

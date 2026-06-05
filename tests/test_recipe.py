@@ -12,9 +12,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from zakcode.agent.loop import AgentLoop
-from zakcode.agent.recipe import RecipeCursor, extract_acceptance
+from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_python_run
 from zakcode.messages import Message, ToolResultBlock
+from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
 from zakcode.tools import default_registry
@@ -118,9 +121,7 @@ def _loop(provider: _ScriptedProvider, tmp_path: Path, **kw: Any) -> AgentLoop:
 
 
 def test_recipe_gate_forces_a_run_before_completing(tmp_path: Path) -> None:
-    write = LLMResult(
-        tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")]
-    )
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
     done = LLMResult(text="All done!")
     run = LLMResult(tool_calls=[_c("r1", "bash", command="echo prog.py")])
     provider = _ScriptedProvider([write, done, run, done])
@@ -215,3 +216,84 @@ def test_recipe_acceptance_completes_on_right_output(tmp_path: Path) -> None:
     loop = _loop(provider, tmp_path, recipe_mode=True, recipe_acceptance_compare=True)
     result = asyncio.run(loop.arun_turn("create p.py that prints `pong`"))
     assert result.stop_reason == "completed"  # output contained "pong"
+
+
+# ── Slice 2b-A: harness-issued verification run ───────────────────────────────
+
+
+def _bash_spec() -> Any:
+    return default_registry().get("bash").spec
+
+
+def test_auto_allows_only_without_a_prompt() -> None:
+    assert PermissionPolicy(PermissionMode.ALLOW).auto_allows(_bash_spec(), {"command": "py x.py"})
+    assert not PermissionPolicy(PermissionMode.ASK).auto_allows(
+        _bash_spec(), {"command": "py x.py"}
+    )
+    granted = PermissionPolicy(PermissionMode.ASK)
+    granted._session_allow.add("bash")  # a prior "allow for session" grant
+    assert granted.auto_allows(_bash_spec(), {"command": "py x.py"})
+
+
+def test_auto_allows_never_for_dangerous_even_granted() -> None:
+    p = PermissionPolicy(PermissionMode.ALLOW)
+    p._session_allow.add("bash")
+    assert p.auto_allows(_bash_spec(), {"command": "rm -rf /"}) is False
+
+
+def test_resolve_python_run() -> None:
+    cmd = resolve_python_run("/tmp/x.py")
+    assert cmd is not None  # a python interpreter exists in the test env
+    assert "/tmp/x.py" in cmd
+
+
+def test_cursor_pending_target_and_consume() -> None:
+    c = RecipeCursor(enabled=True)
+    assert c.pending_target() is None
+    c.observe([_c("w", "write_file", path="a.py")], [_r("w", path="a.py")])
+    assert c.pending_target() == "a.py"
+    c.consume_attempt()
+    assert c.nudges == 1
+    c.observe([_c("r", "bash", command="py a.py")], [_r("r")])
+    assert c.pending_target() is None  # verified -> nothing pending
+
+
+def test_harness_run_verifies_without_the_model(tmp_path: Path) -> None:
+    if resolve_python_run("x.py") is None:
+        pytest.skip("no python interpreter available")
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
+    done = LLMResult(text="done")  # the model NEVER runs it
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_harness_run=True)
+    result = asyncio.run(loop.arun_turn("make p.py"))
+    assert result.stop_reason == "completed"  # the HARNESS ran it
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert "[harness]" in transcript
+
+
+def test_harness_run_off_falls_back_to_nudge(tmp_path: Path) -> None:
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('x')\n")])
+    done = LLMResult(text="done")
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(
+        provider, tmp_path, recipe_mode=True, recipe_harness_run=False, recipe_attempt_cap=1
+    )
+    result = asyncio.run(loop.arun_turn("make p.py"))
+    assert result.stop_reason == "recipe_stalled"
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert "[harness]" not in transcript  # gated off -> never auto-ran
+
+
+def test_harness_run_is_bounded_on_a_broken_file(tmp_path: Path) -> None:
+    if resolve_python_run("x.py") is None:
+        pytest.skip("no python interpreter available")
+    # 1/0 compiles (passes the firewall) but errors at runtime -> the harness run never
+    # verifies; it must still stall gracefully after the cap, not loop forever.
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="1 / 0\n")])
+    done = LLMResult(text="done")
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(
+        provider, tmp_path, recipe_mode=True, recipe_harness_run=True, recipe_attempt_cap=2
+    )
+    result = asyncio.run(loop.arun_turn("make p.py"))
+    assert result.stop_reason == "recipe_stalled"

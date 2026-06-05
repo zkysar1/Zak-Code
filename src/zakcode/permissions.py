@@ -265,6 +265,21 @@ class PermissionPolicy:
         """The per-session 'deny' blocks (exact-call keys), sorted (a read-only copy)."""
         return sorted(self._session_deny)
 
+    def auto_allows(self, spec: ToolSpec | None, arguments: dict) -> bool:
+        """True iff a call would be allowed WITHOUT prompting (allow-mode or already granted).
+
+        Used by the recipe harness-run to fire a synthetic verification command ONLY where
+        it would not raise an uninitiated prompt. Never relaxes the gate: a dangerous
+        command is not auto-allowed even under a session grant (it re-decides to ASK/DENY).
+        """
+        tool_name = spec.name if spec is not None else "<unknown>"
+        if self._key(tool_name, arguments) in self._session_deny:
+            return False
+        if tool_name in self._session_allow and self._dangerous_reason(arguments) is None:
+            return True
+        decision, _ = self.decide(spec, arguments)
+        return decision is PermissionDecision.ALLOW
+
     # ── pure decision ─────────────────────────────────────────────────────────
 
     @staticmethod
