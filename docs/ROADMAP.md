@@ -530,7 +530,8 @@ remaining glue)._
 >
 > **Deferred (opt-in, each its own future mini-milestone with the same DoD):** session list/resume &
 > cost/context visualization in the UI; agent-authored skills + curator; OS-level sandboxing;
-> multi-agent teams / coordinator / cron / recipes; additional providers (Anthropic/Bedrock/Vertex —
+> multi-agent teams / coordinator / cron / YAML recipes (declarative Jinja2 workflows — *not* the
+shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Vertex —
 > just new litellm prefixes, no loop changes); plus the M9 deferrals (Git-undo, JSON phase events,
 > the CI workflow file).
 
@@ -544,7 +545,7 @@ remaining glue)._
 **Deferred / opt-in (only after the core is proven, to avoid surface sprawl)**
 - Agent-authored skills + curator (usage tracking, archive-not-delete).
 - OS-level sandboxing (filesystem + network egress allowlist via proxy; secrets outside the box).
-- Multi-agent teams / coordinator, remote/bridge, cron scheduling, recipes (declarative YAML + Jinja2 workflows with schema-validated output).
+- Multi-agent teams / coordinator, remote/bridge, cron scheduling, **YAML recipes** (declarative YAML + Jinja2 workflows with schema-validated output — distinct from the shipped **Recipe Cursor**, the small-model verify-before-finish gate; see the Post-M11 section).
 - Additional providers (Anthropic, Bedrock, Vertex) — just new litellm prefixes + registry entries, no loop changes.
 
 **Exit criteria (web client)**
@@ -589,6 +590,31 @@ remaining glue)._
 > the autonomous "never-terminate" Stop-hook continuation loop, verbatim `settings.json`
 > hook ingestion, and managing a framework's background daemon — out of scope for a
 > coding agent; the safe fold-in is reader/assistant mode + the encode pass.
+
+### Post-M11 — Portable cognition + small-model reliability — ✅ shipped (commits `a6b9e41`…HEAD)
+
+> Hardening so the agent stays reliable on **small local models** — the mandate is to make
+> `qwen2.5:3b` usable, *not* to upgrade the model — plus extraction of a vendor-agnostic
+> provider package. Highlights:
+>
+> 1. **Vendor-agnostic provider package** (`packages/zds-llm-provider`, provider track
+>    "M-7/8/9") — the `Provider` ABC + the text tool-calling layer extracted into a
+>    pydantic-only, no-vendor-SDK package; adds `ClaudeCodeProvider` + `BitNetProvider`.
+> 2. **Small-model reliability bundle** — protocol/template stop-sequences,
+>    single-tool-per-turn, an Ollama `num_ctx` lift with a matching capability window, and
+>    a cp1252-safe glyph set with ASCII fallbacks.
+> 3. **The Recipe Cursor** (`agent/recipe.py`) — a per-turn **verify-before-finish gate**
+>    for create-and-run tasks: a write firewall → write-grounding read-back → a gate that
+>    won't let the turn end until the written `.py` was actually *run* (optionally matching
+>    a stated output literal, optionally via a harness-issued run when it would not raise a
+>    permission prompt), else it ends as `recipe_stalled` rather than claiming a false
+>    success. Opt-in / default-off; every `ZAKCODE_RECIPE_*` / `ZAKCODE_VERIFY_WRITES` /
+>    `ZAKCODE_SINGLE_TOOL_PER_TURN` knob is documented in the **Small-model reliability**
+>    section of the [README](../README.md).
+>
+> **Terminology — "Recipe Cursor" ≠ "YAML recipes."** The shipped *Recipe Cursor* (above)
+> is a small-model verify-before-finish gate. It is **unrelated** to the deferred *YAML
+> recipes* (declarative Jinja2 workflows) listed in the M10+ deferrals.
 
 ---
 

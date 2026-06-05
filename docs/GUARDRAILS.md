@@ -33,9 +33,10 @@ All file-writing and command-running tools route through a single permission gat
 
 ## 4. Filesystem scoping and tool sandboxing
 
-- **Workspace root boundary.** File tools operate within a configured workspace root. Resolve every path to its real, absolute form and reject any that escapes the root via `..`, absolute paths, symlinks, or drive-letter tricks. Path-escape attempts are denied, not clamped silently.
+- **Workspace root boundary.** File tools operate within the configured workspace root(s). Resolve every path to its real, absolute form and reject any that escapes **all** roots via `..`, absolute paths, symlinks, or drive-letter tricks. Path-escape attempts are denied, not clamped silently.
+- **Multi-root sandbox is operator opt-in.** The default is a single workspace root. An operator MAY widen the sandbox with additional **trusted** roots via `zakcode chat --extra-root <dir>` (repeatable) or `Agent(extra_workspace_roots=...)`; all file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`) resolve against the full set via `resolve_in_workspace_roots`, so an extra root is a deliberate grant the agent may **read _and write_** under — with the same `..`/symlink/escape protection applied to each. There is no implicit widening: absent the flag, only the one root is in scope. (Separately, `chat --skill-dir <dir>` adds an external directory the **skill loader** reads `SKILL.md` files from — skill discovery, not the file-tool write sandbox.)
 - **Protect sensitive paths even inside the root.** Deny or require explicit confirmation for `.git/` internals, `.env`/secret files, the venv, and the gitignored research directory. The agent must not be able to read `.env` values or write into `_zakcode_research/`.
-- **No write outside scope.** Writes outside the workspace root are denied regardless of permission mode. Reads outside the root require explicit operator opt-in.
+- **No write outside scope.** Writes outside **all** configured workspace roots are denied regardless of permission mode. Reads outside the root(s) require explicit operator opt-in (e.g. an `--extra-root`).
 - **Deterministic, bounded tools.** Tools take typed, validated inputs (pydantic-modeled boundaries), enforce size/output limits, and time out. A tool must not hang the loop or stream unbounded output into context.
 - **Least privilege per tool.** Each tool declares the narrowest capability it needs. A search tool does not get write access; an edit tool does not get shell access.
 
