@@ -420,6 +420,14 @@ def _run_streamed_turn(
             console.print("\n[dim]interrupted[/dim]")
             return False
     finally:
+        # Mirror asyncio.run(): close any async generators still suspended on this
+        # loop before closing it. The renderer breaks out of the event stream on
+        # AgentDone, leaving the agent/provider ``astream`` generators paused; without
+        # this their aclose() is orphaned and runs at GC time on a dead loop, which
+        # surfaces as "Task was destroyed but it is pending" / "coroutine method
+        # 'aclose' ... was never awaited" runtime warnings.
+        with contextlib.suppress(Exception):
+            loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
         asyncio.set_event_loop(None)
 
