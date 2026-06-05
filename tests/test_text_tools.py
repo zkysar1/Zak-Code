@@ -603,6 +603,31 @@ async def test_single_tool_per_turn_stops_at_close_tag_and_slices() -> None:
     assert [c.name for c in result.tool_calls] == ["read_file"]
 
 
+async def test_text_mode_stop_list_capped_to_backend_limit() -> None:
+    # audit2 #8: against a backend that caps stop sequences (e.g. OpenAI rejects >4), the
+    # text-mode sentinel list must be trimmed so the request isn't 400'd — keeping the
+    # highest-value sentinels (</tool_call>, <tool_result>).
+    class _Capped(_RecordingProvider):
+        def capabilities(self) -> Capabilities:
+            return Capabilities(supports_tools=False, max_stop_sequences=4)
+
+    inner = _Capped(reply("done"), supports_tools=False)
+    wrap = TextToolCallingProvider(inner, mode="text", single_tool_per_turn=True)
+    await wrap.acomplete([Message.user("hi")], tools=TOOLS)
+    stop = inner.calls[0]["kwargs"]["stop"]
+    assert len(stop) <= 4
+    assert "</tool_call>" in stop  # the structurally-important sentinels survive the cap
+    assert "<tool_result>" in stop
+
+
+async def test_text_mode_stop_list_uncapped_when_backend_unbounded() -> None:
+    # The default backend declares no limit (max_stop_sequences=None) -> all sentinels kept.
+    inner = _RecordingProvider(reply("done"), supports_tools=False)  # caps default to None
+    wrap = TextToolCallingProvider(inner, mode="text", single_tool_per_turn=True)
+    await wrap.acomplete([Message.user("hi")], tools=TOOLS)
+    assert len(inner.calls[0]["kwargs"]["stop"]) > 4  # not trimmed
+
+
 async def test_native_mode_does_not_thread_stop() -> None:
     # The stop sequences are a text-protocol concern only; the native path is untouched.
     native = LLMResult(tool_calls=[ToolCall(id="x", name="read_file", arguments={"path": "a"})])

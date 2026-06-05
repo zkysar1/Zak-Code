@@ -86,6 +86,23 @@ def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
 
+def _max_stop_sequences(model: str) -> int | None:
+    """The backend's max number of ``stop`` sequences, when known.
+
+    The OpenAI (and Azure OpenAI) Chat Completions API rejects a request with more than 4
+    stop strings. The text tool-calling layer can emit up to ~6 sentinels, so it must cap
+    to this for those backends (see ``Capabilities.max_stop_sequences``). ``None`` = unknown
+    / unbounded (e.g. Ollama accepts many). Returns 4 for the ``openai``/``azure`` prefixes
+    and for bare OpenAI model names (``gpt*``/``o1``/``o3``/``o4``/``chatgpt*``).
+    """
+    prefix = model.split("/", 1)[0].lower() if "/" in model else ""
+    if prefix in ("openai", "azure"):
+        return 4
+    if not prefix and model.lower().startswith(("gpt", "o1", "o3", "o4", "chatgpt")):
+        return 4
+    return None
+
+
 #: Cap for Ollama's per-request context window (``num_ctx``). Ollama's default ctx is
 #: small and silently truncates the prompt *tail* (the latest user step + tool-protocol
 #: rules), which looks like the model "ignoring" the task. We lift num_ctx to the model's
@@ -606,6 +623,11 @@ class LiteLLMProvider(Provider):
         # matches Ollama's real context and never truncates before compaction fires.
         if _is_ollama_model(self.model) and caps.context_window > _OLLAMA_NUM_CTX_CAP:
             caps = caps.model_copy(update={"context_window": _OLLAMA_NUM_CTX_CAP})
+        # Declare the backend's stop-sequence cap so the text layer trims its sentinel list
+        # (OpenAI/Azure reject >4); leaves unknown backends unbounded. (audit2 #8)
+        limit = _max_stop_sequences(self.model)
+        if limit is not None and caps.max_stop_sequences is None:
+            caps = caps.model_copy(update={"max_stop_sequences": limit})
         return caps
 
 

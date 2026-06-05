@@ -85,7 +85,12 @@ def _offered_tool_names(tools: list[dict[str, Any]]) -> set[str]:
     """
     names: set[str] = set()
     for tool in tools:
-        name = tool.get("function", {}).get("name") or tool.get("name")
+        # Guard a non-dict ``function`` (e.g. {"function": None}) so a malformed tool def
+        # cannot raise a raw AttributeError out of acomplete (the ABC's error-taxonomy
+        # contract); mirrors render_tool_protocol / _offered_names. (audit2 #12)
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        fn = fn if isinstance(fn, dict) else {}
+        name = fn.get("name") or (tool.get("name") if isinstance(tool, dict) else None)
         if name:
             names.add(name)
     return names

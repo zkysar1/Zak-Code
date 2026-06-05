@@ -61,6 +61,10 @@ class Capabilities(BaseModel):
     supports_caching: bool = False
     context_window: int = 8192
     max_output: int | None = None
+    #: Maximum number of ``stop`` sequences the backend accepts in one request (e.g. the
+    #: OpenAI Chat Completions API rejects more than 4). ``None`` means unbounded / unknown;
+    #: the text tool-calling layer caps its sentinel list to this when set. (audit2 #8)
+    max_stop_sequences: int | None = None
 
 
 # ── Streaming events (yielded by Provider.astream) ───────────────────────────

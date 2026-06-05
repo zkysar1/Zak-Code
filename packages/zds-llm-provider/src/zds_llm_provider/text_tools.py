@@ -634,12 +634,19 @@ class TextToolCallingProvider(Provider):
         Truncates generation at protocol/template sentinels so a weak model cannot
         fabricate a ``<tool_result>`` or leak chat-template tokens; in
         single-tool-per-turn mode it also stops right after the closing
-        ``</tool_call>``. Returns a new dict — never mutates the caller's kwargs.
+        ``</tool_call>``. Sentinels are ordered HIGHEST-VALUE FIRST (the structural
+        ``</tool_call>`` / ``<tool_result>`` before chat-template tokens) and the final
+        list is capped to the backend's ``max_stop_sequences`` capability when it declares
+        one (e.g. OpenAI rejects >4) — so a real ``openai/`` model in text mode does not
+        hard-400 while the most important sentinels survive. Returns a new dict — never
+        mutates the caller's kwargs.
         """
         merged = dict(kwargs)
-        stops: list[str] = list(_STOP_SENTINELS)
+        # Front-load the structurally-important sentinels so they survive any cap below.
+        stops: list[str] = []
         if self.single_tool_per_turn:
-            stops.append(_CLOSE_TAG)
+            stops.append(_CLOSE_TAG)  # </tool_call>: bounds the turn to one tool call
+        stops.extend(_STOP_SENTINELS)  # <tool_result> then chat-template tokens
         existing = merged.get("stop")
         if isinstance(existing, str):
             stops = [existing, *stops]
@@ -651,8 +658,19 @@ class TextToolCallingProvider(Provider):
             if s not in seen:
                 seen.add(s)
                 deduped.append(s)
+        limit = self._stop_limit()
+        if limit is not None:
+            deduped = deduped[:limit]
         merged["stop"] = deduped
         return merged
+
+    def _stop_limit(self) -> int | None:
+        """The backend's maximum allowed number of stop sequences, or None if unbounded."""
+        try:
+            limit = self.inner.capabilities().max_stop_sequences
+        except Exception:  # noqa: BLE001 — a capability probe must never break a call
+            return None
+        return limit if isinstance(limit, int) and limit >= 0 else None
 
     # ── Provider interface ───────────────────────────────────────────────────
 

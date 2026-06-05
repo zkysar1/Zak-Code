@@ -159,12 +159,20 @@ class BitNetProvider(Provider):
         body: dict[str, Any] = {
             "model": self._model,
             "messages": _translate_messages(messages, system),
-            "temperature": self._temperature,
+            # Per-call kwargs override the constructor defaults (OpenAI-compatible names).
+            "temperature": kwargs.get("temperature", self._temperature),
         }
-        if self._max_output is not None:
-            body["max_tokens"] = self._max_output
+        max_tokens = kwargs.get("max_tokens", self._max_output)
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = tools
+        # Forward the optional generation params the text-tool wrapper / loop pass — most
+        # importantly `stop` (the single-tool / sentinel stop list). Previously **kwargs was
+        # accepted but ignored, so the text-mode reliability stops did nothing here. (audit2 #7)
+        stop = kwargs.get("stop")
+        if stop is not None:
+            body["stop"] = stop
 
         url = f"{self._base_url}/v1/chat/completions"
         try:

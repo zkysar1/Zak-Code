@@ -85,6 +85,28 @@ async def test_acomplete_simple_text() -> None:
     assert result.tool_calls == []
 
 
+async def test_acomplete_forwards_stop_and_per_call_overrides() -> None:
+    # audit2 #7: BitNet declared **kwargs but ignored it, so the text-mode stop sentinels
+    # (and per-call temperature/max_tokens) never reached the request body. They must now.
+    captured: dict = {}
+
+    class _CapturingClient(MockClient):
+        async def post(self, url, *, json=None, headers=None):  # noqa: ANN001
+            captured["body"] = json
+            return MockResponse(_chat_response("ok"))
+
+    provider = BitNetProvider(client=_CapturingClient(), temperature=0.0)
+    await provider.acomplete(
+        [Message.user("hi")],
+        stop=["</tool_call>", "<tool_result>"],
+        temperature=0.5,
+        max_tokens=128,
+    )
+    assert captured["body"]["stop"] == ["</tool_call>", "<tool_result>"]
+    assert captured["body"]["temperature"] == 0.5  # per-call override beats the constructor
+    assert captured["body"]["max_tokens"] == 128
+
+
 async def test_acomplete_with_tool_calls() -> None:
     tool_calls = [
         {
