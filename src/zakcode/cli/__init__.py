@@ -274,15 +274,23 @@ class ConsolePermissionPrompter:
 def _render_permissions(console: Console, agent: Agent) -> None:
     """Render the active permission mode and any session grants (the /permissions cmd)."""
     policy = agent.permission_policy
-    console.print(f"[dim]permission mode[/dim]  {policy.mode.value}")
-    allow = sorted(policy._session_allow)
-    deny = sorted(policy._session_deny)
-    console.print(f"[dim]session allow[/dim]    {len(allow)} grant(s)")
-    for key in allow:
-        console.print(f"    [green]+[/green] {key}")
-    console.print(f"[dim]session deny[/dim]     {len(deny)} block(s)")
-    for key in deny:
-        console.print(f"    [red]-[/red] {key}")
+    allow = policy.session_allow()
+    deny = policy.session_deny()
+    console.print(
+        margin(
+            Text.assemble(("permission mode  ", "banner.label"), (policy.mode.value, "arg.value"))
+        )
+    )
+    console.print(margin(Text(f"session allow    {len(allow)} grant(s)", style="notice.dim")))
+    for name in allow:
+        console.print(
+            Padding(Text.assemble((GLYPHS["add"] + " ", "ok"), (name, "arg.value")), (0, 0, 0, 4))
+        )
+    console.print(margin(Text(f"session deny     {len(deny)} block(s)", style="notice.dim")))
+    for name in deny:
+        console.print(
+            Padding(Text.assemble((GLYPHS["del"] + " ", "err"), (name, "arg.value")), (0, 0, 0, 4))
+        )
 
 
 def _render_hooks(console: Console, agent: Agent) -> None:

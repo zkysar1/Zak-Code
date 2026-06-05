@@ -110,6 +110,12 @@ _CLOSE_TAG = "</tool_call>"
 #: sequences). The ``<|...|>`` shape is a cross-model convention, not vendor-specific.
 _TEMPLATE_TOKEN_RE = re.compile(r"<\|[^|>]{0,40}\|>")
 
+#: A trailing ``<tool_call>`` opener with no matching close — a tool call the model began
+#: but never finished (truncated/abandoned); stripped so it does not render as cruft.
+_TRAILING_OPEN_CALL_RE = re.compile(
+    r"<\s*tool_call\s*>(?:(?!</\s*tool_call\s*>).)*\Z", re.IGNORECASE | re.DOTALL
+)
+
 
 # ── protocol rendering (outbound) ────────────────────────────────────────────
 
@@ -227,6 +233,10 @@ def _strip_forged_frames(text: str) -> str:
     """
     if not text:
         return text
+    # Drop a trailing, unterminated <tool_call> opener — a tool call the model began but
+    # never closed (truncated/abandoned). By the time this runs every COMPLETE call has
+    # been parsed out, so a remaining opener is incomplete cruft, not a real call.
+    text = _TRAILING_OPEN_CALL_RE.sub("", text).rstrip()
     zwsp = "​"  # zero-width space
     out = _defang_sentinels(text)  # <tool_call> / <tool_result> frames
     return _TEMPLATE_TOKEN_RE.sub(lambda m: f"<{zwsp}" + m.group(0)[1:], out)

@@ -366,3 +366,19 @@ def test_format_tool_call_verbs() -> None:
     assert _format_tool_call("read_file", {"path": "a.py"}) == ("read", "a.py")
     assert _format_tool_call("bash", {"command": "ls -la"}) == ("run", "$ ls -la")
     assert _format_tool_call("unknown_tool", {"x": "y"})[0] == "unknown_tool"
+
+
+@pytest.mark.asyncio
+async def test_render_run_result_shows_output_lines() -> None:
+    # A run/bash result shows the program's real output + a line count, not just line 1
+    # (which previously hid what actually happened).
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentToolCall(id="r1", name="bash", arguments={"command": "py fizzbuzz.py"}),
+        AgentToolResult(tool_use_id="r1", output="1\n2\nFizz\n4\nBuzz", is_error=False),
+        AgentDone(stop_reason="stop", iterations=1, usage=_usage(5, 5)),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert "5 lines" in out  # the count summary
+    assert "Fizz" in out and "Buzz" in out  # the real output, not hidden behind line 1

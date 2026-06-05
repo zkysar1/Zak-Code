@@ -587,3 +587,17 @@ def test_render_protocol_single_tool_and_negative_rules() -> None:
     single = render_tool_protocol(TOOLS, single_tool=True)
     assert "EXACTLY ONE" in single
     assert "several in a row" not in single
+
+
+async def test_text_mode_strips_trailing_unterminated_tool_call() -> None:
+    # A model that began a tool call but got cut off (no closing tag, partial JSON):
+    # the incomplete opener must not survive into the visible text as cruft.
+    inner = _RecordingProvider(
+        reply('Let me do that.\n<tool_call>\n{"name": "write_file"'),
+        supports_tools=False,
+    )
+    wrap = TextToolCallingProvider(inner, mode="text")
+    result = await wrap.acomplete([Message.user("hi")], tools=TOOLS)
+    assert "tool_call" not in result.text
+    assert "Let me do that." in result.text
+    assert result.tool_calls == []  # the incomplete call did not parse

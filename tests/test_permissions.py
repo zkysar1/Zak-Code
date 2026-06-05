@@ -210,12 +210,24 @@ async def test_authorize_deny_session_persists() -> None:
     assert len(prompter.requests) == 1  # remembered the denial
 
 
-async def test_session_grant_is_argument_specific() -> None:
+async def test_session_grant_covers_whole_tool() -> None:
     prompter = _ScriptedPrompter(PermissionOutcome.ALLOW_SESSION)
     policy = PermissionPolicy(PermissionMode.ASK, prompter=prompter)
     await policy.authorize(BASH, {"command": "ls"})
-    # A different command is a different key → prompts again.
-    await policy.authorize(BASH, {"command": "pwd"})
+    # A different (non-dangerous) command of the same tool is covered by the grant — the
+    # operator is not re-prompted for every new command.
+    allowed, _ = await policy.authorize(BASH, {"command": "pwd"})
+    assert allowed is True
+    assert len(prompter.requests) == 1
+
+
+async def test_session_grant_never_waives_dangerous() -> None:
+    # The safety invariant for per-tool grants: a session grant for a tool does NOT
+    # silently run a dangerous command of that tool — it always re-prompts.
+    prompter = _ScriptedPrompter(PermissionOutcome.ALLOW_SESSION)
+    policy = PermissionPolicy(PermissionMode.ASK, prompter=prompter)
+    await policy.authorize(BASH, {"command": "ls"})  # grant the bash tool for the session
+    await policy.authorize(BASH, {"command": "rm -rf /"})  # dangerous -> not waived
     assert len(prompter.requests) == 2
 
 

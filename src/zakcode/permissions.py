@@ -249,17 +249,20 @@ class PermissionPolicy:
         # can only ever tighten the blocklist, never remove a built-in footgun.
         base = DANGEROUS_PATTERNS if dangerous_patterns is None else dangerous_patterns
         self.dangerous_patterns = [*base, *(extra_dangerous_patterns or [])]
+        # 'allow' grants are keyed by TOOL NAME — a grant covers the whole tool for the
+        # session (the operator is not re-prompted for every new path/command). 'deny'
+        # grants stay keyed by the exact (tool, args) so a block is narrow.
         self._session_allow: set[str] = set()
         self._session_deny: set[str] = set()
 
     # ── public read accessors (so clients never touch the private sets) ────────
 
     def session_allow(self) -> list[str]:
-        """The per-session 'allow' grants, sorted (a read-only copy)."""
+        """The per-session 'allow' grants (tool names), sorted (a read-only copy)."""
         return sorted(self._session_allow)
 
     def session_deny(self) -> list[str]:
-        """The per-session 'deny' blocks, sorted (a read-only copy)."""
+        """The per-session 'deny' blocks (exact-call keys), sorted (a read-only copy)."""
         return sorted(self._session_deny)
 
     # ── pure decision ─────────────────────────────────────────────────────────
@@ -325,7 +328,11 @@ class PermissionPolicy:
 
         if key in self._session_deny:
             return (False, "denied for this session")
-        if key in self._session_allow:
+        # A session 'allow' grant covers the whole TOOL for the rest of the session, so
+        # the operator is not re-prompted for every new path/command. The dangerous-
+        # command blocklist is NEVER waived by a grant: a dangerous call re-decides
+        # below, so "allow bash for the session" still cannot silently run a blocked one.
+        if tool_name in self._session_allow and self._dangerous_reason(arguments) is None:
             return (True, "allowed for this session")
 
         decision, reason = self.decide(spec, arguments)
@@ -346,7 +353,7 @@ class PermissionPolicy:
         )
         outcome = await self.prompter.confirm(request)
         if outcome is PermissionOutcome.ALLOW_SESSION:
-            self._session_allow.add(key)
+            self._session_allow.add(tool_name)  # grant the whole tool, not the exact args
             return (True, "")
         if outcome is PermissionOutcome.ALLOW_ONCE:
             return (True, "")

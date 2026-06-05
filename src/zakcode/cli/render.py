@@ -42,6 +42,9 @@ from zakcode.usage import Usage
 
 _FENCE = "```"
 
+#: Max lines of shell/run output shown inline in a result block (then "... (+N more)").
+_RUN_OUTPUT_LINES = 12
+
 #: Map a tool name to the short verb shown in the gutter; unknown tools use their name.
 _VERB_MAP = {
     "read_file": "read",
@@ -239,24 +242,51 @@ class StreamRenderer:
             )
         )
 
+    def _result_head(self, name: str, state: str, summary: str) -> Padding:
+        glyph = self._g["fail"] if state == "err" else self._g["ok"]
+        return Padding(
+            Text.assemble(
+                (glyph + " ", state),
+                (name + " ", "tool.marker"),
+                (self._g["dot"] + " ", "tool.marker"),
+                (summary, "notice.dim"),
+            ),
+            (0, 0, 0, 4),
+        )
+
     def _on_tool_result(self, event: AgentToolResult) -> None:
         name = self._tool_names.get(event.tool_use_id, "tool")
         state = "err" if event.is_error else "ok"
-        glyph = self._g["fail"] if event.is_error else self._g["ok"]
-        summary = _first_line(event.output) or ("error" if event.is_error else "ok")
-        head = Text.assemble(
-            (glyph + " ", state),
-            (name + " ", "tool.marker"),
-            (self._g["dot"] + " ", "tool.marker"),
-            (summary, "notice.dim"),
-        )
-        self.console.print(Padding(head, (0, 0, 0, 4)))
+        output = str(event.output)
 
-        diff = _diff_preview(str(event.output))
+        if name == "run":
+            # Shell output is the whole point — show the program's real stdout/stderr
+            # (capped), not just its first line, so the user can see what actually ran.
+            lines = output.splitlines()
+            n = len(lines)
+            if event.is_error:
+                summary = "failed"
+            else:
+                summary = f"{n} line{'' if n == 1 else 's'}" if n else "no output"
+            self.console.print(self._result_head(name, state, summary))
+            preview = lines[:_RUN_OUTPUT_LINES]
+            if preview:
+                self.console.print(
+                    Padding(Text("\n".join(preview), style="notice.dim"), (0, 0, 0, 6))
+                )
+            if n > _RUN_OUTPUT_LINES:
+                more = n - _RUN_OUTPUT_LINES
+                tail = f"{self._g['ellipsis']} (+{more} more line{'' if more == 1 else 's'})"
+                self.console.print(Padding(Text(tail, style="notice.dim"), (0, 0, 0, 6)))
+            return
+
+        summary = _first_line(output) or ("error" if event.is_error else "ok")
+        self.console.print(self._result_head(name, state, summary))
+        diff = _diff_preview(output)
         if diff is not None:
             self.console.print(Padding(diff, (0, 0, 0, 6)))
         elif event.is_error:
-            extra = "\n".join(str(event.output).splitlines()[1:6]).rstrip()
+            extra = "\n".join(output.splitlines()[1:6]).rstrip()
             if extra:
                 self.console.print(Padding(Text(extra, overflow="fold"), (0, 0, 0, 6)))
 
