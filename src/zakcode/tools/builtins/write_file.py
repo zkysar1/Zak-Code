@@ -14,7 +14,12 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
+from zakcode.tools.builtins._safety import (
+    PathEscapeError,
+    check_literal_content,
+    check_python_syntax,
+    resolve_path,
+)
 
 
 class WriteFileTool(Tool):
@@ -52,6 +57,12 @@ class WriteFileTool(Tool):
             return ToolResult.error("'path' is required and must be a string.")
         if not isinstance(content, str):
             return ToolResult.error("'content' is required and must be a string.")
+
+        # Deterministic write firewall (refuse-only, before any bytes land): reject a
+        # shell command written as file content, or a .py file that will not compile.
+        guard = check_literal_content(content) or check_python_syntax(path, content)
+        if guard is not None:
+            return ToolResult.error(guard)
 
         try:
             resolved = resolve_path(path, ctx.workspace_root, ctx.extra_workspace_roots)

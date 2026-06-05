@@ -14,7 +14,12 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
+from zakcode.tools.builtins._safety import (
+    PathEscapeError,
+    check_literal_content,
+    check_python_syntax,
+    resolve_path,
+)
 
 # Maximum number of bytes we will read before refusing to edit.
 _MAX_BYTES = 100 * 1024 * 1024
@@ -129,6 +134,12 @@ class EditFileTool(Tool):
             else:
                 new_text = text.replace(old_string, new_string, 1)
                 replacements = 1
+
+            # Write firewall: refuse a shell-command replacement, or an edit that would
+            # leave a .py file unparseable (checked on the resulting file).
+            guard = check_literal_content(new_string) or check_python_syntax(path, new_text)
+            if guard is not None:
+                return ToolResult.error(guard)
 
             data = new_text.encode("utf-8")
             parent = resolved.parent

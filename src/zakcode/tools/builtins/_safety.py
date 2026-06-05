@@ -13,6 +13,7 @@ world directory, and an external meta directory — all separate filesystem root
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -114,3 +115,47 @@ def resolve_path(path: str, workspace_root: Path, extra_roots: Sequence[Path] = 
     if extra_roots:
         return resolve_in_workspace_roots(path, [workspace_root, *extra_roots])
     return resolve_in_workspace(path, workspace_root)
+
+
+# ── content write firewall (deterministic, refuse-only) ──────────────────────
+# A small local model sometimes writes a SHELL COMMAND into a file instead of the
+# file's text — e.g. content="$(cat other.py)", expecting substitution to run.
+# write_file stores content literally, so the file is corrupted. These conservative
+# checks refuse such writes BEFORE any bytes land. They fire only when the WHOLE
+# content is the mistake, so a file that merely *contains* "$(" is never affected.
+
+_WHOLE_CMD_SUB_RE = re.compile(r"^\$\(.*\)$", re.DOTALL)
+_WHOLE_BACKTICK_RE = re.compile(r"^`[^`]+`$", re.DOTALL)
+
+
+def check_literal_content(content: str) -> str | None:
+    """Refuse content that is wholly a shell command-substitution / backtick command.
+
+    Returns an error message, or ``None`` if the content is acceptable. Conservative:
+    only fires when ``content.strip()`` is *entirely* ``$(...)`` or a single backtick
+    command, never when the content merely contains those characters.
+    """
+    stripped = content.strip()
+    if stripped and (_WHOLE_CMD_SUB_RE.match(stripped) or _WHOLE_BACKTICK_RE.match(stripped)):
+        return (
+            "Refusing to write a shell command as file content: write_file/edit_file store "
+            "text LITERALLY and do not evaluate $(...) or backticks. Pass the actual file "
+            "contents, not a command that would produce them."
+        )
+    return None
+
+
+def check_python_syntax(path: str, content: str) -> str | None:
+    """For a ``.py`` ``path``, refuse ``content`` that does not parse (parse-only).
+
+    Uses ``compile(..., "exec")`` — no execution, no new permission tier. Returns an
+    error message, or ``None`` if the content is empty, non-Python, or valid.
+    """
+    if not path.endswith(".py") or not content.strip():
+        return None
+    try:
+        compile(content, path, "exec")
+    except SyntaxError as exc:
+        where = f" (line {exc.lineno})" if exc.lineno else ""
+        return f"Refusing to write invalid Python to {path}: {exc.msg}{where}."
+    return None
