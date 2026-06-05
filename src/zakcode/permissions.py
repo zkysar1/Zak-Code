@@ -271,6 +271,21 @@ class PermissionPolicy:
         self._session_allow: set[str] = set()
         self._session_deny: set[str] = set()
 
+    def child_view(self) -> PermissionPolicy:
+        """A policy for a delegated child: same immutable posture, isolated session grants.
+
+        Shares this policy's mode, prompter, and the full (baseline + operator) dangerous-
+        pattern blocklist, but starts with its OWN empty per-session allow/deny sets — so an
+        ALLOW_SESSION (or DENY_SESSION) decision answered inside an "isolated" child does not
+        silently widen or narrow the parent or its sibling children. The deny-first gate and
+        the never-waivable catastrophic blocklist are unchanged. (audit2 #10)
+        """
+        return PermissionPolicy(
+            self.mode,
+            prompter=self.prompter,
+            dangerous_patterns=self.dangerous_patterns,
+        )
+
     # ── public read accessors (so clients never touch the private sets) ────────
 
     def session_allow(self) -> list[str]:

@@ -251,6 +251,21 @@ async def test_session_grant_covers_whole_tool() -> None:
     assert len(prompter.requests) == 1
 
 
+def test_child_view_isolates_session_grants_but_shares_posture() -> None:
+    # audit2 #10: a child policy shares mode + the dangerous blocklist but has its own
+    # session-grant sets, so a child's grant can't widen the parent (or siblings).
+    parent = PermissionPolicy(PermissionMode.ASK)
+    child = parent.child_view()
+    assert child is not parent
+    assert child.mode == parent.mode
+    assert child.dangerous_patterns == parent.dangerous_patterns  # same never-waived blocklist
+    child._session_allow.add("bash")
+    assert "bash" not in parent._session_allow  # the child's grant does not bleed up
+    # and the blocklist still fires for the child even with the grant present
+    decision, _ = child.decide(BASH, {"command": "sudo rm -rf /"})
+    assert decision is PermissionDecision.ASK
+
+
 async def test_session_grant_never_waives_dangerous() -> None:
     # The safety invariant for per-tool grants: a session grant for a tool does NOT
     # silently run a dangerous command of that tool — it always re-prompts.

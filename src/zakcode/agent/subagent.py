@@ -161,16 +161,29 @@ class SubAgentRunner:
 
         registry = self.child_registry(definition)
         session = Session(cwd=str(self.workspace_root), model=self.settings.default_model)
+        # A child gets its OWN permission view (same mode + blocklist, isolated session
+        # grants) so a child's "allow for session" cannot bleed into the parent/siblings.
+        child_policy = (
+            self.permission_policy.child_view() if self.permission_policy is not None else None
+        )
         loop = AgentLoop(
             self.provider,
             registry,
             session,
             prompt_builder=self.prompt_builder_for(definition),
             settings=self.settings,
-            permission_policy=self.permission_policy,
+            permission_policy=child_policy,
             hook_manager=self.hook_manager,
             budget=self.budget,
             workspace_root=self.workspace_root,
+            # Inherit the parent's verification posture: AgentLoop reads these from explicit
+            # params (not from settings), so a child would otherwise silently run UNGROUNDED
+            # and UNGATED for delegated create-and-run work. (audit2 #3)
+            verify_writes=self.settings.verify_writes,
+            recipe_mode=self.settings.recipe_mode,
+            recipe_attempt_cap=self.settings.recipe_attempt_cap,
+            recipe_acceptance_compare=self.settings.recipe_acceptance_compare,
+            recipe_harness_run=self.settings.recipe_harness_run,
         )
         result = await loop.arun_turn(prompt)
         summary = self._summarize(result)

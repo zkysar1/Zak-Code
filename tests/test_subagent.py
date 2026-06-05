@@ -276,3 +276,75 @@ def test_manager_satisfies_spawner_protocol(tmp_path: Path) -> None:
 
     mgr = _manager(tmp_path, _OneShotProvider("x"), [GENERAL_PURPOSE], "general-purpose")
     assert isinstance(mgr, SubAgentSpawner)
+
+
+async def test_child_inherits_verification_and_recipe_settings(tmp_path: Path, monkeypatch) -> None:
+    # audit2 #3: AgentLoop reads verify_writes/recipe_* from explicit params (not settings),
+    # so the runner must forward them — else delegated create-and-run work runs UNGROUNDED
+    # and UNGATED even though verify_writes defaults on. Capture the child loop's kwargs.
+    import zakcode.agent.subagent as sub
+
+    captured: dict = {}
+
+    class _FakeLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def arun_turn(self, prompt: str) -> TurnResult:
+            return TurnResult(stop_reason="completed")
+
+    monkeypatch.setattr(sub, "AgentLoop", _FakeLoop)
+    runner = SubAgentRunner(
+        provider=_OneShotProvider("x"),
+        registry=_registry(_RecordingTool("read_file")),
+        settings=Settings(
+            default_model="scripted/test",
+            workspace_root=tmp_path,
+            verify_writes=True,
+            recipe_mode=True,
+            recipe_harness_run=True,
+            recipe_acceptance_compare=True,
+            recipe_attempt_cap=2,
+        ),
+        budget=IterationBudget(10),
+        workspace_root=tmp_path,
+    )
+    await runner.run(GENERAL_PURPOSE, "do it")
+    assert captured["verify_writes"] is True
+    assert captured["recipe_mode"] is True
+    assert captured["recipe_harness_run"] is True
+    assert captured["recipe_acceptance_compare"] is True
+    assert captured["recipe_attempt_cap"] == 2
+
+
+async def test_child_gets_isolated_permission_view(tmp_path: Path, monkeypatch) -> None:
+    # audit2 #10: the child must receive a child_view() of the parent policy (isolated
+    # session grants), not the shared instance, so a child ALLOW_SESSION can't bleed up.
+    import zakcode.agent.subagent as sub
+    from zakcode.permissions import PermissionMode, PermissionPolicy
+
+    parent_policy = PermissionPolicy(PermissionMode.ASK)
+    captured: dict = {}
+
+    class _FakeLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def arun_turn(self, prompt: str) -> TurnResult:
+            return TurnResult(stop_reason="completed")
+
+    monkeypatch.setattr(sub, "AgentLoop", _FakeLoop)
+    runner = SubAgentRunner(
+        provider=_OneShotProvider("x"),
+        registry=_registry(_RecordingTool("read_file")),
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        budget=IterationBudget(10),
+        permission_policy=parent_policy,
+        workspace_root=tmp_path,
+    )
+    await runner.run(GENERAL_PURPOSE, "do it")
+    child_policy = captured["permission_policy"]
+    assert child_policy is not parent_policy  # not the shared instance
+    assert child_policy.mode == parent_policy.mode
+    child_policy._session_allow.add("bash")
+    assert "bash" not in parent_policy._session_allow  # grant does not bleed up
