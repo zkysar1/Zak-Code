@@ -22,6 +22,9 @@ ENV/
 # uv  (uv.lock IS committed for reproducible installs; override any global *.lock ignore)
 .uv/
 !uv.lock
+# ...but the editable path-dependency package is locked by the root uv.lock, not its
+# own; ignore a stray nested lock that `uv run` may generate under packages/.
+packages/*/uv.lock
 
 # Test / type / lint caches
 .pytest_cache/

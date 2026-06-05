@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Collection, Iterator
 from typing import Any
 
 from zds_llm_provider.messages import (
@@ -69,18 +69,26 @@ TOOL_CALLING_MODES = ("auto", "native", "text")
 
 # A tool call is an explicit ``<tool_call>...</tool_call>`` tag (the canonical form,
 # which Qwen/Hermes-style local models are already trained to emit) OR a
-# ```` ```tool_call ... ``` ```` fenced block (a common Markdown alternate). Both are
-# non-greedy + DOTALL so a single block with nested JSON braces is matched whole,
-# and case-insensitive so ``<Tool_Call>`` still works.
+# ```` ```tool_call ... ``` ```` fenced block (a common Markdown alternate). The tag
+# form is recovered by a balanced-brace scan (see :func:`_iter_tag_calls`), NOT this
+# regex, so an argument value that itself contains a literal ``</tool_call>`` does not
+# truncate the body the way a non-greedy ``...</tool_call>`` match would; ``_TAG_RE``
+# remains only to recover a tag wrapped inside a fence (see :func:`_parse_fence_body`).
 _TAG_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"```tool_call\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
-# End-anchored fallbacks for a *truncated* trailing tool-call (the model hit its
-# output budget mid-emit, so the closing ``</tool_call>`` / fence never arrived).
-# They require a complete trailing JSON object so a half-written object is left in
-# the text rather than mis-parsed; a properly-closed block ends in ``>``/`` ``` ``
-# (not ``}``), so these never double-match one the closed regexes already caught.
-_TAG_OPEN_RE = re.compile(r"<tool_call>\s*(\{.*\})\s*$", re.DOTALL | re.IGNORECASE)
+# Opener / closer for the balanced-brace tag scan. Matching the opener alone (not a
+# closed pair) lets :func:`_iter_tag_calls` locate the JSON object by brace-counting,
+# which both survives an embedded ``</tool_call>`` and recovers a *truncated* trailing
+# call whose object is otherwise complete (subsuming the old end-anchored regex).
+_TAG_OPENER_RE = re.compile(r"<\s*tool_call\s*>", re.IGNORECASE)
+_CLOSE_TAG_RE = re.compile(r"</\s*tool_call\s*>", re.IGNORECASE)
+
+# End-anchored fallback for a *truncated* trailing fenced tool-call (the model hit its
+# output budget mid-emit, so the closing fence never arrived). Requires a complete
+# trailing JSON object so a half-written object is left in the text rather than
+# mis-parsed; a properly-closed fence ends in `` ``` `` (not ``}``), so this never
+# double-matches one ``_FENCE_RE`` already caught.
 _FENCE_OPEN_RE = re.compile(r"```tool_call\s*(\{.*\})\s*$", re.DOTALL | re.IGNORECASE)
 
 # Frame sentinels that untrusted tool output must not be able to forge when it is
@@ -102,7 +110,13 @@ _STOP_SENTINELS: tuple[str, ...] = (
     "<|eom_id|>",
 )
 #: Added to the stop list only in single-tool-per-turn mode: generation halts right
-#: after the one tool call (``_TAG_OPEN_RE`` recovers the truncated closing tag).
+#: after the one tool call. KNOWN LIMITATION: this is a plain stop *string*, so a model
+#: writing an argument value that itself contains the literal ``</tool_call>`` (e.g.
+#: editing this protocol's own docs/tests) is truncated mid-emit by the backend and
+#: that one call is lost. The inbound parser brace-balances and so survives an embedded
+#: marker in a *fully received* block (multi-tool mode, where this stop is off), but it
+#: cannot recover content the backend never sent. For that rare self-referential case,
+#: run with ``single_tool_per_turn`` off or avoid emitting the literal marker.
 _CLOSE_TAG = "</tool_call>"
 
 #: Generic ``<|...|>`` chat-template tokens, defanged out of residual text so a leaked
@@ -310,6 +324,103 @@ def textify_messages(messages: list[Message]) -> list[Message]:
 # ── parsing (inbound) ────────────────────────────────────────────────────────
 
 
+def _scan_json_object(text: str, start: int) -> tuple[str, int] | None:
+    """Extract one balanced JSON object from ``text`` starting at index ``start``.
+
+    ``start`` must index the opening ``{``. Scans forward tracking brace depth while
+    respecting JSON string literals (a ``{`` / ``}`` / ``"`` inside a string does not
+    affect depth) and backslash escapes, returning ``(object_text, end)`` where
+    ``end`` is just past the matching ``}``. Returns ``None`` when the object never
+    closes (the model was truncated mid-emit). Because it brace-balances rather than
+    trusting a delimiter, a literal ``</tool_call>`` inside a string value is handled
+    correctly — the central fix for "argument content contains the close marker".
+    """
+    if start < 0 or start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1], i + 1
+    return None
+
+
+def _iter_tag_calls(text: str) -> Iterator[tuple[int, int, tuple[str, dict[str, Any]]]]:
+    """Yield ``(start, end, (name, arguments))`` for each ``<tool_call>`` tag block.
+
+    For each ``<tool_call>`` opener the JSON object is extracted by brace-balancing
+    (:func:`_scan_json_object`) rather than by matching a literal ``</tool_call>``
+    delimiter, so an argument value that itself contains ``</tool_call>`` is parsed
+    intact. Any prose between the object's closing ``}`` and the trailing
+    ``</tool_call>`` is folded into the removed span (so it never leaks to residual),
+    but only when no *new* opener intervenes — so we never swallow a following,
+    separate tool call. A truncated opener whose object never closes is skipped (left
+    for :func:`_strip_forged_frames`). This subsumes both the closed-tag form and the
+    truncated-but-complete trailing-tag form the old end-anchored regex handled.
+    """
+    pos = 0
+    while True:
+        opener = _TAG_OPENER_RE.search(text, pos)
+        if opener is None:
+            return
+        brace = text.find("{", opener.end())
+        if brace == -1:
+            return
+        scanned = _scan_json_object(text, brace)
+        if scanned is None:
+            # No balanced object after this opener (truncated mid-emit); step past the
+            # opener so a later well-formed call can still be recovered.
+            pos = opener.end()
+            continue
+        obj_text, obj_end = scanned
+        end = obj_end
+        close = _CLOSE_TAG_RE.search(text, obj_end)
+        if close is not None and _TAG_OPENER_RE.search(text, obj_end, close.start()) is None:
+            end = close.end()
+        parsed = _try_parse_call(obj_text)
+        if parsed is not None:
+            yield opener.start(), end, parsed
+        pos = end
+
+
+def _loads_leading_object(inner: str) -> Any:
+    """Parse the leading JSON value of ``inner``, tolerating trailing prose.
+
+    Tries a strict ``json.loads`` first; on failure falls back to
+    ``JSONDecoder().raw_decode``, which consumes only the leading JSON object and
+    ignores anything a weak model appended after it (``{...} done now``). Returns
+    ``None`` when no JSON value starts the (stripped) string — so prose *before* the
+    JSON is still rejected, leaving the block untouched rather than mis-parsed.
+    """
+    inner = inner.strip()
+    if not inner:
+        return None
+    try:
+        return json.loads(inner)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(inner)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj
+
+
 def _try_parse_call(inner: str) -> tuple[str, dict[str, Any]] | None:
     """Parse the JSON inside one tool-call block into ``(name, arguments)``.
 
@@ -317,12 +428,10 @@ def _try_parse_call(inner: str) -> tuple[str, dict[str, Any]] | None:
     is not a JSON object carrying a non-empty string ``name``. ``arguments`` is
     coerced to a ``dict``: a JSON object is used as-is; a JSON *string* is decoded
     once more (some models double-encode); anything else degrades to ``{}`` or, for
-    a non-dict non-empty value, ``{"_raw": <repr>}`` — never raising.
+    a non-dict non-empty value, ``{"_raw": <repr>}`` — never raising. Trailing prose
+    after the JSON object is tolerated (see :func:`_loads_leading_object`).
     """
-    try:
-        obj = json.loads(inner)
-    except (json.JSONDecodeError, ValueError):
-        return None
+    obj = _loads_leading_object(inner)
     if not isinstance(obj, dict):
         return None
     name = obj.get("name")
@@ -380,9 +489,11 @@ def parse_text_tool_calls(
     counter is per-call (each response restarts at 0); the loop only correlates ids
     within a single iteration's batch, so per-response uniqueness suffices.
 
-    Recovers four shapes: a closed ``<tool_call>`` tag, a closed ```` ```tool_call ````
-    fence (incl. one wrapping a tag), and a *truncated* trailing tag/fence whose
-    JSON is otherwise complete (the model hit its output budget mid-emit). When
+    Recovers these shapes robustly: a ``<tool_call>`` tag (parsed by brace-balancing,
+    so an argument value containing a literal ``</tool_call>`` does not truncate it,
+    and trailing prose after the JSON object is ignored), a closed ```` ```tool_call ````
+    fence (incl. one wrapping a tag), and a *truncated* trailing tag/fence whose JSON
+    is otherwise complete (the model hit its output budget mid-emit). When
     ``allowed_names`` is given, only calls naming one of those tools are recovered —
     used on the salvage path so a model that merely *shows* a tool-call example is
     not made to execute it.
@@ -391,11 +502,7 @@ def parse_text_tool_calls(
         return text, []
 
     candidates: list[tuple[int, int, tuple[str, dict[str, Any]]]] = []
-    for rx in (_TAG_RE, _TAG_OPEN_RE):
-        for m in rx.finditer(text):
-            parsed = _try_parse_call(m.group(1).strip())
-            if parsed is not None:
-                candidates.append((m.start(), m.end(), parsed))
+    candidates.extend(_iter_tag_calls(text))
     for rx in (_FENCE_RE, _FENCE_OPEN_RE):
         for m in rx.finditer(text):
             parsed = _parse_fence_body(m.group(1).strip())

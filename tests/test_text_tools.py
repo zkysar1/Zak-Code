@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -416,6 +417,37 @@ def test_parse_fence_wrapping_tag_leaves_no_orphans() -> None:
     assert len(calls) == 1
     assert calls[0].name == "read_file"
     assert residual == ""  # no orphaned ``` markers
+
+
+def test_parse_argument_value_containing_close_marker() -> None:
+    # Regression: a write whose content contains the literal </tool_call> must not
+    # truncate the body (the brace-balanced scan ignores the marker inside the string).
+    content = "Protocol docs: emit </tool_call> to end a call."
+    payload = json.dumps({"name": "write_file", "arguments": {"content": content}})
+    residual, calls = parse_text_tool_calls(f"<tool_call>\n{payload}\n</tool_call>")
+    assert len(calls) == 1
+    assert calls[0].arguments["content"] == content
+    assert "</tool_call>" not in residual
+
+
+def test_parse_trailing_prose_after_object_is_salvaged() -> None:
+    # Regression: a weak model appending prose after the JSON object must not lose the
+    # call — raw_decode consumes the leading object and the prose is dropped.
+    text = '<tool_call>{"name": "run", "arguments": {"x": 1}} done now</tool_call>'
+    residual, calls = parse_text_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0].arguments == {"x": 1}
+    assert "done now" not in residual
+
+
+def test_parse_two_calls_embedded_marker_not_swallowed() -> None:
+    # Regression: absorbing the trailing close tag must not swallow a following call.
+    first = json.dumps({"name": "write_file", "arguments": {"content": "a </tool_call> b"}})
+    second = json.dumps({"name": "read_file", "arguments": {"path": "a.py"}})
+    _residual, calls = parse_text_tool_calls(
+        f"<tool_call>{first}</tool_call><tool_call>{second}</tool_call>"
+    )
+    assert [c.name for c in calls] == ["write_file", "read_file"]
 
 
 def test_parse_allowed_names_filters_unknown_tools() -> None:

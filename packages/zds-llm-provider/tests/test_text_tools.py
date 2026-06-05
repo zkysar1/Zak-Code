@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from conftest import StubProvider
 from zds_llm_provider.messages import (
     Message,
@@ -78,6 +80,66 @@ def test_parse_allowed_names_filter() -> None:
     assert len(calls) == 1
     assert calls[0].name == "allowed_tool"
     assert "blocked_tool" in residual
+
+
+def test_parse_argument_value_containing_close_marker() -> None:
+    # A write whose content legitimately contains the literal </tool_call> must NOT
+    # truncate the body: the balanced-brace scan ignores the marker inside the string.
+    content = "Docs about the protocol: emit </tool_call> to end a call."
+    payload = json.dumps({"name": "write_file", "arguments": {"content": content}})
+    text = f"<tool_call>\n{payload}\n</tool_call>"
+    residual, calls = parse_text_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0].name == "write_file"
+    assert calls[0].arguments["content"] == content
+    assert "<tool_call>" not in residual
+    assert "</tool_call>" not in residual
+
+
+def test_parse_nested_braces_in_arguments() -> None:
+    # Nested JSON objects in arguments must brace-balance, not stop at the first }.
+    payload = json.dumps({"name": "configure", "arguments": {"opts": {"a": 1, "b": {"c": 2}}}})
+    residual, calls = parse_text_tool_calls(f"<tool_call>{payload}</tool_call>")
+    assert len(calls) == 1
+    assert calls[0].arguments == {"opts": {"a": 1, "b": {"c": 2}}}
+
+
+def test_parse_trailing_prose_inside_block_is_salvaged() -> None:
+    # A weak model often appends prose after the JSON object inside the block; the
+    # leading JSON object is salvaged via raw_decode and the prose is dropped.
+    text = '<tool_call>{"name": "run", "arguments": {"x": 1}} done now, let me run it</tool_call>'
+    residual, calls = parse_text_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0].name == "run"
+    assert calls[0].arguments == {"x": 1}
+    assert "done now" not in residual
+
+
+def test_parse_trailing_prose_without_close_tag() -> None:
+    # Same salvage on the truncated path (no close tag): leading object recovered.
+    text = '<tool_call>{"name": "run", "arguments": {}} ok'
+    _residual, calls = parse_text_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0].name == "run"
+
+
+def test_parse_prose_before_json_is_not_misparsed() -> None:
+    # raw_decode only consumes a LEADING object: prose before the JSON leaves the
+    # block unrecovered (no false positive), and the name-gate still applies.
+    text = "<tool_call>let me think {not json here}</tool_call>"
+    residual, calls = parse_text_tool_calls(text)
+    assert calls == []
+    assert "let me think" in residual
+
+
+def test_parse_two_calls_one_with_embedded_marker() -> None:
+    # The trailing-close-tag absorption must not swallow a following separate call.
+    first = json.dumps({"name": "write_file", "arguments": {"content": "x </tool_call> y"}})
+    second = json.dumps({"name": "read_file", "arguments": {"path": "a.py"}})
+    text = f"<tool_call>{first}</tool_call>\n<tool_call>{second}</tool_call>"
+    _residual, calls = parse_text_tool_calls(text)
+    assert [c.name for c in calls] == ["write_file", "read_file"]
+    assert calls[0].arguments["content"] == "x </tool_call> y"
 
 
 def test_textify_messages_rewrites_tool_role() -> None:
