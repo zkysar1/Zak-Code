@@ -26,7 +26,7 @@ All file-writing and command-running tools route through a single permission gat
 
 ## 3. Destructive-operation confirmation
 
-- **Destructive actions always confirm in `ask` mode.** This includes file deletion/overwrite of existing content, recursive removal, `git` history rewrites (reset --hard, force-push), mass edits across many files, and any shell command matching a known-destructive pattern (e.g. `rm -rf`, `del`, disk/partition tools, `git clean -fdx`).
+- **Destructive actions always confirm in `ask` mode.** This includes file deletion/overwrite of existing content, recursive removal, `git` history rewrites (reset --hard, force-push), mass edits across many files, and any shell command matching a known-destructive pattern (e.g. `rm -rf <root/home>`, recursive deletes `rd /s` / `del /s` / `Remove-Item -Recurse` of a drive or profile path, `format`/`mkfs` (case-insensitive), disk/partition tools, `git clean -fdx`). Plain non-recursive `del <file>` is **not** itself a blocklist match (it still passes the tier/mode gate like any write).
 - **Show before you act.** Confirmation prompts MUST display exactly what will run or change (the literal command, or a diff/file list for edits) so the operator approves the real action, not a summary of it.
 - **Prefer reversible.** Where practical, prefer non-destructive equivalents (write-new-then-rename over in-place truncate; edit over wholesale rewrite). Never use truncating/overwriting file creation on a file that already has content the operator hasn't seen.
 - **No auto-confirm from model output.** The model proposing a destructive action does not count as approval. Only an operator (or an explicit pre-granted `allow` policy) confirms.

@@ -125,7 +125,7 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "recursive remove of a root or home path",
     ),
     (re.compile(r"(^|\s)sudo(\s|$)"), "privilege escalation (sudo)"),
-    (re.compile(r"\bmkfs\b|\bformat\s+[a-z]:"), "filesystem format"),
+    (re.compile(r"\bmkfs\b|\bformat\s+[A-Za-z]:", re.IGNORECASE), "filesystem format"),
     (re.compile(r":\s*\(\s*\)\s*\{.*\}\s*;\s*:"), "shell fork bomb"),
     (re.compile(r"\bdd\b.*\bof=/dev/"), "raw write to a block device"),
     (re.compile(r">\s*/dev/sd[a-z]"), "overwrite of a block device"),
@@ -142,14 +142,30 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     # ── PowerShell equivalents (the powershell tool shares this blocklist) ──────
     (
-        # Recursive Remove-Item of a drive root or profile (e.g. Remove-Item -Recurse
-        # -Force C:\ or $HOME). Requires -Recurse; a single-file Remove-Item is benign.
+        # Recursive Remove-Item of any absolute drive path or the profile/home (e.g.
+        # Remove-Item -Recurse -Force C:\Windows\System32, or -r C:\Users\X). Accepts the
+        # -Recurse abbreviations (-r / -rec / ... — all unambiguous prefixes PowerShell
+        # honors). A single-file Remove-Item, and recursive deletes of relative paths,
+        # stay benign.
         re.compile(
-            r"\b(Remove-Item|ri|rd|rmdir|del|erase)\b[^\n]*-Recurse\b[^\n]*"
-            r"([A-Za-z]:\\?(\s|$|\\\*)|\$HOME|\$env:USERPROFILE|~)",
+            r"\b(Remove-Item|ri|rd|rmdir|del|erase)\b"
+            r"[^\n]*\s-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b"
+            r"[^\n]*([A-Za-z]:\\|\$HOME|\$env:USERPROFILE|~)",
             re.IGNORECASE,
         ),
-        "recursive Remove-Item of a drive root or home path",
+        "recursive Remove-Item of a drive or home path",
+    ),
+    (
+        # cmd.exe recursive delete (bash runs through cmd.exe on Windows): rd/rmdir/del/
+        # erase with the /s switch targeting an absolute drive or profile path, in any
+        # argument order. Plain `del file.txt` (no /s and no drive path) stays benign.
+        re.compile(
+            r"\b(rd|rmdir|del|erase)\b"
+            r"(?=[^\n]*\s/[sS]\b)"
+            r"(?=[^\n]*([A-Za-z]:\\|%USERPROFILE%|%HOMEPATH%))",
+            re.IGNORECASE,
+        ),
+        "recursive delete (cmd.exe /s) of a drive or profile path",
     ),
     (
         re.compile(r"\b(Format-Volume|Clear-Disk|Remove-Partition)\b", re.IGNORECASE),
