@@ -252,6 +252,16 @@ class PermissionPolicy:
         self._session_allow: set[str] = set()
         self._session_deny: set[str] = set()
 
+    # ── public read accessors (so clients never touch the private sets) ────────
+
+    def session_allow(self) -> list[str]:
+        """The per-session 'allow' grants, sorted (a read-only copy)."""
+        return sorted(self._session_allow)
+
+    def session_deny(self) -> list[str]:
+        """The per-session 'deny' blocks, sorted (a read-only copy)."""
+        return sorted(self._session_deny)
+
     # ── pure decision ─────────────────────────────────────────────────────────
 
     @staticmethod

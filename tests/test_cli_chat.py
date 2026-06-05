@@ -12,13 +12,16 @@ token-by-token rendering path end to end. The CLI is exercised through Typer's
 from __future__ import annotations
 
 import asyncio
+import io
 from collections.abc import AsyncIterator
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 import zakcode
 from zakcode.cli import ConsolePermissionPrompter, _parse_permission_answer, app
+from zakcode.cli._theme import ZAK_THEME
 from zakcode.config import load_settings
 from zakcode.events import (
     AgentDone,
@@ -136,9 +139,10 @@ def test_chat_renders_tool_lines(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", ToolAgent)
     result = runner.invoke(app, ["chat"], input="run ls\n/exit\n")
     assert result.exit_code == 0
-    # Exactly one tool-call summary line is rendered for the single tool use.
-    assert result.stdout.count("tool bash(") == 1
-    assert "-> ok" in result.stdout
+    # Exactly one tool-call line is rendered for the single tool use (its target),
+    # followed by the result summary and the assistant text.
+    assert result.stdout.count("ls -la") == 1
+    assert "files" in result.stdout
     assert CANNED_TEXT in result.stdout
 
 
@@ -150,7 +154,7 @@ def test_chat_provider_error_stays_in_repl(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", BoomAgent)
     result = runner.invoke(app, ["chat"], input="hello\n/exit\n")
     assert result.exit_code == 0
-    assert "Provider error" in result.stdout
+    assert "provider error" in result.stdout
 
 
 def test_chat_permissions_command(monkeypatch) -> None:
@@ -198,17 +202,38 @@ def _request() -> PermissionRequest:
 
 
 class _FakeConsole:
-    """Captures printed lines and returns a scripted answer to input()."""
+    """Renders printed renderables to an in-memory buffer (so assertions inspect the
+    real rendered text) and returns a scripted answer to ``input``.
+
+    The prompter prints rich renderables (Panel/Padding/Text), so a naive ``str(arg)``
+    capture would only see reprs; this delegates to a real Console writing to a buffer.
+    """
 
     def __init__(self, answer: str) -> None:
         self.answer = answer
-        self.lines: list[str] = []
+        self._buf = io.StringIO()
+        self._console = Console(
+            file=self._buf, force_terminal=False, no_color=True, width=100, theme=ZAK_THEME
+        )
 
-    def print(self, *args: object, **_kw: object) -> None:
-        self.lines.append(" ".join(str(a) for a in args))
+    def print(self, *args: object, **kwargs: object) -> None:
+        self._console.print(*args, **kwargs)
 
-    def input(self, _prompt: str = "") -> str:
+    def input(self, prompt: object = "") -> str:
+        self._console.print(prompt, end="")
         return self.answer
+
+    @property
+    def lines(self) -> list[str]:
+        return self._buf.getvalue().splitlines()
+
+    @property
+    def encoding(self) -> str:
+        return self._console.encoding
+
+    @property
+    def file(self) -> io.StringIO:
+        return self._buf
 
 
 async def test_console_prompter_allow_once() -> None:

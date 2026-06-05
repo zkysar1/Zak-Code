@@ -176,7 +176,6 @@ async def test_render_open_fence_only_completes_at_end() -> None:
     # turn so nothing is lost.
     assert "intro" in out
     assert "code = 1" in out
-    assert "```" in out
 
 
 @pytest.mark.asyncio
@@ -188,8 +187,8 @@ async def test_render_tool_call_line() -> None:
     ]
     await renderer.render(_astream(events))
     out = buffer.getvalue()
-    assert "tool read_file(" in out
-    assert "path=a.txt" in out
+    assert "read" in out  # the verb
+    assert "a.txt" in out  # the salient target
 
 
 @pytest.mark.asyncio
@@ -207,7 +206,7 @@ async def test_render_tool_call_args_abbreviated_single_line() -> None:
     await renderer.render(_astream(events))
     out = buffer.getvalue()
     # Collapsed to the first line and truncated; full long value absent.
-    assert "tool write_file(" in out
+    assert "write" in out  # the verb
     assert long_val not in out
     assert "line2" not in out  # second line collapsed away
 
@@ -222,9 +221,9 @@ async def test_render_tool_result_ok_and_err() -> None:
     ]
     await renderer.render(_astream(events))
     out = buffer.getvalue()
-    assert "-> ok" in out
+    assert "✓" in out  # ok-state glyph
     assert "all good" in out
-    assert "-> err" in out
+    assert "✗" in out  # error-state glyph
     assert "boom" in out
 
 
@@ -262,13 +261,14 @@ async def test_render_footer_shows_cost_when_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_render_footer_omits_cost_when_zero() -> None:
+async def test_render_footer_always_shows_cost_slot() -> None:
     renderer, buffer = _make_renderer()
     events: list[AgentEvent] = [
         AgentDone(stop_reason="stop", iterations=1, usage=_usage(10, 10, cost=0.0)),
     ]
     await renderer.render(_astream(events))
-    assert "$" not in buffer.getvalue()
+    # The cost slot is always present (fixed-width $0.0000) so the footer never jitters.
+    assert "$0.0000" in buffer.getvalue()
 
 
 @pytest.mark.asyncio
@@ -295,3 +295,74 @@ async def test_render_footer_prefers_done_usage() -> None:
     await renderer.render(_astream(events))
     # Footer uses the authoritative AgentDone usage (40 tok), not the running 10.
     assert "40 tok" in buffer.getvalue()
+
+
+# ── overhaul: glyphs / inline markdown / fenced code / markup safety ──────────
+
+
+@pytest.mark.asyncio
+async def test_render_ascii_fallback(monkeypatch) -> None:
+    # ZAKCODE_ASCII forces the cp1252-safe glyph set: no unicode glyph reaches output.
+    monkeypatch.setenv("ZAKCODE_ASCII", "1")
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentToolCall(id="t1", name="read_file", arguments={"path": "a.txt"}),
+        AgentToolResult(tool_use_id="t1", output="done", is_error=False),
+        AgentDone(stop_reason="stop", iterations=1, usage=_usage(5, 5)),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert "->" in out  # arrow fallback
+    assert "[ok]" in out  # ok fallback
+    assert "→" not in out
+    assert "✓" not in out
+
+
+@pytest.mark.asyncio
+async def test_render_inline_markdown() -> None:
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentTextDelta(text="- first item\n"),
+        AgentTextDelta(text="see **bold** and `code` here\n"),
+        AgentDone(stop_reason="stop", iterations=1, usage=_usage(5, 5)),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert "first item" in out
+    assert "•" in out  # the bullet glyph replaced "- "
+    assert "bold" in out and "**" not in out  # bold markers consumed
+    assert "code" in out and "`" not in out  # inline-code markers consumed
+
+
+@pytest.mark.asyncio
+async def test_render_fenced_code_block_renders_without_markers() -> None:
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentTextDelta(text="intro\n\n```python\nx = 1\n```\n\ndone\n"),
+        AgentDone(stop_reason="stop", iterations=1, usage=_usage(5, 5)),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert "intro" in out
+    assert "x = 1" in out  # code body rendered (via Syntax)
+    assert "done" in out
+    assert "```" not in out  # fence markers consumed, not printed raw
+
+
+@pytest.mark.asyncio
+async def test_render_result_value_with_brackets_is_literal() -> None:
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentToolResult(tool_use_id="t1", output="found [bold] tag", is_error=False),
+        AgentDone(stop_reason="stop", iterations=1, usage=_usage(5, 5)),
+    ]
+    await renderer.render(_astream(events))
+    assert "[bold]" in buffer.getvalue()  # rendered literally, never parsed as markup
+
+
+def test_format_tool_call_verbs() -> None:
+    from zakcode.cli.render import _format_tool_call
+
+    assert _format_tool_call("read_file", {"path": "a.py"}) == ("read", "a.py")
+    assert _format_tool_call("bash", {"command": "ls -la"}) == ("run", "$ ls -la")
+    assert _format_tool_call("unknown_tool", {"x": "y"})[0] == "unknown_tool"

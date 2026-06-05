@@ -16,9 +16,22 @@ from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 import typer
-from rich.console import Console
+from rich.console import Console, Group, RenderableType
+from rich.padding import Padding
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
+from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
+from zakcode.cli._layout import (
+    kv_table,
+    margin,
+    notice_error,
+    notice_info,
+    notice_warn,
+    read_prompt,
+)
+from zakcode.cli._theme import ZAK_THEME
 from zakcode.cli.render import StreamRenderer
 from zakcode.config import Settings, load_settings
 from zakcode.permissions import PermissionOutcome, PermissionRequest
@@ -35,7 +48,12 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
-console = Console()
+# Upgrade the console to UTF-8 where possible, then build it with the Zak theme and
+# highlight=False (so rich never auto-colors our metadata). GLYPHS resolves to ASCII
+# fallbacks on a cp1252 console.
+enable_utf8()
+console = Console(theme=ZAK_THEME, highlight=False)
+GLYPHS = resolve_glyphs(console)
 
 # Provider API keys we report the *presence* of (never the value).
 _PROVIDER_KEY_ENV = ["OPENAI_API_KEY"]
@@ -151,7 +169,7 @@ Anything else is sent to the agent as a turn.\
 def _abbrev(value: object, *, limit: int = 80) -> str:
     """One-line, length-capped rendering of an argument value for a prompt."""
     text = str(value).replace("\n", " ").replace("\r", " ")
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _parse_permission_answer(answer: str) -> PermissionOutcome | None:
@@ -194,32 +212,62 @@ class ConsolePermissionPrompter:
         self.console = console
 
     async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
-        self.console.print()
-        self.console.print(
-            f"[yellow]⚠ permission required[/yellow] for "
-            f"[bold]{request.tool_name}[/bold] [dim]({request.tier.name})[/dim]"
-        )
-        if request.reason:
-            self.console.print(f"  [dim]{request.reason}[/dim]")
+        g = resolve_glyphs(self.console)
+        args = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
+        args.add_column(style="arg.key", min_width=8, no_wrap=True)
+        args.add_column(style="arg.value", overflow="fold")
         for key, val in request.arguments.items():
-            self.console.print(f"  [dim]{key}=[/dim]{_abbrev(val)}")
-        # Keys are shown in parens, not [brackets]: rich parses "[y]" as a markup tag
-        # and silently drops it, so the operator never sees the keys — which is how a
-        # typed "allow for session" fell through to deny. Show the keys, accept the words.
-        self.console.print("  [dim]allow once (y) · allow for session (a) · deny (n)[/dim]")
+            args.add_row(key, Text(_abbrev(val)))
+
+        body: list[RenderableType] = [
+            Text.assemble(
+                (request.tool_name + "  ", "tool.target"),
+                ("(" + request.tier.name + ")", "perm.tier"),
+            ),
+        ]
+        if request.reason:
+            body.append(Text(request.reason, style="notice.dim"))
+        body.append(Text(""))
+        body.append(args)
+        body.append(Text(""))
+        # Keys shown in (parens), never [brackets]: rich parses "[y]" as a markup tag
+        # and drops it, so the operator never sees the keys (how a typed "allow for
+        # session" once fell through to deny). Show the keys; accept the spelled words.
+        body.append(
+            Text(
+                f"allow once (y) {g['dot']} allow for session (a) {g['dot']} deny (n)",
+                style="notice.dim",
+            )
+        )
+        panel = Panel(
+            Group(*body),
+            title="permission required",
+            title_align="left",
+            border_style="perm.border",
+            padding=(1, 2),
+        )
+        self.console.print()
+        self.console.print(margin(panel))
+
+        prompt = f"  permit? (y/a/n) [prompt.marker]{g['prompt']}[/prompt.marker] "
         for _ in range(3):
             try:
-                answer = self.console.input("  [bold cyan]permit? (y/a/n)[/bold cyan] ")
+                answer = self.console.input(prompt)
             except (EOFError, KeyboardInterrupt):
-                self.console.print("  [dim]denied[/dim]")
+                self.console.print(margin(Text("denied", style="notice.dim")))
                 return PermissionOutcome.DENY_ONCE
             decision = _parse_permission_answer(answer)
             if decision is not None:
                 return decision
             self.console.print(
-                "  [dim]please answer y (allow once), a (allow for session), or n (deny)[/dim]"
+                margin(
+                    Text(
+                        "please answer y (allow once), a (allow for session), or n (deny)",
+                        style="notice.dim",
+                    )
+                )
             )
-        self.console.print("  [dim]no clear answer - denied[/dim]")
+        self.console.print(margin(Text("no clear answer - denied", style="notice.dim")))
         return PermissionOutcome.DENY_ONCE
 
 
@@ -280,7 +328,7 @@ def _run_plan(console: Console, agent: Agent, task: str) -> None:
     try:
         result = _run_async(spawner.spawn(type_name="plan", prompt=task))
     except ProviderError as exc:
-        console.print(f"[red]Provider error:[/red] {exc}")
+        notice_error(console, "provider error", str(exc))
         return
     console.print(result.summary or "[dim](the planner produced no plan)[/dim]")
 
@@ -398,16 +446,38 @@ def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
 def _print_banner(console: Console, agent: Agent) -> None:
     """Print the one-shot session banner (model, provider, workspace, perms)."""
     settings = agent.settings
-    console.print(f"[bold]Zak Code[/bold] {__version__} — interactive chat")
-    console.print(f"[dim]model[/dim]      {settings.default_model}")
-    console.print(f"[dim]provider[/dim]   {settings.provider}")
-    console.print(f"[dim]workspace[/dim]  {settings.workspace_root}")
-    console.print(f"[dim]perms[/dim]      {settings.permission_mode}")
-    console.print(f"[dim]session[/dim]    {agent.session.id}")
-    console.print(
-        "[dim]Tools: edit_file (+ read/write/glob/grep/bash). Ctrl-C interrupts a reply.[/dim]"
+    g = GLYPHS
+    dot = f" {g['dot']} "
+    title = Text.assemble(("Zak Code", "banner.title"), ("  ", ""), (__version__, "banner.version"))
+    facts = kv_table(
+        [
+            ("model", settings.default_model),
+            ("provider", settings.provider),
+            ("workspace", str(settings.workspace_root)),
+            ("perms", settings.permission_mode),
+            ("session", agent.session.id),
+        ]
     )
-    console.print("[dim]Type /help for commands, /exit to quit.[/dim]\n")
+    hints = Text.assemble(
+        ("tools  edit (+ read write glob grep bash)", "notice.dim"),
+        (dot, "notice.dim"),
+        ("Ctrl-C interrupts a reply", "notice.dim"),
+    )
+    cmds = Text.assemble(
+        ("/help for commands", "notice.dim"),
+        (dot, "notice.dim"),
+        ("/exit to quit", "notice.dim"),
+    )
+    block = Group(
+        title,
+        Text("interactive chat", style="banner.version"),
+        Text(""),
+        facts,
+        Text(""),
+        hints,
+        cmds,
+    )
+    console.print(Padding(block, (1, 0, 0, 2)))
 
 
 #: A factory that produces one turn's event stream. The CLI is agnostic to where
@@ -510,7 +580,7 @@ def _run_streamed_turn(
         # (its CancelledError handler persists state and re-raises).
         with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
             loop.run_until_complete(task)
-        console.print("\n[dim]interrupted[/dim]")
+        notice_warn(console, "interrupted - turn stopped, returning to prompt")
         return False
 
 
@@ -674,9 +744,9 @@ def chat(
 
     while True:
         try:
-            line = console.input("[bold cyan]›[/bold cyan] ")
+            line = read_prompt(console)
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]Bye.[/dim]")
+            notice_info(console, "bye")
             break
 
         stripped = line.strip()
@@ -686,7 +756,7 @@ def chat(
         if stripped.startswith("/"):
             command = stripped.split(maxsplit=1)[0].lower()
             if command in ("/exit", "/quit"):
-                console.print("[dim]Bye.[/dim]")
+                notice_info(console, "bye")
                 break
             if command == "/help":
                 console.print(_CHAT_HELP)
@@ -709,7 +779,7 @@ def chat(
                     extra_skill_dirs=extra_skill_dirs,
                     extra_workspace_roots=extra_roots,
                 )
-                console.print("[dim]Started a fresh session.[/dim]")
+                notice_info(console, "started a fresh session")
                 continue
             if command == "/cost":
                 usage = agent.session.cumulative_usage()
@@ -770,7 +840,7 @@ def chat(
         try:
             _run_streamed_turn(console, functools.partial(agent.astream_turn, stripped), renderer)
         except ProviderError as exc:
-            console.print(f"[red]Provider error:[/red] {exc}")
+            notice_error(console, "provider error", str(exc))
             continue
 
     _shutdown_session_loop(loop)
@@ -807,9 +877,9 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
 
     while True:
         try:
-            line = console.input("[bold cyan]›[/bold cyan] ")
+            line = read_prompt(console)
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]Bye.[/dim]")
+            notice_info(console, "bye")
             break
         stripped = line.strip()
         if not stripped:
@@ -826,7 +896,7 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
                 renderer,
             )
         except httpx.HTTPError as exc:
-            console.print(f"[red]Server error:[/red] {exc}")
+            notice_error(console, "server error", str(exc))
             continue
 
     _shutdown_session_loop(loop)
