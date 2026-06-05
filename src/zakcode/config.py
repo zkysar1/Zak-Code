@@ -82,6 +82,20 @@ class Settings(BaseSettings):
             "weak model cannot hallucinate that a write did what it intended."
         ),
     )
+    recipe_mode: bool = Field(
+        default=False,
+        description=(
+            "Verify-before-finish gate (the Recipe Cursor): once the model writes a "
+            "runnable .py file in a turn, the turn cannot end until the model has RUN it "
+            "successfully; an unfixable file ends as 'recipe_stalled'. Opt-in; best for "
+            "small local models on create-and-run tasks."
+        ),
+    )
+    recipe_attempt_cap: int = Field(
+        default=3,
+        ge=0,
+        description="Recipe mode: how many times to nudge the model to verify before giving up.",
+    )
 
     # ── Local (Ollama) ──────────────────────────────────────────────────────
     ollama_base_url: str = Field(default="http://localhost:11434")

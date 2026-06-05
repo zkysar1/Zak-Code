@@ -55,6 +55,7 @@ from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
+from zakcode.agent.recipe import RecipeCursor
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -176,6 +177,8 @@ class AgentLoop:
         spawner: SubAgentSpawner | None = None,
         compactor: Compactor | None = None,
         verify_writes: bool = False,
+        recipe_mode: bool = False,
+        recipe_attempt_cap: int = 3,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -203,6 +206,9 @@ class AgentLoop:
         # the real on-disk content so a weak model cannot hallucinate that a write did
         # what it intended. Off for a bare loop; the Agent facade enables it from settings.
         self.verify_writes = verify_writes
+        # Slice 2 (Recipe Cursor): verify-before-finish gate for create-and-run turns.
+        self.recipe_mode = recipe_mode
+        self.recipe_attempt_cap = recipe_attempt_cap
         # The security gate is INJECTED, not assumed. A bare AgentLoop with no
         # policy is ungated (a pure mechanism, convenient for library/tests); the
         # Agent facade — the real entry point — always injects a policy built from
@@ -553,6 +559,7 @@ class AgentLoop:
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
         )
+        cursor = RecipeCursor(enabled=self.recipe_mode, attempt_cap=self.recipe_attempt_cap)
 
         while True:
             if not self._grant_iteration(iterations):
@@ -581,6 +588,16 @@ class AgentLoop:
 
             # An empty completion (no text, no tool calls) ends the turn cleanly.
             if not result.has_tool_calls:
+                # Recipe gate: a create-and-run turn may not end until the written file
+                # has actually been run successfully. Nudge the model to verify; give up
+                # gracefully (recipe_stalled) once the attempt cap is hit.
+                if cursor.needs_verification():
+                    if cursor.can_nudge():
+                        self.session.add_message(Message.user(cursor.nudge()))
+                        self._persist()
+                        continue
+                    stop_reason = "recipe_stalled"
+                    break
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
@@ -620,6 +637,8 @@ class AgentLoop:
                 if grounding is not None:
                     self.session.add_message(grounding)
                     self._persist()
+
+            cursor.observe(result.tool_calls, result_blocks)
 
         return TurnResult(
             assistant_messages=turn_assistant,
@@ -685,6 +704,7 @@ class AgentLoop:
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
         )
+        cursor = RecipeCursor(enabled=self.recipe_mode, attempt_cap=self.recipe_attempt_cap)
 
         try:
             while True:
@@ -729,6 +749,16 @@ class AgentLoop:
 
                 # No tool calls → the turn is complete.
                 if not tool_calls:
+                    if cursor.needs_verification():
+                        if cursor.can_nudge():
+                            self.session.add_message(Message.user(cursor.nudge()))
+                            self._persist()
+                            continue
+                        stop_reason = "recipe_stalled"
+                        yield AgentStatus(
+                            message="stopping: wrote a file but could not verify it runs"
+                        )
+                        break
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
                     stop_reason = "completed"
@@ -771,6 +801,8 @@ class AgentLoop:
                     if grounding is not None:
                         self.session.add_message(grounding)
                         self._persist()
+
+                cursor.observe(tool_calls, result_blocks)
         except asyncio.CancelledError:
             # Cancellation is a control signal, not a stop reason. State has only
             # been mutated + persisted at message boundaries, so it is consistent.

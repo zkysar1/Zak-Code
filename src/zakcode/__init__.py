@@ -420,6 +420,8 @@ class Agent:
             spawner=spawner,
             compactor=self.compactor,
             verify_writes=self.settings.verify_writes,
+            recipe_mode=self.settings.recipe_mode,
+            recipe_attempt_cap=self.settings.recipe_attempt_cap,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:
