@@ -391,8 +391,21 @@ def _tool_target(arguments: object) -> str:
 
 
 def _diff_preview(output: str) -> Text | None:
-    """A small colored unified-diff preview, or ``None`` if the output is not a diff."""
+    """A small colored unified-diff preview, or ``None`` if the output is not a diff.
+
+    Gated on a real unified-diff SIGNATURE — an ``@@`` hunk header, or a ``--- ``/``+++ ``
+    file-header pair — before colorizing. Without the gate, ordinary tool output whose
+    lines merely begin with ``-``/``+`` (markdown bullets, an ``ls -l`` listing, a file
+    read) was mis-painted as a red/green diff and truncated; the signature gate prevents
+    that false positive.
+    """
     lines = output.splitlines()
+    has_hunk = any(ln.startswith("@@") for ln in lines)
+    has_file_headers = any(ln.startswith("--- ") for ln in lines) and any(
+        ln.startswith("+++ ") for ln in lines
+    )
+    if not (has_hunk or has_file_headers):
+        return None
     diff_lines = [ln for ln in lines if ln[:1] in ("+", "-", "@")]
     if len(diff_lines) < 2:
         return None

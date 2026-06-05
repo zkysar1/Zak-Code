@@ -302,9 +302,11 @@ def _render_hooks(console: Console, agent: Agent) -> None:
         console.print("[dim]no hooks configured.[/dim]")
         return
     for spec in shell:
-        console.print(f"[dim]{spec.event.value}[/dim] [{spec.matcher}] -> {' '.join(spec.command)}")
+        line = Text(spec.event.value, style="notice.dim")
+        line.append(f" [{spec.matcher}] -> {' '.join(spec.command)}")
+        console.print(line)
     if in_proc:
-        console.print(f"[dim]{in_proc} in-process hook(s) registered.[/dim]")
+        console.print(Text(f"{in_proc} in-process hook(s) registered.", style="notice.dim"))
 
 
 def _render_agents(console: Console, agent: Agent) -> None:
@@ -395,6 +397,17 @@ def _render_plugins(console: Console, agent: Agent) -> None:
     if not report.loaded and not report.skipped and not report.failed and not errors:
         console.print("[dim]no plugins discovered.[/dim]")
         return
+    # Built with Text + console-resolved glyphs (never f-string markup) so a cp1252
+    # console can't crash on a glyph and a plugin-supplied name/reason can't inject or
+    # drop rich markup.
+    g = resolve_glyphs(console)
+
+    def _status_line(glyph: str, glyph_style: str, name: str, detail: str) -> Text:
+        line = Text.assemble(("  ", ""), (glyph + " ", glyph_style), (name, "arg.value"))
+        if detail:
+            line.append(f" ({detail})", style="notice.dim")
+        return line
+
     for name in report.loaded:
         contrib = report.contributions.get(name, {})
         parts = [
@@ -402,27 +415,34 @@ def _render_plugins(console: Console, agent: Agent) -> None:
             for kind in ("tools", "commands", "hooks")
             if contrib.get(kind)
         ]
-        suffix = f" [dim]({', '.join(parts)})[/dim]" if parts else ""
-        console.print(f"  [green]✓[/green] {name}{suffix}")
+        console.print(_status_line(g["ok"], "ok", name, ", ".join(parts)))
     for name, reason in report.skipped.items():
-        console.print(f"  [yellow]–[/yellow] {name} [dim]({reason})[/dim]")
+        console.print(_status_line(g["dash"], "warn", name, reason))
     for name, err in report.failed.items():
-        console.print(f"  [red]✗[/red] {name} [dim]({err})[/dim]")
+        console.print(_status_line(g["fail"], "err", name, err))
     for name, err in errors.items():
-        console.print(f"  [red]✗[/red] {name} [dim](discovery: {err})[/dim]")
+        console.print(_status_line(g["fail"], "err", name, f"discovery: {err}"))
 
 
 def _render_skills(console: Console, agent: Agent) -> None:
     """List discovered skills + any discovery errors (the /skills cmd)."""
     registry = getattr(agent, "skill_registry", None)
+    g = resolve_glyphs(console)
     if registry is None or len(registry) == 0:
         console.print("[dim]no skills discovered.[/dim]")
     else:
         for name, desc in registry.catalog():
-            console.print(f"  [bold]{name}[/bold]" + (f" [dim]— {desc}[/dim]" if desc else ""))
-        console.print("[dim]invoke a skill with /<name> to load its instructions.[/dim]")
+            line = Text.assemble(("  ", ""), (name, "bold"))
+            if desc:
+                line.append(f" {g['dash']} {desc}", style="notice.dim")
+            console.print(line)
+        console.print(
+            Text("invoke a skill with /<name> to load its instructions.", style="notice.dim")
+        )
     for name, err in getattr(agent, "skill_errors", {}).items():
-        console.print(f"  [red]{name}[/red] [dim]({err})[/dim]")
+        line = Text.assemble(("  ", ""), (name, "err"))
+        line.append(f" ({err})", style="notice.dim")
+        console.print(line)
 
 
 def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
@@ -442,11 +462,15 @@ def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
     try:
         body = skill.body()
     except Exception as exc:  # noqa: BLE001 — a bad skill file is a UX error, not a crash
-        console.print(f"[red]could not load skill [bold]{skill.name}[/bold]: {exc}[/red]")
+        notice_error(console, "could not load skill", f"{skill.name}: {exc}")
         return True
     agent.session.add_message(Message.user(f"[skill: {skill.name}]\n{body}"))
     console.print(
-        f"[dim]loaded skill [bold]{skill.name}[/bold]; describe your task and it will apply.[/dim]"
+        Text.assemble(
+            ("loaded skill ", "notice.dim"),
+            (skill.name, "bold"),
+            ("; describe your task and it will apply.", "notice.dim"),
+        )
     )
     return True
 
@@ -834,10 +858,9 @@ def chat(
                 else None
             )
             if cmd_result is not None:
-                style = "red" if cmd_result.is_error else ""
-                console.print(
-                    f"[{style}]{cmd_result.output}[/{style}]" if style else cmd_result.output
-                )
+                # Opaque plugin output: render as plain Text so a bare [/] can't raise
+                # MarkupError (crashing the REPL) and style tags can't drop the literal.
+                console.print(Text(cmd_result.output, style="err" if cmd_result.is_error else ""))
                 continue
             console.print(f"[dim]{command} is not yet supported.[/dim]")
             continue
@@ -868,10 +891,16 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
     try:
         session_id = _create_remote_session(base_url)
     except (httpx.HTTPError, OSError) as exc:
-        console.print(f"[red]Could not reach server at {base_url}:[/red] {exc}")
+        notice_error(console, f"could not reach server at {base_url}", str(exc))
         raise typer.Exit(code=1) from exc
 
-    console.print(f"[bold]Zak Code[/bold] {__version__} — connected to {base_url}")
+    console.print(
+        Text.assemble(
+            ("Zak Code", "banner.title"),
+            (f" {__version__} ", "banner.version"),
+            (f"{GLYPHS['dash']} connected to {base_url}", "notice.dim"),
+        )
+    )
     console.print(f"[dim]session[/dim]  {session_id}")
     if model:
         console.print(f"[dim]model[/dim]    {model} [dim](per-request override)[/dim]")

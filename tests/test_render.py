@@ -368,6 +368,26 @@ def test_format_tool_call_verbs() -> None:
     assert _format_tool_call("unknown_tool", {"x": "y"})[0] == "unknown_tool"
 
 
+def test_diff_preview_ignores_non_diff_output() -> None:
+    # Output whose lines merely begin with -/+ (markdown bullets, an ls -l listing, a file
+    # read) is NOT a diff and must not be colorized/truncated (audit #6).
+    from zakcode.cli.render import _diff_preview
+
+    assert _diff_preview("- installed pkg\n- removed old file\n- done") is None
+    assert _diff_preview("-rw-r--r-- 1 me 0 a.txt\n-rw-r--r-- 1 me 0 b.txt") is None
+
+
+def test_diff_preview_colorizes_real_unified_diff() -> None:
+    from zakcode.cli.render import _diff_preview
+
+    # @@ hunk signature.
+    out = _diff_preview("@@ -1,2 +1,2 @@\n-old line\n+new line\n context")
+    assert out is not None
+    assert "old line" in out.plain and "new line" in out.plain
+    # ---/+++ file-header signature.
+    assert _diff_preview("--- a/x.py\n+++ b/x.py\n-removed\n+added") is not None
+
+
 @pytest.mark.asyncio
 async def test_render_run_result_shows_output_lines() -> None:
     # A run/bash result shows the program's real output + a line count, not just line 1

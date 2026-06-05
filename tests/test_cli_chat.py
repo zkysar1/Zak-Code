@@ -410,3 +410,56 @@ def test_shutdown_session_loop_closes_and_clears() -> None:
         assert cli._SESSION_LOOP is None  # session reference cleared
     finally:
         cli._SESSION_LOOP = prev
+
+
+# ── audit #4/#5: /plugins + /skills are cp1252-safe and markup-immune ──────────
+
+
+def _ascii_console() -> tuple[Console, io.StringIO]:
+    buf = io.StringIO()
+    return Console(file=buf, force_terminal=False, no_color=True, width=100, theme=ZAK_THEME), buf
+
+
+def test_render_plugins_is_ascii_safe_and_markup_immune(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from zakcode.cli import _render_plugins
+
+    monkeypatch.setenv("ZAKCODE_ASCII", "1")  # force the cp1252-safe glyph set
+    console, buf = _ascii_console()
+    report = SimpleNamespace(
+        loaded=["good"],
+        skipped={"skip [/] me": "needs x"},  # a bare close tag would crash f-string markup
+        failed={"bad": "boom [bold]"},
+        contributions={"good": {"tools": [1, 2]}},
+    )
+    agent = SimpleNamespace(plugin_report=report, plugin_discovery_errors={"disc": "nope"})
+    _render_plugins(console, agent)  # must not raise MarkupError or UnicodeEncodeError
+    out = buf.getvalue()
+    assert "✓" not in out and "✗" not in out  # raw unicode glyphs never emitted
+    assert "[ok]" in out  # ok glyph fell back to ASCII
+    assert "skip [/] me" in out  # the bare close tag rendered literally, not parsed
+    assert "boom [bold]" in out  # style tags rendered literally, not consumed
+
+
+def test_render_skills_is_ascii_safe_and_markup_immune(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from zakcode.cli import _render_skills
+
+    monkeypatch.setenv("ZAKCODE_ASCII", "1")
+    console, buf = _ascii_console()
+
+    class _Registry:
+        def __len__(self) -> int:
+            return 1
+
+        def catalog(self) -> list[tuple[str, str]]:
+            return [("greet [/]", "say hi")]
+
+    agent = SimpleNamespace(skill_registry=_Registry(), skill_errors={"oops": "missing [bold]"})
+    _render_skills(console, agent)  # must not raise
+    out = buf.getvalue()
+    assert "—" not in out  # em-dash fell back to ASCII
+    assert "greet [/]" in out  # literal, not parsed as markup
+    assert "missing [bold]" in out
