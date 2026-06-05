@@ -85,6 +85,69 @@ def test_cursor_nudge_cap() -> None:
     assert c.can_nudge() is False
 
 
+def test_cursor_non_executing_commands_do_not_verify() -> None:
+    # A command that merely NAMES the file (never runs it) must not satisfy the gate.
+    for cmd in ("echo prog.py", "cat prog.py", "ls -l prog.py", "rm prog.py", "git add prog.py"):
+        c = RecipeCursor(enabled=True)
+        c.observe([_c("w", "write_file", path="prog.py")], [_r("w", path="prog.py")])
+        c.observe([_c("r", "bash", command=cmd)], [_r("r")])
+        assert c.needs_verification() is True, cmd
+
+
+def test_cursor_substring_filename_does_not_false_verify() -> None:
+    # Running a DIFFERENT, longer file must not satisfy a shorter target's basename.
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="a.py")], [_r("w", path="a.py")])
+    c.observe([_c("r", "bash", command="py aa.py")], [_r("r")])
+    assert c.needs_verification() is True
+
+
+def test_cursor_interpreter_with_flags_and_quoted_path_verifies() -> None:
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="src/app.py")], [_r("w", path="src/app.py")])
+    c.observe([_c("r", "bash", command='python -u "src/app.py"')], [_r("r")])
+    assert c.needs_verification() is False
+
+
+def test_cursor_run_in_later_segment_verifies() -> None:
+    # `cd build && py app.py` — the interpreter is in the second segment.
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="app.py")], [_r("w", path="app.py")])
+    c.observe([_c("r", "bash", command="cd build && py app.py")], [_r("r")])
+    assert c.needs_verification() is False
+
+
+def test_cursor_named_in_one_segment_run_in_another_is_not_confused() -> None:
+    # `python a.py && echo b.py` runs a.py but only NAMES b.py; b.py must stay unverified.
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w1", "write_file", path="a.py")], [_r("w1", path="a.py")])
+    c.observe([_c("w2", "write_file", path="b.py")], [_r("w2", path="b.py")])
+    c.observe([_c("r", "bash", command="python a.py && echo b.py")], [_r("r")])
+    assert c.needs_verification() is True  # b.py was only echoed
+    assert c.pending_target() == "b.py"
+
+
+def test_cursor_multi_file_requires_running_each() -> None:
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w1", "write_file", path="a.py")], [_r("w1", path="a.py")])
+    c.observe([_c("w2", "write_file", path="b.py")], [_r("w2", path="b.py")])
+    c.observe([_c("r1", "bash", command="py a.py")], [_r("r1")])
+    assert c.needs_verification() is True  # b.py not run yet
+    assert c.pending_target() == "b.py"
+    c.observe([_c("r2", "bash", command="py b.py")], [_r("r2")])
+    assert c.needs_verification() is False
+
+
+def test_cursor_rewrite_unverifies_a_file() -> None:
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="a.py")], [_r("w", path="a.py")])
+    c.observe([_c("r", "bash", command="py a.py")], [_r("r")])
+    assert c.needs_verification() is False
+    # Editing the file again means it must be re-verified.
+    c.observe([_c("w2", "edit_file", path="a.py")], [_r("w2", path="a.py")])
+    assert c.needs_verification() is True
+
+
 # ── loop integration ──────────────────────────────────────────────────────────
 
 
@@ -121,14 +184,30 @@ def _loop(provider: _ScriptedProvider, tmp_path: Path, **kw: Any) -> AgentLoop:
 
 
 def test_recipe_gate_forces_a_run_before_completing(tmp_path: Path) -> None:
+    run_cmd = resolve_python_run("prog.py")
+    if run_cmd is None:
+        pytest.skip("no python interpreter available")
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
     done = LLMResult(text="All done!")
-    run = LLMResult(tool_calls=[_c("r1", "bash", command="echo prog.py")])
+    # A real interpreter run (not `echo prog.py`): only an actual execution satisfies the gate.
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
     provider = _ScriptedProvider([write, done, run, done])
     result = asyncio.run(_loop(provider, tmp_path, recipe_mode=True).arun_turn("make prog.py"))
     assert result.stop_reason == "completed"
     # write -> "done"(blocked+nudged) -> run -> "done"(now verified) = 4 provider calls.
     assert provider.calls == 4
+
+
+def test_recipe_gate_rejects_a_non_executing_run(tmp_path: Path) -> None:
+    # `echo prog.py` succeeds and names the file but never RUNS it, so the gate must not
+    # accept it: the turn stalls instead of falsely completing.
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
+    done = LLMResult(text="All done!")
+    run = LLMResult(tool_calls=[_c("r1", "bash", command="echo prog.py")])
+    provider = _ScriptedProvider([write, done, run, done])
+    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_attempt_cap=1)
+    result = asyncio.run(loop.arun_turn("make prog.py"))
+    assert result.stop_reason == "recipe_stalled"
 
 
 def test_recipe_gate_stalls_gracefully_after_cap(tmp_path: Path) -> None:
@@ -170,6 +249,18 @@ def test_extract_acceptance_is_verbatim_and_case_sensitive() -> None:
     assert extract_acceptance("prints `Hello`") == "Hello"  # not lowercased
 
 
+def test_extract_acceptance_rejects_output_filenames_generically() -> None:
+    # Generic name.ext rejection (not a hardcoded list): .csv/.xml/.log/.ini/.dat all go.
+    for fn in ("result.csv", "data.xml", "report.log", "config.ini", "out.dat"):
+        assert extract_acceptance(f"it prints `{fn}`") is None, fn
+
+
+def test_extract_acceptance_keeps_numeric_literals() -> None:
+    # A numeric literal is NOT a filename (its "extension" is digits) and is kept.
+    assert extract_acceptance("it prints `3.14`") == "3.14"
+    assert extract_acceptance("it prints `v1.2`") == "v1.2"
+
+
 def test_cursor_acceptance_requires_output_match() -> None:
     c = RecipeCursor(enabled=True, acceptance="Hello, World!")
     c.observe([_c("w", "write_file", path="hi.py")], [_r("w", path="hi.py")])
@@ -197,9 +288,13 @@ def test_nudge_cites_acceptance() -> None:
 
 
 def test_recipe_acceptance_stalls_on_wrong_output(tmp_path: Path) -> None:
+    run_cmd = resolve_python_run("p.py")
+    if run_cmd is None:
+        pytest.skip("no python interpreter available")
+    # A REAL run whose program prints the wrong thing: ran fine but output lacks "pong".
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('nope')\n")])
     done = LLMResult(text="done")
-    run = LLMResult(tool_calls=[_c("r1", "bash", command="echo ran p.py and printed nothing")])
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
     provider = _ScriptedProvider([write, done, run, done])
     loop = _loop(
         provider, tmp_path, recipe_mode=True, recipe_acceptance_compare=True, recipe_attempt_cap=1
@@ -209,9 +304,12 @@ def test_recipe_acceptance_stalls_on_wrong_output(tmp_path: Path) -> None:
 
 
 def test_recipe_acceptance_completes_on_right_output(tmp_path: Path) -> None:
+    run_cmd = resolve_python_run("p.py")
+    if run_cmd is None:
+        pytest.skip("no python interpreter available")
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
     done = LLMResult(text="done")
-    run = LLMResult(tool_calls=[_c("r1", "bash", command="echo ran p.py and printed pong")])
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
     provider = _ScriptedProvider([write, done, run, done])
     loop = _loop(provider, tmp_path, recipe_mode=True, recipe_acceptance_compare=True)
     result = asyncio.run(loop.arun_turn("create p.py that prints `pong`"))
