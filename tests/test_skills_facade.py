@@ -157,9 +157,7 @@ def test_agent_extra_skill_dir_shadows_project(tmp_path: Path) -> None:
     # Write a project skill and an external skill with the same name.
     _write_skill(tmp_path, "g")  # name="greeter" in project .zakcode/skills
     ext = tmp_path / "external-skills"
-    _write_ext_skill(
-        ext, "g2", "---\nname: greeter\ndescription: External wins.\n---\nbody\n"
-    )
+    _write_ext_skill(ext, "g2", "---\nname: greeter\ndescription: External wins.\n---\nbody\n")
     agent = _agent(tmp_path, enable_skills=True, extra_skill_dirs=[str(ext)])
     skill = agent.skill_registry.get("greeter")
     assert skill is not None

@@ -1,4 +1,5 @@
 """Tests for the provider ABC, value objects, streaming events, and error taxonomy."""
+
 from __future__ import annotations
 
 import pytest

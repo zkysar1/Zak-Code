@@ -1,4 +1,5 @@
 """Shared test fixtures for zds-llm-provider."""
+
 from __future__ import annotations
 
 from typing import Any

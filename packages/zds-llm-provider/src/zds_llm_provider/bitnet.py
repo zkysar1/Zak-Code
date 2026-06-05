@@ -38,9 +38,7 @@ except ImportError:  # pragma: no cover - exercised via monkeypatch in tests
     httpx = None  # type: ignore[assignment]
 
 
-def _translate_messages(
-    messages: list[Message], system: str | None
-) -> list[dict[str, Any]]:
+def _translate_messages(messages: list[Message], system: str | None) -> list[dict[str, Any]]:
     """Translate canonical :class:`Message`s to OpenAI-shaped wire dicts.
 
     - ``system`` (the argument) → a leading ``{"role": "system", ...}`` entry
@@ -172,13 +170,9 @@ class BitNetProvider(Provider):
         try:
             response = await self._client.post(url, json=body, headers=None)
         except Exception as exc:  # map transport errors; everything else → RequestFailed
-            if httpx is not None and isinstance(
-                exc, (httpx.ConnectError, httpx.ConnectTimeout)
-            ):
+            if httpx is not None and isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
                 raise RequestFailed(f"Connection error: {exc}") from exc
-            if httpx is not None and isinstance(
-                exc, (httpx.ReadTimeout, httpx.WriteTimeout)
-            ):
+            if httpx is not None and isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)):
                 raise RequestFailed(f"Timeout: {exc}") from exc
             raise RequestFailed(f"Request failed: {exc}") from exc
 

@@ -96,9 +96,7 @@ class GlobTool(Tool):
                 rp = p.resolve()
                 # Must live strictly under at least one root, and never be the
                 # base/root itself (a glob should not return its own search dir).
-                if rp != resolved_base and any(
-                    root in rp.parents for root in resolved_roots
-                ):
+                if rp != resolved_base and any(root in rp.parents for root in resolved_roots):
                     kept.append(str(rp))
             matches = sorted(set(kept))
             total = len(matches)

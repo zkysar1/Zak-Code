@@ -165,9 +165,7 @@ async def test_m3_sandbox_accepts_reads_across_all_roots(mock_mind_repo):
     assert "The Program" in res.output
 
     # Read from external meta dir — should work.
-    res = await ReadFileTool().execute(
-        {"path": str(meta / "config-overrides.yaml")}, ctx
-    )
+    res = await ReadFileTool().execute({"path": str(meta / "config-overrides.yaml")}, ctx)
     assert not res.is_error, f"Meta read failed: {res.output}"
     assert "overrides" in res.output
 

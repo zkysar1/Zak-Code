@@ -1,4 +1,5 @@
 """Tests for text-based tool-calling (render, parse, textify, wrapper)."""
+
 from __future__ import annotations
 
 from conftest import StubProvider
@@ -152,7 +153,7 @@ async def test_text_tool_calling_provider_native_passthrough() -> None:
 async def test_text_tool_calling_provider_auto_salvage() -> None:
     """In auto mode with native support, a stray text tool-call is salvaged."""
     response_text = (
-        'Let me read that.\n'
+        "Let me read that.\n"
         '<tool_call>\n{"name": "read_file", "arguments": {"path": "b.py"}}\n</tool_call>'
     )
     stub = StubProvider(

@@ -140,9 +140,7 @@ class ClaudeCodeProvider(Provider):
 
         if tools:
             allowed = _offered_tool_names(tools)
-            residual, calls = parse_text_tool_calls(
-                response, allowed_names=allowed or None
-            )
+            residual, calls = parse_text_tool_calls(response, allowed_names=allowed or None)
             return LLMResult(
                 text=residual,
                 tool_calls=calls,

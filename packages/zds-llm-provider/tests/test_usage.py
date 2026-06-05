@@ -1,4 +1,5 @@
 """Tests for token/cost accounting value objects."""
+
 from __future__ import annotations
 
 from zds_llm_provider.usage import Usage, UsageTracker

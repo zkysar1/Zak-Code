@@ -89,9 +89,7 @@ def resolve_in_workspace_roots(path: str, roots: Sequence[Path]) -> Path:
             if _is_inside(resolved, root):
                 return resolved
         roots_str = ", ".join(str(r) for r in resolved_roots)
-        raise PathEscapeError(
-            f"Path {path!r} resolves outside all workspace roots ({roots_str})"
-        )
+        raise PathEscapeError(f"Path {path!r} resolves outside all workspace roots ({roots_str})")
 
     # Relative path: try each root as a base; first match wins.
     for root in resolved_roots:
@@ -100,9 +98,7 @@ def resolve_in_workspace_roots(path: str, roots: Sequence[Path]) -> Path:
             return resolved
 
     roots_str = ", ".join(str(r) for r in resolved_roots)
-    raise PathEscapeError(
-        f"Path {path!r} resolves outside all workspace roots ({roots_str})"
-    )
+    raise PathEscapeError(f"Path {path!r} resolves outside all workspace roots ({roots_str})")
 
 
 def resolve_path(path: str, workspace_root: Path, extra_roots: Sequence[Path] = ()) -> Path:

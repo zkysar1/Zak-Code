@@ -46,9 +46,7 @@ async def test_acomplete_simple_text() -> None:
 
 
 async def test_acomplete_with_tools() -> None:
-    response = (
-        '<tool_call>\n{"name": "read_file", "arguments": {"path": "x.py"}}\n</tool_call>'
-    )
+    response = '<tool_call>\n{"name": "read_file", "arguments": {"path": "x.py"}}\n</tool_call>'
     seen: list[str] = []
     provider = ClaudeCodeProvider(_canned_bridge(response, record=seen))
     tools = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
@@ -64,9 +62,7 @@ async def test_acomplete_with_tools() -> None:
 
 async def test_acomplete_unoffered_tool_not_recovered() -> None:
     """A tool-call naming a tool we never offered is left as text, not executed."""
-    response = (
-        '<tool_call>\n{"name": "rm_rf", "arguments": {"path": "/"}}\n</tool_call>'
-    )
+    response = '<tool_call>\n{"name": "rm_rf", "arguments": {"path": "/"}}\n</tool_call>'
     provider = ClaudeCodeProvider(_canned_bridge(response))
     tools = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
     result = await provider.acomplete([Message.user("go")], tools=tools)
@@ -91,9 +87,7 @@ def test_format_messages_includes_system() -> None:
 
 
 def test_format_messages_tool_results() -> None:
-    msg = Message.tool_results(
-        [ToolResultBlock(tool_use_id="call_0", output="42 matches")]
-    )
+    msg = Message.tool_results([ToolResultBlock(tool_use_id="call_0", output="42 matches")])
     out = _format_messages([msg])
     assert "[TOOL_RESULT call_0]" in out
     assert "42 matches" in out
@@ -124,9 +118,7 @@ def test_capabilities_defaults() -> None:
 
 
 def test_capabilities_custom() -> None:
-    provider = ClaudeCodeProvider(
-        _canned_bridge(""), context_window=64_000, max_output=4096
-    )
+    provider = ClaudeCodeProvider(_canned_bridge(""), context_window=64_000, max_output=4096)
     caps = provider.capabilities()
     assert caps.context_window == 64_000
     assert caps.max_output == 4096
@@ -135,8 +127,6 @@ def test_capabilities_custom() -> None:
 async def test_astream_default_works() -> None:
     provider = ClaudeCodeProvider(_canned_bridge("streamed text"))
     events = [event async for event in provider.astream([Message.user("hi")])]
-    assert any(
-        isinstance(e, StreamTextDelta) and e.text == "streamed text" for e in events
-    )
+    assert any(isinstance(e, StreamTextDelta) and e.text == "streamed text" for e in events)
     assert any(isinstance(e, StreamUsage) for e in events)
     assert isinstance(events[-1], StreamDone)

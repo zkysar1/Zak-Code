@@ -188,9 +188,7 @@ def test_discover_skills_extra_dir_shadows_project(tmp_path: Path) -> None:
 
 def test_discover_skills_extra_dir_missing_is_harmless(tmp_path: Path) -> None:
     """Passing a nonexistent extra skill dir produces no errors and no crash."""
-    registry, errors = discover_skills(
-        tmp_path, extra_skill_dirs=[tmp_path / "does-not-exist"]
-    )
+    registry, errors = discover_skills(tmp_path, extra_skill_dirs=[tmp_path / "does-not-exist"])
     # Should succeed with no skills from the missing dir (bundled may still be present).
     assert errors == {}
 

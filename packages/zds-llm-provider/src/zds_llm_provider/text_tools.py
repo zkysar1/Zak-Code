@@ -488,9 +488,7 @@ class TextToolCallingProvider(Provider):
         if self.mode == "auto" and tools:
             saw_tool_call = False
             text_parts: list[str] = []
-            async for event in self.inner.astream(
-                messages, system=system, tools=tools, **kwargs
-            ):
+            async for event in self.inner.astream(messages, system=system, tools=tools, **kwargs):
                 if isinstance(event, StreamToolCallDelta):
                     saw_tool_call = True
                     yield event
@@ -514,9 +512,7 @@ class TextToolCallingProvider(Provider):
                     yield event
             return
 
-        async for event in self.inner.astream(
-            messages, system=system, tools=tools, **kwargs
-        ):
+        async for event in self.inner.astream(messages, system=system, tools=tools, **kwargs):
             yield event
 
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:

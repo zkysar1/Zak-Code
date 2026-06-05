@@ -1,4 +1,5 @@
 """Tests for the canonical conversation model (messages module)."""
+
 from __future__ import annotations
 
 from zds_llm_provider.messages import (
