@@ -55,9 +55,13 @@ class Settings(BaseSettings):
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     # How tools are offered to the model. ``auto`` (default) uses native
     # function-calling when the model supports it and transparently falls back to a
-    # text protocol when it does not (so tool-less local models still work);
-    # ``native`` forces native only; ``text`` forces the text protocol for any
-    # backend. See ``zakcode.providers.text_tools``.
+    # text protocol when it does not (so tool-less local models still work). In
+    # ``auto``, Ollama models (``ollama``/``ollama_chat``) are routed to the text
+    # protocol regardless, because their native tool path is unreliable via litellm
+    # (it returns empty responses for common local models like qwen2.5:3b); use
+    # ``native`` to force native there. ``native`` forces native only; ``text`` forces
+    # the text protocol for any backend. See ``zakcode.providers.text_tools`` and
+    # ``zakcode._resolve_tool_calling_mode``.
     tool_calling_mode: str = Field(
         default="auto",
         description="How tools reach the model: auto | native | text.",

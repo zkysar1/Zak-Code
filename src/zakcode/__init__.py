@@ -45,6 +45,30 @@ if TYPE_CHECKING:
 __all__ = ["Agent", "AgentLoop", "IterationBudget", "Message", "TurnResult", "__version__"]
 
 
+# Provider prefixes whose *native* (function-calling) tool path is unreliable via
+# litellm: they advertise tool support (``litellm.supports_function_calling`` returns
+# True) yet native calls commonly come back empty for local models — verified with
+# ``ollama_chat/qwen2.5:3b``, which never calls a tool natively — while the text
+# protocol drives tools reliably. So in ``auto`` mode these are routed to the text
+# protocol. Explicit ``tool_calling_mode="native"`` still forces native. This vendor
+# knowledge lives in the application layer, never in the vendor-agnostic
+# zds-llm-provider wrapper (which must stay free of any "ollama" special-casing).
+_TEXT_TOOL_PROTOCOL_PREFIXES = frozenset({"ollama", "ollama_chat"})
+
+
+def _resolve_tool_calling_mode(mode: str, model: str) -> str:
+    """Resolve the effective tool-calling mode for ``model``.
+
+    Only ``"auto"`` is adjusted: for a provider whose native tool path is unreliable
+    (see :data:`_TEXT_TOOL_PROTOCOL_PREFIXES`) it becomes ``"text"``; otherwise
+    ``"auto"`` is preserved. Explicit ``"native"`` / ``"text"`` pass through unchanged.
+    """
+    if mode != "auto":
+        return mode
+    prefix = model.split("/", 1)[0] if "/" in model else model
+    return "text" if prefix in _TEXT_TOOL_PROTOCOL_PREFIXES else "auto"
+
+
 def _find_repo_root(start: Path) -> Path | None:
     """Walk up from ``start`` to find the nearest directory containing ``.git``."""
     current = start.resolve()
@@ -166,11 +190,16 @@ class Agent:
             from zakcode.providers.litellm_provider import LiteLLMProvider
             from zakcode.providers.text_tools import TextToolCallingProvider
 
-            # Wrap the vendor provider so tool-less local models still get
-            # tool-calling via a text protocol (a no-op passthrough in "native"
-            # mode). See zakcode.providers.text_tools.
+            # Wrap the vendor provider so tool-less (or unreliable-native) models still
+            # get tool-calling via a text protocol (a no-op passthrough in "native"
+            # mode). In "auto", Ollama models are routed to the text protocol because
+            # their native path is unreliable via litellm — see
+            # _resolve_tool_calling_mode and zakcode.providers.text_tools.
             self.provider = TextToolCallingProvider(
-                LiteLLMProvider(self.settings), mode=self.settings.tool_calling_mode
+                LiteLLMProvider(self.settings),
+                mode=_resolve_tool_calling_mode(
+                    self.settings.tool_calling_mode, self.settings.default_model
+                ),
             )
         self.registry = default_registry()
         self.store = session_store
