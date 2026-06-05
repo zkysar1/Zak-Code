@@ -88,11 +88,33 @@ _FENCE_OPEN_RE = re.compile(r"```tool_call\s*(\{.*\})\s*$", re.DOTALL | re.IGNOR
 # is case-insensitive and covers the opening/closing tags and the fenced form.
 _SENTINEL_RE = re.compile(r"</?\s*tool_(?:call|result)|```tool_call", re.IGNORECASE)
 
+# Stop sequences injected on the TEXT-mode path so a weak local model cannot
+# autoregress past one tool call into a fabricated ``<tool_result>`` or leak a
+# chat-template token. These are protocol frame markers + chat-template sentinels
+# common across open models (ChatML / Llama) — structural strings, never a
+# vendor-name branch. litellm forwards ``stop`` to the backend; the text path only
+# targets local backends (Ollama), which accept many stop strings.
+_STOP_SENTINELS: tuple[str, ...] = (
+    "<tool_result>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|eot_id|>",
+    "<|eom_id|>",
+)
+#: Added to the stop list only in single-tool-per-turn mode: generation halts right
+#: after the one tool call (``_TAG_OPEN_RE`` recovers the truncated closing tag).
+_CLOSE_TAG = "</tool_call>"
+
+#: Generic ``<|...|>`` chat-template tokens, defanged out of residual text so a leaked
+#: sentinel never renders or re-enters history (defense-in-depth behind the stop
+#: sequences). The ``<|...|>`` shape is a cross-model convention, not vendor-specific.
+_TEMPLATE_TOKEN_RE = re.compile(r"<\|[^|>]{0,40}\|>")
+
 
 # ── protocol rendering (outbound) ────────────────────────────────────────────
 
 
-def render_tool_protocol(tools: list[dict[str, Any]]) -> str:
+def render_tool_protocol(tools: list[dict[str, Any]], *, single_tool: bool = False) -> str:
     """Render OpenAI-shaped tool definitions as a plain-text protocol block.
 
     The block tells the model exactly how to call a tool and lists every tool with
@@ -102,6 +124,13 @@ def render_tool_protocol(tools: list[dict[str, Any]]) -> str:
     """
     if not tools:
         return ""
+
+    emit_rule = (
+        "- Emit EXACTLY ONE `<tool_call>` block, then STOP — write nothing after it and "
+        "wait for the result before doing anything else."
+        if single_tool
+        else "- Emit one `<tool_call>` block per tool call; you may emit several in a row."
+    )
 
     lines: list[str] = [
         "# Tool calling",
@@ -115,13 +144,31 @@ def render_tool_protocol(tools: list[dict[str, Any]]) -> str:
         "</tool_call>",
         "",
         "Rules:",
-        "- Emit one `<tool_call>` block per tool call; you may emit several in a row.",
+        emit_rule,
         "- `arguments` must be a JSON object matching that tool's parameters.",
         "- Put nothing but the JSON object inside a `<tool_call>` block; write any "
         "reasoning outside it.",
-        "- After emitting tool calls, stop and wait for the results before continuing.",
+        "- NEVER write a `<tool_result>` block or invent a tool's output. You ONLY emit "
+        "`<tool_call>`; the system runs the tool and gives you the real `<tool_result>` "
+        "as your next input. Wait for it — do not imagine or continue the conversation.",
+        "- NEVER emit special chat-template tokens (anything of the form `<|...|>`).",
         "- When the task is complete and you need no more tools, reply normally with "
         "no `<tool_call>` block.",
+        "",
+        "Worked example — you write ONLY the `<tool_call>`; the system then sends you the "
+        "`<tool_result>` (you never write that yourself):",
+        "",
+        "<tool_call>",
+        '{"name": "bash", "arguments": {"command": "pytest -q"}}',
+        "</tool_call>",
+        "",
+        "the system then returns the real result, e.g.:",
+        "",
+        '<tool_result tool="bash">',
+        "1 passed",
+        "</tool_result>",
+        "",
+        "and only then do you continue, using that real result.",
         "",
         "Available tools:",
     ]
@@ -166,6 +213,23 @@ def _defang_sentinels(text: str) -> str:
         lambda m: m.group(0).replace("<", f"<{zwsp}", 1).replace("`", f"`{zwsp}", 1),
         text,
     )
+
+
+def _strip_forged_frames(text: str) -> str:
+    """Neutralize model-forged protocol frames + chat-template tokens in residual text.
+
+    Defense-in-depth behind the stop sequences (:data:`_STOP_SENTINELS`): if a backend
+    ignores ``stop``, a weak model may still emit a fabricated ``<tool_result>`` or leak
+    a chat-template token (``<|im_start|>`` ...). Those are not recovered as tool calls,
+    so without this they would render to the user *and* re-enter the next turn's context.
+    We defang them in place with a zero-width space — never delete — so a legitimate
+    answer that merely *quotes* such a token stays readable.
+    """
+    if not text:
+        return text
+    zwsp = "​"  # zero-width space
+    out = _defang_sentinels(text)  # <tool_call> / <tool_result> frames
+    return _TEMPLATE_TOKEN_RE.sub(lambda m: f"<{zwsp}" + m.group(0)[1:], out)
 
 
 def _sanitize_tool_name(name: str) -> str:
@@ -292,7 +356,10 @@ def _parse_fence_body(body: str) -> tuple[str, dict[str, Any]] | None:
 
 
 def parse_text_tool_calls(
-    text: str, *, allowed_names: Collection[str] | None = None
+    text: str,
+    *,
+    allowed_names: Collection[str] | None = None,
+    max_calls: int | None = None,
 ) -> tuple[str, list[ToolCall]]:
     """Extract tool-call blocks from assistant text.
 
@@ -344,6 +411,13 @@ def parse_text_tool_calls(
         kept.append((start, end, parsed))
         last_end = end
 
+    # ``max_calls`` (single-tool-per-turn) keeps only the first N calls AND drops any
+    # text *after* the last kept call — that trailing text is either absent (a stop
+    # sequence fired right after the call) or post-call hallucination.
+    truncate_tail = max_calls is not None and bool(kept)
+    if max_calls is not None and max_calls >= 0:
+        kept = kept[:max_calls]
+
     calls = [
         ToolCall(id=f"call_{i}", name=parsed[0], arguments=parsed[1])
         for i, (_s, _e, parsed) in enumerate(kept)
@@ -354,7 +428,7 @@ def parse_text_tool_calls(
     for start, end, _parsed in kept:
         out_parts.append(text[cursor:start])
         cursor = end
-    out_parts.append(text[cursor:])
+    out_parts.append("" if truncate_tail else text[cursor:])
     residual = "".join(out_parts).strip()
     return residual, calls
 
@@ -371,9 +445,12 @@ class TextToolCallingProvider(Provider):
     text protocol as documented on this module.
     """
 
-    def __init__(self, inner: Provider, *, mode: str = "auto") -> None:
+    def __init__(
+        self, inner: Provider, *, mode: str = "auto", single_tool_per_turn: bool = False
+    ) -> None:
         self.inner = inner
         self.mode = mode if mode in TOOL_CALLING_MODES else "auto"
+        self.single_tool_per_turn = single_tool_per_turn
         self._cached_native: bool | None = None
 
     # ── mode resolution ──────────────────────────────────────────────────────
@@ -412,6 +489,32 @@ class TextToolCallingProvider(Provider):
                 names.add(name)
         return names
 
+    def _merge_stop_sentinels(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Merge the text-mode stop sequences into any caller-provided ``stop``.
+
+        Truncates generation at protocol/template sentinels so a weak model cannot
+        fabricate a ``<tool_result>`` or leak chat-template tokens; in
+        single-tool-per-turn mode it also stops right after the closing
+        ``</tool_call>``. Returns a new dict — never mutates the caller's kwargs.
+        """
+        merged = dict(kwargs)
+        stops: list[str] = list(_STOP_SENTINELS)
+        if self.single_tool_per_turn:
+            stops.append(_CLOSE_TAG)
+        existing = merged.get("stop")
+        if isinstance(existing, str):
+            stops = [existing, *stops]
+        elif isinstance(existing, list):
+            stops = [*existing, *stops]
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for s in stops:
+            if s not in seen:
+                seen.add(s)
+                deduped.append(s)
+        merged["stop"] = deduped
+        return merged
+
     # ── Provider interface ───────────────────────────────────────────────────
 
     async def acomplete(
@@ -426,12 +529,15 @@ class TextToolCallingProvider(Provider):
             return await self.inner.acomplete(messages, system=system, tools=None, **kwargs)
 
         if self._use_text_mode(tools):
-            protocol = render_tool_protocol(tools)
+            protocol = render_tool_protocol(tools, single_tool=self.single_tool_per_turn)
             new_system = f"{system}\n\n{protocol}" if system else protocol
+            call_kwargs = self._merge_stop_sentinels(kwargs)
             result = await self.inner.acomplete(
-                textify_messages(messages), system=new_system, tools=None, **kwargs
+                textify_messages(messages), system=new_system, tools=None, **call_kwargs
             )
-            residual, calls = parse_text_tool_calls(result.text)
+            max_calls = 1 if self.single_tool_per_turn else None
+            residual, calls = parse_text_tool_calls(result.text, max_calls=max_calls)
+            residual = _strip_forged_frames(residual)
             return result.model_copy(update={"text": residual, "tool_calls": calls})
 
         # Native path. In auto mode, salvage a text tool-call the model emitted even

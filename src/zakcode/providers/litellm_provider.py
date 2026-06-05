@@ -86,6 +86,15 @@ def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
 
+#: Cap for Ollama's per-request context window (``num_ctx``). Ollama's default ctx is
+#: small and silently truncates the prompt *tail* (the latest user step + tool-protocol
+#: rules), which looks like the model "ignoring" the task. We lift num_ctx to the model's
+#: real window but clamp here so a huge advertised window (e.g. llama3.1's 128k) cannot
+#: OOM a local box. ``capabilities().context_window`` is clamped to the same value so the
+#: compactor's threshold matches Ollama's real context (no truncate-before-compact).
+_OLLAMA_NUM_CTX_CAP = 16_384
+
+
 class LiteLLMProvider(Provider):
     """A :class:`Provider` backed by litellm.
 
@@ -414,6 +423,17 @@ class LiteLLMProvider(Provider):
             call_kwargs["api_base"] = self.api_base
         if self.api_key is not None:
             call_kwargs["api_key"] = self.api_key
+        if _is_ollama_model(self.model):
+            # Lift Ollama's tiny default context window to the model's real one (clamped),
+            # so the prompt tail is not silently truncated. Gated on the Ollama prefix —
+            # for other backends litellm may wrap an unknown num_ctx into extra_body
+            # rather than drop it. setdefault so an explicit caller override wins.
+            try:
+                window = get_capabilities(self.model).context_window
+            except Exception:  # noqa: BLE001 — a capability probe must never fail a call
+                window = 0
+            if window:
+                call_kwargs.setdefault("num_ctx", min(window, _OLLAMA_NUM_CTX_CAP))
         # Allow per-call overrides (e.g. max_tokens) without re-listing them.
         call_kwargs.update(kw)
         return call_kwargs
@@ -581,6 +601,11 @@ class LiteLLMProvider(Provider):
             supports = None
         if supports is False:
             caps = caps.model_copy(update={"supports_tools": False})
+        # Keep the reported window in lockstep with the num_ctx we actually request for
+        # Ollama (see _OLLAMA_NUM_CTX_CAP / _build_kwargs) so the compactor's threshold
+        # matches Ollama's real context and never truncates before compaction fires.
+        if _is_ollama_model(self.model) and caps.context_window > _OLLAMA_NUM_CTX_CAP:
+            caps = caps.model_copy(update={"context_window": _OLLAMA_NUM_CTX_CAP})
         return caps
 
 

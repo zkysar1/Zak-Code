@@ -53,3 +53,36 @@ def test_endpoint_flows_into_request_kwargs() -> None:
     assert kwargs["api_base"] == "http://127.0.0.1:8000/v1"
     assert kwargs["api_key"] == "sk-local-noop"
     assert kwargs["model"] == "openai/qwen2.5-coder"
+
+
+# ── C1: Ollama num_ctx lift + matching capability window ──────────────────────
+
+
+def test_ollama_num_ctx_set_and_clamped() -> None:
+    from zakcode.providers.litellm_provider import _OLLAMA_NUM_CTX_CAP
+
+    provider = LiteLLMProvider(Settings(default_model="ollama_chat/qwen2.5:3b"))
+    kwargs = provider._build_kwargs([{"role": "user", "content": "hi"}], None)
+    assert "num_ctx" in kwargs
+    assert 0 < kwargs["num_ctx"] <= _OLLAMA_NUM_CTX_CAP
+
+
+def test_num_ctx_absent_for_non_ollama() -> None:
+    provider = LiteLLMProvider(Settings(default_model="openai/gpt-4o"))
+    kwargs = provider._build_kwargs([{"role": "user", "content": "hi"}], None)
+    assert "num_ctx" not in kwargs
+
+
+def test_caller_num_ctx_override_wins() -> None:
+    provider = LiteLLMProvider(Settings(default_model="ollama_chat/qwen2.5:3b"))
+    kwargs = provider._build_kwargs([{"role": "user", "content": "hi"}], None, num_ctx=2048)
+    assert kwargs["num_ctx"] == 2048
+
+
+def test_ollama_capability_window_matches_num_ctx_cap() -> None:
+    from zakcode.providers.litellm_provider import _OLLAMA_NUM_CTX_CAP
+
+    # qwen2.5:3b resolves (via the registry :tag fallback) to qwen2.5's 32k window,
+    # then clamps so the compactor threshold matches the num_ctx we actually request.
+    provider = LiteLLMProvider(Settings(default_model="ollama_chat/qwen2.5:3b"))
+    assert provider.capabilities().context_window == _OLLAMA_NUM_CTX_CAP

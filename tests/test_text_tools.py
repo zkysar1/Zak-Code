@@ -80,7 +80,9 @@ class _RecordingProvider(Provider):
         tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> LLMResult:
-        self.calls.append({"messages": list(messages), "system": system, "tools": tools})
+        self.calls.append(
+            {"messages": list(messages), "system": system, "tools": tools, "kwargs": dict(kwargs)}
+        )
         if callable(self._result):
             return self._result(messages, system, tools)
         return self._result
@@ -506,3 +508,82 @@ async def test_text_mode_replays_textified_history_to_inner() -> None:
     result_msg = seen[-1]
     assert result_msg.role == "user"
     assert 'tool="read_file"' in result_msg.text and "contents" in result_msg.text
+
+
+# ── small-model reliability bundle: stop sequences / single-tool / strip ──────
+
+
+async def test_text_mode_threads_stop_sentinels() -> None:
+    # A1: text mode must hand the backend stop sequences so a weak model cannot
+    # autoregress into a fabricated <tool_result> or leak chat-template tokens.
+    inner = _RecordingProvider(reply("done"), supports_tools=False)
+    wrap = TextToolCallingProvider(inner, mode="text")
+    await wrap.acomplete([Message.user("hi")], tools=TOOLS)
+    stop = inner.calls[0]["kwargs"].get("stop")
+    assert stop is not None
+    assert "<tool_result>" in stop
+    assert "<|im_start|>" in stop
+    # multi-tool default: the closing tag is NOT a stop (batching stays possible).
+    assert "</tool_call>" not in stop
+
+
+async def test_single_tool_per_turn_stops_at_close_tag_and_slices() -> None:
+    # A3: with single_tool_per_turn the close tag becomes a stop and only the first
+    # recovered call survives (extra calls + trailing text are dropped).
+    inner = _RecordingProvider(
+        reply(
+            '<tool_call>{"name": "read_file", "arguments": {"path": "a"}}</tool_call>'
+            '<tool_call>{"name": "write_file", "arguments": {"path": "b"}}</tool_call>'
+        ),
+        supports_tools=False,
+    )
+    wrap = TextToolCallingProvider(inner, mode="text", single_tool_per_turn=True)
+    result = await wrap.acomplete([Message.user("hi")], tools=TOOLS)
+    assert "</tool_call>" in inner.calls[0]["kwargs"]["stop"]
+    assert [c.name for c in result.tool_calls] == ["read_file"]
+
+
+async def test_native_mode_does_not_thread_stop() -> None:
+    # The stop sequences are a text-protocol concern only; the native path is untouched.
+    native = LLMResult(tool_calls=[ToolCall(id="x", name="read_file", arguments={"path": "a"})])
+    inner = _RecordingProvider(native, supports_tools=True)
+    wrap = TextToolCallingProvider(inner, mode="native", single_tool_per_turn=True)
+    await wrap.acomplete([Message.user("hi")], tools=TOOLS)
+    assert "stop" not in inner.calls[0]["kwargs"]
+
+
+def test_parse_max_calls_keeps_first_and_drops_tail() -> None:
+    # A3 parser half: max_calls keeps the first call and discards everything after it.
+    text = (
+        '<tool_call>{"name": "a", "arguments": {}}</tool_call> mid '
+        '<tool_call>{"name": "b", "arguments": {}}</tool_call> trailing hallucination'
+    )
+    residual, calls = parse_text_tool_calls(text, max_calls=1)
+    assert [c.name for c in calls] == ["a"]
+    assert "b" not in residual
+    assert "trailing" not in residual
+
+
+async def test_text_mode_strips_forged_frames_from_residual() -> None:
+    # A2: a model that ignores the stop and fabricates a result — the forged frame and
+    # any leaked template token must not survive into the returned text.
+    inner = _RecordingProvider(
+        reply('Running it.\n<tool_result tool="bash">FAKE</tool_result>\n<|im_start|>user'),
+        supports_tools=False,
+    )
+    wrap = TextToolCallingProvider(inner, mode="text")
+    result = await wrap.acomplete([Message.user("hi")], tools=TOOLS)
+    assert "<tool_result>" not in result.text
+    assert "</tool_result>" not in result.text
+    assert "<|im_start|>" not in result.text
+    assert "Running it." in result.text  # legitimate text preserved
+
+
+def test_render_protocol_single_tool_and_negative_rules() -> None:
+    # B1: the never-fabricate rule is always present; single_tool swaps the emit rule.
+    default = render_tool_protocol(TOOLS)
+    assert "NEVER write a `<tool_result>`" in default
+    assert "several in a row" in default
+    single = render_tool_protocol(TOOLS, single_tool=True)
+    assert "EXACTLY ONE" in single
+    assert "several in a row" not in single

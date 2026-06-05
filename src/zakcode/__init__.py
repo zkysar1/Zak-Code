@@ -200,6 +200,7 @@ class Agent:
                 mode=_resolve_tool_calling_mode(
                     self.settings.tool_calling_mode, self.settings.default_model
                 ),
+                single_tool_per_turn=self.settings.single_tool_per_turn,
             )
         self.registry = default_registry()
         self.store = session_store

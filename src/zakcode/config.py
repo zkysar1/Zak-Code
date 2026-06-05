@@ -66,6 +66,14 @@ class Settings(BaseSettings):
         default="auto",
         description="How tools reach the model: auto | native | text.",
     )
+    single_tool_per_turn: bool = Field(
+        default=True,
+        description=(
+            "Text tool-calling only: emit and parse exactly ONE tool call per turn and "
+            "stop generation right after it. Stops weak local models fabricating tool "
+            "results or leaking template tokens. Ignored on the native path."
+        ),
+    )
 
     # ── Local (Ollama) ──────────────────────────────────────────────────────
     ollama_base_url: str = Field(default="http://localhost:11434")

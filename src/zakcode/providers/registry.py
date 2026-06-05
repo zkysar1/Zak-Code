@@ -114,6 +114,17 @@ def _lookup_static(model: str) -> Capabilities | None:
         for name, caps in _CAPABILITIES.items():
             if name.lower() == stripped_lower:
                 return caps
+    # Ollama tags a model as ``name:size`` (e.g. "ollama_chat/qwen2.5:3b"); fall back to
+    # the untagged base ("ollama_chat/qwen2.5") so size variants share a capability entry
+    # instead of dropping to the conservative default window.
+    if ":" in key:
+        base = key.split(":", 1)[0]
+        if base in _CAPABILITIES:
+            return _CAPABILITIES[base]
+        base_lower = base.lower()
+        for name, caps in _CAPABILITIES.items():
+            if name.lower() == base_lower:
+                return caps
     return None
 
 
