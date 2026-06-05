@@ -16,6 +16,7 @@ import pytest
 
 from zakcode.agent.loop import AgentLoop
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_python_run
+from zakcode.events import AgentDone, AgentStatus
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
@@ -395,3 +396,121 @@ def test_harness_run_is_bounded_on_a_broken_file(tmp_path: Path) -> None:
     )
     result = asyncio.run(loop.arun_turn("make p.py"))
     assert result.stop_reason == "recipe_stalled"
+
+
+# ── audit #9: the streaming gate path (astream_turn — the REPL's real path) ────
+
+
+def _drain_stream(loop: AgentLoop, user_text: str) -> list[Any]:
+    async def run() -> list[Any]:
+        return [ev async for ev in loop.astream_turn(user_text)]
+
+    return asyncio.run(run())
+
+
+def test_recipe_streaming_gate_forces_a_run(tmp_path: Path) -> None:
+    run_cmd = resolve_python_run("prog.py")
+    if run_cmd is None:
+        pytest.skip("no python interpreter available")
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
+    done = LLMResult(text="All done!")
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
+    provider = _ScriptedProvider([write, done, run, done])
+    events = _drain_stream(_loop(provider, tmp_path, recipe_mode=True), "make prog.py")
+    done_ev = next(e for e in events if isinstance(e, AgentDone))
+    assert done_ev.stop_reason == "completed"
+
+
+def test_recipe_streaming_gate_stalls_and_emits_status(tmp_path: Path) -> None:
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('x')\n")])
+    done = LLMResult(text="done")  # never runs the file
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_attempt_cap=1)
+    events = _drain_stream(loop, "make p.py")
+    done_ev = next(e for e in events if isinstance(e, AgentDone))
+    assert done_ev.stop_reason == "recipe_stalled"
+    statuses = [e.message for e in events if isinstance(e, AgentStatus)]
+    assert any("could not verify" in m for m in statuses)  # the streaming-only stall status
+
+
+def test_recipe_streaming_harness_run_emits_status(tmp_path: Path) -> None:
+    if resolve_python_run("x.py") is None:
+        pytest.skip("no python interpreter available")
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
+    done = LLMResult(text="done")  # the model never runs it; the harness does
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_harness_run=True)
+    events = _drain_stream(loop, "make p.py")
+    done_ev = next(e for e in events if isinstance(e, AgentDone))
+    assert done_ev.stop_reason == "completed"
+    statuses = [e.message for e in events if isinstance(e, AgentStatus)]
+    assert any("ran the file to verify" in m for m in statuses)
+
+
+# ── audit #10: harness-run under a REAL permission policy (never an uninitiated prompt) ──
+
+
+def test_harness_run_suppressed_when_run_would_prompt(tmp_path: Path) -> None:
+    if resolve_python_run("x.py") is None:
+        pytest.skip("no python interpreter available")
+    # acceptEdits auto-allows the WRITE (so the gate arms) but a shell run would still
+    # prompt: the harness run MUST be suppressed (fall back to a nudge) and the turn
+    # stalls -- it must never auto-run shell behind an uninitiated prompt.
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
+    done = LLMResult(text="done")
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(
+        provider,
+        tmp_path,
+        recipe_mode=True,
+        recipe_harness_run=True,
+        recipe_attempt_cap=1,
+        permission_policy=PermissionPolicy(PermissionMode.ACCEPT_EDITS),
+    )
+    result = asyncio.run(loop.arun_turn("make p.py"))
+    assert result.stop_reason == "recipe_stalled"
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert "[harness]" not in transcript  # the run was never issued (would have prompted)
+
+
+def test_harness_run_fires_under_allow_policy(tmp_path: Path) -> None:
+    if resolve_python_run("x.py") is None:
+        pytest.skip("no python interpreter available")
+    # ALLOW mode would not prompt, so the harness run is permitted and verifies the file.
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
+    done = LLMResult(text="done")
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(
+        provider,
+        tmp_path,
+        recipe_mode=True,
+        recipe_harness_run=True,
+        permission_policy=PermissionPolicy(PermissionMode.ALLOW),
+    )
+    result = asyncio.run(loop.arun_turn("make p.py"))
+    assert result.stop_reason == "completed"
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert "[harness]" in transcript  # the harness auto-ran it
+
+
+# ── audit #14: Settings -> Agent facade -> AgentLoop recipe-flag wiring ────────
+
+
+def test_settings_recipe_flags_flow_through_facade() -> None:
+    import zakcode
+    from zakcode.config import Settings
+
+    # The facade is the only way to turn the (default-OFF) recipe flags on via config; a
+    # dropped kwarg would leave the feature inert with the suite still green. An explicit
+    # provider keeps this network-free.
+    settings = Settings(
+        recipe_mode=True,
+        recipe_harness_run=True,
+        recipe_acceptance_compare=True,
+        recipe_attempt_cap=2,
+    )
+    agent = zakcode.Agent(settings=settings, provider=_ScriptedProvider([LLMResult(text="")]))
+    assert agent.loop.recipe_mode is True
+    assert agent.loop.recipe_harness_run is True
+    assert agent.loop.recipe_acceptance_compare is True
+    assert agent.loop.recipe_attempt_cap == 2
