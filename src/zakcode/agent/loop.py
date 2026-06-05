@@ -55,7 +55,7 @@ from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
-from zakcode.agent.recipe import RecipeCursor
+from zakcode.agent.recipe import RecipeCursor, extract_acceptance
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -179,6 +179,7 @@ class AgentLoop:
         verify_writes: bool = False,
         recipe_mode: bool = False,
         recipe_attempt_cap: int = 3,
+        recipe_acceptance_compare: bool = False,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -209,6 +210,7 @@ class AgentLoop:
         # Slice 2 (Recipe Cursor): verify-before-finish gate for create-and-run turns.
         self.recipe_mode = recipe_mode
         self.recipe_attempt_cap = recipe_attempt_cap
+        self.recipe_acceptance_compare = recipe_acceptance_compare
         # The security gate is INJECTED, not assumed. A bare AgentLoop with no
         # policy is ungated (a pure mechanism, convenient for library/tests); the
         # Agent facade — the real entry point — always injects a policy built from
@@ -559,7 +561,11 @@ class AgentLoop:
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
         )
-        cursor = RecipeCursor(enabled=self.recipe_mode, attempt_cap=self.recipe_attempt_cap)
+        cursor = RecipeCursor(
+            enabled=self.recipe_mode,
+            attempt_cap=self.recipe_attempt_cap,
+            acceptance=extract_acceptance(user_text) if self.recipe_acceptance_compare else None,
+        )
 
         while True:
             if not self._grant_iteration(iterations):
@@ -704,7 +710,11 @@ class AgentLoop:
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
         )
-        cursor = RecipeCursor(enabled=self.recipe_mode, attempt_cap=self.recipe_attempt_cap)
+        cursor = RecipeCursor(
+            enabled=self.recipe_mode,
+            attempt_cap=self.recipe_attempt_cap,
+            acceptance=extract_acceptance(user_text) if self.recipe_acceptance_compare else None,
+        )
 
         try:
             while True:

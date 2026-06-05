@@ -422,6 +422,7 @@ class Agent:
             verify_writes=self.settings.verify_writes,
             recipe_mode=self.settings.recipe_mode,
             recipe_attempt_cap=self.settings.recipe_attempt_cap,
+            recipe_acceptance_compare=self.settings.recipe_acceptance_compare,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:

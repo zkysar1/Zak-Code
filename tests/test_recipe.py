@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.agent.loop import AgentLoop
-from zakcode.agent.recipe import RecipeCursor
+from zakcode.agent.recipe import RecipeCursor, extract_acceptance
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
@@ -24,9 +24,11 @@ def _c(call_id: str, name: str, **args: object) -> ToolCall:
     return ToolCall(id=call_id, name=name, arguments=dict(args))
 
 
-def _r(tool_use_id: str, *, path: str | None = None, is_error: bool = False) -> ToolResultBlock:
+def _r(
+    tool_use_id: str, *, path: str | None = None, is_error: bool = False, output: str = "ok"
+) -> ToolResultBlock:
     data = {"path": path} if path else None
-    return ToolResultBlock(tool_use_id=tool_use_id, output="ok", is_error=is_error, data=data)
+    return ToolResultBlock(tool_use_id=tool_use_id, output=output, is_error=is_error, data=data)
 
 
 # ── pure cursor logic ─────────────────────────────────────────────────────────
@@ -144,3 +146,72 @@ def test_recipe_disabled_completes_without_a_run(tmp_path: Path) -> None:
     result = asyncio.run(_loop(provider, tmp_path, recipe_mode=False).arun_turn("make p.py"))
     assert result.stop_reason == "completed"
     assert provider.calls == 2  # no nudge: write, done
+
+
+# ── Slice 2b-C: deterministic acceptance COMPARE ──────────────────────────────
+
+
+def test_extract_acceptance_positive() -> None:
+    assert extract_acceptance("write a script that prints `Hello, World!`") == "Hello, World!"
+    assert extract_acceptance('it should output "pong"') == "pong"
+    assert extract_acceptance("the program prints 'ok'") == "ok"
+
+
+def test_extract_acceptance_none_cases() -> None:
+    assert extract_acceptance("write a fibonacci function") is None  # no verb+literal
+    assert extract_acceptance("print `a` and also print `b`") is None  # >1 distinct
+    assert extract_acceptance("it prints `src/main.py`") is None  # path-like
+    assert extract_acceptance("it prints `output.txt`") is None  # code/file extension
+    assert extract_acceptance("print ``") is None  # empty literal
+
+
+def test_extract_acceptance_is_verbatim_and_case_sensitive() -> None:
+    assert extract_acceptance("prints `Hello`") == "Hello"  # not lowercased
+
+
+def test_cursor_acceptance_requires_output_match() -> None:
+    c = RecipeCursor(enabled=True, acceptance="Hello, World!")
+    c.observe([_c("w", "write_file", path="hi.py")], [_r("w", path="hi.py")])
+    # ran the file but printed the wrong thing -> not verified
+    c.observe([_c("r", "bash", command="py hi.py")], [_r("r", output="Goodbye\n[exit code: 0]")])
+    assert c.needs_verification() is True
+    # ran the file and printed the expected string -> verified
+    c.observe(
+        [_c("r2", "bash", command="py hi.py")],
+        [_r("r2", output="Hello, World!\n[exit code: 0]")],
+    )
+    assert c.needs_verification() is False
+
+
+def test_cursor_no_acceptance_exit0_suffices() -> None:
+    c = RecipeCursor(enabled=True, acceptance=None)
+    c.observe([_c("w", "write_file", path="hi.py")], [_r("w", path="hi.py")])
+    c.observe([_c("r", "bash", command="py hi.py")], [_r("r", output="anything at all")])
+    assert c.needs_verification() is False
+
+
+def test_nudge_cites_acceptance() -> None:
+    c = RecipeCursor(enabled=True, acceptance="pong")
+    assert "pong" in c.nudge()
+
+
+def test_recipe_acceptance_stalls_on_wrong_output(tmp_path: Path) -> None:
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('nope')\n")])
+    done = LLMResult(text="done")
+    run = LLMResult(tool_calls=[_c("r1", "bash", command="echo ran p.py and printed nothing")])
+    provider = _ScriptedProvider([write, done, run, done])
+    loop = _loop(
+        provider, tmp_path, recipe_mode=True, recipe_acceptance_compare=True, recipe_attempt_cap=1
+    )
+    result = asyncio.run(loop.arun_turn("create p.py that prints `pong`"))
+    assert result.stop_reason == "recipe_stalled"  # ran, but output lacked "pong"
+
+
+def test_recipe_acceptance_completes_on_right_output(tmp_path: Path) -> None:
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
+    done = LLMResult(text="done")
+    run = LLMResult(tool_calls=[_c("r1", "bash", command="echo ran p.py and printed pong")])
+    provider = _ScriptedProvider([write, done, run, done])
+    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_acceptance_compare=True)
+    result = asyncio.run(loop.arun_turn("create p.py that prints `pong`"))
+    assert result.stop_reason == "completed"  # output contained "pong"

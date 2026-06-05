@@ -96,6 +96,14 @@ class Settings(BaseSettings):
         ge=0,
         description="Recipe mode: how many times to nudge the model to verify before giving up.",
     )
+    recipe_acceptance_compare: bool = Field(
+        default=False,
+        description=(
+            "Recipe mode: when the request clearly states an expected output string, also "
+            "require the program's run output to contain it (catches a program that runs "
+            "but prints the wrong thing). Off by default; extraction is high-precision."
+        ),
+    )
 
     # ── Local (Ollama) ──────────────────────────────────────────────────────
     ollama_base_url: str = Field(default="http://localhost:11434")
