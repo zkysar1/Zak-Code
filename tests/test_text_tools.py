@@ -313,6 +313,18 @@ async def test_capabilities_and_count_tokens_delegate() -> None:
     assert wrap.count_tokens([Message.user("a"), Message.user("b")]) == 2
 
 
+async def test_count_tokens_accounts_for_text_mode_protocol_overhead() -> None:
+    # In text mode the real request carries the injected protocol, which the raw messages
+    # the loop passes to count_tokens do not reflect. After a text-mode call, count_tokens
+    # must include that overhead so the compactor doesn't under-count num_ctx. (audit #12)
+    inner = _RecordingProvider(reply("done"), supports_tools=False)
+    wrap = TextToolCallingProvider(inner, mode="text")
+    msgs = [Message.user("hi")]
+    before = wrap.count_tokens(msgs)  # no protocol injected yet
+    await wrap.acomplete(msgs, tools=TOOLS)
+    assert wrap.count_tokens(msgs) > before  # overhead added after the protocol was sent
+
+
 # ── streaming ────────────────────────────────────────────────────────────────
 
 

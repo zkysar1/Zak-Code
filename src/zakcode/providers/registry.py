@@ -97,8 +97,7 @@ def _strip_provider_prefix(model: str) -> str:
     return model
 
 
-def _lookup_static(model: str) -> Capabilities | None:
-    key = model.strip()
+def _lookup_key(key: str) -> Capabilities | None:
     if key in _CAPABILITIES:
         return _CAPABILITIES[key]
     lowered = key.lower()
@@ -125,6 +124,20 @@ def _lookup_static(model: str) -> Capabilities | None:
         for name, caps in _CAPABILITIES.items():
             if name.lower() == base_lower:
                 return caps
+    return None
+
+
+def _lookup_static(model: str) -> Capabilities | None:
+    key = model.strip()
+    result = _lookup_key(key)
+    if result is not None:
+        return result
+    # The bare ``ollama/`` and ``ollama_chat/`` prefixes name the SAME backend model, but
+    # the table is keyed on ``ollama_chat/``; resolve ``ollama/X`` against that key so both
+    # forms get the same context window (else ``ollama/qwen2.5`` would silently fall to the
+    # conservative default and get half the num_ctx of ``ollama_chat/qwen2.5``). (audit #11)
+    if key.startswith("ollama/"):
+        return _lookup_key("ollama_chat/" + key[len("ollama/") :])
     return None
 
 

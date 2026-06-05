@@ -569,6 +569,11 @@ class TextToolCallingProvider(Provider):
         self.mode = mode if mode in TOOL_CALLING_MODES else "auto"
         self.single_tool_per_turn = single_tool_per_turn
         self._cached_native: bool | None = None
+        # Token cost of the most recently injected text-mode protocol. The loop calls
+        # count_tokens() WITHOUT tools, so without this the compactor would under-count the
+        # real text-mode request (raw messages + this multi-KB protocol) and risk silently
+        # overrunning num_ctx. 0 on the native path and before the first text-mode call.
+        self._text_overhead_tokens = 0
 
     # ── mode resolution ──────────────────────────────────────────────────────
 
@@ -648,6 +653,7 @@ class TextToolCallingProvider(Provider):
         if self._use_text_mode(tools):
             protocol = render_tool_protocol(tools, single_tool=self.single_tool_per_turn)
             new_system = f"{system}\n\n{protocol}" if system else protocol
+            self._record_text_overhead(protocol)
             call_kwargs = self._merge_stop_sentinels(kwargs)
             result = await self.inner.acomplete(
                 textify_messages(messages), system=new_system, tools=None, **call_kwargs
@@ -738,9 +744,24 @@ class TextToolCallingProvider(Provider):
         async for event in self.inner.astream(messages, system=system, tools=tools, **kwargs):
             yield event
 
+    def _record_text_overhead(self, protocol: str) -> None:
+        """Remember the injected protocol's token cost (see ``_text_overhead_tokens``)."""
+        try:
+            self._text_overhead_tokens = self.inner.count_tokens([Message.user(protocol)])
+        except Exception:  # noqa: BLE001 — overhead is an estimate; never break a real call
+            self._text_overhead_tokens = 0
+
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
-        """Delegate token counting to the wrapped provider."""
-        return self.inner.count_tokens(messages, system=system)
+        """Token count of the wrapped provider plus the injected text-mode protocol.
+
+        In text mode the real request also carries the tool protocol (prepended to the
+        system prompt) and textified history, which the raw ``messages`` the loop passes
+        here do not reflect. Adding the most recent protocol's token cost keeps the
+        compactor's estimate from under-counting and silently overrunning num_ctx. The
+        overhead is 0 on the native path and before the first text-mode call, so this is a
+        pure pass-through there (and the loop is always preceded by an ``acomplete``).
+        """
+        return self.inner.count_tokens(messages, system=system) + self._text_overhead_tokens
 
     def capabilities(self) -> Capabilities:
         """Report the wrapped model's capabilities unchanged.

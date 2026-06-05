@@ -391,6 +391,19 @@ def test_get_capabilities_ollama() -> None:
     assert caps.context_window == 128_000
 
 
+def test_get_capabilities_ollama_bare_prefix_matches_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 'ollama/X' and 'ollama_chat/X' name the same backend model and must resolve to the
+    # same window via the static table. Force litellm metadata off so the assertion proves
+    # the registry's prefix normalization, not a metadata coincidence. (audit #11)
+    import zakcode.providers.registry as reg
+
+    monkeypatch.setattr(reg, "_from_litellm", lambda model: None)
+    chat = get_capabilities("ollama_chat/qwen2.5").context_window
+    assert chat == 32_768
+    assert get_capabilities("ollama/qwen2.5").context_window == chat
+    assert get_capabilities("ollama/qwen2.5:3b").context_window == chat  # tagged variant too
+
+
 def test_get_capabilities_unknown_falls_back_to_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
