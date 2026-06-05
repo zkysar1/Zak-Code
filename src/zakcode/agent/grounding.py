@@ -18,6 +18,7 @@ from pathlib import Path
 
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import ToolCall
+from zakcode.providers.text_tools import defang_untrusted
 
 #: Tools whose successful result triggers a read-back.
 _WRITE_TOOLS = {"write_file", "edit_file"}
@@ -85,9 +86,13 @@ def build_write_grounding(
         content, ok = _read_back(path, max_chars=max_chars)
         if not ok:
             continue
-        note = syntax_note(path, content)
-        header = f"{path} now on disk" + (f" {note}" if note else "") + ":"
-        sections.append(f"{header}\n{content}")
+        note = syntax_note(path, content)  # syntax check runs on the REAL on-disk bytes
+        # This content is model-authored and is re-injected into a TRUSTED user message, so
+        # neutralize any protocol/template sentinels it contains before embedding — else a
+        # file whose text includes </tool_result> or <|im_start|> could forge a frame in
+        # the next text-protocol turn. (audit2 #2; same trust-boundary rule as tool output.)
+        header = f"{defang_untrusted(path)} now on disk" + (f" {note}" if note else "") + ":"
+        sections.append(f"{header}\n{defang_untrusted(content)}")
 
     if not sections:
         return None

@@ -251,6 +251,23 @@ def _strip_forged_frames(text: str) -> str:
     # never closed (truncated/abandoned). By the time this runs every COMPLETE call has
     # been parsed out, so a remaining opener is incomplete cruft, not a real call.
     text = _TRAILING_OPEN_CALL_RE.sub("", text).rstrip()
+    return defang_untrusted(text)
+
+
+def defang_untrusted(text: str) -> str:
+    """Neutralize protocol frame markers AND chat-template tokens in untrusted text.
+
+    Inserts a zero-width space after the leading ``<`` / `` ` `` of any ``<tool_call>`` /
+    ``<tool_result>`` frame (or ```` ```tool_call ````) and any ``<|...|>`` chat-template
+    token, so the bytes stay human-readable but can no longer forge a protocol frame or
+    leak a template token. **Never deletes** content (unlike :func:`_strip_forged_frames`,
+    which also drops a trailing unterminated opener) — so it is safe to run over content
+    that must be preserved verbatim: file read-backs, shell output, skill bodies, or any
+    untrusted bytes a *harness-authored* message embeds. This is the trust-boundary rule
+    for the user role, mirroring :func:`_defang_sentinels` for the tool role.
+    """
+    if not text:
+        return text
     zwsp = "​"  # zero-width space
     out = _defang_sentinels(text)  # <tool_call> / <tool_result> frames
     return _TEMPLATE_TOKEN_RE.sub(lambda m: f"<{zwsp}" + m.group(0)[1:], out)
@@ -779,4 +796,5 @@ __all__ = [
     "render_tool_protocol",
     "textify_messages",
     "parse_text_tool_calls",
+    "defang_untrusted",
 ]

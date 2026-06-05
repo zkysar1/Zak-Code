@@ -36,6 +36,7 @@ from zakcode.cli.render import StreamRenderer
 from zakcode.config import Settings, load_settings
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
+from zakcode.providers.text_tools import defang_untrusted
 from zakcode.version import __version__
 
 if TYPE_CHECKING:
@@ -464,7 +465,9 @@ def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
     except Exception as exc:  # noqa: BLE001 — a bad skill file is a UX error, not a crash
         notice_error(console, "could not load skill", f"{skill.name}: {exc}")
         return True
-    agent.session.add_message(Message.user(f"[skill: {skill.name}]\n{body}"))
+    # The skill body is file-authored content folded into a TRUSTED user message; defang
+    # protocol/template sentinels so a skill file can't forge a frame in text mode. (audit2 #2)
+    agent.session.add_message(Message.user(f"[skill: {skill.name}]\n{defang_untrusted(body)}"))
     console.print(
         Text.assemble(
             ("loaded skill ", "notice.dim"),

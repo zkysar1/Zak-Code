@@ -84,6 +84,7 @@ from zakcode.providers.base import (
     StreamUsage,
     ToolCall,
 )
+from zakcode.providers.text_tools import defang_untrusted
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -470,8 +471,12 @@ class AgentLoop:
         block = await self._execute_tool_call(call, ctx)
         cursor.harness_runs += 1
         cursor.observe([call], [block])
+        # block.output is real shell stdout (attacker-influenceable) folded into a TRUSTED
+        # user message — defang protocol/template sentinels so it can't forge a frame in the
+        # next text-protocol turn. (audit2 #2)
+        safe_output = defang_untrusted(block.output)
         self.session.add_message(
-            Message.user(f"[harness] I ran the file to verify it:\n{block.output}")
+            Message.user(f"[harness] I ran the file to verify it:\n{safe_output}")
         )
         return True
 
