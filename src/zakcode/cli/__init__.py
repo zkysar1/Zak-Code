@@ -253,7 +253,10 @@ class ConsolePermissionPrompter:
         prompt = f"  permit? (y/a/n) [prompt.marker]{g['prompt']}[/prompt.marker] "
         for _ in range(3):
             try:
-                answer = self.console.input(prompt)
+                # Offload the blocking read so concurrent sub-agents (TaskTool runs children
+                # via asyncio.gather, sharing this one prompter) don't freeze the event loop
+                # — matching bash.py/powershell.py's asyncio.to_thread pattern. (audit2 #11)
+                answer = await asyncio.to_thread(self.console.input, prompt)
             except (EOFError, KeyboardInterrupt):
                 self.console.print(margin(Text("denied", style="notice.dim")))
                 return PermissionOutcome.DENY_ONCE

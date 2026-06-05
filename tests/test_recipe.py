@@ -14,9 +14,10 @@ from typing import Any
 
 import pytest
 
+from zakcode.agent.budget import IterationBudget
 from zakcode.agent.loop import AgentLoop
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_python_run
-from zakcode.events import AgentDone, AgentStatus
+from zakcode.events import AgentDone, AgentStatus, AgentToolCall, AgentToolResult
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
@@ -445,6 +446,26 @@ def test_recipe_streaming_harness_run_emits_status(tmp_path: Path) -> None:
     assert done_ev.stop_reason == "completed"
     statuses = [e.message for e in events if isinstance(e, AgentStatus)]
     assert any("ran the file to verify" in m for m in statuses)
+    # audit2 #9: the harness-issued bash run is surfaced on the live stream like any tool.
+    harness_calls = [e for e in events if isinstance(e, AgentToolCall) and e.name == "bash"]
+    assert harness_calls and "p.py" in harness_calls[0].arguments["command"]
+    assert any(isinstance(e, AgentToolResult) for e in events)
+
+
+def test_recipe_nudge_over_empty_completion_refunds_budget(tmp_path: Path) -> None:
+    # audit2 #14: a recipe nudge over an EMPTY completion did no work, so it must refund the
+    # shared-budget unit (matching the non-recipe empty-completion path) — else a stalling
+    # recipe turn drains a shared delegation pool faster than budget.py promises.
+    budget = IterationBudget(10)
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('x')\n")])
+    empty = LLMResult(text="")  # empty completion: no text, no tool calls
+    provider = _ScriptedProvider([write, empty, empty])
+    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_attempt_cap=1, budget=budget)
+    result = asyncio.run(loop.arun_turn("make p.py"))
+    assert result.stop_reason == "recipe_stalled"
+    # write (1) consumed; the empty nudge iteration was refunded; the stall iteration (1)
+    # consumed and terminal → 2 retained of 10. Without the refund it would be 7 remaining.
+    assert budget.remaining == 8
 
 
 # ── audit #10: harness-run under a REAL permission policy (never an uninitiated prompt) ──

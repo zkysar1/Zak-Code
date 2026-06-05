@@ -40,10 +40,12 @@ def syntax_note(path: str, content: str) -> str:
 
 
 def _read_back(path: str, *, max_chars: int) -> tuple[str, bool]:
-    """Read ``path`` (capped). Returns ``(text, ok)``; ``ok=False`` if unreadable."""
+    """Read ``path`` (capped). Returns ``(text, ok)``; ``ok=False`` only on a genuine IO
+    failure (deleted/locked/raced). Decodes with ``errors="replace"`` (matching
+    ``read_file``) so odd-but-readable bytes still ground rather than silently vanishing."""
     try:
-        text = Path(path).read_text(encoding="utf-8")
-    except Exception:  # noqa: BLE001 — unreadable/binary file: skip grounding for it
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 — genuine IO failure: surfaced as [unverified] below
         return "", False
     if len(text) > max_chars:
         text = text[:max_chars] + "\n... (truncated)"
@@ -85,6 +87,13 @@ def build_write_grounding(
             continue
         content, ok = _read_back(path, max_chars=max_chars)
         if not ok:
+            # A successful write whose read-back fails: surface it as [unverified] rather
+            # than silently dropping the grounding (which would leave the model believing
+            # nothing happened). (audit2 #13)
+            sections.append(
+                f"[unverified] could not read {defang_untrusted(path)} back from disk to "
+                "confirm the write (it may have been moved, locked, or changed)."
+            )
             continue
         note = syntax_note(path, content)  # syntax check runs on the REAL on-disk bytes
         # This content is model-authored and is re-injected into a TRUSTED user message, so

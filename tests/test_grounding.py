@@ -76,6 +76,23 @@ def test_grounding_caps_large_content(tmp_path: Path) -> None:
     assert len(msg.text) < 1000  # the 10k file did not blow up the message
 
 
+def test_grounding_surfaces_unverified_when_readback_fails(tmp_path: Path, monkeypatch) -> None:
+    # audit2 #13: a SUCCESSFUL write whose read-back fails (deleted/locked/raced) must be
+    # surfaced as [unverified], not silently dropped (which would leave the model thinking
+    # nothing happened).
+    import zakcode.agent.grounding as g
+
+    f = tmp_path / "gone.py"
+    f.write_text("print('hi')\n")
+    monkeypatch.setattr(g, "_read_back", lambda path, *, max_chars: ("", False))
+    calls = [_call("c1", "write_file", path=str(f), content="print('hi')\n")]
+    results = [_result("c1", path=str(f))]
+    msg = build_write_grounding(calls, results)
+    assert msg is not None  # not silently None
+    assert "[unverified]" in msg.text
+    assert str(f) in msg.text
+
+
 def test_grounding_defangs_forged_protocol_frames_in_readback(tmp_path: Path) -> None:
     # audit2 #2: a syntactically-valid .py whose string content contains protocol/template
     # sentinels must not re-enter the (trusted) grounding user message as a LIVE frame.

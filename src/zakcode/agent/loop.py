@@ -442,24 +442,27 @@ class AgentLoop:
             data=tool_res.data,
         )
 
-    async def _try_harness_verify(self, cursor: RecipeCursor, ctx: ToolContext) -> bool:
+    async def _try_harness_verify(
+        self, cursor: RecipeCursor, ctx: ToolContext
+    ) -> tuple[ToolCall, ToolResultBlock] | None:
         """Issue a harness-side verification run of the pending file (Slice 2b-A).
 
         Fires only when armed (``recipe_harness_run``), a target is pending, an interpreter
         resolves, and — crucially — the synthetic ``bash`` would auto-allow WITHOUT a prompt
-        (allow-mode or a prior ``bash`` grant). Otherwise returns ``False`` so the caller
+        (allow-mode or a prior ``bash`` grant). Otherwise returns ``None`` so the caller
         falls back to nudging the model (never an uninitiated prompt). The synthetic call
         funnels through the SAME ``_execute_tool_call`` gate; the real output is fed to the
-        cursor and injected as a user message. Returns ``True`` if a run was issued.
+        cursor and injected as a user message. Returns the ``(call, block)`` it ran (so the
+        streaming path can surface it as AgentToolCall/AgentToolResult), else ``None``.
         """
         if not self.recipe_harness_run:
-            return False
+            return None
         target = cursor.pending_target()
         if target is None:
-            return False
+            return None
         command = resolve_python_run(target)
         if command is None:
-            return False
+            return None
         call = ToolCall(
             id=f"recipe_run_{cursor.harness_runs}", name="bash", arguments={"command": command}
         )
@@ -467,7 +470,7 @@ class AgentLoop:
             bash_tool = self.registry.get("bash")
             bash_spec = bash_tool.spec if bash_tool is not None else None
             if not self.permission_policy.auto_allows(bash_spec, call.arguments):
-                return False  # would prompt / is blocked -> fall back to the nudge
+                return None  # would prompt / is blocked -> fall back to the nudge
         block = await self._execute_tool_call(call, ctx)
         cursor.harness_runs += 1
         cursor.observe([call], [block])
@@ -478,7 +481,7 @@ class AgentLoop:
         self.session.add_message(
             Message.user(f"[harness] I ran the file to verify it:\n{safe_output}")
         )
-        return True
+        return call, block
 
     def _is_read_only_safe(self, call: ToolCall) -> bool:
         """Whether ``call`` may join a concurrent batch.
@@ -645,10 +648,14 @@ class AgentLoop:
                     # Prefer a harness-issued run (only when it would auto-allow without a
                     # prompt); else nudge the model. Either way consumes one attempt, so an
                     # unfixable file still stalls gracefully rather than looping.
-                    if await self._try_harness_verify(cursor, ctx):
+                    if await self._try_harness_verify(cursor, ctx) is not None:
                         cursor.consume_attempt()
                     else:
                         self.session.add_message(Message.user(cursor.nudge()))
+                        # A nudge over an empty completion did no work — refund the unit so a
+                        # stalling recipe turn doesn't drain a shared budget. (audit2 #14)
+                        if not result.text:
+                            self._refund_iteration()
                     self._persist()
                     continue
                 # A truly empty completion did no work — refund its shared-budget unit.
@@ -813,11 +820,27 @@ class AgentLoop:
                                 message="stopping: wrote a file but could not verify it runs"
                             )
                             break
-                        if await self._try_harness_verify(cursor, ctx):
+                        harness = await self._try_harness_verify(cursor, ctx)
+                        if harness is not None:
+                            # Surface the harness-issued run on the live stream like any other
+                            # tool call (it executes a real subprocess), not just a status
+                            # note. (audit2 #9)
+                            hcall, hblock = harness
+                            yield AgentToolCall(
+                                id=hcall.id, name=hcall.name, arguments=hcall.arguments
+                            )
+                            yield AgentToolResult(
+                                tool_use_id=hblock.tool_use_id,
+                                output=hblock.output,
+                                is_error=hblock.is_error,
+                            )
                             cursor.consume_attempt()
                             yield AgentStatus(message="ran the file to verify it works")
                         else:
                             self.session.add_message(Message.user(cursor.nudge()))
+                            # Empty completion + a nudge did no work — refund. (audit2 #14)
+                            if not assistant_text:
+                                self._refund_iteration()
                         self._persist()
                         continue
                     if not assistant_text:  # truly empty completion did no work
