@@ -13,10 +13,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+import pytest
 from typer.testing import CliRunner
 
 import zakcode
-from zakcode.cli import ConsolePermissionPrompter, app
+from zakcode.cli import ConsolePermissionPrompter, _parse_permission_answer, app
 from zakcode.config import load_settings
 from zakcode.events import (
     AgentDone,
@@ -283,3 +284,49 @@ def test_chat_clear_default_keeps_memory_and_rules_on(monkeypatch) -> None:
 # Keep an explicit reference so the unused-import linter is satisfied for the
 # scripted-policy helper used indirectly above.
 _ = PermissionMode
+
+
+# ── permission-answer parsing (the [y]/[a]/[n] markup + lenient-words fix) ─────
+
+
+@pytest.mark.parametrize(
+    "answer,expected",
+    [
+        ("y", PermissionOutcome.ALLOW_ONCE),
+        ("yes", PermissionOutcome.ALLOW_ONCE),
+        ("allow once", PermissionOutcome.ALLOW_ONCE),
+        ("allow", PermissionOutcome.ALLOW_ONCE),
+        ("a", PermissionOutcome.ALLOW_SESSION),
+        ("always", PermissionOutcome.ALLOW_SESSION),
+        ("session", PermissionOutcome.ALLOW_SESSION),
+        ("allow for session", PermissionOutcome.ALLOW_SESSION),
+        ("ALLOW FOR SESSION", PermissionOutcome.ALLOW_SESSION),
+        ("n", PermissionOutcome.DENY_ONCE),
+        ("no", PermissionOutcome.DENY_ONCE),
+        ("deny", PermissionOutcome.DENY_ONCE),
+    ],
+)
+def test_parse_permission_answer(answer: str, expected: PermissionOutcome) -> None:
+    assert _parse_permission_answer(answer) is expected
+
+
+def test_parse_permission_answer_unrecognized_is_none() -> None:
+    assert _parse_permission_answer("maybe?") is None
+    assert _parse_permission_answer("") is None
+
+
+async def test_console_prompter_accepts_spelled_out_session() -> None:
+    # The reported bug: typing the words shown ("allow for session") must allow for
+    # the session, not silently deny.
+    prompter = ConsolePermissionPrompter(_FakeConsole("allow for session"))
+    assert await prompter.confirm(_request()) is PermissionOutcome.ALLOW_SESSION
+
+
+async def test_console_prompter_shows_key_hints_literally() -> None:
+    # Regression: the keys must be visible. With rich markup, "[y]" is parsed as a
+    # tag and dropped from the rendered line; parens survive.
+    console = _FakeConsole("y")
+    await ConsolePermissionPrompter(console).confirm(_request())
+    blob = "\n".join(console.lines)
+    assert "(y)" in blob and "(a)" in blob and "(n)" in blob
+    assert "[y]" not in blob

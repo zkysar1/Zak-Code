@@ -154,6 +154,32 @@ def _abbrev(value: object, *, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _parse_permission_answer(answer: str) -> PermissionOutcome | None:
+    """Map a typed permission answer to an outcome, or ``None`` if unrecognized.
+
+    Accepts the single-key hints (``y`` / ``a`` / ``n``) and the spelled-out phrases
+    shown in the prompt (``allow once`` / ``allow for session`` / ``deny``) plus common
+    synonyms, so an operator who types the words they see is understood rather than
+    silently denied (the original cause of this prompt's confusion).
+    """
+    a = answer.strip().lower()
+    if a in (
+        "a",
+        "always",
+        "session",
+        "allow session",
+        "allow for session",
+        "allow for the session",
+        "allow always",
+    ):
+        return PermissionOutcome.ALLOW_SESSION
+    if a in ("y", "yes", "o", "once", "allow", "allow once"):
+        return PermissionOutcome.ALLOW_ONCE
+    if a in ("n", "no", "d", "deny"):
+        return PermissionOutcome.DENY_ONCE
+    return None
+
+
 class ConsolePermissionPrompter:
     """Asks the operator to confirm an escalated tool call at the terminal.
 
@@ -177,17 +203,23 @@ class ConsolePermissionPrompter:
             self.console.print(f"  [dim]{request.reason}[/dim]")
         for key, val in request.arguments.items():
             self.console.print(f"  [dim]{key}=[/dim]{_abbrev(val)}")
-        self.console.print("  [dim]allow once [y] · allow for session [a] · deny [n][/dim]")
-        try:
-            answer = self.console.input("  [bold cyan]permit?[/bold cyan] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            self.console.print("  [dim]denied[/dim]")
-            return PermissionOutcome.DENY_ONCE
-
-        if answer in ("y", "yes"):
-            return PermissionOutcome.ALLOW_ONCE
-        if answer in ("a", "always", "session"):
-            return PermissionOutcome.ALLOW_SESSION
+        # Keys are shown in parens, not [brackets]: rich parses "[y]" as a markup tag
+        # and silently drops it, so the operator never sees the keys — which is how a
+        # typed "allow for session" fell through to deny. Show the keys, accept the words.
+        self.console.print("  [dim]allow once (y) · allow for session (a) · deny (n)[/dim]")
+        for _ in range(3):
+            try:
+                answer = self.console.input("  [bold cyan]permit? (y/a/n)[/bold cyan] ")
+            except (EOFError, KeyboardInterrupt):
+                self.console.print("  [dim]denied[/dim]")
+                return PermissionOutcome.DENY_ONCE
+            decision = _parse_permission_answer(answer)
+            if decision is not None:
+                return decision
+            self.console.print(
+                "  [dim]please answer y (allow once), a (allow for session), or n (deny)[/dim]"
+            )
+        self.console.print("  [dim]no clear answer - denied[/dim]")
         return PermissionOutcome.DENY_ONCE
 
 
