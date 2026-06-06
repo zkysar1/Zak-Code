@@ -13,6 +13,7 @@ from zakcode.skills import (
     discover_skill_dir,
     discover_skills,
     parse_frontmatter,
+    save_skill,
 )
 
 _SKILL = """\
@@ -201,3 +202,50 @@ def test_discover_skills_multiple_extra_dirs(tmp_path: Path) -> None:
     _write_skill(ext2, "s", "---\nname: clash\ndescription: second\n---\nbody\n")
     registry, _ = discover_skills(tmp_path, extra_skill_dirs=[ext1, ext2])
     assert registry.get("clash").description == "second"
+
+
+# ── audit3 #2: skills discovery / save_skill stay inside the skills tree ──────
+
+
+def _make_dir_link(link: Path, target: Path) -> bool:
+    """Create a directory junction (Windows, no admin) or symlink (POSIX). False if unable."""
+    import os
+    import subprocess
+    import sys
+
+    if sys.platform == "win32":
+        r = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+        )
+        return r.returncode == 0 and link.exists()
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+def test_discover_skips_skill_dir_escaping_root_via_link(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("---\nname: evil\ndescription: x\n---\nstolen\n")
+    if not _make_dir_link(skills_dir / "evil", outside):
+        pytest.skip("cannot create a directory junction/symlink in this environment")
+    skills, errors = discover_skill_dir(skills_dir)
+    assert skills == []  # the out-of-tree skill is NOT pulled into the catalog/prompt
+    assert "evil" in errors
+
+
+def test_save_skill_refuses_out_of_tree_link(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if not _make_dir_link(skills_dir / "evil", outside):
+        pytest.skip("cannot create a directory junction/symlink in this environment")
+    with pytest.raises(SkillError):
+        save_skill("evil", "d", "body text", skills_dir=skills_dir, overwrite=True)
+    assert not (outside / "SKILL.md").exists()  # nothing written through the link

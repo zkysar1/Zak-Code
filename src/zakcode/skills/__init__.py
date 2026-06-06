@@ -176,12 +176,25 @@ class SkillRegistry:
         return "\n".join(lines)
 
 
+def _within(path: Path, root: Path) -> bool:
+    """Whether ``path``'s real path (junctions/symlinks/``..`` collapsed) is ``root`` itself
+    or lives under it — the same containment the file-tool resolver enforces
+    (:mod:`zakcode.tools.builtins._safety`). (audit3 #2)
+    """
+    resolved = path.resolve()
+    resolved_root = root.resolve()
+    return resolved == resolved_root or resolved_root in resolved.parents
+
+
 def discover_skill_dir(skills_dir: str | Path) -> tuple[list[Skill], dict[str, str]]:
     """Discover skills under ``skills_dir`` (one subdir per skill, each with SKILL.md).
 
     Returns ``(skills, errors)``; a malformed/unreadable skill is recorded in
     ``errors`` (by directory name) and skipped. Only the frontmatter is parsed here
-    — bodies stay unloaded (lazy disclosure). A missing dir yields empties.
+    — bodies stay unloaded (lazy disclosure). A missing dir yields empties. A subdir
+    (or its SKILL.md) whose real path escapes ``skills_dir`` — e.g. a planted junction
+    or symlink — is skipped and recorded, so discovery never pulls out-of-tree content
+    into the prompt (the same containment the file tools enforce).
     """
     skills: list[Skill] = []
     errors: dict[str, str] = {}
@@ -193,6 +206,10 @@ def discover_skill_dir(skills_dir: str | Path) -> tuple[list[Skill], dict[str, s
             continue
         md = entry / SKILL_FILENAME
         try:
+            # Containment first: a junction/symlink entry (or SKILL.md) whose realpath
+            # escapes the skills root must not be read into the catalog/prompt. (audit3 #2)
+            if not _within(md, root):
+                raise SkillError("resolves outside the skills directory")
             if not md.is_file():
                 raise SkillError(f"missing {SKILL_FILENAME}")
             frontmatter, _body = parse_frontmatter(md.read_text(encoding="utf-8"))
@@ -264,9 +281,11 @@ def save_skill(
 
     Writes ``<skills_dir>/<name>/SKILL.md`` with a frontmatter block this package's
     own parser round-trips, followed by ``body``. ``name`` must be a safe, kebab-case
-    identifier (``[a-z0-9][a-z0-9-]{0,63}``) so it can never escape ``skills_dir`` via
-    path separators or ``..``. Raises :class:`SkillError` on a bad name, an empty
-    body, or an existing skill when ``overwrite`` is false.
+    identifier (``[a-z0-9][a-z0-9-]{0,63}``) so it has no path separators or ``..``, and
+    the target dir's REAL path is verified to live under ``skills_dir`` (so a pre-planted
+    junction/symlink at ``<skills_dir>/<name>`` cannot redirect the write out of tree).
+    Raises :class:`SkillError` on a bad name, an out-of-tree target, an empty body, or an
+    existing skill when ``overwrite`` is false.
 
     This is the storage primitive a self-learning framework (or the ``save_skill``
     tool) builds skill-extraction on; it makes no decision about *when* to author.
@@ -277,7 +296,13 @@ def save_skill(
         )
     if not body or not body.strip():
         raise SkillError("skill body must be non-empty")
-    skill_dir = Path(skills_dir) / name
+    root = Path(skills_dir)
+    skill_dir = root / name
+    # Containment: refuse if <skills_dir>/<name> resolves out of the skills tree (a planted
+    # junction/symlink) — the kebab-case name check alone never resolves reparse points so
+    # cannot catch this on its own. Checked before any mkdir/write. (audit3 #2)
+    if not _within(skill_dir, root):
+        raise SkillError(f"skill {name!r} resolves outside the skills directory {str(root)!r}")
     md = skill_dir / SKILL_FILENAME
     if md.exists() and not overwrite:
         raise SkillError(f"skill {name!r} already exists at {md} (pass overwrite=True to replace)")
