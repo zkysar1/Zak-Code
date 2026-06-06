@@ -217,6 +217,7 @@ __all__ = [
     "RuleError",
     "Rule",
     "RuleRegistry",
+    "_split_frontmatter",  # shared with zakcode.identity (self.md frontmatter parsing)
     "discover_rule_dir",
     "default_rule_dirs",
     "discover_rules",

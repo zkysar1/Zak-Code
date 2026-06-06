@@ -2,9 +2,10 @@
 
 The system prompt is assembled in two tiers separated by :data:`DYNAMIC_BOUNDARY`:
 
-* **STABLE** (cacheable prefix) — identity, behavior guidance, brief tool-use guidance,
-  and the safety policy. This text never changes within a conversation, so a provider can
-  cache it and we never invalidate that cache by reordering or mutating it.
+* **STABLE** (cacheable prefix) — the agent **identity** (the operator-authored ``self.md``
+  when present, else a default line), behavior guidance, brief tool-use guidance, and the
+  safety policy. This text never changes within a conversation, so a provider can cache it
+  and we never invalidate that cache by reordering or mutating it.
 * **CONTEXT** (dynamic suffix) — per-session facts: the environment (OS, workspace root,
   model) and discovered ``ZAK.md`` memory. This sits *after* the boundary so it can vary
   without touching the cached prefix.
@@ -92,9 +93,20 @@ class SystemPromptBuilder:
     ``rules`` (optional) is always-on, operator-authored guidance (see
     :mod:`zakcode.rules`) rendered into the same stable tier. Like
     ``extra_instructions`` it is constant per session, so it is cache-safe there.
+
+    ``identity`` (optional) is the operator-authored agent identity (``self.md``; see
+    :mod:`zakcode.identity`). When set it REPLACES the default identity line as the first
+    section of the stable tier — this is how a "mind" gives the runtime its persona.
     """
 
-    def __init__(self, *, extra_instructions: str | None = None, rules: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        identity: str | None = None,
+        extra_instructions: str | None = None,
+        rules: str | None = None,
+    ) -> None:
+        self.identity = identity
         self.extra_instructions = extra_instructions
         self.rules = rules
 
@@ -125,7 +137,10 @@ class SystemPromptBuilder:
     # ── stable tier ────────────────────────────────────────────────────────────
 
     def _build_stable(self, tools: list[ToolSpec] | None) -> str:
-        sections = [_IDENTITY, _BEHAVIOR, _TOOL_GUIDANCE, _SAFETY]
+        # The operator identity (self.md) REPLACES the default line when set, staying first
+        # in the cacheable tier (highest framing precedence). Falls back to _IDENTITY.
+        identity = self.identity.strip() if self.identity and self.identity.strip() else _IDENTITY
+        sections = [identity, _BEHAVIOR, _TOOL_GUIDANCE, _SAFETY]
         tool_section = self._summarize_tools(tools)
         if tool_section:
             sections.append(tool_section)

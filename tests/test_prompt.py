@@ -23,6 +23,23 @@ def test_prompt_has_identity_and_boundary(tmp_path: Path) -> None:
     assert DYNAMIC_BOUNDARY in prompt
 
 
+def test_operator_identity_replaces_default(tmp_path: Path) -> None:
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder(identity="You are Vinheim, a friendly guide.").build(settings)
+    stable = prompt[: prompt.index(DYNAMIC_BOUNDARY)]
+    assert "You are Vinheim, a friendly guide." in stable
+    assert stable.lstrip().startswith("You are Vinheim")  # identity leads the stable tier
+    assert "You are Zak Code, a vendor-agnostic AI coding assistant" not in prompt
+
+
+def test_identity_none_is_byte_for_byte_default(tmp_path: Path) -> None:
+    # Cache-stability guard: identity=None must reproduce the default prompt exactly.
+    settings = load_settings(workspace_root=tmp_path, default_model="openai/gpt-4o")
+    assert SystemPromptBuilder(identity=None).build(settings) == SystemPromptBuilder().build(
+        settings
+    )
+
+
 def test_stable_precedes_boundary_and_context_follows(tmp_path: Path) -> None:
     settings = load_settings(workspace_root=tmp_path, default_model="openai/gpt-4o")
     prompt = SystemPromptBuilder().build(settings)
