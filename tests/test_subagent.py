@@ -348,3 +348,31 @@ async def test_child_gets_isolated_permission_view(tmp_path: Path, monkeypatch) 
     assert child_policy.mode == parent_policy.mode
     child_policy._session_allow.add("bash")
     assert "bash" not in parent_policy._session_allow  # grant does not bleed up
+
+
+async def test_child_inherits_extra_workspace_roots(tmp_path: Path, monkeypatch) -> None:
+    # audit4 #4: a delegated child must get the SAME multi-root sandbox as the parent, so a
+    # --skill-dir-granted path isn't wrongly rejected inside a sub-agent.
+    import zakcode.agent.subagent as sub
+
+    captured: dict = {}
+
+    class _FakeLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def arun_turn(self, prompt: str) -> TurnResult:
+            return TurnResult(stop_reason="completed")
+
+    monkeypatch.setattr(sub, "AgentLoop", _FakeLoop)
+    extra = [tmp_path / "mind", tmp_path / "world"]
+    runner = SubAgentRunner(
+        provider=_OneShotProvider("x"),
+        registry=_registry(_RecordingTool("read_file")),
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        budget=IterationBudget(10),
+        extra_workspace_roots=extra,
+        workspace_root=tmp_path,
+    )
+    await runner.run(GENERAL_PURPOSE, "do it")
+    assert captured["extra_workspace_roots"] == extra

@@ -23,6 +23,7 @@ session) — it adds no new agent behavior and imports no vendor SDK.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -118,6 +119,7 @@ class SubAgentRunner:
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
         workspace_root: Path | None = None,
+        extra_workspace_roots: Sequence[Path] | None = None,
         rules: str | None = None,
     ) -> None:
         self.provider = provider
@@ -127,6 +129,9 @@ class SubAgentRunner:
         self.permission_policy = permission_policy
         self.hook_manager = hook_manager
         self.workspace_root = workspace_root or settings.workspace_root
+        # The parent's multi-root sandbox, so a child gets the SAME roots (not a narrower
+        # one) and a delegated --skill-dir-granted path isn't wrongly rejected. (audit4 #4)
+        self.extra_workspace_roots = list(extra_workspace_roots or [])
         # The parent's rendered always-on rules, threaded into every child's prompt so
         # delegated work runs under the same standing guidance as the parent.
         self.rules = rules
@@ -176,6 +181,7 @@ class SubAgentRunner:
             hook_manager=self.hook_manager,
             budget=self.budget,
             workspace_root=self.workspace_root,
+            extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent
             # Inherit the parent's verification posture: AgentLoop reads these from explicit
             # params (not from settings), so a child would otherwise silently run UNGROUNDED
             # and UNGATED for delegated create-and-run work. (audit2 #3)

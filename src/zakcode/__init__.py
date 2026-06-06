@@ -278,6 +278,17 @@ class Agent:
         # runner) with a task-FREE registry and NO spawner, so one-level nesting is
         # structural: a child can neither see nor call ``task``. Disabled by default,
         # so an ordinary ``Agent`` is byte-for-byte unchanged.
+        # Multi-root sandbox (M-3): compute extra workspace roots from explicit args plus
+        # auto-detected roots from --skill-dir. Computed HERE (before the sub-agent runner)
+        # so the SAME sandbox is threaded into both the parent loop AND every child loop —
+        # else a delegated --skill-dir-granted path would hit PathEscapeError. (audit4 #4)
+        computed_extra_roots: list[Path] = []
+        if extra_workspace_roots:
+            computed_extra_roots.extend(Path(r) for r in extra_workspace_roots)
+        if extra_skill_dirs:
+            for sd in extra_skill_dirs:
+                computed_extra_roots.extend(_infer_roots_from_skill_dir(Path(sd)))
+
         shared_budget = budget
         spawner = None
         if enable_subagents:
@@ -298,6 +309,7 @@ class Agent:
                 permission_policy=self.permission_policy,
                 hook_manager=self.hook_manager,
                 workspace_root=self.settings.workspace_root,
+                extra_workspace_roots=computed_extra_roots,  # same sandbox as the parent
                 rules=rules_text or None,  # sub-agents inherit the parent's always-on rules
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
@@ -394,16 +406,6 @@ class Agent:
         self.compactor: Compactor | None = None
         if enable_compaction:
             self.compactor = Compactor()
-
-        # Multi-root sandbox (M-3): compute extra workspace roots from explicit
-        # args plus auto-detected roots from --skill-dir (the skill directory's
-        # owning repo root, and any external paths declared in its local-paths.conf).
-        computed_extra_roots: list[Path] = []
-        if extra_workspace_roots:
-            computed_extra_roots.extend(Path(r) for r in extra_workspace_roots)
-        if extra_skill_dirs:
-            for sd in extra_skill_dirs:
-                computed_extra_roots.extend(_infer_roots_from_skill_dir(Path(sd)))
 
         self.loop = AgentLoop(
             self.provider,
