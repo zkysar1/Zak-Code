@@ -16,16 +16,19 @@ from zakcode.tools.builtins.write_file import WriteFileTool
 def default_registry() -> ToolRegistry:
     """Build a :class:`ToolRegistry` populated with every built-in tool.
 
-    Friendly aliases (``read`` / ``write`` / ``ls``) are registered alongside the
-    canonical tool names so the model can use either form.
+    Each tool is registered under a small set of guessable aliases (POSIX muscle-memory like
+    ``cat`` / ``ls`` / ``grep`` aliases) so a model that guesses a sibling name still resolves
+    to the right tool ("learn one, guess the rest"). Aliases are a SILENT fallback — they are
+    not advertised in the prompt (that would cost tokens and dilute the one-canonical-name
+    signal); the registry just routes them. See ToolRegistry.register's collision guard.
     """
     registry = ToolRegistry()
-    registry.register(ReadFileTool(), aliases=["read"])
+    registry.register(ReadFileTool(), aliases=["read", "cat"])
     registry.register(WriteFileTool(), aliases=["write"])
     registry.register(EditFileTool(), aliases=["edit"])
-    registry.register(ListDirTool(), aliases=["ls"])
-    registry.register(GlobTool())
-    registry.register(GrepTool())
-    registry.register(BashTool())
+    registry.register(ListDirTool(), aliases=["ls", "dir"])
+    registry.register(GlobTool(), aliases=["find"])
+    registry.register(GrepTool(), aliases=["search", "rg"])
+    registry.register(BashTool(), aliases=["sh", "shell"])
     registry.register(PowerShellTool(), aliases=["pwsh"])
     return registry

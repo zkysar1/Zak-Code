@@ -46,7 +46,10 @@ async def test_read_line_slice(ctx: ToolContext) -> None:
     read = ReadFileTool()
     res = await read.execute({"path": "lines.txt", "offset": 2, "limit": 2}, ctx)
     assert not res.is_error
-    assert res.output == "b\nc\n"
+    # Slice content, then an explicit continuation marker (the slice stops before EOF; line 4
+    # of 4 remains) so the partial read does not read to the model as the whole file.
+    assert res.output.startswith("b\nc\n")
+    assert "of 4" in res.output and "offset=4" in res.output
 
 
 async def test_read_missing_file_is_error_not_exception(ctx: ToolContext) -> None:
@@ -170,6 +173,47 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
     assert reg.get("ls") is reg.get("list_dir")
     assert reg.get("bash") is reg.get("bash")
     assert reg.get("pwsh") is reg.get("powershell")  # M10: PowerShell tool + alias
+    # Guessable POSIX-muscle-memory aliases ("learn one, guess the rest").
+    assert reg.get("cat") is reg.get("read_file")
+    assert reg.get("dir") is reg.get("list_dir")
+    assert reg.get("find") is reg.get("glob")
+    assert reg.get("search") is reg.get("grep")
+    assert reg.get("rg") is reg.get("grep")
+    assert reg.get("sh") is reg.get("bash")
+    assert reg.get("shell") is reg.get("bash")
+    # Aliases are NOT canonical names (silent fallback; not exposed in the prompt).
+    assert "cat" not in reg.names() and "search" not in reg.names()
+
+
+def test_register_rejects_colliding_alias() -> None:
+    from zakcode.tools.base import ToolRegistry
+
+    # An alias that shadows another tool's canonical name is rejected.
+    reg = ToolRegistry()
+    reg.register(ReadFileTool())  # canonical "read_file"
+    with pytest.raises(ValueError, match="collides with a registered tool name"):
+        reg.register(WriteFileTool(), aliases=["read_file"])
+
+    # An alias already mapped to a different tool is rejected.
+    reg2 = ToolRegistry()
+    reg2.register(ReadFileTool(), aliases=["x"])
+    with pytest.raises(ValueError, match="already maps to"):
+        reg2.register(WriteFileTool(), aliases=["x"])
+
+    # A new tool whose canonical NAME equals an existing alias is rejected — otherwise it would
+    # register but be permanently shadowed by the alias (every call dispatched elsewhere).
+    from zakcode.tools.base import Tool, ToolResult, ToolSpec
+
+    class _Cat(Tool):
+        spec = ToolSpec(name="cat", description="a tool literally named 'cat'")
+
+        async def execute(self, args, ctx):  # noqa: ANN001, ARG002
+            return ToolResult.ok("x")
+
+    reg3 = ToolRegistry()
+    reg3.register(ReadFileTool(), aliases=["cat"])
+    with pytest.raises(ValueError, match="collides with an existing alias"):
+        reg3.register(_Cat())
 
 
 def test_specs_have_expected_permissions_and_concurrency() -> None:

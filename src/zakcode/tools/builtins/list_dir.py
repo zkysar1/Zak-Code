@@ -12,6 +12,10 @@ from zakcode.tools.base import (
 )
 from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
 
+#: Soft cap on entries rendered into the model-facing output; beyond this an explicit marker
+#: points the model at glob. ``data["entries"]`` still carries the full list for clients.
+_MAX_ENTRIES = 1000
+
 
 class ListDirTool(Tool):
     """List the entries of a directory inside the workspace."""
@@ -72,10 +76,24 @@ class ListDirTool(Tool):
                     entries.append(entry.name)
                 names.append(entry.name)
 
-            output = "\n".join(entries) if entries else "(empty directory)"
+            # Soft cap with an explicit marker so a huge directory cannot flood the model's
+            # context one-entry-per-line with no signal that it was capped. (#5 dense output)
+            shown = entries
+            truncated = len(entries) > _MAX_ENTRIES
+            if truncated:
+                hidden = len(entries) - _MAX_ENTRIES
+                shown = entries[:_MAX_ENTRIES] + [
+                    f"[... {hidden} more entries; use glob with a pattern to narrow ...]"
+                ]
+            output = "\n".join(shown) if shown else "(empty directory)"
             return ToolResult.ok(
                 output,
-                data={"path": str(resolved), "count": len(names), "entries": names},
+                data={
+                    "path": str(resolved),
+                    "count": len(names),
+                    "entries": names,
+                    "truncated": truncated,
+                },
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to list {target!r}: {exc}")

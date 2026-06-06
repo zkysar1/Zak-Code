@@ -101,26 +101,41 @@ class GrepTool(Tool):
             rows: list[str] = []
             total = 0
             truncated = False
+            file_notes: list[str] = []
             for file_path in files:
                 if total >= _MAX_MATCHES:
                     truncated = True
                     break
-                for line_no, line in self._scan_file(file_path, regex):
+                matches, file_truncated = self._scan_file(file_path, regex)
+                if file_truncated:
+                    # Explicit marker: a >5MB file was only partially scanned, so a "no match"
+                    # here is not conclusive — without this the drop is silent. (#5)
+                    file_notes.append(
+                        f"{file_path}: [... file exceeds 5MB; only its first 5MB was scanned ...]"
+                    )
+                for line_no, line in matches:
                     rows.append(f"{file_path}:{line_no}:{line}")
                     total += 1
                     if total >= _MAX_MATCHES:
                         truncated = True
                         break
 
-            if not rows:
+            if not rows and not file_notes:
                 return ToolResult.ok("(no matches)", data={"count": 0, "matches": []})
 
             output = "\n".join(rows)
             if truncated:
                 output += f"\n\n[... results truncated at {_MAX_MATCHES} matches ...]"
+            if file_notes:
+                output += ("\n\n" if output else "") + "\n".join(file_notes)
             return ToolResult.ok(
                 output,
-                data={"count": total, "matches": rows, "truncated": truncated},
+                data={
+                    "count": total,
+                    "matches": rows,
+                    "truncated": truncated,
+                    "files_partially_scanned": len(file_notes),
+                },
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Grep failed for pattern {pattern!r}: {exc}")
@@ -157,15 +172,23 @@ class GrepTool(Tool):
                 collected.append(leaf)
         return collected
 
-    def _scan_file(self, file_path: Path, regex: re.Pattern[str]) -> list[tuple[int, str]]:
-        """Return ``(line_no, line_text)`` pairs in ``file_path`` matching ``regex``."""
+    def _scan_file(
+        self, file_path: Path, regex: re.Pattern[str]
+    ) -> tuple[list[tuple[int, str]], bool]:
+        """Return ``(matches, truncated)`` for ``file_path``.
+
+        ``matches`` is the ``(line_no, line_text)`` pairs matching ``regex``; ``truncated`` is
+        True when the file exceeded the per-file byte cap and only its first ``_MAX_FILE_BYTES``
+        were scanned (so a caller can surface that the result for this file is incomplete).
+        """
         try:
             raw = file_path.read_bytes()
         except OSError:
-            return []
+            return [], False
         if _is_binary(raw[:1024]):
-            return []
-        if len(raw) > _MAX_FILE_BYTES:
+            return [], False
+        truncated = len(raw) > _MAX_FILE_BYTES
+        if truncated:
             raw = raw[:_MAX_FILE_BYTES]
         text = raw.decode("utf-8", errors="replace")
 
@@ -173,4 +196,4 @@ class GrepTool(Tool):
         for idx, line in enumerate(text.splitlines(), start=1):
             if regex.search(line):
                 results.append((idx, line))
-        return results
+        return results, truncated

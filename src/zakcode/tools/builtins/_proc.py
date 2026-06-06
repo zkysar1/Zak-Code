@@ -13,6 +13,7 @@ and the MCP transport via :mod:`zakcode._subprocess`. (audit3 #3 / audit4 #2 / #
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from typing import Any
 
@@ -40,11 +41,16 @@ async def run_capturing(
         raise ValueError("exactly one of argv or shell_command is required")
 
     stdin = subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL
+    # Suppress child-emitted ANSI color: the combined stdout+stderr is fed straight to the
+    # model, and raw escape codes are token-noise it can't use. Inherit the full parent env
+    # (unchanged behavior) and add the standard no-color signals most CLIs honor. (#5)
+    child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
     spawn_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "stdin": stdin,
+        "env": child_env,
         **new_group_kwargs(),
     }
     if shell_command is not None:

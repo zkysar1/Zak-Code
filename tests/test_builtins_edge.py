@@ -167,7 +167,9 @@ async def test_read_offset_limit_slice(ctx, tmp_path):
     (tmp_path / "n.txt").write_bytes(b"l1\nl2\nl3\nl4\nl5\n")
     res = await ReadFileTool().execute({"path": "n.txt", "offset": 2, "limit": 2}, ctx)
     assert not res.is_error
-    assert res.output == "l2\nl3\n"
+    # Slice content followed by an explicit continuation marker (lines 4-5 of 5 remain).
+    assert res.output.startswith("l2\nl3\n")
+    assert "of 5" in res.output and "offset=4" in res.output
 
 
 async def test_read_size_cap_truncation_note(ctx, tmp_path):

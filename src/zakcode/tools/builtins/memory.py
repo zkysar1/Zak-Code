@@ -21,6 +21,13 @@ from zakcode.memory import MemoryProvider
 from zakcode.secrets import redact_secrets
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 
+#: Next-step rail after a (new or no-op) remember: a small model otherwise keeps looping after
+#: a write instead of ending the turn (observed ~5-min remember turns on a 3B). See rb-204.
+_SAVED_HINT = "Memory saved. If nothing else is needed, reply briefly to the user and end the turn."
+#: How many recent memories to scan for an exact-text duplicate before storing (idempotency:
+#: a retried remember must not pile up duplicates in a long-lived, re-injected store).
+_DEDUP_SCAN = 20
+
 
 class RememberTool(Tool):
     """Persist a durable memory for future sessions."""
@@ -72,6 +79,40 @@ class RememberTool(Tool):
         # Never persist credential-shaped text into a long-lived, re-injected store
         # (docs/GUARDRAILS.md §6). Scrub before storing and tell the model it happened.
         scrubbed, redactions = redact_secrets(text.strip())
+        # Idempotency: a retried remember (same scrubbed text) must not create a duplicate in a
+        # long-lived, re-injected store. If an identical recent note exists, no-op benignly. The
+        # probe is best-effort — a search failure must never block the actual write.
+        try:
+            for existing in self._provider.recent(limit=_DEDUP_SCAN):
+                if existing.text == scrubbed:
+                    # The store exposes no update(), so a re-issued remember with a NEW kind or
+                    # extra tags can't reclassify the existing record — say so rather than
+                    # silently echo the old classification as if it were applied.
+                    raw_kind = args.get("kind")
+                    kind_changed = (
+                        isinstance(raw_kind, str)
+                        and bool(raw_kind.strip())
+                        and raw_kind.strip() != existing.kind
+                    )
+                    tags_changed = bool(set(tags) - set(existing.tags))
+                    note = (
+                        " (kind/tags were NOT changed — re-tagging an existing memory is not "
+                        "supported)"
+                        if (kind_changed or tags_changed)
+                        else ""
+                    )
+                    return ToolResult.ok(
+                        f"Already remembered (id={existing.id}); no duplicate created.{note}",
+                        data={
+                            "id": existing.id,
+                            "kind": existing.kind,
+                            "tags": existing.tags,
+                            "duplicate": True,
+                        },
+                        hint=_SAVED_HINT,
+                    )
+        except Exception:  # noqa: BLE001 — a dedup probe failure must never block the write
+            pass
         try:
             record = self._provider.add(scrubbed, kind=kind, tags=tags, source=self._source)
         except Exception as exc:  # noqa: BLE001 — a store failure is a tool error, not a crash
@@ -80,13 +121,7 @@ class RememberTool(Tool):
         return ToolResult.ok(
             f"Remembered (id={record.id}).{note}",
             data={"id": record.id, "kind": record.kind, "tags": record.tags},
-            # Rail: a small model often keeps looping after a successful write instead of
-            # ending the turn (observed: ~5-min remember turns on a 3B). Name the next step
-            # so it terminates cleanly once the memory is saved.
-            hint=(
-                "Memory saved. If nothing else is needed, reply briefly to the user and "
-                "end the turn."
-            ),
+            hint=_SAVED_HINT,
         )
 
 

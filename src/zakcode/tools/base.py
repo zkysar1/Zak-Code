@@ -10,6 +10,12 @@ Design rules (see ``docs/ARCHITECTURE.md`` / ``docs/GUARDRAILS.md``):
 
 * **Handlers never raise.** Failures are wrapped into an error :class:`ToolResult` so a bad
   tool call can never crash the loop — the model sees the error and can recover.
+* **Idempotent where sensible.** A repeated call that finds the desired state already holds
+  SHOULD return a benign success (a no-op), not an error — small models retry on timeouts or
+  confusion, so "already done" must not read as failure (e.g. ``edit_file`` whose edit is
+  already applied, or ``remember`` of an existing note). Genuine errors (wrong path, ambiguous
+  match, differing content) still error. Inherently stateful tools (``bash`` / ``powershell``)
+  are exempt — re-running an arbitrary command yields a real result, not a contract violation.
 * **Structured I/O.** Input is a validated ``dict``; results carry optional structured
   ``data``. No lossy round-trips through strings.
 * **Least privilege.** Every spec declares the narrowest :class:`~zakcode.config.PermissionTier`
@@ -231,8 +237,28 @@ class ToolRegistry:
         """
         if tool.name in self._tools:
             raise ValueError(f"tool already registered: {tool.name!r}")
+        # Symmetric collision guard: a new tool's canonical name must not equal an existing
+        # alias that points elsewhere. ``_canonical`` resolves aliases FIRST, so such a tool
+        # would register but be permanently unreachable by its own name (every call silently
+        # dispatched to the alias target). Fail loud instead. (review: collision asymmetry)
+        shadowing_alias = self._aliases.get(tool.name)
+        if shadowing_alias is not None and shadowing_alias != tool.name:
+            raise ValueError(
+                f"tool name {tool.name!r} collides with an existing alias for {shadowing_alias!r}"
+            )
         self._tools[tool.name] = tool
         for alias in aliases or []:
+            # Collision guard (cheap insurance as the alias set grows and plugins/MCP can
+            # register too): an alias must not shadow another tool's canonical name or an
+            # existing alias that points elsewhere. A self-alias (== tool.name) is a harmless
+            # no-op.
+            if alias != tool.name and alias in self._tools:
+                raise ValueError(
+                    f"alias {alias!r} for {tool.name!r} collides with a registered tool name"
+                )
+            existing = self._aliases.get(alias)
+            if existing is not None and existing != tool.name:
+                raise ValueError(f"alias {alias!r} already maps to {existing!r}")
             self._aliases[alias] = tool.name
         if active:
             self._active.add(tool.name)

@@ -116,7 +116,11 @@ class PowerShellTool(Tool):
 
         truncated = False
         if len(output) > _MAX_OUTPUT:
-            output = output[:_MAX_OUTPUT] + "\n\n[... output truncated ...]"
+            hidden = len(output) - _MAX_OUTPUT
+            output = output[:_MAX_OUTPUT] + (
+                f"\n\n[... output truncated at 64KB; {hidden} more chars hidden — "
+                "narrow the command (Select-String/Select-Object) to see the rest ...]"
+            )
             truncated = True
 
         combined = output

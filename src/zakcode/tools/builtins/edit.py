@@ -24,6 +24,12 @@ from zakcode.tools.builtins._safety import (
 # Maximum number of bytes we will read before refusing to edit.
 _MAX_BYTES = 100 * 1024 * 1024
 
+# Minimum length (stripped) for a single-line ``new_string`` to qualify the "edit already
+# applied" idempotency no-op. Below this, a short/generic token ("pass", "30", "}") could
+# coincidentally appear elsewhere and the no-op would mask a genuine wrong-target edit, so we
+# fall through to the recoverable error instead. A multi-line new_string always qualifies.
+_MIN_NOOP_LEN = 12
+
 
 class EditFileTool(Tool):
     """Replace an exact ``old_string`` with ``new_string`` in a workspace file."""
@@ -124,6 +130,26 @@ class EditFileTool(Tool):
 
             count = text.count(old_string)
             if count == 0:
+                # Idempotency: a retry of an ALREADY-APPLIED edit (old_string gone, new_string
+                # now present) is the desired state, not a failure — return a benign no-op so a
+                # small model that retries on timeout/confusion doesn't thrash. Conservative on
+                # TWO axes so it never masks a genuine wrong-target edit: (1) new_string must be
+                # present, and (2) DISTINCTIVE — multi-line, or >= _MIN_NOOP_LEN stripped chars.
+                # A short/generic token ("pass", "30") that coincidentally appears elsewhere, or
+                # an empty new_string (a pure deletion, indistinguishable from a wrong target),
+                # falls through to the recoverable error below. (review: coincidental-substring)
+                distinctive = "\n" in new_string or len(new_string.strip()) >= _MIN_NOOP_LEN
+                if new_string and distinctive and new_string in text:
+                    return ToolResult.ok(
+                        f"No change needed: the edit is already applied to {path} "
+                        "(old_string absent, new_string already present).",
+                        data={
+                            "path": str(resolved),
+                            "replacements": 0,
+                            "already_applied": True,
+                        },
+                        hint="The desired edit is already in place; continue with the next step.",
+                    )
                 return ToolResult.error(
                     f"'old_string' not found in {path}",
                     fix="re-read the file (read_file) and copy old_string exactly, including "

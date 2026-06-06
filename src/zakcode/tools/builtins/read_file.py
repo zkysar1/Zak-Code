@@ -93,34 +93,70 @@ class ReadFileTool(Tool):
             except OSError as exc:
                 return ToolResult.error(f"Could not read {path}: {exc}")
 
-            truncated = False
-            if len(raw) > _MAX_BYTES:
-                raw = raw[:_MAX_BYTES]
-                truncated = True
-
-            # errors='replace' keeps binary / non-UTF-8 content from crashing us;
-            # undecodable bytes become U+FFFD rather than raising.
-            text = raw.decode("utf-8", errors="replace")
-
             offset_past_eof = False
+            slice_note: str | None = None
+            total_lines: int | None = None
+            byte_truncated = False
+
             if offset is not None or limit is not None:
-                lines = text.splitlines(keepends=True)
+                # Line-account against the FULL file (already in memory via read_bytes), NOT the
+                # byte-capped text — otherwise `total` undercounts and a valid offset past the
+                # 100KB window is falsely reported "beyond EOF". The byte cap governs only how
+                # much we RETURN. (review: HIGH false-EOF + MEDIUM undercount)
+                # errors='replace' keeps non-UTF-8 content from crashing us (U+FFFD).
+                lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+                total_lines = len(lines)
                 start = (offset - 1) if isinstance(offset, int) else 0
-                end = (start + limit) if isinstance(limit, int) else len(lines)
-                if start >= len(lines):
+                end = (start + limit) if isinstance(limit, int) else total_lines
+                if start >= total_lines:
                     offset_past_eof = True
                     text = ""
                 else:
-                    text = "".join(lines[start:end])
+                    shown_end = min(end, total_lines)
+                    text = "".join(lines[start:shown_end])
+                    # Explicit, actionable continuation marker when the slice stops before the
+                    # REAL EOF — without it a partial read reads as "that's the whole file".
+                    if shown_end < total_lines:
+                        slice_note = (
+                            f"[... showed lines {start + 1}-{shown_end} of {total_lines}; "
+                            f"use offset={shown_end + 1} to read more ...]"
+                        )
+                # A slice with a huge limit could still be enormous; cap the RETURNED bytes.
+                encoded = text.encode("utf-8")
+                if len(encoded) > _MAX_BYTES:
+                    text = encoded[:_MAX_BYTES].decode("utf-8", errors="ignore")
+                    byte_truncated = True
+            else:
+                # Whole-file read: cap the returned bytes directly off raw (no full re-encode).
+                if len(raw) > _MAX_BYTES:
+                    raw = raw[:_MAX_BYTES]
+                    byte_truncated = True
+                text = raw.decode("utf-8", errors="replace")
 
             notes: list[str] = []
             if offset_past_eof:
                 notes.append("[... offset is beyond the end of the file; no lines returned ...]")
-            if truncated:
-                notes.append("[... output truncated at 100KB ...]")
+            if slice_note:
+                notes.append(slice_note)
+            if byte_truncated:
+                notes.append(
+                    "[... output truncated at 100KB; re-read with offset/limit to page "
+                    "through the rest ...]"
+                )
             if notes:
                 text = (text + "\n\n" if text else "") + "\n".join(notes)
 
-            return ToolResult.ok(text, data={"path": str(resolved), "truncated": truncated})
+            return ToolResult.ok(
+                text,
+                data={
+                    "path": str(resolved),
+                    # `truncated` = the output is incomplete for ANY reason (byte cap OR a slice
+                    # that stopped before EOF), so a data-only client sees the same signal the
+                    # model reads in the markers. `byte_truncated` keeps the precise cap meaning.
+                    "truncated": byte_truncated or slice_note is not None,
+                    "byte_truncated": byte_truncated,
+                    "total_lines": total_lines,
+                },
+            )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to read {path!r}: {exc}")
