@@ -76,4 +76,26 @@ def redact_secrets(text: str) -> tuple[str, int]:
     return text, count
 
 
-__all__ = ["redact_secrets"]
+def strip_url_credentials(url: str | None) -> str | None:
+    """Mask any ``user:password@`` userinfo in a URL's authority.
+
+    So an endpoint URL with embedded credentials (RFC-3986 userinfo, e.g.
+    ``https://user:TOKEN@host/v1``) is never displayed or serialized verbatim — the host
+    and rest of the URL are preserved, only the credentials are masked to ``***@``. Returns
+    the input unchanged when there is no userinfo or it cannot be parsed. (audit3 #7)
+    """
+    if not url or "@" not in url:
+        return url
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(url)
+        if "@" not in parts.netloc:
+            return url
+        host = parts.netloc.rsplit("@", 1)[1]
+        return urlunsplit(parts._replace(netloc=f"***@{host}"))
+    except Exception:  # noqa: BLE001 — redaction must never raise; fall back to the input
+        return url
+
+
+__all__ = ["redact_secrets", "strip_url_credentials"]

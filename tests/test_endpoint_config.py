@@ -41,6 +41,16 @@ def test_explicit_kwargs_override_settings() -> None:
     assert provider.api_base == "http://from-kwarg/v1"
 
 
+def test_api_key_not_forwarded_for_cloud_model_without_api_base() -> None:
+    # audit3 #6: with no api_base (a bare cloud model), a configured api_key must NOT be
+    # forwarded — litellm reads the real key from OPENAI_API_KEY; a stale ZAKCODE_API_KEY
+    # shadowing it would break the config-only cloud switch with a spurious AuthError.
+    s = Settings(default_model="openai/gpt-4o", api_key="sk-stale-local-dummy")
+    provider = LiteLLMProvider(s)
+    kwargs = provider._build_kwargs([{"role": "user", "content": "hi"}], None)
+    assert "api_key" not in kwargs
+
+
 def test_endpoint_flows_into_request_kwargs() -> None:
     """A configured api_base/api_key must appear in the kwargs sent to litellm."""
     s = Settings(

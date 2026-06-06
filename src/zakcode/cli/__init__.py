@@ -37,6 +37,7 @@ from zakcode.config import Settings, load_settings
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
 from zakcode.providers.text_tools import defang_untrusted
+from zakcode.secrets import strip_url_credentials
 from zakcode.version import __version__
 
 if TYPE_CHECKING:
@@ -73,7 +74,7 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = [
         ("Model", settings.default_model),
         ("Provider", settings.provider),
-        ("API base", settings.api_base or "(default for provider)"),
+        ("API base", strip_url_credentials(settings.api_base) or "(default for provider)"),
         ("Fallback model", settings.fallback_model or "(none)"),
         ("Temperature", str(settings.temperature)),
         ("Ollama base URL", settings.ollama_base_url),

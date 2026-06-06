@@ -190,6 +190,14 @@ async def test_raw_vendor_exception_never_leaks(
     assert not isinstance(ei.value, VendorBoom)
 
 
+def test_map_error_redacts_credentials_from_message() -> None:
+    # audit3 #8: a vendor exception that embeds a credential-shaped token must be scrubbed
+    # before the ProviderError (which is displayed/logged) carries it.
+    err = Exception("auth failed for api_key=sk-supersecretvalue1234567890 at gateway")
+    mapped = LiteLLMProvider._map_error(err)
+    assert "sk-supersecretvalue1234567890" not in str(mapped)
+
+
 def test_map_error_falls_back_to_name_when_classes_unresolved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

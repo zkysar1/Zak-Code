@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
-from zakcode.secrets import redact_secrets
+from zakcode.secrets import redact_secrets, strip_url_credentials
+
+
+def test_strip_url_credentials_masks_userinfo() -> None:
+    # audit3 #7: an api_base with embedded user:pass@ must be masked for display/serialization,
+    # preserving the host and path.
+    masked = strip_url_credentials("https://user:s3cret-token@gateway.example.com:8443/v1")
+    assert masked is not None
+    assert "s3cret-token" not in masked and "user" not in masked
+    assert "gateway.example.com:8443/v1" in masked
+    # URLs without userinfo (and None) pass through unchanged.
+    assert strip_url_credentials("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1"
+    assert strip_url_credentials(None) is None
 
 
 def test_redacts_openai_style_key() -> None:

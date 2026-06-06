@@ -43,6 +43,7 @@ from zakcode.providers.base import (
     ToolCall,
 )
 from zakcode.providers.registry import get_capabilities
+from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
 
 # Drop kwargs unsupported by a given backend (e.g. temperature on some models)
@@ -400,16 +401,20 @@ class LiteLLMProvider(Provider):
         # carries through any server-suggested retry delay. An unknown exception
         # always degrades to RequestFailed — a raw vendor exception never leaks.
         retry_after = cls._extract_retry_after(exc)
+        # Scrub credential-shaped text (e.g. a gateway api_base with embedded creds, or a
+        # backend echoing a token) from the vendor message BEFORE it propagates to any
+        # display / log / HTTP error body / traceback. (audit3 #8 / GUARDRAILS §6)
+        message = redact_secrets(str(exc))[0]
 
         if cls._is_a(exc, _LiteLLMAuthError, "AuthenticationError") or cls._is_a(
             exc, _LiteLLMPermissionError, "PermissionDeniedError"
         ):
-            return AuthError(str(exc))
+            return AuthError(message)
         if cls._is_a(exc, _LiteLLMContextWindowError, "ContextWindowExceededError"):
-            return ContextWindowExceeded(str(exc))
+            return ContextWindowExceeded(message)
         if cls._is_a(exc, _LiteLLMRateLimitError, "RateLimitError"):
-            return RateLimited(str(exc), retry_after=retry_after)
-        return RequestFailed(str(exc))
+            return RateLimited(message, retry_after=retry_after)
+        return RequestFailed(message)
 
     # ------------------------------------------------------------------
     # Provider interface
@@ -438,8 +443,13 @@ class LiteLLMProvider(Provider):
             call_kwargs["tool_choice"] = "auto"
         if self.api_base is not None:
             call_kwargs["api_base"] = self.api_base
-        if self.api_key is not None:
-            call_kwargs["api_key"] = self.api_key
+            # Only forward api_key ALONGSIDE a custom endpoint — the local/generic-server
+            # case the placeholder key exists for. For a bare cloud model (no api_base),
+            # omit it so litellm reads the REAL key from the standard env var (OPENAI_API_KEY,
+            # ...); a stale ZAKCODE_API_KEY must not shadow it and break the config-only
+            # cloud switch with a spurious AuthError. (audit3 #6)
+            if self.api_key is not None:
+                call_kwargs["api_key"] = self.api_key
         if _is_ollama_model(self.model):
             # Lift Ollama's tiny default context window to the model's real one (clamped),
             # so the prompt tail is not silently truncated. Gated on the Ollama prefix —

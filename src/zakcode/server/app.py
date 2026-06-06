@@ -48,6 +48,7 @@ from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
+from zakcode.secrets import strip_url_credentials
 from zakcode.server.wire import (
     ChatRequest,
     ChatResponse,
@@ -206,6 +207,10 @@ def create_app(
         # belt-and-suspenders in case that field convention is ever changed.
         data = resolved_settings.model_dump(mode="json")
         data.pop("api_key", None)
+        # api_base may carry RFC-3986 userinfo (user:pass@host); mask it so /config never
+        # serializes embedded credentials. api_key is already excluded above. (audit3 #7)
+        if data.get("api_base"):
+            data["api_base"] = strip_url_credentials(data["api_base"])
         return data
 
     @app.get("/tools")
