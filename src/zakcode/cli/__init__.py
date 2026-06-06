@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import ipaddress
 import os
 from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
@@ -946,6 +947,23 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
     _shutdown_session_loop(loop)
 
 
+def _is_loopback_host(host: str) -> bool:
+    """True if ``host`` only reaches the local machine (so an unauthenticated bind is safe).
+
+    Parses the address with :mod:`ipaddress` so the whole ``127.0.0.0/8`` range and every IPv6
+    loopback spelling are accepted, while ``0.0.0.0`` / ``::`` (all interfaces) and lookalike
+    hostnames (``127.com``, ``127.0.0.1.evil.com``) are correctly NOT loopback. A non-IP host
+    is treated as non-loopback — fail-safe: the bind guard then demands a token or ``--insecure``.
+    """
+    if host == "localhost":
+        return True
+    candidate = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
@@ -956,6 +974,11 @@ def serve(
         "-w",
         help="Workspace root the served mind loads identity/rules/memory/skills from.",
     ),
+    insecure: bool = typer.Option(
+        False,
+        "--insecure",
+        help="Allow binding a non-loopback host with NO auth token (unauthenticated exposure).",
+    ),
 ) -> None:
     """Run the Zak Code HTTP API server (FastAPI over the same core).
 
@@ -964,6 +987,11 @@ def serve(
     served mind at one customer env (one container per env); without it the server uses the
     configured workspace root (``ZAKCODE_WORKSPACE_ROOT`` / cwd). It is a pointer, not a
     behavior toggle.
+
+    Auth: set ``ZAKCODE_AUTH_TOKEN`` to require ``Authorization: Bearer <token>`` on every
+    request (browsers authenticate the WS via the ``Sec-WebSocket-Protocol: bearer, <token>``
+    subprotocol). Without a token the server is unauthenticated, so binding a non-loopback
+    ``--host`` is refused unless you pass ``--insecure`` (acknowledging the exposure).
     """
     try:
         import uvicorn
@@ -976,13 +1004,26 @@ def serve(
         )
         raise typer.Exit(code=1) from exc
 
-    fastapi_app = (
-        create_app(settings=load_settings(workspace_root=workspace))
-        if workspace is not None
-        else create_app()
+    # Resolve settings once (also drives the bind guard); only PASS them to create_app when a
+    # workspace was given, so --workspace stays a pointer and the no-workspace path resolves
+    # settings inside the server from env (unchanged contract).
+    resolved_settings = (
+        load_settings(workspace_root=workspace) if workspace is not None else load_settings()
     )
+    if not _is_loopback_host(host) and not resolved_settings.auth_token and not insecure:
+        console.print(
+            f"[red]Refusing to bind non-loopback host {host!r} without authentication.[/red]\n"
+            "Set [bold]ZAKCODE_AUTH_TOKEN[/bold] to require a bearer token, or pass "
+            "[bold]--insecure[/bold] to expose the server unauthenticated (not recommended)."
+        )
+        raise typer.Exit(code=1)
+
+    fastapi_app = create_app(settings=resolved_settings) if workspace is not None else create_app()
+    auth_note = " [auth: on]" if resolved_settings.auth_token else ""
     where = f" (mind workspace: {workspace})" if workspace is not None else ""
-    console.print(f"[bold]Zak Code[/bold] {__version__} — serving on http://{host}:{port}{where}")
+    console.print(
+        f"[bold]Zak Code[/bold] {__version__} — serving on http://{host}:{port}{where}{auth_note}"
+    )
     uvicorn.run(fastapi_app, host=host, port=port)
 
 

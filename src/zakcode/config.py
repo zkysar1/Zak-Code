@@ -13,11 +13,13 @@ pydantic reserves the bare name ``model``.
 
 from __future__ import annotations
 
+import json
 from enum import IntEnum
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, ValidationInfo, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class PermissionTier(IntEnum):
@@ -112,16 +114,69 @@ class Settings(BaseSettings):
     permission_mode: str = Field(
         default="ask", description="One of: ask | acceptEdits | allow | deny."
     )
-    denied_commands: list[str] = Field(
+    denied_commands: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         description=(
             "Extra operator deny regexes (case-insensitive) appended to the built-in "
-            "dangerous-command blocklist; they only ever tighten the verdict."
+            "dangerous-command blocklist; they only ever tighten the verdict. From an env "
+            "var: one regex per line (regexes may contain commas/spaces), or a JSON array."
         ),
     )
     workspace_root: Path = Field(
         default_factory=Path.cwd, description="Root directory the agent operates within."
     )
+
+    # ── Server (HTTP) auth + multi-tenant hardening ──────────────────────────
+    # When set, the FastAPI server (``zakcode serve``) requires every request to carry
+    # ``Authorization: Bearer <auth_token>``; ``GET /health`` is the only exemption. Browsers
+    # (which cannot set a handshake Authorization header) authenticate the WebSocket via the
+    # ``Sec-WebSocket-Protocol: bearer, <token>`` subprotocol — NOT a ``?token=`` query param,
+    # which would land in access logs. When unset, the server is unauthenticated and ``serve``
+    # refuses to bind a non-loopback host without an explicit ``--insecure`` opt-in.
+    # ``exclude=True`` keeps the token out of every ``model_dump()`` (e.g. ``GET /config``).
+    auth_token: str | None = Field(
+        default=None,
+        exclude=True,
+        description="Bearer token required by the HTTP server when set (else unauthenticated).",
+    )
+    # Optional allowlist for the per-request ``model`` override on /chat, /chat/stream and
+    # /complete. When non-empty, a request whose ``model`` is not listed is rejected (400),
+    # so a client cannot route prompts/cost to an arbitrary provider the host has creds for.
+    # Empty (default) = no restriction. From an env var: comma- or whitespace-separated model
+    # strings (e.g. ``ZAKCODE_ALLOWED_MODELS=openai/gpt-4o,ollama_chat/qwen2.5:3b``) or a JSON
+    # array. (``NoDecode`` + the validator below; a bare ``list[str]`` would demand JSON and a
+    # plain value would crash settings load.)
+    allowed_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="If non-empty, the only model strings a request may override to.",
+    )
+
+    @field_validator("denied_commands", "allowed_models", mode="before")
+    @classmethod
+    def _parse_list_from_env(cls, value: object, info: ValidationInfo) -> object:
+        """Accept a list, a JSON array string, or a plain delimited string from an env var.
+
+        ``NoDecode`` hands us the raw env string (pydantic would otherwise require JSON and
+        crash on a plain value). A list passes through unchanged (programmatic construction).
+        ``denied_commands`` holds regexes that may contain commas/spaces, so it splits on
+        NEWLINES only; ``allowed_models`` holds simple ids, so it splits on commas/whitespace.
+        A value that looks like a JSON array is parsed as one for either field.
+        """
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return parsed
+        if info.field_name == "denied_commands":
+            return [line.strip() for line in text.splitlines() if line.strip()]
+        return [part.strip() for part in text.replace(",", " ").split() if part.strip()]
 
     # ── Cross-session memory (opt-in via Agent(enable_memory=True)) ──────────
     memory_db_path: str | None = Field(

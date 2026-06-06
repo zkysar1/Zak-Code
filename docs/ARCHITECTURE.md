@@ -169,6 +169,8 @@ Four distinct mechanisms, each for a different job:
 - `GET /config` / `PATCH /config` — read and update non-secret settings.
 - `GET /health` — liveness.
 
+**Auth & multi-tenant hardening.** The server is unauthenticated by default and `zakcode serve` binds `127.0.0.1`, so the loopback-dev posture is unchanged. For hosted/multi-tenant use (e.g. one container per customer env behind a router), set `ZAKCODE_AUTH_TOKEN`: every route except `GET /health` then requires `Authorization: Bearer <token>` (constant-time compared), enforced by an HTTP middleware that is **only registered when a token is configured**. The WebSocket authenticates the handshake before `accept()`, taking the token from the `Authorization` header or, for browsers (which cannot set handshake headers), the `Sec-WebSocket-Protocol: bearer, <token>` subprotocol — deliberately **not** a `?token=` query param, which would be persisted in uvicorn's access log. `serve` **refuses a non-loopback `--host`** when no token is set unless `--insecure` is passed. An optional `ZAKCODE_ALLOWED_MODELS` allowlist rejects (400) any per-request `model` override not on the list. The token is `exclude=True`, so it never appears in `GET /config`.
+
 All surfaces (CLI in-process, SSE, WS) emit the **identical `AgentEvent` stream**, so a future web/IDE client is a thin renderer, never a fork of agent logic.
 
 ## Config & permission model

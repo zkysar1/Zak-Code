@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -40,8 +41,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import pydantic
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from zds_llm_provider import complete_structured, schema_error
@@ -77,6 +78,58 @@ logger = logging.getLogger("zakcode.server")
 #: How long the WebSocket permission bridge waits for a client's approval before
 #: failing closed (deny-once). Bounds a stuck/disconnected client from hanging a turn.
 APPROVAL_TIMEOUT_SECONDS = 120.0
+
+#: WebSocket close code for an unauthenticated handshake (RFC 6455 policy violation).
+WS_UNAUTHORIZED_CODE = 1008
+
+#: The only HTTP path served without a bearer token when auth is enabled (liveness probes
+#: from a load balancer / orchestrator must not need a credential).
+_AUTH_EXEMPT_PATHS = frozenset({"/health"})
+
+
+def _extract_bearer(header: str | None) -> str | None:
+    """Return the token from an ``Authorization: Bearer <token>`` header, or ``None``.
+
+    Tolerant of casing/whitespace in the scheme; returns ``None`` for a missing header or
+    any non-``Bearer`` scheme so the caller treats it as unauthenticated (never raises).
+    """
+    if not header:
+        return None
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    token = token.strip()
+    return token or None
+
+
+def _token_matches(provided: str | None, expected: str) -> bool:
+    """Constant-time compare of a presented token against the configured one.
+
+    ``hmac.compare_digest`` avoids leaking the token length/content via timing. A missing
+    presented token is rejected without comparing. Both sides are compared as UTF-8 *bytes*:
+    the str form of ``compare_digest`` raises ``TypeError`` on non-ASCII input, which would
+    turn a malformed client token into a 500 instead of a clean rejection.
+    """
+    if not provided:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _subprotocol_token(header: str | None) -> str | None:
+    """Extract a bearer token offered as ``Sec-WebSocket-Protocol: bearer, <token>``.
+
+    Browsers cannot set an ``Authorization`` header on a WebSocket handshake, but they CAN
+    offer subprotocols. The client offers exactly two — ``bearer`` and the token — and the
+    server echoes ``bearer`` on accept. This keeps the token out of the URL (and therefore
+    out of uvicorn's access log) unlike a ``?token=`` query param. Returns ``None`` unless the
+    header is precisely ``bearer, <token>``.
+    """
+    if not header:
+        return None
+    parts = [p.strip() for p in header.split(",") if p.strip()]
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
 
 
 class AgentLike(Protocol):
@@ -216,6 +269,34 @@ def create_app(
         summary="Vendor-agnostic agentic coding engine over HTTP.",
     )
 
+    # ── auth (opt-in; inert and zero-overhead when no token is configured) ───────
+    # When an auth token is set, EVERY HTTP request (except /health) must carry a matching
+    # ``Authorization: Bearer`` header. The middleware is only registered when a token
+    # exists, so the unauthenticated loopback-dev path is byte-for-byte unchanged. NOTE:
+    # http middleware never sees the ``websocket`` ASGI scope, so the WS route authenticates
+    # itself in-handler (below). The bundled web client at ``/`` is NOT exempt: enabling auth
+    # means an external front-end (holding the token) is the intended interface.
+    auth_token = resolved_settings.auth_token
+    if auth_token:
+
+        @app.middleware("http")
+        async def _require_bearer(request: Request, call_next: Callable) -> Any:
+            if request.url.path in _AUTH_EXEMPT_PATHS:
+                return await call_next(request)
+            presented = _extract_bearer(request.headers.get("authorization"))
+            if not _token_matches(presented, auth_token):
+                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    def _check_model(model: str | None) -> None:
+        """Reject a per-request model override that is not in the operator allowlist.
+
+        No-op when the allowlist is empty (the default) or no override was supplied.
+        """
+        allowed = resolved_settings.allowed_models
+        if model and allowed and model not in allowed:
+            raise HTTPException(status_code=400, detail=f"model {model!r} is not allowed")
+
     # Session ids with a turn currently in flight. Two overlapping turns on one
     # session would both mutate Session.messages and race on store.save (the store
     # is last-writer-wins, with no cross-request lock), corrupting the transcript —
@@ -316,6 +397,7 @@ def create_app(
 
     @app.post("/chat")
     async def chat(request: ChatRequest) -> ChatResponse:
+        _check_model(request.model)
         session = _get_or_create_session(request.session_id, request.model)
         _claim_session(session)
         try:
@@ -328,6 +410,7 @@ def create_app(
 
     @app.post("/chat/stream")
     async def chat_stream(request: ChatRequest) -> EventSourceResponse:
+        _check_model(request.model)
         session = _get_or_create_session(request.session_id, request.model)
         _claim_session(session)
         # Build the agent INSIDE a guard: the factory can raise (e.g. a bad request.model
@@ -365,6 +448,7 @@ def create_app(
         error or schema-invalid output (after the bounded repair) -> 502 with a
         ``{error, detail, raw_text}`` body. This endpoint never creates or touches a session.
         """
+        _check_model(request.model)
         try:
             messages = request.to_messages()
         except ValueError as exc:
@@ -415,7 +499,26 @@ def create_app(
 
     @app.websocket("/ws/{session_id}")
     async def ws_chat(websocket: WebSocket, session_id: str) -> None:
-        await websocket.accept()
+        # Authenticate the handshake BEFORE accepting. http middleware never runs for the
+        # websocket scope, so the token is checked here. The token comes from the
+        # ``Authorization`` header (server-to-server clients, e.g. a reverse proxy) or, for
+        # browsers that cannot set that header, the ``Sec-WebSocket-Protocol: bearer, <token>``
+        # subprotocol. We deliberately do NOT read a ``?token=`` query param: uvicorn logs the
+        # request path+query, so a token there would be persisted in the access log. Reject by
+        # closing before accept → the client sees a failed handshake (HTTP 403).
+        if auth_token:
+            presented = _extract_bearer(websocket.headers.get("authorization"))
+            selected_subprotocol: str | None = None
+            if presented is None:
+                presented = _subprotocol_token(websocket.headers.get("sec-websocket-protocol"))
+                if presented is not None:
+                    selected_subprotocol = "bearer"  # echo only what the client offered
+            if not _token_matches(presented, auth_token):
+                await websocket.close(code=WS_UNAUTHORIZED_CODE)
+                return
+            await websocket.accept(subprotocol=selected_subprotocol)
+        else:
+            await websocket.accept()
         try:
             session = resolved_store.load(session_id)
         except SessionNotFound:
@@ -458,8 +561,12 @@ def create_app(
             except asyncio.CancelledError:
                 await send({"event": "status", "message": "interrupted"})
                 raise
-            except Exception as exc:  # noqa: BLE001 — surface, never crash the socket
-                await send({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+            except Exception:  # noqa: BLE001 — surface generically, never crash the socket
+                # Log the real detail server-side; send the client a GENERIC frame so a
+                # raw exception string (which may echo filesystem paths / internals) never
+                # crosses the wire. (RISKS.md: WS info-leak) The socket stays alive.
+                logger.exception("turn failed for session %s", session.id)
+                await send({"type": "error", "detail": "internal error"})
             finally:
                 # Release the per-session reservation in its own finally so a save error
                 # cannot strand it (mirrors /chat/stream). (audit2 #4/#5)
