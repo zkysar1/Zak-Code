@@ -96,7 +96,10 @@ class EditFileTool(Tool):
 
         try:
             if not resolved.exists():
-                return ToolResult.error(f"File not found: {path}")
+                return ToolResult.error(
+                    f"File not found: {path}",
+                    fix="create it with write_file first, or check the path with list_dir/glob.",
+                )
             if resolved.is_dir():
                 return ToolResult.error(f"Path is a directory, not a file: {path}")
 
@@ -121,7 +124,11 @@ class EditFileTool(Tool):
 
             count = text.count(old_string)
             if count == 0:
-                return ToolResult.error(f"'old_string' not found in {path}")
+                return ToolResult.error(
+                    f"'old_string' not found in {path}",
+                    fix="re-read the file (read_file) and copy old_string exactly, including "
+                    "whitespace and indentation.",
+                )
             if count > 1 and not replace_all:
                 return ToolResult.error(
                     f"Found {count} occurrences of 'old_string' in {path}; pass "

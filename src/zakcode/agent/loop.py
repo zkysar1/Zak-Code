@@ -126,6 +126,38 @@ _CTX_CLOSE = "</injected_context>"
 _CTX_SENTINEL_RE = re.compile(r"</?\s*injected_context", re.IGNORECASE)
 
 
+def _append_rail(output: str, *, hint: str | None, fix: str | None) -> str:
+    """Append an agent-facing next-step (``Hint:``) or remedy (``Fix:``) line to a result.
+
+    ``fix`` wins over ``hint`` (an error's remedy matters more than a success suggestion).
+    Kept ASCII and on its own trailing line so a small model can cheaply parse the next
+    action it should take. No-op when neither is set.
+    """
+    line = f"Fix: {fix}" if fix else (f"Hint: {hint}" if hint else None)
+    if line is None:
+        return output
+    return f"{output}\n{line}" if output else line
+
+
+def _denial_remedy(tier: PermissionTier | None) -> str:
+    """Name the concrete way to grant a denied tool, keyed by its required permission tier.
+
+    Turns a dead-end ("Permission denied") into a recoverable, named action — the operator
+    (or an outer harness) sees exactly which permission mode unblocks the call.
+    """
+    if tier is PermissionTier.WORKSPACE_WRITE:
+        return (
+            "this needs workspace-write -- run with permission_mode 'acceptEdits' (or 'allow'), "
+            "or approve it for the session."
+        )
+    if tier is PermissionTier.DANGER_FULL_ACCESS:
+        return (
+            "this needs full access -- run with permission_mode 'allow', or approve it when "
+            "prompted."
+        )
+    return "grant the required permission, or approve it when prompted."
+
+
 def _fence_injected_context(texts: list[str]) -> str:
     """Defang + fence PRE_LLM_CALL contributions into one untrusted-context block."""
     zwsp = "​"  # zero-width space: neutralizes a forged fence without hiding bytes
@@ -415,11 +447,14 @@ class AgentLoop:
         if self.permission_policy is not None:
             allowed, reason = await self.permission_policy.authorize(spec, call.arguments)
             if not allowed:
+                remedy = _denial_remedy(spec.required_permission if spec else None)
                 return ToolResultBlock(
                     tool_use_id=call.id,
-                    output=f"Permission denied for {call.name!r}: {reason}",
+                    output=_append_rail(
+                        f"Permission denied for {call.name!r}: {reason}", hint=None, fix=remedy
+                    ),
                     is_error=True,
-                    data={"permission_denied": True, "reason": reason},
+                    data={"permission_denied": True, "reason": reason, "fix": remedy},
                 )
 
         arguments = call.arguments
@@ -478,11 +513,19 @@ class AgentLoop:
         if post.message:
             output = f"{output}\n[hook] {post.message}" if output else f"[hook] {post.message}"
 
+        # Surface the tool's next-step rail (Hint: on success / Fix: on error) into the
+        # model-facing text, and mirror it into the structured data for non-model clients.
+        output = _append_rail(output, hint=tool_res.hint, fix=tool_res.fix)
+        data = tool_res.data
+        if tool_res.hint or tool_res.fix:
+            rail = {k: v for k, v in (("hint", tool_res.hint), ("fix", tool_res.fix)) if v}
+            data = {**(data or {}), **rail}
+
         return ToolResultBlock(
             tool_use_id=call.id,
             output=output,
             is_error=tool_res.is_error,
-            data=tool_res.data,
+            data=data,
         )
 
     async def _try_harness_verify(

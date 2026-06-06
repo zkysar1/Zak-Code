@@ -158,21 +158,35 @@ class ToolResult(BaseModel):
 
     ``output`` is the text the model sees; ``data`` optionally carries structured results
     losslessly alongside it.
+
+    ``hint`` and ``fix`` are the optional *rails* a tool can hand the model: ``hint`` is a
+    suggested next step on success (e.g. "saved -- reply and end"), ``fix`` is the concrete
+    remedy on an error (e.g. "re-read the file; old_string must match exactly"). The agent
+    loop renders whichever is set as a trailing ``Hint:`` / ``Fix:`` line in the model-facing
+    text (and mirrors it into the result's structured data). Naming the next action is the
+    single biggest help for a small model, which is otherwise weak at planning the next step
+    and at recovering from errors.
     """
 
     output: str = ""
     is_error: bool = False
     data: dict[str, Any] | None = None
+    hint: str | None = None
+    fix: str | None = None
 
     @classmethod
-    def ok(cls, output: str, *, data: dict[str, Any] | None = None) -> ToolResult:
-        """A successful result."""
-        return cls(output=output, is_error=False, data=data)
+    def ok(
+        cls, output: str, *, data: dict[str, Any] | None = None, hint: str | None = None
+    ) -> ToolResult:
+        """A successful result, optionally with a next-step ``hint``."""
+        return cls(output=output, is_error=False, data=data, hint=hint)
 
     @classmethod
-    def error(cls, message: str, *, data: dict[str, Any] | None = None) -> ToolResult:
-        """An error result (still a value, never an exception)."""
-        return cls(output=message, is_error=True, data=data)
+    def error(
+        cls, message: str, *, data: dict[str, Any] | None = None, fix: str | None = None
+    ) -> ToolResult:
+        """An error result (still a value, never an exception), optionally with a ``fix``."""
+        return cls(output=message, is_error=True, data=data, fix=fix)
 
 
 class Tool(ABC):

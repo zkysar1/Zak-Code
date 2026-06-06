@@ -80,6 +80,13 @@ class RememberTool(Tool):
         return ToolResult.ok(
             f"Remembered (id={record.id}).{note}",
             data={"id": record.id, "kind": record.kind, "tags": record.tags},
+            # Rail: a small model often keeps looping after a successful write instead of
+            # ending the turn (observed: ~5-min remember turns on a 3B). Name the next step
+            # so it terminates cleanly once the memory is saved.
+            hint=(
+                "Memory saved. If nothing else is needed, reply briefly to the user and "
+                "end the turn."
+            ),
         )
 
 

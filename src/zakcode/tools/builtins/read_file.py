@@ -78,7 +78,11 @@ class ReadFileTool(Tool):
 
         try:
             if not resolved.exists():
-                return ToolResult.error(f"File not found: {path}")
+                return ToolResult.error(
+                    f"File not found: {path}",
+                    fix="check the path -- use list_dir or glob to find it; paths resolve "
+                    "relative to the workspace root.",
+                )
             if resolved.is_dir():
                 return ToolResult.error(f"Path is a directory, not a file: {path}")
 
