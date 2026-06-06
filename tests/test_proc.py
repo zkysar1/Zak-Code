@@ -12,7 +12,8 @@ import time
 
 import pytest
 
-from zakcode.tools.builtins._proc import CommandTimeout, _terminate_tree, run_capturing
+from zakcode._subprocess import terminate_process_tree
+from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 
 
 def _sleep_cmd(seconds: int) -> str:
@@ -54,5 +55,5 @@ async def test_terminate_tree_reaps_a_running_child() -> None:
         _sleep_cmd(30), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
     )
     assert proc.returncode is None  # alive
-    await _terminate_tree(proc)
+    await terminate_process_tree(proc)
     assert proc.returncode is not None  # killed + reaped, not orphaned

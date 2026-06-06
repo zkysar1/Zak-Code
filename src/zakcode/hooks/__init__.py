@@ -28,6 +28,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from zakcode._subprocess import new_group_kwargs, terminate_process_tree
+
 logger = logging.getLogger("zakcode.hooks")
 
 #: Default per-hook timeout (seconds). A hook exceeding it is killed and treated
@@ -353,6 +355,7 @@ class HookManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
             logger.warning("context hook %r failed to start: %s", spec.command, exc)
@@ -362,10 +365,13 @@ class HookManager:
             stdout, _stderr = await asyncio.wait_for(
                 proc.communicate(stdin_bytes), timeout=spec.timeout
             )
-        except TimeoutError:
-            with _suppress():
-                proc.kill()
-                await proc.wait()
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            # Kill the whole child tree (not just the parent) on timeout, AND on a turn
+            # cancellation — CancelledError is a BaseException that the bare `except Exception`
+            # below would NOT catch, so without this a cancelled turn orphans the hook. (audit4 #2)
+            await terminate_process_tree(proc)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             logger.warning("context hook %r timed out after %ss", spec.command, spec.timeout)
             return None
         except Exception as exc:  # noqa: BLE001 — never propagate a context-hook failure
@@ -409,16 +415,17 @@ class HookManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
             logger.warning("lifecycle hook %r failed to start: %s", spec.command, exc)
             return
         try:
             await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=spec.timeout)
-        except TimeoutError:
-            with _suppress():
-                proc.kill()
-                await proc.wait()
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            await terminate_process_tree(proc)  # tree, not parent-only (audit4 #2)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             logger.warning("lifecycle hook %r timed out after %ss", spec.command, spec.timeout)
         except Exception as exc:  # noqa: BLE001 — never propagate a lifecycle-hook failure
             logger.warning("lifecycle hook %r errored: %s", spec.command, exc)
@@ -455,6 +462,7 @@ class HookManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
             logger.warning("hook %r failed to start: %s", spec.command, exc)
@@ -464,10 +472,10 @@ class HookManager:
             stdout, _stderr = await asyncio.wait_for(
                 proc.communicate(stdin_bytes), timeout=spec.timeout
             )
-        except TimeoutError:
-            with _suppress():
-                proc.kill()
-                await proc.wait()
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            await terminate_process_tree(proc)  # tree, not parent-only (audit4 #2)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             logger.warning("hook %r timed out after %ss", spec.command, spec.timeout)
             return HookResult(
                 decision=HookDecision.WARN,
@@ -518,16 +526,6 @@ class HookManager:
 
 def _msgs(message: str) -> list[str]:
     return [message] if message else []
-
-
-class _suppress:
-    """Tiny context manager that swallows any exception (best-effort cleanup)."""
-
-    def __enter__(self) -> None:
-        return None
-
-    def __exit__(self, *exc: object) -> bool:
-        return True
 
 
 __all__ = [

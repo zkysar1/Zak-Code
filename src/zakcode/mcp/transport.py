@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from zakcode._subprocess import new_group_kwargs, terminate_process_tree
 from zakcode.mcp.jsonrpc import MCPProtocolError
 
 #: How long to wait for a child to exit after we ask it to terminate, before moving on.
@@ -81,6 +82,9 @@ class StdioTransport:
             stderr=asyncio.subprocess.PIPE,
             env=full_env,
             cwd=self._cwd,
+            # Own process group/session: a launcher (npx/uvx) starts the real server as a
+            # grandchild, so close() must be able to kill the whole tree. (audit4 #3)
+            **new_group_kwargs(),
         )
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
@@ -136,10 +140,10 @@ class StdioTransport:
         try:
             await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE_SECONDS)
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
+            # The graceful stdin-close + terminate did not stop it in time; kill the whole
+            # TREE (not just the parent), so a wrapper's grandchild server isn't orphaned
+            # holding ports/locks/credentials. (audit4 #3)
+            await terminate_process_tree(proc)
         # The process has now exited, so the child's stderr is at EOF and the drain
         # task has (or is about to) finish on its own. Cancel + await it to be sure,
         # suppressing CancelledError explicitly — contextlib.suppress(Exception) does

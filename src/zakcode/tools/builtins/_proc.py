@@ -6,61 +6,19 @@ process tree** instead of orphaning grandchildren that hold ports / file locks. 
 previous ``subprocess.run``-via-``asyncio.to_thread`` approach kept no process handle: a
 ``to_thread`` worker can't be interrupted (so a cancel just abandons the thread while the
 child runs on), and ``subprocess.run``'s own timeout terminates only the *parent*, leaving
-the tree alive. The hooks and MCP layers already reap children correctly via
-``create_subprocess_exec`` + kill; this brings the two shell tools — the only other
-subprocess spawns in the repo — in line. (audit3 #3)
+the tree alive. The group-spawn + tree-teardown primitives are shared with the hook runners
+and the MCP transport via :mod:`zakcode._subprocess`. (audit3 #3 / audit4 #2 / #3)
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import os
-import signal
 import subprocess
-import sys
 from typing import Any
 
+from zakcode._subprocess import CommandTimeout, new_group_kwargs, terminate_process_tree
 
-class CommandTimeout(Exception):
-    """Raised by :func:`run_capturing` when the child exceeds its timeout.
-
-    The child's entire process tree has already been killed by the time this propagates.
-    """
-
-
-def _new_group_kwargs() -> dict[str, Any]:
-    """Spawn the child in its own process group/session so the whole tree is killable."""
-    if sys.platform == "win32":
-        # A new process group lets taskkill /T find the tree by the child's PID.
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
-
-
-async def _terminate_tree(proc: asyncio.subprocess.Process) -> None:
-    """Forcibly kill ``proc`` AND its descendants (best-effort), then reap it."""
-    if proc.returncode is not None:
-        return
-    try:
-        if sys.platform == "win32":
-            # taskkill walks and kills the whole tree (/T) forcibly (/F); killing only the
-            # parent (proc.kill) would orphan grandchildren on Windows.
-            killer = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/PID",
-                str(proc.pid),
-                "/T",
-                "/F",
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            await killer.wait()
-        else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        pass  # already gone / race — nothing to reap
-    with contextlib.suppress(Exception):
-        await proc.wait()
+__all__ = ["CommandTimeout", "run_capturing"]
 
 
 async def run_capturing(
@@ -87,7 +45,7 @@ async def run_capturing(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "stdin": stdin,
-        **_new_group_kwargs(),
+        **new_group_kwargs(),
     }
     if shell_command is not None:
         proc = await asyncio.create_subprocess_shell(shell_command, **spawn_kwargs)
@@ -100,7 +58,7 @@ async def run_capturing(
         out_bytes, _ = await asyncio.wait_for(proc.communicate(input=input_bytes), timeout=timeout)
     except (TimeoutError, asyncio.CancelledError) as exc:
         # wait_for cancelled communicate() but the child is still running — kill the tree.
-        await _terminate_tree(proc)
+        await terminate_process_tree(proc)
         if isinstance(exc, asyncio.CancelledError):
             raise  # a turn cancel: propagate after teardown
         raise CommandTimeout from exc

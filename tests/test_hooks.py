@@ -7,8 +7,12 @@ Shell hooks are exercised with tiny throwaway Python scripts invoked via
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 from zakcode.hooks import (
     HookDecision,
@@ -193,6 +197,21 @@ async def test_shell_hook_timeout_is_isolated(tmp_path: Path) -> None:
     assert not result.blocked
     assert result.decision is HookDecision.WARN
     assert "timed out" in result.message
+
+
+async def test_shell_hook_cancellation_tears_down_and_propagates(tmp_path: Path) -> None:
+    # audit4 #2: cancelling a turn mid-hook must tear the hook's child down and re-raise
+    # CancelledError promptly — not swallow it, nor run the 30s command to completion.
+    cmd = _script(tmp_path, "slow2.py", "import time; time.sleep(30)")
+    spec = HookSpec(event=HookEvent.PRE_TOOL_USE, command=cmd, timeout=30)
+    mgr = HookManager([spec])
+    task = asyncio.ensure_future(mgr.run(_payload()))
+    await asyncio.sleep(0.5)  # let the hook child spawn
+    task.cancel()
+    start = time.monotonic()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert time.monotonic() - start < 15  # torn down promptly, not after the full sleep
 
 
 # ── matching & pre-checks ─────────────────────────────────────────────────────
