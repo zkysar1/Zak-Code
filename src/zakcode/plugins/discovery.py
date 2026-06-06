@@ -15,8 +15,18 @@ raises, so one broken plugin can't stop the others (or startup). Discovery does
 trust-gated, by :meth:`~zakcode.plugins.PluginManager.load_into`.
 
 Trust: a plugin participates only if its manifest is ``trusted``. Rather than make
-operators edit each manifest, pass ``trusted_names`` (an allowlist) — any plugin
-named in it is marked trusted at discovery time.
+operators edit each manifest, pass ``trusted_names`` (an allowlist) — a plugin named in
+it is marked trusted at discovery time.
+
+**Origin-aware resolution (security, audit3 #4).** Installed sources (the user config dir
+and entry points) are resolved BEFORE the workspace ``.zakcode/plugins`` dir of the opened
+repo, so a workspace plugin can never shadow — win the name race against — a trusted
+installed plugin (no impersonation). The name-based allowlist still applies to workspace
+plugins (so the documented ``trusted_plugins`` / ``--trusted-plugin`` flow works), but
+because ``ZAKCODE_TRUSTED_PLUGINS`` is a *name* allowlist, trusting a name also trusts a
+same-named plugin in *any* opened repo — so every trusted WORKSPACE plugin is logged with a
+prominent security warning (its code will execute in-process). Scope trust per project and
+review opened-repo plugins; content-pinned trust is a tracked follow-on.
 """
 
 from __future__ import annotations
@@ -164,30 +174,56 @@ def discover_plugins(
     trusted_names: set[str] | None = None,
     include_entry_points: bool = True,
 ) -> tuple[list[Plugin], dict[str, str]]:
-    """Discover all plugins (project + user dirs, then entry points).
+    """Discover all plugins (installed user dir + entry points, THEN the workspace dir).
 
-    Returns ``(plugins, errors)``. Later sources do not override earlier ones by
-    name — the first plugin discovered for a given name wins, and a duplicate is
-    recorded in ``errors``.
+    Returns ``(plugins, errors)``. The first plugin discovered for a given name wins; a
+    duplicate is recorded in ``errors``. Resolution order is security-relevant (audit3 #4):
+    the installed/user sources are resolved BEFORE the workspace ``.zakcode/plugins`` dir so
+    a workspace plugin cannot shadow a trusted installed one, and the workspace dir is
+    discovered WITHOUT the global ``trusted_names`` allowlist so opening an untrusted repo
+    can't auto-trust its plugins. A workspace plugin that shadows an already-seen name is
+    logged as a possible trust-hijack attempt.
     """
     all_plugins: list[Plugin] = []
     all_errors: dict[str, str] = {}
     seen: set[str] = set()
 
-    sources: list[tuple[list[Plugin], dict[str, str]]] = [
-        discover_dir_plugins(d, trusted_names=trusted_names)
-        for d in default_plugin_dirs(workspace_root)
+    dirs = default_plugin_dirs(workspace_root)
+    workspace_dir = dirs[0]  # the opened repo's .zakcode/plugins (least trusted)
+    user_dirs = dirs[1:]  # the operator's own config dir(s)
+
+    # (kind, plugins, errors) — installed/user sources first, the opened-repo workspace dir
+    # LAST, so a workspace plugin can never shadow a trusted installed plugin of the same name.
+    ordered: list[tuple[str, tuple[list[Plugin], dict[str, str]]]] = [
+        ("user", discover_dir_plugins(d, trusted_names=trusted_names)) for d in user_dirs
     ]
     if include_entry_points:
-        sources.append(discover_entrypoint_plugins(trusted_names=trusted_names))
+        ordered.append(("entry-point", discover_entrypoint_plugins(trusted_names=trusted_names)))
+    ordered.append(("workspace", discover_dir_plugins(workspace_dir, trusted_names=trusted_names)))
 
-    for plugins, errors in sources:
+    for kind, (plugins, errors) in ordered:
         all_errors.update(errors)
         for plugin in plugins:
-            if plugin.manifest.name in seen:
-                all_errors[plugin.manifest.name] = "duplicate plugin name (first one wins)"
+            name = plugin.manifest.name
+            if name in seen:
+                all_errors[name] = "duplicate plugin name (first one wins)"
+                if kind == "workspace":
+                    logger.warning(
+                        "workspace plugin %r shadows an installed/user plugin of the same "
+                        "name and was ignored (possible trust-hijack attempt)",
+                        name,
+                    )
                 continue
-            seen.add(plugin.manifest.name)
+            # A trusted plugin from the OPENED REPO will run its code in-process; surface it
+            # loudly, since a name-based grant (esp. a persistent ZAKCODE_TRUSTED_PLUGINS) also
+            # trusts a same-named plugin in any repo you open. (audit3 #4)
+            if kind == "workspace" and plugin.manifest.trusted:
+                logger.warning(
+                    "TRUSTED workspace plugin %r (from the opened repo's .zakcode/plugins) "
+                    "will execute as in-process code — ensure you trust this repo's copy",
+                    name,
+                )
+            seen.add(name)
             all_plugins.append(plugin)
     return all_plugins, all_errors
 

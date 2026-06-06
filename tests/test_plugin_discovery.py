@@ -129,3 +129,65 @@ def test_discover_plugins_dedups_by_name(tmp_path: Path) -> None:
     _write_plugin(proj, "dup")
     plugins, errors = discover_plugins(tmp_path, include_entry_points=False)
     assert [p.manifest.name for p in plugins] == ["dup"], errors
+
+
+# ── audit3 #4: workspace plugins are origin-blind no more ─────────────────────
+
+
+def test_trusted_workspace_plugin_logs_security_warning(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    # The documented name-allowlist flow still trusts a workspace plugin, but because the
+    # grant is name-based (a same name in any opened repo would match), trusting an
+    # opened-repo plugin is surfaced with a prominent security warning.
+    import logging
+
+    import zakcode.plugins.discovery as disc
+
+    ws = tmp_path / "ws" / ".zakcode" / "plugins"
+    user = tmp_path / "user"
+    _write_plugin(ws, "blessed")
+    monkeypatch.setattr(disc, "default_plugin_dirs", lambda root: [ws, user])
+    with caplog.at_level(logging.WARNING, logger="zakcode.plugins.discovery"):
+        plugins, _ = discover_plugins(
+            tmp_path, trusted_names={"blessed"}, include_entry_points=False
+        )
+    blessed = next(p for p in plugins if p.manifest.name == "blessed")
+    assert blessed.manifest.trusted is True  # documented allowlist flow preserved
+    assert any(
+        "TRUSTED workspace plugin" in r.message and "blessed" in r.message for r in caplog.records
+    )
+
+
+def test_installed_plugin_wins_over_workspace_shadow(tmp_path: Path, monkeypatch) -> None:
+    # An installed/user plugin of the same name resolves FIRST (wins) and IS trusted; the
+    # workspace shadow is dropped as a duplicate.
+    import zakcode.plugins.discovery as disc
+
+    ws = tmp_path / "ws" / ".zakcode" / "plugins"
+    user = tmp_path / "user"
+    _write_plugin(user, "blessed")
+    _write_plugin(ws, "blessed")
+    monkeypatch.setattr(disc, "default_plugin_dirs", lambda root: [ws, user])
+    plugins, errors = discover_plugins(
+        tmp_path, trusted_names={"blessed"}, include_entry_points=False
+    )
+    blessed = [p for p in plugins if p.manifest.name == "blessed"]
+    assert len(blessed) == 1
+    assert blessed[0].origin == str(user / "blessed")  # the installed one won
+    assert blessed[0].manifest.trusted is True
+    assert errors.get("blessed") == "duplicate plugin name (first one wins)"
+
+
+def test_workspace_plugin_explicit_manifest_trust_is_honored(tmp_path: Path, monkeypatch) -> None:
+    # The per-project consent path still works: a workspace plugin that declares
+    # "trusted": true in its own plugin.json remains trusted.
+    import zakcode.plugins.discovery as disc
+
+    ws = tmp_path / "ws" / ".zakcode" / "plugins"
+    user = tmp_path / "user"
+    _write_plugin(ws, "local", manifest={"trusted": True})
+    monkeypatch.setattr(disc, "default_plugin_dirs", lambda root: [ws, user])
+    plugins, _ = discover_plugins(tmp_path, include_entry_points=False)
+    local = next(p for p in plugins if p.manifest.name == "local")
+    assert local.manifest.trusted is True
