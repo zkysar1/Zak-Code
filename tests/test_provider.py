@@ -180,6 +180,40 @@ async def test_acomplete_with_tools_sends_tool_choice(
     assert captured["tool_choice"] == "auto"
 
 
+async def test_acomplete_forwards_response_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_acompletion(**kwargs: Any) -> _Obj:
+        captured.update(kwargs)
+        return _make_response(content="{}", tool_calls=None)
+
+    monkeypatch.setattr(lp.litellm, "acompletion", fake_acompletion)
+    rf = {"type": "json_object"}
+    await _provider().acomplete([Message.user("go")], response_format=rf)
+    assert captured["response_format"] == rf
+
+
+async def test_acomplete_omits_response_format_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Backward-compat guard: a normal call must NOT send a response_format key (drop-in safe).
+    captured: dict[str, Any] = {}
+
+    async def fake_acompletion(**kwargs: Any) -> _Obj:
+        captured.update(kwargs)
+        return _make_response(content="hi", tool_calls=None)
+
+    monkeypatch.setattr(lp.litellm, "acompletion", fake_acompletion)
+    await _provider().acomplete([Message.user("go")])
+    assert "response_format" not in captured
+
+
+def test_build_kwargs_response_format_present_and_absent() -> None:
+    p = _provider()
+    wire = [{"role": "user", "content": "x"}]
+    assert "response_format" not in p._build_kwargs(wire, None)
+    rf = {"type": "json_schema", "json_schema": {"name": "o", "schema": {}, "strict": True}}
+    assert p._build_kwargs(wire, None, response_format=rf)["response_format"] == rf
+
+
 async def test_acomplete_parses_tool_calls_dict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

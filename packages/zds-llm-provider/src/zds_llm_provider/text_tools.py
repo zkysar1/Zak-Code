@@ -680,8 +680,15 @@ class TextToolCallingProvider(Provider):
         *,
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> LLMResult:
+        # Fold structured-output into kwargs ONLY when requested, so the wrapper stays a
+        # transparent passthrough for inner providers whose signature predates response_format
+        # — a None must never be injected into every inner call (it would break a minimal
+        # Provider that accepts neither response_format nor **kwargs).
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         if not tools:
             return await self.inner.acomplete(messages, system=system, tools=None, **kwargs)
 
@@ -717,6 +724,7 @@ class TextToolCallingProvider(Provider):
         *,
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ProviderStreamEvent]:
         """Stream a turn.
@@ -734,6 +742,9 @@ class TextToolCallingProvider(Provider):
         "falls silent" on the streaming path either (it does on the buffered path
         via :meth:`acomplete`). In strict ``native`` mode it is a pure passthrough.
         """
+        # See acomplete: forward structured-output only when set (transparent passthrough).
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         if self._use_text_mode(tools):
             result = await self.acomplete(messages, system=system, tools=tools, **kwargs)
             if result.text:

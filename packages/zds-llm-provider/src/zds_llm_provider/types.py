@@ -166,12 +166,17 @@ class Provider(ABC):
         *,
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> LLMResult:
         """Run one non-streaming completion and return a normalized :class:`LLMResult`.
 
         ``tools`` are OpenAI-shaped JSON-schema tool definitions (the provider translates
-        them per-backend). Implementations must map backend failures onto the error
+        them per-backend). ``response_format`` is an OpenAI-shaped structured-output request
+        (``{"type": "json_object"}`` or a ``json_schema`` block — see
+        :func:`zds_llm_provider.structured.make_response_format`); a backend that cannot honor
+        it may ignore it, so callers must still VALIDATE the returned text (the kwarg is a
+        request, not a guarantee). Implementations must map backend failures onto the error
         taxonomy above rather than leaking vendor exceptions.
         """
         raise NotImplementedError
@@ -197,6 +202,7 @@ class Provider(ABC):
         *,
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[ProviderStreamEvent]:
         """Stream a completion as a sequence of :data:`ProviderStreamEvent`.
@@ -207,6 +213,10 @@ class Provider(ABC):
         and a done event. This makes streaming work for every provider out of the
         box; a concrete provider should override it with true token streaming.
         """
+        # Forward structured-output only when set, so this default astream stays a transparent
+        # passthrough for a minimal Provider whose acomplete predates response_format.
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         result = await self.acomplete(messages, system=system, tools=tools, **kwargs)
         if result.text:
             yield StreamTextDelta(text=result.text)

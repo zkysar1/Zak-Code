@@ -126,12 +126,15 @@ class ClaudeCodeProvider(Provider):
         *,
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> LLMResult:
         """Format the prompt, invoke the bridge, and normalize the response.
 
         When ``tools`` are supplied, the text tool protocol is appended to the prompt and
         tool calls are recovered from the response text (restricted to offered tools).
+        ``response_format`` is accepted for interface conformance but the text bridge cannot
+        enforce a schema, so it is ignored here — callers must validate the returned text.
         Any exception raised by the bridge is mapped to :class:`RequestFailed` so the
         agent loop never sees a raw bridge error.
         """

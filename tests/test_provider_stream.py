@@ -127,6 +127,23 @@ async def test_text_deltas_across_multiple_chunks(monkeypatch: pytest.MonkeyPatc
     assert events[-1].finish_reason == "stop"
 
 
+async def test_astream_forwards_response_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def _aiter() -> AsyncIterator[Any]:
+        for c in [_chunk(content="hi", finish_reason="stop")]:
+            yield c
+
+    async def _acompletion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return _aiter()
+
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _acompletion)
+    rf = {"type": "json_object"}
+    await _collect(_make_provider().astream(_MSGS, response_format=rf))
+    assert captured["response_format"] == rf
+
+
 async def test_kwargs_request_streaming_with_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 

@@ -149,12 +149,15 @@ class BitNetProvider(Provider):
         *,
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> LLMResult:
         """Translate messages, POST to ``/v1/chat/completions``, normalize the response.
 
         Backend transport and HTTP errors are mapped onto the provider error taxonomy
-        (see the class docstring); vendor exceptions never leak to the agent loop.
+        (see the class docstring); vendor exceptions never leak to the agent loop. A
+        ``response_format`` is forwarded verbatim (OpenAI-compatible); a server that does not
+        support it ignores it, so callers still validate the returned text.
         """
         body: dict[str, Any] = {
             "model": self._model,
@@ -173,6 +176,8 @@ class BitNetProvider(Provider):
         stop = kwargs.get("stop")
         if stop is not None:
             body["stop"] = stop
+        if response_format is not None:
+            body["response_format"] = response_format
 
         url = f"{self._base_url}/v1/chat/completions"
         try:

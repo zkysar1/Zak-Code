@@ -423,6 +423,8 @@ class LiteLLMProvider(Provider):
         self,
         wire_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
+        *,
+        response_format: dict[str, Any] | None = None,
         **kw: Any,
     ) -> dict[str, Any]:
         """Assemble the kwargs handed to ``litellm.acompletion``.
@@ -461,6 +463,12 @@ class LiteLLMProvider(Provider):
                 window = 0
             if window:
                 call_kwargs.setdefault("num_ctx", min(window, _OLLAMA_NUM_CTX_CAP))
+        # Structured-output request. litellm maps response_format per-backend (incl. Ollama's
+        # native ``format``); ``drop_params=True`` means an unsupported backend silently drops
+        # it — so correctness is the caller VALIDATING the result, not this kwarg. setdefault so
+        # an explicit per-call ``kw`` still wins.
+        if response_format is not None:
+            call_kwargs.setdefault("response_format", response_format)
         # Allow per-call overrides (e.g. max_tokens) without re-listing them.
         call_kwargs.update(kw)
         return call_kwargs
@@ -471,10 +479,13 @@ class LiteLLMProvider(Provider):
         *,
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kw: Any,
     ) -> LLMResult:
         wire_messages = self._translate_messages(messages, system)
-        call_kwargs = self._build_kwargs(wire_messages, tools, **kw)
+        call_kwargs = self._build_kwargs(
+            wire_messages, tools, response_format=response_format, **kw
+        )
 
         try:
             response = await litellm.acompletion(**call_kwargs)
@@ -552,6 +563,7 @@ class LiteLLMProvider(Provider):
         *,
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        response_format: dict[str, Any] | None = None,
         **kw: Any,
     ) -> AsyncIterator[ProviderStreamEvent]:
         """Stream a completion as true per-token :data:`ProviderStreamEvent`s.
@@ -566,7 +578,9 @@ class LiteLLMProvider(Provider):
         through the error taxonomy; a raw vendor exception never escapes.
         """
         wire_messages = self._translate_messages(messages, system)
-        call_kwargs = self._build_kwargs(wire_messages, tools, **kw)
+        call_kwargs = self._build_kwargs(
+            wire_messages, tools, response_format=response_format, **kw
+        )
         call_kwargs["stream"] = True
         call_kwargs["stream_options"] = {"include_usage": True}
 

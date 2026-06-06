@@ -107,6 +107,33 @@ async def test_acomplete_forwards_stop_and_per_call_overrides() -> None:
     assert captured["body"]["max_tokens"] == 128
 
 
+async def test_acomplete_forwards_response_format() -> None:
+    captured: dict = {}
+
+    class _CapturingClient(MockClient):
+        async def post(self, url, *, json=None, headers=None):  # noqa: ANN001
+            captured["body"] = json
+            return MockResponse(_chat_response("ok"))
+
+    provider = BitNetProvider(client=_CapturingClient())
+    rf = {"type": "json_object"}
+    await provider.acomplete([Message.user("hi")], response_format=rf)
+    assert captured["body"]["response_format"] == rf
+
+
+async def test_acomplete_omits_response_format_when_none() -> None:
+    captured: dict = {}
+
+    class _CapturingClient(MockClient):
+        async def post(self, url, *, json=None, headers=None):  # noqa: ANN001
+            captured["body"] = json
+            return MockResponse(_chat_response("ok"))
+
+    provider = BitNetProvider(client=_CapturingClient())
+    await provider.acomplete([Message.user("hi")])
+    assert "response_format" not in captured["body"]
+
+
 async def test_acomplete_with_tool_calls() -> None:
     tool_calls = [
         {

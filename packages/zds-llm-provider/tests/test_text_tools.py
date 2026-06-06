@@ -212,6 +212,30 @@ async def test_text_tool_calling_provider_native_passthrough() -> None:
     assert result.tool_calls[0].name == "read_file"
 
 
+async def test_forwards_response_format_to_inner() -> None:
+    # The wrapper must forward response_format to the inner provider on BOTH the tool-less
+    # passthrough and the text-mode path (structured output composes with the text protocol).
+    class _Recording(StubProvider):
+        def __init__(self) -> None:
+            super().__init__(result=LLMResult(text="ok"))
+            self.seen: list[dict | None] = []
+
+        async def acomplete(  # noqa: ANN001
+            self, messages, *, system=None, tools=None, response_format=None, **kw
+        ):
+            self.seen.append(response_format)
+            return self._result
+
+    rf = {"type": "json_object"}
+    inner = _Recording()
+    wrapper = TextToolCallingProvider(inner, mode="text")
+    await wrapper.acomplete([Message.user("hi")], response_format=rf)  # tool-less passthrough
+    await wrapper.acomplete(  # text-mode path (protocol injected)
+        [Message.user("hi")], tools=[_make_tool("read_file")], response_format=rf
+    )
+    assert inner.seen == [rf, rf]
+
+
 async def test_text_tool_calling_provider_auto_salvage() -> None:
     """In auto mode with native support, a stray text tool-call is salvaged."""
     response_text = (
