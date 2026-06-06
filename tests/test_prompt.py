@@ -10,7 +10,7 @@ from zakcode.agent.prompt import (
     MAX_MEMORY_TOTAL_CHARS,
     discover_memory,
 )
-from zakcode.config import load_settings
+from zakcode.config import PermissionTier, load_settings
 from zakcode.tools.base import ConcurrencyClass, ToolSpec
 
 # ── structure ──────────────────────────────────────────────────────────────────
@@ -65,26 +65,48 @@ def test_tool_specs_are_summarized(tmp_path: Path) -> None:
         ToolSpec(
             name="read_file",
             description="Read a file from the workspace.\nSecond line ignored.",
+            parameters={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
         ),
         ToolSpec(
-            name="run_bash",
-            description="Run a shell command.",
-            concurrency=ConcurrencyClass.NEVER_PARALLEL,
+            name="write_file",
+            description="Create or overwrite a file.",
+            parameters={
+                "type": "object",
+                "properties": {"path": {}, "content": {}},
+                "required": ["path", "content"],
+            },
+            required_permission=PermissionTier.WORKSPACE_WRITE,
+            concurrency=ConcurrencyClass.PATH_SCOPED,
         ),
     ]
     prompt = SystemPromptBuilder().build(settings, tools=tools)
 
-    assert "Available tools:" in prompt
-    assert "read_file: Read a file from the workspace." in prompt
-    assert "run_bash: Run a shell command." in prompt
-    # Only the first description line is summarized (dense tool descriptions).
+    assert "Available tools" in prompt
+    # Required args render as a signature; only the first description line is kept.
+    assert "read_file(path): Read a file from the workspace." in prompt
+    assert "write_file(path, content): Create or overwrite a file." in prompt
     assert "Second line ignored." not in prompt
+    # Grouped by what the tool does (permission tier), least-privileged first.
+    assert "Inspect (read-only)" in prompt
+    assert "Edit (writes to the workspace)" in prompt
+    assert prompt.index("read_file(path)") < prompt.index("write_file(path, content)")
+
+
+def test_tool_without_required_args_renders_bare_name(tmp_path: Path) -> None:
+    settings = load_settings(workspace_root=tmp_path)
+    tools = [ToolSpec(name="ping", description="Health check.")]  # no required params
+    prompt = SystemPromptBuilder().build(settings, tools=tools)
+    assert "- ping: Health check." in prompt  # no empty parentheses
 
 
 def test_no_tools_omits_tool_section(tmp_path: Path) -> None:
     settings = load_settings(workspace_root=tmp_path)
     prompt = SystemPromptBuilder().build(settings, tools=[])
-    assert "Available tools:" not in prompt
+    assert "Available tools" not in prompt
 
 
 def test_extra_context_lands_in_dynamic_section(tmp_path: Path) -> None:

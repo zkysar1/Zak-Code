@@ -3,7 +3,9 @@
 The system prompt is assembled in two tiers separated by :data:`DYNAMIC_BOUNDARY`:
 
 * **STABLE** (cacheable prefix) — the agent **identity** (the operator-authored ``self.md``
-  when present, else a default line), behavior guidance, brief tool-use guidance, and the
+  when present, else a default line), behavior guidance, brief tool-use guidance, a terse
+  grouped **tool cheat-sheet** (one line per active tool: ``name(required, args): purpose``,
+  grouped by read/write/run so a small model picks the right tool without probing), and the
   safety policy. This text never changes within a conversation, so a provider can cache it
   and we never invalidate that cache by reordering or mutating it.
 * **CONTEXT** (dynamic suffix) — per-session facts: the environment (OS, workspace root,
@@ -29,7 +31,7 @@ import hashlib
 import platform
 from pathlib import Path
 
-from zakcode.config import Settings
+from zakcode.config import PermissionTier, Settings
 from zakcode.tools.base import ToolSpec
 
 #: Marker separating the stable (cacheable) prefix from the dynamic context suffix.
@@ -152,16 +154,53 @@ class SystemPromptBuilder:
             sections.append(self.extra_instructions.strip())
         return "\n\n".join(sections)
 
+    #: Cheat-sheet group labels keyed by required permission tier — an axis already on every
+    #: spec that also flags blast radius to the model (read vs write vs run). Order = least to
+    #: most privileged, so the model reads the safe tools first.
+    _TOOL_GROUPS = (
+        (PermissionTier.READ_ONLY, "Inspect (read-only)"),
+        (PermissionTier.WORKSPACE_WRITE, "Edit (writes to the workspace)"),
+        (PermissionTier.DANGER_FULL_ACCESS, "Run (shell / system)"),
+    )
+
     @staticmethod
     def _summarize_tools(tools: list[ToolSpec] | None) -> str:
+        """A terse, grouped cheat-sheet of the active tools for the cacheable prefix.
+
+        One line per tool — ``name(required, args): one-line purpose`` — grouped by what the
+        tool does (its permission tier). Optional/obvious arguments are omitted; the full JSON
+        schema is still available to the model when it actually calls the tool. Naming the
+        required args inline lets a small model pick the right tool with the right shape
+        without probing, the cheapest big reliability win (cf. hf-CLI-for-agents). Gated to the
+        active tool set the loop passes in, so it stays within the tool budget.
+        """
         if not tools:
             return ""
-        lines = ["Available tools:"]
+        rendered: dict[PermissionTier, list[str]] = {}
         for spec in tools:
-            # First line of the description keeps the summary dense (<~100 tokens/tool).
-            summary = spec.description.strip().splitlines()[0] if spec.description else ""
-            lines.append(f"- {spec.name}: {summary}" if summary else f"- {spec.name}")
-        return "\n".join(lines)
+            params = spec.parameters if isinstance(spec.parameters, dict) else {}
+            required = [a for a in params.get("required", []) if isinstance(a, str)]
+            sig = f"{spec.name}({', '.join(required)})" if required else spec.name
+            # Terse purpose: the first SENTENCE of the description (not a mid-word char cut),
+            # with a hard length backstop. The full schema is available when the tool is called.
+            first = spec.description.strip().splitlines()[0] if spec.description else ""
+            idx = first.find(". ")
+            summary = first if idx == -1 else first[: idx + 1]
+            if len(summary) > 120:
+                summary = summary[:117].rstrip() + "..."
+            rendered.setdefault(spec.required_permission, []).append(
+                f"- {sig}: {summary}" if summary else f"- {sig}"
+            )
+        out = [
+            "Available tools (required arguments in parentheses; call a tool to get its "
+            "full schema):"
+        ]
+        for tier, label in SystemPromptBuilder._TOOL_GROUPS:
+            lines = rendered.get(tier)
+            if lines:
+                out.append(f"\n{label}:")
+                out.extend(lines)
+        return "\n".join(out)
 
     # ── dynamic tier ───────────────────────────────────────────────────────────
 
