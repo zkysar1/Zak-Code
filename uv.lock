@@ -2617,7 +2617,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "typer" },
-    { name = "zds-llm-provider" },
+    { name = "zds-llm-provider", extra = ["structured"] },
 ]
 
 [package.optional-dependencies]
@@ -2674,7 +2674,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.30" },
     { name = "websockets", marker = "extra == 'server'", specifier = ">=12.0" },
     { name = "zakcode", extras = ["server", "mcp", "dev"], marker = "extra == 'all'" },
-    { name = "zds-llm-provider", editable = "packages/zds-llm-provider" },
+    { name = "zds-llm-provider", extras = ["structured"], editable = "packages/zds-llm-provider" },
 ]
 provides-extras = ["server", "mcp", "dev", "all"]
 
@@ -2694,12 +2694,18 @@ dependencies = [
     { name = "pydantic" },
 ]
 
+[package.optional-dependencies]
+structured = [
+    { name = "jsonschema" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "httpx", marker = "extra == 'bitnet'", specifier = ">=0.27" },
+    { name = "jsonschema", marker = "extra == 'structured'", specifier = ">=4.18" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
-provides-extras = ["bitnet"]
+provides-extras = ["bitnet", "structured"]
 
 [[package]]
 name = "zipp"

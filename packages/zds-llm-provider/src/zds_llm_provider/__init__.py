@@ -15,6 +15,12 @@ from zds_llm_provider.messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from zds_llm_provider.structured import (
+    StructuredValidationError,
+    coerce_structured,
+    extract_json,
+    make_response_format,
+)
 from zds_llm_provider.text_tools import (
     TOOL_CALLING_MODES,
     TextToolCallingProvider,
@@ -73,6 +79,11 @@ __all__ = [
     "parse_text_tool_calls",
     "render_tool_protocol",
     "textify_messages",
+    # structured output (response_format helpers)
+    "StructuredValidationError",
+    "coerce_structured",
+    "extract_json",
+    "make_response_format",
     # claude code bridge (M-8)
     "ClaudeCodeProvider",
     "CompletionBridge",

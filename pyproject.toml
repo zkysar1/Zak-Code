@@ -21,7 +21,7 @@ classifiers = [
 
 # Core engine dependencies (the importable library + CLI).
 dependencies = [
-  "zds-llm-provider",       # extracted vendor-agnostic provider ABC (M-7, in-repo editable sub-package)
+  "zds-llm-provider[structured]", # vendor-agnostic provider ABC (M-7, in-repo editable) + jsonschema for structured output
   "litellm>=1.55",          # vendor-agnostic LLM layer (Ollama, OpenAI, + ~100 providers)
   "pydantic>=2.7",          # typed models for tools, messages, config
   "pydantic-settings>=2.3", # 12-factor config from env / .env
