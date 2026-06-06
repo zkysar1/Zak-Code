@@ -11,6 +11,7 @@ harness run WOULD prompt, the gate falls back to nudging the model instead.
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,30 @@ def test_cursor_verified_by_node_run() -> None:
     c.observe([_c("w", "write_file", path="app.js")], [_r("w", path="app.js")])
     c.observe([_c("r", "bash", command="node app.js")], [_r("r")])
     assert c.needs_verification() is False
+
+
+def test_cursor_verified_by_typescript_runners() -> None:
+    # A .ts file run via tsx / ts-node (the runners resolve_run_command may emit when deno/bun
+    # are absent) must be credited as executed — else a clean run falsely stalls.
+    for cmd in ("tsx app.ts", "ts-node app.ts", "deno run app.ts", "bun app.ts"):
+        c = RecipeCursor(enabled=True)
+        c.observe([_c("w", "write_file", path="app.ts")], [_r("w", path="app.ts")])
+        c.observe([_c("r", "bash", command=cmd)], [_r("r")])
+        assert c.needs_verification() is False, cmd
+
+
+def test_interpreter_set_covers_every_resolvable_runner() -> None:
+    # Invariant guard: every head-position executable resolve_run_command can emit must be
+    # recognized by _executed_targets (i.e. live in _INTERPRETERS). 'deno' is the documented
+    # exception — it runs via the `deno run` subcommand, so 'deno' is the head and the file is
+    # a body token. Catches a future extension whose runner is added to only one of the sets.
+    from zakcode.agent import recipe as _recipe
+
+    for ext, runners in _recipe._INTERPRETER_BY_EXT.items():
+        for exe in runners:
+            if exe == "deno":
+                continue
+            assert exe in _recipe._INTERPRETERS, f"{exe} (for {ext}) missing from _INTERPRETERS"
 
 
 def test_cursor_verified_by_windows_exe_interpreter() -> None:
@@ -292,6 +317,31 @@ def test_nudge_cites_acceptance() -> None:
     assert "pong" in c.nudge()
 
 
+def test_nudge_is_language_correct_not_hardcoded_python() -> None:
+    # review2 #1: the gate now arms on .js/.sh/.rb/.ps1 too — the nudge must cite the RIGHT
+    # interpreter for the pending target, never the Python `py` launcher for a non-.py file.
+    expect = {"app.js": "node", "build.sh": "bash", "task.rb": "ruby", "deploy.ps1": "pwsh"}
+    for fname, interp in expect.items():
+        c = RecipeCursor(enabled=True)
+        c.observe([_c("w", "write_file", path=fname)], [_r("w", path=fname)])
+        msg = c.nudge()
+        assert fname in msg, fname
+        # The hint cites this file's interpreter (when on PATH) and never the Python launcher.
+        assert "`py " not in msg and "py <file>" not in msg, msg
+        if shutil.which(interp):
+            assert interp in msg, (fname, msg)
+
+
+def test_nudge_for_python_still_cites_python() -> None:
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="prog.py")], [_r("w", path="prog.py")])
+    msg = c.nudge()
+    assert "prog.py" in msg
+    # resolve_run_command always resolves for .py (sys.executable fallback), so a concrete
+    # python run command is cited.
+    assert "prog.py" in (resolve_run_command("prog.py") or "")
+
+
 def test_recipe_acceptance_stalls_on_wrong_output(tmp_path: Path) -> None:
     if resolve_run_command("p.py") is None:
         pytest.skip("no python interpreter available")
@@ -347,8 +397,10 @@ def test_resolve_run_command() -> None:
 
 def test_resolve_run_command_picks_interpreter_by_extension() -> None:
     # The interpreter is chosen from the extension; an unknown extension resolves to None.
+    # A .py always resolves to SOME python (a PATH `py`/`python*`, or the sys.executable
+    # fallback whose basename is python.exe) — so just assert "py" appears, not a prefix.
     py = resolve_run_command("x.py")
-    assert py is not None and py.startswith(("py", "python"))
+    assert py is not None and "py" in py.lower()
     assert resolve_run_command("notes.txt") is None  # not a runnable extension
 
 

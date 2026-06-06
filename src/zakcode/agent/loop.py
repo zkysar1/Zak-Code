@@ -308,19 +308,21 @@ class AgentLoop:
             return self.budget.try_consume(1)
         return True
 
-    def _tool_specs(self) -> list[ToolSpec]:
+    def _tool_specs(self, restrict_to: set[str] | None = None) -> list[ToolSpec]:
         # Only ACTIVE (exposed) tools, so the system-prompt tool summary matches the
         # schemas sent via ``definitions()`` — lazily-registered MCP tools stay out
-        # of the prompt until surfaced (M5 lazy discovery / tool budget).
+        # of the prompt until surfaced (M5 lazy discovery / tool budget). ``restrict_to``
+        # (a stuck NARROW step) further limits the summary to those canonical names, so the
+        # prompt does not advertise tools withheld from that iteration's schema.
         specs: list[ToolSpec] = []
         for name in self.registry.active_names():
             tool = self.registry.get(name)
-            if tool is not None:
+            if tool is not None and (restrict_to is None or tool.spec.name in restrict_to):
                 specs.append(tool.spec)
         return specs
 
-    def _build_system(self) -> str:
-        return self.prompt_builder.build(self.settings, tools=self._tool_specs())
+    def _build_system(self, restrict_to: set[str] | None = None) -> str:
+        return self.prompt_builder.build(self.settings, tools=self._tool_specs(restrict_to))
 
     async def _messages_for_call(self, user_text: str, iteration: int) -> list[Message]:
         """The message list for the next provider call, with any injected context.
@@ -360,26 +362,47 @@ class AgentLoop:
             blocks.append(ToolUseBlock(id=call.id, name=call.name, input=call.arguments))
         return Message(role="assistant", blocks=blocks)
 
-    async def _execute_tool_call(self, call: ToolCall, ctx: ToolContext) -> ToolResultBlock:
+    async def _execute_tool_call(
+        self, call: ToolCall, ctx: ToolContext, *, restrict_to: set[str] | None = None
+    ) -> ToolResultBlock:
         """Run one tool call through the full gate, returning its result block.
 
         The single seam both the buffered (:meth:`_run_turn`) and streaming
         (:meth:`astream_turn`) paths funnel through, so they gate identically. The
         stages, in order:
 
+        0. **Step restriction** — during a stuck NARROW recovery step, ``restrict_to`` is
+           the read-only name set offered that iteration; a call to any other tool is
+           rejected here (an error result, never executed) so NARROW *enforces* "investigate
+           first" on every protocol — not just by withholding the schema, which a weak
+           text-protocol model can ignore. (review2 #3)
         1. **Permission** — :meth:`PermissionPolicy.authorize` (deny-first, decided
            here where the model cannot reach it). Only runs if a policy was injected.
         2. **PreToolUse hooks** — may veto the call or rewrite its arguments.
         3. **Execute** — :meth:`ToolRegistry.execute` (which itself never raises).
         4. **PostToolUse hooks** — observe-only; any note is appended as feedback.
 
-        A permission denial or hook veto is returned as an *error*
+        A permission denial, step restriction, or hook veto is returned as an *error*
         :class:`ToolResultBlock` (never an exception), so the turn continues and the
         model sees the feedback and can adapt.
         """
         tool = self.registry.get(call.name)
         spec = tool.spec if tool is not None else None
         cwd = str(self.workspace_root)
+
+        # 0. Stuck NARROW step restriction (enforced regardless of protocol).
+        if restrict_to is not None and (spec is None or spec.name not in restrict_to):
+            offered = ", ".join(sorted(restrict_to)) or "(none)"
+            return ToolResultBlock(
+                tool_use_id=call.id,
+                output=(
+                    f"Tool {call.name!r} is unavailable on this step. The turn is recovering "
+                    f"from repeated no-progress steps — use a read-only tool ({offered}) to "
+                    "investigate the cause first, then proceed."
+                ),
+                is_error=True,
+                data={"step_restricted": True, "tool": call.name},
+            )
 
         # 1. Permission gate (only when a policy is injected; see __init__).
         if self.permission_policy is not None:
@@ -496,13 +519,15 @@ class AgentLoop:
         return call, block
 
     def _readonly_tool_names(self) -> list[str]:
-        """Active tool names at the ``READ_ONLY`` tier — the set offered during a stuck
+        """Active tool names at the ``READ_ONLY`` tier — the set allowed during a stuck
         NARROW step so the model is forced to investigate before mutating again.
 
         Derived from each active tool's required tier (not a hardcoded list), so any
-        read-only MCP/plugin tool is included too. May be empty, in which case the NARROW
-        iteration offers no tools at all — a hard circuit-breaker that pushes the model to
-        respond in text rather than keep flailing.
+        read-only MCP/plugin tool is included too. The NARROW step both withholds the other
+        tools from the schema/prompt AND rejects them at the execution seam (see
+        :meth:`_execute_tool_call`'s ``restrict_to``), so it enforces on every protocol. May
+        be empty, in which case every tool call that iteration is rejected with guiding
+        feedback — a hard circuit-breaker that pushes the model to respond in text.
         """
         names: list[str] = []
         for name in self.registry.active_names():
@@ -529,7 +554,7 @@ class AgentLoop:
         )
 
     async def _execute_batch(
-        self, calls: list[ToolCall], ctx: ToolContext
+        self, calls: list[ToolCall], ctx: ToolContext, *, restrict_to: set[str] | None = None
     ) -> list[ToolResultBlock]:
         """Execute one iteration's tool-call batch, parallelizing when it is safe.
 
@@ -538,28 +563,37 @@ class AgentLoop:
         prompt) runs concurrently via :func:`asyncio.gather`; anything else (a
         write, a shell command, an unknown tool, a single call) runs sequentially.
         Result order matches call order either way. This is where the long-declared
-        :class:`ConcurrencyClass` finally gates real parallelism.
+        :class:`ConcurrencyClass` finally gates real parallelism. ``restrict_to`` (a stuck
+        NARROW step) is forwarded so a withheld tool is rejected at the single execution seam.
         """
         if len(calls) > 1 and all(self._is_read_only_safe(c) for c in calls):
-            return list(await asyncio.gather(*(self._execute_tool_call(c, ctx) for c in calls)))
+            return list(
+                await asyncio.gather(
+                    *(self._execute_tool_call(c, ctx, restrict_to=restrict_to) for c in calls)
+                )
+            )
         blocks: list[ToolResultBlock] = []
         for call in calls:
-            blocks.append(await self._execute_tool_call(call, ctx))
+            blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
         return blocks
 
     @staticmethod
     def _batch_did_no_work(blocks: list[ToolResultBlock]) -> bool:
-        """True iff every result was a permission denial or hook veto (no tool ran).
+        """True iff every result was a permission denial, step restriction, or hook veto.
 
-        Such an iteration accomplished nothing, so its shared-budget unit is refunded
-        — the model still gets the feedback and may retry within the per-turn cap.
+        Such an iteration ran no tool, so its shared-budget unit is refunded — the model
+        still gets the feedback and may retry within the per-turn cap.
         """
         if not blocks:
             return False
         return all(
             b.is_error
             and isinstance(b.data, dict)
-            and bool(b.data.get("permission_denied") or b.data.get("hook_blocked"))
+            and bool(
+                b.data.get("permission_denied")
+                or b.data.get("hook_blocked")
+                or b.data.get("step_restricted")
+            )
             for b in blocks
         )
 
@@ -650,16 +684,20 @@ class AgentLoop:
                 stop_reason = "max_iterations"
                 break
             iterations += 1
-            system = self._build_system()
             # Recompute exposed tools each iteration so a tool activated mid-turn
-            # (e.g. via tool_search) is offered in the same turn and stays consistent
-            # with the system prompt's tool summary (both read active_names()). During a
-            # stuck-recovery NARROW step the next iteration is limited to read-only tools.
+            # (e.g. via tool_search) is offered in the same turn. During a stuck-recovery
+            # NARROW step this iteration is limited to read-only tools: the schema, the
+            # system-prompt tool summary, AND the execution seam are all narrowed to
+            # ``restrict_now`` so the restriction is enforced on every protocol.
             if restrict_readonly_next:
-                tool_defs = self.registry.definitions(allowed=self._readonly_tool_names())
+                readonly = set(self._readonly_tool_names())
+                restrict_now: set[str] | None = readonly
+                tool_defs = self.registry.definitions(allowed=sorted(readonly))
                 restrict_readonly_next = False
             else:
+                restrict_now = None
                 tool_defs = self.registry.definitions()
+            system = self._build_system(restrict_now)
             call_messages = await self._messages_for_call(user_text, iterations)
 
             result = await self.provider.acomplete(
@@ -722,7 +760,10 @@ class AgentLoop:
             # Each call runs through the permission + hook gate (a denial, veto, or
             # tool error becomes an error result fed back so the model can recover —
             # it never aborts the turn). A wholly read-only batch runs concurrently.
-            result_blocks = await self._execute_batch(result.tool_calls, ctx)
+            # ``restrict_now`` enforces a stuck NARROW step's read-only limit at execution.
+            result_blocks = await self._execute_batch(
+                result.tool_calls, ctx, restrict_to=restrict_now
+            )
             turn_tool_results.extend(result_blocks)
             # If the whole batch was denied/vetoed, no work happened — refund the unit.
             if self._batch_did_no_work(result_blocks):
@@ -838,15 +879,19 @@ class AgentLoop:
                     stop_reason = "max_iterations"
                     break
                 iterations += 1
-                system = self._build_system()
-                # Recompute exposed tools each iteration (see _run_turn) so mid-turn
-                # tool activations are offered in the same turn; a stuck NARROW step limits
-                # the next iteration to read-only tools.
+                # Recompute exposed tools each iteration (see _run_turn) so mid-turn tool
+                # activations are offered in the same turn; a stuck NARROW step limits this
+                # iteration to read-only tools across the schema, the system-prompt summary,
+                # AND the execution seam (``restrict_now``).
                 if restrict_readonly_next:
-                    tool_defs = self.registry.definitions(allowed=self._readonly_tool_names())
+                    readonly = set(self._readonly_tool_names())
+                    restrict_now: set[str] | None = readonly
+                    tool_defs = self.registry.definitions(allowed=sorted(readonly))
                     restrict_readonly_next = False
                 else:
+                    restrict_now = None
                     tool_defs = self.registry.definitions()
+                system = self._build_system(restrict_now)
                 call_messages = await self._messages_for_call(user_text, iterations)
 
                 text_parts: list[str] = []
@@ -934,7 +979,7 @@ class AgentLoop:
                 result_blocks: list[ToolResultBlock] = []
                 for call in tool_calls:
                     yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
-                    block = await self._execute_tool_call(call, ctx)
+                    block = await self._execute_tool_call(call, ctx, restrict_to=restrict_now)
                     result_blocks.append(block)
                     yield AgentToolResult(
                         tool_use_id=block.tool_use_id,

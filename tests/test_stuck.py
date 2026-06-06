@@ -172,6 +172,8 @@ class _LookTool(Tool):
 
 class _MutateTool(Tool):
     # A write-tier tool (so it is excluded from the read-only NARROW subset) that errors.
+    # Records how many times it actually EXECUTED so a test can prove a NARROW step REJECTS
+    # it before execution (dispatch gate), not merely withholds it from the schema.
     spec = ToolSpec(
         name="mutate",
         description="Write-tier; always errors.",
@@ -179,7 +181,11 @@ class _MutateTool(Tool):
         concurrency=ConcurrencyClass.NEVER_PARALLEL,
     )
 
+    def __init__(self) -> None:
+        self.executed = 0
+
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.executed += 1
         return ToolResult.error("nope")
 
 
@@ -261,13 +267,31 @@ def test_loop_recovery_ladder_writes_hints(tmp_path: Path) -> None:
 
 def test_loop_narrow_restricts_offered_tools(tmp_path: Path) -> None:
     # The NARROW step (streak 4) must restrict the NEXT iteration (the 5th call) to read-only
-    # tools — the write-tier 'mutate' is dropped, the read-only 'look' remains.
+    # tools — the write-tier 'mutate' is dropped from the offered schema, 'look' remains.
     registry = _registry(_LookTool(), _MutateTool())
     provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "mutate", n=n)]))
     result = asyncio.run(_loop(provider, tmp_path, registry).arun_turn("keep failing"))
     assert result.stop_reason == "stuck"
     assert "mutate" in _tool_names(provider.tools_seen[0])  # full set early on
     assert _tool_names(provider.tools_seen[4]) == {"look"}  # 5th call: read-only only
+
+
+def test_loop_narrow_enforces_dispatch_not_just_schema(tmp_path: Path) -> None:
+    # review2 #3: NARROW must ENFORCE, not merely advise. A model that ignores the narrowed
+    # schema and still emits the write-tier 'mutate' on the narrowed iteration must have it
+    # REJECTED (an error result), never executed — on any protocol. mutate executes on the 4
+    # un-narrowed iterations (streak 1-4) but is rejected on the 5th (narrowed) iteration.
+    mutate = _MutateTool()
+    registry = _registry(_LookTool(), mutate)
+    provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "mutate", n=n)]))
+    result = asyncio.run(_loop(provider, tmp_path, registry).arun_turn("keep failing"))
+    assert result.stop_reason == "stuck"
+    assert result.iterations == 5
+    assert mutate.executed == 4  # ran on iters 1-4; the 5th (narrowed) call was rejected
+    last = result.tool_results[-1]
+    assert last.is_error and isinstance(last.data, dict) and last.data.get("step_restricted")
+    # The rejection guides the model toward the read-only tool.
+    assert "look" in last.output and "unavailable on this step" in last.output
 
 
 def test_loop_not_stuck_when_progressing(tmp_path: Path) -> None:

@@ -28,6 +28,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
@@ -38,6 +39,11 @@ _RUN_TOOLS = {"bash", "powershell"}
 # Programs that actually EXECUTE a script (vs. merely naming it). Used to require a real
 # run before the gate is satisfied, so ``echo``/``cat``/``ls``/``rm <file>`` no longer
 # count. Cross-shell, structural names — not a vendor branch.
+# INVARIANT: every bare interpreter that :func:`resolve_run_command` can emit as a command
+# HEAD must appear here, or a successful harness/model run would not be credited (the gate
+# would falsely stall). I.e. ``_INTERPRETERS`` must be a superset of the head-position
+# executables in :data:`_INTERPRETER_BY_EXT` (``deno`` is the lone exception — it runs via
+# the ``deno run`` subcommand, so ``deno`` is the head and ``run`` is just a body token).
 _INTERPRETERS = {
     "py",
     "python",
@@ -46,6 +52,8 @@ _INTERPRETERS = {
     "node",
     "deno",
     "bun",
+    "tsx",
+    "ts-node",
     "ruby",
     "bash",
     "sh",
@@ -225,6 +233,13 @@ def resolve_run_command(path: str) -> str | None:
     ``bash "x.sh"``. Used by the harness-issued verification run so the right interpreter is
     chosen deterministically; returns None when none resolves so the caller falls back to
     nudging the model rather than manufacturing a failing run.
+
+    For ``.py`` there is a guaranteed last resort: the interpreter currently running Zak Code
+    (``sys.executable``) can always run a written ``.py``, even when no bare ``py``/``python``
+    is on PATH (a Windows venv whose ``Scripts`` dir isn't on PATH, or an embedded/isolated
+    interpreter launched by absolute path). ``sys.executable`` is an absolute path; its
+    ``.exe`` suffix is normalized off by :func:`_executed_targets`, so the run is still
+    credited as executing the file.
     """
     ext = os.path.splitext(path)[1].lower()
     for exe in _INTERPRETER_BY_EXT.get(ext, ()):
@@ -232,6 +247,8 @@ def resolve_run_command(path: str) -> str | None:
             if exe == "deno":  # deno runs a script via the `run` subcommand, not directly
                 return f'deno run "{path}"'
             return f'{exe} "{path}"'
+    if ext == ".py" and sys.executable:
+        return f'"{sys.executable}" "{path}"'
     return None
 
 
@@ -300,7 +317,7 @@ class RecipeCursor:
         return self.nudges < self.attempt_cap
 
     def pending_target(self) -> str | None:
-        """The most-recently-written runnable .py still needing verification, else None."""
+        """The most-recently-written runnable script still needing verification, else None."""
         for path in reversed(self._abs_targets):
             if os.path.basename(path) not in self._verified:
                 return path
@@ -310,13 +327,34 @@ class RecipeCursor:
         """Count one verification attempt (e.g. a harness-issued run) toward the cap."""
         self.nudges += 1
 
+    @staticmethod
+    def _run_hint(target: str | None) -> str:
+        """A language-correct 'how to run it' clause for the nudge, derived from the target.
+
+        Prefers the exact command the harness itself would use (:func:`resolve_run_command`,
+        which resolves an interpreter actually on PATH); falls back to the preferred
+        interpreter for the extension when none is installed. So a ``.js`` target yields
+        ``node "app.js"`` and a ``.sh`` target ``bash "build.sh"`` — never a hardcoded ``py``
+        for a non-Python file (which a literal-minded weak model would run and fail). (review2 #1)
+        """
+        if not target:
+            return "run it with the right interpreter"
+        cmd = resolve_run_command(target)
+        if cmd is not None:
+            return f"run it now, e.g. `{cmd}`"
+        exes = _INTERPRETER_BY_EXT.get(os.path.splitext(target)[1].lower(), ())
+        if exes:
+            prog = "deno run" if exes[0] == "deno" else exes[0]
+            return f'run it now, e.g. `{prog} "{target}"`'
+        return "run it with the right interpreter"
+
     def nudge(self) -> str:
         """Consume one attempt and return the one-step corrective instruction to inject."""
         self.nudges += 1
         message = (
-            "You created or edited a Python file but have not run it successfully yet. "
-            "Run it now (use `py <file>`) to verify it works; if it errors, fix the file "
-            "and run it again. Do not finish until the program runs without error."
+            "You created or edited a runnable script but have not run it successfully yet. "
+            f"{self._run_hint(self.pending_target())} to verify it works; if it errors, fix "
+            "the file and run it again. Do not finish until the program runs without error."
         )
         if self.acceptance is not None:
             message += (
