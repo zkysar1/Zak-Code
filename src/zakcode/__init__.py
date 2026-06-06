@@ -444,6 +444,9 @@ class Agent:
             budget=shared_budget,
             spawner=spawner,
             compactor=self.compactor,
+            # Same store the recall hook + remember/recall tools use, so harness-authored
+            # recovery lessons (research R1) are recalled next session. None when memory is off.
+            memory_provider=self.memory,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:

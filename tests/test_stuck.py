@@ -108,6 +108,22 @@ def test_repeated_failure_signal() -> None:
     assert SIG_REPEATED_FAILURE in t.last_signals
 
 
+def test_error_signatures_ranks_repeated_failures_most_first() -> None:
+    # The accessor the lesson writer (R1) reads: call signatures that failed >= repeated_failure_at
+    # times, most-failed first; calls below the floor are excluded.
+    t = StuckTracker(repeated_failure_at=2)
+    for _ in range(3):
+        t.observe([_c("x", "boom", k="a")], [_r("x", is_error=True)], assistant_text="t")
+    for _ in range(2):
+        t.observe([_c("y", "boom", k="b")], [_r("y", is_error=True)], assistant_text="t")
+    # 'boom c' fails only once — below the repeated_failure_at floor, so it is excluded.
+    t.observe([_c("z", "boom", k="c")], [_r("z", is_error=True)], assistant_text="t")
+    sigs = t.error_signatures()
+    assert sigs[0] == ("boom", '{"k": "a"}')  # 3 failures rank first
+    assert ("boom", '{"k": "b"}') in sigs  # 2 failures included
+    assert ("boom", '{"k": "c"}') not in sigs  # 1 failure excluded
+
+
 def test_successful_iterations_never_stuck() -> None:
     t = StuckTracker(nudge_at=1, narrow_at=2, stop_at=3)
     for i in range(5):

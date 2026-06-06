@@ -131,6 +131,19 @@ class StuckTracker:
         """Whether any recovery step (nudge/narrow/stop) has fired this turn."""
         return bool(self._actions)
 
+    def error_signatures(self) -> list[tuple[str, str]]:
+        """Call signatures ``(name, canonical-args)`` that failed at least ``repeated_failure_at``
+        times this turn, most-failed first.
+
+        The symptom set a recovered-failure lesson (research R1) is built from — exposed as a
+        clean accessor so the writer never reaches into the private failure Counter.
+        """
+        return sorted(
+            (sig for sig, n in self._error_counts.items() if n >= self.repeated_failure_at),
+            key=lambda sig: self._error_counts[sig],
+            reverse=True,
+        )
+
     # ── core ─────────────────────────────────────────────────────────────────
     def observe(
         self, calls: list[ToolCall], results: list[ToolResultBlock], *, assistant_text: str = ""

@@ -267,6 +267,10 @@ class RecipeCursor:
         self._abs_targets: list[str] = []  # their paths, in write order (for the harness run)
         self._verified: set[str] = set()  # basenames that have been run successfully
         self.harness_runs = 0  # how many harness-issued verification runs were issued
+        # Recovery tracking (research R1): a run of a created file that FAILED, then one that
+        # SUCCEEDED — the failed-then-fixed signal a deterministic lesson is built from.
+        self._last_failed_command: str | None = None
+        self._recovered_command: str | None = None
 
     @property
     def verified(self) -> bool:
@@ -285,7 +289,16 @@ class RecipeCursor:
         by_id = {r.tool_use_id: r for r in results}
         for call in calls:
             result = by_id.get(call.id)
-            if result is None or result.is_error:
+            if result is None:
+                continue
+            if result.is_error:
+                # Record a FAILED run of a created file so a later success yields a recovery
+                # lesson (research R1). Does NOT affect verification — a failed run still
+                # verifies nothing, so the gate behaves exactly as before.
+                if call.name in _RUN_TOOLS and self.wrote_runnable:
+                    command = call.arguments.get("command")
+                    if isinstance(command, str) and _executed_targets(command, self._targets):
+                        self._last_failed_command = command
                 continue
             if call.name in _WRITE_TOOLS:
                 path = _runnable_path(call, result)
@@ -307,6 +320,15 @@ class RecipeCursor:
                 output_ok = self.acceptance is None or self.acceptance in (result.output or "")
                 if executed and output_ok:
                     self._verified |= executed
+                    # A success after an earlier FAILED run of a created file = a recovery.
+                    if self._last_failed_command is not None:
+                        self._recovered_command = command
+
+    @property
+    def recovered_command(self) -> str | None:
+        """A run command that SUCCEEDED after an earlier run of a created file FAILED this turn
+        (else ``None``) — the corrective step a recipe-recovery lesson records (research R1)."""
+        return self._recovered_command
 
     def needs_verification(self) -> bool:
         """True when the turn should not end yet: a runnable file written, not yet run."""

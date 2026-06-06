@@ -63,6 +63,7 @@ from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
 from zakcode.agent.grounding import build_write_grounding
+from zakcode.agent.lessons import LessonWriter
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
 from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
@@ -83,6 +84,7 @@ from zakcode.hooks import (
     LifecyclePayload,
     LLMContextPayload,
 )
+from zakcode.memory import MemoryProvider
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import (
@@ -178,11 +180,16 @@ class AgentLoop:
         budget: IterationBudget | None = None,
         spawner: SubAgentSpawner | None = None,
         compactor: Compactor | None = None,
+        memory_provider: MemoryProvider | None = None,
         attempt_cap: int = 3,
     ) -> None:
         self.provider = provider
         self.registry = registry
         self.session = session
+        # Deterministic failure-lesson writer (research R1): on a recovered turn it records ONE
+        # lesson to the cross-session memory store. A no-op when memory_provider is None, so an
+        # ordinary loop (no memory) is unaffected. (Stateless; safe to build once per loop.)
+        self._lessons = LessonWriter(memory_provider, source=f"lesson:{session.id}")
         self.prompt_builder = prompt_builder or SystemPromptBuilder()
         self.settings = settings or load_settings()
         self.store = store
@@ -797,6 +804,10 @@ class AgentLoop:
                 restrict_readonly_next = True
                 self._persist()
 
+        # Failure-lesson capture (research R1): on a genuine recovery, record one deterministic
+        # lesson. Best-effort — a writer/store error never affects the turn's outcome.
+        with contextlib.suppress(Exception):
+            self._lessons.maybe_write(stuck, cursor, stop_reason=stop_reason)
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
@@ -1028,6 +1039,9 @@ class AgentLoop:
                 self._persist()
             raise
 
+        # Failure-lesson capture (research R1) — same seam as the buffered path; best-effort.
+        with contextlib.suppress(Exception):
+            self._lessons.maybe_write(stuck, cursor, stop_reason=stop_reason)
         yield AgentUsage(usage=turn_usage)
         yield AgentDone(
             stop_reason=stop_reason,
