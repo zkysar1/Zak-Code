@@ -279,6 +279,10 @@ def test_loop_recovery_ladder_writes_hints(tmp_path: Path) -> None:
     transcript = "\n".join(m.text or "" for m in loop.session.messages)
     assert "appear to be stuck" in transcript  # the nudge
     assert "read-only tools are available" in transcript  # the narrow
+    # rb-204: loop-injected guidance opens with the SAME control-rail marker as tool-result
+    # hints, so the model sees one "next action" vocabulary regardless of the source.
+    injected = [m.text for m in loop.session.messages if m.text and "stuck" in m.text]
+    assert injected and all(t.startswith("Hint:") for t in injected)
 
 
 def test_loop_narrow_restricts_offered_tools(tmp_path: Path) -> None:
@@ -348,3 +352,13 @@ def test_streaming_stuck_stops_and_emits_status(tmp_path: Path) -> None:
     assert any("nudging" in m for m in statuses)
     assert any("read-only" in m for m in statuses)
     assert any("stopping: stuck" in m for m in statuses)
+
+
+def test_streaming_injected_guidance_carries_rail_marker(tmp_path: Path) -> None:
+    # rb-204: the streaming path (the REPL's real path) must wrap loop-injected stuck guidance
+    # with the SAME "Hint:" control-rail marker as the buffered path. (review: was untested)
+    provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "boom", n=n)]))
+    loop = _loop(provider, tmp_path)
+    _drain(loop, "do the thing")
+    injected = [m.text for m in loop.session.messages if m.text and "stuck" in m.text]
+    assert injected and all(t.startswith("Hint:") for t in injected)

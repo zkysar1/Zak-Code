@@ -126,6 +126,15 @@ _CTX_CLOSE = "</injected_context>"
 _CTX_SENTINEL_RE = re.compile(r"</?\s*injected_context", re.IGNORECASE)
 
 
+# One control-rail vocabulary for "what to do next", used everywhere the harness names the
+# model's next action (rb-204): tool-result success/error rails AND the loop-injected
+# stuck/recipe guidance. Keeping a single marker word means the model learns one cue. (A
+# future flip to e.g. "Next:" is a one-constant change.) Observations — ``[harness]``/``[hook]``/
+# ``[verified]`` — keep a distinct bracket idiom because they report, they don't direct.
+_RAIL_HINT = "Hint:"  # a suggested/required next action
+_RAIL_FIX = "Fix:"  # the remedy for an error/blocker
+
+
 def _append_rail(output: str, *, hint: str | None, fix: str | None) -> str:
     """Append an agent-facing next-step (``Hint:``) or remedy (``Fix:``) line to a result.
 
@@ -133,10 +142,20 @@ def _append_rail(output: str, *, hint: str | None, fix: str | None) -> str:
     Kept ASCII and on its own trailing line so a small model can cheaply parse the next
     action it should take. No-op when neither is set.
     """
-    line = f"Fix: {fix}" if fix else (f"Hint: {hint}" if hint else None)
+    line = f"{_RAIL_FIX} {fix}" if fix else (f"{_RAIL_HINT} {hint}" if hint else None)
     if line is None:
         return output
     return f"{output}\n{line}" if output else line
+
+
+def _control_rail(text: str) -> str:
+    """Render loop-injected guidance (a stuck nudge / recipe stall) with the shared rail marker.
+
+    So every harness-issued "next action" — whether it rides a tool result or arrives as an
+    injected message — opens with the same control word the model already learns from tool
+    rails (rb-204: name the next action, one consistent vocabulary).
+    """
+    return f"{_RAIL_HINT} {text}"
 
 
 def _denial_remedy(tier: PermissionTier | None) -> str:
@@ -778,7 +797,7 @@ class AgentLoop:
                     if await self._try_harness_verify(cursor, ctx) is not None:
                         cursor.consume_attempt()
                     else:
-                        self.session.add_message(Message.user(cursor.nudge()))
+                        self.session.add_message(Message.user(_control_rail(cursor.nudge())))
                         # A nudge over an empty completion did no work — refund the unit so a
                         # stalling recipe turn doesn't drain a shared budget. (audit2 #14)
                         if not result.text:
@@ -840,10 +859,10 @@ class AgentLoop:
                 stop_reason = "stuck"
                 break
             if action is StuckAction.NUDGE:
-                self.session.add_message(Message.user(stuck.nudge_message()))
+                self.session.add_message(Message.user(_control_rail(stuck.nudge_message())))
                 self._persist()
             elif action is StuckAction.NARROW:
-                self.session.add_message(Message.user(stuck.narrow_message()))
+                self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                 restrict_readonly_next = True
                 self._persist()
 
@@ -1003,7 +1022,7 @@ class AgentLoop:
                             cursor.consume_attempt()
                             yield AgentStatus(message="ran the file to verify it works")
                         else:
-                            self.session.add_message(Message.user(cursor.nudge()))
+                            self.session.add_message(Message.user(_control_rail(cursor.nudge())))
                             # Empty completion + a nudge did no work — refund. (audit2 #14)
                             if not assistant_text:
                                 self._refund_iteration()
@@ -1063,11 +1082,11 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break
                 if action is StuckAction.NUDGE:
-                    self.session.add_message(Message.user(stuck.nudge_message()))
+                    self.session.add_message(Message.user(_control_rail(stuck.nudge_message())))
                     self._persist()
                     yield AgentStatus(message="recovering: no progress — nudging a rethink")
                 elif action is StuckAction.NARROW:
-                    self.session.add_message(Message.user(stuck.narrow_message()))
+                    self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                     restrict_readonly_next = True
                     self._persist()
                     yield AgentStatus(
