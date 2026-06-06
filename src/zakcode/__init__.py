@@ -174,6 +174,8 @@ class Agent:
         extra_skill_dirs: Sequence[str | Path] | None = None,
         extra_workspace_roots: Sequence[str | Path] | None = None,
         enable_rules: bool = False,
+        enable_identity: bool = True,
+        identity: str | None = None,
         enable_memory: bool = False,
         memory_provider: MemoryProvider | None = None,
         enable_compaction: bool = False,
@@ -260,15 +262,34 @@ class Agent:
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
             rules_text = self.rule_registry.render()
 
+        # Operator identity (self.md), loaded ONCE here so it is cache-stable for the session.
+        # An explicit ``identity`` arg wins; else discover it from the workspace when enabled
+        # (the default). It is operator-authored = TRUSTED, so it is injected UN-fenced (unlike
+        # memory recall); never wire a request-supplied identity through this path.
+        self.identity: str | None = None
+        self.identity_error: str | None = None
+        if identity is not None:
+            self.identity = identity
+        elif enable_identity:
+            from zakcode.identity import load_identity
+
+            self.identity, self.identity_error = load_identity(self.settings.workspace_root)
+
         # Wire the discovered content into the prompt builder. With no injected
         # builder, construct one; with an injected builder, fill any empty stable-tier
-        # slot so enable_skills/enable_rules are never silently no-ops.
-        if prompt_builder is None and (skills_catalog or rules_text):
+        # slot so enable_identity/enable_skills/enable_rules are never silently no-ops.
+        # NOTE: the construction condition MUST include self.identity, or a workspace with
+        # ONLY a self.md (no rules/skills) would leave prompt_builder=None and the loop's
+        # default builder would ignore the loaded identity.
+        if prompt_builder is None and (skills_catalog or rules_text or self.identity):
             prompt_builder = SystemPromptBuilder(
+                identity=self.identity,
                 extra_instructions=skills_catalog or None,
                 rules=rules_text or None,
             )
         elif prompt_builder is not None:
+            if self.identity and not prompt_builder.identity:
+                prompt_builder.identity = self.identity
             if skills_catalog and not prompt_builder.extra_instructions:
                 prompt_builder.extra_instructions = skills_catalog
             if rules_text and not prompt_builder.rules:
