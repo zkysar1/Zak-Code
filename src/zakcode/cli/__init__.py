@@ -950,11 +950,20 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
 def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
     port: int = typer.Option(8000, "--port", "-p", help="Bind port."),
+    workspace: str | None = typer.Option(
+        None,
+        "--workspace",
+        "-w",
+        help="Workspace root the served mind loads identity/rules/memory/skills from.",
+    ),
 ) -> None:
     """Run the Zak Code HTTP API server (FastAPI over the same core).
 
     Exposes REST + SSE + a WebSocket channel — see ``docs/ARCHITECTURE.md``. Requires
-    the ``server`` extra (``pip install 'zakcode[server]'``).
+    the ``server`` extra (``pip install 'zakcode[server]'``). ``--workspace`` points the
+    served mind at one customer env (one container per env); without it the server uses the
+    configured workspace root (``ZAKCODE_WORKSPACE_ROOT`` / cwd). It is a pointer, not a
+    behavior toggle.
     """
     try:
         import uvicorn
@@ -967,8 +976,14 @@ def serve(
         )
         raise typer.Exit(code=1) from exc
 
-    console.print(f"[bold]Zak Code[/bold] {__version__} — serving on http://{host}:{port}")
-    uvicorn.run(create_app(), host=host, port=port)
+    fastapi_app = (
+        create_app(settings=load_settings(workspace_root=workspace))
+        if workspace is not None
+        else create_app()
+    )
+    where = f" (mind workspace: {workspace})" if workspace is not None else ""
+    console.print(f"[bold]Zak Code[/bold] {__version__} — serving on http://{host}:{port}{where}")
+    uvicorn.run(fastapi_app, host=host, port=port)
 
 
 def main() -> None:

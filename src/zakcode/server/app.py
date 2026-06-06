@@ -90,21 +90,35 @@ AgentFactory = Callable[[Session, str | None, PermissionPrompter | None], AgentL
 
 
 def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFactory:
-    """Build the production factory: a real :class:`~zakcode.Agent` per request.
+    """Build the production factory: a real :class:`~zakcode.Agent` per request, running a MIND.
 
-    Bound to ``settings`` so every agent shares the operator's configured posture
-    (model, permission mode, workspace root, …) and to ``store`` so a turn persists
-    incrementally at message boundaries — the same durability the in-process CLI
-    agent gets.
+    Each request's agent loads the env's MIND from ``settings.workspace_root`` — the operator
+    identity (``self.md``), always-on rules, cross-session memory, and skills — so ``zakcode
+    serve`` behaves like the CLI. The topology is one container per customer env, selected by
+    the workspace root; sub-agents / MCP / plugins / compaction are deliberately NOT enabled
+    here (a separate posture decision, out of scope for the connection substrate).
 
-    A per-request ``model`` override swaps **only** the model via
-    :meth:`Settings.model_copy`, preserving the rest of the posture; rebuilding
-    ``Settings`` from the environment would silently drop ``permission_mode`` /
-    ``workspace_root`` and change the security stance of the turn. A ``prompter``
-    (from the WebSocket bridge) makes ``ask`` mode interactive; with none, ``ask``
-    fails closed (writes/shell denied) — the safe default for headless REST/SSE.
+    Bound to ``settings`` so every agent shares the operator's configured posture (model,
+    permission mode, workspace root, …) and to ``store`` so a turn persists incrementally at
+    message boundaries — the same durability the in-process CLI agent gets.
+
+    A per-request ``model`` override swaps **only** the model via :meth:`Settings.model_copy`,
+    preserving the rest of the posture; rebuilding ``Settings`` from the environment would
+    silently drop ``permission_mode`` / ``workspace_root`` and change the security stance of
+    the turn. A ``prompter`` (from the WebSocket bridge) makes ``ask`` mode interactive; with
+    none, ``ask`` fails closed (writes/shell denied) — the safe default for headless REST/SSE.
+
+    Memory: ONE :class:`SqliteMemoryProvider` is built here and SHARED across every request's
+    agent (passed via ``memory_provider=``), so concurrent sessions reuse a single DB handle
+    rather than each opening its own.
     """
     from zakcode import Agent
+    from zakcode.memory.sqlite_store import SqliteMemoryProvider
+
+    db_path = settings.memory_db_path or str(
+        Path(settings.workspace_root) / ".zakcode" / "memory.db"
+    )
+    shared_memory = SqliteMemoryProvider(db_path)
 
     def factory(
         session: Session, model: str | None, prompter: PermissionPrompter | None
@@ -118,6 +132,10 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
             settings=agent_settings,
             session_store=store,
             prompter=prompter,
+            enable_skills=True,
+            enable_rules=True,
+            enable_memory=True,
+            memory_provider=shared_memory,
         )
 
     return factory

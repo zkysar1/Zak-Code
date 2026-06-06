@@ -97,7 +97,7 @@ Progressive-disclosure skills as markdown (`SKILL.md` with YAML frontmatter). Le
 Key types: `Skill`, `SkillFrontmatter`, `SkillRegistry`, `SkillLoader`.
 
 ### `server/`
-FastAPI app wrapping the core (see API surface below). Serializes the core's `AgentEvent` stream to SSE and WebSocket frames; bridges interactive permission prompts to clients over the WebSocket `action_required` channel; manages one shared asyncio event loop for the process.
+FastAPI app wrapping the core (see API surface below). Serializes the core's `AgentEvent` stream to SSE and WebSocket frames; bridges interactive permission prompts to clients over the WebSocket `action_required` channel; manages one shared asyncio event loop for the process. The default agent factory builds each request's `Agent` with a full **mind** — operator identity (`self.md`), always-on rules, cross-session memory (one shared SQLite provider), and skills — loaded from the workspace root (`serve --workspace` / `ZAKCODE_WORKSPACE_ROOT`); the topology is one container per customer env.
 Key types: `create_app()`, request/response Pydantic models (`ChatRequest`, `ChatResponse`, `SessionInfo`, `ToolInfo`), `EventSerializer`.
 
 ### `cli/`
@@ -138,7 +138,7 @@ The design goal is that the loop, session, tools, and context manager are **comp
 ## Context management & compaction
 
 Context is a first-class, actively managed resource — quality decays well before the technical limit ("context rot"), so the effective window is treated as smaller than advertised.
-- **Cache-stable prompt ordering.** The system prompt is built **stable → context → volatile** with a `DYNAMIC_BOUNDARY`. The stable prefix (identity, safety policy, tool schemas) is cached at the provider level; toolsets, memory, and past context are never mutated mid-conversation, protecting cache hit rate and cost.
+- **Cache-stable prompt ordering.** The system prompt is built **stable → context → volatile** with a `DYNAMIC_BOUNDARY`. The stable prefix (identity, safety policy, tool schemas) is cached at the provider level; toolsets, memory, and past context are never mutated mid-conversation, protecting cache hit rate and cost. The **identity** slot is the operator-authored `self.md` when present (`.zakcode/self.md` > `<ws>/self.md` > `~/.config/zakcode/self.md`), which REPLACES the default identity line — this is how a "mind" gives the runtime its persona; absent a `self.md` the prompt is byte-for-byte the default.
 - **Just-in-time context.** Prefer lightweight identifiers + on-demand tool calls over pre-loading files. Tool results are summarized per type (bash vs. file read), large outputs are capped with truncation hints, and the live TODO list is re-injected near the end of context to counter instruction fade-out.
 - **Real-token-triggered auto-compaction.** `Compactor` fires at ~70–80% of the model's real context window (configurable). It preserves the last N (3–5) turns verbatim and replaces older history with a single leading **LLM-written** system summary (the heuristic structured summary is kept only as an offline fallback). Re-compaction detects and merges any prior summary (idempotent), and the summary carries a "resume directly, do not acknowledge" instruction. Compaction pairs with Git-based checkpoints so state is recoverable.
 

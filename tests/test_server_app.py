@@ -147,6 +147,32 @@ def test_default_factory_model_override_preserves_posture(tmp_path: Path) -> Non
     assert plain.settings is settings
 
 
+def test_default_factory_loads_a_mind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # serve runs a full MIND: the default factory builds agents with operator identity +
+    # always-on rules + cross-session memory, sharing ONE memory provider across requests.
+    from zakcode.server.app import _default_agent_factory
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")  # ignore the real user home
+
+    ws = tmp_path / "ws"
+    (ws / ".zakcode" / "rules").mkdir(parents=True)
+    (ws / "self.md").write_text("You are Vinheim, the guide.", encoding="utf-8")
+    (ws / ".zakcode" / "rules" / "tone.md").write_text("Always be kind.", encoding="utf-8")
+
+    settings = Settings(default_model="scripted/test", workspace_root=ws)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    factory = _default_agent_factory(settings, store)
+
+    a1 = factory(Session(cwd=str(ws), model="scripted/test"), None, None)
+    a2 = factory(Session(cwd=str(ws), model="scripted/test"), None, None)
+
+    prompt = a1.loop._build_system()
+    assert "You are Vinheim, the guide." in prompt  # identity (self.md)
+    assert "Always be kind." in prompt  # always-on rule
+    assert a1.memory is not None  # cross-session memory enabled
+    assert a1.memory is a2.memory  # ONE shared provider across requests (not one DB-open each)
+
+
 def test_tools_lists_builtins(client: TestClient) -> None:
     resp = client.get("/tools")
     assert resp.status_code == 200
