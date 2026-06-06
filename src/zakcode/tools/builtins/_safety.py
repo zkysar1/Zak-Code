@@ -13,6 +13,8 @@ world directory, and an external meta directory — all separate filesystem root
 
 from __future__ import annotations
 
+import ntpath
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -20,6 +22,21 @@ from pathlib import Path
 
 class PathEscapeError(Exception):
     """Raised when a requested path resolves outside the workspace root."""
+
+
+def _reject_alternate_data_stream(path: str) -> None:
+    """On Windows, reject an NTFS alternate-data-stream marker (a ``:`` outside the optional
+    drive prefix), e.g. ``public.txt:secret``. Such a path stays inside the workspace (the
+    colon binds to the leaf) but reads a hidden stream that ``list_dir``/``glob`` never show.
+    POSIX has no ADS and allows ``:`` in filenames, so this is a no-op there. (audit3 #9)
+    """
+    if os.name != "nt":
+        return
+    _drive, rest = ntpath.splitdrive(path)
+    if ":" in rest:
+        raise PathEscapeError(
+            f"Path {path!r} contains an alternate-data-stream marker (':') and is refused"
+        )
 
 
 def resolve_in_workspace(path: str, workspace_root: Path) -> Path:
@@ -42,6 +59,7 @@ def resolve_in_workspace(path: str, workspace_root: Path) -> Path:
         raise PathEscapeError(f"Path must be a string, got {type(path).__name__}")
     if not path:
         raise PathEscapeError("Path must not be empty")
+    _reject_alternate_data_stream(path)
 
     root = Path(workspace_root).resolve()
     candidate = Path(path)
@@ -80,6 +98,7 @@ def resolve_in_workspace_roots(path: str, roots: Sequence[Path]) -> Path:
         raise PathEscapeError("Path must not be empty")
     if not roots:
         raise PathEscapeError("At least one workspace root is required")
+    _reject_alternate_data_stream(path)
 
     resolved_roots = [Path(r).resolve() for r in roots]
     candidate = Path(path)

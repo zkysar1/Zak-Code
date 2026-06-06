@@ -329,6 +329,14 @@ class PermissionPolicy:
                         return description
         return None
 
+    def dangerous_reason(self, arguments: dict) -> str | None:
+        """Public: the catastrophic-blocklist reason ``arguments`` match, or None.
+
+        Lets a caller re-check the NEVER-WAIVABLE blocklist against arguments that changed
+        after authorization — e.g. a PreToolUse hook that rewrote a command. (audit3 #5)
+        """
+        return self._dangerous_reason(arguments)
+
     def decide(self, spec: ToolSpec | None, arguments: dict) -> tuple[PermissionDecision, str]:
         """Return the static (pre-prompt, stateless) verdict and a human reason.
 

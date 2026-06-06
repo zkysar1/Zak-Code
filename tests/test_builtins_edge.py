@@ -49,6 +49,18 @@ def test_safety_rejects_absolute_outside_root(tmp_path):
         resolve_in_workspace(str(outside), tmp_path)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="NTFS alternate data streams are Windows-only")
+def test_safety_rejects_alternate_data_stream(tmp_path):
+    # audit3 #9: a ':' outside the drive prefix names an NTFS alternate data stream that
+    # list_dir/glob never reveal — refuse it. A leading drive prefix (C:\) is still fine.
+    with pytest.raises(PathEscapeError):
+        resolve_in_workspace("public.txt:secret", tmp_path)
+    with pytest.raises(PathEscapeError):
+        resolve_in_workspace_roots("public.txt:secret", [tmp_path])
+    leaf = tmp_path / "ok.txt"  # a normal absolute Windows path (drive colon only) is fine
+    assert resolve_in_workspace(str(leaf), tmp_path) == leaf.resolve()
+
+
 def test_safety_accepts_legitimate_nested_path(tmp_path):
     resolved = resolve_in_workspace("a/b/c.txt", tmp_path)
     assert resolved == (tmp_path / "a" / "b" / "c.txt").resolve()

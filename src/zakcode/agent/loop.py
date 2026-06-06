@@ -416,6 +416,23 @@ class AgentLoop:
             )
         if pre.mutated_arguments is not None:
             arguments = pre.mutated_arguments
+            # A PreToolUse hook may rewrite the arguments AFTER the permission gate ran on
+            # the originals; re-check the NEVER-WAIVABLE catastrophic blocklist against what
+            # will ACTUALLY execute, so a hook can't turn an authorized 'echo hi' into an
+            # 'rm -rf /'. (Re-check only the blocklist, not the full prompt, so a benign
+            # rewrite doesn't re-prompt.) (audit3 #5)
+            if self.permission_policy is not None:
+                danger = self.permission_policy.dangerous_reason(arguments)
+                if danger is not None:
+                    return ToolResultBlock(
+                        tool_use_id=call.id,
+                        output=(
+                            f"Blocked: a hook rewrote {call.name!r} into a dangerous command "
+                            f"({danger}); the catastrophic blocklist is never waived."
+                        ),
+                        is_error=True,
+                        data={"hook_blocked": True, "dangerous": True, "reason": danger},
+                    )
 
         # 3. Execute (registry.execute wraps any failure into an error ToolResult).
         tool_res = await self.registry.execute(call.name, arguments, ctx)
