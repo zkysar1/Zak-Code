@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import subprocess
-
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -13,6 +10,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 
 # Default and hard-cap timeouts, in seconds.
 _DEFAULT_TIMEOUT = 60
@@ -63,31 +61,28 @@ class BashTool(Tool):
             timeout = _DEFAULT_TIMEOUT
         timeout = min(timeout, _MAX_TIMEOUT)
 
+        # run_capturing spawns the child in its own process group so a timeout OR a turn
+        # cancellation kills the whole tree (no orphaned grandchildren); CancelledError is
+        # NOT caught here (it is BaseException) so a cancel propagates after teardown.
         try:
-            completed = await asyncio.to_thread(
-                self._run, command, str(ctx.workspace_root), timeout
+            output, exit_code = await run_capturing(
+                shell_command=command,
+                cwd=str(ctx.workspace_root),
+                timeout=timeout,
             )
-        except subprocess.TimeoutExpired as exc:
-            partial = exc.output or ""
-            if isinstance(partial, bytes):
-                partial = partial.decode("utf-8", errors="replace")
-            message = f"Command timed out after {timeout}s: {command}"
-            if partial:
-                message += f"\n--- partial output ---\n{partial[:_MAX_OUTPUT]}"
+        except CommandTimeout:
             return ToolResult.error(
-                message,
+                f"Command timed out after {timeout}s: {command}",
                 data={"command": command, "timed_out": True},
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to run command: {exc}", data={"command": command})
 
-        output = completed.stdout or ""
         truncated = False
         if len(output) > _MAX_OUTPUT:
             output = output[:_MAX_OUTPUT] + "\n\n[... output truncated ...]"
             truncated = True
 
-        exit_code = completed.returncode
         combined = output
         if combined and not combined.endswith("\n"):
             combined += "\n"
@@ -101,18 +96,3 @@ class BashTool(Tool):
         if exit_code != 0:
             return ToolResult.error(combined, data=data)
         return ToolResult.ok(combined, data=data)
-
-    @staticmethod
-    def _run(command: str, cwd: str, timeout: int) -> subprocess.CompletedProcess[str]:
-        """Synchronously run ``command`` via the platform shell, combining streams."""
-        return subprocess.run(
-            command,
-            cwd=cwd,
-            shell=True,  # noqa: S602 - this is the explicit shell tool
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-            errors="replace",
-        )

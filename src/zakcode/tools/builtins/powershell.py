@@ -16,9 +16,7 @@ like ``Remove-Item -Recurse -Force`` and ``Format-Volume``).
 
 from __future__ import annotations
 
-import asyncio
 import shutil
-import subprocess
 
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
@@ -28,6 +26,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 
 # Default and hard-cap timeouts, in seconds (kept in step with the bash tool).
 _DEFAULT_TIMEOUT = 60
@@ -96,31 +95,30 @@ class PowerShellTool(Tool):
             timeout = _DEFAULT_TIMEOUT
         timeout = min(timeout, _MAX_TIMEOUT)
 
+        # -NoProfile for a clean/fast session, -NonInteractive so a cmdlet never blocks on a
+        # prompt, and -Command - to read the script from stdin (avoids argv quoting pitfalls).
+        # run_capturing spawns in its own process group so a timeout or turn cancellation
+        # kills the whole tree; CancelledError propagates (not caught) after teardown.
         try:
-            completed = await asyncio.to_thread(
-                self._run, exe, command, str(ctx.workspace_root), timeout
+            output, exit_code = await run_capturing(
+                argv=[exe, "-NoProfile", "-NonInteractive", "-Command", "-"],
+                cwd=str(ctx.workspace_root),
+                timeout=timeout,
+                stdin_text=command,
             )
-        except subprocess.TimeoutExpired as exc:
-            partial = exc.output or ""
-            if isinstance(partial, bytes):
-                partial = partial.decode("utf-8", errors="replace")
-            message = f"Command timed out after {timeout}s: {command}"
-            if partial:
-                message += f"\n--- partial output ---\n{partial[:_MAX_OUTPUT]}"
+        except CommandTimeout:
             return ToolResult.error(
-                message,
+                f"Command timed out after {timeout}s: {command}",
                 data={"command": command, "timed_out": True},
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to run command: {exc}", data={"command": command})
 
-        output = completed.stdout or ""
         truncated = False
         if len(output) > _MAX_OUTPUT:
             output = output[:_MAX_OUTPUT] + "\n\n[... output truncated ...]"
             truncated = True
 
-        exit_code = completed.returncode
         combined = output
         if combined and not combined.endswith("\n"):
             combined += "\n"
@@ -134,22 +132,3 @@ class PowerShellTool(Tool):
         if exit_code != 0:
             return ToolResult.error(combined, data=data)
         return ToolResult.ok(combined, data=data)
-
-    @staticmethod
-    def _run(exe: str, command: str, cwd: str, timeout: int) -> subprocess.CompletedProcess[str]:
-        """Synchronously run ``command`` via PowerShell, combining streams.
-
-        ``-NoProfile`` for a clean/fast session, ``-NonInteractive`` so a cmdlet never
-        blocks on a prompt, and ``-Command -`` to read the script from stdin — which
-        avoids quoting/escaping pitfalls of passing the command as an argv element.
-        """
-        return subprocess.run(
-            [exe, "-NoProfile", "-NonInteractive", "-Command", "-"],
-            input=command,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout,
-            errors="replace",
-        )
