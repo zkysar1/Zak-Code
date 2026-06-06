@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import ntpath
 import os
 import uuid
 from datetime import UTC, datetime
@@ -53,6 +54,25 @@ _TMP_SUFFIX = ".tmp"
 def _new_id() -> str:
     """Return a fresh random session id (uuid4 hex)."""
     return uuid.uuid4().hex
+
+
+def _is_safe_session_id(session_id: object) -> bool:
+    """Whether ``session_id`` is a safe single filename component (cannot escape base_dir).
+
+    Ids the store mints are uuid4 hex; this also accepts other simple tokens but REJECTS
+    anything that could traverse out of the sessions directory — path separators, ``..``,
+    a ``:`` (Windows drive / NTFS stream), an absolute or UNC path (checked POSIX- AND
+    Windows-style on every OS), a NUL byte, or an empty/blank value. ``session_id`` reaches
+    here straight from an HTTP request body (``ChatRequest.session_id``), so this is a
+    network-facing trust boundary, not a mere sanity check. (audit3 #1)
+    """
+    if not isinstance(session_id, str) or not session_id.strip():
+        return False
+    if session_id in (".", ".."):
+        return False
+    if any(ch in session_id for ch in ("/", "\\", ":", "\x00")):
+        return False
+    return not (os.path.isabs(session_id) or ntpath.isabs(session_id))
 
 
 def _now_iso() -> str:
@@ -133,7 +153,10 @@ class SessionStore:
     """Reads and writes :class:`Session` documents on disk.
 
     Each session is stored as ``<base_dir>/<id>.json``. ``base_dir`` defaults to
-    ``~/.zakcode/sessions`` and is created on construction.
+    ``~/.zakcode/sessions`` and is created on construction. Session ids are validated as
+    safe single filename components (:func:`_is_safe_session_id`) on save/load/delete, so a
+    request-supplied id can never traverse out of ``base_dir`` — load/delete treat an unsafe
+    id as not-found, and save rejects it.
     """
 
     def __init__(self, base_dir: str | os.PathLike[str] | None = None) -> None:
@@ -156,6 +179,8 @@ class SessionStore:
         previously stored session file is left intact -- no partial/garbage file
         survives a failed save.
         """
+        if not _is_safe_session_id(session.id):
+            raise ValueError(f"unsafe session id {session.id!r} (would escape the store dir)")
         path = self._path_for(session.id)
         # Render before touching the filesystem: if serialization raises, the
         # existing on-disk file (if any) is never disturbed.
@@ -189,6 +214,10 @@ class SessionStore:
             SessionCorruptError: the file is not valid UTF-8 JSON, is not a JSON
                 object, or fails schema validation (the file is left untouched).
         """
+        # An id that isn't a safe single component cannot name a real session and must not
+        # be allowed to traverse out of base_dir — treat it as not-found. (audit3 #1)
+        if not _is_safe_session_id(session_id):
+            raise SessionNotFound(session_id)
         path = self._path_for(session_id)
         try:
             payload = path.read_text(encoding="utf-8")
@@ -245,6 +274,8 @@ class SessionStore:
         Returns ``True`` if a session file was removed, ``False`` if none existed.
         Never raises for a missing session, so a double-delete is harmless.
         """
+        if not _is_safe_session_id(session_id):
+            return False  # an unsafe id names no session here — nothing to delete
         try:
             self._path_for(session_id).unlink()
             return True

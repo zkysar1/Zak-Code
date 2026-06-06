@@ -66,6 +66,49 @@ def test_load_missing_id_raises_session_not_found(tmp_path: Path) -> None:
     assert exc.value.session_id == "does-not-exist"
 
 
+_TRAVERSAL_IDS = [
+    "../outside/leak",
+    "..\\outside\\leak",
+    "/etc/passwd",
+    "C:/Windows/win",
+    "C:secret",  # drive-relative
+    "a/b",
+    "..",
+    "with\x00null",
+    "public.txt:secret",  # NTFS alternate data stream
+    "",
+]
+
+
+@pytest.mark.parametrize("bad_id", _TRAVERSAL_IDS)
+def test_load_rejects_traversal_id_as_not_found(tmp_path: Path, bad_id: str) -> None:
+    # audit3 #1: an id that isn't a safe single component must not escape base_dir — load
+    # treats it as not-found, never reaching outside the sessions dir.
+    store = SessionStore(base_dir=tmp_path)
+    # Plant a session-shaped file one level above base_dir to prove it is NOT read.
+    outside = tmp_path.parent / "outside"
+    outside.mkdir(exist_ok=True)
+    (outside / "leak.json").write_text(Session(cwd="C:/secret", model="m").model_dump_json())
+    with pytest.raises(SessionNotFound):
+        store.load(bad_id)
+
+
+@pytest.mark.parametrize("bad_id", _TRAVERSAL_IDS)
+def test_save_rejects_traversal_id(tmp_path: Path, bad_id: str) -> None:
+    # save() is an arbitrary-write primitive at the library boundary; a traversal id is a
+    # caller bug and must be refused before any file is written. (audit3 #1)
+    store = SessionStore(base_dir=tmp_path)
+    session = Session(cwd=".", model="m", id=bad_id)
+    with pytest.raises(ValueError):
+        store.save(session)
+
+
+@pytest.mark.parametrize("bad_id", _TRAVERSAL_IDS)
+def test_delete_rejects_traversal_id(tmp_path: Path, bad_id: str) -> None:
+    store = SessionStore(base_dir=tmp_path)
+    assert store.delete(bad_id) is False  # nothing deleted, no traversal
+
+
 def test_load_invalid_json_raises_corrupt_and_preserves_file(tmp_path: Path) -> None:
     store = SessionStore(base_dir=tmp_path)
     bad = tmp_path / "broken.json"
