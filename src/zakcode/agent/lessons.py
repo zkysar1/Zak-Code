@@ -98,16 +98,21 @@ class LessonWriter:
         text, raw_tags = derived
         scrubbed, _ = redact_secrets(text)
         tags = [redact_secrets(t)[0] for t in raw_tags]
-        if self._is_duplicate(scrubbed):
+        if self._is_duplicate(scrubbed, tags):
             return False
         self._memory.add(scrubbed, kind=LESSON_KIND, tags=tags, source=self._source)
         return True
 
-    def _is_duplicate(self, text: str) -> bool:
-        """True when an equivalent lesson already exists (normalized-exact OR Jaccard >= floor).
+    def _is_duplicate(self, text: str, tags: list[str]) -> bool:
+        """True when an equivalent lesson already exists.
 
-        Searches on the RAW text (FTS returns nothing for a token-less query), then compares
-        normalized forms in Python, filtering to ``kind == 'lesson'``.
+        A candidate duplicates an existing lesson only when it has the SAME identity (kind +
+        tag set — the tag set carries the distinguishing payload, e.g. the failing tool name)
+        AND a near-identical body (normalized-exact OR distinctive-word Jaccard >= the floor).
+        The tag gate is essential: the templates are mostly boilerplate, so without it two
+        stuck-recovery lessons that differ only in tool name would collide above the Jaccard
+        floor and the second would be wrongly dropped (review2 #2). Searches on the RAW text
+        (FTS returns nothing for a token-less query), then compares in Python.
         """
         if self._memory is None:
             return False
@@ -115,11 +120,12 @@ class LessonWriter:
             hits = self._memory.search(text, limit=10)
         except Exception:  # noqa: BLE001 — dedup is best-effort; a search failure never blocks a write
             return False
+        tagset = set(tags)
         norm = _normalize(text)
         norm_tokens = {t for t in _tokens(norm) if t not in _STOPWORDS}
         for hit in hits:
-            if hit.kind != LESSON_KIND:
-                continue
+            if hit.kind != LESSON_KIND or set(hit.tags) != tagset:
+                continue  # different lesson identity -> never a duplicate
             other = _normalize(hit.text)
             if other == norm:
                 return True

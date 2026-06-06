@@ -44,7 +44,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
-from zds_llm_provider import complete_structured
+from zds_llm_provider import complete_structured, schema_error
 
 from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings, load_settings
@@ -369,6 +369,17 @@ def create_app(
             messages = request.to_messages()
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # A malformed client schema is a CALLER error (400), not a 500 and not a wasted model
+        # call — meta-validate it before anything else. (jsonschema raises SchemaError, which is
+        # not a ValidationError/ProviderError, so it would otherwise escape as an unhandled 500.)
+        if request.schema_ is not None:
+            schema_problem = schema_error(request.schema_)
+            if schema_problem is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": "invalid_schema", "detail": schema_problem, "raw_text": None},
+                )
 
         # Build the provider AND run the completion inside ONE guard so a construction error
         # (e.g. a bad request.model) becomes a clean 502, never an unhandled 500.

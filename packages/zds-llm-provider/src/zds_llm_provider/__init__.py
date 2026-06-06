@@ -22,6 +22,7 @@ from zds_llm_provider.structured import (
     complete_structured,
     extract_json,
     make_response_format,
+    schema_error,
 )
 from zds_llm_provider.text_tools import (
     TOOL_CALLING_MODES,
@@ -88,6 +89,7 @@ __all__ = [
     "complete_structured",
     "extract_json",
     "make_response_format",
+    "schema_error",
     # claude code bridge (M-8)
     "ClaudeCodeProvider",
     "CompletionBridge",

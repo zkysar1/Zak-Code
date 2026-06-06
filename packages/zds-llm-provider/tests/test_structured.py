@@ -11,10 +11,12 @@ from zds_llm_provider.messages import Message
 from zds_llm_provider.structured import (
     StructuredResult,
     StructuredValidationError,
+    _extract,
     coerce_structured,
     complete_structured,
     extract_json,
     make_response_format,
+    schema_error,
 )
 from zds_llm_provider.types import Capabilities, LLMResult, Provider
 from zds_llm_provider.usage import Usage
@@ -107,6 +109,47 @@ def test_coerce_structured_degrades_without_jsonschema(monkeypatch: pytest.Monke
     # ...but a non-JSON output still raises (extraction failure is independent of jsonschema).
     with pytest.raises(StructuredValidationError):
         coerce_structured("not json", schema=_OBJ_SCHEMA)
+
+
+# ── review2 hardening: malformed schema, literal null, RecursionError ─────────────
+
+
+def test_schema_error_flags_malformed_schema() -> None:
+    pytest.importorskip("jsonschema")
+    assert schema_error(_OBJ_SCHEMA) is None  # a valid schema
+    assert schema_error({"type": "striing"}) is not None  # invalid type keyword
+    assert schema_error({"type": "string", "pattern": "["}) is not None  # invalid regex
+
+
+def test_coerce_structured_malformed_schema_is_failure_not_raise() -> None:
+    # A malformed / unresolvable schema must surface as StructuredValidationError, never escape
+    # (so /complete returns a clean 5xx, never an unhandled 500). (review2 #1/#4)
+    pytest.importorskip("jsonschema")
+    with pytest.raises(StructuredValidationError):
+        coerce_structured('{"a": "x"}', schema={"$ref": "#/definitions/Missing"})
+
+
+def test_extract_distinguishes_literal_null_from_missing() -> None:
+    assert _extract("null") == (True, None)  # the model emitted a literal null
+    assert _extract("not json") == (False, None)  # no JSON at all
+    assert extract_json("null") is None  # public contract unchanged (None for null)
+
+
+def test_coerce_structured_accepts_literal_null_for_nullable_schema() -> None:
+    pytest.importorskip("jsonschema")
+    # A legitimately-parsed null is validated like any value, not mistaken for a parse failure.
+    assert coerce_structured("null", schema={"type": ["object", "null"]}) is None
+
+
+def test_extract_json_handles_recursionerror(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pathologically-nested model output (RecursionError, not a ValueError) must degrade to None,
+    # never escape — else /complete would 500. (review2 #4)
+    def boom(*_a: object, **_k: object):
+        raise RecursionError("too deep")
+
+    monkeypatch.setattr(structured.json, "loads", boom)
+    monkeypatch.setattr(structured.json.JSONDecoder, "raw_decode", boom)
+    assert extract_json('{"a": 1}') is None
 
 
 # ── complete_structured (the C<->P seam) ─────────────────────────────────────────

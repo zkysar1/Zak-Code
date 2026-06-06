@@ -70,46 +70,61 @@ def make_response_format(
     }
 
 
-def extract_json(text: str) -> Any:
-    """The leading JSON value of ``text``, or ``None`` if it does not start with one.
+def _extract(text: str) -> tuple[bool, Any]:
+    """``(found, value)`` for the leading JSON value of ``text``.
 
-    Strips a leading ```json/``` code fence first, then tries a strict ``json.loads`` and
-    falls back to ``raw_decode`` (which consumes only the leading value, tolerating trailing
-    prose like ``{...} done``). Prose *before* the JSON yields ``None`` — the text is left
-    for the caller to treat as a failure rather than mis-parsed. Mirrors the text-protocol
-    tool-call parser's leading-object tolerance.
+    Distinguishes a model that emitted the literal token ``null`` (``found=True, value=None``)
+    from one that produced no JSON at all (``found=False``) — so a nullable-root schema can
+    accept ``null`` rather than it being mistaken for a parse failure. Strips a leading
+    ```json/``` fence and tolerates trailing prose; leading prose yields ``found=False``.
+    ``RecursionError`` from pathologically-nested input degrades to ``found=False`` (it must
+    never escape — see :func:`coerce_structured`'s callers, which must not 500).
     """
     s = text.strip()
     if not s:
-        return None
+        return False, None
     if s.startswith("```"):
         s = _FENCE_OPEN_RE.sub("", s, count=1)
         if s.rstrip().endswith("```"):
             s = s.rstrip()[:-3]
         s = s.strip()
     if not s:
-        return None
+        return False, None
     try:
-        return json.loads(s)
-    except (json.JSONDecodeError, ValueError):
+        return True, json.loads(s)
+    except (json.JSONDecodeError, ValueError, RecursionError):
         pass
     try:
         obj, _end = json.JSONDecoder().raw_decode(s)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return obj
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return False, None
+    return True, obj
+
+
+def extract_json(text: str) -> Any:
+    """The leading JSON value of ``text``, or ``None`` if it does not start with one.
+
+    Strips a leading ```json/``` code fence, then parses (tolerating trailing prose); leading
+    prose yields ``None``. NOTE ``None`` is also returned for a literal ``null`` — callers that
+    must tell the two apart use the internal ``_extract`` (e.g. :func:`coerce_structured`).
+    Never raises (even on pathological nesting).
+    """
+    found, value = _extract(text)
+    return value if found else None
 
 
 def coerce_structured(text: str, *, schema: dict[str, Any] | None = None) -> Any:
     """Parse ``text`` into a JSON value and (when possible) validate it against ``schema``.
 
     Raises :class:`StructuredValidationError` when no JSON value can be extracted, or when a
-    ``schema`` is supplied AND ``jsonschema`` is installed AND validation fails. When
-    ``jsonschema`` is absent the schema check is skipped (extraction-only degradation), so a
-    minimal install still returns the parsed object. Returns the parsed value on success.
+    ``schema`` is supplied AND ``jsonschema`` is installed AND validation fails OR the schema
+    itself is unusable (a malformed schema / unresolvable ``$ref`` is reported as a validation
+    FAILURE, never escaping as an unhandled 500). When ``jsonschema`` is absent the schema check
+    is skipped (extraction-only degradation). A legitimately-parsed ``null`` is validated like
+    any other value, not treated as a parse failure.
     """
-    data = extract_json(text)
-    if data is None:
+    found, data = _extract(text)
+    if not found:
         raise StructuredValidationError("no JSON value found in model output", raw_text=text)
     if schema is not None and jsonschema is not None:
         try:
@@ -118,7 +133,28 @@ def coerce_structured(text: str, *, schema: dict[str, Any] | None = None) -> Any
             raise StructuredValidationError(
                 f"output failed schema validation: {exc.message}", raw_text=text
             ) from exc
+        except Exception as exc:  # noqa: BLE001 — a malformed schema / unresolvable $ref must
+            # surface as a clean validation failure, never escape as an unhandled 500.
+            raise StructuredValidationError(
+                f"schema could not be applied: {exc}", raw_text=text
+            ) from exc
     return data
+
+
+def schema_error(schema: dict[str, Any]) -> str | None:
+    """A message if ``schema`` is not a usable JSON Schema, else ``None``.
+
+    Lets a caller (e.g. an HTTP endpoint) reject a malformed *client* schema as a 4xx BEFORE
+    spending a model call. Returns ``None`` when ``jsonschema`` is unavailable (no meta-check is
+    possible, so the schema is accepted and simply not enforced downstream).
+    """
+    if jsonschema is None:
+        return None
+    try:
+        jsonschema.Draft202012Validator.check_schema(schema)
+    except Exception as exc:  # noqa: BLE001 — any meta-schema failure means the schema is unusable
+        return str(exc)
+    return None
 
 
 class StructuredResult(BaseModel):

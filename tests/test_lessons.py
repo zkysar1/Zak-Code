@@ -61,12 +61,12 @@ def _recipe_recovered(command: str = "py a.py") -> RecipeCursor:
     return c
 
 
-def _stuck_recovered() -> StuckTracker:
-    """A tracker that fired a recovery action with a repeatedly-failing call (a stuck recovery)."""
+def _stuck_recovered(tool: str = "boom") -> StuckTracker:
+    """A tracker that fired a recovery action with a repeatedly-failing ``tool``."""
     t = StuckTracker(nudge_at=1, narrow_at=2, stop_at=3, repeated_failure_at=2)
-    t.observe([_c("c1", "boom", k="a")], [_r("c1", is_error=True)], assistant_text="")
+    t.observe([_c("c1", tool, k="a")], [_r("c1", is_error=True)], assistant_text="")
     t.next_action()  # streak 1 -> NUDGE (took_action True)
-    t.observe([_c("c2", "boom", k="a")], [_r("c2", is_error=True)], assistant_text="")
+    t.observe([_c("c2", tool, k="a")], [_r("c2", is_error=True)], assistant_text="")
     t.next_action()
     return t
 
@@ -156,6 +156,37 @@ def test_normalize_collapses_paths_and_numbers() -> None:
     a = _normalize("run C:/x/app.py line 42 hash deadbeefcafe")
     b = _normalize("run C:/y/other.py line 99 hash 0123456789ab")
     assert a == b  # volatile bits collapse to the same key
+
+
+def test_gate_a_lessons_for_different_tools_not_deduped() -> None:
+    # review2 #2: two stuck-recovery lessons for DIFFERENT failing tools differ only in the tool
+    # name (heavy boilerplate -> Jaccard > 0.8), but distinct tags must keep them both.
+    mem = _FakeMemory()
+    writer = LessonWriter(mem, source="x")
+
+    def write(tool: str) -> bool:
+        return writer.maybe_write(
+            _stuck_recovered(tool), RecipeCursor(enabled=True), stop_reason="completed"
+        )
+
+    assert write("boom") is True
+    assert write("crash") is True  # different tag identity -> not a duplicate
+    assert mem.count() == 2
+    assert write("boom") is False  # same tool again -> duplicate
+    assert mem.count() == 2
+
+
+def test_gate_b_no_cross_file_misattribution() -> None:
+    # review2 #3: file a fails then recovers; file b then succeeds on its FIRST run (never failed)
+    # and must NOT overwrite the genuine recovery command.
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("wa", "write_file", path="a.py")], [_r("wa", path="a.py")])
+    c.observe([_c("ra1", "bash", command="py a.py")], [_r("ra1", is_error=True)])
+    c.observe([_c("ra2", "bash", command="py a.py")], [_r("ra2")])
+    assert c.recovered_command == "py a.py"
+    c.observe([_c("wb", "write_file", path="b.py")], [_r("wb", path="b.py")])
+    c.observe([_c("rb", "bash", command="py b.py")], [_r("rb")])  # b first-try success
+    assert c.recovered_command == "py a.py"  # still a's genuine recovery, not b's
 
 
 # ── loop integration ─────────────────────────────────────────────────────────────

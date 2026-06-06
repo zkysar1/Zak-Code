@@ -267,9 +267,10 @@ class RecipeCursor:
         self._abs_targets: list[str] = []  # their paths, in write order (for the harness run)
         self._verified: set[str] = set()  # basenames that have been run successfully
         self.harness_runs = 0  # how many harness-issued verification runs were issued
-        # Recovery tracking (research R1): a run of a created file that FAILED, then one that
-        # SUCCEEDED — the failed-then-fixed signal a deterministic lesson is built from.
-        self._last_failed_command: str | None = None
+        # Recovery tracking (research R1): per-target, the command whose run of a created file
+        # FAILED — so a later SUCCESS that runs the SAME target is recorded as a recovery, and a
+        # never-failed file's first-try success is never misattributed as one. (review2 #3)
+        self._failed_by_target: dict[str, str] = {}
         self._recovered_command: str | None = None
 
     @property
@@ -292,13 +293,14 @@ class RecipeCursor:
             if result is None:
                 continue
             if result.is_error:
-                # Record a FAILED run of a created file so a later success yields a recovery
-                # lesson (research R1). Does NOT affect verification — a failed run still
+                # Record a FAILED run PER executed target so a later success of the SAME file is
+                # a recovery (research R1). Does NOT affect verification — a failed run still
                 # verifies nothing, so the gate behaves exactly as before.
                 if call.name in _RUN_TOOLS and self.wrote_runnable:
                     command = call.arguments.get("command")
-                    if isinstance(command, str) and _executed_targets(command, self._targets):
-                        self._last_failed_command = command
+                    if isinstance(command, str):
+                        for base in _executed_targets(command, self._targets):
+                            self._failed_by_target[base] = command
                 continue
             if call.name in _WRITE_TOOLS:
                 path = _runnable_path(call, result)
@@ -320,9 +322,14 @@ class RecipeCursor:
                 output_ok = self.acceptance is None or self.acceptance in (result.output or "")
                 if executed and output_ok:
                     self._verified |= executed
-                    # A success after an earlier FAILED run of a created file = a recovery.
-                    if self._last_failed_command is not None:
+                    # A recovery: this success ran a target whose EARLIER run failed. Bind it
+                    # per-target so a never-failed file's first-try success is not misattributed,
+                    # and clear the recovered targets' failure record. (review2 #3)
+                    recovered = executed & set(self._failed_by_target)
+                    if recovered:
                         self._recovered_command = command
+                        for base in recovered:
+                            self._failed_by_target.pop(base, None)
 
     @property
     def recovered_command(self) -> str | None:

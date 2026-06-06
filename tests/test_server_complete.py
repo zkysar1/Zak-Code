@@ -84,7 +84,9 @@ def _client(
         provider_factory=provider_factory,
         agent_factory=lambda s, m, p: None,  # /complete never builds an agent
     )
-    return TestClient(app)
+    # raise_server_exceptions=False so a regression that 500s shows as status 500 (the
+    # "/complete never 500" invariant is asserted directly), not re-raised as an exception.
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def test_complete_no_schema_returns_raw_text(tmp_path: Path) -> None:
@@ -182,3 +184,20 @@ def test_complete_creates_no_session(tmp_path: Path) -> None:
     client = _client(tmp_path, _ScriptedProvider(["ok"]))
     client.post("/complete", json={"prompt": "hi"})
     assert client.get("/sessions").json() == []
+
+
+def test_complete_malformed_schema_returns_400(tmp_path: Path) -> None:
+    # A meta-invalid client schema is a 400 (caller error), NOT an unhandled 500. (review2 #1)
+    pytest.importorskip("jsonschema")
+    client = _client(tmp_path, _ScriptedProvider(['{"a": "x"}']))
+    r = client.post("/complete", json={"prompt": "hi", "schema": {"type": "striing"}})
+    assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "invalid_schema"
+
+
+def test_complete_unresolvable_ref_schema_never_500(tmp_path: Path) -> None:
+    # An unresolvable $ref slips past meta-validation but must still never 500 (clean 5xx).
+    pytest.importorskip("jsonschema")
+    client = _client(tmp_path, _ScriptedProvider(['{"a": "x"}']))
+    r = client.post("/complete", json={"prompt": "hi", "schema": {"$ref": "#/definitions/Missing"}})
+    assert r.status_code != 500
