@@ -191,32 +191,41 @@ sandbox-widening flag; see [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) §4).
 
 Zak Code aims to stay useful on **small local models** (e.g. `qwen2.5:3b` via Ollama),
 where a weak model can hallucinate a successful write or finish a turn over code it never
-ran. Several knobs harden the create-and-run loop. All are `ZAKCODE_`-prefixed
-[`Settings`](src/zakcode/config.py) (environment or `.env`); defaults below.
+ran. The create-and-run loop is hardened by scaffolding that is **always on and steers
+itself** — there are no reliability feature flags to set (one way of doing things). It
+self-arms from what actually happened this turn, so it costs nothing on turns that don't
+write code, and capable cloud models are unaffected:
+
+- **One tool call per turn (text protocol).** When tools reach the model over the text
+  protocol, the agent emits/parses exactly one tool call per turn and stops, so a weak
+  model can't fabricate tool results or leak chat-template tokens.
+- **Write-grounding.** After a successful `write_file`/`edit_file`, the file is read back
+  from disk and the real content + a syntax check are injected, so the model can't
+  hallucinate that a write did what it intended. (No-ops when nothing was written.)
+- **The Recipe Cursor — a verify-before-finish gate.** Once the model writes a **runnable
+  script** this turn (`.py`/`.js`/`.ts`/`.sh`/`.rb`/`.ps1`/…), the turn can't end until
+  that file has been *run successfully*. The gate self-arms from the observed write; an
+  unfixable file ends as `recipe_stalled` (never a false success) after a bounded number of
+  attempts.
+- **Harness-issued run.** When the model writes a file but doesn't run it, the harness runs
+  it *itself* (picking the interpreter from the extension) to verify — but **only when that
+  run would auto-allow without a prompt** (allow mode or a prior `bash` grant); otherwise it
+  falls back to nudging the model. It never auto-runs shell behind an uninitiated prompt.
+- **Acceptance compare.** When the request clearly states an expected output literal, the
+  run's output must also contain it (catches "runs but prints the wrong thing"). Extraction
+  is high-precision — any ambiguity falls back to exit-0-only, so it can never over-gate.
+
+The only related knob is how tools reach the model, which already self-resolves by provider:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `ZAKCODE_TOOL_CALLING_MODE` | `auto` | How tools reach the model: `auto` (native when supported; **text protocol for Ollama**, whose native path is unreliable) / `native` / `text`. |
-| `ZAKCODE_SINGLE_TOOL_PER_TURN` | `true` | Text-protocol only: emit/parse exactly one tool call per turn and stop, so a weak model can't fabricate tool results or leak chat-template tokens. |
-| `ZAKCODE_VERIFY_WRITES` | `true` | **Write-grounding:** after a successful `write_file`/`edit_file`, read the file back from disk and inject the real content + a syntax check, so the model can't hallucinate that a write did what it intended. |
-| `ZAKCODE_RECIPE_MODE` | `false` | **The Recipe Cursor:** a verify-before-finish gate — once the model writes a runnable `.py` this turn, the turn can't end until the model has *run it successfully*; an unfixable file ends as `recipe_stalled` (never a false success). |
-| `ZAKCODE_RECIPE_ATTEMPT_CAP` | `3` | Recipe mode: how many times to nudge toward verification before giving up. |
-| `ZAKCODE_RECIPE_ACCEPTANCE_COMPARE` | `false` | Recipe mode: when the request clearly states an expected output literal, also require the program's output to contain it (catches "runs but prints the wrong thing"). Extraction is high-precision (any ambiguity → off). |
-| `ZAKCODE_RECIPE_HARNESS_RUN` | `false` | Recipe mode: let the harness *run* the written `.py` itself to verify it — but **only when that run would auto-allow without a prompt** (allow mode or a prior `bash` grant); otherwise it falls back to nudging the model. |
+| `ZAKCODE_TOOL_CALLING_MODE` | `auto` | How tools reach the model: `auto` (native when supported; **text protocol for Ollama**, whose native path is unreliable) / `native` / `text`. `native`/`text` are a debug override; `auto` is correct for almost everyone. |
 
-> **Defaults note.** `verify_writes` and `single_tool_per_turn` are **on by default** in
-> `zakcode chat` (the `Agent` facade wires them from `Settings`); the bare `AgentLoop`
-> library default is off, so embedders opt in explicitly. Disable write-grounding with
-> `ZAKCODE_VERIFY_WRITES=false`. The Recipe Cursor (`recipe_*`) is **off by default** and
-> fully inert unless enabled, so capable cloud models are unaffected.
-
-A good starting `.env` for a 3B local model:
+A good starting `.env` for a 3B local model is just the model itself — the reliability
+scaffolding needs no configuration:
 
 ```dotenv
 ZAKCODE_DEFAULT_MODEL=ollama/qwen2.5:3b
-ZAKCODE_RECIPE_MODE=true
-ZAKCODE_RECIPE_ACCEPTANCE_COMPARE=true
-ZAKCODE_RECIPE_HARNESS_RUN=true
 ```
 
 ## Platform support

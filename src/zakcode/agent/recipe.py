@@ -3,12 +3,17 @@
 A weak local model writes a file, claims success, and ends the turn over code it never
 actually ran (or that is broken) — failures #2 (incoherent plan) and #5 (broken final
 state). The cursor makes the HARNESS, not the model, own "done": once the model has
-written a runnable (``.py``) file this turn, the turn may not end ``completed`` until the
-model has RUN that file successfully (a ``bash``/``powershell`` result with no error whose
-command actually *executes* the written file — run by an interpreter or directly, not
-merely ``echo``/``cat``-ing it). If it cannot get there within ``attempt_cap``
-nudges, the turn ends gracefully as ``recipe_stalled`` rather than deadlocking or claiming
-a false success.
+written a **runnable script** this turn (a file whose extension maps to a known interpreter
+— ``.py``/``.js``/``.ts``/``.sh``/``.rb``/``.ps1``/... see :data:`_INTERPRETER_BY_EXT`),
+the turn may not end ``completed`` until the model has RUN that file successfully (a
+``bash``/``powershell`` result with no error whose command actually *executes* the written
+file — run by an interpreter or directly, not merely ``echo``/``cat``-ing it). If it cannot
+get there within ``attempt_cap`` nudges, the turn ends gracefully as ``recipe_stalled``
+rather than deadlocking or claiming a false success.
+
+The gate is **always on and self-arms from the observed write** — it is not a feature flag.
+A turn that writes no runnable script is wholly unaffected (``needs_verification`` stays
+False), so "always on" costs nothing on non-create-and-run turns.
 
 Pure per-turn state: the loop creates one cursor per turn, feeds it each iteration's
 ``(calls, results)`` via :meth:`observe`, and consults :meth:`needs_verification` at the
@@ -50,9 +55,28 @@ _INTERPRETERS = {
 }
 #: Package runners that execute via a ``run`` subcommand (e.g. ``uv run app.py``).
 _RUNNERS = {"uv", "poetry", "pdm", "hatch", "rye", "pipenv"}
+#: Runnable script extensions → the interpreters (in preference order) that execute them.
+#: A successful write/edit of a file with one of these extensions ARMS the verify gate, and
+#: the harness-issued run uses the first interpreter present on PATH. Generalizes the gate
+#: beyond Python; an extension with no available interpreter simply falls back to nudging.
+_INTERPRETER_BY_EXT: dict[str, tuple[str, ...]] = {
+    ".py": ("py", "python3", "python"),
+    ".js": ("node",),
+    ".mjs": ("node",),
+    ".cjs": ("node",),
+    ".ts": ("deno", "bun", "tsx", "ts-node"),
+    ".sh": ("bash", "sh"),
+    ".bash": ("bash", "sh"),
+    ".rb": ("ruby",),
+    ".ps1": ("pwsh", "powershell"),
+}
 #: Shell tokens that separate one command from the next; matching is per-segment so an
 #: interpreter in one segment never blesses a filename merely named in another.
 _SEGMENT_SEPARATORS = {"&&", "||", ";", "|", "&", "\n"}
+#: Windows executable suffixes stripped from a command's head before the interpreter check,
+#: so a Windows invocation (``python.exe x.py``, ``node.cmd x.js``, and the very common
+#: ``sys.executable`` form) is recognized as a real run — not just the bare ``python``/``py``.
+_EXE_SUFFIXES = (".exe", ".cmd", ".bat", ".com")
 
 # Conservative acceptance extraction (Slice 2b-C): a stated expected-output literal in
 # the request, captured only when unambiguous so a wrong guess can never over-gate.
@@ -108,6 +132,20 @@ def _basename_any(token: str) -> str:
     return re.split(r"[\\/]", token)[-1]
 
 
+def _interpreter_name(token: str) -> str:
+    """The command head normalized for the interpreter check: basename, lowercased, and
+    with a trailing Windows executable suffix (``.exe``/``.cmd``/``.bat``/``.com``) removed.
+
+    This is why ``C:\\...\\python.exe x.py`` (the ``sys.executable`` form weak models emit
+    on Windows) counts as a real run of ``x.py`` exactly like bare ``python x.py``.
+    """
+    name = _basename_any(token).lower()
+    for suffix in _EXE_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
 def _tokenize(command: str) -> list[str]:
     """Split a shell command into tokens, tolerant of quotes and Windows backslashes.
 
@@ -144,10 +182,10 @@ def _executed_targets(command: str, targets: set[str]) -> set[str]:
     for seg in segments:
         if not seg:
             continue
-        head = _basename_any(seg[0]).lower()
+        head = _interpreter_name(seg[0])
         if head in _INTERPRETERS:
             body = seg[1:]
-        elif head in _RUNNERS and len(seg) >= 2 and _basename_any(seg[1]).lower() == "run":
+        elif head in _RUNNERS and len(seg) >= 2 and _interpreter_name(seg[1]) == "run":
             body = seg[2:]
         else:
             body = []
@@ -160,8 +198,12 @@ def _executed_targets(command: str, targets: set[str]) -> set[str]:
     return executed
 
 
-def _python_path(call: ToolCall, result: ToolResultBlock) -> str | None:
-    """The ``.py`` path a successful write/edit touched, else ``None``."""
+def _runnable_path(call: ToolCall, result: ToolResultBlock) -> str | None:
+    """The path a successful write/edit touched IF it is a runnable script, else ``None``.
+
+    "Runnable" = an extension in :data:`_INTERPRETER_BY_EXT` (``.py``/``.js``/``.ts``/
+    ``.sh``/``.rb``/``.ps1``/...). A write of such a file arms the verify-before-finish gate.
+    """
     path: str | None = None
     if isinstance(result.data, dict):
         candidate = result.data.get("path")
@@ -170,20 +212,26 @@ def _python_path(call: ToolCall, result: ToolResultBlock) -> str | None:
     if path is None:
         candidate = call.arguments.get("path")
         path = candidate if isinstance(candidate, str) else None
-    return path if (path is not None and path.endswith(".py")) else None
+    if path is None:
+        return None
+    return path if os.path.splitext(path)[1].lower() in _INTERPRETER_BY_EXT else None
 
 
-def resolve_python_run(path: str) -> str | None:
-    """A shell command to run ``path`` with an available interpreter, or None if none.
+def resolve_run_command(path: str) -> str | None:
+    """A shell command that runs ``path`` with an available interpreter, or None if none.
 
-    Tries ``py`` (the Windows launcher), then ``python3``, then ``python`` via
-    ``shutil.which``. Used by the harness-issued verification run (Slice 2b-A) so the
-    correct interpreter is chosen deterministically; returns None when none resolves so
-    the caller falls back to nudging the model rather than manufacturing a failing run.
+    Picks the interpreter from the file's extension (:data:`_INTERPRETER_BY_EXT`) and the
+    first candidate present on PATH (``shutil.which``) — e.g. ``py "x.py"``, ``node "x.js"``,
+    ``bash "x.sh"``. Used by the harness-issued verification run so the right interpreter is
+    chosen deterministically; returns None when none resolves so the caller falls back to
+    nudging the model rather than manufacturing a failing run.
     """
-    for interpreter in ("py", "python3", "python"):
-        if shutil.which(interpreter):
-            return f'{interpreter} "{path}"'
+    ext = os.path.splitext(path)[1].lower()
+    for exe in _INTERPRETER_BY_EXT.get(ext, ()):
+        if shutil.which(exe):
+            if exe == "deno":  # deno runs a script via the `run` subcommand, not directly
+                return f'deno run "{path}"'
+            return f'{exe} "{path}"'
     return None
 
 
@@ -196,9 +244,9 @@ class RecipeCursor:
         self.enabled = enabled
         self.attempt_cap = max(0, attempt_cap)
         self.acceptance = acceptance  # required substring in the run output, or None
-        self.wrote_runnable = False  # a .py was created/edited this turn
+        self.wrote_runnable = False  # a runnable script was created/edited this turn
         self.nudges = 0  # verification attempts spent (nudges + harness runs) toward the cap
-        self._targets: set[str] = set()  # basenames of .py files written this turn
+        self._targets: set[str] = set()  # basenames of runnable scripts written this turn
         self._abs_targets: list[str] = []  # their paths, in write order (for the harness run)
         self._verified: set[str] = set()  # basenames that have been run successfully
         self.harness_runs = 0  # how many harness-issued verification runs were issued
@@ -223,7 +271,7 @@ class RecipeCursor:
             if result is None or result.is_error:
                 continue
             if call.name in _WRITE_TOOLS:
-                path = _python_path(call, result)
+                path = _runnable_path(call, result)
                 if path is not None:
                     self.wrote_runnable = True
                     base = os.path.basename(path)

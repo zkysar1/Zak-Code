@@ -1,8 +1,11 @@
 """Tests for the Recipe Cursor (Slice 2): a verify-before-finish gate.
 
-Pure-state tests for :class:`RecipeCursor`, plus loop-integration tests proving that
-with ``recipe_mode`` on, a create-and-run turn cannot end until the written .py has been
-run successfully — and ends gracefully as ``recipe_stalled`` if it never is.
+Pure-state tests for :class:`RecipeCursor`, plus loop-integration tests proving that the
+always-on gate will not let a create-and-run turn end until the written runnable file has
+been run successfully — and that it ends gracefully as ``recipe_stalled`` when it cannot.
+The gate self-arms from the observed write and the harness runs the file itself whenever
+that run would not prompt; there is no feature flag (one way of doing things). When the
+harness run WOULD prompt, the gate falls back to nudging the model instead.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ import pytest
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.loop import AgentLoop
-from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_python_run
+from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
 from zakcode.events import AgentDone, AgentStatus, AgentToolCall, AgentToolResult
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
@@ -57,11 +60,38 @@ def test_cursor_ignores_non_python_write() -> None:
     assert c.needs_verification() is False
 
 
+def test_cursor_gates_after_js_and_shell_write() -> None:
+    # Generalized beyond Python: a .js / .sh write arms the gate the same way (Bet 1).
+    for fname in ("app.js", "build.sh", "task.rb", "deploy.ps1"):
+        c = RecipeCursor(enabled=True)
+        c.observe([_c("w", "write_file", path=fname)], [_r("w", path=fname)])
+        assert c.needs_verification() is True, fname
+
+
 def test_cursor_verified_by_run_referencing_file() -> None:
     c = RecipeCursor(enabled=True)
     c.observe([_c("w", "write_file", path="fizz.py")], [_r("w", path="fizz.py")])
     c.observe([_c("r", "bash", command="py fizz.py")], [_r("r")])
     assert c.needs_verification() is False
+
+
+def test_cursor_verified_by_node_run() -> None:
+    # A .js file is satisfied by `node app.js`, mirroring the Python path.
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="app.js")], [_r("w", path="app.js")])
+    c.observe([_c("r", "bash", command="node app.js")], [_r("r")])
+    assert c.needs_verification() is False
+
+
+def test_cursor_verified_by_windows_exe_interpreter() -> None:
+    # `C:\...\python.exe x.py` — the sys.executable form weak models emit on Windows — must
+    # count as a real run exactly like bare `python x.py` (the .exe suffix is normalized off).
+    for head in (r"C:\Py\python.exe", "python.exe", "node.cmd", "py.exe"):
+        target = "a.js" if "node" in head else "a.py"
+        c = RecipeCursor(enabled=True)
+        c.observe([_c("w", "write_file", path=target)], [_r("w", path=target)])
+        c.observe([_c("r", "bash", command=f'{head} "{target}"')], [_r("r")])
+        assert c.needs_verification() is False, head
 
 
 def test_cursor_run_not_referencing_file_does_not_verify() -> None:
@@ -175,6 +205,9 @@ class _ScriptedProvider(Provider):
 
 
 def _loop(provider: _ScriptedProvider, tmp_path: Path, **kw: Any) -> AgentLoop:
+    # No permission_policy by default → the harness verification run is never suppressed
+    # (the gate is always on; see the module docstring). Tests that need the harness
+    # SUPPRESSED pass an acceptEdits/ask policy so a shell run would prompt.
     return AgentLoop(
         provider,
         default_registry(),
@@ -185,49 +218,19 @@ def _loop(provider: _ScriptedProvider, tmp_path: Path, **kw: Any) -> AgentLoop:
     )
 
 
-def test_recipe_gate_forces_a_run_before_completing(tmp_path: Path) -> None:
-    run_cmd = resolve_python_run("prog.py")
+def test_recipe_gate_completes_when_model_runs_the_file(tmp_path: Path) -> None:
+    # The model runs the file ITSELF before finishing, so the gate is satisfied by the
+    # model's own run and no harness run is needed.
+    run_cmd = resolve_run_command("prog.py")
     if run_cmd is None:
         pytest.skip("no python interpreter available")
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
-    done = LLMResult(text="All done!")
-    # A real interpreter run (not `echo prog.py`): only an actual execution satisfies the gate.
     run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
-    provider = _ScriptedProvider([write, done, run, done])
-    result = asyncio.run(_loop(provider, tmp_path, recipe_mode=True).arun_turn("make prog.py"))
-    assert result.stop_reason == "completed"
-    # write -> "done"(blocked+nudged) -> run -> "done"(now verified) = 4 provider calls.
-    assert provider.calls == 4
-
-
-def test_recipe_gate_rejects_a_non_executing_run(tmp_path: Path) -> None:
-    # `echo prog.py` succeeds and names the file but never RUNS it, so the gate must not
-    # accept it: the turn stalls instead of falsely completing.
-    write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
     done = LLMResult(text="All done!")
-    run = LLMResult(tool_calls=[_c("r1", "bash", command="echo prog.py")])
-    provider = _ScriptedProvider([write, done, run, done])
-    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_attempt_cap=1)
-    result = asyncio.run(loop.arun_turn("make prog.py"))
-    assert result.stop_reason == "recipe_stalled"
-
-
-def test_recipe_gate_stalls_gracefully_after_cap(tmp_path: Path) -> None:
-    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('x')\n")])
-    done = LLMResult(text="done")  # never runs the file
-    provider = _ScriptedProvider([write, done])
-    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_attempt_cap=2)
-    result = asyncio.run(loop.arun_turn("make p.py"))
-    assert result.stop_reason == "recipe_stalled"
-
-
-def test_recipe_disabled_completes_without_a_run(tmp_path: Path) -> None:
-    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('x')\n")])
-    done = LLMResult(text="done")
-    provider = _ScriptedProvider([write, done])
-    result = asyncio.run(_loop(provider, tmp_path, recipe_mode=False).arun_turn("make p.py"))
+    provider = _ScriptedProvider([write, run, done])
+    result = asyncio.run(_loop(provider, tmp_path).arun_turn("make prog.py"))
     assert result.stop_reason == "completed"
-    assert provider.calls == 2  # no nudge: write, done
+    assert provider.calls == 3  # write, run, done — gate satisfied by the model's own run
 
 
 # ── Slice 2b-C: deterministic acceptance COMPARE ──────────────────────────────
@@ -290,32 +293,27 @@ def test_nudge_cites_acceptance() -> None:
 
 
 def test_recipe_acceptance_stalls_on_wrong_output(tmp_path: Path) -> None:
-    run_cmd = resolve_python_run("p.py")
-    if run_cmd is None:
+    if resolve_run_command("p.py") is None:
         pytest.skip("no python interpreter available")
-    # A REAL run whose program prints the wrong thing: ran fine but output lacks "pong".
+    # The harness runs the file (exit 0) but its output lacks "pong": acceptance fails, so
+    # the gate is not satisfied and the turn stalls after the cap.
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('nope')\n")])
     done = LLMResult(text="done")
-    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
-    provider = _ScriptedProvider([write, done, run, done])
-    loop = _loop(
-        provider, tmp_path, recipe_mode=True, recipe_acceptance_compare=True, recipe_attempt_cap=1
-    )
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(provider, tmp_path, attempt_cap=1)
     result = asyncio.run(loop.arun_turn("create p.py that prints `pong`"))
     assert result.stop_reason == "recipe_stalled"  # ran, but output lacked "pong"
 
 
 def test_recipe_acceptance_completes_on_right_output(tmp_path: Path) -> None:
-    run_cmd = resolve_python_run("p.py")
-    if run_cmd is None:
+    if resolve_run_command("p.py") is None:
         pytest.skip("no python interpreter available")
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
     done = LLMResult(text="done")
-    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
-    provider = _ScriptedProvider([write, done, run, done])
-    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_acceptance_compare=True)
+    provider = _ScriptedProvider([write, done])
+    loop = _loop(provider, tmp_path)
     result = asyncio.run(loop.arun_turn("create p.py that prints `pong`"))
-    assert result.stop_reason == "completed"  # output contained "pong"
+    assert result.stop_reason == "completed"  # harness ran it; output contained "pong"
 
 
 # ── Slice 2b-A: harness-issued verification run ───────────────────────────────
@@ -341,10 +339,17 @@ def test_auto_allows_never_for_dangerous_even_granted() -> None:
     assert p.auto_allows(_bash_spec(), {"command": "rm -rf /"}) is False
 
 
-def test_resolve_python_run() -> None:
-    cmd = resolve_python_run("/tmp/x.py")
+def test_resolve_run_command() -> None:
+    cmd = resolve_run_command("/tmp/x.py")
     assert cmd is not None  # a python interpreter exists in the test env
     assert "/tmp/x.py" in cmd
+
+
+def test_resolve_run_command_picks_interpreter_by_extension() -> None:
+    # The interpreter is chosen from the extension; an unknown extension resolves to None.
+    py = resolve_run_command("x.py")
+    assert py is not None and py.startswith(("py", "python"))
+    assert resolve_run_command("notes.txt") is None  # not a runnable extension
 
 
 def test_cursor_pending_target_and_consume() -> None:
@@ -359,42 +364,27 @@ def test_cursor_pending_target_and_consume() -> None:
 
 
 def test_harness_run_verifies_without_the_model(tmp_path: Path) -> None:
-    if resolve_python_run("x.py") is None:
+    if resolve_run_command("x.py") is None:
         pytest.skip("no python interpreter available")
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
     done = LLMResult(text="done")  # the model NEVER runs it
     provider = _ScriptedProvider([write, done])
-    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_harness_run=True)
+    loop = _loop(provider, tmp_path)
     result = asyncio.run(loop.arun_turn("make p.py"))
     assert result.stop_reason == "completed"  # the HARNESS ran it
     transcript = "\n".join(m.text or "" for m in loop.session.messages)
     assert "[harness]" in transcript
 
 
-def test_harness_run_off_falls_back_to_nudge(tmp_path: Path) -> None:
-    write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('x')\n")])
-    done = LLMResult(text="done")
-    provider = _ScriptedProvider([write, done])
-    loop = _loop(
-        provider, tmp_path, recipe_mode=True, recipe_harness_run=False, recipe_attempt_cap=1
-    )
-    result = asyncio.run(loop.arun_turn("make p.py"))
-    assert result.stop_reason == "recipe_stalled"
-    transcript = "\n".join(m.text or "" for m in loop.session.messages)
-    assert "[harness]" not in transcript  # gated off -> never auto-ran
-
-
 def test_harness_run_is_bounded_on_a_broken_file(tmp_path: Path) -> None:
-    if resolve_python_run("x.py") is None:
+    if resolve_run_command("x.py") is None:
         pytest.skip("no python interpreter available")
     # 1/0 compiles (passes the firewall) but errors at runtime -> the harness run never
     # verifies; it must still stall gracefully after the cap, not loop forever.
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="1 / 0\n")])
     done = LLMResult(text="done")
     provider = _ScriptedProvider([write, done])
-    loop = _loop(
-        provider, tmp_path, recipe_mode=True, recipe_harness_run=True, recipe_attempt_cap=2
-    )
+    loop = _loop(provider, tmp_path, attempt_cap=2)
     result = asyncio.run(loop.arun_turn("make p.py"))
     assert result.stop_reason == "recipe_stalled"
 
@@ -409,24 +399,32 @@ def _drain_stream(loop: AgentLoop, user_text: str) -> list[Any]:
     return asyncio.run(run())
 
 
-def test_recipe_streaming_gate_forces_a_run(tmp_path: Path) -> None:
-    run_cmd = resolve_python_run("prog.py")
+def test_recipe_streaming_gate_completes(tmp_path: Path) -> None:
+    run_cmd = resolve_run_command("prog.py")
     if run_cmd is None:
         pytest.skip("no python interpreter available")
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
     done = LLMResult(text="All done!")
     run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
     provider = _ScriptedProvider([write, done, run, done])
-    events = _drain_stream(_loop(provider, tmp_path, recipe_mode=True), "make prog.py")
+    events = _drain_stream(_loop(provider, tmp_path), "make prog.py")
     done_ev = next(e for e in events if isinstance(e, AgentDone))
     assert done_ev.stop_reason == "completed"
 
 
 def test_recipe_streaming_gate_stalls_and_emits_status(tmp_path: Path) -> None:
+    # acceptEdits arms the gate (write auto-allows) but suppresses the harness run (a shell
+    # run would prompt), forcing the model-nudge path; the model never runs it -> stall with
+    # the streaming-only "could not verify" status.
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('x')\n")])
     done = LLMResult(text="done")  # never runs the file
     provider = _ScriptedProvider([write, done])
-    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_attempt_cap=1)
+    loop = _loop(
+        provider,
+        tmp_path,
+        attempt_cap=1,
+        permission_policy=PermissionPolicy(PermissionMode.ACCEPT_EDITS),
+    )
     events = _drain_stream(loop, "make p.py")
     done_ev = next(e for e in events if isinstance(e, AgentDone))
     assert done_ev.stop_reason == "recipe_stalled"
@@ -435,12 +433,12 @@ def test_recipe_streaming_gate_stalls_and_emits_status(tmp_path: Path) -> None:
 
 
 def test_recipe_streaming_harness_run_emits_status(tmp_path: Path) -> None:
-    if resolve_python_run("x.py") is None:
+    if resolve_run_command("x.py") is None:
         pytest.skip("no python interpreter available")
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
     done = LLMResult(text="done")  # the model never runs it; the harness does
     provider = _ScriptedProvider([write, done])
-    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_harness_run=True)
+    loop = _loop(provider, tmp_path)
     events = _drain_stream(loop, "make p.py")
     done_ev = next(e for e in events if isinstance(e, AgentDone))
     assert done_ev.stop_reason == "completed"
@@ -455,12 +453,20 @@ def test_recipe_streaming_harness_run_emits_status(tmp_path: Path) -> None:
 def test_recipe_nudge_over_empty_completion_refunds_budget(tmp_path: Path) -> None:
     # audit2 #14: a recipe nudge over an EMPTY completion did no work, so it must refund the
     # shared-budget unit (matching the non-recipe empty-completion path) — else a stalling
-    # recipe turn drains a shared delegation pool faster than budget.py promises.
+    # recipe turn drains a shared delegation pool faster than budget.py promises. acceptEdits
+    # arms the gate (write auto-allows) while suppressing the harness run (a shell run would
+    # prompt), which forces the model-nudge path this test exercises.
     budget = IterationBudget(10)
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('x')\n")])
     empty = LLMResult(text="")  # empty completion: no text, no tool calls
     provider = _ScriptedProvider([write, empty, empty])
-    loop = _loop(provider, tmp_path, recipe_mode=True, recipe_attempt_cap=1, budget=budget)
+    loop = _loop(
+        provider,
+        tmp_path,
+        attempt_cap=1,
+        budget=budget,
+        permission_policy=PermissionPolicy(PermissionMode.ACCEPT_EDITS),
+    )
     result = asyncio.run(loop.arun_turn("make p.py"))
     assert result.stop_reason == "recipe_stalled"
     # write (1) consumed; the empty nudge iteration was refunded; the stall iteration (1)
@@ -472,7 +478,7 @@ def test_recipe_nudge_over_empty_completion_refunds_budget(tmp_path: Path) -> No
 
 
 def test_harness_run_suppressed_when_run_would_prompt(tmp_path: Path) -> None:
-    if resolve_python_run("x.py") is None:
+    if resolve_run_command("x.py") is None:
         pytest.skip("no python interpreter available")
     # acceptEdits auto-allows the WRITE (so the gate arms) but a shell run would still
     # prompt: the harness run MUST be suppressed (fall back to a nudge) and the turn
@@ -483,9 +489,7 @@ def test_harness_run_suppressed_when_run_would_prompt(tmp_path: Path) -> None:
     loop = _loop(
         provider,
         tmp_path,
-        recipe_mode=True,
-        recipe_harness_run=True,
-        recipe_attempt_cap=1,
+        attempt_cap=1,
         permission_policy=PermissionPolicy(PermissionMode.ACCEPT_EDITS),
     )
     result = asyncio.run(loop.arun_turn("make p.py"))
@@ -495,7 +499,7 @@ def test_harness_run_suppressed_when_run_would_prompt(tmp_path: Path) -> None:
 
 
 def test_harness_run_fires_under_allow_policy(tmp_path: Path) -> None:
-    if resolve_python_run("x.py") is None:
+    if resolve_run_command("x.py") is None:
         pytest.skip("no python interpreter available")
     # ALLOW mode would not prompt, so the harness run is permitted and verifies the file.
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="p.py", content="print('pong')\n")])
@@ -504,34 +508,9 @@ def test_harness_run_fires_under_allow_policy(tmp_path: Path) -> None:
     loop = _loop(
         provider,
         tmp_path,
-        recipe_mode=True,
-        recipe_harness_run=True,
         permission_policy=PermissionPolicy(PermissionMode.ALLOW),
     )
     result = asyncio.run(loop.arun_turn("make p.py"))
     assert result.stop_reason == "completed"
     transcript = "\n".join(m.text or "" for m in loop.session.messages)
     assert "[harness]" in transcript  # the harness auto-ran it
-
-
-# ── audit #14: Settings -> Agent facade -> AgentLoop recipe-flag wiring ────────
-
-
-def test_settings_recipe_flags_flow_through_facade() -> None:
-    import zakcode
-    from zakcode.config import Settings
-
-    # The facade is the only way to turn the (default-OFF) recipe flags on via config; a
-    # dropped kwarg would leave the feature inert with the suite still green. An explicit
-    # provider keeps this network-free.
-    settings = Settings(
-        recipe_mode=True,
-        recipe_harness_run=True,
-        recipe_acceptance_compare=True,
-        recipe_attempt_cap=2,
-    )
-    agent = zakcode.Agent(settings=settings, provider=_ScriptedProvider([LLMResult(text="")]))
-    assert agent.loop.recipe_mode is True
-    assert agent.loop.recipe_harness_run is True
-    assert agent.loop.recipe_acceptance_compare is True
-    assert agent.loop.recipe_attempt_cap == 2

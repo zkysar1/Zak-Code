@@ -55,7 +55,7 @@ from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
-from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_python_run
+from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -177,11 +177,7 @@ class AgentLoop:
         budget: IterationBudget | None = None,
         spawner: SubAgentSpawner | None = None,
         compactor: Compactor | None = None,
-        verify_writes: bool = False,
-        recipe_mode: bool = False,
-        recipe_attempt_cap: int = 3,
-        recipe_acceptance_compare: bool = False,
-        recipe_harness_run: bool = False,
+        attempt_cap: int = 3,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -205,15 +201,14 @@ class AgentLoop:
         # M8: optional context compactor. When set, the loop auto-compacts the session
         # before each turn once it exceeds the provider's context-window threshold.
         self.compactor = compactor
-        # Slice 1 grounding: after a successful write/edit, read the file back and inject
-        # the real on-disk content so a weak model cannot hallucinate that a write did
-        # what it intended. Off for a bare loop; the Agent facade enables it from settings.
-        self.verify_writes = verify_writes
-        # Slice 2 (Recipe Cursor): verify-before-finish gate for create-and-run turns.
-        self.recipe_mode = recipe_mode
-        self.recipe_attempt_cap = recipe_attempt_cap
-        self.recipe_acceptance_compare = recipe_acceptance_compare
-        self.recipe_harness_run = recipe_harness_run
+        # Reliability scaffolding is ALWAYS ON and self-arming — it is not configurable
+        # (one way of doing things). Write-grounding (read a written file back so a weak
+        # model can't hallucinate the write) fires after any successful write; it no-ops
+        # when no write happened. The Recipe Cursor (verify-before-finish gate) arms itself
+        # only once the model writes a RUNNABLE script this turn, so it costs nothing on
+        # other turns. ``attempt_cap`` (how many verification nudges before a graceful
+        # ``recipe_stalled``) is an internal constant, not a user knob.
+        self.attempt_cap = attempt_cap
         # The security gate is INJECTED, not assumed. A bare AgentLoop with no
         # policy is ungated (a pure mechanism, convenient for library/tests); the
         # Agent facade — the real entry point — always injects a policy built from
@@ -462,22 +457,21 @@ class AgentLoop:
     async def _try_harness_verify(
         self, cursor: RecipeCursor, ctx: ToolContext
     ) -> tuple[ToolCall, ToolResultBlock] | None:
-        """Issue a harness-side verification run of the pending file (Slice 2b-A).
+        """Issue a harness-side verification run of the pending file.
 
-        Fires only when armed (``recipe_harness_run``), a target is pending, an interpreter
-        resolves, and — crucially — the synthetic ``bash`` would auto-allow WITHOUT a prompt
-        (allow-mode or a prior ``bash`` grant). Otherwise returns ``None`` so the caller
-        falls back to nudging the model (never an uninitiated prompt). The synthetic call
-        funnels through the SAME ``_execute_tool_call`` gate; the real output is fed to the
-        cursor and injected as a user message. Returns the ``(call, block)`` it ran (so the
-        streaming path can surface it as AgentToolCall/AgentToolResult), else ``None``.
+        Always attempted when a target is pending and an interpreter resolves, but ONLY
+        when the synthetic ``bash`` would auto-allow WITHOUT a prompt (allow-mode or a prior
+        ``bash`` grant) — otherwise returns ``None`` so the caller falls back to nudging the
+        model (never an uninitiated prompt). No feature flag: this is the one way the harness
+        verifies, gated purely by what can run without prompting. The synthetic call funnels
+        through the SAME ``_execute_tool_call`` gate; the real output is fed to the cursor and
+        injected as a user message. Returns the ``(call, block)`` it ran (so the streaming
+        path can surface it as AgentToolCall/AgentToolResult), else ``None``.
         """
-        if not self.recipe_harness_run:
-            return None
         target = cursor.pending_target()
         if target is None:
             return None
-        command = resolve_python_run(target)
+        command = resolve_run_command(target)
         if command is None:
             return None
         call = ToolCall(
@@ -623,9 +617,11 @@ class AgentLoop:
             spawner=self.spawner,
         )
         cursor = RecipeCursor(
-            enabled=self.recipe_mode,
-            attempt_cap=self.recipe_attempt_cap,
-            acceptance=extract_acceptance(user_text) if self.recipe_acceptance_compare else None,
+            enabled=True,  # always on; self-arms only when a runnable script is written
+            attempt_cap=self.attempt_cap,
+            # Always extract a stated expected-output literal — high-precision (returns None
+            # on ANY ambiguity), so always-on can never over-gate a turn.
+            acceptance=extract_acceptance(user_text),
         )
 
         while True:
@@ -709,11 +705,11 @@ class AgentLoop:
             self.session.add_message(Message.tool_results(result_blocks))
             self._persist()
 
-            if self.verify_writes:
-                grounding = build_write_grounding(result.tool_calls, result_blocks)
-                if grounding is not None:
-                    self.session.add_message(grounding)
-                    self._persist()
+            # Write-grounding is unconditional (no flag); it no-ops when nothing was written.
+            grounding = build_write_grounding(result.tool_calls, result_blocks)
+            if grounding is not None:
+                self.session.add_message(grounding)
+                self._persist()
 
             cursor.observe(result.tool_calls, result_blocks)
 
@@ -782,9 +778,11 @@ class AgentLoop:
             spawner=self.spawner,
         )
         cursor = RecipeCursor(
-            enabled=self.recipe_mode,
-            attempt_cap=self.recipe_attempt_cap,
-            acceptance=extract_acceptance(user_text) if self.recipe_acceptance_compare else None,
+            enabled=True,  # always on; self-arms only when a runnable script is written
+            attempt_cap=self.attempt_cap,
+            # Always extract a stated expected-output literal — high-precision (returns None
+            # on ANY ambiguity), so always-on can never over-gate a turn.
+            acceptance=extract_acceptance(user_text),
         )
 
         try:
@@ -897,11 +895,11 @@ class AgentLoop:
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()
 
-                if self.verify_writes:
-                    grounding = build_write_grounding(tool_calls, result_blocks)
-                    if grounding is not None:
-                        self.session.add_message(grounding)
-                        self._persist()
+                # Write-grounding is unconditional (no flag); no-ops when nothing was written.
+                grounding = build_write_grounding(tool_calls, result_blocks)
+                if grounding is not None:
+                    self.session.add_message(grounding)
+                    self._persist()
 
                 cursor.observe(tool_calls, result_blocks)
         except asyncio.CancelledError:

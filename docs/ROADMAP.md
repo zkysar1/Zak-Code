@@ -605,11 +605,14 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 >    a cp1252-safe glyph set with ASCII fallbacks.
 > 3. **The Recipe Cursor** (`agent/recipe.py`) — a per-turn **verify-before-finish gate**
 >    for create-and-run tasks: a write firewall → write-grounding read-back → a gate that
->    won't let the turn end until the written `.py` was actually *run* (optionally matching
->    a stated output literal, optionally via a harness-issued run when it would not raise a
->    permission prompt), else it ends as `recipe_stalled` rather than claiming a false
->    success. Opt-in / default-off; every `ZAKCODE_RECIPE_*` / `ZAKCODE_VERIFY_WRITES` /
->    `ZAKCODE_SINGLE_TOOL_PER_TURN` knob is documented in the **Small-model reliability**
+>    won't let the turn end until the written runnable script (`.py`/`.js`/`.ts`/`.sh`/…)
+>    was actually *run* (matching a stated output literal when the request clearly states
+>    one, via a harness-issued run when it would not raise a permission prompt), else it
+>    ends as `recipe_stalled` rather than claiming a false success. **Always on and
+>    self-arming** — not a feature flag: it arms from the observed write and is inert on
+>    turns that write no runnable script (one way of doing things; the agent steers itself).
+>    The former `ZAKCODE_RECIPE_*` / `ZAKCODE_VERIFY_WRITES` / `ZAKCODE_SINGLE_TOOL_PER_TURN`
+>    knobs were removed in favor of this autonomy; see the **Small-model reliability**
 >    section of the [README](../README.md).
 >
 > **Terminology — "Recipe Cursor" ≠ "YAML recipes."** The shipped *Recipe Cursor* (above)

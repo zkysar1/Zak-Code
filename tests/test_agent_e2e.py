@@ -55,7 +55,11 @@ async def test_e2e_buffered_writes_and_runs_tests(tmp_path: Path) -> None:
     result = await agent.arun_turn("Build calc.py + tests and run them.")
 
     assert result.stop_reason == "completed", result.stop_reason
-    assert result.iterations == 4, result.iterations
+    # 5 iterations: 3 scripted (write calc.py, write test_calc.py, run the tests) + the
+    # always-on verify gate's harness run of calc.py (a library the model wrote but only
+    # imported, never ran standalone) + the final reply that now passes the gate. The gate
+    # runs every runnable file written this turn; calc.py exits 0, so it verifies harmlessly.
+    assert result.iterations == 5, result.iterations
     # The files were really written to disk.
     assert calc.is_file() and tcalc.is_file()
     body = calc.read_text(encoding="utf-8")
@@ -80,9 +84,11 @@ async def test_e2e_streaming_emits_full_event_sequence(tmp_path: Path) -> None:
     kinds = {}
     for ev in events:
         kinds[ev.event] = kinds.get(ev.event, 0) + 1
-    # Three tool calls, three results, a closing text, a usage snapshot, and done.
-    assert kinds.get("tool_call") == 3, kinds
-    assert kinds.get("tool_result") == 3, kinds
+    # Four tool calls / results: the 3 scripted (write, write, run tests) PLUS the always-on
+    # verify gate's harness run of calc.py (surfaced on the stream like any tool call). Then a
+    # closing text, a usage snapshot, and done.
+    assert kinds.get("tool_call") == 4, kinds
+    assert kinds.get("tool_result") == 4, kinds
     assert kinds.get("done") == 1, kinds
     # The terminal event reports clean completion.
     done = [ev for ev in events if isinstance(ev, AgentDone)]

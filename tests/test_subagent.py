@@ -278,10 +278,11 @@ def test_manager_satisfies_spawner_protocol(tmp_path: Path) -> None:
     assert isinstance(mgr, SubAgentSpawner)
 
 
-async def test_child_inherits_verification_and_recipe_settings(tmp_path: Path, monkeypatch) -> None:
-    # audit2 #3: AgentLoop reads verify_writes/recipe_* from explicit params (not settings),
-    # so the runner must forward them — else delegated create-and-run work runs UNGROUNDED
-    # and UNGATED even though verify_writes defaults on. Capture the child loop's kwargs.
+async def test_child_loop_constructed_without_obsolete_flags(tmp_path: Path, monkeypatch) -> None:
+    # Bet 1: write-grounding and the verify-before-finish gate are ALWAYS ON in AgentLoop
+    # (not configurable — one way of doing things), so the runner must NOT forward the
+    # removed verify_writes/recipe_* kwargs. A delegated child inherits grounding + the gate
+    # by construction; this guards against a stray kwarg reappearing and reintroducing a flag.
     import zakcode.agent.subagent as sub
 
     captured: dict = {}
@@ -297,24 +298,20 @@ async def test_child_inherits_verification_and_recipe_settings(tmp_path: Path, m
     runner = SubAgentRunner(
         provider=_OneShotProvider("x"),
         registry=_registry(_RecordingTool("read_file")),
-        settings=Settings(
-            default_model="scripted/test",
-            workspace_root=tmp_path,
-            verify_writes=True,
-            recipe_mode=True,
-            recipe_harness_run=True,
-            recipe_acceptance_compare=True,
-            recipe_attempt_cap=2,
-        ),
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
     )
     await runner.run(GENERAL_PURPOSE, "do it")
-    assert captured["verify_writes"] is True
-    assert captured["recipe_mode"] is True
-    assert captured["recipe_harness_run"] is True
-    assert captured["recipe_acceptance_compare"] is True
-    assert captured["recipe_attempt_cap"] == 2
+    for obsolete in (
+        "verify_writes",
+        "recipe_mode",
+        "recipe_harness_run",
+        "recipe_acceptance_compare",
+        "recipe_attempt_cap",
+        "single_tool_per_turn",
+    ):
+        assert obsolete not in captured, obsolete
 
 
 async def test_child_gets_isolated_permission_view(tmp_path: Path, monkeypatch) -> None:

@@ -182,14 +182,8 @@ class SubAgentRunner:
             budget=self.budget,
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent
-            # Inherit the parent's verification posture: AgentLoop reads these from explicit
-            # params (not from settings), so a child would otherwise silently run UNGROUNDED
-            # and UNGATED for delegated create-and-run work. (audit2 #3)
-            verify_writes=self.settings.verify_writes,
-            recipe_mode=self.settings.recipe_mode,
-            recipe_attempt_cap=self.settings.recipe_attempt_cap,
-            recipe_acceptance_compare=self.settings.recipe_acceptance_compare,
-            recipe_harness_run=self.settings.recipe_harness_run,
+            # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
+            # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )
         result = await loop.arun_turn(prompt)
         summary = self._summarize(result)

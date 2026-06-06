@@ -200,7 +200,9 @@ class Agent:
                 mode=_resolve_tool_calling_mode(
                     self.settings.tool_calling_mode, self.settings.default_model
                 ),
-                single_tool_per_turn=self.settings.single_tool_per_turn,
+                # Always on (text-protocol scaffolding); not a user knob — emitting/parsing
+                # one tool call per turn stops weak models fabricating results.
+                single_tool_per_turn=True,
             )
         self.registry = default_registry()
         self.store = session_store
@@ -421,11 +423,6 @@ class Agent:
             budget=shared_budget,
             spawner=spawner,
             compactor=self.compactor,
-            verify_writes=self.settings.verify_writes,
-            recipe_mode=self.settings.recipe_mode,
-            recipe_attempt_cap=self.settings.recipe_attempt_cap,
-            recipe_acceptance_compare=self.settings.recipe_acceptance_compare,
-            recipe_harness_run=self.settings.recipe_harness_run,
         )
 
     async def arun_turn(self, user_text: str) -> TurnResult:

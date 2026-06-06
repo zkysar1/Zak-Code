@@ -66,52 +66,18 @@ class Settings(BaseSettings):
         default="auto",
         description="How tools reach the model: auto | native | text.",
     )
-    single_tool_per_turn: bool = Field(
-        default=True,
-        description=(
-            "Text tool-calling only: emit and parse exactly ONE tool call per turn and "
-            "stop generation right after it. Stops weak local models fabricating tool "
-            "results or leaking template tokens. Ignored on the native path."
-        ),
-    )
-    verify_writes: bool = Field(
-        default=True,
-        description=(
-            "After a successful write_file/edit_file, read the file back from disk and "
-            "inject the real content + a syntax check as a grounding observation, so a "
-            "weak model cannot hallucinate that a write did what it intended."
-        ),
-    )
-    recipe_mode: bool = Field(
-        default=False,
-        description=(
-            "Verify-before-finish gate (the Recipe Cursor): once the model writes a "
-            "runnable .py file in a turn, the turn cannot end until the model has RUN it "
-            "successfully; an unfixable file ends as 'recipe_stalled'. Opt-in; best for "
-            "small local models on create-and-run tasks."
-        ),
-    )
-    recipe_attempt_cap: int = Field(
-        default=3,
-        ge=0,
-        description="Recipe mode: how many times to nudge the model to verify before giving up.",
-    )
-    recipe_acceptance_compare: bool = Field(
-        default=False,
-        description=(
-            "Recipe mode: when the request clearly states an expected output string, also "
-            "require the program's run output to contain it (catches a program that runs "
-            "but prints the wrong thing). Off by default; extraction is high-precision."
-        ),
-    )
-    recipe_harness_run: bool = Field(
-        default=False,
-        description=(
-            "Recipe mode: let the harness RUN the written .py itself to verify it (instead "
-            "of only nudging the model), but ONLY when that run would auto-allow without a "
-            "prompt (allow mode or a prior bash grant). Off by default; requires recipe_mode."
-        ),
-    )
+    # NOTE (autonomous-by-design): the small-model reliability scaffolding is NOT
+    # configurable — there is one way of doing things, and the agent steers itself:
+    #   * write-grounding (read a written file back) is always on (no-ops without a write);
+    #   * the verify-before-finish "Recipe Cursor" gate self-arms when the model writes a
+    #     runnable script this turn, always extracts a stated expected-output literal
+    #     (high-precision), and lets the harness run the file to verify it whenever that run
+    #     would auto-allow without a prompt;
+    #   * one tool call per turn is always enforced on the text protocol.
+    # These were once Settings flags (verify_writes / recipe_mode / recipe_attempt_cap /
+    # recipe_acceptance_compare / recipe_harness_run / single_tool_per_turn); they were
+    # removed in favor of observed-signal autonomy. ``tool_calling_mode`` is kept because
+    # ``auto`` already self-resolves by provider; native/text remain a debug override.
 
     # ── Local (Ollama) ──────────────────────────────────────────────────────
     ollama_base_url: str = Field(default="http://localhost:11434")
