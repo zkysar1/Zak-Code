@@ -20,6 +20,7 @@ Endpoints (see ``docs/ARCHITECTURE.md`` — Server API surface):
 * ``DELETE /sessions/{id}``   — delete a session
 * ``POST /chat``              — run one buffered turn → :class:`ChatResponse`
 * ``POST /chat/stream``       — run one turn, streaming ``AgentEvent``s as SSE
+* ``POST /complete``          — raw schema-valid completion (no tools / loop / session)
 * ``WS   /ws/{session_id}``   — bidirectional: input, interrupt, permission approval
 
 ``/chat`` and ``/chat/stream`` refuse a second turn on a session that already has
@@ -43,15 +44,19 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
+from zds_llm_provider import complete_structured
 
 from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
+from zakcode.providers.base import Provider, ProviderError
 from zakcode.secrets import strip_url_credentials
 from zakcode.server.wire import (
     ChatRequest,
     ChatResponse,
+    CompleteRequest,
+    CompleteResponse,
     SessionInfo,
     ToolInfo,
     WSActionRequired,
@@ -87,6 +92,28 @@ class AgentLike(Protocol):
 #: an optional permission prompter (the WebSocket channel supplies one so escalations
 #: can be approved interactively; REST/SSE pass ``None`` and ``ask`` fails closed).
 AgentFactory = Callable[[Session, str | None, PermissionPrompter | None], AgentLike]
+
+
+#: How the server builds a RAW provider for ``/complete`` (a bounded, tool-less completion —
+#: NOT an agent turn), given an optional per-request model override.
+ProviderFactory = Callable[[str | None], Provider]
+
+
+def _default_provider_factory(settings: Settings) -> ProviderFactory:
+    """Build the production ``/complete`` provider factory: a :class:`LiteLLMProvider` DIRECTLY.
+
+    Deliberately NOT wrapped in the text-tool protocol — ``/complete`` is a raw completion (no
+    tools) and the wrapper's tool-less branch is a literal passthrough anyway. A per-request
+    ``model`` override swaps only the model via :meth:`Settings.model_copy`, preserving the rest
+    of the posture (including the excluded ``api_key``).
+    """
+    from zakcode.providers.litellm_provider import LiteLLMProvider
+
+    def factory(model: str | None) -> Provider:
+        resolved = settings.model_copy(update={"default_model": model}) if model else settings
+        return LiteLLMProvider(resolved)
+
+    return factory
 
 
 def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFactory:
@@ -168,16 +195,19 @@ def create_app(
     settings: Settings | None = None,
     store: SessionStore | None = None,
     agent_factory: AgentFactory | None = None,
+    provider_factory: ProviderFactory | None = None,
     tool_registry: ToolRegistry | None = None,
 ) -> FastAPI:
     """Construct the Zak Code HTTP app.
 
     All collaborators are injectable for testing; production callers pass nothing
-    and get a real store + agent factory.
+    and get a real store + agent factory + provider factory (the latter drives ``/complete``,
+    a raw schema-valid completion that bypasses the agent loop).
     """
     resolved_settings = settings or load_settings()
     resolved_store = store or SessionStore()
     resolved_factory = agent_factory or _default_agent_factory(resolved_settings, resolved_store)
+    resolved_provider_factory = provider_factory or _default_provider_factory(resolved_settings)
     resolved_registry = tool_registry or default_registry()
 
     app = FastAPI(
@@ -324,6 +354,51 @@ def create_app(
                     inflight.discard(session.id)
 
         return EventSourceResponse(event_source())
+
+    @app.post("/complete")
+    async def complete(request: CompleteRequest) -> CompleteResponse:
+        """Raw schema-valid completion — NO tools, NO agent loop, NO session, NO permission gate.
+
+        A thin proxy over a provider for callers that want bounded structured output (e.g. a
+        semantic extractor): supply ``prompt`` or ``messages`` (+ optional ``schema``/``model``)
+        and get back JSON the server validated. On a malformed request -> 400; on a provider
+        error or schema-invalid output (after the bounded repair) -> 502 with a
+        ``{error, detail, raw_text}`` body. This endpoint never creates or touches a session.
+        """
+        try:
+            messages = request.to_messages()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Build the provider AND run the completion inside ONE guard so a construction error
+        # (e.g. a bad request.model) becomes a clean 502, never an unhandled 500.
+        try:
+            provider = resolved_provider_factory(request.model)
+            result = await complete_structured(
+                provider, messages, system=request.system, schema=request.schema_, max_repairs=1
+            )
+        except ProviderError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "provider_error", "detail": str(exc), "raw_text": None},
+            ) from exc
+
+        if request.schema_ is not None and not result.valid:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "schema_validation_failed",
+                    "detail": "model output did not satisfy the schema after repair",
+                    "raw_text": result.text,
+                },
+            )
+        return CompleteResponse(
+            data=result.data,
+            text=result.text,
+            usage=result.usage,
+            cost_usd=result.usage.cost_usd,
+            repaired=result.repaired,
+        )
 
     # ── WebSocket: bidirectional input + interrupt + permission approval ────────
 

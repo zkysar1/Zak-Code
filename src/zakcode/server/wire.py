@@ -20,11 +20,11 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from zakcode.agent.loop import TurnResult
 from zakcode.events import AgentEvent
-from zakcode.messages import ToolResultBlock
+from zakcode.messages import Message, ToolResultBlock
 from zakcode.permissions import PermissionRequest
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolSpec
@@ -112,6 +112,64 @@ class ChatResponse(BaseModel):
             stop_reason=result.stop_reason,
             iterations=result.iterations,
         )
+
+
+class CompleteMessage(BaseModel):
+    """One message in a ``POST /complete`` request (a raw, tool-less completion)."""
+
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class CompleteRequest(BaseModel):
+    """Body of ``POST /complete`` — a raw schema-valid completion (no tools, no agent loop).
+
+    Supply EITHER ``prompt`` (a single user turn) OR ``messages`` (a full exchange), not both
+    and not neither. ``schema`` (a JSON Schema) requests schema-valid JSON; ``system`` is an
+    optional system prompt; ``model`` overrides the served model for this call.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    prompt: str | None = None
+    messages: list[CompleteMessage] | None = None
+    system: str | None = None
+    # ``schema`` shadows pydantic's BaseModel.schema(); expose it on the wire as "schema"
+    # via the alias while storing it as ``schema_``.
+    schema_: dict[str, Any] | None = Field(default=None, alias="schema")
+    model: str | None = None
+
+    def to_messages(self) -> list[Message]:
+        """Map the request to canonical :class:`~zakcode.messages.Message` objects.
+
+        Raises ``ValueError`` if both ``prompt`` and ``messages`` are set, or neither (the
+        route turns that into a 400).
+        """
+        if self.prompt is not None and self.messages is not None:
+            raise ValueError("provide either 'prompt' or 'messages', not both")
+        if self.prompt is not None:
+            return [Message.user(self.prompt)]
+        if self.messages:
+            out: list[Message] = []
+            for m in self.messages:
+                if m.role == "system":
+                    out.append(Message.system(m.content))
+                elif m.role == "assistant":
+                    out.append(Message.assistant_text(m.content))
+                else:
+                    out.append(Message.user(m.content))
+            return out
+        raise ValueError("provide either 'prompt' or 'messages'")
+
+
+class CompleteResponse(BaseModel):
+    """Result of ``POST /complete``: schema-valid ``data`` (when a schema was requested) + text."""
+
+    data: Any | None = None
+    text: str = ""
+    usage: Usage = Field(default_factory=Usage)
+    cost_usd: float = 0.0
+    repaired: bool = False
 
 
 class SessionInfo(BaseModel):
@@ -228,6 +286,9 @@ __all__ = [
     "event_from_dict",
     "ChatRequest",
     "ChatResponse",
+    "CompleteMessage",
+    "CompleteRequest",
+    "CompleteResponse",
     "SessionInfo",
     "ToolInfo",
     "WSUserInput",
