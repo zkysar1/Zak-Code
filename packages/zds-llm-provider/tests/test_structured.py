@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from zds_llm_provider import structured
+from zds_llm_provider.messages import Message
 from zds_llm_provider.structured import (
+    StructuredResult,
     StructuredValidationError,
     coerce_structured,
+    complete_structured,
     extract_json,
     make_response_format,
 )
+from zds_llm_provider.types import Capabilities, LLMResult, Provider
+from zds_llm_provider.usage import Usage
 
 _OBJ_SCHEMA = {
     "type": "object",
@@ -100,3 +107,76 @@ def test_coerce_structured_degrades_without_jsonschema(monkeypatch: pytest.Monke
     # ...but a non-JSON output still raises (extraction failure is independent of jsonschema).
     with pytest.raises(StructuredValidationError):
         coerce_structured("not json", schema=_OBJ_SCHEMA)
+
+
+# ── complete_structured (the C<->P seam) ─────────────────────────────────────────
+
+
+class _FakeProvider(Provider):
+    """Returns canned texts in order (repeats the last once exhausted); records call kwargs."""
+
+    def __init__(self, texts: list[str]) -> None:
+        self._texts = list(texts)
+        self._last = texts[0] if texts else ""
+        self.calls: list[dict[str, Any]] = []
+
+    async def acomplete(  # noqa: ANN001
+        self, messages, *, system=None, tools=None, response_format=None, **kwargs
+    ) -> LLMResult:
+        self.calls.append(
+            {"response_format": response_format, "temperature": kwargs.get("temperature")}
+        )
+        if self._texts:
+            self._last = self._texts.pop(0)
+        return LLMResult(text=self._last, usage=Usage(total_tokens=1))
+
+    def count_tokens(self, messages, *, system=None) -> int:  # noqa: ANN001
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
+
+
+async def test_complete_structured_no_schema_single_call() -> None:
+    p = _FakeProvider(["just text"])
+    res = await complete_structured(p, [Message.user("hi")])
+    assert isinstance(res, StructuredResult)
+    assert res.data is None and res.text == "just text"
+    assert res.valid is True and res.repaired is False
+    assert len(p.calls) == 1
+    # No schema -> no response_format and no forced temperature.
+    assert p.calls[0]["response_format"] is None
+    assert p.calls[0]["temperature"] is None
+
+
+async def test_complete_structured_valid_first_try() -> None:
+    pytest.importorskip("jsonschema")
+    p = _FakeProvider(['{"a": "x"}'])
+    res = await complete_structured(p, [Message.user("hi")], schema=_OBJ_SCHEMA)
+    assert res.valid is True and res.repaired is False and res.data == {"a": "x"}
+    assert len(p.calls) == 1
+    assert p.calls[0]["response_format"] is not None  # schema requested
+    assert p.calls[0]["temperature"] == 0.0  # deterministic on the schema path
+
+
+async def test_complete_structured_invalid_then_valid() -> None:
+    pytest.importorskip("jsonschema")
+    p = _FakeProvider(['{"a": 1}', '{"a": "x"}'])  # first violates (a must be str), second valid
+    res = await complete_structured(p, [Message.user("hi")], schema=_OBJ_SCHEMA)
+    assert res.valid is True and res.repaired is True and res.data == {"a": "x"}
+    assert len(p.calls) == 2  # exactly one repair retry (max_repairs=1)
+
+
+async def test_complete_structured_always_invalid_no_raise() -> None:
+    pytest.importorskip("jsonschema")
+    p = _FakeProvider(['{"a": 1}'])  # repeats the invalid output
+    res = await complete_structured(p, [Message.user("hi")], schema=_OBJ_SCHEMA)
+    assert res.valid is False and res.data is None and res.text == '{"a": 1}'
+    assert res.repaired is True and len(p.calls) == 2
+
+
+async def test_complete_structured_accumulates_usage() -> None:
+    pytest.importorskip("jsonschema")
+    p = _FakeProvider(['{"a": 1}', '{"a": "x"}'])  # two calls, 1 token each
+    res = await complete_structured(p, [Message.user("hi")], schema=_OBJ_SCHEMA)
+    assert res.usage.total_tokens == 2
