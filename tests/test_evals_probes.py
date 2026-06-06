@@ -10,9 +10,9 @@ from zakcode.evals import run_evals
 from zakcode.evals.probes import FlakyTool, build_default_suite
 
 
-def test_default_suite_has_six_probes(tmp_path: Path) -> None:
+def test_default_suite_has_all_probes(tmp_path: Path) -> None:
     suite = build_default_suite(str(tmp_path))
-    assert len(suite) == 6
+    assert len(suite) == 7
     names = {c.name for c in suite}
     assert names == {
         "completion-detection",
@@ -20,6 +20,7 @@ def test_default_suite_has_six_probes(tmp_path: Path) -> None:
         "plan-mode-readonly",
         "doom-loop-halt",
         "partial-failure-recovery",
+        "stuck-recovery",
         "long-horizon-compaction",
     }
 
@@ -29,7 +30,7 @@ def test_full_suite_all_pass(tmp_path: Path) -> None:
     report = asyncio.run(run_evals(build_default_suite(str(tmp_path))))
     failed = [(r.name, r.error) for r in report.results if not r.passed]
     assert report.ok, f"probes failed: {failed}"
-    assert report.passed == 6
+    assert report.passed == 7
 
 
 # Each probe also runs standalone so a regression names the exact failing behavior.
@@ -62,6 +63,10 @@ def test_probe_doom_loop_halt(tmp_path: Path) -> None:
 
 def test_probe_partial_failure_recovery(tmp_path: Path) -> None:
     _run_one(tmp_path, "partial-failure-recovery")
+
+
+def test_probe_stuck_recovery(tmp_path: Path) -> None:
+    _run_one(tmp_path, "stuck-recovery")
 
 
 def test_probe_long_horizon_compaction(tmp_path: Path) -> None:

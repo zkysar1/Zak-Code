@@ -134,8 +134,9 @@ no agent logic.
 ## Features (M0–M10)
 
 - **Agent loop** — ReAct-style tool-use loop with layered stop conditions (completion,
-  iteration cap, shared budget, and a **doom-loop guard** that halts identical repeated
-  calls). Buffered and streaming paths.
+  iteration cap, shared budget, a **doom-loop guard** that halts identical repeated calls,
+  and a broader **multi-signal stuck detector** that first tries to recover — nudge, then
+  narrow to read-only tools — before stopping as `stuck`). Buffered and streaming paths.
 - **Tools** — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`,
   and **`powershell`** (Windows-first; uses `pwsh`/`powershell.exe`) — all scoped to the
   workspace, with path-escape protection.

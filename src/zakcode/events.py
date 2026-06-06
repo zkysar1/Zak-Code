@@ -75,6 +75,10 @@ class AgentDone(BaseModel):
     stop_reason: str
     iterations: int
     usage: Usage = Field(default_factory=Usage)
+    #: Thin "this turn struggled" roll-up (mirrors ``TurnResult.degraded``): True when the
+    #: turn engaged failure-recovery (a stuck nudge/narrow) or ended non-cleanly
+    #: (stuck / doom_loop / recipe_stalled). False on a clean turn.
+    degraded: bool = False
 
 
 AgentEvent = Annotated[

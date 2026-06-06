@@ -14,11 +14,14 @@ the project must never regress:
   with ``stop_reason="doom_loop"`` instead of burning the whole iteration budget.
 * **partial-failure-recovery** — a tool that fails once then succeeds is retried by
   the model and the turn completes (no doom-loop, no crash).
+* **stuck-recovery** — a model stuck on varying-arg failures (which the exact-repeat
+  doom guard misses) is recovered via the nudge → narrow ladder and then halted as
+  ``stuck`` rather than flailing to the iteration cap.
 * **long-horizon-compaction** — once history crosses the context-window threshold the
   loop compacts (a model-written summary replaces old turns) and the turn still
   completes.
 
-``build_default_suite(workspace)`` returns all six as :class:`~zakcode.evals.harness.EvalCase`
+``build_default_suite(workspace)`` returns all seven as :class:`~zakcode.evals.harness.EvalCase`
 objects bound to a caller-provided workspace directory (the CLI passes a temp dir).
 """
 
@@ -72,7 +75,35 @@ class FlakyTool(Tool):
         return ToolResult.ok(f"succeeded on call {self.calls}")
 
 
-# ── the six probes ────────────────────────────────────────────────────────────────
+class AlwaysFailTool(Tool):
+    """A READ_ONLY tool that ALWAYS errors (for stuck-recovery testing).
+
+    Used by the stuck-recovery probe: the model keeps calling it with fresh args, so the
+    exact-repeat doom guard never fires, but the multi-signal stuck detector still recovers
+    (nudge → narrow) and then halts the turn as ``stuck`` instead of flailing forever.
+    """
+
+    spec = ToolSpec(
+        name="always_fail",
+        description="Always fails (for stuck-recovery testing).",
+        parameters={
+            "type": "object",
+            "properties": {"n": {"type": "integer"}},
+            "required": [],
+        },
+        required_permission=PermissionTier.READ_ONLY,
+        concurrency=ConcurrencyClass.READ_ONLY_SAFE,
+    )
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.calls += 1
+        return ToolResult.error(f"always fails (call {self.calls})")
+
+
+# ── the probes ──────────────────────────────────────────────────────────────────────
 
 
 async def _probe_completion(workspace: str) -> str:
@@ -168,6 +199,31 @@ async def _probe_partial_failure_recovery(workspace: str) -> str:
     return "tool failure surfaced as recoverable feedback; model retried and completed"
 
 
+async def _probe_stuck_recovery(workspace: str) -> str:
+    """A model stuck on VARYING-arg failures is recovered, then halted as ``stuck``.
+
+    Distinct args each iteration mean the exact-repeat doom guard never fires — only the
+    multi-signal stuck ladder (nudge → narrow-to-read-only → stop) can end the turn. Proves
+    the loop never flails forever on the many stall shapes the doom guard misses.
+    """
+    failing = AlwaysFailTool()
+
+    def responder(messages: list[Message], system: str | None, i: int) -> LLMResult:
+        # A fresh arg every iteration → identical-signature doom detection cannot trip.
+        return call_tool("always_fail", {"n": i}, id=f"af{i}")
+
+    provider = ScriptedProvider([reply("unused")], responder=responder)
+    agent = make_agent(provider, workspace_root=workspace, extra_tools=[failing])
+    result = await agent.arun_turn("keep trying the broken tool")
+    assert result.stop_reason == "stuck", result.stop_reason
+    assert result.degraded is True, result.degraded
+    # Halted by the recovery ladder (nudge→narrow→stop), far below the iteration cap.
+    assert result.iterations <= 6, result.iterations
+    return (
+        f"varying-arg failure loop recovered then halted as 'stuck' after {result.iterations} iters"
+    )
+
+
 async def _probe_long_horizon_compaction(workspace: str) -> str:
     """Once history crosses the window threshold, the loop compacts and still completes.
 
@@ -202,7 +258,7 @@ async def _probe_long_horizon_compaction(workspace: str) -> str:
 
 
 def build_default_suite(workspace: str) -> list[EvalCase]:
-    """The six behavioral probes, bound to ``workspace`` (a writable temp dir)."""
+    """The seven behavioral probes, bound to ``workspace`` (a writable temp dir)."""
     return [
         EvalCase(
             "completion-detection",
@@ -228,6 +284,11 @@ def build_default_suite(workspace: str) -> list[EvalCase]:
             "partial-failure-recovery",
             "A tool that fails once then succeeds is retried; the turn completes.",
             lambda: _probe_partial_failure_recovery(workspace),
+        ),
+        EvalCase(
+            "stuck-recovery",
+            "A varying-arg failure loop (doom guard misses it) is recovered then halts 'stuck'.",
+            lambda: _probe_stuck_recovery(workspace),
         ),
         EvalCase(
             "long-horizon-compaction",

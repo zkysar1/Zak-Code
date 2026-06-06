@@ -32,6 +32,16 @@ Stop conditions
   arguments :data:`DOOM_LOOP_THRESHOLD` times in a row, so the loop stops early
   rather than burning the whole iteration budget on a no-progress cycle. Fires
   only while iteration budget remains to be saved.
+* ``"stuck"`` — broader, multi-signal no-progress detection
+  (:class:`~zakcode.agent.stuck.StuckTracker`): when several stuck signals (an
+  all-failing batch, a repeatedly-failing call, near-repeats with no progress)
+  persist for a streak of iterations, the loop first tries to *recover* (inject a
+  nudge, then narrow the next iteration to read-only tools) and only ends as
+  ``"stuck"`` if recovery fails. Catches the many stall shapes the exact-repeat
+  doom guard misses; capable models and transient single errors never trigger it.
+
+``TurnResult.degraded`` (and the streaming ``AgentDone.degraded``) is a thin roll-up:
+True when the turn engaged failure-recovery or ended in a non-clean terminal.
 
 Cancellation (``asyncio.CancelledError``) is never treated as a normal stop: it
 propagates out of the turn after the session has been persisted in a consistent
@@ -42,7 +52,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -56,6 +65,7 @@ from zakcode.agent.compact import Compactor
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
+from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -128,6 +138,12 @@ def _fence_injected_context(texts: list[str]) -> str:
     )
 
 
+#: Terminal stop reasons that mean the turn did not finish cleanly — used to roll a single
+#: ``degraded`` confidence signal up onto :class:`TurnResult` / ``AgentDone`` (Bet 2 idea #6)
+#: so a client can flag a struggling turn without re-deriving it from the stop reason.
+_DEGRADED_STOP_REASONS = {"stuck", "doom_loop", "recipe_stalled"}
+
+
 class TurnResult(BaseModel):
     """Outcome of a single :meth:`AgentLoop.arun_turn` call."""
 
@@ -136,25 +152,10 @@ class TurnResult(BaseModel):
     iterations: int = 0
     usage: Usage = Field(default_factory=Usage)
     stop_reason: str = "completed"
-
-
-def _call_signature(call: ToolCall) -> tuple[str, str]:
-    """A stable, hashable identity for a tool call (name + canonical arguments).
-
-    Arguments are serialized with sorted keys so two logically-identical calls
-    compare equal regardless of dict ordering. Falls back to ``repr`` for the
-    (vanishingly rare) non-JSON-serializable argument value.
-    """
-    try:
-        args = json.dumps(call.arguments, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        args = repr(sorted(call.arguments.items()))
-    return (call.name, args)
-
-
-def _batch_signature(calls: list[ToolCall]) -> tuple[tuple[str, str], ...]:
-    """Signature for a whole batch of tool calls requested in one iteration."""
-    return tuple(_call_signature(c) for c in calls)
+    #: True when the turn engaged failure-recovery machinery or ended in a non-clean
+    #: terminal (stuck / doom_loop / recipe_stalled, or any stuck-ladder nudge/narrow
+    #: fired). A thin "this turn struggled" roll-up; clean turns leave it False.
+    degraded: bool = False
 
 
 class AgentLoop:
@@ -494,6 +495,22 @@ class AgentLoop:
         )
         return call, block
 
+    def _readonly_tool_names(self) -> list[str]:
+        """Active tool names at the ``READ_ONLY`` tier — the set offered during a stuck
+        NARROW step so the model is forced to investigate before mutating again.
+
+        Derived from each active tool's required tier (not a hardcoded list), so any
+        read-only MCP/plugin tool is included too. May be empty, in which case the NARROW
+        iteration offers no tools at all — a hard circuit-breaker that pushes the model to
+        respond in text rather than keep flailing.
+        """
+        names: list[str] = []
+        for name in self.registry.active_names():
+            tool = self.registry.get(name)
+            if tool is not None and tool.spec.required_permission is PermissionTier.READ_ONLY:
+                names.append(name)
+        return names
+
     def _is_read_only_safe(self, call: ToolCall) -> bool:
         """Whether ``call`` may join a concurrent batch.
 
@@ -623,6 +640,10 @@ class AgentLoop:
             # on ANY ambiguity), so always-on can never over-gate a turn.
             acceptance=extract_acceptance(user_text),
         )
+        # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
+        # NARROW step fires, the next iteration is restricted to read-only tools.
+        stuck = StuckTracker()
+        restrict_readonly_next = False
 
         while True:
             if not self._grant_iteration(iterations):
@@ -632,8 +653,13 @@ class AgentLoop:
             system = self._build_system()
             # Recompute exposed tools each iteration so a tool activated mid-turn
             # (e.g. via tool_search) is offered in the same turn and stays consistent
-            # with the system prompt's tool summary (both read active_names()).
-            tool_defs = self.registry.definitions()
+            # with the system prompt's tool summary (both read active_names()). During a
+            # stuck-recovery NARROW step the next iteration is limited to read-only tools.
+            if restrict_readonly_next:
+                tool_defs = self.registry.definitions(allowed=self._readonly_tool_names())
+                restrict_readonly_next = False
+            else:
+                tool_defs = self.registry.definitions()
             call_messages = await self._messages_for_call(user_text, iterations)
 
             result = await self.provider.acomplete(
@@ -683,7 +709,7 @@ class AgentLoop:
             # still iteration budget left to save. If the threshold coincides with
             # the final allowed iteration, the loop would have stopped anyway, so
             # "max_iterations" stays the accurate (and outer-bound) stop reason.
-            signature = _batch_signature(result.tool_calls)
+            signature = batch_signature(result.tool_calls)
             if signature == last_signature:
                 repeat_count += 1
             else:
@@ -713,12 +739,30 @@ class AgentLoop:
 
             cursor.observe(result.tool_calls, result_blocks)
 
+            # Stuck detection + recovery ladder: nudge -> narrow-to-read-only -> stop.
+            # Generalizes the (exact-repeat) doom guard above to the many ways a weak model
+            # stalls; fires only on a sustained multi-signal streak, so capable models and
+            # transient single errors are unaffected.
+            stuck.observe(result.tool_calls, result_blocks, assistant_text=assistant_msg.text)
+            action = stuck.next_action()
+            if action is StuckAction.STOP:
+                stop_reason = "stuck"
+                break
+            if action is StuckAction.NUDGE:
+                self.session.add_message(Message.user(stuck.nudge_message()))
+                self._persist()
+            elif action is StuckAction.NARROW:
+                self.session.add_message(Message.user(stuck.narrow_message()))
+                restrict_readonly_next = True
+                self._persist()
+
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
             iterations=iterations,
             usage=turn_usage,
             stop_reason=stop_reason,
+            degraded=stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
         )
 
     def run_turn(self, user_text: str) -> TurnResult:
@@ -784,6 +828,9 @@ class AgentLoop:
             # on ANY ambiguity), so always-on can never over-gate a turn.
             acceptance=extract_acceptance(user_text),
         )
+        # Stuck detection + recovery ladder (identical semantics to the buffered path).
+        stuck = StuckTracker()
+        restrict_readonly_next = False
 
         try:
             while True:
@@ -793,8 +840,13 @@ class AgentLoop:
                 iterations += 1
                 system = self._build_system()
                 # Recompute exposed tools each iteration (see _run_turn) so mid-turn
-                # tool activations are offered in the same turn.
-                tool_defs = self.registry.definitions()
+                # tool activations are offered in the same turn; a stuck NARROW step limits
+                # the next iteration to read-only tools.
+                if restrict_readonly_next:
+                    tool_defs = self.registry.definitions(allowed=self._readonly_tool_names())
+                    restrict_readonly_next = False
+                else:
+                    tool_defs = self.registry.definitions()
                 call_messages = await self._messages_for_call(user_text, iterations)
 
                 text_parts: list[str] = []
@@ -864,7 +916,7 @@ class AgentLoop:
                     break
 
                 # Doom-loop guard — identical to the buffered path.
-                signature = _batch_signature(tool_calls)
+                signature = batch_signature(tool_calls)
                 if signature == last_signature:
                     repeat_count += 1
                 else:
@@ -902,6 +954,26 @@ class AgentLoop:
                     self._persist()
 
                 cursor.observe(tool_calls, result_blocks)
+
+                # Stuck detection + recovery ladder (see _run_turn); surfaced live as
+                # AgentStatus notes so a client can show the recovery happening.
+                stuck.observe(tool_calls, result_blocks, assistant_text=assistant_text)
+                action = stuck.next_action()
+                if action is StuckAction.STOP:
+                    stop_reason = "stuck"
+                    yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
+                    break
+                if action is StuckAction.NUDGE:
+                    self.session.add_message(Message.user(stuck.nudge_message()))
+                    self._persist()
+                    yield AgentStatus(message="recovering: no progress — nudging a rethink")
+                elif action is StuckAction.NARROW:
+                    self.session.add_message(Message.user(stuck.narrow_message()))
+                    restrict_readonly_next = True
+                    self._persist()
+                    yield AgentStatus(
+                        message="recovering: limiting to read-only tools to break the loop"
+                    )
         except asyncio.CancelledError:
             # Cancellation is a control signal, not a stop reason. State has only
             # been mutated + persisted at message boundaries, so it is consistent.
@@ -912,7 +984,12 @@ class AgentLoop:
             raise
 
         yield AgentUsage(usage=turn_usage)
-        yield AgentDone(stop_reason=stop_reason, iterations=iterations, usage=turn_usage)
+        yield AgentDone(
+            stop_reason=stop_reason,
+            iterations=iterations,
+            usage=turn_usage,
+            degraded=stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
+        )
 
     @staticmethod
     def _stream_assistant_message(text: str, tool_calls: list[ToolCall]) -> Message:
