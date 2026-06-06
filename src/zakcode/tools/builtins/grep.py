@@ -131,8 +131,10 @@ class GrepTool(Tool):
             return [root]
 
         collected: list[Path] = []
-        # ``onerror`` is left at its default (errors swallowed) and we never follow
-        # symlinks, so a cycle or an unreadable subtree cannot hang or crash us.
+        # ``onerror`` is left at its default (errors swallowed). ``followlinks=False`` stops
+        # os.walk recursing INTO symlinked directories, but a symlinked FILE leaf still shows
+        # up in ``filenames`` and ``read_bytes()`` would follow it out of the workspace — so
+        # each leaf is checked per-file below (mirroring glob's per-match re-resolve). (audit4 #1)
         for current, dirnames, filenames in os.walk(root, followlinks=False):
             # Prune skip directories in place so os.walk does not descend.
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
@@ -140,7 +142,19 @@ class GrepTool(Tool):
             for name in sorted(filenames):
                 if glob_filter and not fnmatch.fnmatch(name, glob_filter):
                     continue
-                collected.append(current_path / name)
+                leaf = current_path / name
+                # A symlinked leaf is never scanned, and the real path must stay under the
+                # (already workspace-confined) walked root — so grep cannot return the content
+                # of a file outside the sandbox via a planted link.
+                if leaf.is_symlink():
+                    continue
+                try:
+                    resolved_leaf = leaf.resolve()
+                except OSError:
+                    continue
+                if resolved_leaf != root and root not in resolved_leaf.parents:
+                    continue
+                collected.append(leaf)
         return collected
 
     def _scan_file(self, file_path: Path, regex: re.Pattern[str]) -> list[tuple[int, str]]:

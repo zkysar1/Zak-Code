@@ -91,6 +91,26 @@ def test_safety_rejects_symlink_pointing_outside(tmp_path):
         resolve_in_workspace("link/secret.txt", tmp_path)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="file symlinks need privilege on Windows")
+async def test_grep_does_not_follow_symlinked_file_out_of_workspace(tmp_path):
+    # audit4 #1: a symlinked FILE leaf inside the workspace pointing OUTSIDE must not be
+    # scanned (os.walk(followlinks=False) only stops directory recursion, not file leaves).
+    from zakcode.tools.builtins.grep import GrepTool
+
+    secret = tmp_path.parent / "grep_secret.txt"
+    secret.write_text("TOPSECRET-NEEDLE\n", encoding="utf-8")
+    (tmp_path / "real.txt").write_text("ordinary NEEDLE line\n", encoding="utf-8")
+    try:
+        (tmp_path / "leak.txt").symlink_to(secret)
+    except (OSError, NotImplementedError):  # pragma: no cover - platform dependent
+        pytest.skip("symlinks unsupported in this environment")
+    res = await GrepTool().execute(
+        {"pattern": "NEEDLE", "path": "."}, ToolContext(workspace_root=tmp_path)
+    )
+    assert "ordinary NEEDLE line" in res.output  # the real in-workspace file IS scanned
+    assert "TOPSECRET-NEEDLE" not in res.output  # the symlinked-out file is NOT
+
+
 # --------------------------------------------------------------------------- #
 # read_file
 # --------------------------------------------------------------------------- #
