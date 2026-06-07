@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -32,10 +32,17 @@ from zds_llm_provider.messages import Message
 from zds_llm_provider.types import Provider, ProviderError
 from zds_llm_provider.usage import Usage
 
-try:  # optional: schema VALIDATION. Without it, coerce_structured degrades to extraction.
+# Optional: schema VALIDATION. Without ``jsonschema``, coerce_structured degrades to extraction.
+# Under TYPE_CHECKING mypy sees the real (typed) module — so its uses below need no per-line
+# ``type: ignore`` — while at runtime the import is guarded and may resolve to ``None`` (every
+# use is fenced behind ``jsonschema is not None``).
+if TYPE_CHECKING:
     import jsonschema
-except ImportError:  # pragma: no cover - exercised by monkeypatching jsonschema=None
-    jsonschema = None  # type: ignore[assignment]
+else:
+    try:
+        import jsonschema
+    except ImportError:  # pragma: no cover - exercised by monkeypatching jsonschema=None
+        jsonschema = None
 
 #: A leading Markdown code fence a weak model often wraps JSON in (```json ... ``` / ``` ...).
 _FENCE_OPEN_RE = re.compile(r"^```[A-Za-z0-9_-]*[ \t]*\r?\n?")
@@ -137,7 +144,7 @@ def coerce_structured(text: str, *, schema: dict[str, Any] | None = None) -> Any
     if schema is not None and jsonschema is not None:
         try:
             jsonschema.validate(instance=data, schema=schema)
-        except jsonschema.ValidationError as exc:  # type: ignore[misc]
+        except jsonschema.ValidationError as exc:
             raise StructuredValidationError(
                 f"output failed schema validation: {exc.message}", raw_text=text
             ) from exc

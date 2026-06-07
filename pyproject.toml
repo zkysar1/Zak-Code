@@ -99,6 +99,8 @@ asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = "3.11"
-packages = ["zakcode"]
+# Both the app and the workspace's provider library are type-checked by the single CI `mypy`
+# step (the package is installed editable, so mypy resolves `zds_llm_provider` by import).
+packages = ["zakcode", "zds_llm_provider"]
 ignore_missing_imports = true
 warn_unused_ignores = true
