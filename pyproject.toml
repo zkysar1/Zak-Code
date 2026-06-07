@@ -85,8 +85,13 @@ zds-llm-provider = { path = "packages/zds-llm-provider", editable = true }
 [tool.hatch.build.targets.wheel]
 packages = ["src/zakcode"]
 # Ship the PEP 561 marker so downstream type-checkers see zakcode as typed,
-# and the bundled web-client static assets (served at "/" by the FastAPI app).
-artifacts = ["src/zakcode/py.typed", "src/zakcode/server/static/**"]
+# the bundled web-client static assets (served at "/" by the FastAPI app), and the
+# bundled SKILL.md playbooks (discovered from src/zakcode/skills/bundled at runtime).
+artifacts = [
+    "src/zakcode/py.typed",
+    "src/zakcode/server/static/**",
+    "src/zakcode/skills/bundled/**",
+]
 
 [tool.ruff]
 line-length = 100

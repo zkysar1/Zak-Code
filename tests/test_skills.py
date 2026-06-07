@@ -187,6 +187,25 @@ def test_discover_skills_extra_dir_shadows_project(tmp_path: Path) -> None:
     assert skill.description == "external version"
 
 
+# ── bundled skills ──────────────────────────────────────────────────────────────
+
+
+def test_bundled_research_skill_is_discoverable_and_well_formed() -> None:
+    # The shipped `research` playbook lives in src/zakcode/skills/bundled and must parse, declare
+    # the web tools, and tell the model to fan out search then fetch then synthesize.
+    import zakcode.skills as skills_mod
+
+    bundled = Path(skills_mod.__file__).parent / "bundled"
+    found, errors = discover_skill_dir(bundled)
+    assert errors == {}
+    research = next((s for s in found if s.name == "research"), None)
+    assert research is not None, f"bundled skills found: {[s.name for s in found]}"
+    assert set(research.frontmatter.allowed_tools) >= {"web_search", "web_fetch"}
+    body = research.body().lower()
+    assert "web_search" in body and "web_fetch" in body
+    assert "parallel" in body and "synthe" in body  # the playbook's shape
+
+
 def test_discover_skills_extra_dir_missing_is_harmless(tmp_path: Path) -> None:
     """Passing a nonexistent extra skill dir produces no errors and no crash."""
     registry, errors = discover_skills(tmp_path, extra_skill_dirs=[tmp_path / "does-not-exist"])
