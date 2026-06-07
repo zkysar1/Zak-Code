@@ -105,6 +105,7 @@ class PowerShellTool(Tool):
                 cwd=str(ctx.workspace_root),
                 timeout=timeout,
                 stdin_text=command,
+                extra_env=ctx.egress_env,
             )
         except CommandTimeout:
             return ToolResult.error(

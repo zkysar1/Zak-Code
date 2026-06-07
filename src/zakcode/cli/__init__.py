@@ -94,6 +94,13 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     ]
     if settings.search_backend == "searxng":
         rows.append(("SearXNG URL", strip_url_credentials(settings.searxng_url) or "(not set)"))
+    if settings.egress_proxy:
+        rows.append(
+            (
+                "Subprocess egress",
+                "proxy -> " + (", ".join(settings.egress_allowed_domains) or "deny all"),
+            )
+        )
     for name, present in _provider_key_status().items():
         rows.append((name, "set" if present else "not set"))
     return rows

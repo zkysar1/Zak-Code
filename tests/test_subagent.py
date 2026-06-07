@@ -291,6 +291,9 @@ async def test_child_loop_constructed_without_obsolete_flags(tmp_path: Path, mon
         def __init__(self, *args: object, **kwargs: object) -> None:
             captured.update(kwargs)
 
+        async def aclose(self) -> None:  # the real AgentLoop has this; the runner calls it
+            pass
+
         async def arun_turn(self, prompt: str) -> TurnResult:
             return TurnResult(stop_reason="completed")
 
@@ -327,6 +330,9 @@ async def test_child_gets_isolated_permission_view(tmp_path: Path, monkeypatch) 
         def __init__(self, *args: object, **kwargs: object) -> None:
             captured.update(kwargs)
 
+        async def aclose(self) -> None:  # the real AgentLoop has this; the runner calls it
+            pass
+
         async def arun_turn(self, prompt: str) -> TurnResult:
             return TurnResult(stop_reason="completed")
 
@@ -357,6 +363,9 @@ async def test_child_inherits_extra_workspace_roots(tmp_path: Path, monkeypatch)
     class _FakeLoop:
         def __init__(self, *args: object, **kwargs: object) -> None:
             captured.update(kwargs)
+
+        async def aclose(self) -> None:  # the real AgentLoop has this; the runner calls it
+            pass
 
         async def arun_turn(self, prompt: str) -> TurnResult:
             return TurnResult(stop_reason="completed")

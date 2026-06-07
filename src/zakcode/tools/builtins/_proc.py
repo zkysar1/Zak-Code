@@ -29,13 +29,15 @@ async def run_capturing(
     cwd: str,
     timeout: float,
     stdin_text: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[str, int]:
     """Run a child to completion, capturing combined stdout+stderr; enforce ``timeout``.
 
     Exactly one of ``argv`` (direct exec) or ``shell_command`` (platform shell) must be
     given. Returns ``(combined_output, exit_code)``. On timeout raises
     :class:`CommandTimeout`; on cancellation re-raises ``CancelledError`` — in BOTH cases
-    the child's entire process tree is killed first, never orphaned.
+    the child's entire process tree is killed first, never orphaned. ``extra_env`` is overlaid
+    on the inherited environment (e.g. ``HTTP(S)_PROXY`` for the egress sandbox).
     """
     if (argv is None) == (shell_command is None):
         raise ValueError("exactly one of argv or shell_command is required")
@@ -44,7 +46,7 @@ async def run_capturing(
     # Suppress child-emitted ANSI color: the combined stdout+stderr is fed straight to the
     # model, and raw escape codes are token-noise it can't use. Inherit the full parent env
     # (unchanged behavior) and add the standard no-color signals most CLIs honor. (#5)
-    child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb"}
+    child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(extra_env or {})}
     spawn_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "stdout": subprocess.PIPE,

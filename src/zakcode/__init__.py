@@ -642,6 +642,8 @@ class Agent:
         if self.memory is not None:
             with contextlib.suppress(Exception):
                 self.memory.close()
+        with contextlib.suppress(Exception):
+            await self.loop.aclose()  # tear down the egress-proxy listener (no-op when off)
         await self.aclose_mcp()
 
     @classmethod

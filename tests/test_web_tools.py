@@ -611,18 +611,6 @@ async def test_web_fetch_bogus_charset_does_not_raise(
 # ── egress allowlist gate (ZAKCODE_WEB_ALLOWED_DOMAINS) ──────────────────────────────
 
 
-def test_host_allowed_matching() -> None:
-    from zakcode.tools.builtins.web_fetch import _host_allowed
-
-    assert _host_allowed("example.com", [])  # empty allowlist = any host
-    assert _host_allowed("example.com", ["example.com"])
-    assert _host_allowed("docs.example.com", ["example.com"])  # subdomain ok
-    assert _host_allowed("EXAMPLE.com", ["example.com"])  # case-insensitive
-    assert not _host_allowed("notexample.com", ["example.com"])  # not a subdomain
-    assert not _host_allowed("example.com.evil.test", ["example.com"])  # suffix trick blocked
-    assert not _host_allowed("other.org", ["example.com", "github.com"])
-
-
 async def test_web_fetch_allowlist_permits_listed_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

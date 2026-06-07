@@ -56,6 +56,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -106,6 +107,9 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.usage import Usage
+
+if TYPE_CHECKING:
+    from zakcode.sandbox import EgressProxy
 
 #: Fallback iteration budget when neither an explicit value nor settings provide one.
 DEFAULT_MAX_ITERATIONS = 50
@@ -286,12 +290,45 @@ class AgentLoop:
             self.max_iterations = max_iterations
         else:
             self.max_iterations = self.settings.max_iterations or DEFAULT_MAX_ITERATIONS
+        # Network-egress sandbox (opt-in): a lazily-started localhost allowlisting proxy that
+        # subprocess tools route through. Kept per running loop (see _egress_env).
+        self._egress_proxy: EgressProxy | None = None
 
     # ── internals ────────────────────────────────────────────────────────────
 
     def _persist(self) -> None:
         if self.store is not None:
             self.store.save(self.session)
+
+    async def _egress_env(self) -> dict[str, str]:
+        """Subprocess ``HTTP(S)_PROXY`` env for the egress sandbox, or ``{}`` when it is off.
+
+        Lazily starts the allowlisting proxy on the current event loop and reuses it across turns
+        on that loop; if the loop changed (e.g. a fresh ``asyncio.run`` per ``run_turn``), the old
+        listener died with its loop, so a new one is started. The agent's own model calls are not
+        proxied — only the env handed to ``bash``/``powershell`` children carries the proxy.
+        """
+        if not self.settings.egress_proxy:
+            return {}
+        from zakcode.sandbox import EgressProxy
+
+        loop = asyncio.get_running_loop()
+        if self._egress_proxy is None or self._egress_proxy.bound_loop is not loop:
+            self._egress_proxy = EgressProxy(self.settings.egress_allowed_domains)
+            await self._egress_proxy.start()
+        return self._egress_proxy.subprocess_env()
+
+    async def aclose(self) -> None:
+        """Release loop-owned resources (the egress proxy listener). A no-op when egress is off.
+
+        Important on a long-lived event loop (``zakcode serve``), where the OS does not reclaim the
+        listener until process exit — call it when an agent/sub-agent is done so the socket (and
+        any in-flight tunnels) are torn down promptly. Safe to call more than once.
+        """
+        if self._egress_proxy is not None:
+            with contextlib.suppress(Exception):
+                await self._egress_proxy.stop()
+            self._egress_proxy = None
 
     async def _summarize_for_compaction(self, messages: list[Message]) -> str:
         """Summarize older messages via the model (the compactor's summarize callback)."""
@@ -741,6 +778,7 @@ class AgentLoop:
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
+            egress_env=await self._egress_env(),
         )
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -940,6 +978,7 @@ class AgentLoop:
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
+            egress_env=await self._egress_env(),
         )
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written

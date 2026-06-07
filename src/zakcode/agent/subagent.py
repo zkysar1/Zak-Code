@@ -207,7 +207,12 @@ class SubAgentRunner:
             # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
             # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )
-        result = await loop.arun_turn(prompt)
+        try:
+            result = await loop.arun_turn(prompt)
+        finally:
+            # The child loop is discarded here; release its egress-proxy listener (a no-op when
+            # off) so a delegation tree doesn't leak one listener per child on a long-lived loop.
+            await loop.aclose()
         summary = self._summarize(result)
         return SubAgentResult(
             name=definition.name,

@@ -179,8 +179,29 @@ class Settings(BaseSettings):
         default=False,
         description="Require operator confirmation before each web_fetch (egress gate).",
     )
+    # Network-egress sandbox (opt-in). When ``egress_proxy`` is true, subprocess tools (bash /
+    # powershell) are pointed at a localhost domain-allowlisting proxy via HTTP(S)_PROXY, so their
+    # outbound HTTP/HTTPS to ``egress_allowed_domains`` (+ subdomains) on the standard web ports
+    # (80/443) is allowed and everything else is refused. An empty list with the proxy on = deny
+    # all subprocess egress. Best-effort (cooperating clients only — a process that ignores the
+    # proxy env can still egress directly); see docs/RISKS.md. The agent's own model calls are NOT
+    # proxied.
+    egress_proxy: bool = Field(
+        default=False,
+        description="Route subprocess egress through a localhost domain-allowlisting proxy.",
+    )
+    egress_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Domains (+ subdomains) the egress proxy permits; empty = deny all egress.",
+    )
 
-    @field_validator("denied_commands", "allowed_models", "web_allowed_domains", mode="before")
+    @field_validator(
+        "denied_commands",
+        "allowed_models",
+        "web_allowed_domains",
+        "egress_allowed_domains",
+        mode="before",
+    )
     @classmethod
     def _parse_list_from_env(cls, value: object, info: ValidationInfo) -> object:
         """Accept a list, a JSON array string, or a plain delimited string from an env var.

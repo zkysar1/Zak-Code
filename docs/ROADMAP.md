@@ -545,6 +545,11 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 **Deferred / opt-in (only after the core is proven, to avoid surface sprawl)**
 - Agent-authored skills + curator (usage tracking, archive-not-delete).
 - OS-level sandboxing (filesystem + network egress allowlist via proxy; secrets outside the box).
+  *Partial:* filesystem confinement is enforced (workspace path guard), and the **network egress
+  allowlist via a domain-whitelisting proxy** shipped opt-in (`ZAKCODE_EGRESS_PROXY`,
+  `zakcode.sandbox.EgressProxy`) for subprocess egress — best-effort (cooperating clients).
+  Remaining: kernel-enforced isolation so the proxy can't be bypassed (Linux bubblewrap / Windows
+  AppContainer or Docker), and routing secrets outside the box.
 - Multi-agent teams / coordinator, remote/bridge, cron scheduling, **YAML recipes** (declarative YAML + Jinja2 workflows with schema-validated output — distinct from the shipped **Recipe Cursor**, the small-model verify-before-finish gate; see the Post-M11 section).
 - Additional providers (Anthropic, Bedrock, Vertex) — just new litellm prefixes + registry entries, no loop changes.
 

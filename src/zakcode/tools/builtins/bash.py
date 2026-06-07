@@ -97,6 +97,7 @@ class BashTool(Tool):
                 shell_command=command,
                 cwd=str(ctx.workspace_root),
                 timeout=timeout,
+                extra_env=ctx.egress_env,
             )
         except CommandTimeout:
             return ToolResult.error(

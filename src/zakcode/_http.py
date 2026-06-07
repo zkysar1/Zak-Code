@@ -36,6 +36,24 @@ class BlockedUrlError(ValueError):
     """A URL was rejected by the SSRF guard (bad scheme, or a private/loopback/metadata host)."""
 
 
+def host_allowed(host: str, allowed: list[str]) -> bool:
+    """Pure matcher: does ``host`` equal, or sit under, any domain in ``allowed``?
+
+    Case-insensitive, trailing-dot-insensitive, subdomain-aware (``example.com`` matches
+    ``docs.example.com`` but NOT ``notexample.com`` or ``example.com.evil.test``). An EMPTY
+    ``allowed`` returns ``False`` (no match) — the caller decides what empty means (web_fetch
+    treats no-allowlist as allow-all; the egress proxy treats it as deny-all).
+    """
+    if not host:
+        return False
+    h = host.lower().rstrip(".")
+    for entry in allowed:
+        d = entry.lower().strip().strip(".")
+        if d and (h == d or h.endswith("." + d)):
+            return True
+    return False
+
+
 def load_httpx() -> Any:
     """Return the ``httpx`` module, or raise ``ImportError`` with install guidance.
 

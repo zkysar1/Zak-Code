@@ -152,6 +152,9 @@ class ToolContext(BaseModel):
     workspace_root: Path
     extra_workspace_roots: list[Path] = Field(default_factory=list)
     spawner: SubAgentSpawner | None = None
+    #: Extra environment for subprocess tools (bash/powershell) — e.g. ``HTTP(S)_PROXY`` pointing
+    #: at the egress proxy when the network-egress sandbox is on. Empty for an ordinary turn.
+    egress_env: dict[str, str] = Field(default_factory=dict)
 
     @property
     def all_workspace_roots(self) -> list[Path]:

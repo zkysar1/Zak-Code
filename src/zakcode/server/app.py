@@ -141,6 +141,22 @@ class AgentLike(Protocol):
     def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]: ...
 
 
+async def _release_agent(agent: Any) -> None:
+    """Tear down a finished per-request/connection agent's loop-owned resources.
+
+    Currently this stops the egress-proxy listener (a no-op unless ``ZAKCODE_EGRESS_PROXY`` is on)
+    so it is not leaked for the life of the long-lived server event loop. Guarded so it is safe
+    for any ``AgentLike`` (a remote/stub agent with no ``loop`` is simply skipped) and never
+    raises. Deliberately does NOT call ``agent.aclose()`` — SESSION_END/memory lifecycle on the
+    server is unchanged.
+    """
+    loop = getattr(agent, "loop", None)
+    aclose = getattr(loop, "aclose", None)
+    if aclose is not None:
+        with contextlib.suppress(Exception):
+            await aclose()
+
+
 #: How the server builds an agent for a given session, optional model override, and
 #: an optional permission prompter (the WebSocket channel supplies one so escalations
 #: can be approved interactively; REST/SSE pass ``None`` and ``ask`` fails closed).
@@ -400,12 +416,14 @@ def create_app(
         _check_model(request.model)
         session = _get_or_create_session(request.session_id, request.model)
         _claim_session(session)
+        agent: AgentLike | None = None
         try:
             agent = resolved_factory(session, request.model, None)
             result = await agent.arun_turn(request.message)
             resolved_store.save(agent.session)
             return ChatResponse.from_turn(agent.session.id, result)
         finally:
+            await _release_agent(agent)
             inflight.discard(session.id)
 
     @app.post("/chat/stream")
@@ -434,6 +452,7 @@ def create_app(
                 try:
                     resolved_store.save(agent.session)
                 finally:
+                    await _release_agent(agent)  # stop the egress proxy (no-op when off)
                     inflight.discard(session.id)
 
         return EventSourceResponse(event_source())
@@ -615,6 +634,10 @@ def create_app(
                 current_turn.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await current_turn
+        finally:
+            # The per-connection agent is done — release its egress-proxy listener (no-op unless
+            # ZAKCODE_EGRESS_PROXY is on) so it isn't leaked for the life of the server loop.
+            await _release_agent(agent)
 
     # ── wire-schema contract + web client ────────────────────────────────────────
 
