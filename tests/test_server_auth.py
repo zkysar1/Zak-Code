@@ -113,6 +113,28 @@ def test_no_token_routes_work_without_header(tmp_path: Path) -> None:
     assert client.post("/chat", json={"message": "hi"}).status_code == 200
 
 
+def test_ws_auth_off_echoes_offered_subprotocol(tmp_path: Path) -> None:
+    # Auth off: a browser client written for an auth-ON deployment always offers
+    # ``bearer, <token>``. Per RFC 6455 it aborts the handshake if the server selects no
+    # subprotocol, so the auth-off path must ECHO ``bearer`` to stay connectable by one client.
+    client, store = _app(tmp_path)  # no auth_token
+    sid = _sid(store)
+    with client.websocket_connect(f"/ws/{sid}", subprotocols=["bearer", "ignored"]) as ws:
+        assert ws.accepted_subprotocol == "bearer"
+        ws.send_json({"type": "input", "message": "hi"})
+        assert ws.receive_json()["text"] == "echo:hi"
+
+
+def test_ws_auth_off_no_subprotocol_offered_accepts_plain(tmp_path: Path) -> None:
+    # ...and a client that offers NONE (the bundled web client) still connects with none selected.
+    client, store = _app(tmp_path)
+    sid = _sid(store)
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        assert ws.accepted_subprotocol is None
+        ws.send_json({"type": "input", "message": "hi"})
+        assert ws.receive_json()["text"] == "echo:hi"
+
+
 # ── auth on: HTTP ──────────────────────────────────────────────────────────────────
 
 

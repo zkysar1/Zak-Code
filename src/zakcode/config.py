@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     # which would land in access logs. When unset, the server is unauthenticated and ``serve``
     # refuses to bind a non-loopback host without an explicit ``--insecure`` opt-in.
     # ``exclude=True`` keeps the token out of every ``model_dump()`` (e.g. ``GET /config``).
+    # NOTE: a token used for browser WebSocket auth must contain NO commas or whitespace — the
+    # ``Sec-WebSocket-Protocol`` header is a comma-separated list, so an embedded comma is
+    # ambiguous and the handshake is rejected (the HTTP ``Authorization`` path is unaffected).
+    # Generate one with e.g. ``secrets.token_urlsafe()``.
     auth_token: str | None = Field(
         default=None,
         exclude=True,

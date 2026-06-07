@@ -518,7 +518,12 @@ def create_app(
                 return
             await websocket.accept(subprotocol=selected_subprotocol)
         else:
-            await websocket.accept()
+            # Auth off: still ECHO an offered ``bearer`` subprotocol. A browser client written
+            # for an auth-ON deployment always offers ``bearer, <token>``, and per RFC 6455 it
+            # aborts the handshake if it offered subprotocols and the server selected none — so
+            # one client can talk to both postures. There is no token to enforce here.
+            offered = _subprotocol_token(websocket.headers.get("sec-websocket-protocol"))
+            await websocket.accept(subprotocol="bearer" if offered is not None else None)
         try:
             session = resolved_store.load(session_id)
         except SessionNotFound:
