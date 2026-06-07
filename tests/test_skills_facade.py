@@ -10,6 +10,8 @@ from rich.console import Console
 from zakcode import Agent
 from zakcode.cli import _invoke_skill, _render_skills
 from zakcode.config import Settings
+from zakcode.hooks import HookEvent, LifecyclePayload
+from zakcode.messages import Message
 
 _SKILL = """\
 ---
@@ -103,6 +105,70 @@ def test_invoke_unknown_skill_returns_false(tmp_path: Path) -> None:
     agent = _agent(tmp_path, enable_skills=True)
     console, _ = _console()
     assert _invoke_skill(console, agent, "nope") is False
+
+
+# ── skill-selection signal (ON_SKILL_SELECTED): the seam a learning mind records from ──
+
+
+def _capture(into: list[LifecyclePayload]):
+    def hook(payload: LifecyclePayload) -> None:
+        into.append(payload)
+
+    return hook
+
+
+async def test_invoke_skill_fires_selection_signal(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "g")
+    agent = _agent(tmp_path, enable_skills=True)
+    fired: list[LifecyclePayload] = []
+    agent.hook_manager.register_lifecycle(HookEvent.ON_SKILL_SELECTED, _capture(fired))
+
+    result = await agent.invoke_skill("greeter")
+
+    assert result.invoked is True and result.error is None
+    assert len(fired) == 1
+    payload = fired[0]
+    assert payload.event is HookEvent.ON_SKILL_SELECTED
+    assert payload.data["skill"] == "greeter"
+    assert payload.data["source"] == "command"
+    assert payload.session_id == agent.session.id
+    # The body was injected too (the signal accompanies the actual use).
+    assert "greet the user by name" in agent.session.messages[-1].text.lower()
+
+
+async def test_skill_signal_carries_triggering_query(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "g")
+    agent = _agent(tmp_path, enable_skills=True)
+    agent.session.add_message(Message.user("help me greet bob"))  # the prior turn
+    fired: list[LifecyclePayload] = []
+    agent.hook_manager.register_lifecycle(HookEvent.ON_SKILL_SELECTED, _capture(fired))
+
+    await agent.invoke_skill("greeter")
+
+    assert fired and fired[0].data["query"] == "help me greet bob"
+
+
+async def test_load_failure_does_not_fire_signal(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "g")
+    agent = _agent(tmp_path, enable_skills=True)
+    (tmp_path / ".zakcode" / "skills" / "g" / "SKILL.md").unlink()
+    fired: list[LifecyclePayload] = []
+    agent.hook_manager.register_lifecycle(HookEvent.ON_SKILL_SELECTED, _capture(fired))
+
+    result = await agent.invoke_skill("greeter")
+
+    assert result.invoked is True and result.error is not None
+    assert fired == []  # a skill that did not actually load is not a "selection"
+
+
+async def test_unknown_skill_does_not_fire_signal(tmp_path: Path) -> None:
+    agent = _agent(tmp_path, enable_skills=True)
+    fired: list[LifecyclePayload] = []
+    agent.hook_manager.register_lifecycle(HookEvent.ON_SKILL_SELECTED, _capture(fired))
+
+    result = await agent.invoke_skill("nope")
+
+    assert result.invoked is False and fired == []
 
 
 def test_invoke_skill_no_registry_is_safe(tmp_path: Path) -> None:

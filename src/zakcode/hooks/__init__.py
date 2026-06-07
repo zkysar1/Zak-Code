@@ -56,6 +56,10 @@ class HookEvent(StrEnum):
     SESSION_START = "SessionStart"
     SESSION_END = "SessionEnd"
     PRE_COMPACT = "PreCompact"
+    # Fired (observe-only) when a skill is invoked, carrying the chosen skill name and the
+    # triggering query in the LifecyclePayload ``data`` map. The seam a learning layer records
+    # (query -> skill) from to learn habitual skill preferences (it does NOT pick skills).
+    ON_SKILL_SELECTED = "OnSkillSelected"
 
 
 class HookDecision(StrEnum):

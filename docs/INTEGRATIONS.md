@@ -30,6 +30,7 @@ isolated).
 | `SessionStart` | once, on the first turn of a session | "prime" — load durable state into the framework's working memory |
 | `PreCompact` | before the transcript is compacted (auto or `/compact`) | serialize learning state before context is dropped |
 | `SessionEnd` | on `Agent.aclose()` | "encode" — consolidate the just-finished session |
+| `OnSkillSelected` | when a skill is used (via `Agent.invoke_skill`); `data` = `{skill, query, source}` | learn **habitual skill preferences** — record `(query → skill)` to bias future selection (e.g. via a bandit + the `PreLLMCall` hook) |
 
 Register in-process:
 
@@ -125,6 +126,7 @@ Mistral can rely on tools working regardless of the model's native capability.
 | retrieve relevant memory per turn | `PreLLMCall` context hook (shell `retrieve.sh`) |
 | encode / consolidate after a session | `SessionEnd` lifecycle hook |
 | serialize before compaction | `PreCompact` lifecycle hook |
+| learn which skill to use for a task | `OnSkillSelected` lifecycle hook (record) + `PreLLMCall` (bias) |
 | runtime guardrail that can block a tool | `PreToolUse` hook (exit 2) |
 | skills (read + author) | `.claude/skills` loader + `save_skill` |
 | rules / conventions | `.claude/rules` loader |

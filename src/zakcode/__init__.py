@@ -13,7 +13,9 @@ Nothing here triggers network activity at import time — only an actual
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,7 +25,7 @@ from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
-from zakcode.hooks import HookManager
+from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
 from zakcode.messages import Message
 from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.providers.base import Provider
@@ -42,7 +44,15 @@ if TYPE_CHECKING:
     from zakcode.rules import RuleRegistry
     from zakcode.skills import SkillRegistry
 
-__all__ = ["Agent", "AgentLoop", "IterationBudget", "Message", "TurnResult", "__version__"]
+__all__ = [
+    "Agent",
+    "AgentLoop",
+    "IterationBudget",
+    "Message",
+    "SkillInvocation",
+    "TurnResult",
+    "__version__",
+]
 
 
 # Provider prefixes whose *native* (function-calling) tool path is unreliable via
@@ -137,6 +147,19 @@ def _infer_roots_from_skill_dir(skill_dir: Path) -> list[Path]:
                         seen.add(rp)
 
     return roots
+
+
+@dataclass(frozen=True)
+class SkillInvocation:
+    """Outcome of :meth:`Agent.invoke_skill`.
+
+    ``invoked`` is True iff ``name`` resolved to a discovered skill (so the caller treats it
+    as handled, not an unknown command); ``error`` is set iff the skill's body failed to load.
+    """
+
+    invoked: bool
+    name: str = ""
+    error: str | None = None
 
 
 class Agent:
@@ -491,6 +514,54 @@ class Agent:
         if model not in self._provider_cache:
             self._provider_cache[model] = self._build_provider(model)
         return self._provider_cache[model]
+
+    async def invoke_skill(self, name: str) -> SkillInvocation:
+        """Load a discovered skill's body into the session and emit the selection signal.
+
+        The single CORE entry point for "use this skill", so every client (the CLI ``/<skill>``
+        path today; a future server route or a model-facing tool) injects the body identically
+        AND fires the observe-only :attr:`~zakcode.hooks.HookEvent.ON_SKILL_SELECTED` lifecycle
+        hook. That hook is the seam a learning "mind" records ``(query -> skill)`` from to learn
+        habitual skill preferences — the substrate emits the signal; choosing/learning is the
+        mind's job. Never raises: a missing/unreadable skill file is a UX result, not a crash.
+        """
+        registry = getattr(self, "skill_registry", None)
+        skill = registry.get(name) if registry is not None else None
+        if skill is None:
+            return SkillInvocation(invoked=False)
+        # Capture the triggering context (the user's last natural-language turn) BEFORE the
+        # skill body is injected, so a learner can associate the query with the chosen skill.
+        query = self._recent_user_text()
+        try:
+            body = skill.body()  # L1 read lazily; the file may have changed/vanished
+        except Exception as exc:  # noqa: BLE001 — a bad skill file is a UX error, not a crash
+            return SkillInvocation(invoked=True, name=skill.name, error=str(exc))
+        from zakcode.providers.text_tools import defang_untrusted
+
+        # File-authored body folded into a TRUSTED user message; defang protocol/template
+        # sentinels so a skill file can't forge a frame in text mode.
+        self.session.add_message(Message.user(f"[skill: {skill.name}]\n{defang_untrusted(body)}"))
+        await self._emit_skill_selected(skill.name, query)
+        return SkillInvocation(invoked=True, name=skill.name)
+
+    def _recent_user_text(self) -> str:
+        """The most recent user message text (the query that motivated a skill), or ''."""
+        for message in reversed(self.session.messages):
+            if message.role == "user" and message.text:
+                return message.text
+        return ""
+
+    async def _emit_skill_selected(self, skill_name: str, query: str) -> None:
+        """Fire the observe-only ON_SKILL_SELECTED lifecycle hook (cheap + failure-isolated)."""
+        with contextlib.suppress(Exception):
+            await self.hook_manager.fire(
+                LifecyclePayload(
+                    event=HookEvent.ON_SKILL_SELECTED,
+                    session_id=self.session.id,
+                    cwd=str(self.settings.workspace_root),
+                    data={"skill": skill_name, "query": query, "source": "command"},
+                )
+            )
 
     async def arun_turn(self, user_text: str) -> TurnResult:
         """Run one user turn asynchronously."""

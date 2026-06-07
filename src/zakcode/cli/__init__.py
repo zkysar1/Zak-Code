@@ -37,7 +37,6 @@ from zakcode.cli.render import StreamRenderer
 from zakcode.config import Settings, load_settings
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
-from zakcode.providers.text_tools import defang_untrusted
 from zakcode.secrets import strip_url_credentials
 from zakcode.version import __version__
 
@@ -454,29 +453,26 @@ def _render_skills(console: Console, agent: Agent) -> None:
 def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
     """If ``name`` is a skill, load its body into the session and return True.
 
-    The L1 body is read on demand (not at startup) and added to the conversation as
-    a user message — ephemeral, cache-safe context the next turn naturally includes.
+    Delegates to the CORE :meth:`Agent.invoke_skill` (which injects the body lazily and fires
+    the observe-only skill-selection signal); this function only renders the outcome. The body
+    is ephemeral, cache-safe context the next turn naturally includes.
     """
-    registry = getattr(agent, "skill_registry", None)
-    skill = registry.get(name) if registry is not None else None
-    if skill is None:
+    # The live agent may be any AgentLike (a thin/remote client) with no skills surface; a
+    # missing invoke_skill just means "not a skill here" — fall through to other command paths.
+    invoke = getattr(agent, "invoke_skill", None)
+    if invoke is None:
         return False
-    from zakcode.messages import Message
-
-    # The body is read here (lazily). The file may have changed/vanished since
-    # discovery, so failing to read it must not crash the REPL — report and move on.
-    try:
-        body = skill.body()
-    except Exception as exc:  # noqa: BLE001 — a bad skill file is a UX error, not a crash
-        notice_error(console, "could not load skill", f"{skill.name}: {exc}")
+    result = _run_async(invoke(name))
+    if not result.invoked:
+        return False  # not a skill — let the caller try other command paths
+    if result.error:
+        # The file may have changed/vanished since discovery; report, don't crash the REPL.
+        notice_error(console, "could not load skill", f"{result.name}: {result.error}")
         return True
-    # The skill body is file-authored content folded into a TRUSTED user message; defang
-    # protocol/template sentinels so a skill file can't forge a frame in text mode. (audit2 #2)
-    agent.session.add_message(Message.user(f"[skill: {skill.name}]\n{defang_untrusted(body)}"))
     console.print(
         Text.assemble(
             ("loaded skill ", "notice.dim"),
-            (skill.name, "bold"),
+            (result.name, "bold"),
             ("; describe your task and it will apply.", "notice.dim"),
         )
     )
