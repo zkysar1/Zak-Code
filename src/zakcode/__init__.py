@@ -238,6 +238,8 @@ class Agent:
             self.settings.permission_mode,
             prompter=prompter,
             extra_dangerous_patterns=compile_deny_patterns(self.settings.denied_commands),
+            # Opt-in egress gate: confirm every web_fetch before it reaches the network.
+            confirm_tools={"web_fetch"} if self.settings.web_fetch_confirm else None,
         )
         self.hook_manager = hook_manager or HookManager()
         # One-shot guard so aclose() (and its SESSION_END encode step) runs at most once.

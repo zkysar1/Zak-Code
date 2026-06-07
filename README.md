@@ -247,9 +247,10 @@ return a clean "install the web extra" message rather than failing.
 
 `web_fetch` needs no backend — it GETs a public `http(s)` URL and returns readable text. It
 **refuses** localhost / private / cloud-metadata addresses (an SSRF guard, re-checked across
-redirects) and size-caps the output; fetched content is treated as untrusted. To lock down
-egress, set `ZAKCODE_WEB_ALLOWED_DOMAINS=example.com,docs.python.org` — `web_fetch` is then
-confined to those domains (and their subdomains); unset (the default) allows any public host.
+redirects) and size-caps the output; fetched content is treated as untrusted. Two opt-in egress
+controls lock it down: `ZAKCODE_WEB_ALLOWED_DOMAINS=example.com,docs.python.org` confines
+`web_fetch` to those domains (and their subdomains), or `ZAKCODE_WEB_FETCH_CONFIRM=true` prompts
+for confirmation before each fetch. Unset (the default), any public host is allowed.
 
 ## Platform support
 

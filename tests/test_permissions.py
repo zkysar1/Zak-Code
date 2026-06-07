@@ -292,3 +292,51 @@ async def test_request_carries_tier_and_reason() -> None:
     assert req.tool_name == "bash"
     assert req.tier is PermissionTier.DANGER_FULL_ACCESS
     assert req.reason
+
+
+# ── confirm_tools: the opt-in web_fetch egress gate ─────────────────────────────────
+
+WEBFETCH = _spec("web_fetch", PermissionTier.READ_ONLY)
+
+
+def test_confirm_tools_escalates_readonly_to_ask() -> None:
+    # READ_ONLY web_fetch normally auto-allows; in confirm_tools it escalates to a prompt.
+    plain = PermissionPolicy(PermissionMode.ASK)
+    assert plain.decide(WEBFETCH, {"url": "https://x"})[0] is PermissionDecision.ALLOW
+    gated = PermissionPolicy(PermissionMode.ASK, confirm_tools={"web_fetch"})
+    decision, reason = gated.decide(WEBFETCH, {"url": "https://x"})
+    assert decision is PermissionDecision.ASK and "network" in reason
+
+
+def test_confirm_tools_still_prompts_in_allow_mode() -> None:
+    # Even in 'allow' mode (where READ_ONLY auto-allows) the egress gate forces a prompt.
+    gated = PermissionPolicy(PermissionMode.ALLOW, confirm_tools={"web_fetch"})
+    assert gated.decide(WEBFETCH, {"url": "https://x"})[0] is PermissionDecision.ASK
+
+
+def test_confirm_tools_blocked_in_deny_mode() -> None:
+    gated = PermissionPolicy(PermissionMode.DENY, confirm_tools={"web_fetch"})
+    decision, reason = gated.decide(WEBFETCH, {"url": "https://x"})
+    assert decision is PermissionDecision.DENY and "deny" in reason
+
+
+def test_confirm_tools_does_not_affect_other_tools() -> None:
+    gated = PermissionPolicy(PermissionMode.ASK, confirm_tools={"web_fetch"})
+    assert gated.decide(READ, {"path": "a"})[0] is PermissionDecision.ALLOW  # read_file untouched
+
+
+async def test_confirm_tools_prompt_is_session_grantable() -> None:
+    # Unlike the never-waivable dangerous-pattern path, an egress confirm IS session-grantable
+    # (so the operator is not re-prompted for every fetch — approval fatigue).
+    prompter = _ScriptedPrompter(PermissionOutcome.ALLOW_SESSION)
+    policy = PermissionPolicy(PermissionMode.ASK, prompter=prompter, confirm_tools={"web_fetch"})
+    a1, _ = await policy.authorize(WEBFETCH, {"url": "https://a"})
+    a2, _ = await policy.authorize(WEBFETCH, {"url": "https://b"})  # different url, same tool
+    assert a1 and a2
+    assert len(prompter.requests) == 1  # granted for the session -> prompted only once
+
+
+def test_child_view_propagates_confirm_tools() -> None:
+    parent = PermissionPolicy(PermissionMode.ASK, confirm_tools={"web_fetch"})
+    child = parent.child_view()
+    assert child.decide(WEBFETCH, {"url": "https://x"})[0] is PermissionDecision.ASK

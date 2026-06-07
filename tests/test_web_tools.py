@@ -153,6 +153,46 @@ def test_html_to_text_handles_malformed_without_raising() -> None:
     assert isinstance(html_to_text("<p>unclosed <b>bold <a href=foo>x"), str)
 
 
+def test_html_to_text_prefers_main_and_drops_boilerplate() -> None:
+    # The readability pass: a page with a <main>/<article> landmark returns ONLY that content,
+    # and nav/footer/aside chrome is dropped regardless.
+    html = (
+        "<html><body>"
+        "<nav>Home About Login MEGA MENU</nav>"
+        "<header>Site banner junk</header>"
+        "<main><h1>Real Title</h1><p>The actual article body.</p></main>"
+        "<aside>Related links sidebar</aside>"
+        "<footer>Copyright cookie notice</footer>"
+        "</body></html>"
+    )
+    out = html_to_text(html)
+    assert "# Real Title" in out and "The actual article body." in out
+    for noise in ("MEGA MENU", "Site banner", "Related links", "Copyright", "Login"):
+        assert noise not in out
+
+
+def test_html_to_text_drops_boilerplate_without_a_main_landmark() -> None:
+    # No <main>/<article>: fall back to the whole body, but nav/footer/aside are still pruned.
+    html = (
+        "<html><body><nav>NAVNOISE</nav>"
+        "<div><p>body content</p></div><footer>FOOT</footer></body></html>"
+    )
+    out = html_to_text(html)
+    assert "body content" in out
+    assert "NAVNOISE" not in out and "FOOT" not in out
+
+
+def test_html_to_text_recovers_content_that_lives_only_in_boilerplate() -> None:
+    # Safety net: if the page's ONLY text is in nav/footer/aside, don't blank it — recover it
+    # as the last-resort tier rather than declaring the page empty.
+    out = html_to_text(
+        "<html><body><footer><h1>T</h1><p>everything is here</p></footer></body></html>"
+    )
+    assert "everything is here" in out and "# T" in out
+    # ...but script content is dropped UNCONDITIONALLY (never recovered), even if it's all there is.
+    assert html_to_text("<html><body><script>var x=1</script></body></html>").strip() == ""
+
+
 # ── search-backend abstraction + factory ────────────────────────────────────────────
 
 
@@ -171,10 +211,16 @@ def test_config_rejects_unknown_search_backend() -> None:
         Settings(default_model="x/y", search_backend="bogus")
 
 
-async def test_ddgs_backend_reports_unavailable_without_dep() -> None:
-    # ddgs is not installed in the test env, so the default backend degrades gracefully.
+async def test_ddgs_backend_reports_unavailable_without_dep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Simulate ddgs being absent (sys.modules[...] = None makes `from ddgs import DDGS` raise),
+    # so this is deterministic whether or not the [web] extra is installed in the env.
+    import sys
+
     from zakcode.search.ddgs_backend import DuckDuckGoBackend
 
+    monkeypatch.setitem(sys.modules, "ddgs", None)
     with pytest.raises(BackendUnavailable) as ei:
         await DuckDuckGoBackend().search("python")
     assert ei.value.fix and "zakcode[web]" in ei.value.fix
@@ -625,6 +671,41 @@ def test_config_parses_web_allowed_domains_from_csv() -> None:
 
     s = Settings(default_model="x/y", web_allowed_domains="example.com, github.com")  # type: ignore[arg-type]
     assert s.web_allowed_domains == ["example.com", "github.com"]
+
+
+def test_agent_wires_web_fetch_confirm_into_the_gate(tmp_path: Path) -> None:
+    # End-to-end wiring: ZAKCODE_WEB_FETCH_CONFIRM -> Agent.permission_policy gates web_fetch.
+    from typing import Any
+
+    import zakcode
+    from zakcode.config import Settings
+    from zakcode.messages import Message
+    from zakcode.permissions import PermissionDecision
+    from zakcode.providers.base import Capabilities, LLMResult, Provider
+
+    class _Stub(Provider):
+        async def acomplete(
+            self,
+            messages: list[Message],
+            *,
+            system: str | None = None,
+            tools: list[dict[str, Any]] | None = None,
+            response_format: dict[str, Any] | None = None,
+            **kwargs: Any,
+        ) -> LLMResult:
+            return LLMResult(text="")
+
+        def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
+            return 0
+
+        def capabilities(self) -> Capabilities:
+            return Capabilities()
+
+    settings = Settings(default_model="x/y", workspace_root=tmp_path, web_fetch_confirm=True)
+    agent = zakcode.Agent(provider=_Stub(), settings=settings)
+    spec = agent.registry.get("web_fetch").spec
+    decision, _ = agent.permission_policy.decide(spec, {"url": "https://x"})
+    assert decision is PermissionDecision.ASK  # the gate is live
 
 
 # ── REST backend JSON mapping (fake httpx; no network) ───────────────────────────────

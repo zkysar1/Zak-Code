@@ -172,6 +172,13 @@ class Settings(BaseSettings):
         default_factory=list,
         description="If non-empty, web_fetch may only reach these domains (and their subdomains).",
     )
+    # Per-call confirmation gate for web_fetch egress (the other named hardening for the
+    # public-egress residual). When true, every web_fetch is escalated to a confirmation prompt
+    # (session-grantable, like a write); in ``deny`` mode it is blocked outright. Default off.
+    web_fetch_confirm: bool = Field(
+        default=False,
+        description="Require operator confirmation before each web_fetch (egress gate).",
+    )
 
     @field_validator("denied_commands", "allowed_models", "web_allowed_domains", mode="before")
     @classmethod

@@ -256,6 +256,7 @@ class PermissionPolicy:
         prompter: PermissionPrompter | None = None,
         dangerous_patterns: list[tuple[re.Pattern[str], str]] | None = None,
         extra_dangerous_patterns: list[tuple[re.Pattern[str], str]] | None = None,
+        confirm_tools: set[str] | None = None,
     ) -> None:
         self.mode = PermissionMode.parse(mode)
         self.prompter = prompter
@@ -265,6 +266,10 @@ class PermissionPolicy:
         # can only ever tighten the blocklist, never remove a built-in footgun.
         base = DANGEROUS_PATTERNS if dangerous_patterns is None else dangerous_patterns
         self.dangerous_patterns = [*base, *(extra_dangerous_patterns or [])]
+        # Tools the operator wants to confirm on EVERY call regardless of their declared tier
+        # (e.g. ``web_fetch`` egress when ``web_fetch_confirm`` is on). Like the dangerous-pattern
+        # check this can only TIGHTEN a verdict — but unlike it, the prompt is session-grantable.
+        self._confirm_tools = set(confirm_tools or ())
         # 'allow' grants are keyed by TOOL NAME — a grant covers the whole tool for the
         # session (the operator is not re-prompted for every new path/command). 'deny'
         # grants stay keyed by the exact (tool, args) so a block is narrow.
@@ -284,6 +289,7 @@ class PermissionPolicy:
             self.mode,
             prompter=self.prompter,
             dangerous_patterns=self.dangerous_patterns,
+            confirm_tools=self._confirm_tools,
         )
 
     # ── public read accessors (so clients never touch the private sets) ────────
@@ -346,6 +352,17 @@ class PermissionPolicy:
         ceiling = _MODE_CEILING[self.mode]
         base = PermissionDecision.ALLOW if tier <= ceiling else _ABOVE_CEILING[self.mode]
 
+        # Operator-requested confirm-on-every-call tools (e.g. web_fetch egress). Tighten-only,
+        # like the dangerous-pattern check: blocked outright in ``deny`` mode, otherwise escalated
+        # to a (session-grantable) prompt. Never loosens an existing ASK/DENY.
+        tool_name = spec.name if spec is not None else "<unknown>"
+        confirm_escalated = False
+        if tool_name in self._confirm_tools and base is PermissionDecision.ALLOW:
+            if self.mode is PermissionMode.DENY:
+                return (PermissionDecision.DENY, f"'{tool_name}' is blocked in 'deny' mode")
+            base = PermissionDecision.ASK
+            confirm_escalated = True
+
         danger = self._dangerous_reason(arguments)
         if danger is not None:
             if self.mode is PermissionMode.DENY or base is PermissionDecision.DENY:
@@ -357,6 +374,8 @@ class PermissionPolicy:
             return (base, "")
         if base is PermissionDecision.DENY:
             return (base, f"'{tier.name}' is blocked in '{self.mode.value}' mode")
+        if confirm_escalated:
+            return (base, f"'{tool_name}' requires confirmation before reaching the network")
         return (base, f"'{tier.name}' requires confirmation in '{self.mode.value}' mode")
 
     # ── stateful authorization ────────────────────────────────────────────────

@@ -84,9 +84,12 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
         ("Search backend", settings.search_backend),
         (
             "web_fetch egress",
-            ", ".join(settings.web_allowed_domains)
-            if settings.web_allowed_domains
-            else "any public host",
+            (
+                ", ".join(settings.web_allowed_domains)
+                if settings.web_allowed_domains
+                else "any public host"
+            )
+            + (" (confirm per call)" if settings.web_fetch_confirm else ""),
         ),
     ]
     if settings.search_backend == "searxng":
