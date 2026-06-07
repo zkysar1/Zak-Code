@@ -92,3 +92,24 @@ def test_programmatic_lists_pass_through() -> None:
     s = Settings(allowed_models=["a/b"], denied_commands=["x .*y", "p{2,3}"])
     assert s.allowed_models == ["a/b"]
     assert s.denied_commands == ["x .*y", "p{2,3}"]
+
+
+# ── model_roles (dict from env: JSON object) ────────────────────────────────────────
+
+
+def test_model_roles_default_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ZAKCODE_MODEL_ROLES", raising=False)
+    assert load_settings().model_roles == {}
+
+
+def test_model_roles_from_env_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ZAKCODE_MODEL_ROLES", '{"planner": "cheap/x", "summarizer": "cheap/y"}')
+    assert load_settings().model_roles == {"planner": "cheap/x", "summarizer": "cheap/y"}
+
+
+def test_model_roles_unknown_key_raises() -> None:
+    # A typo'd role (e.g. 'planer') fails fast at load rather than silently disabling routing.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="unrecognized model_roles"):
+        Settings(model_roles={"planer": "x"})

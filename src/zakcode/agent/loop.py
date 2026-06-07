@@ -232,9 +232,14 @@ class AgentLoop:
         spawner: SubAgentSpawner | None = None,
         compactor: Compactor | None = None,
         memory_provider: MemoryProvider | None = None,
+        summarizer_provider: Provider | None = None,
         attempt_cap: int = 3,
     ) -> None:
         self.provider = provider
+        # Optional separate provider for compaction summaries (per-role model routing): a mind
+        # can route the cheap "summarizer" role to a cheaper/local model than the generator.
+        # ``None`` falls back to ``provider`` — so the default path is unchanged.
+        self._summarizer_provider = summarizer_provider
         self.registry = registry
         self.session = session
         # Deterministic failure-lesson writer (research R1): on a recovered turn it records ONE
@@ -296,7 +301,8 @@ class AgentLoop:
             "any unfinished work. Be concise but complete; omit pleasantries. Output only "
             "the summary."
         )
-        result = await self.provider.acomplete(messages, system=instruction)
+        summarizer = self._summarizer_provider or self.provider
+        result = await summarizer.acomplete(messages, system=instruction)
         return result.text.strip()
 
     async def _maybe_compact(self) -> None:

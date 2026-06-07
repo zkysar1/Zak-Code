@@ -23,7 +23,7 @@ session) — it adds no new agent behavior and imports no vendor SDK.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -46,13 +46,16 @@ class SubAgentDefinition(BaseModel):
     ``allowed_tools=None`` inherits the parent's full toolset; a list restricts the
     child to exactly those tools (canonical names or aliases). ``system_suffix`` is
     appended to the child's system prompt to specialize its behavior (e.g. a planner
-    that is told to produce a plan rather than edit files).
+    that is told to produce a plan rather than edit files). ``model`` optionally routes
+    this sub-agent type to a DIFFERENT model than the parent's (e.g. a cheap/local model
+    for a read-only planner); ``None`` uses the parent's ``default_model``.
     """
 
     name: str
     description: str = ""
     allowed_tools: list[str] | None = None
     system_suffix: str | None = None
+    model: str | None = None
 
 
 class SubAgentResult(BaseModel):
@@ -121,6 +124,7 @@ class SubAgentRunner:
         workspace_root: Path | None = None,
         extra_workspace_roots: Sequence[Path] | None = None,
         rules: str | None = None,
+        provider_for: Callable[[str | None], Provider] | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -128,6 +132,10 @@ class SubAgentRunner:
         self.budget = budget
         self.permission_policy = permission_policy
         self.hook_manager = hook_manager
+        # Resolves a sub-agent's optional ``model`` override to a provider (e.g. the parent
+        # Agent's model-routing seam). ``None`` here — or a definition with no ``model`` — means
+        # every child uses the parent ``provider``, so the default delegation path is unchanged.
+        self._provider_for = provider_for
         self.workspace_root = workspace_root or settings.workspace_root
         # The parent's multi-root sandbox, so a child gets the SAME roots (not a narrower
         # one) and a delegated --skill-dir-granted path isn't wrongly rejected. (audit4 #4)
@@ -165,14 +173,28 @@ class SubAgentRunner:
         self.budget.register_child()
 
         registry = self.child_registry(definition)
-        session = Session(cwd=str(self.workspace_root), model=self.settings.default_model)
+        # Route this sub-agent type to its own model when the definition names one AND a
+        # resolver is wired (production); otherwise the parent provider/model is used — so the
+        # default path, and any path with an injected provider (tests), is unchanged.
+        child_provider = self.provider
+        child_model = self.settings.default_model
+        if definition.model and self._provider_for is not None:
+            routed = self._provider_for(definition.model)
+            # Only adopt the role-model label when it actually routes to a DISTINCT provider. If
+            # the resolver short-circuits to the parent (an injected provider, or model ==
+            # default), keep the default label so Session.model never disagrees with the
+            # provider that will actually run. (review: Session.model honesty)
+            if routed is not self.provider:
+                child_provider = routed
+                child_model = definition.model
+        session = Session(cwd=str(self.workspace_root), model=child_model)
         # A child gets its OWN permission view (same mode + blocklist, isolated session
         # grants) so a child's "allow for session" cannot bleed into the parent/siblings.
         child_policy = (
             self.permission_policy.child_view() if self.permission_policy is not None else None
         )
         loop = AgentLoop(
-            self.provider,
+            child_provider,
             registry,
             session,
             prompt_builder=self.prompt_builder_for(definition),

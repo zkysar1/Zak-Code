@@ -54,6 +54,16 @@ class Settings(BaseSettings):
         default=None,
         description="Optional model to retry with if the primary call errors.",
     )
+    # Optional per-ROLE model overrides so a mind can route cheap/local models to cheap roles
+    # and reserve the capable model for generation (the "three specialized models" pattern).
+    # Recognized keys: 'planner' (the plan sub-agent), 'subagent' (other sub-agents),
+    # 'summarizer' (compaction). The main agent loop (the generator) always uses default_model.
+    # Empty (default) = every role uses default_model. From an env var: a JSON object, e.g.
+    # ZAKCODE_MODEL_ROLES={"planner":"ollama_chat/qwen2.5:3b"} (JSON is the only env form).
+    model_roles: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-role model overrides (keys: planner | subagent | summarizer).",
+    )
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     # How tools are offered to the model. ``auto`` (default) uses native
     # function-calling when the model supports it and transparently falls back to a
@@ -177,6 +187,21 @@ class Settings(BaseSettings):
         if info.field_name == "denied_commands":
             return [line.strip() for line in text.splitlines() if line.strip()]
         return [part.strip() for part in text.replace(",", " ").split() if part.strip()]
+
+    @field_validator("model_roles", mode="after")
+    @classmethod
+    def _check_model_roles(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject unrecognized role keys so a typo (e.g. 'planer') fails fast at load rather
+        than silently disabling the intended routing (the misspelled key would just be a no-op).
+        """
+        recognized = {"planner", "subagent", "summarizer"}
+        unknown = sorted(set(value) - recognized)
+        if unknown:
+            raise ValueError(
+                f"unrecognized model_roles key(s): {unknown}; recognized roles are "
+                f"{sorted(recognized)}"
+            )
+        return value
 
     # ── Cross-session memory (opt-in via Agent(enable_memory=True)) ──────────
     memory_db_path: str | None = Field(

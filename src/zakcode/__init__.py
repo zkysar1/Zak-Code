@@ -186,26 +186,16 @@ class Agent:
         # but a caller may inject any ``Provider`` (the eval harness drives the loop with
         # a no-network ScriptedProvider this way). Importing litellm lazily keeps the
         # vendor SDK out of the import graph when an explicit provider is supplied.
+        # Whether the provider was injected (so per-role model routing can't rebuild it from
+        # settings — an injected provider is used for every role) vs built from settings.
+        self._provider_injected = provider is not None
+        # Cache of role providers built for a non-default model, keyed by model string, so
+        # spawning N sub-agents on the same role model doesn't rebuild the litellm wrapper N×.
+        self._provider_cache: dict[str, Provider] = {}
         if provider is not None:
             self.provider = provider
         else:
-            from zakcode.providers.litellm_provider import LiteLLMProvider
-            from zakcode.providers.text_tools import TextToolCallingProvider
-
-            # Wrap the vendor provider so tool-less (or unreliable-native) models still
-            # get tool-calling via a text protocol (a no-op passthrough in "native"
-            # mode). In "auto", Ollama models are routed to the text protocol because
-            # their native path is unreliable via litellm — see
-            # _resolve_tool_calling_mode and zakcode.providers.text_tools.
-            self.provider = TextToolCallingProvider(
-                LiteLLMProvider(self.settings),
-                mode=_resolve_tool_calling_mode(
-                    self.settings.tool_calling_mode, self.settings.default_model
-                ),
-                # Always on (text-protocol scaffolding); not a user knob — emitting/parsing
-                # one tool call per turn stops weak models fabricating results.
-                single_tool_per_turn=True,
-            )
+            self.provider = self._build_provider(self.settings.default_model)
         self.registry = default_registry()
         self.store = session_store
         self.session = session or Session(
@@ -334,10 +324,17 @@ class Agent:
                 workspace_root=self.settings.workspace_root,
                 extra_workspace_roots=computed_extra_roots,  # same sandbox as the parent
                 rules=rules_text or None,  # sub-agents inherit the parent's always-on rules
+                provider_for=self._provider_for,  # per-role model routing (model_roles)
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
-            # subset omits write tools, so Plan Mode is schema-enforced).
-            spawner = SubAgentManager(runner, [GENERAL_PURPOSE, PLAN], default=GENERAL_PURPOSE.name)
+            # subset omits write tools, so Plan Mode is schema-enforced). Apply optional
+            # per-role model overrides: model_roles['subagent'] -> the general delegate,
+            # model_roles['planner'] -> the plan sub-agent. model_copy(model=None) leaves the
+            # model unset (use default_model), so an empty model_roles is the unchanged default.
+            roles = self.settings.model_roles
+            general_def = GENERAL_PURPOSE.model_copy(update={"model": roles.get("subagent")})
+            plan_def = PLAN.model_copy(update={"model": roles.get("planner")})
+            spawner = SubAgentManager(runner, [general_def, plan_def], default=general_def.name)
             self.registry.register(TaskTool())
 
         # MCP (M5), opt-in. Build (but do NOT start) a client per configured server;
@@ -447,7 +444,53 @@ class Agent:
             # Same store the recall hook + remember/recall tools use, so harness-authored
             # recovery lessons (research R1) are recalled next session. None when memory is off.
             memory_provider=self.memory,
+            # Per-role model routing: a cheaper/local model for compaction summaries when the
+            # mind configures model_roles['summarizer']; None = use the generator's provider.
+            summarizer_provider=(
+                self._provider_for(self.settings.model_roles["summarizer"])
+                if "summarizer" in self.settings.model_roles
+                else None
+            ),
         )
+
+    def _build_provider(self, model: str) -> Provider:
+        """Build a settings-based provider for ``model`` (litellm wrapped in the text-tool
+        protocol) — the same construction used for the default model and for per-role overrides.
+        """
+        from zakcode.providers.litellm_provider import LiteLLMProvider
+        from zakcode.providers.text_tools import TextToolCallingProvider
+
+        if model == self.settings.default_model:
+            role_settings = self.settings
+        else:
+            update: dict[str, object] = {"default_model": model}
+            # api_base/api_key are ENDPOINT-specific. Don't carry the default model's custom
+            # endpoint onto a routed model on a DIFFERENT backend — e.g. an ollama_chat/* role
+            # would otherwise be sent to the default's OpenAI gateway. (review: cross-backend
+            # endpoint bleed) Same backend keeps sharing the endpoint (correct).
+            default_backend = self.settings.default_model.split("/", 1)[0].lower()
+            if model.split("/", 1)[0].lower() != default_backend:
+                update["api_base"] = None
+                update["api_key"] = None
+            role_settings = self.settings.model_copy(update=update)
+        return TextToolCallingProvider(
+            LiteLLMProvider(role_settings),
+            mode=_resolve_tool_calling_mode(role_settings.tool_calling_mode, model),
+            single_tool_per_turn=True,
+        )
+
+    def _provider_for(self, model: str | None) -> Provider:
+        """Resolve a per-role model string to a :class:`Provider` (the model-routing seam).
+
+        Returns the default ``self.provider`` for ``None``, the default model, or when the
+        provider was injected (an injected test/eval provider can't be rebuilt per model, so
+        every role uses it). Otherwise builds — and caches — a provider for that model.
+        """
+        if not model or model == self.settings.default_model or self._provider_injected:
+            return self.provider
+        if model not in self._provider_cache:
+            self._provider_cache[model] = self._build_provider(model)
+        return self._provider_cache[model]
 
     async def arun_turn(self, user_text: str) -> TurnResult:
         """Run one user turn asynchronously."""
