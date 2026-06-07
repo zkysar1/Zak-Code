@@ -65,10 +65,20 @@ def test_render_skills_lists_them(tmp_path: Path) -> None:
 
 
 def test_render_skills_none(tmp_path: Path) -> None:
-    agent = _agent(tmp_path, enable_skills=True)  # enabled, nothing on disk
+    # Empty state: with skills DISABLED there is no registry to show. (With skills enabled the
+    # bundled `research` playbook is always discovered, so the empty state is unreachable there.)
+    agent = _agent(tmp_path, enable_skills=False)
     console, buf = _console()
     _render_skills(console, agent)
     assert "no skills discovered" in buf.getvalue()
+
+
+def test_render_skills_includes_bundled_research(tmp_path: Path) -> None:
+    # The shipped bundled skill shows up even in a fresh workspace with nothing authored.
+    agent = _agent(tmp_path, enable_skills=True)
+    console, buf = _console()
+    _render_skills(console, agent)
+    assert "research" in buf.getvalue()
 
 
 def test_invoke_skill_injects_body(tmp_path: Path) -> None:
