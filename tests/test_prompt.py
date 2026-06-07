@@ -59,6 +59,24 @@ def test_stable_precedes_boundary_and_context_follows(tmp_path: Path) -> None:
     assert "Environment:" not in stable
 
 
+def test_environment_section_names_the_shell(tmp_path: Path, monkeypatch) -> None:
+    # The Shell line tells the model what it's driving up front; on Windows it steers
+    # toward powershell to dodge the cmd.exe bash-quoting trap, on POSIX it names /bin/sh.
+    from zakcode.agent import prompt as prompt_mod
+
+    settings = load_settings(workspace_root=tmp_path, default_model="openai/gpt-4o")
+
+    monkeypatch.setattr(prompt_mod.platform, "system", lambda: "Windows")
+    win = SystemPromptBuilder().build(settings)
+    assert "- Shell:" in win
+    assert "powershell" in win.lower() and "cmd.exe" in win.lower()
+
+    monkeypatch.setattr(prompt_mod.platform, "system", lambda: "Linux")
+    posix = SystemPromptBuilder().build(settings)
+    assert "- Shell:" in posix
+    assert "/bin/sh" in posix
+
+
 def test_tool_specs_are_summarized(tmp_path: Path) -> None:
     settings = load_settings(workspace_root=tmp_path)
     tools = [

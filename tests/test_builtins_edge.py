@@ -422,6 +422,43 @@ async def test_bash_runs_in_workspace_cwd(ctx, tmp_path):
     assert str(tmp_path.resolve()) in res.output
 
 
+# -- Windows shell-quoting fix rail (_windows_shell_fix) ---------------------
+# The bash tool runs under cmd.exe on Windows; a model trained on bash hits
+# quoting/not-found errors and retries the identical command until the stuck
+# guard halts it. The fix rail names the real remedy so it can break the loop.
+# os.name is monkeypatched so both branches are exercised on any platform.
+
+
+def test_windows_shell_fix_remedies_quoting_and_not_found(monkeypatch):
+    import zakcode.tools.builtins.bash as bash_mod
+
+    monkeypatch.setattr(bash_mod.os, "name", "nt")
+    # A single-quote in the command line is itself a strong signal.
+    quoted = bash_mod._windows_shell_fix("py -c 'import sys; print(sys)'", "[exit code: 1]")
+    assert quoted is not None and "powershell" in quoted.lower()
+    # ... as is Python's own complaint when cmd hands it a broken token.
+    literal = bash_mod._windows_shell_fix(
+        "py -c import sys", "SyntaxError: unterminated string literal (line 1)"
+    )
+    assert literal is not None and "powershell" in literal.lower()
+    # A bash builtin cmd.exe can't find.
+    not_found = bash_mod._windows_shell_fix(
+        "ls -la", "'ls' is not recognized as an internal or external command"
+    )
+    assert not_found is not None and "powershell" in not_found.lower()
+
+
+def test_windows_shell_fix_quiet_on_ordinary_and_off_windows(monkeypatch):
+    import zakcode.tools.builtins.bash as bash_mod
+
+    monkeypatch.setattr(bash_mod.os, "name", "nt")
+    # An ordinary failure with no quoting/not-found signal must not be mislabeled.
+    assert bash_mod._windows_shell_fix("py script.py", "Traceback: ValueError") is None
+    # Off Windows the rail never fires, even on an otherwise-matching signal.
+    monkeypatch.setattr(bash_mod.os, "name", "posix")
+    assert bash_mod._windows_shell_fix("py -c 'x'", "unterminated string literal") is None
+
+
 # --------------------------------------------------------------------------- #
 # Multi-root sandbox (M-3: resolve_in_workspace_roots, resolve_path, and
 # ToolContext.extra_workspace_roots)

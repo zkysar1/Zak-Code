@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -17,6 +19,32 @@ _DEFAULT_TIMEOUT = 60
 _MAX_TIMEOUT = 60
 # Maximum number of characters of combined output to return.
 _MAX_OUTPUT = 64 * 1024
+
+
+def _windows_shell_fix(command: str, output: str) -> str | None:
+    """A remedy hint for a likely Windows shell-quoting / command-not-found failure, else None.
+
+    On Windows ``create_subprocess_shell`` runs commands through **cmd.exe**, where bash-isms
+    (single-quote quoting, ``;`` chaining) do not parse — a model trained on bash hits this and,
+    seeing only a cryptic error, tends to retry the identical command until the stuck guard
+    halts it. Naming the real fix (the rails channel) breaks that loop. Conservative: only fires
+    on Windows, on a strong signal, so it doesn't mislabel an ordinary command failure.
+    """
+    if os.name != "nt":
+        return None
+    low = output.lower()
+    if "'" in command or "unterminated string literal" in low:
+        return (
+            "On Windows the bash tool runs under cmd.exe, where bash-style single-quote quoting "
+            "(and ';' chaining) do not parse. Use the powershell tool, double-quote the code, "
+            "or write a script file and run it."
+        )
+    if "is not recognized" in low:
+        return (
+            "cmd.exe did not find that command (the bash tool runs under cmd.exe on Windows). "
+            "Check the name, or use the powershell tool."
+        )
+    return None
 
 
 class BashTool(Tool):
@@ -98,5 +126,5 @@ class BashTool(Tool):
             "truncated": truncated,
         }
         if exit_code != 0:
-            return ToolResult.error(combined, data=data)
+            return ToolResult.error(combined, data=data, fix=_windows_shell_fix(command, output))
         return ToolResult.ok(combined, data=data)

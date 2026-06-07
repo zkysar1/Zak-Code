@@ -219,9 +219,20 @@ class SystemPromptBuilder:
     @staticmethod
     def _environment_section(settings: Settings) -> str:
         # Curated, non-secret facts only — never the raw Settings object.
+        # The shell line steers the model to the right tool: on Windows the `bash` tool runs
+        # commands through cmd.exe, so bash-style single-quote quoting and ';' chaining fail —
+        # a common small-model trap (it retries the broken quoting until the stuck guard halts).
+        if platform.system() == "Windows":
+            shell = (
+                "the `bash` tool runs commands through cmd.exe — prefer the `powershell` tool "
+                "for shell work, and avoid bash-isms (single-quote quoting, ';' chaining)"
+            )
+        else:
+            shell = "the `bash` tool runs commands through a POSIX shell (/bin/sh)"
         return (
             "Environment:\n"
             f"- Operating system: {platform.system()} ({platform.platform()})\n"
+            f"- Shell: {shell}\n"
             f"- Workspace root (cwd): {settings.workspace_root}\n"
             f"- Model: {settings.default_model}"
         )
