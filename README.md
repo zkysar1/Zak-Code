@@ -139,7 +139,9 @@ no agent logic.
   narrow to read-only tools — before stopping as `stuck`). Buffered and streaming paths.
 - **Tools** — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`,
   and **`powershell`** (Windows-first; uses `pwsh`/`powershell.exe`) — all scoped to the
-  workspace, with path-escape protection.
+  workspace, with path-escape protection — plus **`web_search`** and **`web_fetch`**: a
+  vendor-agnostic search backend (DuckDuckGo by default — free, no key; Tavily/SearXNG opt-in
+  via `ZAKCODE_SEARCH_BACKEND`) and an SSRF-guarded page fetcher (install with `[web]` extra).
 - **Vendor-agnostic providers** — litellm; Ollama + OpenAI are first-class and live-tested.
 - **Streaming + rich TUI** — token-by-token output, tool calls, and usage in the terminal.
 - **Local-model tool-calling** — a composable text-protocol fallback so models without
@@ -228,6 +230,24 @@ scaffolding needs no configuration:
 ```dotenv
 ZAKCODE_DEFAULT_MODEL=ollama_chat/qwen2.5:3b
 ```
+
+### Web search & fetch
+
+`web_search` and `web_fetch` are built in; install their (optional) deps with the `web` extra —
+`uv sync --extra web` (or `pip install 'zakcode[web]'`). Without them the tools still register and
+return a clean "install the web extra" message rather than failing.
+
+`web_search` runs over a swappable, vendor-agnostic backend selected by `ZAKCODE_SEARCH_BACKEND`:
+
+| Backend | Free? | Setup |
+| --- | --- | --- |
+| `ddgs` *(default)* | yes, no key | nothing — DuckDuckGo via the `ddgs` library |
+| `tavily` | 1,000 searches/mo free | `export TAVILY_API_KEY=...` (cleaner, LLM-optimized results) |
+| `searxng` | yes (self-hosted) | `ZAKCODE_SEARXNG_URL=http://localhost:8080` (enable the JSON format) |
+
+`web_fetch` needs no backend — it GETs a public `http(s)` URL and returns readable text. It
+**refuses** localhost / private / cloud-metadata addresses (an SSRF guard, re-checked across
+redirects) and size-caps the output; fetched content is treated as untrusted.
 
 ## Platform support
 

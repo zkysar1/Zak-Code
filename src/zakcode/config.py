@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from enum import IntEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -228,6 +228,20 @@ class Settings(BaseSettings):
             "the floor (inject every search match). Corpus-size-independent (unlike a raw "
             "bm25 score, which collapses to ~0 in a small store)."
         ),
+    )
+
+    # ── Web tools (web_search / web_fetch) ───────────────────────────────────
+    # Which vendor-agnostic search backend `web_search` uses. ``ddgs`` (the default) is free and
+    # needs no key; ``tavily`` reads TAVILY_API_KEY from the env (like other provider keys — never
+    # modeled here); ``searxng`` queries the instance at ``searxng_url``. Switching backend is a
+    # config change, never a code change. (web_fetch needs no backend — it is plain HTTP.)
+    search_backend: Literal["ddgs", "tavily", "searxng"] = Field(
+        default="ddgs",
+        description="web_search backend: ddgs (default, no key) | tavily | searxng.",
+    )
+    searxng_url: str | None = Field(
+        default=None,
+        description="Base URL of a self-hosted SearXNG instance (when search_backend=searxng).",
     )
 
     @property

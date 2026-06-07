@@ -57,8 +57,8 @@ enable_utf8()
 console = Console(theme=ZAK_THEME, highlight=False)
 GLYPHS = resolve_glyphs(console)
 
-# Provider API keys we report the *presence* of (never the value).
-_PROVIDER_KEY_ENV = ["OPENAI_API_KEY"]
+# Provider / service API keys we report the *presence* of (never the value).
+_PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "TAVILY_API_KEY"]
 
 
 def _provider_key_status() -> dict[str, bool]:
@@ -81,7 +81,10 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
         ("Permission mode", settings.permission_mode),
         ("Max iterations", str(settings.max_iterations)),
         ("Workspace root", str(settings.workspace_root)),
+        ("Search backend", settings.search_backend),
     ]
+    if settings.search_backend == "searxng":
+        rows.append(("SearXNG URL", strip_url_credentials(settings.searxng_url) or "(not set)"))
     for name, present in _provider_key_status().items():
         rows.append((name, "set" if present else "not set"))
     return rows

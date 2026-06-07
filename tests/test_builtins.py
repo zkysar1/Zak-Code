@@ -165,6 +165,8 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "grep",
         "bash",
         "powershell",
+        "web_search",
+        "web_fetch",
     }
     # Aliases resolve to the canonical tools (M1 added "edit" -> edit_file).
     assert reg.get("read") is reg.get("read_file")

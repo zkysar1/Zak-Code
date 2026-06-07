@@ -40,6 +40,10 @@ server = [
 ]
 # Model Context Protocol client (external tool/extension support).
 mcp = ["mcp>=1.0"]
+# Web tools (web_search / web_fetch). `ddgs` powers the default DuckDuckGo backend; `httpx`
+# covers the Tavily + SearXNG backends (plain REST) and the web_fetch HTTP client. Both are
+# soft-imported, so the tools register without this extra and report a clean install hint.
+web = ["ddgs>=9.0", "httpx>=0.27"]
 # Developer tooling. Kept as an extra for back-compat (`uv sync --extra dev`, and the
 # `all` extra below); but the canonical install is plain `uv sync`, which installs the
 # `dev` dependency-group (defined below) automatically.
@@ -49,7 +53,7 @@ dev = [
   "ruff>=0.5",
   "mypy>=1.10",
 ]
-all = ["zakcode[server,mcp,dev]"]
+all = ["zakcode[server,mcp,web,dev]"]
 
 # Dependency group (PEP 735). uv installs the `dev` group by DEFAULT on every
 # `uv sync` and — unlike an extra — it is NOT dropped when you add `--extra server`.

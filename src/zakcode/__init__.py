@@ -222,7 +222,7 @@ class Agent:
             self.provider = provider
         else:
             self.provider = self._build_provider(self.settings.default_model)
-        self.registry = default_registry()
+        self.registry = default_registry(self.settings)
         self.store = session_store
         self.session = session or Session(
             cwd=str(self.settings.workspace_root),
@@ -348,7 +348,7 @@ class Agent:
             shared_budget = budget or IterationBudget(self.settings.max_iterations)
             runner = SubAgentRunner(
                 provider=self.provider,
-                registry=default_registry(),  # task-free registry for children
+                registry=default_registry(self.settings),  # task-free registry for children
                 settings=self.settings,
                 budget=shared_budget,
                 permission_policy=self.permission_policy,

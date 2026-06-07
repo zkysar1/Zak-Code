@@ -11,6 +11,8 @@ from zakcode.tools.builtins.glob import GlobTool
 from zakcode.tools.builtins.grep import GrepTool
 from zakcode.tools.builtins.list_dir import ListDirTool
 from zakcode.tools.builtins.read_file import ReadFileTool
+from zakcode.tools.builtins.web_fetch import WebFetchTool
+from zakcode.tools.builtins.web_search import WebSearchTool
 from zakcode.tools.builtins.write_file import WriteFileTool
 
 __all__ = [
@@ -19,6 +21,8 @@ __all__ = [
     "GrepTool",
     "ListDirTool",
     "ReadFileTool",
+    "WebFetchTool",
+    "WebSearchTool",
     "WriteFileTool",
     "default_registry",
 ]
