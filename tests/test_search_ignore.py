@@ -136,9 +136,7 @@ async def test_grep_never_searches_git_even_with_include_ignored(tmp_path: Path)
     ctx = _ws(tmp_path)
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "config").write_text("NEEDLE secret\n", encoding="utf-8")
-    res = await GrepTool().execute(
-        {"pattern": "NEEDLE", "path": ".", "include_ignored": True}, ctx
-    )
+    res = await GrepTool().execute({"pattern": "NEEDLE", "path": ".", "include_ignored": True}, ctx)
     assert ".git" not in res.output  # hard floor, always
 
 

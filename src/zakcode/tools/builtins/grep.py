@@ -175,9 +175,7 @@ class GrepTool(Tool):
             dirnames[:] = [
                 d
                 for d in dirnames
-                if not ignore.is_ignored_path(
-                    current_path / d, ignore_root, is_dir=True, soft=soft
-                )
+                if not ignore.is_ignored_path(current_path / d, ignore_root, is_dir=True, soft=soft)
             ]
             for name in sorted(filenames):
                 if glob_filter and not fnmatch.fnmatch(name, glob_filter):
