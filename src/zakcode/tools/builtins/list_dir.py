@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -10,6 +12,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from zakcode.tools.builtins._ignore import load_ignore
 from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
 
 #: Soft cap on entries rendered into the model-facing output; beyond this an explicit marker
@@ -24,7 +27,9 @@ class ListDirTool(Tool):
         name="list_dir",
         description=(
             "List the entries of a directory within the workspace. Directories are "
-            "suffixed with '/'. Defaults to the workspace root."
+            "suffixed with '/'. Defaults to the workspace root. Ignored entries (.git, "
+            "build/vendor/cache dirs, .gitignore/.zakcodeignore) are hidden with a count; "
+            "pass include_ignored=true to show them."
         ),
         parameters={
             "type": "object",
@@ -34,6 +39,13 @@ class ListDirTool(Tool):
                     "description": (
                         "Directory to list (absolute or relative to the workspace "
                         "root). Defaults to the workspace root."
+                    ),
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": (
+                        "Also list git-ignored and default-ignored entries. Default false. "
+                        "(.git is always hidden.)"
                     ),
                 },
             },
@@ -47,6 +59,7 @@ class ListDirTool(Tool):
         path = args.get("path")
         if path is not None and not isinstance(path, str):
             return ToolResult.error("'path' must be a string.")
+        soft = not bool(args.get("include_ignored"))
         target = path if path else "."
 
         try:
@@ -67,13 +80,19 @@ class ListDirTool(Tool):
             except PermissionError as exc:
                 return ToolResult.error(f"Permission denied listing {target}: {exc}")
 
+            ignore = load_ignore(Path(ctx.workspace_root))
+            ignore_root = Path(ctx.workspace_root).resolve()
             entries: list[str] = []
             names: list[str] = []
+            ignored_count = 0
             for entry in children:
-                if entry.is_dir():
-                    entries.append(f"{entry.name}/")
-                else:
-                    entries.append(entry.name)
+                is_dir = entry.is_dir()
+                # Hide ignored entries (build/vendor/.gitignore), counted so the listing never
+                # SILENTLY omits something like node_modules — the agent sees there's more.
+                if ignore.is_ignored_path(entry, ignore_root, is_dir=is_dir, soft=soft):
+                    ignored_count += 1
+                    continue
+                entries.append(f"{entry.name}/" if is_dir else entry.name)
                 names.append(entry.name)
 
             # Soft cap with an explicit marker so a huge directory cannot flood the model's
@@ -85,7 +104,12 @@ class ListDirTool(Tool):
                 shown = entries[:_MAX_ENTRIES] + [
                     f"[... {hidden} more entries; use glob with a pattern to narrow ...]"
                 ]
-            output = "\n".join(shown) if shown else "(empty directory)"
+            notes = (
+                [f"[... {ignored_count} ignored entries hidden; include_ignored=true to show ...]"]
+                if ignored_count
+                else []
+            )
+            output = "\n".join(shown + notes) if (shown or notes) else "(empty directory)"
             return ToolResult.ok(
                 output,
                 data={
@@ -93,6 +117,7 @@ class ListDirTool(Tool):
                     "count": len(names),
                     "entries": names,
                     "truncated": truncated,
+                    "ignored": ignored_count,
                 },
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise

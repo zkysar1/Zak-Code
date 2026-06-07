@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import PurePath
+from pathlib import Path, PurePath
 
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
@@ -12,6 +12,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from zakcode.tools.builtins._ignore import load_ignore
 from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
 
 # Maximum number of matches to return.
@@ -25,7 +26,9 @@ class GlobTool(Tool):
         name="glob",
         description=(
             "Find files matching a glob pattern within the workspace. Patterns "
-            "containing '**' search recursively. Results are sorted and capped."
+            "containing '**' search recursively. Results are sorted and capped. Skips "
+            "ignored paths (.git, build/vendor/cache dirs, .gitignore/.zakcodeignore "
+            "entries); pass include_ignored=true to include them."
         ),
         parameters={
             "type": "object",
@@ -39,6 +42,13 @@ class GlobTool(Tool):
                     "description": (
                         "Base directory to search (absolute or relative to the "
                         "workspace root). Defaults to the workspace root."
+                    ),
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": (
+                        "Also return git-ignored and default-ignored files. Default false. "
+                        "(.git is always skipped.)"
                     ),
                 },
             },
@@ -61,6 +71,7 @@ class GlobTool(Tool):
         path = args.get("path")
         if path is not None and not isinstance(path, str):
             return ToolResult.error("'path' must be a string.")
+        soft = not bool(args.get("include_ignored"))
         base = path if path else "."
 
         try:
@@ -91,13 +102,18 @@ class GlobTool(Tool):
             # self-referential match like 'base/../base' collapses to the base and
             # is skipped rather than leaking a confusing dotted path.
             resolved_roots = [r.resolve() for r in ctx.all_workspace_roots]
+            ignore = load_ignore(Path(ctx.workspace_root))
+            ignore_root = Path(ctx.workspace_root).resolve()
             kept: list[str] = []
             for p in raw_matches:
                 rp = p.resolve()
                 # Must live strictly under at least one root, and never be the
                 # base/root itself (a glob should not return its own search dir).
-                if rp != resolved_base and any(root in rp.parents for root in resolved_roots):
-                    kept.append(str(rp))
+                if rp == resolved_base or not any(root in rp.parents for root in resolved_roots):
+                    continue
+                if ignore.is_ignored_path(rp, ignore_root, is_dir=rp.is_dir(), soft=soft):
+                    continue
+                kept.append(str(rp))
             matches = sorted(set(kept))
             total = len(matches)
             truncated = total > _MAX_RESULTS

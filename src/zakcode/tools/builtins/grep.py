@@ -15,12 +15,11 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from zakcode.tools.builtins._ignore import load_ignore
 from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
 
 # Maximum number of matching lines to return.
 _MAX_MATCHES = 1000
-# Directories we never descend into.
-_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache"}
 # Read at most this many bytes per file when scanning.
 _MAX_FILE_BYTES = 5 * 1024 * 1024
 
@@ -37,7 +36,8 @@ class GrepTool(Tool):
         name="grep",
         description=(
             "Search file contents for a regular expression within the workspace. "
-            "Skips binary files and common vendored directories (.git, .venv, ...). "
+            "Skips binary files and ignored paths (.git, build/vendor/cache dirs, and "
+            ".gitignore/.zakcodeignore entries); pass include_ignored=true to search them too. "
             "Returns 'file:line:match' rows, capped."
         ),
         parameters={
@@ -58,6 +58,13 @@ class GrepTool(Tool):
                     "type": "string",
                     "description": "Optional filename glob filter, e.g. '*.py'.",
                 },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": (
+                        "Also search git-ignored and default-ignored files (build/vendor/cache, "
+                        ".gitignore entries). Default false. (.git is always skipped.)"
+                    ),
+                },
             },
             "required": ["pattern"],
         },
@@ -77,6 +84,7 @@ class GrepTool(Tool):
         glob_filter = args.get("glob")
         if glob_filter is not None and not isinstance(glob_filter, str):
             return ToolResult.error("'glob' must be a string.")
+        soft = not bool(args.get("include_ignored"))
 
         base = path if path else "."
 
@@ -96,7 +104,11 @@ class GrepTool(Tool):
             if not resolved.exists():
                 return ToolResult.error(f"Path not found: {base}")
 
-            files = self._gather_files(resolved, glob_filter)
+            ignore = load_ignore(Path(ctx.workspace_root))
+            ignore_root = Path(ctx.workspace_root).resolve()
+            files = self._gather_files(
+                resolved, glob_filter, ignore=ignore, ignore_root=ignore_root, soft=soft
+            )
 
             rows: list[str] = []
             total = 0
@@ -140,8 +152,14 @@ class GrepTool(Tool):
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Grep failed for pattern {pattern!r}: {exc}")
 
-    def _gather_files(self, root: Path, glob_filter: str | None) -> list[Path]:
-        """Collect candidate files under ``root``, applying skip/glob filters."""
+    def _gather_files(
+        self, root: Path, glob_filter: str | None, *, ignore, ignore_root: Path, soft: bool
+    ) -> list[Path]:
+        """Collect candidate files under ``root``, applying ignore + glob filters.
+
+        ``ignore``/``ignore_root`` prune ignored directories (so os.walk never descends into
+        them) and skip ignored files; ``soft=False`` keeps only the ``.git`` hard floor.
+        """
         if root.is_file():
             return [root]
 
@@ -151,9 +169,16 @@ class GrepTool(Tool):
         # up in ``filenames`` and ``read_bytes()`` would follow it out of the workspace — so
         # each leaf is checked per-file below (mirroring glob's per-match re-resolve). (audit4 #1)
         for current, dirnames, filenames in os.walk(root, followlinks=False):
-            # Prune skip directories in place so os.walk does not descend.
-            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
             current_path = Path(current)
+            # Prune ignored directories in place so os.walk does not descend (cheap + keeps
+            # huge vendor/build trees out of the scan entirely).
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if not ignore.is_ignored_path(
+                    current_path / d, ignore_root, is_dir=True, soft=soft
+                )
+            ]
             for name in sorted(filenames):
                 if glob_filter and not fnmatch.fnmatch(name, glob_filter):
                     continue
@@ -168,6 +193,8 @@ class GrepTool(Tool):
                 except OSError:
                     continue
                 if resolved_leaf != root and root not in resolved_leaf.parents:
+                    continue
+                if ignore.is_ignored_path(leaf, ignore_root, is_dir=False, soft=soft):
                     continue
                 collected.append(leaf)
         return collected
