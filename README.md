@@ -226,7 +226,7 @@ A good starting `.env` for a 3B local model is just the model itself — the rel
 scaffolding needs no configuration:
 
 ```dotenv
-ZAKCODE_DEFAULT_MODEL=ollama/qwen2.5:3b
+ZAKCODE_DEFAULT_MODEL=ollama_chat/qwen2.5:3b
 ```
 
 ## Platform support
