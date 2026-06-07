@@ -72,7 +72,11 @@ def test_make_response_format_json_schema_shape() -> None:
     assert rf["type"] == "json_schema"
     assert rf["json_schema"]["name"] == "lesson"
     assert rf["json_schema"]["schema"] is _OBJ_SCHEMA
-    assert rf["json_schema"]["strict"] is True
+    # Lenient by default (vendor-agnostic): strict json_schema mode would hard-fail OpenAI/Azure
+    # on a Draft-valid-but-not-strict-compatible schema; correctness comes from coerce_structured.
+    assert rf["json_schema"]["strict"] is False
+    # ...but strict mode is available as an explicit opt-in for OpenAI-targeted callers.
+    assert make_response_format(_OBJ_SCHEMA, strict=True)["json_schema"]["strict"] is True
 
 
 # ── coerce_structured ────────────────────────────────────────────────────────────
@@ -198,7 +202,11 @@ async def test_complete_structured_valid_first_try() -> None:
     res = await complete_structured(p, [Message.user("hi")], schema=_OBJ_SCHEMA)
     assert res.valid is True and res.repaired is False and res.data == {"a": "x"}
     assert len(p.calls) == 1
-    assert p.calls[0]["response_format"] is not None  # schema requested
+    rf = p.calls[0]["response_format"]
+    assert rf is not None  # schema requested
+    # Vendor-agnostic: the request uses lenient json_schema (no server-side strict subset that
+    # would 4xx a Draft-valid schema on OpenAI); validity is enforced locally, see below.
+    assert rf["json_schema"]["strict"] is False
     assert p.calls[0]["temperature"] == 0.0  # deterministic on the schema path
 
 

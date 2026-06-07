@@ -105,6 +105,28 @@ async def test_provider_astream_default() -> None:
     assert events[3].finish_reason == "stop"
 
 
+async def test_provider_astream_default_forwards_response_format() -> None:
+    """The default astream folds response_format into its acomplete call, so structured output
+    works on the streaming path for a minimal Provider that only implements acomplete."""
+
+    class _Recording(StubProvider):
+        def __init__(self) -> None:
+            super().__init__(result=LLMResult(text="ok"))
+            self.seen: list[dict | None] = []
+
+        async def acomplete(  # noqa: ANN001
+            self, messages, *, system=None, tools=None, response_format=None, **kw
+        ):
+            self.seen.append(response_format)
+            return self._result
+
+    rf = {"type": "json_object"}
+    stub = _Recording()
+    async for _ in stub.astream([Message.user("hi")], response_format=rf):
+        pass
+    assert stub.seen == [rf]
+
+
 def test_error_hierarchy() -> None:
     assert issubclass(AuthError, ProviderError)
     assert issubclass(ContextWindowExceeded, ProviderError)

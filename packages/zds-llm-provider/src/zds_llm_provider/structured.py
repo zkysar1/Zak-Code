@@ -54,13 +54,21 @@ class StructuredValidationError(ProviderError):
 
 
 def make_response_format(
-    schema: dict[str, Any] | None = None, *, name: str = "output", strict: bool = True
+    schema: dict[str, Any] | None = None, *, name: str = "output", strict: bool = False
 ) -> dict[str, Any]:
     """The ``response_format`` payload to request structured output from a backend.
 
     ``schema is None`` → plain JSON mode (``{"type": "json_object"}``); a schema →
     a named ``json_schema`` block (the OpenAI shape litellm maps per-backend). This only
     *requests* structure; always validate the result with :func:`coerce_structured`.
+
+    ``strict`` defaults to **False** to stay vendor-agnostic: OpenAI/Azure *strict* json_schema
+    mode imposes a structural subset (every property ``required``, ``additionalProperties:false``,
+    a limited keyword set) that a perfectly valid JSON Schema can violate, hard-failing the
+    request — whereas a schema is only meta-checked against Draft 2020-12 before the call. Since
+    correctness comes from the local :func:`coerce_structured` validation regardless of the
+    backend flag, we request the lenient mode every backend can map. Pass ``strict=True`` only
+    when you specifically target an OpenAI-compatible backend and want server-side enforcement.
     """
     if schema is None:
         return {"type": "json_object"}

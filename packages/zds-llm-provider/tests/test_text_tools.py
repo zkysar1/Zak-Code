@@ -17,7 +17,7 @@ from zds_llm_provider.text_tools import (
     render_tool_protocol,
     textify_messages,
 )
-from zds_llm_provider.types import Capabilities, LLMResult
+from zds_llm_provider.types import Capabilities, LLMResult, StreamDone
 
 
 def _make_tool(name: str, desc: str = "", params: dict | None = None) -> dict:
@@ -234,6 +234,45 @@ async def test_forwards_response_format_to_inner() -> None:
         [Message.user("hi")], tools=[_make_tool("read_file")], response_format=rf
     )
     assert inner.seen == [rf, rf]
+
+
+async def test_astream_forwards_response_format_to_inner() -> None:
+    # astream is the production streaming path the agent loop uses, so the forwarding it relies
+    # on must be pinned: response_format must reach the inner provider on BOTH the text-mode
+    # branch (buffered via the wrapper's acomplete) and the native auto branch (inner.astream).
+    class _Recording(StubProvider):
+        def __init__(self) -> None:
+            super().__init__(result=LLMResult(text="ok"), caps=Capabilities(supports_tools=True))
+            self.seen: list[dict | None] = []
+
+        async def acomplete(  # noqa: ANN001
+            self, messages, *, system=None, tools=None, response_format=None, **kw
+        ):
+            self.seen.append(response_format)
+            return self._result
+
+        async def astream(  # noqa: ANN001
+            self, messages, *, system=None, tools=None, response_format=None, **kw
+        ):
+            self.seen.append(response_format)
+            yield StreamDone(finish_reason="stop")
+
+    rf = {"type": "json_object"}
+    tools = [_make_tool("read_file")]
+
+    inner_text = _Recording()  # text mode buffers via the wrapper's acomplete -> inner.acomplete
+    async for _ in TextToolCallingProvider(inner_text, mode="text").astream(
+        [Message.user("hi")], tools=tools, response_format=rf
+    ):
+        pass
+    assert inner_text.seen == [rf]
+
+    inner_native = _Recording()  # native auto path streams inner.astream directly
+    async for _ in TextToolCallingProvider(inner_native, mode="auto").astream(
+        [Message.user("hi")], tools=tools, response_format=rf
+    ):
+        pass
+    assert inner_native.seen == [rf]
 
 
 async def test_text_tool_calling_provider_auto_salvage() -> None:
