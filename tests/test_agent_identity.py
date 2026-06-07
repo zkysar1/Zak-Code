@@ -95,3 +95,20 @@ def test_explicit_identity_arg_beats_discovery(
     prompt = _agent(ws, identity="EXPLICIT IDENTITY").loop._build_system()
     assert "EXPLICIT IDENTITY" in prompt
     assert "FROM FILE" not in prompt
+
+
+def test_unloadable_self_md_is_recorded_and_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A self.md that exists but is empty after frontmatter must NOT silently fall back to the
+    # default identity: the reason is recorded on the Agent (for the CLI banner) AND logged
+    # (the one load-error path that used to be fully silent).
+    _fake_home(monkeypatch, tmp_path / "home")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "self.md").write_text("---\ntitle: x\n---\n\n", encoding="utf-8")  # frontmatter only
+    with caplog.at_level("WARNING", logger="zakcode"):
+        agent = _agent(ws)
+    assert agent.identity is None  # fell back to the default identity
+    assert agent.identity_error and "no identity text" in agent.identity_error
+    assert "not loaded" in caplog.text and "self.md" in caplog.text

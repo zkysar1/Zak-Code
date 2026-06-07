@@ -514,6 +514,16 @@ def _print_banner(console: Console, agent: Agent) -> None:
         cmds,
     )
     console.print(Padding(block, (1, 0, 0, 2)))
+    # Surface a self.md that was present but failed to load (unreadable / empty after
+    # frontmatter) — otherwise the operator silently gets the default identity with no signal.
+    identity_error = getattr(agent, "identity_error", None)
+    if identity_error:
+        console.print(
+            Padding(
+                Text(f"self.md present but not loaded: {identity_error}", style="warn"),
+                (0, 0, 0, 2),
+            )
+        )
 
 
 #: A factory that produces one turn's event stream. The CLI is agnostic to where

@@ -14,6 +14,7 @@ Nothing here triggers network activity at import time — only an actual
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,8 @@ __all__ = [
     "TurnResult",
     "__version__",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 # Provider prefixes whose *native* (function-calling) tool path is unreliable via
@@ -287,6 +290,12 @@ class Agent:
             from zakcode.identity import load_identity
 
             self.identity, self.identity_error = load_identity(self.settings.workspace_root)
+            # An operator-authored self.md that fails to load (unreadable, or empty after
+            # frontmatter) is a silent footgun: the intended persona is gone with no signal.
+            # Log it like rule-discovery failures so it surfaces; clients (e.g. the CLI banner)
+            # can also read ``identity_error``. A missing self.md is not an error (stays None).
+            if self.identity_error:
+                logger.warning("operator identity (self.md) not loaded: %s", self.identity_error)
 
         # Wire the discovered content into the prompt builder. With no injected
         # builder, construct one; with an injected builder, fill any empty stable-tier
