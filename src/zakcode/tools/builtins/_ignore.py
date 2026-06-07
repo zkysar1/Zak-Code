@@ -142,11 +142,16 @@ class IgnoreSpec:
     def __init__(self, rules: list[_Rule]) -> None:
         self._rules = rules
 
-    def match(self, rel_posix: str, *, is_dir: bool, soft: bool = True) -> bool:
+    def match(
+        self, rel_posix: str, *, is_dir: bool, soft: bool = True, apply_rules: bool = True
+    ) -> bool:
         """True if the path (POSIX, relative to the root) should be skipped.
 
         ``soft=False`` disables the default-dir + gitignore layers (the ``include_ignored``
-        escape hatch); the ``.git`` hard floor still applies.
+        escape hatch); the ``.git`` hard floor still applies. ``apply_rules=False`` keeps the
+        ``.git`` + default-dir floor but skips the user ``.gitignore``/``.zakcodeignore`` rules —
+        used for the basename-only fallback on a path that is NOT under this root (an extra
+        workspace root), where this root's project ignores must not govern another tree's files.
         """
         rel = rel_posix.strip("/")
         if not rel:
@@ -158,6 +163,8 @@ class IgnoreSpec:
             return False
         if any(p in DEFAULT_IGNORE_DIRS for p in parts):
             return True
+        if not apply_rules:
+            return False
         ignored = False
         for rule in self._rules:  # gitignore semantics: last matching rule wins
             if not rule.regex.match(rel):
@@ -170,14 +177,19 @@ class IgnoreSpec:
     def is_ignored_path(self, path: Path, root: Path, *, is_dir: bool, soft: bool = True) -> bool:
         """Convenience: relativize ``path`` to ``root`` and :meth:`match`.
 
-        A path not under ``root`` (e.g. an extra workspace root) is matched on its basename
-        only — enough for the ``.git`` / default-dir basename floor.
+        A path not under ``root`` (e.g. an extra workspace root from the M-3 multi-root sandbox)
+        is matched on its basename against the ``.git`` / default-dir floor ONLY — the user
+        ``.gitignore`` rules are NOT applied, because they belong to *this* root and a basename
+        like ``config.py`` would otherwise silently hide a same-named real file in another root,
+        breaking the module's FAIL-OPEN guarantee.
         """
         try:
             rel = path.relative_to(root).as_posix()
+            under_root = True
         except ValueError:
             rel = path.name
-        return self.match(rel, is_dir=is_dir, soft=soft)
+            under_root = False
+        return self.match(rel, is_dir=is_dir, soft=soft, apply_rules=under_root)
 
 
 def load_ignore(root: Path) -> IgnoreSpec:

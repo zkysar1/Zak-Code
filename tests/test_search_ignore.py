@@ -104,6 +104,20 @@ def test_comments_and_blanks_skipped(tmp_path: Path) -> None:
     assert not spec.match("a comment", is_dir=False)
 
 
+def test_extra_root_basename_fallback_applies_floor_only(tmp_path: Path) -> None:
+    # A path NOT under the ignore root (an extra workspace root, M-3 multi-root sandbox) is
+    # matched on its basename against the .git / default-dir floor ONLY — THIS root's user
+    # gitignore rules must NOT govern another tree's files, or a basename like `config.py` would
+    # silently hide a same-named real file elsewhere, breaking the FAIL-OPEN guarantee.
+    spec = _spec(tmp_path, gitignore="config.py\n")
+    other = tmp_path.parent / "other_root"
+    assert spec.is_ignored_path(tmp_path / "config.py", tmp_path, is_dir=False)  # under root
+    assert not spec.is_ignored_path(other / "config.py", tmp_path, is_dir=False)  # outside: skip
+    # ...but the .git + default-dir floor still applies by basename in the extra root.
+    assert spec.is_ignored_path(other / ".git", tmp_path, is_dir=True)
+    assert spec.is_ignored_path(other / "node_modules", tmp_path, is_dir=True)
+
+
 # ── integration: grep / glob / list_dir ────────────────────────────────────────────
 
 
@@ -158,3 +172,40 @@ async def test_list_dir_hides_ignored_with_explicit_marker(tmp_path: Path) -> No
     assert res.data and res.data.get("ignored") >= 2
     res2 = await ListDirTool().execute({"path": ".", "include_ignored": True}, ctx)
     assert "node_modules/" in res2.output and "build/" in res2.output
+
+
+# ── multi-root: the primary .gitignore must not hide files in an EXTRA workspace root ──
+
+
+def _multiroot_ws(tmp_path: Path) -> tuple[ToolContext, Path]:
+    """Primary root with a basename .gitignore entry + a separate extra root holding a
+    real, same-named file. Reproduces the over-ignore the basename fallback used to cause."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    # A bare-basename ignore in the PRIMARY repo (not anchored, not dir-only).
+    (primary / ".gitignore").write_text("config.py\n", encoding="utf-8")
+    extra = tmp_path / "skill_repo"
+    extra.mkdir()
+    (extra / "config.py").write_text("REALCODE in extra root\n", encoding="utf-8")
+    (extra / "other.py").write_text("REALCODE elsewhere\n", encoding="utf-8")
+    ctx = ToolContext(workspace_root=primary, extra_workspace_roots=[extra])
+    return ctx, extra
+
+
+async def test_grep_does_not_over_ignore_extra_root(tmp_path: Path) -> None:
+    ctx, extra = _multiroot_ws(tmp_path)
+    res = await GrepTool().execute({"pattern": "REALCODE", "path": str(extra)}, ctx)
+    # The primary repo's `config.py` ignore must NOT hide the extra root's real config.py.
+    assert "config.py" in res.output and "other.py" in res.output
+
+
+async def test_glob_does_not_over_ignore_extra_root(tmp_path: Path) -> None:
+    ctx, extra = _multiroot_ws(tmp_path)
+    res = await GlobTool().execute({"pattern": "*.py", "path": str(extra)}, ctx)
+    assert "config.py" in res.output and "other.py" in res.output
+
+
+async def test_list_dir_does_not_over_ignore_extra_root(tmp_path: Path) -> None:
+    ctx, extra = _multiroot_ws(tmp_path)
+    res = await ListDirTool().execute({"path": str(extra)}, ctx)
+    assert "config.py" in res.output and "other.py" in res.output
