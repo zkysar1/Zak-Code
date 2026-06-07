@@ -164,8 +164,16 @@ class Settings(BaseSettings):
         default_factory=list,
         description="If non-empty, the only model strings a request may override to.",
     )
+    # Egress allowlist for the web_fetch tool. Empty (default) = web_fetch may reach any PUBLIC
+    # host (the SSRF guard still blocks loopback/private/metadata). When non-empty, web_fetch is
+    # restricted to these domains and their subdomains — the named hardening for the public-egress
+    # exfil residual (see docs/RISKS.md). Comma/space/JSON list from the env, like allowed_models.
+    web_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="If non-empty, web_fetch may only reach these domains (and their subdomains).",
+    )
 
-    @field_validator("denied_commands", "allowed_models", mode="before")
+    @field_validator("denied_commands", "allowed_models", "web_allowed_domains", mode="before")
     @classmethod
     def _parse_list_from_env(cls, value: object, info: ValidationInfo) -> object:
         """Accept a list, a JSON array string, or a plain delimited string from an env var.

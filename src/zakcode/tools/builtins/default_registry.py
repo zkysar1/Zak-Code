@@ -46,5 +46,6 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(BashTool(), aliases=["sh", "shell"])
     registry.register(PowerShellTool(), aliases=["pwsh"])
     registry.register(WebSearchTool(make_search_backend(settings)), aliases=["websearch"])
-    registry.register(WebFetchTool(), aliases=["fetch", "webfetch"])
+    web_allowlist = settings.web_allowed_domains if settings else None
+    registry.register(WebFetchTool(allowed_domains=web_allowlist), aliases=["fetch", "webfetch"])
     return registry

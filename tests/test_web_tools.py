@@ -562,6 +562,71 @@ async def test_web_fetch_bogus_charset_does_not_raise(
     assert not res.is_error and "hi" in res.output
 
 
+# ── egress allowlist gate (ZAKCODE_WEB_ALLOWED_DOMAINS) ──────────────────────────────
+
+
+def test_host_allowed_matching() -> None:
+    from zakcode.tools.builtins.web_fetch import _host_allowed
+
+    assert _host_allowed("example.com", [])  # empty allowlist = any host
+    assert _host_allowed("example.com", ["example.com"])
+    assert _host_allowed("docs.example.com", ["example.com"])  # subdomain ok
+    assert _host_allowed("EXAMPLE.com", ["example.com"])  # case-insensitive
+    assert not _host_allowed("notexample.com", ["example.com"])  # not a subdomain
+    assert not _host_allowed("example.com.evil.test", ["example.com"])  # suffix trick blocked
+    assert not _host_allowed("other.org", ["example.com", "github.com"])
+
+
+async def test_web_fetch_allowlist_permits_listed_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_http, "_resolve_host", lambda host: ["93.184.216.34"])
+    _patch_httpx(
+        monkeypatch,
+        lambda url: _FakeResponse(headers={"content-type": "text/html"}, body=b"<p>ok</p>"),
+    )
+    tool = WebFetchTool(allowed_domains=["example.com"])
+    res = await tool.execute({"url": "https://docs.example.com/p"}, _ctx(tmp_path))
+    assert not res.is_error and "ok" in res.output
+
+
+async def test_web_fetch_allowlist_blocks_unlisted_host(tmp_path: Path) -> None:
+    # No httpx patch needed: the allowlist refuses before any connection.
+    tool = WebFetchTool(allowed_domains=["example.com"])
+    res = await tool.execute({"url": "https://evil.test/p"}, _ctx(tmp_path))
+    assert res.is_error and "allowlist" in res.output
+
+
+async def test_web_fetch_allowlist_blocks_redirect_off_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A listed origin 302s to an UNLISTED host; the per-hop allowlist must catch the redirect.
+    monkeypatch.setattr(_http, "_resolve_host", lambda host: ["93.184.216.34"])
+    _patch_httpx(
+        monkeypatch,
+        lambda url: _FakeResponse(status_code=302, headers={"location": "https://evil.test/x"}),
+    )
+    tool = WebFetchTool(allowed_domains=["example.com"])
+    res = await tool.execute({"url": "https://example.com/start"}, _ctx(tmp_path))
+    assert res.is_error and "allowlist" in res.output
+
+
+def test_default_registry_threads_web_allowlist() -> None:
+    from zakcode.config import Settings
+    from zakcode.tools.builtins.default_registry import default_registry
+
+    reg = default_registry(Settings(default_model="x/y", web_allowed_domains=["example.com"]))
+    fetch = reg.get("web_fetch")
+    assert fetch is not None and fetch._allowed == ["example.com"]
+
+
+def test_config_parses_web_allowed_domains_from_csv() -> None:
+    from zakcode.config import Settings
+
+    s = Settings(default_model="x/y", web_allowed_domains="example.com, github.com")  # type: ignore[arg-type]
+    assert s.web_allowed_domains == ["example.com", "github.com"]
+
+
 # ── REST backend JSON mapping (fake httpx; no network) ───────────────────────────────
 
 

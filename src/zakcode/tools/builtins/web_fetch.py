@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+from urllib.parse import urlsplit
 
 from zakcode._http import BlockedUrlError, load_httpx, resolve_pinned_url
 from zakcode.config import PermissionTier
@@ -55,6 +56,23 @@ def _looks_textual(content_type: str) -> bool:
         "application/atom+xml",
         "application/javascript",
     }
+
+
+def _host_allowed(host: str, allowed: list[str]) -> bool:
+    """True if ``host`` is permitted by the egress allowlist (empty allowlist = any host).
+
+    A host matches an entry when it equals it or is a subdomain of it (case-insensitive,
+    trailing dots ignored) — so ``example.com`` permits ``docs.example.com`` but not
+    ``notexample.com`` or ``example.com.evil.test``.
+    """
+    if not allowed:
+        return True
+    h = host.lower().rstrip(".")
+    for entry in allowed:
+        d = entry.lower().strip().strip(".")
+        if d and (h == d or h.endswith("." + d)):
+            return True
+    return False
 
 
 def _charset(content_type: str) -> str:
@@ -103,6 +121,10 @@ class WebFetchTool(Tool):
         required_permission=PermissionTier.READ_ONLY,
         concurrency=ConcurrencyClass.READ_ONLY_SAFE,
     )
+
+    def __init__(self, *, allowed_domains: list[str] | None = None) -> None:
+        # Optional egress allowlist (ZAKCODE_WEB_ALLOWED_DOMAINS). Empty = any public host.
+        self._allowed = [d for d in (allowed_domains or []) if d and d.strip()]
 
     async def execute(self, args: dict, ctx: ToolContext) -> ToolResult:
         url = args.get("url")
@@ -175,6 +197,14 @@ class WebFetchTool(Tool):
         current = url
         async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
             for _hop in range(_MAX_REDIRECTS + 1):
+                # Egress allowlist (policy): refuse a host not on the configured list — checked
+                # per hop so a redirect cannot walk off the allowlist. SSRF guard runs next.
+                host = urlsplit(current).hostname or ""
+                if not _host_allowed(host, self._allowed):
+                    raise BlockedUrlError(
+                        f"host {host!r} is not in the configured web_fetch allowlist "
+                        f"(ZAKCODE_WEB_ALLOWED_DOMAINS)"
+                    )
                 # Validate + pin to the checked IP off the event loop (the guard does DNS).
                 connect_url, pin_headers, ext = await asyncio.to_thread(resolve_pinned_url, current)
                 req_headers = {**headers, **pin_headers}
