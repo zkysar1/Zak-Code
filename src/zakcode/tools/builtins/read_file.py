@@ -126,6 +126,21 @@ class ReadFileTool(Tool):
                 if len(encoded) > _MAX_BYTES:
                     text = encoded[:_MAX_BYTES].decode("utf-8", errors="ignore")
                     byte_truncated = True
+                    # The cap may have cut the slice SHORTER than ``shown_end`` (or below EOF for
+                    # a slice that reached it). Rebase the continuation marker on the lines
+                    # ACTUALLY returned (complete = newline-terminated), so its offset can never
+                    # skip the un-returned tail between the byte cutoff and shown_end. (review)
+                    shown_lines = text.count("\n")
+                    real_end = start + shown_lines
+                    if shown_lines >= 1 and real_end < total_lines:
+                        slice_note = (
+                            f"[... showed lines {start + 1}-{real_end} of {total_lines}; "
+                            f"use offset={real_end + 1} to read more ...]"
+                        )
+                    else:
+                        # Not even one whole line fit (a single line > 100KB): no honest line
+                        # offset to give — the byte-truncation note alone explains the cut.
+                        slice_note = None
             else:
                 # Whole-file read: cap the returned bytes directly off raw (no full re-encode).
                 if len(raw) > _MAX_BYTES:

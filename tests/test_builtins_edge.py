@@ -181,6 +181,23 @@ async def test_read_size_cap_truncation_note(ctx, tmp_path):
     assert "truncated at 100KB" in res.output
 
 
+async def test_read_slice_marker_honors_byte_cap(ctx, tmp_path, monkeypatch):
+    import zakcode.tools.builtins.read_file as rf_mod
+
+    # 10 lines of exactly 10 bytes each ("AAAAAAAAA\n"); cap the RETURNED bytes at 35 so only 3
+    # whole lines (30 bytes) + a partial 4th fit. Requesting lines 1-8 made the OLD code claim
+    # "showed lines 1-8 ... offset=9", skipping the unreturned tail. The marker must instead
+    # reflect the lines ACTUALLY returned and resume at the first un-returned line.
+    monkeypatch.setattr(rf_mod, "_MAX_BYTES", 35)
+    (tmp_path / "wide.txt").write_bytes(b"AAAAAAAAA\n" * 10)
+    res = await ReadFileTool().execute({"path": "wide.txt", "offset": 1, "limit": 8}, ctx)
+    assert not res.is_error
+    assert res.data["byte_truncated"] is True
+    assert "showed lines 1-3 of 10" in res.output  # only the 3 whole lines that actually fit
+    assert "offset=4" in res.output  # resume at the first un-returned line — no skip
+    assert "offset=9" not in res.output  # the OLD overstated offset is gone
+
+
 # --------------------------------------------------------------------------- #
 # write_file
 # --------------------------------------------------------------------------- #
