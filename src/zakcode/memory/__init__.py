@@ -6,9 +6,11 @@ like Claude-Mind — see ``docs/INTEGRATIONS``) builds policy on top of. The spl
 deliberate:
 
 * :class:`MemoryProvider` is the abstract contract — ``add`` / ``search`` /
-  ``recent`` / ``delete`` / ``count``. It says nothing about *what* to remember or
-  *when*; that routing is policy, owned by the layer above (a ``remember`` tool the
-  model calls, a session-end writer, or a framework's encode pass).
+  ``recent`` / ``update`` / ``delete`` / ``count``. ``update`` enables *surgical* edits
+  (set a fact's text/kind/tags in place) so a "learner" policy can refine or reclassify
+  a memory instead of appending a duplicate. The contract says nothing about *what* to
+  remember or *when*; that routing is policy, owned by the layer above (a ``remember``
+  tool the model calls, a session-end writer, or a framework's encode pass).
 * :class:`~zakcode.memory.sqlite_store.SqliteMemoryProvider` is the batteries-included
   default: a local SQLite database (FTS5 full-text search when available, a LIKE
   fallback otherwise) whose path is configurable, so the store can live wherever an
@@ -157,6 +159,31 @@ class MemoryProvider(ABC):
     def recent(self, *, limit: int = 10) -> list[MemoryRecord]:
         """Return up to ``limit`` most recently added memories (newest first)."""
         raise NotImplementedError
+
+    def update(
+        self,
+        memory_id: str,
+        *,
+        text: str | None = None,
+        kind: str | None = None,
+        tags: list[str] | None = None,
+    ) -> MemoryRecord | None:
+        """Surgically edit an existing memory; return the updated record (``None`` if absent).
+
+        Only the fields passed (non-``None``) are changed — the rest are left as-is — so a
+        policy layer (a "learner" mind) can add/refine/reclassify a fact in place instead of
+        appending a duplicate. ``tags`` REPLACES the tag list (callers merge if they want a
+        union). Like :meth:`add`, this is a low-level store op: a caller persisting model- or
+        user-derived text is responsible for redacting secrets first (the ``remember`` tool
+        does); the store does not scrub.
+
+        OPTIONAL capability: the default raises ``NotImplementedError`` so a provider written
+        before this method still *instantiates* (vendor/mind portability — unlike a new
+        ``@abstractmethod``, which would break it at construction). Override to support edits;
+        callers that may meet a non-supporting provider should degrade gracefully (the
+        ``remember`` tool treats an update failure as a benign no-op, never a duplicate).
+        """
+        raise NotImplementedError("this MemoryProvider does not support update()")
 
     @abstractmethod
     def delete(self, memory_id: str) -> bool:

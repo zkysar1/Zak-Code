@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from zakcode.memory import MemoryProvider, MemoryRecord
 from zakcode.memory.sqlite_store import SqliteMemoryProvider
 from zakcode.tools.base import ToolContext
 from zakcode.tools.builtins import grep as grep_mod
@@ -94,6 +95,103 @@ async def test_remember_same_text_is_idempotent(tmp_path: Path, ctx: ToolContext
     # A genuinely different note still stores.
     third = await tool.execute({"text": "my dog is named Mochi"}, ctx)
     assert third.is_error is False and mem.count() == 2
+
+
+def test_sqlite_update_edits_fields_in_place(tmp_path: Path) -> None:
+    store = SqliteMemoryProvider(str(tmp_path / "m.db"))
+    rec = store.add("favorite color is blue", kind="note", tags=["color"])
+    updated = store.update(rec.id, kind="preference", tags=["color", "ui"])
+    assert updated is not None
+    assert updated.kind == "preference" and set(updated.tags) == {"color", "ui"}
+    assert updated.text == "favorite color is blue"  # text=None -> unchanged
+    # Persisted, no duplicate row.
+    again = store.recent(limit=1)[0]
+    assert again.kind == "preference" and set(again.tags) == {"color", "ui"}
+    assert store.count() == 1
+    # A text edit in place.
+    store.update(rec.id, text="favorite color is green")
+    assert store.recent(limit=1)[0].text == "favorite color is green"
+    # The search index tracks the edit: findable by the NEW text, no longer by the OLD.
+    assert [r.id for r in store.search("green")] == [rec.id]
+    assert store.search("blue") == []
+
+
+class _UpdateRaises(MemoryProvider):
+    """A store whose update() always fails (transient lock / unsupported)."""
+
+    def __init__(self) -> None:
+        self.records: list[MemoryRecord] = []
+
+    def add(self, text, *, kind="note", tags=None, source=""):
+        rec = MemoryRecord(text=text, kind=kind, tags=tags or [], source=source)
+        self.records.append(rec)
+        return rec
+
+    def search(self, query, *, limit=5):
+        return list(self.records)[:limit]
+
+    def recent(self, *, limit=10):
+        return list(self.records)[-limit:]
+
+    def update(self, memory_id, *, text=None, kind=None, tags=None):
+        raise RuntimeError("update boom")
+
+    def delete(self, memory_id):
+        return False
+
+    def count(self):
+        return len(self.records)
+
+
+class _UpdateReturnsNone(_UpdateRaises):
+    """A store whose update() reports the row vanished (None) — TOCTOU between probe + update."""
+
+    def update(self, memory_id, *, text=None, kind=None, tags=None):
+        return None
+
+
+async def test_remember_update_failure_does_not_duplicate(tmp_path: Path, ctx: ToolContext) -> None:
+    # review HIGH: an enrich update() that raises must degrade to a benign no-op — NEVER fall
+    # through to add() and recreate the duplicate dedup exists to prevent.
+    mem = _UpdateRaises()
+    tool = RememberTool(mem)
+    await tool.execute({"text": "X"}, ctx)
+    res = await tool.execute({"text": "X", "tags": ["t"]}, ctx)  # enrich -> update raises
+    assert res.is_error is False  # benign, not an error
+    assert mem.count() == 1  # NO duplicate row
+    assert "no duplicate created" in res.output
+
+
+async def test_remember_update_none_not_reported_as_updated(
+    tmp_path: Path, ctx: ToolContext
+) -> None:
+    # update() -> None means the matched row vanished; must NOT claim updated=True with stale
+    # fields — it falls through to persist the note instead.
+    mem = _UpdateReturnsNone()
+    tool = RememberTool(mem)
+    await tool.execute({"text": "X"}, ctx)
+    res = await tool.execute({"text": "X", "tags": ["t"]}, ctx)
+    assert res.is_error is False
+    assert not (res.data or {}).get("updated")  # not falsely reported as an applied edit
+
+
+def test_sqlite_update_missing_id_returns_none(tmp_path: Path) -> None:
+    store = SqliteMemoryProvider(str(tmp_path / "m.db"))
+    assert store.update("does-not-exist") is None
+
+
+async def test_remember_enriches_tags_via_update(tmp_path: Path, ctx: ToolContext) -> None:
+    # A re-issued identical note with NEW tags enriches the existing record in place (merge
+    # via MemoryProvider.update) instead of duplicating or dropping the intent.
+    mem = SqliteMemoryProvider(str(tmp_path / "m.db"))
+    tool = RememberTool(mem)
+    await tool.execute({"text": "I like Rust", "tags": ["lang"]}, ctx)
+    res = await tool.execute({"text": "I like Rust", "tags": ["systems"]}, ctx)
+    assert res.is_error is False
+    assert res.data and res.data.get("updated") is True
+    assert mem.count() == 1  # no duplicate row
+    assert set(mem.recent(limit=1)[0].tags) == {"lang", "systems"}  # merged
+    assert "updated its tags" in res.output
 
 
 # ── #5 dense output: explicit, actionable truncation markers ─────────────────────

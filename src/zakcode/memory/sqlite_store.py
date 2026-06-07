@@ -193,6 +193,38 @@ class SqliteMemoryProvider(MemoryProvider):
         ).fetchall()
         return [self._row_to_record(r) for r in rows]
 
+    def update(
+        self,
+        memory_id: str,
+        *,
+        text: str | None = None,
+        kind: str | None = None,
+        tags: list[str] | None = None,
+    ) -> MemoryRecord | None:
+        row = self._conn.execute(
+            f"SELECT {_COLUMNS} FROM memories WHERE mem_id = ?", (memory_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        current = self._row_to_record(row)
+        # None = leave the field as-is; a provided value replaces it (tags replaces the list).
+        new_text = current.text if text is None else text
+        new_kind = current.kind if kind is None else (kind or "note")
+        new_tags = current.tags if tags is None else tags
+        self._conn.execute(
+            "UPDATE memories SET text = ?, kind = ?, tags = ? WHERE mem_id = ?",
+            (new_text, new_kind, json.dumps(new_tags), memory_id),
+        )
+        self._conn.commit()
+        return MemoryRecord(
+            id=current.id,
+            text=new_text,
+            kind=new_kind,
+            tags=new_tags,
+            source=current.source,
+            created_at=current.created_at,
+        )
+
     def delete(self, memory_id: str) -> bool:
         cur = self._conn.execute("DELETE FROM memories WHERE mem_id = ?", (memory_id,))
         self._conn.commit()

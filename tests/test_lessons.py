@@ -43,6 +43,18 @@ class _FakeMemory(MemoryProvider):
     def recent(self, *, limit=10):
         return list(self.records)[-limit:]
 
+    def update(self, memory_id, *, text=None, kind=None, tags=None):
+        for r in self.records:
+            if r.id == memory_id:
+                if text is not None:
+                    r.text = text
+                if kind is not None:
+                    r.kind = kind or "note"
+                if tags is not None:
+                    r.tags = tags
+                return r
+        return None
+
     def delete(self, memory_id):
         before = len(self.records)
         self.records = [r for r in self.records if r.id != memory_id]

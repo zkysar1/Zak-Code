@@ -80,39 +80,78 @@ class RememberTool(Tool):
         # (docs/GUARDRAILS.md §6). Scrub before storing and tell the model it happened.
         scrubbed, redactions = redact_secrets(text.strip())
         # Idempotency: a retried remember (same scrubbed text) must not create a duplicate in a
-        # long-lived, re-injected store. If an identical recent note exists, no-op benignly. The
-        # probe is best-effort — a search failure must never block the actual write.
+        # long-lived, re-injected store. The dedup PROBE is best-effort (a read failure just
+        # falls through to add() — write once). Crucially, the enrich WRITE is kept OUT of this
+        # broad guard: a failed update() must NOT fall through to add() and recreate the very
+        # duplicate dedup prevents. (review HIGH)
+        existing = None
         try:
-            for existing in self._provider.recent(limit=_DEDUP_SCAN):
-                if existing.text == scrubbed:
-                    # The store exposes no update(), so a re-issued remember with a NEW kind or
-                    # extra tags can't reclassify the existing record — say so rather than
-                    # silently echo the old classification as if it were applied.
-                    raw_kind = args.get("kind")
-                    kind_changed = (
-                        isinstance(raw_kind, str)
-                        and bool(raw_kind.strip())
-                        and raw_kind.strip() != existing.kind
-                    )
-                    tags_changed = bool(set(tags) - set(existing.tags))
-                    note = (
-                        " (kind/tags were NOT changed — re-tagging an existing memory is not "
-                        "supported)"
-                        if (kind_changed or tags_changed)
-                        else ""
-                    )
-                    return ToolResult.ok(
-                        f"Already remembered (id={existing.id}); no duplicate created.{note}",
-                        data={
-                            "id": existing.id,
-                            "kind": existing.kind,
-                            "tags": existing.tags,
-                            "duplicate": True,
-                        },
-                        hint=_SAVED_HINT,
-                    )
-        except Exception:  # noqa: BLE001 — a dedup probe failure must never block the write
-            pass
+            for cand in self._provider.recent(limit=_DEDUP_SCAN):
+                if cand.text == scrubbed:
+                    existing = cand
+                    break
+        except Exception:  # noqa: BLE001 — probe failure: fall through and add once
+            existing = None
+
+        if existing is not None:
+            # If the caller supplied a NEW kind or EXTRA tags, ENRICH the existing record in
+            # place (set kind / merge tags) via update() — a surgical edit, not a second row.
+            raw_kind = args.get("kind")
+            new_kind = (
+                raw_kind.strip()
+                if isinstance(raw_kind, str)
+                and raw_kind.strip()
+                and raw_kind.strip() != existing.kind
+                else None
+            )
+            merged_tags = (
+                sorted(set(existing.tags) | set(tags)) if set(tags) - set(existing.tags) else None
+            )
+            if new_kind is None and merged_tags is None:
+                return ToolResult.ok(
+                    f"Already remembered (id={existing.id}); no duplicate created.",
+                    data={
+                        "id": existing.id,
+                        "kind": existing.kind,
+                        "tags": existing.tags,
+                        "duplicate": True,
+                    },
+                    hint=_SAVED_HINT,
+                )
+            try:
+                updated = self._provider.update(existing.id, kind=new_kind, tags=merged_tags)
+            except Exception:  # noqa: BLE001 — enrich failure must NOT create a duplicate row
+                return ToolResult.ok(
+                    f"Already remembered (id={existing.id}); no duplicate created "
+                    "(could not update its kind/tags).",
+                    data={
+                        "id": existing.id,
+                        "kind": existing.kind,
+                        "tags": existing.tags,
+                        "duplicate": True,
+                    },
+                    hint=_SAVED_HINT,
+                )
+            if updated is not None:
+                what = (
+                    "kind and tags"
+                    if (new_kind and merged_tags is not None)
+                    else ("kind" if new_kind else "tags")
+                )
+                return ToolResult.ok(
+                    f"Already remembered (id={updated.id}); updated its {what} "
+                    "(no duplicate created).",
+                    data={
+                        "id": updated.id,
+                        "kind": updated.kind,
+                        "tags": updated.tags,
+                        "duplicate": True,
+                        "updated": True,
+                    },
+                    hint=_SAVED_HINT,
+                )
+            # update() returned None: the matched row vanished between the probe and the
+            # update, so the dedup target is gone — persist the note (fall through to add()).
         try:
             record = self._provider.add(scrubbed, kind=kind, tags=tags, source=self._source)
         except Exception as exc:  # noqa: BLE001 — a store failure is a tool error, not a crash

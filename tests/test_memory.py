@@ -114,6 +114,9 @@ class _CountingProvider(MemoryProvider):
     def recent(self, *, limit=10):  # noqa: ANN201
         return self._records[:limit]
 
+    def update(self, memory_id, *, text=None, kind=None, tags=None):  # noqa: ANN001, ANN201
+        return None
+
     def delete(self, memory_id):  # noqa: ANN001, ANN201
         return False
 

@@ -92,7 +92,9 @@ files its skills read via the file tools rather than relying on always-on inject
 ### 5. Memory (`MemoryProvider`)
 
 `zakcode.memory.MemoryProvider` is the storage + retrieval contract (`add` / `search`
-/ `recent` / `delete` / `count`); the default `SqliteMemoryProvider` is a local
+/ `recent` / `update` / `delete` / `count`); `update` lets a learner policy edit a fact's
+text/kind/tags in place (surgical edits, not duplicate appends). The default
+`SqliteMemoryProvider` is a local
 SQLite/FTS5 store whose path is configurable (`ZAKCODE_MEMORY_DB_PATH`) so a framework
 can relocate or per-agent it. Recalled text is **secret-redacted** at both the write
 (`remember`) and recall boundaries (`docs/GUARDRAILS.md` §6). Inject your own store
