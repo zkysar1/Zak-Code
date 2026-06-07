@@ -1,0 +1,4 @@
+# Advisory ownership for Zak-Code, the shared Python library.
+# Move-fast governance: no required PR reviews, so this file documents
+# ownership advisorily and is not an enforced review gate.
+*       @zkysar1
