@@ -45,13 +45,11 @@ jobs:
         run: uv run --no-sync mypy
 
       - name: Pytest
-        # DIAGNOSTIC: collection is fine (1315 collected in 6.4s) and the run
-        # reaches ~49% then dies with exit 137 (uncatchable SIGKILL, no
-        # faulthandler dump) -- an OOM kill or a test that kills its own process
-        # group (the suite has process-tree-termination tests). Run verbose +
-        # unbuffered so the LAST test name before the SIGKILL names the culprit.
-        # Still bounded by `timeout -s ABRT` so a true hang can't stall to ceiling.
+        # Session-level safety bound: PYTHONFAULTHANDLER + `timeout -s ABRT` make
+        # any future hang fail in minutes with an all-thread traceback instead of
+        # stalling silently to the runner ceiling (the failure class this PR fixes).
+        # Per-test bound is in pyproject (pytest-timeout, timeout=120). The suite
+        # runs in ~90s, so the 600s bound is pure headroom.
         env:
           PYTHONFAULTHANDLER: "1"
-          PYTHONUNBUFFERED: "1"
-        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -v --tb=short -p no:cacheprovider
+        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q
