@@ -45,15 +45,13 @@ jobs:
         run: uv run --no-sync mypy
 
       - name: Pytest
-        # Bound any hang (collection OR execution) and force an all-thread
-        # traceback dump via PYTHONFAULTHANDLER + `timeout -s ABRT`, instead of a
-        # silent stall to the runner ceiling. The per-test pytest-timeout below
-        # (pyproject `timeout = 120`) only arms once a test is RUNNING, so it
-        # cannot cover a test MODULE that hangs at import (the collection phase).
-        # The collect-only probe fails fast (<=2min) on a collection hang and the
-        # ABRT dump names the stuck import; the full run is bounded to 10min.
+        # DIAGNOSTIC: collection is fine (1315 collected in 6.4s) and the run
+        # reaches ~49% then dies with exit 137 (uncatchable SIGKILL, no
+        # faulthandler dump) -- an OOM kill or a test that kills its own process
+        # group (the suite has process-tree-termination tests). Run verbose +
+        # unbuffered so the LAST test name before the SIGKILL names the culprit.
+        # Still bounded by `timeout -s ABRT` so a true hang can't stall to ceiling.
         env:
           PYTHONFAULTHANDLER: "1"
-        run: |
-          timeout -s ABRT -k 10 120 uv run --no-sync pytest --collect-only -q
-          timeout -s ABRT -k 30 600 uv run --no-sync pytest -q
+          PYTHONUNBUFFERED: "1"
+        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -v --tb=short -p no:cacheprovider
