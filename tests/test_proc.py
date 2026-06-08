@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from zakcode._subprocess import terminate_process_tree
+from zakcode._subprocess import new_group_kwargs, terminate_process_tree
 from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 
 
@@ -51,8 +51,17 @@ async def test_run_capturing_cancel_propagates_promptly() -> None:
 
 
 async def test_terminate_tree_reaps_a_running_child() -> None:
+    # Spawn the child the way EVERY production spawner does -- in its own process
+    # group/session via new_group_kwargs(). terminate_process_tree's POSIX path is
+    # os.killpg(getpgid(child), SIGKILL); without an own group the child shares
+    # pytest's process group, so killpg SIGKILLs the test runner itself (ubuntu-only
+    # exit 137 -- Windows uses `taskkill /PID /T` and is unaffected). This honors the
+    # documented terminate_process_tree contract; do NOT drop new_group_kwargs().
     proc = await asyncio.create_subprocess_shell(
-        _sleep_cmd(30), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        _sleep_cmd(30),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        **new_group_kwargs(),
     )
     assert proc.returncode is None  # alive
     await terminate_process_tree(proc)

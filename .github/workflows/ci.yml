@@ -45,4 +45,11 @@ jobs:
         run: uv run --no-sync mypy
 
       - name: Pytest
-        run: uv run --no-sync pytest -q
+        # Session-level safety bound: PYTHONFAULTHANDLER + `timeout -s ABRT` make
+        # any future hang fail in minutes with an all-thread traceback instead of
+        # stalling silently to the runner ceiling (the failure class this PR fixes).
+        # Per-test bound is in pyproject (pytest-timeout, timeout=120). The suite
+        # runs in ~90s, so the 600s bound is pure headroom.
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q
