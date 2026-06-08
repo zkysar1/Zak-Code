@@ -46,3 +46,37 @@ jobs:
 
       - name: Pytest
         run: uv run --no-sync pytest -q
+
+  # Single alert job that runs ONCE after the whole matrix (needs: verify),
+  # not once per py-version cell. `failure()` here is true iff any verify cell
+  # failed; cancelled runs (concurrency cancel-in-progress) are not failures,
+  # so superseded pushes never alert. Gated to push-to-main so PR/feature-branch
+  # runs (and fork PRs, which never receive secrets) stay quiet.
+  #
+  # Sends agents@zacharykysar.com -> agents@zacharykysar.com via the SCOPED
+  # zds-ci-alert key (ses:SendEmail, FromAddress-locked). The
+  # ForwardEmailReceivedAtZacharyKysarDotCom forwarder routes agents@ to the S3
+  # agent-inbox (outbound-free, self-skip, echo-suppressed), so this alert is
+  # TERMINAL -- it cannot trigger another email (loop-safe; guard-84). jq + aws
+  # CLI are pre-installed on ubuntu-latest; no checkout needed.
+  alert-on-failure:
+    name: Alert agent inbox on CI failure
+    needs: verify
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send SES alert
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-2
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n --arg repo "$REPO" --arg branch "$BRANCH" --arg sha "$SHA" --arg actor "$ACTOR" --arg run "$RUN_URL" \
+            '{FromEmailAddress:"agents@zacharykysar.com",Destination:{ToAddresses:["agents@zacharykysar.com"]},Content:{Simple:{Subject:{Data:("[CI-FAIL] "+$repo+" @ "+$branch)},Body:{Text:{Data:("CI failed.\nrepo: "+$repo+"\nbranch: "+$branch+"\nsha: "+$sha+"\nactor: "+$actor+"\nrun: "+$run+"\n\nAutomated CI alert -- read-only notification. Do NOT reply by email; fix the build or file an Investigate goal.")}}}}}' > ci-alert.json
+          aws sesv2 send-email --cli-input-json file://ci-alert.json
