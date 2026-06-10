@@ -4,8 +4,12 @@ Values are resolved (highest precedence first) from explicit overrides, environm
 variables prefixed ``ZAKCODE_``, a local ``.env`` file, then defaults.
 
 Provider API keys are intentionally **not** modeled here: litellm reads them from their
-standard environment variables (e.g. ``OPENAI_API_KEY``). This keeps secrets out of our
-config surface — see ``docs/GUARDRAILS.md``.
+standard environment variables (e.g. ``OPENAI_API_KEY``, ``GROQ_API_KEY``). This keeps
+secrets out of our config surface — see ``docs/GUARDRAILS.md``. So that a key placed in
+the project ``.env`` actually reaches litellm, :func:`load_settings` first exports the
+local ``.env`` into the process environment (existing variables always win) — without
+that step pydantic-settings would extract only the ``ZAKCODE_*`` entries and silently
+ignore provider keys in the file.
 
 Note: the primary model field is named ``default_model`` (not ``model``) because
 pydantic reserves the bare name ``model``.
@@ -18,6 +22,7 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
+from dotenv import load_dotenv
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -288,7 +293,16 @@ class Settings(BaseSettings):
 
 
 def load_settings(**overrides: object) -> Settings:
-    """Load settings from env/.env, applying any explicit keyword overrides."""
+    """Load settings from env/.env, applying any explicit keyword overrides.
+
+    Exports the local ``.env`` (CWD-relative, matching pydantic-settings'
+    ``env_file``) into the process environment first, with ``override=False`` so a
+    variable already set in the real environment always wins. This is what lets
+    provider keys (``OPENAI_API_KEY``, ``GROQ_API_KEY``, …) live in the project
+    ``.env``: litellm reads them from ``os.environ``, never from our settings.
+    A missing ``.env`` is a silent no-op.
+    """
+    load_dotenv(".env", override=False)
     return Settings(**overrides)  # type: ignore[arg-type]
 
 
