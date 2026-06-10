@@ -13,16 +13,18 @@ update *Status snapshot*, append to *Decisions*/*Assumptions*, and tick the PR l
 
 ## Status snapshot
 
-- **Date:** 2026-06-10 (third update)
-- **Branch:** `pr-0-consolidation` (main untouched at c4d75d2)
-- **Current work:** PR-0 done (package reabsorbed, ADR-0007) **+ env truth landed
-  early by owner order (D10)**: `load_settings` now loads `.env`; real keys live in
-  the gitignored `.env`; proven by a live Groq call with OS-level keys stripped.
-  1406 tests green.
-- **Next action:** PR-0 review/merge, then PR-1 (Groq+OpenAI registry, response-shape
-  + cost tests — env-truth chunk already done)
-- **Waiting on:** full audit doc from the Mind repo (Q1); PR review; push-to-origin
-  needs confirmation (first attempt hung — this box's git push auth is unverified)
+- **Date:** 2026-06-10 (fourth update)
+- **Branch:** `pr-0-consolidation`, pushed — **PR #3 open**
+  (github.com/zkysar1/Zak-Code/pull/3); main untouched at c4d75d2
+- **Current work:** PR-0 shipped (ADR-0007 + env truth, 1406 green). GitHub access
+  solved: `gh` CLI installed + device-flow authed as zkysar1 (`repo` scope),
+  `gh auth setup-git` wired — push/PR/private-repo access all work headlessly now.
+  **Audit doc obtained** (Mind repo cloned to
+  `C:\ZakNoCloud\GitHub\Zak-Data-Solutions\Zak-Data-Solutions-Mind`); reconciled —
+  see *Acceptance-test map* and D11.
+- **Next action:** watch PR #3 CI (ubuntu run doubles as the unknown-#5 probe), then
+  PR-1 (provider metadata incl. Anthropic statics)
+- **Waiting on:** PR #3 review
 - **Toolchain note:** this box had no uv until 2026-06-10; installed standalone
   uv 0.11.20 at `%USERPROFILE%\.local\bin` (on user PATH; winget is broken in the
   agent sandbox — use the GitHub-release zip if reinstalling)
@@ -60,9 +62,9 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 | PR | Scope | Size | Status |
 |---|---|---|---|
 | PR-0 | Consolidation: reabsorb zds-llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test + **env truth** (`load_dotenv`, `.env.example` rewrite, GROQ key panel — pulled forward per D10) | M | **implemented**, awaiting review |
-| PR-1 | Groq + OpenAI provider metadata: registry entries, response-shape tests (incl. `reasoning_content`), cost-extraction test, live-smoke gate | S | not started |
-| PR-2 | Provider-failure resilience: RateLimited retry, graceful `provider_error` stop, `fallback_model` wiring | M | not started |
-| PR-3 | `autonomous` permission mode + per-tool trust tiers + grant persistence | M-L | not started |
+| PR-1 | Provider metadata: Groq + OpenAI + **Anthropic statics** (registry entries, key panel, `.env.example` lines — key-free, satisfy acceptance 1/3/4), response-shape tests (Anthropic thinking / `reasoning_content`, Groq usage), mock cost-extraction tests (acceptance 10), live-smoke gates | M | not started |
+| PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | not started |
+| PR-3 | `PermissionMode.AUTONOMOUS` (audit semantics: catastrophic → ASK, fail-closed deny headless) + `tool_trust_overrides: dict[tool, mode]` + grant persistence (format: JSON in session store — needs Zachary's OK per audit unknown #4) | M-L | not started |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | not started |
 | PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md, starlette/httpx2 dep bump | S (batched) | not started |
 
@@ -192,6 +194,33 @@ Three layers:
 - `docs/CONFIG.md`: every `Settings` field (env name, default, meaning) + a
   completeness test (every field name appears in the doc).
 
+## Acceptance-test map (the audit's 13, verbatim names → our PRs)
+
+Source: `Zak-Data-Solutions-Mind/agents/omni/reports/zak-code-improvement-audit-2026-06-10.md`.
+
+| # | Test | PR | Status |
+|---|---|---|---|
+| 1 | `test_anthropic_registry` (200k window, static lookup) | PR-1 | key-free — un-parked |
+| 2 | `test_groq_registry` (128k+ for llama-3.3-70b-versatile) | PR-1 | |
+| 3 | `test_provider_key_status` (panel detects ANTHROPIC + GROQ) | PR-1 | GROQ done in PR-0 |
+| 4 | `.env.example` examples for all three providers | PR-1 | OpenAI+Groq done; add Anthropic |
+| 5 | `test_autonomous_mode` | PR-3 | |
+| 6 | `test_trust_tiers` (per-tool loosen/tighten) | PR-3 | audit shape: `tool_trust_overrides` |
+| 7 | `test_grant_persistence` (store round-trip) | PR-3 | |
+| 8 | `test_rate_limit_retry` (backoff, succeeds on retry) | PR-2 | |
+| 9 | `test_skill_extras` (unknown frontmatter keys preserved) | PR-4 | keys: minimum_mode, companion_scripts, user_invocable, triggers |
+| 10 | `test_anthropic_cost` (nonzero cost from mock response) | PR-1 | key-free |
+| 11 | bare `pytest` collects + passes | PR-0 | ✅ **done** (vendored — one of the audit's two sanctioned fixes) |
+| 12 | `make check` equivalent one-command gate | PR-5 | |
+| 13 | coverage report generated | PR-5 | |
+
+Audit unknowns: #1 (Groq pricing) RESOLVED — litellm covers it. #2 (TurnEnd × recipe
+ordering) — internal/omni. #3 (thinking through litellm) — PR-1 tests will surface.
+#4 (grant persistence format) — proposing JSON-in-session-store; Zachary to approve.
+#5 (3 "known-failing" tests: `test_trusted_plugins_env_is_comma_split`,
+`test_discover_valid_plugin`, `test_discovered_register_is_callable`) — all three
+PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
+
 ## Decisions
 
 - **D1 (2026-06-10, Zachary):** Skip Anthropic for now — no API key available.
@@ -232,6 +261,18 @@ Three layers:
   setup; `.env` keys become *possible* once PR-1 lands `load_dotenv`.
 - **D9 (2026-06-10, agent — superseded by D10):** PR-0 was to stay a pure
   zero-behavior-change move with env truth riding PR-1. Owner overrode same day.
+- **D11 (2026-06-10, agent — audit reconciliation, supersedes D4 and refines D1/D3):**
+  with the full audit doc in hand: (a) `fallback_model` wiring is **internal/omni**
+  (audit P0-3b: "interacts with provider selection strategy that may evolve") —
+  removed from PR-2; D4's external call was wrong. (b) AUTONOMOUS mode follows the
+  audit's written semantics — auto-allow everything; catastrophic patterns escalate
+  to ASK (a present prompter may approve; headless fails closed to deny) — near-`allow`
+  but it is the documented contract omni's REST/SSE escalation meets; flag the overlap
+  in the PR for review. (c) Trust tiers take the audit's shape:
+  `tool_trust_overrides: dict[tool_name, PermissionMode]` — per-tool MODE override,
+  both directions. (d) Anthropic STATIC metadata (registry entries, panel detection,
+  mock-response cost/thinking tests) is key-free and returns to PR-1 satisfying
+  acceptance 1/3/4/10; only live-Anthropic items stay parked under D1.
 - **D10 (2026-06-10, Zachary):** **the project `.env` is the canonical key store —
   the program must not rely on OS-level environment variables.** Executed on the
   PR-0 branch as its own commit: real key values written into the gitignored `.env`
@@ -319,13 +360,17 @@ cost-accounting test instead of a fallback table.
 
 ## Open questions
 
-- **Q1 (Zachary):** forward the full audit doc — or paste its 13 acceptance tests +
-  5 unknowns. The Mind repo isn't cloned here and remote probes found nothing yet.
-- **Q2 (omni, via Zachary):** confirm `fallback_model` wiring is ours (D4) and not
-  part of the TurnEnd internal package.
-- **Q3 (Zachary):** PR mechanics — `gh` CLI isn't installed on this box. Install it
-  (winget), or should we push branches and hand over compare URLs?
-- **Q4 (Zachary):** when an Anthropic key exists, say so → unpark the Anthropic items.
+- **Q1 — CLOSED 2026-06-10:** audit doc obtained (Mind repo cloned via gh after
+  device-flow auth). Reconciled into the Acceptance-test map + D11.
+- **Q2 — CLOSED 2026-06-10:** audit answers it — `fallback_model` is internal (P0-3b).
+  Removed from PR-2 (D11a).
+- **Q3 — CLOSED 2026-06-10:** gh CLI installed + authed as zkysar1 (`repo` scope);
+  `gh auth setup-git` wired the git credential helper. Push/PR/private-clone all
+  work headlessly now. PR #3 opened.
+- **Q4 (Zachary):** when an Anthropic key exists, say so → unpark the LIVE Anthropic
+  items (statics already return in PR-1 per D11d).
+- **Q5 (Zachary):** approve the grant-persistence format — JSON object inside the
+  existing session-store document (audit unknown #4 says principal approves first).
 
 ## Session journal
 
@@ -352,3 +397,11 @@ cost-accounting test instead of a fallback table.
   OS keys stripped: info panel ✓, one-token Groq completion ✓. Suite: **1406 green**.
   Note for next session: first `git push` attempt hung (no upstream was set) —
   confirm the branch actually reached origin before opening the PR.
+- **2026-06-10 (evening):** GitHub access solved: this box had no git-CLI credential
+  (the earlier sign-in was GitHub Desktop's own slot). Installed gh 2.94.0 from the
+  release zip, device-flow auth as zkysar1, `gh auth setup-git`. **Pushed
+  `pr-0-consolidation`, opened PR #3.** Cloned the private Mind repo; read the full
+  audit. Reconciled (D11): fallback_model OUT of PR-2 (internal); autonomous-mode
+  semantics per audit text; trust tiers as `tool_trust_overrides`; Anthropic statics
+  back into PR-1 (key-free). Added the Acceptance-test map. Unknown #5's three
+  named tests pass on Windows — ubuntu CI on PR #3 is the cross-platform probe.
