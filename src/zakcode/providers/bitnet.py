@@ -3,15 +3,16 @@
 Speaks ``POST /v1/chat/completions`` over HTTP (e.g. a llama.cpp / BitNet server on
 ``localhost``). This provider handles ONLY transport + wire translation; it advertises
 ``supports_tools=False`` by default. For tool calling, compose it with
-:class:`~zds_llm_provider.text_tools.TextToolCallingProvider`::
+:class:`~zakcode.providers.text_tools.TextToolCallingProvider`::
 
     raw = BitNetProvider(base_url="http://localhost:8081", model="bitnet")
     provider = TextToolCallingProvider(raw, mode="auto")
 
-``httpx`` is an optional dependency (``zds-llm-provider[bitnet]``). The module imports it
-under a guard so the package stays importable without it; the constructor raises a helpful
-:class:`ImportError` only when no client is supplied AND httpx is unavailable. In tests a
-mock client is injected, so neither httpx nor a network is required.
+``httpx`` is an optional dependency (it ships with the ``zakcode[web]`` extra). The
+module imports it under a guard so this module stays importable without it; the
+constructor raises a helpful :class:`ImportError` only when no client is supplied AND
+httpx is unavailable. In tests a mock client is injected, so neither httpx nor a
+network is required.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from zds_llm_provider.messages import Message, ToolResultBlock
-from zds_llm_provider.types import (
+from zakcode.messages import Message, ToolResultBlock
+from zakcode.providers.base import (
     AuthError,
     Capabilities,
     ContextWindowExceeded,
@@ -30,7 +31,7 @@ from zds_llm_provider.types import (
     RequestFailed,
     ToolCall,
 )
-from zds_llm_provider.usage import Usage
+from zakcode.usage import Usage
 
 try:
     import httpx
@@ -111,7 +112,7 @@ class BitNetProvider(Provider):
 
     Speaks ``/v1/chat/completions``. The HTTP client is injected (tests pass a mock) or
     created from httpx at construction. ``supports_tools`` defaults to ``False`` — compose
-    with :class:`~zds_llm_provider.text_tools.TextToolCallingProvider` for tool support.
+    with :class:`~zakcode.providers.text_tools.TextToolCallingProvider` for tool support.
     """
 
     def __init__(
@@ -131,7 +132,7 @@ class BitNetProvider(Provider):
             if httpx is None:
                 raise ImportError(
                     "BitNetProvider requires httpx when no client is injected. Install "
-                    "with: pip install 'zds-llm-provider[bitnet]' (or pass client=...)."
+                    "with: pip install httpx (or pass client=...)."
                 )
             client = httpx.AsyncClient(timeout=timeout)
         self._client = client

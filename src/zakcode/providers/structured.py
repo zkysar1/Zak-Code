@@ -16,7 +16,7 @@ A small, dependency-light layer for asking a model for JSON and getting back a
   works in a minimal install.
 
 This module depends only on pydantic + the stdlib (+ optional ``jsonschema``) and the
-:class:`~zds_llm_provider.types.Provider` ABC; it imports no vendor/transport SDK, so any
+:class:`~zakcode.providers.base.Provider` ABC; it imports no vendor/transport SDK, so any
 provider or caller can reuse it.
 """
 
@@ -28,9 +28,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from zds_llm_provider.messages import Message
-from zds_llm_provider.types import Provider, ProviderError
-from zds_llm_provider.usage import Usage
+from zakcode.messages import Message
+from zakcode.providers.base import Provider, ProviderError
+from zakcode.usage import Usage
 
 # Optional: schema VALIDATION. Without ``jsonschema``, coerce_structured degrades to extraction.
 # Under TYPE_CHECKING mypy sees the real (typed) module — so its uses below need no per-line
@@ -250,4 +250,5 @@ __all__ = [
     "complete_structured",
     "extract_json",
     "make_response_format",
+    "schema_error",
 ]

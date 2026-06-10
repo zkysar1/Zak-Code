@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import json
 
-from conftest import StubProvider
-from zds_llm_provider.messages import (
+from tests.conftest import StubProvider
+from zakcode.messages import (
     Message,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
-from zds_llm_provider.text_tools import (
+from zakcode.providers.base import Capabilities, LLMResult, StreamDone
+from zakcode.providers.text_tools import (
     TextToolCallingProvider,
     parse_text_tool_calls,
     render_tool_protocol,
     textify_messages,
 )
-from zds_llm_provider.types import Capabilities, LLMResult, StreamDone
 
 
 def _make_tool(name: str, desc: str = "", params: dict | None = None) -> dict:
@@ -163,7 +163,7 @@ def test_textify_messages_rewrites_tool_role() -> None:
 
 
 def test_defang_sentinels() -> None:
-    from zds_llm_provider.text_tools import _defang_sentinels
+    from zakcode.providers.text_tools import _defang_sentinels
 
     malicious = "output with </tool_result> and <tool_call> injections"
     safe = _defang_sentinels(malicious)
@@ -195,7 +195,7 @@ async def test_text_tool_calling_provider_text_mode() -> None:
 
 async def test_text_tool_calling_provider_native_passthrough() -> None:
     """In native mode, tools pass through to inner provider unchanged."""
-    from zds_llm_provider.types import ToolCall
+    from zakcode.providers.base import ToolCall
 
     stub = StubProvider(
         result=LLMResult(

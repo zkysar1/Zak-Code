@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -173,3 +174,40 @@ def test_registry_definitions_filter() -> None:
     assert len(reg.definitions()) == 2
     only = reg.definitions(allowed=["say"])  # alias resolves to echo
     assert len(only) == 1 and only[0]["function"]["name"] == "echo"
+
+
+# ── vendor-agnostic import ban ───────────────────────────────────────────────
+# The boundary the in-repo zds-llm-provider package used to express as a package
+# split (see ADR-0005) is now enforced HERE, as a contract test: the engine stays
+# vendor-agnostic by construction, not by packaging.
+
+_SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "zakcode"
+
+#: The only modules allowed to import litellm: the litellm-backed provider and the
+#: capability registry's guarded best-effort metadata lookup.
+_LITELLM_ALLOWED = {
+    _SRC_ROOT / "providers" / "litellm_provider.py",
+    _SRC_ROOT / "providers" / "registry.py",
+}
+
+_VENDOR_IMPORT_RE = re.compile(
+    r"^\s*(?:import|from)\s+(litellm|openai|anthropic|groq|mistralai|cohere)\b",
+    re.MULTILINE,
+)
+
+
+def test_no_vendor_sdk_imports_outside_provider_layer() -> None:
+    """litellm may be imported only by its two named provider modules; no other
+    vendor SDK may be imported anywhere in the engine. Keeps the loop, tools, and
+    session vendor-agnostic by construction (CLAUDE.md rule 2 / GUARDRAILS)."""
+    violations: list[str] = []
+    for path in sorted(_SRC_ROOT.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for match in _VENDOR_IMPORT_RE.finditer(text):
+            if match.group(1) == "litellm" and path in _LITELLM_ALLOWED:
+                continue
+            rel = path.relative_to(_SRC_ROOT)
+            violations.append(f"{rel}: {match.group(0).strip()}")
+    assert not violations, "vendor SDK imported outside the provider layer:\n" + "\n".join(
+        violations
+    )

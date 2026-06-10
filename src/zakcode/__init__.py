@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # protocol drives tools reliably. So in ``auto`` mode these are routed to the text
 # protocol. Explicit ``tool_calling_mode="native"`` still forces native. This vendor
 # knowledge lives in the application layer, never in the vendor-agnostic
-# zds-llm-provider wrapper (which must stay free of any "ollama" special-casing).
+# text-tool wrapper (which must stay free of any "ollama" special-casing).
 _TEXT_TOOL_PROTOCOL_PREFIXES = frozenset({"ollama", "ollama_chat"})
 
 

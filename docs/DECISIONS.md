@@ -68,3 +68,28 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   docs. Process is defined in [`WORKFLOW.md`](WORKFLOW.md).
 - **Consequences:** Parallelism and rigor at scale; requires disciplined scoping and
   verification so parallel work stays coherent.
+
+
+## ADR-0007 — Reabsorb the provider package into the core (one src tree)
+
+- **Status:** Accepted (2026-06-10)
+- **Context:** Post-M11 extracted the provider contract into an in-repo editable package
+  (`packages/zds-llm-provider`, provider track "M-7/8/9") to make portability a packaging
+  fact. In practice zak-code was its only consumer (verified 2026-06-10: no other local
+  repo references it; never published to an index), and the split's costs were real:
+  four re-export shim modules, a second pyproject/mypy/pytest surface, the package's 92
+  tests collected by neither local pytest nor CI, and "where does X live?" confusion for
+  the owner. Owner asked for the lowest-cognitive-load structure.
+- **Decision:** Move the package's modules into the core where their shims already
+  pointed — `zakcode/messages.py`, `zakcode/usage.py`, and
+  `zakcode/providers/{base,text_tools,structured,bitnet,claude_code}.py` — merge its
+  tests into `tests/`, and delete `packages/`. The vendor-agnostic boundary is preserved
+  **by contract test instead of packaging**:
+  `tests/test_contracts.py::test_no_vendor_sdk_imports_outside_provider_layer` bans
+  litellm outside its two named provider modules and bans vendor SDKs everywhere else.
+- **Consequences:** One package, one test suite (1403 tests, all collected by default),
+  no path-dependency machinery, bare `pytest` works via `pythonpath`. `BitNetProvider`
+  (local OpenAI-compatible llama.cpp/BitNet servers) and `ClaudeCodeProvider` remain
+  fully supported as `zakcode.providers.*` modules. If an external consumer ever
+  materializes, re-extraction is mechanical — the modules stay pydantic-only by enforced
+  contract, so the boundary survives the merge.

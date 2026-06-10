@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter
 
-from conftest import StubProvider
-from zds_llm_provider.messages import Message
-from zds_llm_provider.types import (
+from tests.conftest import StubProvider
+from zakcode.messages import Message
+from zakcode.providers.base import (
     AuthError,
     Capabilities,
     ContextWindowExceeded,
@@ -23,7 +23,7 @@ from zds_llm_provider.types import (
     StreamUsage,
     ToolCall,
 )
-from zds_llm_provider.usage import Usage
+from zakcode.usage import Usage
 
 
 def test_toolcall_defaults() -> None:

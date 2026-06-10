@@ -20,16 +20,16 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from zds_llm_provider.messages import (
+from zakcode.messages import (
     Message,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
-from zds_llm_provider.text_tools import parse_text_tool_calls, render_tool_protocol
-from zds_llm_provider.types import Capabilities, LLMResult, Provider, RequestFailed
-from zds_llm_provider.usage import Usage
+from zakcode.providers.base import Capabilities, LLMResult, Provider, RequestFailed
+from zakcode.providers.text_tools import parse_text_tool_calls, render_tool_protocol
+from zakcode.usage import Usage
 
 # The bridge takes the fully-formatted prompt string and returns response text. The
 # caller (a Claude Code session) provides it at construction. System-prompt embedding is

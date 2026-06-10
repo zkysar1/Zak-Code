@@ -605,6 +605,8 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 > 1. **Vendor-agnostic provider package** (`packages/zds-llm-provider`, provider track
 >    "M-7/8/9") — the `Provider` ABC + the text tool-calling layer extracted into a
 >    pydantic-only, no-vendor-SDK package; adds `ClaudeCodeProvider` + `BitNetProvider`.
+>    *(Reabsorbed into `zakcode.providers` on 2026-06-10 — single consumer, double
+>    surface; the boundary is now a contract test. See ADR-0007.)*
 > 2. **Small-model reliability bundle** — protocol/template stop-sequences,
 >    single-tool-per-turn, an Ollama `num_ctx` lift with a matching capability window, and
 >    a cp1252-safe glyph set with ASCII fallbacks.

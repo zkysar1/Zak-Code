@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from zds_llm_provider.usage import Usage, UsageTracker
+from zakcode.usage import Usage, UsageTracker
 
 
 def test_usage_add() -> None:
