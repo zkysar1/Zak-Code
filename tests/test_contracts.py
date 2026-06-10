@@ -178,8 +178,11 @@ def test_registry_definitions_filter() -> None:
 
 # ── vendor-agnostic import ban ───────────────────────────────────────────────
 # The boundary the in-repo zds-llm-provider package used to express as a package
-# split (see ADR-0005) is now enforced HERE, as a contract test: the engine stays
+# split (see ADR-0007) is now enforced HERE, as a contract test: the engine stays
 # vendor-agnostic by construction, not by packaging.
+# Scope decision (review #3): only src/zakcode is scanned — tests/ may import or
+# mention vendor names freely (mock shapes, monkeypatch targets); the invariant
+# protects the shipped engine, not the test fixtures.
 
 _SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "zakcode"
 

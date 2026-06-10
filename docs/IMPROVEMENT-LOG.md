@@ -64,7 +64,7 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 | PR-0 | Consolidation: reabsorb zds-llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test + **env truth** (`load_dotenv`, `.env.example` rewrite, GROQ key panel — pulled forward per D10) | M | **implemented**, awaiting review |
 | PR-1 | Provider metadata: Groq + OpenAI + **Anthropic statics** (registry entries, key panel, `.env.example` lines — key-free, satisfy acceptance 1/3/4), response-shape tests (Anthropic thinking / `reasoning_content`, Groq usage), mock cost-extraction tests (acceptance 10), live-smoke gates | M | not started |
 | PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | not started |
-| PR-3 | `PermissionMode.AUTONOMOUS` (audit semantics: catastrophic → ASK, fail-closed deny headless) + `tool_trust_overrides: dict[tool, mode]` + grant persistence (format: JSON in session store — needs Zachary's OK per audit unknown #4) | M-L | not started |
+| PR-3 | `PermissionMode.AUTONOMOUS` (**omni ruling, D12**: dangerous-pattern match = deterministic hard DENY, never a prompt, attended or headless; structured tool-error + log) + `tool_trust_overrides: dict[tool, mode]` (**may not loosen the dangerous floor in autonomous**) + grant persistence (JSON in session doc; grants resolve ASK→ALLOW only, never override DENY; record `{tool, args_scope, mode_at_grant, timestamp}`; tighter-mode resume ignores looser-mode grants; Zachary's formal OK still pending — Q5) + **subprocess provider-key env scrub** (from PR #3 review; opt-out for scripts that need keys) | M-L | not started |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | not started |
 | PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md, starlette/httpx2 dep bump | S (batched) | not started |
 
@@ -273,6 +273,28 @@ PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
   both directions. (d) Anthropic STATIC metadata (registry entries, panel detection,
   mock-response cost/thinking tests) is key-free and returns to PR-1 satisfying
   acceptance 1/3/4/10; only live-Anthropic items stay parked under D1.
+- **D12 (2026-06-10, omni — PR #3 review rulings, all recorded verbatim-in-substance):**
+  (a) **AUTONOMOUS semantics: the sharper version wins** — a `DANGEROUS_PATTERNS`
+  match in autonomous mode is a deterministic hard DENY, never a prompt, with or
+  without a prompter; returned as a structured tool-error the model can adapt to,
+  and logged. The distinction vs `allow`: `allow`+prompter can interactively approve
+  a catastrophic command; `autonomous` never can. Two invariants: per-tool trust
+  overrides cannot loosen the dangerous floor in autonomous mode; persisted grants
+  resolve ASK→ALLOW only and never override a DENY. omni corrected the audit doc to
+  match; supersedes D11(b). (b) **Grant persistence**: JSON-in-session-doc blessed
+  technically (pydantic-default degradation fail-safe — older builds drop grants →
+  re-ask, never looser; document it); record shape
+  `{tool, args_scope, mode_at_grant, timestamp}`; a session resumed under a tighter
+  mode does not honor looser-mode grants. Zachary's formal OK still pending (Q5).
+  (c) **Sequencing**: our PR-2 lands first; omni starts internal TurnEnd work after
+  it merges. (d) **Unknown #5 fully closed**: `_fails.txt` was a local gitignored
+  scratch dump, never repo-tracked; omni corrected the audit, deleted the file; all
+  three tests pass everywhere.
+- **D13 (2026-06-10, agent — PR #3 scope question resolved by revert):**
+  `.env.example`'s uncommented default model reverted to `ollama_chat/llama3.1`
+  (matches the code default; fresh-install posture unchanged). Flipping the
+  fresh-install default to a cloud model is a product call for Zachary (Q6) — one
+  line + a D-entry whenever he wants it. This box's own `.env` keeps Groq primary.
 - **D10 (2026-06-10, Zachary):** **the project `.env` is the canonical key store —
   the program must not rely on OS-level environment variables.** Executed on the
   PR-0 branch as its own commit: real key values written into the gitignored `.env`
@@ -370,7 +392,11 @@ cost-accounting test instead of a fallback table.
 - **Q4 (Zachary):** when an Anthropic key exists, say so → unpark the LIVE Anthropic
   items (statics already return in PR-1 per D11d).
 - **Q5 (Zachary):** approve the grant-persistence format — JSON object inside the
-  existing session-store document (audit unknown #4 says principal approves first).
+  existing session-store document (audit unknown #4 says principal approves first;
+  omni has blessed it technically with the D12(b) constraints).
+- **Q6 (Zachary):** should the FRESH-INSTALL default model flip from local
+  (`ollama_chat/llama3.1`) to a cloud model (e.g. `groq/llama-3.3-70b-versatile`)?
+  Reverted to local for now (D13) — say the word and it's a one-line change.
 
 ## Session journal
 
@@ -397,6 +423,16 @@ cost-accounting test instead of a fallback table.
   OS keys stripped: info panel ✓, one-token Groq completion ✓. Suite: **1406 green**.
   Note for next session: first `git push` attempt hung (no upstream was set) —
   confirm the branch actually reached origin before opening the PR.
+- **2026-06-10 (PR #3 review):** omni's verdict: **LGTM pending two amendments** —
+  every premise independently reproduced (ADR-0007 evidence, move correctness, test
+  arithmetic, Groq pricing to the digit). Amendments landed in this commit:
+  RISKS.md row for `.env` keys reaching agent-spawned subprocesses (+ scrub as a
+  PR-3 ladder item), ADR-0005→0007 comment fix in the contract test (+ scope note:
+  tests/ deliberately unscanned). Scope question resolved by reverting
+  `.env.example`'s default model to local (D13/Q6). Rulings recorded as D12 —
+  headline: AUTONOMOUS = deterministic hard-deny on dangerous patterns (the sharper
+  design wins), PR-2 lands before omni's TurnEnd work, unknown #5 fully closed
+  (`_fails.txt` was local gitignored scratch).
 - **2026-06-10 (evening):** GitHub access solved: this box had no git-CLI credential
   (the earlier sign-in was GitHub Desktop's own slot). Installed gh 2.94.0 from the
   release zip, device-flow auth as zkysar1, `gh auth setup-git`. **Pushed
