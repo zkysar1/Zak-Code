@@ -44,6 +44,73 @@ _CAPABILITIES: dict[str, Capabilities] = {
         context_window=16_385,
         max_output=4_096,
     ),
+    # --- Anthropic (Claude) ---
+    # Context windows deliberately pin the STANDARD (no-beta-header) 200k window:
+    # litellm's metadata DB advertises the 1M long-context beta for the 4.x family,
+    # but this runtime sends no beta header — budgeting against 1M would let the
+    # compactor fire too late and overflow the real request limit. A conservative
+    # pin costs only earlier compaction. (Audit P0-1a; acceptance: test_anthropic_registry.)
+    "claude-opus-4-8": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=200_000,
+        max_output=128_000,
+    ),
+    "claude-sonnet-4-6": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=200_000,
+        max_output=64_000,
+    ),
+    "claude-sonnet-4-20250514": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=200_000,
+        max_output=64_000,
+    ),
+    "claude-haiku-4-5": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=200_000,
+        max_output=64_000,
+    ),
+    # --- Groq (hosted) ---
+    # Keyed WITH the ``groq/`` prefix (exact match fires before prefix-stripping in
+    # ``_lookup_key``) because the bare names are Groq catalog ids, not portable model
+    # names. Values mirror litellm's pricing/metadata DB, probed 2026-06-10, so they
+    # hold offline. (Audit P0-1a; acceptance: test_groq_registry.)
+    "groq/llama-3.3-70b-versatile": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=128_000,
+        max_output=32_768,
+    ),
+    "groq/llama-3.1-8b-instant": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=128_000,
+        max_output=8_192,
+    ),
+    "groq/openai/gpt-oss-120b": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=131_072,
+        max_output=32_766,
+    ),
+    "groq/qwen/qwen3-32b": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=131_000,
+        max_output=131_000,
+    ),
     # --- Ollama (local) ---
     "ollama_chat/llama3.1": Capabilities(
         supports_tools=True,

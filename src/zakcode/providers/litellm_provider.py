@@ -325,11 +325,18 @@ class LiteLLMProvider(Provider):
             finish_reason = str(fr) if fr is not None else None
 
         text = ""
+        thinking = ""
         tool_calls: list[ToolCall] = []
         if message is not None:
             content = _get(message, "content")
             if isinstance(content, str):
                 text = content
+            # litellm normalizes provider-side reasoning (Anthropic extended thinking,
+            # Groq-hosted reasoning models) onto ``message.reasoning_content``. Capture
+            # it separately so it never pollutes the assistant text. (audit P0-1d)
+            reasoning = _get(message, "reasoning_content")
+            if isinstance(reasoning, str):
+                thinking = reasoning
             tool_calls = cls._parse_tool_calls(_get(message, "tool_calls"))
 
         raw: dict[str, Any] | None = None
@@ -344,6 +351,7 @@ class LiteLLMProvider(Provider):
 
         return LLMResult(
             text=text,
+            thinking=thinking,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=cls._extract_usage(response),
