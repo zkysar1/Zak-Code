@@ -13,13 +13,16 @@ update *Status snapshot*, append to *Decisions*/*Assumptions*, and tick the PR l
 
 ## Status snapshot
 
-- **Date:** 2026-06-10 (second update)
-- **Branch:** `pr-0-consolidation` (PR-0 implemented; main untouched at c4d75d2)
-- **Current work:** PR-0 done — provider package reabsorbed (ADR-0007), 1403 tests
-  green, bare-pytest proven. Keys found in Windows env (User+Machine scope) and
-  live-validated; clean `.env` written (Groq primary, OpenAI fallback).
-- **Next action:** push PR-0 for review, then PR-1 (Groq + OpenAI metadata + env truth)
-- **Waiting on:** full audit doc from the Mind repo (Q1); PR review
+- **Date:** 2026-06-10 (third update)
+- **Branch:** `pr-0-consolidation` (main untouched at c4d75d2)
+- **Current work:** PR-0 done (package reabsorbed, ADR-0007) **+ env truth landed
+  early by owner order (D10)**: `load_settings` now loads `.env`; real keys live in
+  the gitignored `.env`; proven by a live Groq call with OS-level keys stripped.
+  1406 tests green.
+- **Next action:** PR-0 review/merge, then PR-1 (Groq+OpenAI registry, response-shape
+  + cost tests — env-truth chunk already done)
+- **Waiting on:** full audit doc from the Mind repo (Q1); PR review; push-to-origin
+  needs confirmation (first attempt hung — this box's git push auth is unverified)
 - **Toolchain note:** this box had no uv until 2026-06-10; installed standalone
   uv 0.11.20 at `%USERPROFILE%\.local\bin` (on user PATH; winget is broken in the
   agent sandbox — use the GitHub-release zip if reinstalling)
@@ -56,8 +59,8 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 
 | PR | Scope | Size | Status |
 |---|---|---|---|
-| PR-0 | Consolidation: reabsorb zds-llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test | M | **implemented**, awaiting review |
-| PR-1 | Groq + OpenAI provider metadata (registry, CLI key panel, response-shape tests, cost) **+ env truth** (`load_dotenv` in `load_settings`, `.env.example` rewrite) | S-M | not started |
+| PR-0 | Consolidation: reabsorb zds-llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test + **env truth** (`load_dotenv`, `.env.example` rewrite, GROQ key panel — pulled forward per D10) | M | **implemented**, awaiting review |
+| PR-1 | Groq + OpenAI provider metadata: registry entries, response-shape tests (incl. `reasoning_content`), cost-extraction test, live-smoke gate | S | not started |
 | PR-2 | Provider-failure resilience: RateLimited retry, graceful `provider_error` stop, `fallback_model` wiring | M | not started |
 | PR-3 | `autonomous` permission mode + per-tool trust tiers + grant persistence | M-L | not started |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | not started |
@@ -227,9 +230,19 @@ Three layers:
   (gitignored) written with `ZAKCODE_*` settings only: `groq/llama-3.3-70b-versatile`
   primary, `openai/gpt-4o-mini` fallback, mode `ask`. Keys-in-env is the canonical
   setup; `.env` keys become *possible* once PR-1 lands `load_dotenv`.
-- **D9 (2026-06-10, agent):** PR-0 stays a **pure, zero-behavior-change move** — the
-  `load_dotenv` behavior fix and `.env.example` rewrite ride PR-1 instead, so the
-  consolidation diff is provable by the unchanged test suite alone.
+- **D9 (2026-06-10, agent — superseded by D10):** PR-0 was to stay a pure
+  zero-behavior-change move with env truth riding PR-1. Owner overrode same day.
+- **D10 (2026-06-10, Zachary):** **the project `.env` is the canonical key store —
+  the program must not rely on OS-level environment variables.** Executed on the
+  PR-0 branch as its own commit: real key values written into the gitignored `.env`
+  (never logged/committed), `load_settings()` now runs `load_dotenv(".env",
+  override=False)` (real env still wins when present; missing file is a no-op),
+  `.env.example` rewritten as the full documented option surface, `zakcode info`
+  panel learns `GROQ_API_KEY`. Proven end-to-end: with OS-level keys stripped from
+  the child environment, `zakcode info` reports both keys present and a live
+  one-token Groq completion succeeds from `.env` alone. Supersedes D8's
+  keys-in-OS-env framing (still true that env vars win if set; they're just no
+  longer required).
 
 ## Assumptions
 
@@ -333,3 +346,9 @@ cost-accounting test instead of a fallback table.
   tests merged (1403 green), vendor-SDK import-ban contract test added, docs updated
   (ADR-0007 / ARCHITECTURE inventory / ROADMAP note). Bare-pytest proof: suite passes
   with zakcode uninstalled.
+- **2026-06-10 (latest):** Owner: no reliance on Windows env vars (D10). Real keys
+  moved into `.env`; `load_dotenv` landed in `load_settings()` + 3 tests; `.env.example`
+  rewritten as the option reference; GROQ key in the info panel. Live proof with
+  OS keys stripped: info panel ✓, one-token Groq completion ✓. Suite: **1406 green**.
+  Note for next session: first `git push` attempt hung (no upstream was set) —
+  confirm the branch actually reached origin before opening the PR.
