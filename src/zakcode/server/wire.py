@@ -98,6 +98,10 @@ class ChatResponse(BaseModel):
     cost_usd: float = 0.0
     stop_reason: str = "completed"
     iterations: int = 0
+    #: Mirrors ``TurnResult.error`` (secret-redacted provider-failure detail when
+    #: ``stop_reason == "provider_error"``; empty otherwise) so a REST consumer can
+    #: tell a rate-limit from an auth failure without reading server logs.
+    error: str = ""
 
     @classmethod
     def from_turn(cls, session_id: str, result: TurnResult) -> ChatResponse:
@@ -111,6 +115,7 @@ class ChatResponse(BaseModel):
             cost_usd=result.usage.cost_usd,
             stop_reason=result.stop_reason,
             iterations=result.iterations,
+            error=result.error,
         )
 
 

@@ -52,6 +52,12 @@ class SkillFrontmatter(BaseModel):
     #: Optional tool allow-list (advisory; surfaced to the operator/model).
     allowed_tools: list[str] = Field(default_factory=list)
     version: str = "0.0.0"
+    #: Every frontmatter key this parser does not type explicitly, PRESERVED verbatim
+    #: (audit P1-2): Mind skills carry cognitive metadata — ``minimum_mode``,
+    #: ``companion_scripts``, ``user_invocable``, ``triggers``, … — that must survive
+    #: parsing and stay queryable by the host. Bracketed values arrive as lists,
+    #: everything else as the (de-quoted) string. Keys are normalized ``-`` → ``_``.
+    extras: dict[str, str | list[str]] = Field(default_factory=dict)
 
 
 def _coerce_list(value: str) -> list[str]:
@@ -66,9 +72,11 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
     """Split a ``SKILL.md`` into ``(frontmatter, body)``.
 
     The frontmatter is the block between the leading ``---`` fence and the next
-    ``---`` line; the body is everything after. Only ``name``/``description``/
-    ``version``/``allowed-tools`` (alias ``allowed_tools``) are recognized; unknown
-    keys are ignored. Raises :class:`SkillError` if the fence or ``name`` is missing.
+    ``---`` line; the body is everything after. ``name``/``description``/``version``/
+    ``allowed-tools`` (alias ``allowed_tools``) get typed fields; every OTHER key is
+    preserved verbatim in :attr:`SkillFrontmatter.extras` (audit P1-2 — Mind skills'
+    cognitive metadata must survive). Raises :class:`SkillError` if the fence or
+    ``name`` is missing.
     """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -82,6 +90,7 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
         raise SkillError("unterminated frontmatter (no closing '---')")
 
     fields: dict[str, object] = {}
+    extras: dict[str, str | list[str]] = {}
     for raw in lines[1:end]:
         line = raw.strip()
         if not line or line.startswith("#") or ":" not in line:
@@ -93,11 +102,13 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
             fields[key] = _coerce_list(value)
         elif key in ("name", "description", "version"):
             fields[key] = value.strip("\"'")
+        elif key:
+            extras[key] = _coerce_list(value) if value.startswith("[") else value.strip("\"'")
 
     if "name" not in fields or not fields["name"]:
         raise SkillError("frontmatter is missing a 'name'")
     body = "\n".join(lines[end + 1 :]).strip()
-    return SkillFrontmatter(**fields), body  # type: ignore[arg-type]
+    return SkillFrontmatter(**fields, extras=extras), body  # type: ignore[arg-type]
 
 
 class Skill:
@@ -251,7 +262,11 @@ def default_skill_dirs(workspace_root: str | Path) -> list[Path]:
 
 
 def _serialize_frontmatter(
-    name: str, description: str, allowed_tools: list[str] | None, version: str
+    name: str,
+    description: str,
+    allowed_tools: list[str] | None,
+    version: str,
+    extras: dict[str, str | list[str]] | None = None,
 ) -> str:
     """Render a ``SKILL.md`` frontmatter block the project parser round-trips."""
     lines = ["---", f"name: {name}"]
@@ -263,6 +278,15 @@ def _serialize_frontmatter(
     if allowed_tools:
         lines.append("allowed-tools: [" + ", ".join(allowed_tools) + "]")
     lines.append(f"version: {version}")
+    # Extras (audit P1-2) round-trip after the typed fields, in insertion order. A
+    # list renders in the bracketed form _coerce_list parses back; values are kept
+    # to one physical line for the same line-based-parser reason as description.
+    for key, value in (extras or {}).items():
+        if isinstance(value, list):
+            lines.append(f"{key}: [" + ", ".join(str(v) for v in value) + "]")
+        else:
+            single = re.sub(r"\s*[\r\n]+\s*", " ", str(value).strip())
+            lines.append(f"{key}: {single}")
     lines.append("---")
     return "\n".join(lines)
 
@@ -275,6 +299,7 @@ def save_skill(
     skills_dir: str | Path,
     allowed_tools: list[str] | None = None,
     version: str = "0.0.0",
+    extras: dict[str, str | list[str]] | None = None,
     overwrite: bool = False,
 ) -> Path:
     """Author a ``SKILL.md`` under ``skills_dir`` and return its path.
@@ -307,7 +332,7 @@ def save_skill(
     if md.exists() and not overwrite:
         raise SkillError(f"skill {name!r} already exists at {md} (pass overwrite=True to replace)")
     skill_dir.mkdir(parents=True, exist_ok=True)
-    frontmatter = _serialize_frontmatter(name, description, allowed_tools, version)
+    frontmatter = _serialize_frontmatter(name, description, allowed_tools, version, extras)
     md.write_text(f"{frontmatter}\n{body.strip()}\n", encoding="utf-8")
     return md
 

@@ -98,6 +98,7 @@ class BashTool(Tool):
                 cwd=str(ctx.workspace_root),
                 timeout=timeout,
                 extra_env=ctx.egress_env,
+                drop_env=ctx.scrub_env,
             )
         except CommandTimeout:
             return ToolResult.error(

@@ -13,12 +13,21 @@ concurrency:
 
 jobs:
   verify:
-    name: lint · type · test (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: lint · type · test (py${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Job-level ceiling (matters most for the Windows cell, which cannot use the
+    # GNU `timeout` session watchdog below); per-test bound is pytest-timeout.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        # One Windows cell (audit P2-4): the dev box is Windows and the 2026-06-08
+        # hang incident was ubuntu-only — cross-platform signal matters both ways.
+        include:
+          - os: windows-latest
+            python-version: "3.11"
     steps:
       - uses: actions/checkout@v6
 
@@ -44,7 +53,8 @@ jobs:
       - name: Mypy (type check)
         run: uv run --no-sync mypy
 
-      - name: Pytest
+      - name: Pytest (Linux — session watchdog + coverage)
+        if: runner.os == 'Linux'
         # Session-level safety bound: PYTHONFAULTHANDLER + `timeout -s ABRT` make
         # any future hang fail in minutes with an all-thread traceback instead of
         # stalling silently to the runner ceiling (the failure class this PR fixes).
@@ -52,7 +62,23 @@ jobs:
         # runs in ~90s, so the 600s bound is pure headroom.
         env:
           PYTHONFAULTHANDLER: "1"
-        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q
+        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q --cov=zakcode --cov-report=xml --cov-report=term
+
+      - name: Pytest (Windows)
+        if: runner.os == 'Windows'
+        # GNU `timeout` does not exist here; the job-level timeout-minutes is the
+        # session bound and pytest-timeout (thread method) the per-test bound.
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync pytest -q
+
+      - name: Upload coverage report
+        # One cell is enough for the artifact (audit P2-1; acceptance 13).
+        if: runner.os == 'Linux' && matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
 
   # Single alert job that runs ONCE after the whole matrix (needs: verify),
   # not once per py-version cell. `failure()` here is true iff any verify cell

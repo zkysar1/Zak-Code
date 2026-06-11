@@ -13,18 +13,20 @@ update *Status snapshot*, append to *Decisions*/*Assumptions*, and tick the PR l
 
 ## Status snapshot
 
-- **Date:** 2026-06-10 (fourth update)
-- **Branch:** `pr-0-consolidation`, pushed — **PR #3 open**
-  (github.com/zkysar1/Zak-Code/pull/3); main untouched at c4d75d2
-- **Current work:** PR-0 shipped (ADR-0007 + env truth, 1406 green). GitHub access
-  solved: `gh` CLI installed + device-flow authed as zkysar1 (`repo` scope),
-  `gh auth setup-git` wired — push/PR/private-repo access all work headlessly now.
-  **Audit doc obtained** (Mind repo cloned to
-  `C:\ZakNoCloud\GitHub\Zak-Data-Solutions\Zak-Data-Solutions-Mind`); reconciled —
-  see *Acceptance-test map* and D11.
-- **Next action:** watch PR #3 CI (ubuntu run doubles as the unknown-#5 probe), then
-  PR-1 (provider metadata incl. Anthropic statics)
-- **Waiting on:** PR #3 review
+- **Date:** 2026-06-10 (final update — ladder complete)
+- **State:** the FULL external work package is implemented, fresh-eyes-reviewed per
+  phase, and open as a stacked PR chain: **#3** (consolidation + env truth, omni
+  LGTM'd + amendments landed) → **#4** (tri-provider metadata) → **#5** (provider
+  resilience) → **#6** (autonomous permissions) → **#7** (skill extras + logging) →
+  **#8** (tooling). Merge in order; GitHub auto-retargets each as its base merges.
+  Suite: **1453 passed**; `uv run poe check` green end to end.
+- **All 13 audit acceptance criteria implemented** (see map below — every named
+  `-k` selector passes by name; 4 and 11-13 hold by construction/tests).
+- **One pending owner action:** pushing the P2-4 CI change (windows cell +
+  coverage artifact, local commit on `pr-5-tooling`) needs the `workflow` OAuth
+  scope — agent correctly cannot self-grant; Zachary runs
+  `gh auth refresh -h github.com -s workflow` (one device code), then `git push`.
+- **Waiting on:** PR reviews (omni/Zachary); the workflow-scope grant
 - **Toolchain note:** this box had no uv until 2026-06-10; installed standalone
   uv 0.11.20 at `%USERPROFILE%\.local\bin` (on user PATH; winget is broken in the
   agent sandbox — use the GitHub-release zip if reinstalling)
@@ -63,10 +65,11 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 |---|---|---|---|
 | PR-0 | Consolidation: reabsorb zds-llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test + **env truth** (`load_dotenv`, `.env.example` rewrite, GROQ key panel — pulled forward per D10) | M | **implemented**, awaiting review |
 | PR-1 | Provider metadata: Groq + OpenAI + **Anthropic statics** (registry entries, key panel, `.env.example` lines — key-free, satisfy acceptance 1/3/4), response-shape tests (Anthropic thinking / `reasoning_content`, Groq usage), mock cost-extraction tests (acceptance 10) | M | **implemented** (branch `pr-1-provider-metadata`, stacked on PR-0) |
-| PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | not started |
-| PR-3 | `PermissionMode.AUTONOMOUS` (**omni ruling, D12**: dangerous-pattern match = deterministic hard DENY, never a prompt, attended or headless; structured tool-error + log) + `tool_trust_overrides: dict[tool, mode]` (**may not loosen the dangerous floor in autonomous**) + grant persistence (JSON in session doc; grants resolve ASK→ALLOW only, never override DENY; record `{tool, args_scope, mode_at_grant, timestamp}`; tighter-mode resume ignores looser-mode grants; Zachary's formal OK still pending — Q5) + **subprocess provider-key env scrub** (from PR #3 review; opt-out for scripts that need keys) | M-L | not started |
-| PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | not started |
-| PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md, starlette/httpx2 dep bump | S (batched) | not started |
+| PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | **implemented + fresh-eyes reviewed** (PR #5; review fixes in `8f8c245`: streaming refund symmetry, `error` on AgentDone/ChatResponse, per-attempt accumulators, retry-layering docs) | 
+| PR-3 | `PermissionMode.AUTONOMOUS` (D12 hard-deny semantics) + `tool_trust_overrides` + grant persistence (Q5 approved) + subprocess provider-key env scrub w/ opt-out | M-L | **implemented** (branch `pr-3-autonomous-permissions`; 13 new tests incl. acceptance names `test_autonomous_mode` / `test_trust_tiers` / `test_grant_persistence`; 1442 green). Implementation notes: effective-mode = per-tool override else session mode; autonomous (session OR per-tool) → dangerous = hard DENY and confirm_tools fail closed; grants re-decide so they can never override a static DENY; restore filters by `_MODE_LOOSENESS` rank (deny grants always kept); scrub list = `secrets.provider_key_env_names` (exact names + `*_API_KEY` suffix), applied LAST in `_proc.run_capturing` via `ToolContext.scrub_env`; RISKS row → Mitigating |
+| PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | **implemented** (branch `pr-4-skills-logging`; acceptance 9 `test_skill_extras` passes by name; extras round-trip through `save_skill`; logging = targeted not exhaustive (D16): registry.execute traceback (the biggest silent swallow), permission denials w/ mode, loop iteration/turn-end lines, provider call latency+tokens+cost at debug — never message contents; 1450 green) |
+| PR-6 | **PKG-AUTO** (omni's spec, 2026-06-10; Q6 resolution): `default_model: "auto"` sentinel — startup detection (cheap read-only probes: `/api/tags`, `/v1/models`; never a chat call) + cached, re-probed on failure; resolution = local if viable, else first viable external per configurable preference list (default groq → openai → anthropic), nothing viable → loud startup failure with key-panel diagnosis; resolution logged + in info panel with reason; runtime re-resolution (once per turn) on non-rate-limit ProviderError before the provider_error stop; **fallback_model RELEASED to external** (supersedes D11a) as the explicit-config override of the auto chain; resolver architected as a pluggable interface `(task category, capabilities) → model` with v1 = availability only — Zachary's "zakpick" vision (deep-think/quick-classify/embeddings/planner/coder/writer routing) must land later without API breakage; mocked-detection acceptance matrix + mid-session-fallback + explicit-bypass tests; consider cost-ceiling config; rider: quiet litellm botocore import warnings deliberately | M-L | not started (next after stack merges) |
+| PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md | S (batched) | **implemented** (branch `pr-5-tooling`): `poe check` one-command gate (acceptance 12), `poe cov` + CI coverage artifact (acceptance 13), `test_version_sync` (P2-2), windows-latest 3.11 CI cell with job-level timeout (GNU `timeout` absent there — split pytest steps), `docs/CONFIG.md` + BOTH-direction completeness tests (fields↔doc), CLAUDE.md gains the one-command gate. **Deferred:** the starlette/httpx2 testclient deprecation warning (test-only, harmless; blind dep churn in the last phase loses) — D17. 1453 green |
 
 Sequencing: PR-0 → PR-1 → PR-2 → PR-3 → PR-4 → PR-5. PR-1/2/3 are file-disjoint
 enough to overlap if needed (registry+cli / loop+provider / permissions+config+session).
@@ -290,6 +293,57 @@ PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
   it merges. (d) **Unknown #5 fully closed**: `_fails.txt` was a local gitignored
   scratch dump, never repo-tracked; omni corrected the audit, deleted the file; all
   three tests pass everywhere.
+- **D14 (2026-06-10, Zachary):** blanket approval of all standing recommendations
+  ("fully approved") — closes **Q5**: grant persistence as a JSON object in the
+  session document is formally approved (with omni's D12(b) constraints). Also a
+  standing goal: complete the whole ladder autonomously, fresh-eyes review between
+  phases, agent makes long-term strategic decisions.
+- **D15 (2026-06-10, agent — PR-2 design):** retry ONLY `RateLimited` (waiting is the
+  documented remedy for a 429; retrying auth/context/generic failures wastes spend and
+  masks bugs); backoff = `retry_after` when given else `1s·2^(attempt-1)`, clamped to
+  `[0, 30s]` so a hostile Retry-After can't stall a turn; **mid-stream failures are
+  never retried** (deltas already reached the client — a retry would duplicate them);
+  partial streamed text of a failed turn is NOT persisted (session stays at the last
+  message boundary); `TurnResult.error` carries the redacted detail; streaming
+  surfaces failure as `AgentStatus` (AgentDone schema unchanged — client contract).
+- **D18 (2026-06-10, omni stack review + restack):** verdict clean — zero
+  blocking/major across #4–#8; #6 security core independently attacked and held.
+  Mechanical restack onto main executed (PR #3's squash made the old base
+  unreachable for clean merges); all five branches rebased + force-pushed. All
+  nine minors folded into their home PRs: (1) `auto_allows` now mirrors
+  authorize's grant re-decide; (2) `provider_key_env_names` exported; (3) AWS
+  creds decided **keep-narrow** — the scrub targets model-provider keys whose env
+  presence is zakcode's own doing; AWS creds are operator-managed workflow
+  credentials, agent-run `aws` CLI is first-class here, and the opt-out is global
+  (rationale in the docstring); (4) opus-4-8 `max_output` pinned to the no-header
+  64k; (5) qwen3-32b `max_output` pinned to Groq-documented 40,960 (litellm DB
+  conflates it with the window — re-probed, still 131k/131k); (6) streaming
+  reasoning-drop documented as deliberate (no StreamThinkingDelta yet); (7) refund
+  comment states the real invariant (partial output discarded); (8) mid-stream
+  refund test added; (9) save_skill boolean named. Suite: **1455 green** at tip.
+- **D19 (2026-06-10, omni — Q6 resolved → PKG-AUTO):** Zachary's Q6 answer became
+  the next external package (see PR-6 ladder row for the full spec). Two contract
+  points to honor: **fallback_model is now external** (omni released P0-3b — wire
+  it as the explicit override of the auto chain; supersedes D11a), and the
+  resolver must be a pluggable interface so "zakpick" (task-category model
+  routing) lands later without API breakage. Sequencing: restack → omni merges
+  the stack → PKG-AUTO starts → omni starts the internal TurnEnd seam post-#5.
+- **D16 (2026-06-10, agent — PR-4 logging scope):** the audit's P1-5 names "67 bare
+  except handlers"; instrumenting all 67 mechanically would add noise without value.
+  Delivered the TARGETED set instead: `registry.execute`'s wrapped tool exceptions
+  (the largest silent swallow — operator now gets the traceback while the model
+  still sees the recoverable error), permission denials (warning, with mode +
+  reason — also satisfies D12's "log the autonomous hard-deny"), loop iteration /
+  turn-end lines (debug/info), and provider call accounting (model, latency, token
+  counts, cost — message contents never logged). The remaining handlers are
+  best-effort-by-design paths (hooks, compaction, lessons) that already log.
+- **D17 (2026-06-10, agent — PR-5 scope):** task runner = **poethepoet** (Make is
+  hostile on Windows — the primary dev box; `just` adds a non-Python install; poe
+  rides the existing uv dev group). The starlette/httpx2 testclient deprecation
+  warning is DEFERRED: it is test-only and harmless, and a blind dependency bump in
+  the final phase risks more than it fixes — revisit when the server deps are next
+  touched. CI coverage uploads from one cell (linux/3.11) — an artifact per cell
+  adds noise, not signal.
 - **D13 (2026-06-10, agent — PR #3 scope question resolved by revert):**
   `.env.example`'s uncommented default model reverted to `ollama_chat/llama3.1`
   (matches the code default; fresh-install posture unchanged). Flipping the
@@ -391,9 +445,8 @@ cost-accounting test instead of a fallback table.
   work headlessly now. PR #3 opened.
 - **Q4 (Zachary):** when an Anthropic key exists, say so → unpark the LIVE Anthropic
   items (statics already return in PR-1 per D11d).
-- **Q5 (Zachary):** approve the grant-persistence format — JSON object inside the
-  existing session-store document (audit unknown #4 says principal approves first;
-  omni has blessed it technically with the D12(b) constraints).
+- **Q5 — CLOSED 2026-06-10 (D14):** Zachary approved the grant-persistence format
+  (JSON in the session document, with omni's D12(b) constraints).
 - **Q6 (Zachary):** should the FRESH-INSTALL default model flip from local
   (`ollama_chat/llama3.1`) to a cloud model (e.g. `groq/llama-3.3-70b-versatile`)?
   Reverted to local for now (D13) — say the word and it's a one-line change.
@@ -423,6 +476,25 @@ cost-accounting test instead of a fallback table.
   OS keys stripped: info panel ✓, one-token Groq completion ✓. Suite: **1406 green**.
   Note for next session: first `git push` attempt hung (no upstream was set) —
   confirm the branch actually reached origin before opening the PR.
+- **2026-06-10 (ladder complete):** PR-3 implemented + reviewed (4-angle incl.
+  security bypass hunter: zero bypasses; fixes: restore dedup, doc truth, drift
+  guards — `1445` green). PR-4 implemented + reviewed (fixes: save_skill tool
+  extras passthrough, library NullHandler so unconfigured CLIs see no stderr spam —
+  `1450` green). PR-5 implemented (`poe check`/`poe cov`, version-sync test,
+  CONFIG.md with two-direction completeness tests — `1453` green); its P2-4 CI
+  commit is LOCAL-ONLY pending the `workflow` OAuth scope (the auto-mode
+  classifier rightly blocked agent self-escalation; owner grants it). Final state:
+  six stacked PRs #3-#8 = the complete external package; all 13 acceptance
+  criteria implemented.
+- **2026-06-10 (PR-2):** Implemented on `pr-2-provider-resilience` (stacked on PR-1):
+  `Settings.provider_max_retries` (default 3); `AgentLoop._call_provider` retries
+  RateLimited with `retry_after`-aware capped backoff at the buffered site; streaming
+  path retries only BEFORE the first event (mid-stream = terminal, no duplicate
+  deltas); any surviving `ProviderError` → `stop_reason="provider_error"`,
+  `TurnResult.error`, `degraded=True`, `AgentStatus` on the stream, session left at
+  the last message boundary. 9 new tests (acceptance #8 `test_rate_limit_retry` by
+  name); design rationale in D15. Suite: **1425 green**. loop.py diff confined to
+  the two call sites + helpers, per the omni sequencing agreement.
 - **2026-06-10 (PR #3 review):** omni's verdict: **LGTM pending two amendments** —
   every premise independently reproduced (ADR-0007 evidence, move correctness, test
   arithmetic, Groq pricing to the digit). Amendments landed in this commit:

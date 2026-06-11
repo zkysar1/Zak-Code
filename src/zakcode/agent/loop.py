@@ -39,6 +39,13 @@ Stop conditions
   nudge, then narrow the next iteration to read-only tools) and only ends as
   ``"stuck"`` if recovery fails. Catches the many stall shapes the exact-repeat
   doom guard misses; capable models and transient single errors never trigger it.
+* ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4).
+  A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried up
+  to ``Settings.provider_max_retries`` times with ``retry_after``-aware backoff;
+  any other :class:`~zakcode.providers.base.ProviderError` is terminal immediately.
+  Either way the TURN ends gracefully — session persisted at a message boundary,
+  ``TurnResult.error`` carrying the (already secret-redacted) detail — instead of
+  the exception unwinding an unattended session.
 
 ``TurnResult.degraded`` (and the streaming ``AgentDone.degraded``) is a thin roll-up:
 True when the turn engaged failure-recovery or ended in a non-clean terminal.
@@ -56,7 +63,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -91,6 +98,8 @@ from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import (
     LLMResult,
     Provider,
+    ProviderError,
+    RateLimited,
     StreamDone,
     StreamTextDelta,
     StreamToolCallDelta,
@@ -119,6 +128,14 @@ DEFAULT_MAX_ITERATIONS = 50
 #: repeating the exact same call is making no progress, so we stop early rather
 #: than spend the whole iteration budget on it.
 DOOM_LOOP_THRESHOLD = 3
+
+#: RateLimited retry backoff (audit P0-4): when the provider gave no ``retry_after``,
+#: wait ``_RETRY_BASE_DELAY * 2**(attempt-1)`` seconds; either source is capped at
+#: ``_RETRY_MAX_DELAY`` so a hostile/huge Retry-After can't stall a turn for minutes.
+_RETRY_BASE_DELAY = 1.0
+_RETRY_MAX_DELAY = 30.0
+
+logger = logging.getLogger(__name__)
 
 #: Fence wrapping ``PRE_LLM_CALL``-injected context. The body is untrusted by design
 #: (recalled memory / retrieved documents / a learning framework's output), so each
@@ -198,7 +215,7 @@ def _fence_injected_context(texts: list[str]) -> str:
 #: Terminal stop reasons that mean the turn did not finish cleanly — used to roll a single
 #: ``degraded`` confidence signal up onto :class:`TurnResult` / ``AgentDone`` (Bet 2 idea #6)
 #: so a client can flag a struggling turn without re-deriving it from the stop reason.
-_DEGRADED_STOP_REASONS = {"stuck", "doom_loop", "recipe_stalled"}
+_DEGRADED_STOP_REASONS = {"stuck", "doom_loop", "recipe_stalled", "provider_error"}
 
 
 class TurnResult(BaseModel):
@@ -209,6 +226,9 @@ class TurnResult(BaseModel):
     iterations: int = 0
     usage: Usage = Field(default_factory=Usage)
     stop_reason: str = "completed"
+    #: Human-readable failure detail when ``stop_reason == "provider_error"`` (already
+    #: secret-redacted by the provider's error mapping); empty on every other stop.
+    error: str = ""
     #: True when the turn engaged failure-recovery machinery or ended in a non-clean
     #: terminal (stuck / doom_loop / recipe_stalled, or any stuck-ladder nudge/narrow
     #: fired). A thin "this turn struggled" roll-up; clean turns leave it False.
@@ -290,6 +310,8 @@ class AgentLoop:
             self.max_iterations = max_iterations
         else:
             self.max_iterations = self.settings.max_iterations or DEFAULT_MAX_ITERATIONS
+        # Bounded RateLimited retry budget (audit P0-4); 0 disables retrying.
+        self.provider_max_retries = self.settings.provider_max_retries
         # Network-egress sandbox (opt-in): a lazily-started localhost allowlisting proxy that
         # subprocess tools route through. Kept per running loop (see _egress_env).
         self._egress_proxy: EgressProxy | None = None
@@ -298,7 +320,23 @@ class AgentLoop:
 
     def _persist(self) -> None:
         if self.store is not None:
+            # Snapshot operator grants into the session document so they survive a
+            # restart (audit P0-2d / D12) — same boundary as message persistence.
+            if self.permission_policy is not None:
+                self.session.permission_grants = self.permission_policy.export_grants()
             self.store.save(self.session)
+
+    def _scrub_env_names(self) -> list[str]:
+        """Provider-key env vars to scrub from subprocess children (RISKS/GUARDRAILS §6).
+
+        Empty when the operator opted out (``subprocess_inherit_provider_keys=true``).
+        Computed per turn so keys exported by ``load_dotenv`` at startup are covered.
+        """
+        if self.settings.subprocess_inherit_provider_keys:
+            return []
+        from zakcode.secrets import provider_key_env_names
+
+        return provider_key_env_names()
 
     async def _egress_env(self) -> dict[str, str]:
         """Subprocess ``HTTP(S)_PROXY`` env for the egress sandbox, or ``{}`` when it is off.
@@ -448,6 +486,53 @@ class AgentLoop:
         if not texts:
             return self.session.messages
         return [*self.session.messages, Message.user(_fence_injected_context(texts))]
+
+    @staticmethod
+    def _retry_delay(exc: RateLimited, attempt: int) -> float:
+        """Seconds to wait before retry ``attempt`` (1-based) of a rate-limited call.
+
+        Honors the server-suggested ``retry_after`` when present, else exponential
+        backoff from :data:`_RETRY_BASE_DELAY`. Either source is clamped to
+        ``[0, _RETRY_MAX_DELAY]`` so a hostile/huge Retry-After cannot stall a turn.
+        """
+        if exc.retry_after is not None:
+            delay = exc.retry_after
+        else:
+            delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+        return min(max(delay, 0.0), _RETRY_MAX_DELAY)
+
+    async def _call_provider(
+        self,
+        messages: list[Message],
+        *,
+        system: str,
+        tools: list[dict[str, Any]] | None,
+    ) -> LLMResult:
+        """One buffered completion with bounded ``RateLimited`` retry (audit P0-4).
+
+        Only ``RateLimited`` is retried — up to ``provider_max_retries`` times,
+        ``retry_after``-aware — because a 429 is the one failure class where waiting
+        is the documented remedy. Every other :class:`ProviderError` (auth, context
+        window, generic) propagates immediately; the caller ends the TURN gracefully
+        (``stop_reason="provider_error"``) instead of letting the exception unwind
+        an unattended session.
+        """
+        attempt = 0
+        while True:
+            try:
+                return await self.provider.acomplete(messages, system=system, tools=tools)
+            except RateLimited as exc:
+                if attempt >= self.provider_max_retries:
+                    raise
+                attempt += 1
+                delay = self._retry_delay(exc, attempt)
+                logger.warning(
+                    "provider rate-limited; retry %d/%d in %.1fs",
+                    attempt,
+                    self.provider_max_retries,
+                    delay,
+                )
+                await asyncio.sleep(delay)
 
     @staticmethod
     def _assistant_message(result: LLMResult) -> Message:
@@ -768,6 +853,7 @@ class AgentLoop:
         turn_usage = Usage()
         iterations = 0
         stop_reason = "max_iterations"
+        turn_error = ""
 
         # Doom-loop tracking: the signature of the previous iteration's tool-call
         # batch and how many times in a row we have now seen it.
@@ -779,6 +865,7 @@ class AgentLoop:
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
             egress_env=await self._egress_env(),
+            scrub_env=self._scrub_env_names(),
         )
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -813,12 +900,26 @@ class AgentLoop:
             system = self._build_system(restrict_now)
             call_messages = await self._messages_for_call(user_text, iterations)
 
-            result = await self.provider.acomplete(
-                call_messages,
-                system=system,
-                tools=tool_defs or None,
-            )
+            try:
+                result = await self._call_provider(
+                    call_messages, system=system, tools=tool_defs or None
+                )
+            except ProviderError as exc:
+                # A provider failure that survives the retry budget ends the TURN, not
+                # the process: state was last persisted at a message boundary (so it is
+                # consistent), and the caller sees stop_reason="provider_error" +
+                # degraded so an outer harness can wait/retry/alert. (audit P0-4)
+                stop_reason = "provider_error"
+                turn_error = str(exc)
+                logger.error("turn aborted by provider error: %s", turn_error)
+                self._refund_iteration()  # no model work happened this iteration
+                break
 
+            logger.debug(
+                "iteration %d: model returned %d tool call(s)",
+                iterations,
+                len(result.tool_calls),
+            )
             assistant_msg = self._assistant_message(result)
             self.session.add_message(assistant_msg)
             self.session.add_usage(result.usage)
@@ -914,12 +1015,19 @@ class AgentLoop:
         # lesson. Best-effort — a writer/store error never affects the turn's outcome.
         with contextlib.suppress(Exception):
             self._lessons.maybe_write(stuck, cursor, stop_reason=stop_reason)
+        logger.info(
+            "turn ended: stop_reason=%s iterations=%d tokens=%d",
+            stop_reason,
+            iterations,
+            turn_usage.total_tokens,
+        )
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
             iterations=iterations,
             usage=turn_usage,
             stop_reason=stop_reason,
+            error=turn_error,
             degraded=stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
         )
 
@@ -969,6 +1077,7 @@ class AgentLoop:
         turn_usage = Usage()
         iterations = 0
         stop_reason = "max_iterations"
+        turn_error = ""
 
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
@@ -979,6 +1088,7 @@ class AgentLoop:
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
             egress_env=await self._egress_env(),
+            scrub_env=self._scrub_env_names(),
         )
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -1012,27 +1122,76 @@ class AgentLoop:
                 system = self._build_system(restrict_now)
                 call_messages = await self._messages_for_call(user_text, iterations)
 
-                text_parts: list[str] = []
-                accumulator = ToolCallAccumulator()
+                provider_failure: str | None = None
+                retry_attempts = 0
 
-                async for ev in self.provider.astream(
-                    call_messages,
-                    system=system,
-                    tools=tool_defs or None,
-                ):
-                    if isinstance(ev, StreamTextDelta):
-                        text_parts.append(ev.text)
-                        yield AgentTextDelta(text=ev.text)
-                    elif isinstance(ev, StreamToolCallDelta):
-                        accumulator.add(ev)
-                    elif isinstance(ev, StreamUsage):
-                        turn_usage = turn_usage + ev.usage
-                        self.session.add_usage(ev.usage)
-                    elif isinstance(ev, StreamDone):
-                        # finish_reason is advisory here; the loop's own stop
-                        # conditions decide the turn's stop_reason. Break the inner
-                        # stream and assemble the assistant message.
-                        break
+                # Bounded RateLimited retry for THIS provider call (audit P0-4). A retry
+                # is only safe while NO event has arrived yet — once deltas streamed to
+                # the client, re-issuing the call would re-yield text the client already
+                # rendered, so a mid-stream failure is terminal for the turn instead.
+                # The accumulators are rebuilt per attempt so a retried call can never
+                # inherit partial state (defense in depth on top of the no-event gate).
+                while True:
+                    text_parts: list[str] = []
+                    accumulator = ToolCallAccumulator()
+                    received_any = False
+                    try:
+                        async for ev in self.provider.astream(
+                            call_messages,
+                            system=system,
+                            tools=tool_defs or None,
+                        ):
+                            received_any = True
+                            if isinstance(ev, StreamTextDelta):
+                                text_parts.append(ev.text)
+                                yield AgentTextDelta(text=ev.text)
+                            elif isinstance(ev, StreamToolCallDelta):
+                                accumulator.add(ev)
+                            elif isinstance(ev, StreamUsage):
+                                turn_usage = turn_usage + ev.usage
+                                self.session.add_usage(ev.usage)
+                            elif isinstance(ev, StreamDone):
+                                # finish_reason is advisory here; the loop's own stop
+                                # conditions decide the turn's stop_reason. Break the inner
+                                # stream and assemble the assistant message.
+                                break
+                    except RateLimited as exc:
+                        if not received_any and retry_attempts < self.provider_max_retries:
+                            retry_attempts += 1
+                            delay = self._retry_delay(exc, retry_attempts)
+                            logger.warning(
+                                "provider rate-limited; retry %d/%d in %.1fs",
+                                retry_attempts,
+                                self.provider_max_retries,
+                                delay,
+                            )
+                            yield AgentStatus(
+                                message=(
+                                    f"rate limited; retrying in {delay:.1f}s "
+                                    f"({retry_attempts}/{self.provider_max_retries})"
+                                )
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        provider_failure = str(exc)
+                    except ProviderError as exc:
+                        provider_failure = str(exc)
+                    break
+
+                if provider_failure is not None:
+                    # Graceful turn end (see _run_turn's twin): state is consistent at
+                    # the last message boundary; the partial streamed text (if any) is
+                    # NOT persisted — the failed turn left no assistant message.
+                    stop_reason = "provider_error"
+                    turn_error = provider_failure
+                    logger.error("turn aborted by provider error: %s", provider_failure)
+                    yield AgentStatus(message=f"stopping: provider error — {provider_failure}")
+                    # Refund the iteration: pre-event failure did no work at all, and a
+                    # mid-stream failure's partial output is DISCARDED (not persisted),
+                    # so either way nothing this iteration consumed survives the turn.
+                    # (stack review minor #7 — the buffered twin refunds identically.)
+                    self._refund_iteration()
+                    break
 
                 tool_calls = accumulator.finalize()
                 assistant_text = "".join(text_parts)
@@ -1149,11 +1308,18 @@ class AgentLoop:
         # Failure-lesson capture (research R1) — same seam as the buffered path; best-effort.
         with contextlib.suppress(Exception):
             self._lessons.maybe_write(stuck, cursor, stop_reason=stop_reason)
+        logger.info(
+            "turn ended: stop_reason=%s iterations=%d tokens=%d",
+            stop_reason,
+            iterations,
+            turn_usage.total_tokens,
+        )
         yield AgentUsage(usage=turn_usage)
         yield AgentDone(
             stop_reason=stop_reason,
             iterations=iterations,
             usage=turn_usage,
+            error=turn_error,
             degraded=stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
         )
 
