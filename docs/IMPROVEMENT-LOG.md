@@ -13,18 +13,20 @@ update *Status snapshot*, append to *Decisions*/*Assumptions*, and tick the PR l
 
 ## Status snapshot
 
-- **Date:** 2026-06-10 (fourth update)
-- **Branch:** `pr-0-consolidation`, pushed — **PR #3 open**
-  (github.com/zkysar1/Zak-Code/pull/3); main untouched at c4d75d2
-- **Current work:** PR-0 shipped (ADR-0007 + env truth, 1406 green). GitHub access
-  solved: `gh` CLI installed + device-flow authed as zkysar1 (`repo` scope),
-  `gh auth setup-git` wired — push/PR/private-repo access all work headlessly now.
-  **Audit doc obtained** (Mind repo cloned to
-  `C:\ZakNoCloud\GitHub\Zak-Data-Solutions\Zak-Data-Solutions-Mind`); reconciled —
-  see *Acceptance-test map* and D11.
-- **Next action:** watch PR #3 CI (ubuntu run doubles as the unknown-#5 probe), then
-  PR-1 (provider metadata incl. Anthropic statics)
-- **Waiting on:** PR #3 review
+- **Date:** 2026-06-10 (final update — ladder complete)
+- **State:** the FULL external work package is implemented, fresh-eyes-reviewed per
+  phase, and open as a stacked PR chain: **#3** (consolidation + env truth, omni
+  LGTM'd + amendments landed) → **#4** (tri-provider metadata) → **#5** (provider
+  resilience) → **#6** (autonomous permissions) → **#7** (skill extras + logging) →
+  **#8** (tooling). Merge in order; GitHub auto-retargets each as its base merges.
+  Suite: **1453 passed**; `uv run poe check` green end to end.
+- **All 13 audit acceptance criteria implemented** (see map below — every named
+  `-k` selector passes by name; 4 and 11-13 hold by construction/tests).
+- **One pending owner action:** pushing the P2-4 CI change (windows cell +
+  coverage artifact, local commit on `pr-5-tooling`) needs the `workflow` OAuth
+  scope — agent correctly cannot self-grant; Zachary runs
+  `gh auth refresh -h github.com -s workflow` (one device code), then `git push`.
+- **Waiting on:** PR reviews (omni/Zachary); the workflow-scope grant
 - **Toolchain note:** this box had no uv until 2026-06-10; installed standalone
   uv 0.11.20 at `%USERPROFILE%\.local\bin` (on user PATH; winget is broken in the
   agent sandbox — use the GitHub-release zip if reinstalling)
@@ -451,6 +453,16 @@ cost-accounting test instead of a fallback table.
   OS keys stripped: info panel ✓, one-token Groq completion ✓. Suite: **1406 green**.
   Note for next session: first `git push` attempt hung (no upstream was set) —
   confirm the branch actually reached origin before opening the PR.
+- **2026-06-10 (ladder complete):** PR-3 implemented + reviewed (4-angle incl.
+  security bypass hunter: zero bypasses; fixes: restore dedup, doc truth, drift
+  guards — `1445` green). PR-4 implemented + reviewed (fixes: save_skill tool
+  extras passthrough, library NullHandler so unconfigured CLIs see no stderr spam —
+  `1450` green). PR-5 implemented (`poe check`/`poe cov`, version-sync test,
+  CONFIG.md with two-direction completeness tests — `1453` green); its P2-4 CI
+  commit is LOCAL-ONLY pending the `workflow` OAuth scope (the auto-mode
+  classifier rightly blocked agent self-escalation; owner grants it). Final state:
+  six stacked PRs #3-#8 = the complete external package; all 13 acceptance
+  criteria implemented.
 - **2026-06-10 (PR-2):** Implemented on `pr-2-provider-resilience` (stacked on PR-1):
   `Settings.provider_max_retries` (default 3); `AgentLoop._call_provider` retries
   RateLimited with `retry_after`-aware capped backoff at the buffered site; streaming
