@@ -552,6 +552,8 @@ class Agent:
             # provider failure, the loop may swap to a new provider we build here.
             # None when the provider was injected (it can't be rebuilt from settings).
             model_failover=(None if self._provider_injected else self._model_failover),
+            # TURN_END veto seam (T2/T3/T4): 0 (the default) disables the gate.
+            turn_end_veto_budget=self.settings.turn_end_veto_budget,
         )
 
     def _build_provider(self, model: str) -> Provider:

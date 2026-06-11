@@ -154,6 +154,15 @@ class Settings(BaseSettings):
         ge=0,
         description="Retries (with backoff) after a rate-limited provider call; 0 disables.",
     )
+    # TURN_END veto seam (T2/T3): how many times per turn a TURN_END hook may veto a
+    # vetoable stop (completed / doom_loop / stuck) and re-enter the loop with its
+    # continuation prompt. 0 (default) disables the gate — no hook fires at turn end.
+    # max_iterations / provider_error / recipe_stalled are never vetoable.
+    turn_end_veto_budget: int = Field(
+        default=0,
+        ge=0,
+        description="Max TURN_END hook vetoes per turn (Stop-hook seam); 0 disables.",
+    )
     permission_mode: str = Field(
         default="ask",
         description="One of: ask | acceptEdits | allow | autonomous | deny.",

@@ -91,6 +91,7 @@ from zakcode.hooks import (
     HookPayload,
     LifecyclePayload,
     LLMContextPayload,
+    TurnEndPayload,
 )
 from zakcode.memory import MemoryProvider
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
@@ -180,6 +181,18 @@ def _control_rail(text: str) -> str:
     return f"{_RAIL_HINT} {text}"
 
 
+def _last_assistant_text(turn_assistant: list[Message]) -> str:
+    """The most recent non-empty assistant text THIS turn (TURN_END payload field).
+
+    Scoped to the turn's own assistant messages — never reaches into prior turns —
+    matching what a Claude-Code-style Stop hook reads as ``last_assistant_message``.
+    """
+    for msg in reversed(turn_assistant):
+        if msg.text:
+            return msg.text
+    return ""
+
+
 def _denial_remedy(tier: PermissionTier | None) -> str:
     """Name the concrete way to grant a denied tool, keyed by its required permission tier.
 
@@ -217,6 +230,12 @@ def _fence_injected_context(texts: list[str]) -> str:
 #: ``degraded`` confidence signal up onto :class:`TurnResult` / ``AgentDone`` (Bet 2 idea #6)
 #: so a client can flag a struggling turn without re-deriving it from the stop reason.
 _DEGRADED_STOP_REASONS = {"stuck", "doom_loop", "recipe_stalled", "provider_error"}
+
+#: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
+#: deliberately NOT vetoable: ``max_iterations`` and ``provider_error`` are hard bounds
+#: (budget / infrastructure — a hook must not override them), and ``recipe_stalled`` is
+#: the recipe gate's own bounded give-up (re-entering would stall the same way again).
+_VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck"})
 
 
 class TurnResult(BaseModel):
@@ -260,6 +279,7 @@ class AgentLoop:
         summarizer_provider: Provider | None = None,
         attempt_cap: int = 3,
         model_failover: Callable[[ProviderError], tuple[Provider, str] | None] | None = None,
+        turn_end_veto_budget: int = 0,
     ) -> None:
         self.provider = provider
         # Runtime model failover seam (PKG-AUTO): on a NON-rate-limit provider failure
@@ -268,6 +288,11 @@ class AgentLoop:
         # client (a mid-stream retry would re-yield text already rendered). ``None``
         # (default, and always for injected/test providers) = unchanged behavior.
         self.model_failover = model_failover
+        # TURN_END veto seam (T2/T3): at a vetoable break site (completed / doom_loop /
+        # stuck) the loop runs TURN_END hooks; a veto re-enters the loop with the hook's
+        # continuation prompt, at most this many times per turn. 0 (default) disables
+        # the gate entirely — no hook fires, behavior is byte-identical to pre-T2.
+        self.turn_end_veto_budget = turn_end_veto_budget
         # Optional separate provider for compaction summaries (per-role model routing): a mind
         # can route the cheap "summarizer" role to a cheaper/local model than the generator.
         # ``None`` falls back to ``provider`` — so the default path is unchanged.
@@ -876,6 +901,53 @@ class AgentLoop:
                 self._persist()
             raise
 
+    async def _fire_turn_end(
+        self,
+        stop_reason: str,
+        *,
+        iterations: int,
+        veto_count: int,
+        turn_assistant: list[Message],
+        stuck_took_action: bool,
+    ) -> str | None:
+        """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
+
+        Returns the continuation prompt when a hook vetoes the stop and the per-turn
+        budget allows re-entry; ``None`` (the overwhelmingly common case) lets the
+        turn end. Fail-open by construction: budget 0 / no hooks short-circuits
+        without building a payload, and a crashing hook run never blocks the stop.
+        """
+        if (
+            self.turn_end_veto_budget <= 0
+            or veto_count >= self.turn_end_veto_budget
+            or stop_reason not in _VETOABLE_STOP_REASONS
+            or not self.hook_manager.has_turn_end_hooks()
+        ):
+            return None
+        payload = TurnEndPayload(
+            session_id=self.session.id,
+            cwd=self.session.cwd,
+            stop_reason=stop_reason,
+            iterations=iterations,
+            max_iterations=self.max_iterations,
+            degraded=stuck_took_action or stop_reason in _DEGRADED_STOP_REASONS,
+            last_assistant_message=_last_assistant_text(turn_assistant),
+        )
+        try:
+            result = await self.hook_manager.run_turn_end(payload, drop_env=self._scrub_env_names())
+        except Exception:  # fail-open: a broken hook must never block the stop
+            logger.warning("TURN_END hook run failed; allowing the stop", exc_info=True)
+            return None
+        if not result.vetoed:
+            return None
+        logger.info(
+            "TURN_END hook vetoed stop_reason=%r (veto %d/%d)",
+            stop_reason,
+            veto_count + 1,
+            self.turn_end_veto_budget,
+        )
+        return result.continuation_prompt or "Continue."
+
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
         await self._maybe_compact()
@@ -889,6 +961,7 @@ class AgentLoop:
         stop_reason = "max_iterations"
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
+        turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
 
         # Doom-loop tracking: the signature of the previous iteration's tool-call
         # batch and how many times in a row we have now seen it.
@@ -1007,6 +1080,23 @@ class AgentLoop:
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
+                prompt = await self._fire_turn_end(
+                    "completed",
+                    iterations=iterations,
+                    veto_count=turn_end_vetoes,
+                    turn_assistant=turn_assistant,
+                    stuck_took_action=stuck.took_action,
+                )
+                if prompt is not None:
+                    turn_end_vetoes += 1
+                    self.session.add_message(Message.user(_control_rail(prompt)))
+                    self._persist()
+                    # Sent back to work: pre-veto repetition must not instantly re-trip
+                    # the stall guards on the very next iteration.
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 stop_reason = "completed"
                 break
 
@@ -1023,6 +1113,42 @@ class AgentLoop:
                 repeat_count = 1
                 last_signature = signature
             if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
+                prompt = await self._fire_turn_end(
+                    "doom_loop",
+                    iterations=iterations,
+                    veto_count=turn_end_vetoes,
+                    turn_assistant=turn_assistant,
+                    stuck_took_action=stuck.took_action,
+                )
+                if prompt is not None:
+                    turn_end_vetoes += 1
+                    # The repeated batch was never executed, but the assistant message
+                    # carrying its tool_use blocks is already in the session — answer
+                    # each with a synthetic error result FIRST so strict providers
+                    # still see a valid tool_use/tool_result pairing on re-entry.
+                    self.session.add_message(
+                        Message.tool_results(
+                            [
+                                ToolResultBlock(
+                                    tool_use_id=call.id,
+                                    output=(
+                                        "Not executed: this exact tool batch has been "
+                                        "repeated with no progress. Change approach "
+                                        "before retrying."
+                                    ),
+                                    is_error=True,
+                                    data={"doom_loop_intervention": True},
+                                )
+                                for call in result.tool_calls
+                            ]
+                        )
+                    )
+                    self.session.add_message(Message.user(_control_rail(prompt)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 stop_reason = "doom_loop"
                 break
 
@@ -1056,6 +1182,21 @@ class AgentLoop:
             stuck.observe(result.tool_calls, result_blocks, assistant_text=assistant_msg.text)
             action = stuck.next_action()
             if action is StuckAction.STOP:
+                prompt = await self._fire_turn_end(
+                    "stuck",
+                    iterations=iterations,
+                    veto_count=turn_end_vetoes,
+                    turn_assistant=turn_assistant,
+                    stuck_took_action=stuck.took_action,
+                )
+                if prompt is not None:
+                    turn_end_vetoes += 1
+                    self.session.add_message(Message.user(_control_rail(prompt)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 stop_reason = "stuck"
                 break
             if action is StuckAction.NUDGE:
@@ -1134,6 +1275,10 @@ class AgentLoop:
         stop_reason = "max_iterations"
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
+        turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        # This turn's assistant messages — kept only for the TURN_END payload's
+        # ``last_assistant_message`` (the buffered path reuses its result list).
+        turn_assistant: list[Message] = []
 
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
@@ -1277,6 +1422,7 @@ class AgentLoop:
 
                 assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
                 self.session.add_message(assistant_msg)
+                turn_assistant.append(assistant_msg)
                 self._persist()
 
                 # No tool calls → the turn is complete.
@@ -1313,6 +1459,22 @@ class AgentLoop:
                         continue
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
+                    prompt = await self._fire_turn_end(
+                        "completed",
+                        iterations=iterations,
+                        veto_count=turn_end_vetoes,
+                        turn_assistant=turn_assistant,
+                        stuck_took_action=stuck.took_action,
+                    )
+                    if prompt is not None:
+                        turn_end_vetoes += 1
+                        self.session.add_message(Message.user(_control_rail(prompt)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        continue
                     stop_reason = "completed"
                     break
 
@@ -1324,6 +1486,42 @@ class AgentLoop:
                     repeat_count = 1
                     last_signature = signature
                 if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
+                    prompt = await self._fire_turn_end(
+                        "doom_loop",
+                        iterations=iterations,
+                        veto_count=turn_end_vetoes,
+                        turn_assistant=turn_assistant,
+                        stuck_took_action=stuck.took_action,
+                    )
+                    if prompt is not None:
+                        turn_end_vetoes += 1
+                        # Pairing fix, identical to the buffered twin: the repeated
+                        # batch's tool_use blocks are in the session unexecuted —
+                        # answer them with synthetic error results before re-entry.
+                        self.session.add_message(
+                            Message.tool_results(
+                                [
+                                    ToolResultBlock(
+                                        tool_use_id=call.id,
+                                        output=(
+                                            "Not executed: this exact tool batch has been "
+                                            "repeated with no progress. Change approach "
+                                            "before retrying."
+                                        ),
+                                        is_error=True,
+                                        data={"doom_loop_intervention": True},
+                                    )
+                                    for call in tool_calls
+                                ]
+                            )
+                        )
+                        self.session.add_message(Message.user(_control_rail(prompt)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        continue
                     stop_reason = "doom_loop"
                     yield AgentStatus(message="stopping: repeated identical tool calls")
                     break
@@ -1361,6 +1559,22 @@ class AgentLoop:
                 stuck.observe(tool_calls, result_blocks, assistant_text=assistant_text)
                 action = stuck.next_action()
                 if action is StuckAction.STOP:
+                    prompt = await self._fire_turn_end(
+                        "stuck",
+                        iterations=iterations,
+                        veto_count=turn_end_vetoes,
+                        turn_assistant=turn_assistant,
+                        stuck_took_action=stuck.took_action,
+                    )
+                    if prompt is not None:
+                        turn_end_vetoes += 1
+                        self.session.add_message(Message.user(_control_rail(prompt)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        continue
                     stop_reason = "stuck"
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break

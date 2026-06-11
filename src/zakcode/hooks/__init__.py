@@ -265,6 +265,16 @@ class HookManager:
             return True
         return any(h.event is event and h.matches(tool_name) for h in self.shell_hooks)
 
+    def has_turn_end_hooks(self) -> bool:
+        """Whether any ``TURN_END`` hook is registered (cheap pre-check).
+
+        Matcher-agnostic on purpose: TURN_END is not a per-tool event, so a shell
+        spec's ``matcher`` (which defaults to ``"*"``) is ignored here.
+        """
+        return bool(self.turn_end_hooks) or any(
+            spec.event is HookEvent.TURN_END for spec in self.shell_hooks
+        )
+
     async def run(self, payload: HookPayload) -> HookResult:
         """Run every matching hook for ``payload.event`` and aggregate the verdict.
 
@@ -396,11 +406,14 @@ class HookManager:
             return TurnEndResult()
         stdin_bytes = payload.model_dump_json().encode("utf-8")
 
-        # Build a scrubbed child env (provider-key hygiene).
+        # Build a scrubbed child env (provider-key hygiene). The per-spec list is the
+        # PRIMARY scrub (populated at settings ingestion — TE-R1: hygiene applies to
+        # all workspace hooks, like every sibling shell runner); the caller-supplied
+        # ``drop_env`` is layered on top, so neither path depends on the other.
         import os
 
         child_env = {**os.environ}
-        for name in drop_env or []:
+        for name in [*spec.drop_env, *(drop_env or [])]:
             child_env.pop(name, None)
 
         try:

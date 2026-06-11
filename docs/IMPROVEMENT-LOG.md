@@ -588,3 +588,29 @@ cost-accounting test instead of a fallback table.
   example; stray UTF-8 BOM stripped from this file. Everything else verified
   clean: spec 10/10 clauses, loop seam 7/7 safety points, hermeticity (incl.
   the construction-time probe binding), key handling. 1541 green.
+- **2026-06-11 (omni, D22 — TurnEnd T2/T3/T4: loop break-site veto gates):**
+  the Stop-hook seam goes live in the loop. `AgentLoop` ctor gains
+  `turn_end_veto_budget: int = 0`; at the three VETOABLE break sites
+  (`completed` / `doom_loop` / `stuck`, both paths) a new `_fire_turn_end`
+  runs TURN_END hooks (T1's runner) and, on veto, injects the hook's
+  continuation prompt as a control-rail user message and re-enters the loop —
+  at most budget times per turn. `max_iterations` / `provider_error` /
+  `recipe_stalled` are never vetoable (hard bounds / the recipe gate's own
+  bounded give-up). Veto resets the stall trackers (doom signature+count,
+  `StuckTracker.reset()` from T1) so pre-veto repetition can't instantly
+  re-trip; `RecipeCursor` is deliberately NOT reset. One wrinkle the design
+  ladder missed: at the doom-loop site the repeated batch's tool_use blocks
+  are already in the session UNEXECUTED — re-entering would send a dangling
+  tool_use to strict providers, so the gate first answers each with a
+  synthetic error tool_result (`data.doom_loop_intervention`) before the
+  continuation prompt. Streaming twin yields
+  `AgentStatus("turn_end hook vetoed stop; continuing")`. Fail-open
+  everywhere: budget 0 (the default) short-circuits before payload build —
+  byte-identical pre-T2 behavior — and a crashing hook run allows the stop.
+  T4: `Settings.turn_end_veto_budget` (`ZAKCODE_TURN_END_VETO_BUDGET`,
+  default 0) threaded Agent→loop; CONFIG.md row. Plus
+  `HookManager.has_turn_end_hooks()` (matcher-agnostic cheap pre-check).
+  15 new tests (budget-zero parity, allow/veto-once/budget-exhausted,
+  non-vetoable trio, doom-veto pairing+reset double-threshold proof, payload
+  contents, streaming status + budget-zero, fail-open crash, env/Agent
+  plumbing). Suite 1556 green.
