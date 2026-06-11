@@ -297,6 +297,19 @@ class Settings(BaseSettings):
             )
         return value
 
+    # ── Workspace settings.json hook ingestion (PR-T5; opt-in) ───────────────
+    settings_hooks: bool = Field(
+        default=False,
+        description=(
+            "Load shell hooks from <workspace>/.claude/settings.json and "
+            ".zakcode/settings.json (ZAKCODE_SETTINGS_HOOKS=true). Off by default: "
+            "workspaces configured for other hook runtimes (e.g. Claude Code) would "
+            "otherwise have those hooks half-fire here with a different stdin schema. "
+            "Hosts can force the behavior per-Agent via "
+            "Agent(enable_settings_hooks=True/False)."
+        ),
+    )
+
     # ── Cross-session memory (opt-in via Agent(enable_memory=True)) ──────────
     memory_db_path: str | None = Field(
         default=None,

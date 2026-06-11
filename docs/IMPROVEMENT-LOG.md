@@ -530,3 +530,17 @@ cost-accounting test instead of a fallback table.
   specify `running read...`. render.py now passes `"running " + verb`;
   `test_spinner_label_matches_ux_spec` pins all three surfaces in agreement.
   Suite: **1466 green**, ruff + mypy clean.
+- **2026-06-11 (omni):** Internal TurnEnd package, loop.py-free rungs (PR-T1/T5/T6/T7
+  of the ratified TurnEnd Seam Design v1.0): `HookEvent.TURN_END` + veto-capable
+  dispatch speaking Claude Code's Stop-hook wire protocol (decision-block JSON on
+  exit 0, native exit-2, fail-open on timeout/crash/non-zero, process-tree kill,
+  provider-key scrub); settings.json hook ingestion (`Stop`->`TurnEnd` mapping,
+  DANGEROUS_PATTERNS hard-deny in autonomous mode, key scrub on ALL workspace hooks,
+  appends to a passed hook_manager); `agent_identity_dir` identity discovery for
+  `agents/<agent>/self.md`; SESSION_END/PRE_COMPACT payloads enriched with
+  session_summary. Omni review amendment: settings.json ingestion is OPT-IN
+  (`ZAKCODE_SETTINGS_HOOKS`, default false) instead of CLI-unconditional -- a
+  workspace configured for Claude Code would otherwise have its hooks half-fire
+  here with a different stdin schema before the T2/T3 loop integration lands.
+  Veto dispatch is inert until T2/T3 (deferred behind PKG-AUTO to avoid loop.py
+  collisions). Suite: **1504 green**, ruff clean, mypy at main parity.

@@ -213,7 +213,7 @@ class Agent:
         enable_memory: bool = False,
         memory_provider: MemoryProvider | None = None,
         enable_compaction: bool = False,
-        enable_settings_hooks: bool = False,
+        enable_settings_hooks: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
     ) -> None:
@@ -261,7 +261,13 @@ class Agent:
         # settings.json hook ingestion (PR-T5).  TE-R3(3): when a caller passes
         # BOTH enable_settings_hooks=True AND a programmatic hook_manager, the
         # settings.json specs are APPENDED to the existing manager's shell_hooks.
-        if enable_settings_hooks:
+        # None defers to Settings.settings_hooks (ZAKCODE_SETTINGS_HOOKS); an explicit
+        # True/False from the host wins either way.
+        if (
+            enable_settings_hooks
+            if enable_settings_hooks is not None
+            else self.settings.settings_hooks
+        ):
             from zakcode.hooks.settings_loader import load_settings_hooks
 
             _specs, _errs = load_settings_hooks(
