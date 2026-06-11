@@ -265,6 +265,16 @@ class HookManager:
             return True
         return any(h.event is event and h.matches(tool_name) for h in self.shell_hooks)
 
+    def has_turn_end_hooks(self) -> bool:
+        """Whether any ``TURN_END`` hook is registered (cheap pre-check).
+
+        Matcher-agnostic on purpose: TURN_END is not a per-tool event, so a shell
+        spec's ``matcher`` (which defaults to ``"*"``) is ignored here.
+        """
+        return bool(self.turn_end_hooks) or any(
+            spec.event is HookEvent.TURN_END for spec in self.shell_hooks
+        )
+
     async def run(self, payload: HookPayload) -> HookResult:
         """Run every matching hook for ``payload.event`` and aggregate the verdict.
 

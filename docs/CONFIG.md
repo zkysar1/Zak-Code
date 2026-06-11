@@ -49,6 +49,7 @@ here — adding a Settings field without documenting it fails CI.
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
 | `max_iterations` | `ZAKCODE_MAX_ITERATIONS` | `50` | Hard cap on agent-loop iterations per turn. |
+| `turn_end_veto_budget` | `ZAKCODE_TURN_END_VETO_BUDGET` | `0` | Max times per turn a `TURN_END` hook may veto a vetoable stop (`completed` / `doom_loop` / `stuck`) and re-enter the loop with its continuation prompt (the Claude-Code-Stop-hook seam). `0` disables the gate entirely. `max_iterations` / `provider_error` / `recipe_stalled` are never vetoable. |
 | `permission_mode` | `ZAKCODE_PERMISSION_MODE` | `ask` | `ask` \| `acceptEdits` \| `allow` \| `autonomous` \| `deny`. `autonomous` never prompts; catastrophic commands hard-deny. |
 | `tool_trust_overrides` | `ZAKCODE_TOOL_TRUST_OVERRIDES` | `{}` | Per-tool mode overrides (JSON, tool → mode), loosen or tighten. Cannot loosen the dangerous floor in an autonomous session. |
 | `subprocess_inherit_provider_keys` | `ZAKCODE_SUBPROCESS_INHERIT_PROVIDER_KEYS` | `false` | When false (default), `*_API_KEY` vars are scrubbed from bash/powershell children. |
