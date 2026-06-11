@@ -33,6 +33,7 @@ from zakcode.providers.base import (
     Capabilities,
     ContextWindowExceeded,
     LLMResult,
+    ModelOutputRejected,
     Provider,
     ProviderError,
     ProviderStreamEvent,
@@ -430,6 +431,18 @@ class LiteLLMProvider(Provider):
             return ContextWindowExceeded(message)
         if cls._is_a(exc, _LiteLLMRateLimitError, "RateLimitError"):
             return RateLimited(message, retry_after=retry_after)
+        if "tool_use_failed" in str(exc):
+            # Groq rejects a malformed model-emitted tool call with HTTP 400 and
+            # ``code: "tool_use_failed"``. Matched on the payload text because it
+            # reaches us in two shapes: litellm's BadRequestError carrying the body,
+            # or a raw ValueError ("invalid literal for int(): 'tool_use_failed'")
+            # from litellm's own error mapping choking on the string code. Either
+            # way the remedy is a retry, not a dead turn — and the operator should
+            # see the real cause, not a parser crash.
+            return ModelOutputRejected(
+                "the model produced a malformed tool call and the provider "
+                "rejected it (tool_use_failed)"
+            )
         return RequestFailed(message)
 
     # ------------------------------------------------------------------

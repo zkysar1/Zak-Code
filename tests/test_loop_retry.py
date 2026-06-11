@@ -295,3 +295,35 @@ def test_streaming_midstream_failure_still_refunds_budget(fast_sleep: list[float
     done = asyncio.run(_collect(loop, "hi"))[-1]
     assert done.stop_reason == "provider_error"
     assert budget.remaining == 10  # refunded despite the partial stream
+
+
+# -- groq "tool_use_failed": the model's own malformed tool call is retried ----
+
+
+def test_model_output_rejected_is_retried_immediately(fast_sleep: list[float]) -> None:
+    """A provider-rejected malformed tool call retries (delay 0) and recovers."""
+    from zakcode.providers.base import ModelOutputRejected
+
+    provider = FlakyProvider([ModelOutputRejected("malformed tool call (tool_use_failed)")])
+    loop = _make_loop(provider)
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    assert not result.degraded
+    assert provider.calls == 2  # initial + one retry
+    assert fast_sleep == [0.0]  # nothing to wait for
+
+
+def test_streaming_model_output_rejected_retries_with_clear_status(
+    fast_sleep: list[float],
+) -> None:
+    """The operator-facing retry notice names the real cause, not 'rate limited'."""
+    from zakcode.providers.base import ModelOutputRejected
+
+    provider = FlakyStreamProvider([ModelOutputRejected("malformed tool call (tool_use_failed)")])
+    loop = _make_loop(provider)
+    events = asyncio.run(_collect(loop, "hi"))
+    assert events[-1].stop_reason == "completed"
+    assert provider.stream_calls == 2
+    statuses = [getattr(ev, "message", "") for ev in events]
+    assert any("malformed tool call" in s for s in statuses)
+    assert not any("rate limited" in s for s in statuses)

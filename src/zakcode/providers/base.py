@@ -150,6 +150,20 @@ class RateLimited(ProviderError):
         self.retry_after = retry_after
 
 
+class ModelOutputRejected(RateLimited):
+    """The provider rejected the model's own output (e.g. a malformed tool call).
+
+    Groq returns HTTP 400 with ``code: "tool_use_failed"`` when the model emits a
+    tool call its validator cannot parse. Like a 429, the documented remedy is to
+    retry the call — the model usually produces a valid tool call on the next
+    attempt — so this subclasses :class:`RateLimited` to ride the loop's bounded
+    retry machinery, with ``retry_after=0`` (nothing to wait for).
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retry_after=0.0)
+
+
 class RequestFailed(ProviderError):
     """A request failed for a reason not covered by the more specific errors."""
 

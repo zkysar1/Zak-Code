@@ -347,6 +347,30 @@ def test_error_mapping_by_class_name_fallback() -> None:
     assert isinstance(mapped, AuthError)
 
 
+def test_error_mapping_groq_tool_use_failed_is_retryable() -> None:
+    # Groq rejects a malformed model-emitted tool call with code "tool_use_failed".
+    # It reaches us in two shapes; BOTH must map to the retryable ModelOutputRejected
+    # (a RateLimited subclass, retry_after=0) with the real cause in the message —
+    # never a dead turn showing a parser crash.
+    from zakcode.providers.base import ModelOutputRejected
+
+    # Shape 1: litellm's own error mapping crashes parsing the string code.
+    crash = ValueError("invalid literal for int() with base 10: 'tool_use_failed'")
+    mapped = LiteLLMProvider._map_error(crash)
+    assert isinstance(mapped, ModelOutputRejected)
+    assert isinstance(mapped, RateLimited)  # rides the loop's retry machinery
+    assert mapped.retry_after == 0.0  # nothing to wait for — retry immediately
+    assert "malformed tool call" in str(mapped)
+    assert "invalid literal" not in str(mapped)  # parser crash never shown
+
+    # Shape 2: a genuine BadRequestError carrying the groq error body.
+    class BadRequestError(Exception):
+        pass
+
+    body = BadRequestError('{"error":{"code":"tool_use_failed","failed_generation":"..."}}')
+    assert isinstance(LiteLLMProvider._map_error(body), ModelOutputRejected)
+
+
 # ---------------------------------------------------------------------------
 # count_tokens
 # ---------------------------------------------------------------------------
