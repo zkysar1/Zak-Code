@@ -44,6 +44,79 @@ _CAPABILITIES: dict[str, Capabilities] = {
         context_window=16_385,
         max_output=4_096,
     ),
+    # --- Anthropic (Claude) ---
+    # Context windows deliberately pin the STANDARD (no-beta-header) 200k window:
+    # litellm's metadata DB advertises the 1M long-context beta for the 4.x family,
+    # but this runtime sends no beta header — budgeting against 1M would let the
+    # compactor fire too late and overflow the real request limit. A conservative
+    # pin costs only earlier compaction. (Audit P0-1a; acceptance: test_anthropic_registry.)
+    "claude-opus-4-8": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=200_000,
+        # litellm advertises 128k output for opus-4-8, but that (like the 1M window)
+        # rides a beta header this runtime does not send — pin the no-header limit
+        # for the same consistency reason as the window. (stack review minor #4)
+        max_output=64_000,
+    ),
+    "claude-sonnet-4-6": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=200_000,
+        max_output=64_000,
+    ),
+    "claude-sonnet-4-20250514": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=200_000,
+        max_output=64_000,
+    ),
+    "claude-haiku-4-5": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=200_000,
+        max_output=64_000,
+    ),
+    # --- Groq (hosted) ---
+    # Keyed WITH the ``groq/`` prefix (exact match fires before prefix-stripping in
+    # ``_lookup_key``) because the bare names are Groq catalog ids, not portable model
+    # names. Values mirror litellm's pricing/metadata DB, probed 2026-06-10, so they
+    # hold offline. (Audit P0-1a; acceptance: test_groq_registry.)
+    "groq/llama-3.3-70b-versatile": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=128_000,
+        max_output=32_768,
+    ),
+    "groq/llama-3.1-8b-instant": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=128_000,
+        max_output=8_192,
+    ),
+    "groq/openai/gpt-oss-120b": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=131_072,
+        max_output=32_766,
+    ),
+    "groq/qwen/qwen3-32b": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=131_000,
+        # litellm's DB claims max_output == context_window (131k/131k) — almost
+        # certainly a conflated field. Groq documents 40,960 max completion tokens
+        # for qwen3-32b; pin that. (stack review minor #5; re-probed 2026-06-10)
+        max_output=40_960,
+    ),
     # --- Ollama (local) ---
     "ollama_chat/llama3.1": Capabilities(
         supports_tools=True,

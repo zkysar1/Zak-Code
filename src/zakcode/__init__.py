@@ -57,6 +57,14 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+# Library logging etiquette (PR-4 review): a NullHandler on the package root so an
+# application that configures no logging sees NOTHING on stderr — Python's lastResort
+# handler would otherwise print every ``zakcode.*`` WARNING (e.g. permission denials,
+# which the CLI already renders in its own UI). Operators opt in by configuring
+# handlers/levels for the ``zakcode`` hierarchy; the library never configures global
+# logging and never silences anyone else's.
+logging.getLogger("zakcode").addHandler(logging.NullHandler())
+
 
 # Provider prefixes whose *native* (function-calling) tool path is unreliable via
 # litellm: they advertise tool support (``litellm.supports_function_calling`` returns
@@ -240,7 +248,13 @@ class Agent:
             extra_dangerous_patterns=compile_deny_patterns(self.settings.denied_commands),
             # Opt-in egress gate: confirm every web_fetch before it reaches the network.
             confirm_tools={"web_fetch"} if self.settings.web_fetch_confirm else None,
+            # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load.
+            tool_mode_overrides=dict(self.settings.tool_trust_overrides),
         )
+        # Rehydrate operator grants persisted with the session (audit P0-2d / D12 / Q5).
+        # Honored only when the active mode is at least as loose as the grant-time mode;
+        # a fresh session carries no grants, so this is a no-op there.
+        self.permission_policy.restore_grants(self.session.permission_grants)
         self.hook_manager = hook_manager or HookManager()
         # One-shot guard so aclose() (and its SESSION_END encode step) runs at most once.
         self._closed = False

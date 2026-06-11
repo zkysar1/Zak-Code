@@ -51,6 +51,8 @@ dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
   "pytest-timeout>=2.3",
+  "pytest-cov>=5.0",
+  "poethepoet>=0.27",
   "ruff>=0.5",
   "mypy>=1.10",
 ]
@@ -65,6 +67,8 @@ dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
   "pytest-timeout>=2.3",
+  "pytest-cov>=5.0",
+  "poethepoet>=0.27",
   "ruff>=0.5",
   "mypy>=1.10",
 ]
@@ -119,3 +123,21 @@ python_version = "3.11"
 packages = ["zakcode"]
 ignore_missing_imports = true
 warn_unused_ignores = true
+
+# Task runner (audit P2-3; acceptance 12): `uv run poe check` = the whole gate in one
+# command (the same four steps CLAUDE.md lists and CI runs). poethepoet was chosen over
+# Make (hostile on Windows, the primary dev box) and just (extra non-Python install).
+[tool.poe.tasks]
+lint = "ruff check ."
+format-check = "ruff format --check ."
+types = "mypy"
+test = "pytest -q"
+check = ["lint", "format-check", "types", "test"]
+# Coverage (audit P2-1; acceptance 13): terminal report locally; CI uploads XML.
+cov = "pytest -q --cov=zakcode --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/zakcode"]
+
+[tool.coverage.report]
+skip_empty = true

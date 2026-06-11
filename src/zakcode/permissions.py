@@ -28,7 +28,9 @@ Authorization combines two independent checks, and the stricter wins:
 2. **Dangerous-pattern blocklist.** Shell commands matching :data:`DANGEROUS_PATTERNS`
    (``rm -rf /``, ``sudo``, ``mkfs``, fork bombs, raw device writes, ``DROP TABLE`` …)
    can only ever *tighten* a decision: an otherwise-allowed catastrophic command is
-   escalated to a confirmation prompt (or denied in ``deny`` mode). It never loosens.
+   escalated to a confirmation prompt — except in ``autonomous`` mode, where it is a
+   deterministic hard DENY (no prompt exists to escalate to) — and is denied outright
+   in ``deny`` mode. It never loosens.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -58,12 +61,19 @@ class PermissionMode(StrEnum):
     * ``acceptEdits`` — read + workspace-write auto-allow; executing (shell) prompts.
     * ``allow`` — everything auto-allows (still subject to the dangerous-pattern
       blocklist, which escalates catastrophic commands to a prompt).
+    * ``autonomous`` — the unattended posture (audit P0-2a / D12): everything
+      auto-allows and NOTHING ever prompts. A dangerous-pattern match is a
+      deterministic hard DENY — returned as a recoverable tool error the model can
+      adapt to, identical with or without a prompter, which is what makes the mode
+      testable and safe headless. Contrast ``allow``, where a present operator may
+      interactively approve a catastrophic command; ``autonomous`` never can.
     """
 
     DENY = "deny"
     ASK = "ask"
     ACCEPT_EDITS = "acceptEdits"
     ALLOW = "allow"
+    AUTONOMOUS = "autonomous"
 
     @classmethod
     def parse(cls, value: str | PermissionMode | None) -> PermissionMode:
@@ -99,15 +109,29 @@ _MODE_CEILING: dict[PermissionMode, PermissionTier] = {
     PermissionMode.ASK: PermissionTier.READ_ONLY,
     PermissionMode.ACCEPT_EDITS: PermissionTier.WORKSPACE_WRITE,
     PermissionMode.ALLOW: PermissionTier.DANGER_FULL_ACCESS,
+    PermissionMode.AUTONOMOUS: PermissionTier.DANGER_FULL_ACCESS,
 }
 
 #: What a tier *above* the ceiling resolves to, per mode. ``deny`` blocks outright;
-#: every other mode prompts (and ``allow`` never reaches here — its ceiling is max).
+#: every other mode prompts (``allow``/``autonomous`` never reach here — their ceiling
+#: is max; ``autonomous`` maps to DENY anyway: it must never produce a prompt).
 _ABOVE_CEILING: dict[PermissionMode, PermissionDecision] = {
     PermissionMode.DENY: PermissionDecision.DENY,
     PermissionMode.ASK: PermissionDecision.ASK,
     PermissionMode.ACCEPT_EDITS: PermissionDecision.ASK,
     PermissionMode.ALLOW: PermissionDecision.ASK,
+    PermissionMode.AUTONOMOUS: PermissionDecision.DENY,
+}
+
+#: Looseness rank for grant-restore filtering (D12): a persisted grant recorded under
+#: mode X is honored only while the ACTIVE mode is at least as loose as X — a session
+#: resumed under a TIGHTER posture re-asks (or denies) instead of inheriting grants.
+_MODE_LOOSENESS: dict[PermissionMode, int] = {
+    PermissionMode.DENY: 0,
+    PermissionMode.ASK: 1,
+    PermissionMode.ACCEPT_EDITS: 2,
+    PermissionMode.ALLOW: 3,
+    PermissionMode.AUTONOMOUS: 4,
 }
 
 
@@ -257,9 +281,16 @@ class PermissionPolicy:
         dangerous_patterns: list[tuple[re.Pattern[str], str]] | None = None,
         extra_dangerous_patterns: list[tuple[re.Pattern[str], str]] | None = None,
         confirm_tools: set[str] | None = None,
+        tool_mode_overrides: dict[str, PermissionMode | str] | None = None,
     ) -> None:
         self.mode = PermissionMode.parse(mode)
         self.prompter = prompter
+        # Per-tool trust overrides (audit P0-2b / D12): the named tool is judged under
+        # ITS mode instead of the session mode — both directions (loosen or tighten).
+        # The dangerous-command floor in an autonomous SESSION is never loosenable.
+        self.tool_mode_overrides: dict[str, PermissionMode] = {
+            name: PermissionMode.parse(value) for name, value in (tool_mode_overrides or {}).items()
+        }
         # ``dangerous_patterns`` REPLACES the baseline (advanced); the common path
         # leaves it None and uses the built-in list. ``extra_dangerous_patterns`` is
         # APPENDED, so operator/project deny rules (see ``compile_deny_patterns``)
@@ -275,6 +306,10 @@ class PermissionPolicy:
         # grants stay keyed by the exact (tool, args) so a block is narrow.
         self._session_allow: set[str] = set()
         self._session_deny: set[str] = set()
+        # Persistable record of every operator grant (audit P0-2d / D12 / Q5): the
+        # sets above drive runtime decisions; this log is what survives a restart
+        # (exported into the session document, rehydrated via restore_grants).
+        self._grant_log: list[dict[str, str]] = []
 
     def child_view(self) -> PermissionPolicy:
         """A policy for a delegated child: same immutable posture, isolated session grants.
@@ -290,6 +325,7 @@ class PermissionPolicy:
             prompter=self.prompter,
             dangerous_patterns=self.dangerous_patterns,
             confirm_tools=self._confirm_tools,
+            tool_mode_overrides=dict(self.tool_mode_overrides),
         )
 
     # ── public read accessors (so clients never touch the private sets) ────────
@@ -313,7 +349,12 @@ class PermissionPolicy:
         if self._key(tool_name, arguments) in self._session_deny:
             return False
         if tool_name in self._session_allow and self._dangerous_reason(arguments) is None:
-            return True
+            # Mirror authorize()'s grant guard (stack review minor #1): a grant may
+            # only ever resolve ASK→ALLOW, so this read-only hint must also re-decide —
+            # else the recipe harness-run could auto-fire a call that authorize would
+            # statically DENY (e.g. a grant restored into a tighter posture).
+            decision, _ = self.decide(spec, arguments)
+            return decision is not PermissionDecision.DENY
         decision, _ = self.decide(spec, arguments)
         return decision is PermissionDecision.ALLOW
 
@@ -346,26 +387,42 @@ class PermissionPolicy:
     def decide(self, spec: ToolSpec | None, arguments: dict) -> tuple[PermissionDecision, str]:
         """Return the static (pre-prompt, stateless) verdict and a human reason.
 
-        The dangerous-pattern check only ever tightens the tier/mode verdict.
+        The dangerous-pattern check only ever tightens the tier/mode verdict. A
+        per-tool trust override (``tool_mode_overrides``) substitutes the EFFECTIVE
+        mode for the named tool — but when the SESSION mode is ``autonomous``, a
+        dangerous-pattern match is a hard DENY regardless of any per-tool loosening
+        (D12 invariant: overrides cannot loosen the dangerous floor in autonomous).
         """
+        tool_name = spec.name if spec is not None else "<unknown>"
+        mode = self.tool_mode_overrides.get(tool_name, self.mode)
         tier = self._required_tier(spec)
-        ceiling = _MODE_CEILING[self.mode]
-        base = PermissionDecision.ALLOW if tier <= ceiling else _ABOVE_CEILING[self.mode]
+        ceiling = _MODE_CEILING[mode]
+        base = PermissionDecision.ALLOW if tier <= ceiling else _ABOVE_CEILING[mode]
 
         # Operator-requested confirm-on-every-call tools (e.g. web_fetch egress). Tighten-only,
         # like the dangerous-pattern check: blocked outright in ``deny`` mode, otherwise escalated
-        # to a (session-grantable) prompt. Never loosens an existing ASK/DENY.
-        tool_name = spec.name if spec is not None else "<unknown>"
+        # to a (session-grantable) prompt. Never loosens an existing ASK/DENY. ``autonomous``
+        # never prompts, so a required confirmation there fails closed deterministically.
         confirm_escalated = False
         if tool_name in self._confirm_tools and base is PermissionDecision.ALLOW:
-            if self.mode is PermissionMode.DENY:
+            if mode is PermissionMode.DENY:
                 return (PermissionDecision.DENY, f"'{tool_name}' is blocked in 'deny' mode")
+            if PermissionMode.AUTONOMOUS in (mode, self.mode):
+                return (
+                    PermissionDecision.DENY,
+                    f"'{tool_name}' requires per-call confirmation, which 'autonomous' "
+                    "mode never prompts for",
+                )
             base = PermissionDecision.ASK
             confirm_escalated = True
 
         danger = self._dangerous_reason(arguments)
         if danger is not None:
-            if self.mode is PermissionMode.DENY or base is PermissionDecision.DENY:
+            # D12: in autonomous (session-wide or per-tool), a catastrophic match is a
+            # deterministic hard DENY — never a prompt, attended or headless.
+            if PermissionMode.AUTONOMOUS in (mode, self.mode):
+                return (PermissionDecision.DENY, f"blocked dangerous command: {danger}")
+            if mode is PermissionMode.DENY or base is PermissionDecision.DENY:
                 return (PermissionDecision.DENY, f"blocked dangerous command: {danger}")
             # Force a confirmation even if tier/mode would have auto-allowed.
             return (PermissionDecision.ASK, f"dangerous command: {danger}")
@@ -373,10 +430,10 @@ class PermissionPolicy:
         if base is PermissionDecision.ALLOW:
             return (base, "")
         if base is PermissionDecision.DENY:
-            return (base, f"'{tier.name}' is blocked in '{self.mode.value}' mode")
+            return (base, f"'{tier.name}' is blocked in '{mode.value}' mode")
         if confirm_escalated:
             return (base, f"'{tool_name}' requires confirmation before reaching the network")
-        return (base, f"'{tier.name}' requires confirmation in '{self.mode.value}' mode")
+        return (base, f"'{tier.name}' requires confirmation in '{mode.value}' mode")
 
     # ── stateful authorization ────────────────────────────────────────────────
 
@@ -402,20 +459,28 @@ class PermissionPolicy:
         if key in self._session_deny:
             return (False, "denied for this session")
         # A session 'allow' grant covers the whole TOOL for the rest of the session, so
-        # the operator is not re-prompted for every new path/command. The dangerous-
-        # command blocklist is NEVER waived by a grant: a dangerous call re-decides
-        # below, so "allow bash for the session" still cannot silently run a blocked one.
+        # the operator is not re-prompted for every new path/command. Two things a grant
+        # can NEVER waive (D12: grants resolve ASK→ALLOW only): the dangerous-command
+        # blocklist (a dangerous call re-decides below), and a static DENY — re-decide
+        # so a grant restored into a tighter posture cannot override a hard block.
         if tool_name in self._session_allow and self._dangerous_reason(arguments) is None:
+            decision, reason = self.decide(spec, arguments)
+            if decision is PermissionDecision.DENY:
+                return (False, reason)
             return (True, "allowed for this session")
 
         decision, reason = self.decide(spec, arguments)
         if decision is PermissionDecision.ALLOW:
             return (True, "")
         if decision is PermissionDecision.DENY:
+            # Operator-facing audit trail (audit P1-5; D12 asks for the autonomous
+            # hard-deny to be logged): the model only sees the recoverable error.
+            logger.warning("denied %r in '%s' mode: %s", tool_name, self.mode.value, reason)
             return (False, reason)
 
         # decision is ASK → need the operator. No prompter ⇒ fail closed.
         if self.prompter is None:
+            logger.warning("denied %r (no prompter to escalate to): %s", tool_name, reason)
             return (False, f"requires confirmation but none is available: {reason}")
 
         request = PermissionRequest(
@@ -427,13 +492,71 @@ class PermissionPolicy:
         outcome = await self.prompter.confirm(request)
         if outcome is PermissionOutcome.ALLOW_SESSION:
             self._session_allow.add(tool_name)  # grant the whole tool, not the exact args
+            self._record_grant("allow", tool_name, "*")
             return (True, "")
         if outcome is PermissionOutcome.ALLOW_ONCE:
             return (True, "")
         if outcome is PermissionOutcome.DENY_SESSION:
             self._session_deny.add(key)
+            self._record_grant("deny", tool_name, key)
             return (False, "denied for this session by the operator")
         return (False, "denied by the operator")
+
+    # ── grant persistence (audit P0-2d / D12 / Q5) ─────────────────────────────
+
+    def _record_grant(self, kind: str, tool: str, args_scope: str) -> None:
+        self._grant_log.append(
+            {
+                "kind": kind,
+                "tool": tool,
+                "args_scope": args_scope,
+                "mode_at_grant": self.mode.value,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
+
+    def export_grants(self) -> list[dict[str, str]]:
+        """The operator's session grants as persistable records.
+
+        Record shape (D12): ``{kind: allow|deny, tool, args_scope ('*' for a
+        whole-tool allow; the exact ``tool::args`` key for a deny), mode_at_grant,
+        timestamp}``. The loop snapshots this into the session document on every
+        persist, so grants survive a restart.
+        """
+        return [dict(record) for record in self._grant_log]
+
+    def restore_grants(self, records: list[dict[str, str]] | None) -> int:
+        """Rehydrate persisted grants under the D12 constraints; returns how many held.
+
+        An 'allow' grant is honored only when the ACTIVE mode is at least as loose as
+        the mode it was granted under — a session resumed under a tighter posture
+        re-asks (or denies) instead of inheriting looser-mode grants. 'deny' grants
+        are always kept (keeping a block can only tighten). Grants can still never
+        waive the dangerous blocklist or a static DENY (see :meth:`authorize`).
+        Malformed records are skipped, never fatal — dropping a grant only re-asks.
+        """
+        kept = 0
+        for record in records or []:
+            if not isinstance(record, dict):
+                continue
+            if record in self._grant_log:
+                continue  # dedup: a doc with repeated records must not grow the log
+            kind = record.get("kind")
+            tool = record.get("tool")
+            scope = record.get("args_scope")
+            if kind == "deny" and isinstance(scope, str) and scope:
+                self._session_deny.add(scope)
+                self._grant_log.append(dict(record))
+                kept += 1
+                continue
+            if kind != "allow" or not isinstance(tool, str) or not tool:
+                continue
+            granted_under = PermissionMode.parse(record.get("mode_at_grant"))
+            if _MODE_LOOSENESS[self.mode] >= _MODE_LOOSENESS[granted_under]:
+                self._session_allow.add(tool)
+                self._grant_log.append(dict(record))
+                kept += 1
+        return kept
 
 
 __all__ = [

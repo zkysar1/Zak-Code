@@ -12,7 +12,9 @@ their results are validated/narrowed explicitly before use.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -50,6 +52,8 @@ from zakcode.usage import Usage
 # rather than raising. Set once at import time. ``setattr`` avoids a spurious
 # attr-defined error (litellm ships no type stubs for this module global).
 setattr(litellm, "drop_params", True)  # noqa: B010
+
+logger = logging.getLogger("zakcode.providers")
 
 
 # Resolve litellm's exception classes defensively. Older/newer versions may not
@@ -325,11 +329,18 @@ class LiteLLMProvider(Provider):
             finish_reason = str(fr) if fr is not None else None
 
         text = ""
+        thinking = ""
         tool_calls: list[ToolCall] = []
         if message is not None:
             content = _get(message, "content")
             if isinstance(content, str):
                 text = content
+            # litellm normalizes provider-side reasoning (Anthropic extended thinking,
+            # Groq-hosted reasoning models) onto ``message.reasoning_content``. Capture
+            # it separately so it never pollutes the assistant text. (audit P0-1d)
+            reasoning = _get(message, "reasoning_content")
+            if isinstance(reasoning, str):
+                thinking = reasoning
             tool_calls = cls._parse_tool_calls(_get(message, "tool_calls"))
 
         raw: dict[str, Any] | None = None
@@ -344,6 +355,7 @@ class LiteLLMProvider(Provider):
 
         return LLMResult(
             text=text,
+            thinking=thinking,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=cls._extract_usage(response),
@@ -487,12 +499,24 @@ class LiteLLMProvider(Provider):
             wire_messages, tools, response_format=response_format, **kw
         )
 
+        start = time.perf_counter()
         try:
             response = await litellm.acompletion(**call_kwargs)
         except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
             raise self._map_error(exc) from exc
 
-        return self._normalize(response)
+        result = self._normalize(response)
+        # Operator-facing call accounting (audit P1-5). Message contents are never
+        # logged — model, latency, token counts, and litellm-computed cost only.
+        logger.debug(
+            "%s: %.2fs, %d+%d tokens, $%.6f",
+            self.model,
+            time.perf_counter() - start,
+            result.usage.prompt_tokens,
+            result.usage.completion_tokens,
+            result.usage.cost_usd,
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Streaming: litellm chunk stream -> ProviderStreamEvent stream
@@ -526,6 +550,11 @@ class LiteLLMProvider(Provider):
             content = _get(delta, "content")
             if isinstance(content, str) and content:
                 events.append(StreamTextDelta(text=content))
+            # DELIBERATE (stack review minor #6): a delta carrying only
+            # ``reasoning_content`` yields no event — the provider event model has no
+            # StreamThinkingDelta (yet), and reasoning must never surface as assistant
+            # text. The buffered path captures it on ``LLMResult.thinking``; streaming
+            # clients see reasoning models "pause" until real text starts.
 
             raw_tool_calls = _get(delta, "tool_calls")
             if raw_tool_calls:

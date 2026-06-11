@@ -46,6 +46,12 @@ Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) before making structural cha
 ## Quick verification (run before declaring work done)
 
 ```bash
+uv run poe check     # lint + format-check + types + tests, in one command
+```
+
+Or the individual steps:
+
+```bash
 uv run ruff check .
 uv run mypy
 uv run pytest

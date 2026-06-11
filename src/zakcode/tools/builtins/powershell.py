@@ -106,6 +106,7 @@ class PowerShellTool(Tool):
                 timeout=timeout,
                 stdin_text=command,
                 extra_env=ctx.egress_env,
+                drop_env=ctx.scrub_env,
             )
         except CommandTimeout:
             return ToolResult.error(

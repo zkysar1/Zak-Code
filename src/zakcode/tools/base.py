@@ -24,6 +24,7 @@ Design rules (see ``docs/ARCHITECTURE.md`` / ``docs/GUARDRAILS.md``):
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path
@@ -32,6 +33,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, model_validator
 
 from zakcode.config import PermissionTier
+
+logger = logging.getLogger("zakcode.tools")
 
 if TYPE_CHECKING:
     # Only for the spawner's return annotation. Importing at runtime would be a
@@ -155,6 +158,12 @@ class ToolContext(BaseModel):
     #: Extra environment for subprocess tools (bash/powershell) — e.g. ``HTTP(S)_PROXY`` pointing
     #: at the egress proxy when the network-egress sandbox is on. Empty for an ordinary turn.
     egress_env: dict[str, str] = Field(default_factory=dict)
+    #: Environment-variable NAMES removed from the inherited environment before a
+    #: subprocess tool spawns its child (the provider-key scrub — see RISKS / GUARDRAILS
+    #: §6). Built by the loop from ``zakcode.secrets.provider_key_env_names``; empty when
+    #: the operator opted out via ``subprocess_inherit_provider_keys=true``. Removal runs
+    #: LAST, after ``egress_env`` is overlaid, so nothing can resurrect a scrubbed key.
+    scrub_env: list[str] = Field(default_factory=list)
 
     @property
     def all_workspace_roots(self) -> list[Path]:
@@ -328,6 +337,10 @@ class ToolRegistry:
         try:
             return await tool.execute(args, ctx)
         except Exception as exc:  # noqa: BLE001 — handlers must never crash the loop
+            # The model sees the wrapped error and adapts; the OPERATOR gets the real
+            # traceback here — previously this was the codebase's largest silent
+            # swallow (audit P1-5: instrument the bare except handlers).
+            logger.exception("tool %r raised (wrapped into an error ToolResult)", name)
             return ToolResult.error(f"{type(exc).__name__}: {exc}")
 
     def subset(self, names: list[str]) -> ToolRegistry:
