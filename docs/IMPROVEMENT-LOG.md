@@ -66,7 +66,7 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 | PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | **implemented + fresh-eyes reviewed** (PR #5; review fixes in `8f8c245`: streaming refund symmetry, `error` on AgentDone/ChatResponse, per-attempt accumulators, retry-layering docs) | 
 | PR-3 | `PermissionMode.AUTONOMOUS` (D12 hard-deny semantics) + `tool_trust_overrides` + grant persistence (Q5 approved) + subprocess provider-key env scrub w/ opt-out | M-L | **implemented** (branch `pr-3-autonomous-permissions`; 13 new tests incl. acceptance names `test_autonomous_mode` / `test_trust_tiers` / `test_grant_persistence`; 1442 green). Implementation notes: effective-mode = per-tool override else session mode; autonomous (session OR per-tool) → dangerous = hard DENY and confirm_tools fail closed; grants re-decide so they can never override a static DENY; restore filters by `_MODE_LOOSENESS` rank (deny grants always kept); scrub list = `secrets.provider_key_env_names` (exact names + `*_API_KEY` suffix), applied LAST in `_proc.run_capturing` via `ToolContext.scrub_env`; RISKS row → Mitigating |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | **implemented** (branch `pr-4-skills-logging`; acceptance 9 `test_skill_extras` passes by name; extras round-trip through `save_skill`; logging = targeted not exhaustive (D16): registry.execute traceback (the biggest silent swallow), permission denials w/ mode, loop iteration/turn-end lines, provider call latency+tokens+cost at debug — never message contents; 1450 green) |
-| PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md, starlette/httpx2 dep bump | S (batched) | not started |
+| PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md | S (batched) | **implemented** (branch `pr-5-tooling`): `poe check` one-command gate (acceptance 12), `poe cov` + CI coverage artifact (acceptance 13), `test_version_sync` (P2-2), windows-latest 3.11 CI cell with job-level timeout (GNU `timeout` absent there — split pytest steps), `docs/CONFIG.md` + BOTH-direction completeness tests (fields↔doc), CLAUDE.md gains the one-command gate. **Deferred:** the starlette/httpx2 testclient deprecation warning (test-only, harmless; blind dep churn in the last phase loses) — D17. 1453 green |
 
 Sequencing: PR-0 → PR-1 → PR-2 → PR-3 → PR-4 → PR-5. PR-1/2/3 are file-disjoint
 enough to overlap if needed (registry+cli / loop+provider / permissions+config+session).
@@ -312,6 +312,13 @@ PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
   turn-end lines (debug/info), and provider call accounting (model, latency, token
   counts, cost — message contents never logged). The remaining handlers are
   best-effort-by-design paths (hooks, compaction, lessons) that already log.
+- **D17 (2026-06-10, agent — PR-5 scope):** task runner = **poethepoet** (Make is
+  hostile on Windows — the primary dev box; `just` adds a non-Python install; poe
+  rides the existing uv dev group). The starlette/httpx2 testclient deprecation
+  warning is DEFERRED: it is test-only and harmless, and a blind dependency bump in
+  the final phase risks more than it fixes — revisit when the server deps are next
+  touched. CI coverage uploads from one cell (linux/3.11) — an artifact per cell
+  adds noise, not signal.
 - **D13 (2026-06-10, agent — PR #3 scope question resolved by revert):**
   `.env.example`'s uncommented default model reverted to `ollama_chat/llama3.1`
   (matches the code default; fresh-install posture unchanged). Flipping the
