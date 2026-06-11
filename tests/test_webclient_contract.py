@@ -65,6 +65,12 @@ def test_client_speaks_ws_protocol_verbs() -> None:
     assert sent <= valid, (sent, valid)
 
 
+def test_client_can_interrupt_a_turn() -> None:
+    # The Stop button sends the WS interrupt frame the server's bridge parses.
+    html = _html()
+    assert '"type": "interrupt"' in html or 'type: "interrupt"' in html
+
+
 def test_client_creates_session_via_rest() -> None:
     # The thin client bootstraps a session through the documented REST endpoint.
     html = _html()
