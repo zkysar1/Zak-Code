@@ -214,6 +214,7 @@ class Agent:
         memory_provider: MemoryProvider | None = None,
         enable_compaction: bool = False,
         enable_settings_hooks: bool = False,
+        agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
     ) -> None:
         self.settings = settings or load_settings(**setting_overrides)
@@ -324,7 +325,9 @@ class Agent:
         elif enable_identity:
             from zakcode.identity import load_identity
 
-            self.identity, self.identity_error = load_identity(self.settings.workspace_root)
+            self.identity, self.identity_error = load_identity(
+                self.settings.workspace_root, agent_identity_dir=agent_identity_dir
+            )
             # An operator-authored self.md that fails to load (unreadable, or empty after
             # frontmatter) is a silent footgun: the intended persona is gone with no signal.
             # Log it like rule-discovery failures so it surfaces; clients (e.g. the CLI banner)
