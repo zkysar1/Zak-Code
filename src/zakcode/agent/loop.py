@@ -1049,6 +1049,7 @@ class AgentLoop:
         turn_usage = Usage()
         iterations = 0
         stop_reason = "max_iterations"
+        turn_error = ""
 
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
@@ -1092,8 +1093,6 @@ class AgentLoop:
                 system = self._build_system(restrict_now)
                 call_messages = await self._messages_for_call(user_text, iterations)
 
-                text_parts: list[str] = []
-                accumulator = ToolCallAccumulator()
                 provider_failure: str | None = None
                 retry_attempts = 0
 
@@ -1101,7 +1100,11 @@ class AgentLoop:
                 # is only safe while NO event has arrived yet — once deltas streamed to
                 # the client, re-issuing the call would re-yield text the client already
                 # rendered, so a mid-stream failure is terminal for the turn instead.
+                # The accumulators are rebuilt per attempt so a retried call can never
+                # inherit partial state (defense in depth on top of the no-event gate).
                 while True:
+                    text_parts: list[str] = []
+                    accumulator = ToolCallAccumulator()
                     received_any = False
                     try:
                         async for ev in self.provider.astream(
@@ -1151,8 +1154,10 @@ class AgentLoop:
                     # the last message boundary; the partial streamed text (if any) is
                     # NOT persisted — the failed turn left no assistant message.
                     stop_reason = "provider_error"
+                    turn_error = provider_failure
                     logger.error("turn aborted by provider error: %s", provider_failure)
                     yield AgentStatus(message=f"stopping: provider error — {provider_failure}")
+                    self._refund_iteration()  # no model work happened (buffered twin)
                     break
 
                 tool_calls = accumulator.finalize()
@@ -1275,6 +1280,7 @@ class AgentLoop:
             stop_reason=stop_reason,
             iterations=iterations,
             usage=turn_usage,
+            error=turn_error,
             degraded=stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
         )
 

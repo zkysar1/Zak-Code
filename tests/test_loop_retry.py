@@ -222,3 +222,55 @@ def test_streaming_exhausted_retries_end_gracefully(fast_sleep: list[float]) -> 
     done = events[-1]
     assert done.stop_reason == "provider_error"
     assert provider.stream_calls == 2  # initial + 1 retry
+
+
+def test_streaming_done_event_carries_error_detail(fast_sleep: list[float]) -> None:
+    """A client consuming only the terminal event still learns WHY the turn failed."""
+    provider = FlakyStreamProvider([AuthError("key revoked")])
+    loop = _make_loop(provider)
+    done = asyncio.run(_collect(loop, "hi"))[-1]
+    assert done.stop_reason == "provider_error"
+    assert "key revoked" in done.error
+    # And a clean turn leaves it empty.
+    ok = _make_loop(FlakyStreamProvider([]))
+    done = asyncio.run(_collect(ok, "hi"))[-1]
+    assert done.stop_reason == "completed" and done.error == ""
+
+
+# ── shared-budget symmetry (review #5 finding: refund on both paths) ──────────
+
+
+def test_provider_error_refunds_shared_budget_buffered(fast_sleep: list[float]) -> None:
+    from zakcode.agent.budget import IterationBudget
+
+    budget = IterationBudget(10)
+    provider = FlakyProvider([AuthError("boom")])
+    settings = load_settings(workspace_root=Path.cwd())
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        Session(cwd="/tmp/work", model="test/model"),
+        settings=settings,
+        budget=budget,
+    )
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "provider_error"
+    assert budget.remaining == 10  # the no-work iteration was refunded
+
+
+def test_provider_error_refunds_shared_budget_streaming(fast_sleep: list[float]) -> None:
+    from zakcode.agent.budget import IterationBudget
+
+    budget = IterationBudget(10)
+    provider = FlakyStreamProvider([AuthError("boom")])
+    settings = load_settings(workspace_root=Path.cwd())
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        Session(cwd="/tmp/work", model="test/model"),
+        settings=settings,
+        budget=budget,
+    )
+    done = asyncio.run(_collect(loop, "hi"))[-1]
+    assert done.stop_reason == "provider_error"
+    assert budget.remaining == 10  # symmetric with the buffered path

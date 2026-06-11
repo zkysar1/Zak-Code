@@ -168,3 +168,14 @@ def test_ws_action_required_from_request() -> None:
     assert frame.tier == "DANGER_FULL_ACCESS"
     assert frame.arguments == {"command": "rm x"}
     assert frame.reason == "danger tier"
+
+
+def test_chat_response_carries_provider_error_detail() -> None:
+    """ChatResponse.from_turn maps TurnResult.error so a REST consumer can tell a
+    rate-limit from an auth failure without reading server logs (PR-2 review)."""
+    failed = TurnResult(stop_reason="provider_error", error="RateLimited: 429", degraded=True)
+    resp = ChatResponse.from_turn("s1", failed)
+    assert resp.stop_reason == "provider_error"
+    assert resp.error == "RateLimited: 429"
+    clean = ChatResponse.from_turn("s1", TurnResult())
+    assert clean.error == ""

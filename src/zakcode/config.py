@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     # Bounded retry for RATE-LIMITED provider calls only (a 429 is the one failure
     # class where waiting is the documented remedy). Other provider errors are never
     # retried — they end the turn gracefully with stop_reason="provider_error".
+    # This is THE retry mechanism: litellm's own ``num_retries`` stays 0 so the two
+    # layers can never compound (see the Provider ABC docstring on retry layering).
     provider_max_retries: int = Field(
         default=3,
         ge=0,
