@@ -349,7 +349,12 @@ class PermissionPolicy:
         if self._key(tool_name, arguments) in self._session_deny:
             return False
         if tool_name in self._session_allow and self._dangerous_reason(arguments) is None:
-            return True
+            # Mirror authorize()'s grant guard (stack review minor #1): a grant may
+            # only ever resolve ASK→ALLOW, so this read-only hint must also re-decide —
+            # else the recipe harness-run could auto-fire a call that authorize would
+            # statically DENY (e.g. a grant restored into a tighter posture).
+            decision, _ = self.decide(spec, arguments)
+            return decision is not PermissionDecision.DENY
         decision, _ = self.decide(spec, arguments)
         return decision is PermissionDecision.ALLOW
 

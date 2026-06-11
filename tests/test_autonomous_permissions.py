@@ -315,3 +315,25 @@ def test_restore_is_idempotent_across_save_cycles() -> None:
     third = PermissionPolicy(PermissionMode.ASK)
     third.restore_grants(second.export_grants())
     assert len(third.export_grants()) == 1  # stable across generations
+
+
+def test_auto_allows_grant_cannot_override_static_deny() -> None:
+    """Stack review minor #1: auto_allows (the recipe harness-run's read-only hint)
+    mirrors authorize's grant guard — a grant restored into a deny posture must not
+    let the harness auto-fire what authorize would statically DENY."""
+    record = {
+        "kind": "allow",
+        "tool": "bash",
+        "args_scope": "*",
+        "mode_at_grant": "deny",
+        "timestamp": "2026-06-10T00:00:00+00:00",
+    }
+    policy = PermissionPolicy(PermissionMode.DENY)
+    policy.restore_grants([record])
+    assert policy.auto_allows(SHELL, BENIGN) is False  # consistent with authorize()
+    # And under the grant-time mode it still reports True for a benign granted call.
+    looser = PermissionPolicy(PermissionMode.ASK)
+    looser.restore_grants(
+        [{"kind": "allow", "tool": "bash", "args_scope": "*", "mode_at_grant": "ask"}]
+    )
+    assert looser.auto_allows(SHELL, BENIGN) is True

@@ -100,7 +100,7 @@ def strip_url_credentials(url: str | None) -> str | None:
         return url
 
 
-__all__ = ["redact_secrets", "strip_url_credentials"]
+__all__ = ["provider_key_env_names", "redact_secrets", "strip_url_credentials"]
 
 
 # ── subprocess env hygiene (RISKS: provider keys reach subprocesses) ──────────
@@ -119,6 +119,15 @@ def provider_key_env_names(environ: Mapping[str, str] | None = None) -> list[str
     added provider's key is scrubbed without a code change. Used to build the env-scrub
     list handed to subprocess tools (GUARDRAILS §6; opt out via
     ``ZAKCODE_SUBPROCESS_INHERIT_PROVIDER_KEYS=true``).
+
+    DELIBERATELY NARROW (stack review minor #3): workflow credentials such as
+    ``AWS_SECRET_ACCESS_KEY``/``AWS_SESSION_TOKEN`` are NOT scrubbed. The scrub
+    targets MODEL-provider keys whose presence in the env is zakcode's own doing
+    (``.env`` loading) and which no agent-run script should need; AWS/cloud creds are
+    operator-managed workflow credentials, and agent-run CLIs (``aws s3 ...``) using
+    them is a first-class use case in this household — and the opt-out is global, so
+    scrubbing them by default would force all-or-nothing. Tighten per-deployment with
+    the egress controls instead; revisit if a per-name opt-out ever lands.
     """
     env = os.environ if environ is None else environ
     return sorted(n for n in env if n in _PROVIDER_KEY_ENV_EXACT or n.endswith("_API_KEY"))
