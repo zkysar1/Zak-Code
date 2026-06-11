@@ -87,8 +87,16 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     Secret-safe: provider keys are reported as ``set (<source>)`` / ``not set``
     only — the source names where the value came from, never what it is.
     """
+    if settings.default_model == "auto":
+        # Resolve live (read-only probes) so the panel answers "which model WOULD
+        # run here, and why" — the diagnosis story for the auto sentinel.
+        from zakcode.providers.resolve import describe_resolution
+
+        model_row = describe_resolution(settings)
+    else:
+        model_row = settings.default_model
     rows: list[tuple[str, str]] = [
-        ("Model", settings.default_model),
+        ("Model", model_row),
         ("Provider", settings.provider),
         ("API base", strip_url_credentials(settings.api_base) or "(default for provider)"),
         ("Fallback model", settings.fallback_model or "(none)"),
@@ -823,14 +831,20 @@ def chat(
     extra_skill_dirs = skill_dir if skill_dir else None
     extra_roots = extra_root if extra_root else None
     prompter = ConsolePermissionPrompter(console)
-    agent = _build_chat_agent(
-        prompter,
-        overrides,
-        enable_memory=not no_memory,
-        enable_rules=not no_rules,
-        extra_skill_dirs=extra_skill_dirs,
-        extra_workspace_roots=extra_roots,
-    )
+    try:
+        agent = _build_chat_agent(
+            prompter,
+            overrides,
+            enable_memory=not no_memory,
+            enable_rules=not no_rules,
+            extra_skill_dirs=extra_skill_dirs,
+            extra_workspace_roots=extra_roots,
+        )
+    except ProviderError as exc:
+        # The loud startup failure for default_model='auto' with nothing viable:
+        # the diagnosis (per-source reasons + key provenance) IS the message.
+        notice_error(console, "no model available", str(exc))
+        raise typer.Exit(code=1) from exc
     _print_banner(console, agent)
 
     # One event loop for the whole session (never one per turn) — see

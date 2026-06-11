@@ -52,13 +52,30 @@ class Settings(BaseSettings):
     )
 
     # ── Model / provider (vendor-agnostic via litellm) ──────────────────────
+    # ``"auto"`` engages the availability resolver (PKG-AUTO): local Ollama if up,
+    # else the first viable external per ``auto_model_preference`` — see
+    # ``zakcode.providers.resolve``. The default stays an explicit model for now;
+    # flipping the out-of-the-box default to ``auto`` is a one-line decision later.
     default_model: str = Field(
         default="ollama_chat/llama3.1",
-        description="Primary litellm model string, e.g. 'ollama_chat/llama3.1' or 'openai/gpt-4o'.",
+        description=(
+            "Primary litellm model string (e.g. 'ollama_chat/llama3.1', 'openai/gpt-4o'), "
+            "or 'auto' to resolve by availability at startup."
+        ),
     )
     fallback_model: str | None = Field(
         default=None,
-        description="Optional model to retry with if the primary call errors.",
+        description=(
+            "Optional model to switch to when the primary call errors. With "
+            "default_model='auto' this is the EXPLICIT override of the auto chain: "
+            "runtime failover uses it (once per turn) before re-running auto resolution."
+        ),
+    )
+    # External-provider order the 'auto' resolver tries after local (D19). Names map to
+    # known sources in zakcode.providers.resolve. Comma/space/JSON list from the env.
+    auto_model_preference: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["groq", "openai", "anthropic"],
+        description="External provider order for default_model='auto' (after local).",
     )
     # Optional per-ROLE model overrides so a mind can route cheap/local models to cheap roles
     # and reserve the capable model for generation (the "three specialized models" pattern).
@@ -236,6 +253,7 @@ class Settings(BaseSettings):
         "allowed_models",
         "web_allowed_domains",
         "egress_allowed_domains",
+        "auto_model_preference",
         mode="before",
     )
     @classmethod

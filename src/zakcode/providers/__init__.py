@@ -23,6 +23,12 @@ from zakcode.providers.bitnet import BitNetProvider
 from zakcode.providers.claude_code import ClaudeCodeProvider, CompletionBridge
 from zakcode.providers.litellm_provider import LiteLLMProvider
 from zakcode.providers.registry import get_capabilities
+from zakcode.providers.resolve import (
+    AvailabilityResolver,
+    ModelResolutionError,
+    ModelResolver,
+    ResolvedModel,
+)
 from zakcode.providers.structured import (
     StructuredResult,
     StructuredValidationError,
@@ -41,6 +47,7 @@ from zakcode.providers.text_tools import (
 
 __all__ = [
     "AuthError",
+    "AvailabilityResolver",
     "BitNetProvider",
     "Capabilities",
     "ClaudeCodeProvider",
@@ -49,10 +56,13 @@ __all__ = [
     "LLMResult",
     "LiteLLMProvider",
     "ModelOutputRejected",
+    "ModelResolutionError",
+    "ModelResolver",
     "Provider",
     "ProviderError",
     "RateLimited",
     "RequestFailed",
+    "ResolvedModel",
     "StructuredResult",
     "StructuredValidationError",
     "TextToolCallingProvider",

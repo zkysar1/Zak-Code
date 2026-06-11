@@ -33,8 +33,9 @@ here — adding a Settings field without documenting it fails CI.
 
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
-| `default_model` | `ZAKCODE_DEFAULT_MODEL` | `ollama_chat/llama3.1` | Primary litellm model string (`provider/model`). |
-| `fallback_model` | `ZAKCODE_FALLBACK_MODEL` | unset | Model to retry with if the primary errors (wiring is internal-package scope — audit P0-3b). |
+| `default_model` | `ZAKCODE_DEFAULT_MODEL` | `ollama_chat/llama3.1` | Primary litellm model string (`provider/model`), or **`auto`** to resolve by availability at startup: local Ollama if up, else the first viable external per `auto_model_preference` (read-only probes — never a chat call; cached, re-probed on failure; tools-unreliable models skipped; nothing viable = loud startup failure with a per-source + key-provenance diagnosis). |
+| `fallback_model` | `ZAKCODE_FALLBACK_MODEL` | unset | Model to switch to (once per turn) when the primary call fails with a non-rate-limit error. With `default_model=auto` it is the explicit override of the auto chain — tried before auto re-resolution. |
+| `auto_model_preference` | `ZAKCODE_AUTO_MODEL_PREFERENCE` | `groq, openai, anthropic` | External provider order the `auto` resolver tries after local (comma/space/JSON list). |
 | `model_roles` | `ZAKCODE_MODEL_ROLES` | `{}` | Per-role overrides (JSON; keys `planner` / `subagent` / `summarizer`) so cheap roles can use a cheap model. |
 | `temperature` | `ZAKCODE_TEMPERATURE` | `0.0` | Sampling temperature, 0.0–2.0. |
 | `tool_calling_mode` | `ZAKCODE_TOOL_CALLING_MODE` | `auto` | `auto` \| `native` \| `text` — how tools reach the model; `auto` self-resolves per provider. |

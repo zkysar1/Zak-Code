@@ -68,7 +68,7 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 | PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | **implemented + fresh-eyes reviewed** (PR #5; review fixes in `8f8c245`: streaming refund symmetry, `error` on AgentDone/ChatResponse, per-attempt accumulators, retry-layering docs) | 
 | PR-3 | `PermissionMode.AUTONOMOUS` (D12 hard-deny semantics) + `tool_trust_overrides` + grant persistence (Q5 approved) + subprocess provider-key env scrub w/ opt-out | M-L | **implemented** (branch `pr-3-autonomous-permissions`; 13 new tests incl. acceptance names `test_autonomous_mode` / `test_trust_tiers` / `test_grant_persistence`; 1442 green). Implementation notes: effective-mode = per-tool override else session mode; autonomous (session OR per-tool) → dangerous = hard DENY and confirm_tools fail closed; grants re-decide so they can never override a static DENY; restore filters by `_MODE_LOOSENESS` rank (deny grants always kept); scrub list = `secrets.provider_key_env_names` (exact names + `*_API_KEY` suffix), applied LAST in `_proc.run_capturing` via `ToolContext.scrub_env`; RISKS row → Mitigating |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | **implemented** (branch `pr-4-skills-logging`; acceptance 9 `test_skill_extras` passes by name; extras round-trip through `save_skill`; logging = targeted not exhaustive (D16): registry.execute traceback (the biggest silent swallow), permission denials w/ mode, loop iteration/turn-end lines, provider call latency+tokens+cost at debug — never message contents; 1450 green) |
-| PR-6 | **PKG-AUTO** (omni's spec, 2026-06-10; Q6 resolution): `default_model: "auto"` sentinel — startup detection (cheap read-only probes: `/api/tags`, `/v1/models`; never a chat call) + cached, re-probed on failure; resolution = local if viable, else first viable external per configurable preference list (default groq → openai → anthropic), nothing viable → loud startup failure with key-panel diagnosis; resolution logged + in info panel with reason; runtime re-resolution (once per turn) on non-rate-limit ProviderError before the provider_error stop; **fallback_model RELEASED to external** (supersedes D11a) as the explicit-config override of the auto chain; resolver architected as a pluggable interface `(task category, capabilities) → model` with v1 = availability only — Zachary's "zakpick" vision (deep-think/quick-classify/embeddings/planner/coder/writer routing) must land later without API breakage; mocked-detection acceptance matrix + mid-session-fallback + explicit-bypass tests; consider cost-ceiling config; rider: quiet litellm botocore import warnings deliberately | M-L | not started (next after stack merges) |
+| PR-6 | **PKG-AUTO** (omni's spec, 2026-06-10; Q6 resolution): `default_model: "auto"` sentinel — startup detection (cheap read-only probes: `/api/tags`, `/v1/models`; never a chat call) + cached, re-probed on failure; resolution = local if viable, else first viable external per configurable preference list (default groq → openai → anthropic), nothing viable → loud startup failure with key-panel diagnosis; resolution logged + in info panel with reason; runtime re-resolution (once per turn) on non-rate-limit ProviderError before the provider_error stop; **fallback_model RELEASED to external** (supersedes D11a) as the explicit-config override of the auto chain; resolver architected as a pluggable interface `(task category, capabilities) → model` with v1 = availability only — Zachary's "zakpick" vision (deep-think/quick-classify/embeddings/planner/coder/writer routing) must land later without API breakage; mocked-detection acceptance matrix + mid-session-fallback + explicit-bypass tests; consider cost-ceiling config; rider: quiet litellm botocore import warnings deliberately | M-L | **implemented** (branch `feat-pkg-auto`, PR #17 — see the 2026-06-11 D21 entry below for deltas vs spec) |
 | PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md | S (batched) | **implemented** (branch `pr-5-tooling`): `poe check` one-command gate (acceptance 12), `poe cov` + CI coverage artifact (acceptance 13), `test_version_sync` (P2-2), windows-latest 3.11 CI cell with job-level timeout (GNU `timeout` absent there — split pytest steps), `docs/CONFIG.md` + BOTH-direction completeness tests (fields↔doc), CLAUDE.md gains the one-command gate. **Deferred:** the starlette/httpx2 testclient deprecation warning (test-only, harmless; blind dep churn in the last phase loses) — D17. 1453 green |
 
 Sequencing: PR-0 → PR-1 → PR-2 → PR-3 → PR-4 → PR-5. PR-1/2/3 are file-disjoint
@@ -556,3 +556,35 @@ cost-accounting test instead of a fallback table.
   providers package `__init__` — the one place guaranteed to run before litellm
   (the load_settings placement we first agreed on provably fired too late).
   Suite 1518 green.
+- **2026-06-11 (dev, D21 — PKG-AUTO implemented; rulings from omni's relay):**
+  `default_model: "auto"` lands per the PR-6 row (PR #17, entry drafted by
+  implementer per the new log convention). Shape: `providers/resolve.py` —
+  `AvailabilityResolver` behind a pluggable `ModelResolver` protocol
+  (`resolve(task, require_tools=...)`; v1 ignores `task` — zakpick's seam);
+  read-only probes (`/api/tags`, `/v1/models`) with a process-lifetime cache,
+  probed fresh on the failover path; local wins, then `auto_model_preference`
+  (new Settings field, default groq->openai->anthropic); nothing viable raises
+  `ModelResolutionError` whose message IS the per-source diagnosis incl. key
+  provenance from D20's `env_source`. **Omni ruling folded in:** tool reliability
+  is capability metadata — `Capabilities.tools_unreliable`, set on
+  `groq/llama-3.3-70b-versatile` (#13 root cause); the resolver skips
+  tools-unreliable models whenever tools are required, which lands gpt-oss-120b
+  first within groq without a hardcoded sort. **failed_generation salvage:
+  parked** (omni ruling — fragile coupling for marginal gain). Runtime: loop ctor
+  gains `model_failover` (the ONE loop.py seam, flagged for T2/T3 planning: both
+  paths' `except ProviderError` sites ask the callback once per turn, streaming
+  only before any event reached the client); `fallback_model` is the explicit
+  override of the chain, else auto re-resolution excluding the failed model.
+  Deltas vs spec: out-of-the-box default stays `ollama_chat/llama3.1` ("auto" is
+  opt-in — flipping the default is a one-line decision left open deliberately);
+  cost-ceiling config deferred ("consider" in spec; no consumer yet). Rider
+  (litellm warnings) had already landed in #16.
+- **2026-06-11 (omni, review fixes on #17):** streaming failover now resets the
+  RateLimited retry budget for the replacement provider (buffered-path parity —
+  `_call_provider` resets its attempt counter per call; the streaming twin's
+  counter is outer-scoped and survived the failover `continue`); `.env.example`
+  llama-3.3-70b annotation corrected to tools-UNRELIABLE (it contradicted this
+  PR's own registry marking) with gpt-oss-120b added as the reliable groq
+  example; stray UTF-8 BOM stripped from this file. Everything else verified
+  clean: spec 10/10 clauses, loop seam 7/7 safety points, hermeticity (incl.
+  the construction-time probe binding), key handling. 1541 green.

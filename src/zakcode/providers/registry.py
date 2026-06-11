@@ -88,6 +88,11 @@ _CAPABILITIES: dict[str, Capabilities] = {
     # hold offline. (Audit P0-1a; acceptance: test_groq_registry.)
     "groq/llama-3.3-70b-versatile": Capabilities(
         supports_tools=True,
+        # Emits llama pseudo-XML tool calls (<function=name {json}</function>) that
+        # Groq's strict tool parser rejects with `tool_use_failed` — near-
+        # deterministically with a multi-tool schema (live-verified 2026-06-11,
+        # PR #13 root cause). The auto-resolver skips it when tools are in play.
+        tools_unreliable=True,
         supports_vision=False,
         supports_caching=False,
         context_window=128_000,
