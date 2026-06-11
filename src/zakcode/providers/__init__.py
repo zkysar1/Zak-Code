@@ -6,6 +6,7 @@ Only modules in this package may import ``litellm`` or a vendor SDK (see
 here.
 """
 
+from zakcode.providers import _env  # noqa: F401  — pre-litellm env defaults; keep first
 from zakcode.providers.base import (
     AuthError,
     Capabilities,

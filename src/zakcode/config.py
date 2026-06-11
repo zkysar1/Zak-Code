@@ -18,11 +18,12 @@ pydantic reserves the bare name ``model``.
 from __future__ import annotations
 
 import json
+import os
 from enum import IntEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -354,18 +355,72 @@ class Settings(BaseSettings):
         return model.split("/", 1)[0] if "/" in model else model
 
 
-def load_settings(**overrides: object) -> Settings:
-    """Load settings from env/.env, applying any explicit keyword overrides.
+def zakcode_home() -> Path:
+    """The per-user Zak Code config home: ``~/.zakcode`` (D20, issue #14).
 
-    Exports the local ``.env`` (CWD-relative, matching pydantic-settings'
-    ``env_file``) into the process environment first, with ``override=False`` so a
-    variable already set in the real environment always wins. This is what lets
-    provider keys (``OPENAI_API_KEY``, ``GROQ_API_KEY``, …) live in the project
-    ``.env``: litellm reads them from ``os.environ``, never from our settings.
-    A missing ``.env`` is a silent no-op.
+    ``%USERPROFILE%\\.zakcode`` on Windows — the ``~/.claude`` precedent. The
+    ``ZAKCODE_HOME`` env var overrides the directory (tests / portable installs).
+    This is a **config home only**: workspace discovery never looks here, and it
+    must never be treated as ``workspace_root``.
     """
+    override = os.environ.get("ZAKCODE_HOME", "").strip()
+    return Path(override) if override else Path.home() / ".zakcode"
+
+
+#: Where each env var visible to settings came from — refreshed by load_settings()
+#: and read by env_source(). Best-effort within one process: dotenv exports stick
+#: in os.environ, so names we exported are remembered (with their source) in
+#: _DOTENV_EXPORTED to keep them from masquerading as real environment later.
+_ENV_SOURCES: dict[str, str] = {}
+_DOTENV_EXPORTED: dict[str, str] = {}
+
+
+def env_source(name: str) -> str:
+    """Provenance of env var ``name``: where its resolved value came from.
+
+    One of ``"env"`` (the real process environment), ``"workspace .env"``,
+    ``"user .env"`` (``~/.zakcode/.env``), or ``"not set"``. This is the debugging
+    story for "why is it using that key on this machine" — surfaced in the
+    ``zakcode info`` key panel. Accurate after a ``load_settings()`` call.
+    """
+    if name in _ENV_SOURCES:
+        return _ENV_SOURCES[name]
+    if name in os.environ:
+        return _DOTENV_EXPORTED.get(name, "env")
+    return "not set"
+
+
+def load_settings(**overrides: object) -> Settings:
+    """Load settings, applying any explicit keyword overrides.
+
+    Precedence (lowest → highest): built-in defaults → ``~/.zakcode/.env`` (the
+    per-user config home) → workspace ``.env`` (CWD-relative, matching
+    pydantic-settings' ``env_file``) → the real process environment → explicit
+    overrides. Closer to the invocation wins. Mechanically: the workspace file is
+    exported into ``os.environ`` first, THEN the user file, both with
+    ``override=False`` — so a workspace value shadows a user-home value and a real
+    environment variable always wins. This is what lets provider keys
+    (``OPENAI_API_KEY``, ``GROQ_API_KEY``, …) live in either ``.env``: litellm
+    reads them from ``os.environ``, never from our settings. A missing file is a
+    silent no-op.
+    """
+    user_env = zakcode_home() / ".env"
+    workspace_vals = {k: v for k, v in dotenv_values(".env").items() if v is not None}
+    user_vals = {k: v for k, v in dotenv_values(user_env).items() if v is not None}
+    _ENV_SOURCES.clear()
+    for name in set(workspace_vals) | set(user_vals):
+        if name in os.environ and name not in _DOTENV_EXPORTED:
+            _ENV_SOURCES[name] = "env"
+        elif name in workspace_vals:
+            _ENV_SOURCES[name] = "workspace .env"
+        else:
+            _ENV_SOURCES[name] = "user .env"
+    before = set(os.environ)
     load_dotenv(".env", override=False)
+    load_dotenv(user_env, override=False)
+    for name in set(os.environ) - before:
+        _DOTENV_EXPORTED[name] = _ENV_SOURCES.get(name, "workspace .env")
     return Settings(**overrides)  # type: ignore[arg-type]
 
 
-__all__ = ["PermissionTier", "Settings", "load_settings"]
+__all__ = ["PermissionTier", "Settings", "env_source", "load_settings", "zakcode_home"]

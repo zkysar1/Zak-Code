@@ -544,3 +544,15 @@ cost-accounting test instead of a fallback table.
   here with a different stdin schema before the T2/T3 loop integration lands.
   Veto dispatch is inert until T2/T3 (deferred behind PKG-AUTO to avoid loop.py
   collisions). Suite: **1504 green**, ruff clean, mypy at main parity.
+- **2026-06-11 (omni, D20):** Per-user config home `~/.zakcode` (issue #14, PR #16 —
+  spec omni, implementation dev). One obvious place per the `~/.claude` precedent;
+  v1 = a single user-level `.env`; precedence defaults -> user .env -> workspace
+  .env -> process env (workspace loaded first, then user, both override=False);
+  `ZAKCODE_HOME` overrides the directory; the config home is never a workspace
+  root (test-pinned). Key panel now names each key's SOURCE (env / workspace .env /
+  user .env) — values never shown. RISKS.md notes the wider user-level blast
+  radius; the #6 subprocess scrub covers user keys unchanged. Rider landed for
+  real: `LITELLM_LOG` default moved to `providers/_env.py`, imported first by the
+  providers package `__init__` — the one place guaranteed to run before litellm
+  (the load_settings placement we first agreed on provably fired too late).
+  Suite 1518 green.

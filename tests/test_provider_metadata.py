@@ -61,19 +61,24 @@ def test_groq_registry() -> None:
 
 
 def test_provider_key_status(monkeypatch) -> None:
-    """The info panel detects ANTHROPIC_API_KEY and GROQ_API_KEY (presence only)."""
+    """The info panel detects ANTHROPIC_API_KEY and GROQ_API_KEY (provenance only)."""
+    import zakcode.config as cfg
+
+    # Isolate from any dotenv exports earlier tests made in this process.
+    monkeypatch.setattr(cfg, "_ENV_SOURCES", {})
+    monkeypatch.setattr(cfg, "_DOTENV_EXPORTED", {})
     assert "ANTHROPIC_API_KEY" in _PROVIDER_KEY_ENV
     assert "GROQ_API_KEY" in _PROVIDER_KEY_ENV
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
     status = _provider_key_status()
-    assert status["ANTHROPIC_API_KEY"] is True
-    assert status["GROQ_API_KEY"] is True
+    assert status["ANTHROPIC_API_KEY"] == "env"
+    assert status["GROQ_API_KEY"] == "env"
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     monkeypatch.delenv("GROQ_API_KEY")
     status = _provider_key_status()
-    assert status["ANTHROPIC_API_KEY"] is False
-    assert status["GROQ_API_KEY"] is False
+    assert status["ANTHROPIC_API_KEY"] == "not set"
+    assert status["GROQ_API_KEY"] == "not set"
 
 
 # ── docs (audit P0-1b; acceptance 4) ─────────────────────────────────────────
