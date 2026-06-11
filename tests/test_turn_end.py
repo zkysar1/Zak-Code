@@ -145,6 +145,30 @@ async def test_run_turn_end_shell_env_scrubbed(tmp_path: Path) -> None:
     assert result_text == "ABSENT"
 
 
+async def test_run_turn_end_shell_spec_drop_env_honored(tmp_path: Path) -> None:
+    """spec.drop_env (the TE-R1 ingestion-time scrub) is honored WITHOUT a caller
+    drop_env — parity with every sibling shell runner (PR #18 review fix)."""
+    body = (
+        "import os, json, sys\n"
+        "val = os.environ.get('ANTHROPIC_API_KEY', 'ABSENT')\n"
+        f"open(r'{tmp_path / 'spec_env_check.txt'}', 'w').write(val)\n"
+        "sys.exit(0)\n"
+    )
+    cmd = _script(tmp_path, "spec_env_check.py", body)
+    spec = HookSpec(event=HookEvent.TURN_END, command=cmd, drop_env=["ANTHROPIC_API_KEY"])
+    mgr = HookManager([spec])
+    old = os.environ.get("ANTHROPIC_API_KEY")
+    os.environ["ANTHROPIC_API_KEY"] = "sk-secret-test-key"
+    try:
+        await mgr.run_turn_end(_te_payload())  # no caller drop_env on purpose
+    finally:
+        if old is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = old
+    assert (tmp_path / "spec_env_check.txt").read_text() == "ABSENT"
+
+
 # ── StuckTracker.reset() ────────────────────────────────────────────────────
 
 

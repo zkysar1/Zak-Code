@@ -406,11 +406,14 @@ class HookManager:
             return TurnEndResult()
         stdin_bytes = payload.model_dump_json().encode("utf-8")
 
-        # Build a scrubbed child env (provider-key hygiene).
+        # Build a scrubbed child env (provider-key hygiene). The per-spec list is the
+        # PRIMARY scrub (populated at settings ingestion — TE-R1: hygiene applies to
+        # all workspace hooks, like every sibling shell runner); the caller-supplied
+        # ``drop_env`` is layered on top, so neither path depends on the other.
         import os
 
         child_env = {**os.environ}
-        for name in drop_env or []:
+        for name in [*spec.drop_env, *(drop_env or [])]:
             child_env.pop(name, None)
 
         try:
