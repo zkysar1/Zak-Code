@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import functools
 import ipaddress
+import logging
 import os
 from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
@@ -57,6 +58,13 @@ app = typer.Typer(
 enable_utf8()
 console = Console(theme=ZAK_THEME, highlight=False)
 GLYPHS = resolve_glyphs(console)
+
+# Quiet third-party startup noise the operator can do nothing about at the prompt:
+# the HuggingFace tokenizer-cache symlink warning on Windows (set BEFORE any provider
+# import reads it) and litellm's import-time WARNING chatter (missing optional
+# backends). Real errors still surface — they arrive through the provider taxonomy.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+logging.getLogger("LiteLLM").setLevel(logging.ERROR)
 
 # Provider / service API keys we report the *presence* of (never the value).
 _PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"]
@@ -834,6 +842,9 @@ def chat(
         stripped = line.strip()
         if not stripped:
             continue
+        # One blank line under the submitted input, so the response (or command
+        # output) never sits flush against the prompt row.
+        console.print()
 
         if stripped.startswith("/"):
             command = stripped.split(maxsplit=1)[0].lower()
@@ -987,6 +998,7 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         stripped = line.strip()
         if not stripped:
             continue
+        console.print()  # one blank line under the submitted input
         if stripped.lower() in ("/exit", "/quit"):
             console.print("[dim]Bye.[/dim]")
             break
