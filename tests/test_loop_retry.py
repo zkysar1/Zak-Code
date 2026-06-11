@@ -274,3 +274,24 @@ def test_provider_error_refunds_shared_budget_streaming(fast_sleep: list[float])
     done = asyncio.run(_collect(loop, "hi"))[-1]
     assert done.stop_reason == "provider_error"
     assert budget.remaining == 10  # symmetric with the buffered path
+
+
+def test_streaming_midstream_failure_still_refunds_budget(fast_sleep: list[float]) -> None:
+    """Stack review minor #8: a MID-stream failure (events already received) also
+    refunds the shared-budget unit — the partial output is discarded, so nothing the
+    iteration consumed survives the turn."""
+    from zakcode.agent.budget import IterationBudget
+
+    budget = IterationBudget(10)
+    provider = FlakyStreamProvider([], fail_midstream=RateLimited("429 mid-stream"))
+    settings = load_settings(workspace_root=Path.cwd())
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        Session(cwd="/tmp/work", model="test/model"),
+        settings=settings,
+        budget=budget,
+    )
+    done = asyncio.run(_collect(loop, "hi"))[-1]
+    assert done.stop_reason == "provider_error"
+    assert budget.remaining == 10  # refunded despite the partial stream

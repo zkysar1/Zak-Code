@@ -1157,7 +1157,11 @@ class AgentLoop:
                     turn_error = provider_failure
                     logger.error("turn aborted by provider error: %s", provider_failure)
                     yield AgentStatus(message=f"stopping: provider error — {provider_failure}")
-                    self._refund_iteration()  # no model work happened (buffered twin)
+                    # Refund the iteration: pre-event failure did no work at all, and a
+                    # mid-stream failure's partial output is DISCARDED (not persisted),
+                    # so either way nothing this iteration consumed survives the turn.
+                    # (stack review minor #7 — the buffered twin refunds identically.)
+                    self._refund_iteration()
                     break
 
                 tool_calls = accumulator.finalize()
