@@ -97,6 +97,7 @@ from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, 
 from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import (
     LLMResult,
+    ModelOutputRejected,
     Provider,
     ProviderError,
     RateLimited,
@@ -1177,16 +1178,25 @@ class AgentLoop:
                         if not received_any and retry_attempts < self.provider_max_retries:
                             retry_attempts += 1
                             delay = self._retry_delay(exc, retry_attempts)
+                            # ModelOutputRejected subclasses RateLimited for its retry
+                            # semantics; the operator-facing notice names the real cause.
+                            reason = (
+                                "provider rejected a malformed tool call"
+                                if isinstance(exc, ModelOutputRejected)
+                                else "rate limited"
+                            )
                             logger.warning(
-                                "provider rate-limited; retry %d/%d in %.1fs",
+                                "%s; retry %d/%d in %.1fs",
+                                reason,
                                 retry_attempts,
                                 self.provider_max_retries,
                                 delay,
                             )
                             yield AgentStatus(
                                 message=(
-                                    f"rate limited; retrying in {delay:.1f}s "
-                                    f"({retry_attempts}/{self.provider_max_retries})"
+                                    f"{reason}; retrying"
+                                    + (f" in {delay:.1f}s" if delay else "")
+                                    + f" ({retry_attempts}/{self.provider_max_retries})"
                                 )
                             )
                             await asyncio.sleep(delay)

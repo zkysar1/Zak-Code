@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import functools
 import ipaddress
-import logging
 import os
 from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
@@ -60,11 +59,13 @@ console = Console(theme=ZAK_THEME, highlight=False)
 GLYPHS = resolve_glyphs(console)
 
 # Quiet third-party startup noise the operator can do nothing about at the prompt:
-# the HuggingFace tokenizer-cache symlink warning on Windows (set BEFORE any provider
-# import reads it) and litellm's import-time WARNING chatter (missing optional
-# backends). Real errors still surface — they arrive through the provider taxonomy.
+# the HuggingFace tokenizer-cache symlink warning on Windows and litellm's
+# import-time WARNING chatter (missing optional backends). Both must be set via env
+# BEFORE the libraries import — litellm reconfigures its own "LiteLLM" logger at
+# import time, so a setLevel from here is overwritten; LITELLM_LOG is the supported
+# knob it reads first. Real errors still surface via the provider error taxonomy.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+os.environ.setdefault("LITELLM_LOG", "ERROR")
 
 # Provider / service API keys we report the *presence* of (never the value).
 _PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"]
