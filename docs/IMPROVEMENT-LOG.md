@@ -68,6 +68,7 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 | PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | **implemented + fresh-eyes reviewed** (PR #5; review fixes in `8f8c245`: streaming refund symmetry, `error` on AgentDone/ChatResponse, per-attempt accumulators, retry-layering docs) | 
 | PR-3 | `PermissionMode.AUTONOMOUS` (D12 hard-deny semantics) + `tool_trust_overrides` + grant persistence (Q5 approved) + subprocess provider-key env scrub w/ opt-out | M-L | **implemented** (branch `pr-3-autonomous-permissions`; 13 new tests incl. acceptance names `test_autonomous_mode` / `test_trust_tiers` / `test_grant_persistence`; 1442 green). Implementation notes: effective-mode = per-tool override else session mode; autonomous (session OR per-tool) → dangerous = hard DENY and confirm_tools fail closed; grants re-decide so they can never override a static DENY; restore filters by `_MODE_LOOSENESS` rank (deny grants always kept); scrub list = `secrets.provider_key_env_names` (exact names + `*_API_KEY` suffix), applied LAST in `_proc.run_capturing` via `ToolContext.scrub_env`; RISKS row → Mitigating |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | **implemented** (branch `pr-4-skills-logging`; acceptance 9 `test_skill_extras` passes by name; extras round-trip through `save_skill`; logging = targeted not exhaustive (D16): registry.execute traceback (the biggest silent swallow), permission denials w/ mode, loop iteration/turn-end lines, provider call latency+tokens+cost at debug — never message contents; 1450 green) |
+| PR-6 | **PKG-AUTO** (omni's spec, 2026-06-10; Q6 resolution): `default_model: "auto"` sentinel — startup detection (cheap read-only probes: `/api/tags`, `/v1/models`; never a chat call) + cached, re-probed on failure; resolution = local if viable, else first viable external per configurable preference list (default groq → openai → anthropic), nothing viable → loud startup failure with key-panel diagnosis; resolution logged + in info panel with reason; runtime re-resolution (once per turn) on non-rate-limit ProviderError before the provider_error stop; **fallback_model RELEASED to external** (supersedes D11a) as the explicit-config override of the auto chain; resolver architected as a pluggable interface `(task category, capabilities) → model` with v1 = availability only — Zachary's "zakpick" vision (deep-think/quick-classify/embeddings/planner/coder/writer routing) must land later without API breakage; mocked-detection acceptance matrix + mid-session-fallback + explicit-bypass tests; consider cost-ceiling config; rider: quiet litellm botocore import warnings deliberately | M-L | not started (next after stack merges) |
 | PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md | S (batched) | **implemented** (branch `pr-5-tooling`): `poe check` one-command gate (acceptance 12), `poe cov` + CI coverage artifact (acceptance 13), `test_version_sync` (P2-2), windows-latest 3.11 CI cell with job-level timeout (GNU `timeout` absent there — split pytest steps), `docs/CONFIG.md` + BOTH-direction completeness tests (fields↔doc), CLAUDE.md gains the one-command gate. **Deferred:** the starlette/httpx2 testclient deprecation warning (test-only, harmless; blind dep churn in the last phase loses) — D17. 1453 green |
 
 Sequencing: PR-0 → PR-1 → PR-2 → PR-3 → PR-4 → PR-5. PR-1/2/3 are file-disjoint
@@ -305,6 +306,28 @@ PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
   partial streamed text of a failed turn is NOT persisted (session stays at the last
   message boundary); `TurnResult.error` carries the redacted detail; streaming
   surfaces failure as `AgentStatus` (AgentDone schema unchanged — client contract).
+- **D18 (2026-06-10, omni stack review + restack):** verdict clean — zero
+  blocking/major across #4–#8; #6 security core independently attacked and held.
+  Mechanical restack onto main executed (PR #3's squash made the old base
+  unreachable for clean merges); all five branches rebased + force-pushed. All
+  nine minors folded into their home PRs: (1) `auto_allows` now mirrors
+  authorize's grant re-decide; (2) `provider_key_env_names` exported; (3) AWS
+  creds decided **keep-narrow** — the scrub targets model-provider keys whose env
+  presence is zakcode's own doing; AWS creds are operator-managed workflow
+  credentials, agent-run `aws` CLI is first-class here, and the opt-out is global
+  (rationale in the docstring); (4) opus-4-8 `max_output` pinned to the no-header
+  64k; (5) qwen3-32b `max_output` pinned to Groq-documented 40,960 (litellm DB
+  conflates it with the window — re-probed, still 131k/131k); (6) streaming
+  reasoning-drop documented as deliberate (no StreamThinkingDelta yet); (7) refund
+  comment states the real invariant (partial output discarded); (8) mid-stream
+  refund test added; (9) save_skill boolean named. Suite: **1455 green** at tip.
+- **D19 (2026-06-10, omni — Q6 resolved → PKG-AUTO):** Zachary's Q6 answer became
+  the next external package (see PR-6 ladder row for the full spec). Two contract
+  points to honor: **fallback_model is now external** (omni released P0-3b — wire
+  it as the explicit override of the auto chain; supersedes D11a), and the
+  resolver must be a pluggable interface so "zakpick" (task-category model
+  routing) lands later without API breakage. Sequencing: restack → omni merges
+  the stack → PKG-AUTO starts → omni starts the internal TurnEnd seam post-#5.
 - **D16 (2026-06-10, agent — PR-4 logging scope):** the audit's P1-5 names "67 bare
   except handlers"; instrumenting all 67 mechanically would add noise without value.
   Delivered the TARGETED set instead: `registry.execute`'s wrapped tool exceptions
