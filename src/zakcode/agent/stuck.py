@@ -202,6 +202,16 @@ class StuckTracker:
             self._actions.append(action.value)
         return action
 
+    def reset(self) -> None:
+        """Reset streak and signal state after a TURN_END veto continues the loop.
+
+        Prevents immediate re-triggering of the stuck ladder when the loop
+        re-enters with an injected continuation prompt.
+        """
+        self._streak = 0
+        self._prev_sig = None
+        self._error_counts.clear()
+
     # ── recovery messages ────────────────────────────────────────────────────
     def nudge_message(self) -> str:
         """The corrective hint injected on a :attr:`StuckAction.NUDGE`."""
