@@ -473,10 +473,14 @@ class PermissionPolicy:
         if decision is PermissionDecision.ALLOW:
             return (True, "")
         if decision is PermissionDecision.DENY:
+            # Operator-facing audit trail (audit P1-5; D12 asks for the autonomous
+            # hard-deny to be logged): the model only sees the recoverable error.
+            logger.warning("denied %r in '%s' mode: %s", tool_name, self.mode.value, reason)
             return (False, reason)
 
         # decision is ASK → need the operator. No prompter ⇒ fail closed.
         if self.prompter is None:
+            logger.warning("denied %r (no prompter to escalate to): %s", tool_name, reason)
             return (False, f"requires confirmation but none is available: {reason}")
 
         request = PermissionRequest(

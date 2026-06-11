@@ -915,6 +915,11 @@ class AgentLoop:
                 self._refund_iteration()  # no model work happened this iteration
                 break
 
+            logger.debug(
+                "iteration %d: model returned %d tool call(s)",
+                iterations,
+                len(result.tool_calls),
+            )
             assistant_msg = self._assistant_message(result)
             self.session.add_message(assistant_msg)
             self.session.add_usage(result.usage)
@@ -1010,6 +1015,12 @@ class AgentLoop:
         # lesson. Best-effort — a writer/store error never affects the turn's outcome.
         with contextlib.suppress(Exception):
             self._lessons.maybe_write(stuck, cursor, stop_reason=stop_reason)
+        logger.info(
+            "turn ended: stop_reason=%s iterations=%d tokens=%d",
+            stop_reason,
+            iterations,
+            turn_usage.total_tokens,
+        )
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
@@ -1297,6 +1308,12 @@ class AgentLoop:
         # Failure-lesson capture (research R1) — same seam as the buffered path; best-effort.
         with contextlib.suppress(Exception):
             self._lessons.maybe_write(stuck, cursor, stop_reason=stop_reason)
+        logger.info(
+            "turn ended: stop_reason=%s iterations=%d tokens=%d",
+            stop_reason,
+            iterations,
+            turn_usage.total_tokens,
+        )
         yield AgentUsage(usage=turn_usage)
         yield AgentDone(
             stop_reason=stop_reason,

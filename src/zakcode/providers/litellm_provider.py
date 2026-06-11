@@ -12,7 +12,9 @@ their results are validated/narrowed explicitly before use.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -50,6 +52,8 @@ from zakcode.usage import Usage
 # rather than raising. Set once at import time. ``setattr`` avoids a spurious
 # attr-defined error (litellm ships no type stubs for this module global).
 setattr(litellm, "drop_params", True)  # noqa: B010
+
+logger = logging.getLogger("zakcode.providers")
 
 
 # Resolve litellm's exception classes defensively. Older/newer versions may not
@@ -495,12 +499,24 @@ class LiteLLMProvider(Provider):
             wire_messages, tools, response_format=response_format, **kw
         )
 
+        start = time.perf_counter()
         try:
             response = await litellm.acompletion(**call_kwargs)
         except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
             raise self._map_error(exc) from exc
 
-        return self._normalize(response)
+        result = self._normalize(response)
+        # Operator-facing call accounting (audit P1-5). Message contents are never
+        # logged — model, latency, token counts, and litellm-computed cost only.
+        logger.debug(
+            "%s: %.2fs, %d+%d tokens, $%.6f",
+            self.model,
+            time.perf_counter() - start,
+            result.usage.prompt_tokens,
+            result.usage.completion_tokens,
+            result.usage.cost_usd,
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Streaming: litellm chunk stream -> ProviderStreamEvent stream
