@@ -58,7 +58,7 @@ console = Console(theme=ZAK_THEME, highlight=False)
 GLYPHS = resolve_glyphs(console)
 
 # Provider / service API keys we report the *presence* of (never the value).
-_PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"]
+_PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"]
 
 
 def _provider_key_status() -> dict[str, bool]:

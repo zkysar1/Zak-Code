@@ -62,7 +62,7 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 | PR | Scope | Size | Status |
 |---|---|---|---|
 | PR-0 | Consolidation: reabsorb zds-llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test + **env truth** (`load_dotenv`, `.env.example` rewrite, GROQ key panel — pulled forward per D10) | M | **implemented**, awaiting review |
-| PR-1 | Provider metadata: Groq + OpenAI + **Anthropic statics** (registry entries, key panel, `.env.example` lines — key-free, satisfy acceptance 1/3/4), response-shape tests (Anthropic thinking / `reasoning_content`, Groq usage), mock cost-extraction tests (acceptance 10), live-smoke gates | M | not started |
+| PR-1 | Provider metadata: Groq + OpenAI + **Anthropic statics** (registry entries, key panel, `.env.example` lines — key-free, satisfy acceptance 1/3/4), response-shape tests (Anthropic thinking / `reasoning_content`, Groq usage), mock cost-extraction tests (acceptance 10) | M | **implemented** (branch `pr-1-provider-metadata`, stacked on PR-0) |
 | PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | not started |
 | PR-3 | `PermissionMode.AUTONOMOUS` (**omni ruling, D12**: dangerous-pattern match = deterministic hard DENY, never a prompt, attended or headless; structured tool-error + log) + `tool_trust_overrides: dict[tool, mode]` (**may not loosen the dangerous floor in autonomous**) + grant persistence (JSON in session doc; grants resolve ASK→ALLOW only, never override DENY; record `{tool, args_scope, mode_at_grant, timestamp}`; tighter-mode resume ignores looser-mode grants; Zachary's formal OK still pending — Q5) + **subprocess provider-key env scrub** (from PR #3 review; opt-out for scripts that need keys) | M-L | not started |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | not started |
@@ -433,6 +433,17 @@ cost-accounting test instead of a fallback table.
   headline: AUTONOMOUS = deterministic hard-deny on dangerous patterns (the sharper
   design wins), PR-2 lands before omni's TurnEnd work, unknown #5 fully closed
   (`_fails.txt` was local gitignored scratch).
+- **2026-06-10 (PR-1):** Implemented on `pr-1-provider-metadata` (stacked on PR-0):
+  4 Anthropic + 4 Groq registry entries (Claude windows pinned at the standard 200k,
+  NOT litellm's 1M beta — no beta header is sent, and the acceptance test agrees);
+  `ANTHROPIC_API_KEY` in the key panel; Anthropic lines in `.env.example`;
+  `LLMResult.thinking` captures litellm's `reasoning_content` (kept out of `text`;
+  streaming reasoning deltas yield no text events); 10 new tests incl. the audit's
+  verbatim names — `pytest -k "test_anthropic_registry or test_groq_registry or
+  test_provider_key_status or test_anthropic_cost"` → 4 passed. Suite: **1416 green**.
+  Acceptance 1/2/3/4/10 done; audit unknown #3 partially answered: litellm DOES
+  normalize thinking to `reasoning_content`, now captured (loop persistence of
+  ThinkingBlock deliberately deferred — flag for omni/owner if wanted).
 - **2026-06-10 (evening):** GitHub access solved: this box had no git-CLI credential
   (the earlier sign-in was GitHub Desktop's own slot). Installed gh 2.94.0 from the
   release zip, device-flow auth as zkysar1, `gh auth setup-git`. **Pushed

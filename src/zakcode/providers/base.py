@@ -42,6 +42,11 @@ class LLMResult(BaseModel):
     """The normalized result of one model call."""
 
     text: str = ""
+    #: Model-internal reasoning, when the backend surfaces it separately from ``text``
+    #: (litellm normalizes Anthropic extended thinking and Groq-hosted reasoning models
+    #: to ``message.reasoning_content``). Kept OUT of ``text`` so reasoning never leaks
+    #: into the conversation as assistant prose; empty for models that don't reason.
+    thinking: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     finish_reason: str | None = None
     usage: Usage = Field(default_factory=Usage)
