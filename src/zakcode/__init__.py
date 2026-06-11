@@ -673,6 +673,10 @@ class Agent:
                         event=HookEvent.SESSION_END,
                         session_id=self.session.id,
                         cwd=str(self.settings.workspace_root),
+                        data={
+                            "trigger": "session_end",
+                            "session_summary": self._session_summary(),
+                        },
                     )
                 )
         if self.memory is not None:
@@ -681,6 +685,15 @@ class Agent:
         with contextlib.suppress(Exception):
             await self.loop.aclose()  # tear down the egress-proxy listener (no-op when off)
         await self.aclose_mcp()
+
+    def _session_summary(self) -> dict[str, Any]:
+        """Build a session-summary dict for lifecycle hook payloads (PR-T7)."""
+        return {
+            "session_id": self.session.id,
+            "message_count": len(self.session.messages),
+            "total_usage": self.session.cumulative_usage().model_dump(),
+            "created_at": self.session.created_at,
+        }
 
     @classmethod
     def for_workspace(cls, path: str | Path, **setting_overrides: Any) -> Agent:
