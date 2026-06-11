@@ -45,13 +45,13 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
-from zds_llm_provider import complete_structured, schema_error
 
 from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.providers.base import Provider, ProviderError
+from zakcode.providers.structured import complete_structured, schema_error
 from zakcode.secrets import strip_url_credentials
 from zakcode.server.wire import (
     ChatRequest,

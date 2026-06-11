@@ -17,8 +17,19 @@ from zakcode.providers.base import (
     RequestFailed,
     ToolCall,
 )
+from zakcode.providers.bitnet import BitNetProvider
+from zakcode.providers.claude_code import ClaudeCodeProvider, CompletionBridge
 from zakcode.providers.litellm_provider import LiteLLMProvider
 from zakcode.providers.registry import get_capabilities
+from zakcode.providers.structured import (
+    StructuredResult,
+    StructuredValidationError,
+    coerce_structured,
+    complete_structured,
+    extract_json,
+    make_response_format,
+    schema_error,
+)
 from zakcode.providers.text_tools import (
     TextToolCallingProvider,
     parse_text_tool_calls,
@@ -28,7 +39,10 @@ from zakcode.providers.text_tools import (
 
 __all__ = [
     "AuthError",
+    "BitNetProvider",
     "Capabilities",
+    "ClaudeCodeProvider",
+    "CompletionBridge",
     "ContextWindowExceeded",
     "LLMResult",
     "LiteLLMProvider",
@@ -36,10 +50,17 @@ __all__ = [
     "ProviderError",
     "RateLimited",
     "RequestFailed",
+    "StructuredResult",
+    "StructuredValidationError",
     "TextToolCallingProvider",
     "ToolCall",
+    "coerce_structured",
+    "complete_structured",
+    "extract_json",
     "get_capabilities",
+    "make_response_format",
     "parse_text_tool_calls",
     "render_tool_protocol",
+    "schema_error",
     "textify_messages",
 ]

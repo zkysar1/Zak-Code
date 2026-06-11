@@ -9,18 +9,18 @@ from __future__ import annotations
 
 import pytest
 
-from zds_llm_provider.claude_code import (
-    ClaudeCodeProvider,
-    CompletionBridge,
-    _format_messages,
-)
-from zds_llm_provider.messages import Message, ToolResultBlock, ToolUseBlock
-from zds_llm_provider.types import (
+from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
+from zakcode.providers.base import (
     LLMResult,
     RequestFailed,
     StreamDone,
     StreamTextDelta,
     StreamUsage,
+)
+from zakcode.providers.claude_code import (
+    ClaudeCodeProvider,
+    CompletionBridge,
+    _format_messages,
 )
 
 

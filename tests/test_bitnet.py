@@ -10,15 +10,15 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from zds_llm_provider.bitnet import BitNetProvider, _translate_messages
-from zds_llm_provider.messages import Message, ToolResultBlock
-from zds_llm_provider.text_tools import TextToolCallingProvider
-from zds_llm_provider.types import (
+from zakcode.messages import Message, ToolResultBlock
+from zakcode.providers.base import (
     AuthError,
     ContextWindowExceeded,
     RateLimited,
     RequestFailed,
 )
+from zakcode.providers.bitnet import BitNetProvider, _translate_messages
+from zakcode.providers.text_tools import TextToolCallingProvider
 
 
 class MockResponse:
@@ -255,6 +255,6 @@ async def test_composition_with_text_tool_calling() -> None:
 
 
 def test_no_httpx_raises_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("zds_llm_provider.bitnet.httpx", None)
+    monkeypatch.setattr("zakcode.providers.bitnet.httpx", None)
     with pytest.raises(ImportError):
         BitNetProvider()

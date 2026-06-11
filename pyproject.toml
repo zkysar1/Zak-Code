@@ -21,7 +21,7 @@ classifiers = [
 
 # Core engine dependencies (the importable library + CLI).
 dependencies = [
-  "zds-llm-provider[structured]", # vendor-agnostic provider ABC (M-7, in-repo editable) + jsonschema for structured output
+  "jsonschema>=4.18",       # structured-output schema validation (providers/structured.py)
   "litellm>=1.55",          # vendor-agnostic LLM layer (Ollama, OpenAI, + ~100 providers)
   "pydantic>=2.7",          # typed models for tools, messages, config
   "pydantic-settings>=2.3", # 12-factor config from env / .env
@@ -77,13 +77,6 @@ Homepage = "https://github.com/zkysar1/Zak-Code"
 Repository = "https://github.com/zkysar1/Zak-Code"
 Issues = "https://github.com/zkysar1/Zak-Code/issues"
 
-[tool.uv.sources]
-# In-repo editable path dependency: the extracted vendor-agnostic provider package
-# (M-7). Editable so source edits under packages/zds-llm-provider are live without a
-# re-sync. This is the portability contract in dependency form — zds_llm_provider
-# depends only on pydantic, no vendor SDK.
-zds-llm-provider = { path = "packages/zds-llm-provider", editable = true }
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/zakcode"]
 # Ship the PEP 561 marker so downstream type-checkers see zakcode as typed,
@@ -107,6 +100,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "auto"
+# Bare `pytest` (no uv editable install) resolves the src/ layout via pythonpath, so a
+# fresh clone with deps can run the suite without `pip install -e .` first.
+pythonpath = ["src"]
 # Per-test timeout (pytest-timeout). The full suite runs in ~84s locally, so any
 # single test exceeding 120s is genuinely hung -- fail it fast with a traceback
 # instead of letting it stall the whole CI job to GitHub's 45-minute ceiling
@@ -120,8 +116,6 @@ timeout_method = "thread"
 
 [tool.mypy]
 python_version = "3.11"
-# Both the app and the workspace's provider library are type-checked by the single CI `mypy`
-# step (the package is installed editable, so mypy resolves `zds_llm_provider` by import).
-packages = ["zakcode", "zds_llm_provider"]
+packages = ["zakcode"]
 ignore_missing_imports = true
 warn_unused_ignores = true

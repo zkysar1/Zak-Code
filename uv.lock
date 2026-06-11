@@ -2914,13 +2914,13 @@ name = "zakcode"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "jsonschema" },
     { name = "litellm" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "typer" },
-    { name = "zds-llm-provider", extra = ["structured"] },
 ]
 
 [package.optional-dependencies]
@@ -2973,6 +2973,7 @@ requires-dist = [
     { name = "ddgs", marker = "extra == 'web'", specifier = ">=9.0" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.111" },
     { name = "httpx", marker = "extra == 'web'", specifier = ">=0.27" },
+    { name = "jsonschema", specifier = ">=4.18" },
     { name = "litellm", specifier = ">=1.55" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
@@ -2989,7 +2990,6 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.30" },
     { name = "websockets", marker = "extra == 'server'", specifier = ">=12.0" },
     { name = "zakcode", extras = ["server", "mcp", "web", "dev"], marker = "extra == 'all'" },
-    { name = "zds-llm-provider", extras = ["structured"], editable = "packages/zds-llm-provider" },
 ]
 provides-extras = ["server", "mcp", "web", "dev", "all"]
 
@@ -3001,27 +3001,6 @@ dev = [
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "ruff", specifier = ">=0.5" },
 ]
-
-[[package]]
-name = "zds-llm-provider"
-version = "0.1.0"
-source = { editable = "packages/zds-llm-provider" }
-dependencies = [
-    { name = "pydantic" },
-]
-
-[package.optional-dependencies]
-structured = [
-    { name = "jsonschema" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", marker = "extra == 'bitnet'", specifier = ">=0.27" },
-    { name = "jsonschema", marker = "extra == 'structured'", specifier = ">=4.18" },
-    { name = "pydantic", specifier = ">=2.7" },
-]
-provides-extras = ["bitnet", "structured"]
 
 [[package]]
 name = "zipp"

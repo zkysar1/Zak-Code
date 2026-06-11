@@ -6,9 +6,10 @@ from typing import Any
 
 import pytest
 
-from zds_llm_provider import structured
-from zds_llm_provider.messages import Message
-from zds_llm_provider.structured import (
+from zakcode.messages import Message
+from zakcode.providers import structured
+from zakcode.providers.base import Capabilities, LLMResult, Provider
+from zakcode.providers.structured import (
     StructuredResult,
     StructuredValidationError,
     _extract,
@@ -18,8 +19,7 @@ from zds_llm_provider.structured import (
     make_response_format,
     schema_error,
 )
-from zds_llm_provider.types import Capabilities, LLMResult, Provider
-from zds_llm_provider.usage import Usage
+from zakcode.usage import Usage
 
 _OBJ_SCHEMA = {
     "type": "object",

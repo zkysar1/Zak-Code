@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from zds_llm_provider.messages import (
+from zakcode.messages import (
     ContentBlock,
     Message,
     TextBlock,
