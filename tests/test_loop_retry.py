@@ -313,6 +313,22 @@ def test_model_output_rejected_is_retried_immediately(fast_sleep: list[float]) -
     assert fast_sleep == [0.0]  # nothing to wait for
 
 
+def test_buffered_retry_log_names_the_real_cause(fast_sleep: list[float], caplog) -> None:
+    """The buffered path's retry log mirrors the streaming notice: a rejected tool
+    call is logged as what it is, never as 'rate-limited' (omni review of #13)."""
+    import logging
+
+    from zakcode.providers.base import ModelOutputRejected
+
+    provider = FlakyProvider([ModelOutputRejected("malformed tool call (tool_use_failed)")])
+    loop = _make_loop(provider)
+    with caplog.at_level(logging.WARNING, logger="zakcode.agent.loop"):
+        asyncio.run(loop.arun_turn("hi"))
+    retry_logs = [r.getMessage() for r in caplog.records if "retry" in r.getMessage()]
+    assert any("rejected a malformed tool call" in m for m in retry_logs)
+    assert not any("rate-limited" in m for m in retry_logs)
+
+
 def test_streaming_model_output_rejected_retries_with_clear_status(
     fast_sleep: list[float],
 ) -> None:

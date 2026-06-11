@@ -545,8 +545,16 @@ class AgentLoop:
                     raise
                 attempt += 1
                 delay = self._retry_delay(exc, attempt)
+                # ModelOutputRejected subclasses RateLimited for its retry semantics;
+                # the log names the real cause (mirrors the streaming path's notice).
+                reason = (
+                    "provider rejected a malformed tool call"
+                    if isinstance(exc, ModelOutputRejected)
+                    else "provider rate-limited"
+                )
                 logger.warning(
-                    "provider rate-limited; retry %d/%d in %.1fs",
+                    "%s; retry %d/%d in %.1fs",
+                    reason,
                     attempt,
                     self.provider_max_retries,
                     delay,
