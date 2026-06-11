@@ -103,6 +103,23 @@ uv run zakcode chat --model openai/gpt-4o-mini
 > tool-calling template. `qwen2.5`, `llama3.1`, `gpt-4o*`, etc. work. Very small or
 > template-less GGUFs are chat-only and Ollama will report `does not support tools`.
 
+### Install once, run anywhere
+
+Install `zakcode` as a per-user command (like any CLI tool) instead of running it
+from the source checkout, and put your keys in the per-user config home — then any
+directory is a workspace:
+
+```bash
+uv tool install "zakcode[server] @ git+https://github.com/zkysar1/Zak-Code.git"
+mkdir -p ~/.zakcode && $EDITOR ~/.zakcode/.env   # GROQ_API_KEY=..., ZAKCODE_DEFAULT_MODEL=...
+cd any/project/dir
+zakcode chat                                     # workspace = the current directory
+```
+
+A workspace `.env` still overrides the user file per-project, and real environment
+variables override both — see [`docs/CONFIG.md`](docs/CONFIG.md) for the precedence
+table. Update with `uv tool upgrade zakcode`.
+
 ### Use it as a library (the API-first core)
 
 The CLI is one client; the core is importable with **zero CLI/HTTP dependencies**:

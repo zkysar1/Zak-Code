@@ -35,5 +35,8 @@ def test_every_documented_env_var_matches_a_field() -> None:
     doc = (_ROOT / "docs" / "CONFIG.md").read_text(encoding="utf-8")
     documented = set(re.findall(r"`ZAKCODE_([A-Z0-9_]+)`", doc))
     real = {name.upper() for name in Settings.model_fields}
-    ghosts = sorted(v for v in documented if v not in real)
+    # Meta-vars resolved BEFORE Settings loads (so deliberately not fields):
+    # HOME = the per-user config-home override (D20). Keep this list short.
+    meta = {"HOME"}
+    ghosts = sorted(v for v in documented if v not in real | meta)
     assert not ghosts, f"docs/CONFIG.md documents nonexistent settings: {ghosts}"

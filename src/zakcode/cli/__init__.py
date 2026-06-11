@@ -35,7 +35,7 @@ from zakcode.cli._layout import (
 )
 from zakcode.cli._theme import ZAK_THEME
 from zakcode.cli.render import StreamRenderer, suspend_live
-from zakcode.config import Settings, load_settings
+from zakcode.config import Settings, env_source, load_settings
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
 from zakcode.secrets import strip_url_credentials
@@ -71,15 +71,21 @@ os.environ.setdefault("LITELLM_LOG", "ERROR")
 _PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"]
 
 
-def _provider_key_status() -> dict[str, bool]:
-    """Map each known provider key env-var to whether it is set (no values read out)."""
-    return {name: bool(os.getenv(name)) for name in _PROVIDER_KEY_ENV}
+def _provider_key_status() -> dict[str, str]:
+    """Map each known provider key env-var to its provenance (never its value).
+
+    Sources: ``env`` / ``workspace .env`` / ``user .env`` (``~/.zakcode/.env``) /
+    ``not set`` — the debugging story for "why is it using that key on this
+    machine" (D20). Accurate after ``load_settings()`` has run.
+    """
+    return {name: env_source(name) for name in _PROVIDER_KEY_ENV}
 
 
 def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     """Build the (label, value) rows shown by ``info``.
 
-    Secret-safe: provider keys are reported as ``set`` / ``not set`` only.
+    Secret-safe: provider keys are reported as ``set (<source>)`` / ``not set``
+    only — the source names where the value came from, never what it is.
     """
     rows: list[tuple[str, str]] = [
         ("Model", settings.default_model),
@@ -111,8 +117,8 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
                 "proxy -> " + (", ".join(settings.egress_allowed_domains) or "deny all"),
             )
         )
-    for name, present in _provider_key_status().items():
-        rows.append((name, "set" if present else "not set"))
+    for name, source in _provider_key_status().items():
+        rows.append((name, "not set" if source == "not set" else f"set ({source})"))
     return rows
 
 

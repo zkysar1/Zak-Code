@@ -1,11 +1,30 @@
 # Configuration reference
 
-Every `Settings` field, its environment variable, default, and meaning. Resolution
-order (highest precedence first): explicit overrides → `ZAKCODE_*` environment
-variables → the project `.env` (loaded by `load_settings()`; existing environment
-always wins) → the defaults below. Provider API keys (`OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `TAVILY_API_KEY`) are deliberately **not**
-settings — litellm reads them from the environment, which `.env` populates.
+Every `Settings` field, its environment variable, default, and meaning.
+
+## Resolution order
+
+Lowest → highest precedence; closer to the invocation wins, explicit env always wins:
+
+| Layer | Where | Notes |
+| --- | --- | --- |
+| built-in defaults | the tables below | |
+| user config home | `~/.zakcode/.env` | per-user, follows you to any directory (D20) |
+| workspace `.env` | the invocation cwd | per-project; shadows the user file |
+| process environment | real env vars | always wins over both files |
+| explicit overrides | `load_settings(**kw)` / CLI flags | always wins |
+
+The user config home is `~/.zakcode` (`%USERPROFILE%\.zakcode` on Windows); the
+`ZAKCODE_HOME` env var overrides the directory (tests / portable installs). It is a
+**config home only** — it is never treated as a workspace root. v1 contents: a
+single `.env` file.
+
+Provider API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`,
+`TAVILY_API_KEY`) are deliberately **not** settings — litellm reads them from the
+environment, which either `.env` populates. Put keys in `~/.zakcode/.env` once and
+every `zakcode` invocation on the machine has them; a workspace `.env` overrides
+per-project. `zakcode info` names each key's source (`env` / `workspace .env` /
+`user .env`) so "why is it using that key on this machine" is always answerable.
 
 A completeness test (`tests/test_config_docs.py`) asserts every field is documented
 here — adding a Settings field without documenting it fails CI.

@@ -35,8 +35,13 @@ def test_cli_info_command_runs() -> None:
 
 
 def test_info_reports_key_presence_not_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    import zakcode.config as cfg
+
+    # Isolate from any dotenv exports earlier tests made in this process.
+    monkeypatch.setattr(cfg, "_ENV_SOURCES", {})
+    monkeypatch.setattr(cfg, "_DOTENV_EXPORTED", {})
     secret = "sk-this-value-must-never-be-displayed"
     monkeypatch.setenv("OPENAI_API_KEY", secret)
     rows = dict(build_info_lines(Settings()))
-    assert rows["OPENAI_API_KEY"] == "set"
+    assert rows["OPENAI_API_KEY"] == "set (env)"  # provenance named, value never shown
     assert all(secret not in value for value in rows.values())
