@@ -55,7 +55,10 @@ _CAPABILITIES: dict[str, Capabilities] = {
         supports_vision=True,
         supports_caching=True,
         context_window=200_000,
-        max_output=128_000,
+        # litellm advertises 128k output for opus-4-8, but that (like the 1M window)
+        # rides a beta header this runtime does not send — pin the no-header limit
+        # for the same consistency reason as the window. (stack review minor #4)
+        max_output=64_000,
     ),
     "claude-sonnet-4-6": Capabilities(
         supports_tools=True,
@@ -109,7 +112,10 @@ _CAPABILITIES: dict[str, Capabilities] = {
         supports_vision=False,
         supports_caching=False,
         context_window=131_000,
-        max_output=131_000,
+        # litellm's DB claims max_output == context_window (131k/131k) — almost
+        # certainly a conflated field. Groq documents 40,960 max completion tokens
+        # for qwen3-32b; pin that. (stack review minor #5; re-probed 2026-06-10)
+        max_output=40_960,
     ),
     # --- Ollama (local) ---
     "ollama_chat/llama3.1": Capabilities(

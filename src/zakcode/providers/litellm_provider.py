@@ -534,6 +534,11 @@ class LiteLLMProvider(Provider):
             content = _get(delta, "content")
             if isinstance(content, str) and content:
                 events.append(StreamTextDelta(text=content))
+            # DELIBERATE (stack review minor #6): a delta carrying only
+            # ``reasoning_content`` yields no event — the provider event model has no
+            # StreamThinkingDelta (yet), and reasoning must never surface as assistant
+            # text. The buffered path captures it on ``LLMResult.thinking``; streaming
+            # clients see reasoning models "pause" until real text starts.
 
             raw_tool_calls = _get(delta, "tool_calls")
             if raw_tool_calls:
