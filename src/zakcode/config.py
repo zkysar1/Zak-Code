@@ -137,7 +137,27 @@ class Settings(BaseSettings):
         description="Retries (with backoff) after a rate-limited provider call; 0 disables.",
     )
     permission_mode: str = Field(
-        default="ask", description="One of: ask | acceptEdits | allow | deny."
+        default="ask",
+        description="One of: ask | acceptEdits | allow | autonomous | deny.",
+    )
+    # Per-tool trust overrides (audit P0-2b / D12): judge the NAMED tool under a
+    # different permission mode than the session's — both directions (loosen bash to
+    # 'allow', or tighten web_fetch to 'ask'). In an autonomous session the
+    # dangerous-command floor stays a hard deny regardless of any per-tool loosening.
+    # From an env var: JSON only, e.g.
+    # ZAKCODE_TOOL_TRUST_OVERRIDES={"bash":"allow","web_fetch":"ask"}.
+    tool_trust_overrides: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-tool permission-mode overrides (tool name -> mode).",
+    )
+    # Subprocess key hygiene (PR #3 review / RISKS): by default, provider API keys
+    # (OPENAI_API_KEY and anything matching *_API_KEY) are scrubbed from the
+    # environment handed to bash/powershell children, so agent-run scripts cannot
+    # read the host's model credentials. Set true only when a workflow's scripts
+    # legitimately call a provider themselves.
+    subprocess_inherit_provider_keys: bool = Field(
+        default=False,
+        description="Let bash/powershell children inherit provider API keys (default: scrubbed).",
     )
     denied_commands: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
@@ -242,6 +262,25 @@ class Settings(BaseSettings):
         if info.field_name == "denied_commands":
             return [line.strip() for line in text.splitlines() if line.strip()]
         return [part.strip() for part in text.replace(",", " ").split() if part.strip()]
+
+    @field_validator("tool_trust_overrides", mode="after")
+    @classmethod
+    def _check_tool_trust_overrides(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject unknown mode values so a typo (e.g. 'alow') fails fast at load,
+        rather than silently resolving to 'ask' (PermissionMode.parse's fallback) at
+        authorization time and quietly changing the tool's posture. The set is kept
+        as literals (not imported from zakcode.permissions) to avoid a config↔
+        permissions import cycle; PermissionMode.parse accepts the same spellings.
+        """
+        recognized = {"deny", "ask", "acceptedits", "allow", "autonomous"}
+        for tool, mode in value.items():
+            normalized = str(mode).strip().lower().replace("-", "").replace("_", "")
+            if normalized not in recognized:
+                raise ValueError(
+                    f"unrecognized permission mode {mode!r} for tool {tool!r}; "
+                    "expected one of: deny | ask | acceptEdits | allow | autonomous"
+                )
+        return value
 
     @field_validator("model_roles", mode="after")
     @classmethod

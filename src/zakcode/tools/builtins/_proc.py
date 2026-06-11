@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from collections.abc import Iterable
 from typing import Any
 
 from zakcode._subprocess import CommandTimeout, new_group_kwargs, terminate_process_tree
@@ -30,6 +31,7 @@ async def run_capturing(
     timeout: float,
     stdin_text: str | None = None,
     extra_env: dict[str, str] | None = None,
+    drop_env: Iterable[str] | None = None,
 ) -> tuple[str, int]:
     """Run a child to completion, capturing combined stdout+stderr; enforce ``timeout``.
 
@@ -37,7 +39,9 @@ async def run_capturing(
     given. Returns ``(combined_output, exit_code)``. On timeout raises
     :class:`CommandTimeout`; on cancellation re-raises ``CancelledError`` — in BOTH cases
     the child's entire process tree is killed first, never orphaned. ``extra_env`` is overlaid
-    on the inherited environment (e.g. ``HTTP(S)_PROXY`` for the egress sandbox).
+    on the inherited environment (e.g. ``HTTP(S)_PROXY`` for the egress sandbox);
+    ``drop_env`` names are then REMOVED (the provider-key scrub — applied last so an
+    overlay can never resurrect a scrubbed credential).
     """
     if (argv is None) == (shell_command is None):
         raise ValueError("exactly one of argv or shell_command is required")
@@ -47,6 +51,8 @@ async def run_capturing(
     # model, and raw escape codes are token-noise it can't use. Inherit the full parent env
     # (unchanged behavior) and add the standard no-color signals most CLIs honor. (#5)
     child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(extra_env or {})}
+    for name in drop_env or ():
+        child_env.pop(name, None)
     spawn_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "stdout": subprocess.PIPE,

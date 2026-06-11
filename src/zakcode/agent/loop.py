@@ -320,7 +320,23 @@ class AgentLoop:
 
     def _persist(self) -> None:
         if self.store is not None:
+            # Snapshot operator grants into the session document so they survive a
+            # restart (audit P0-2d / D12) — same boundary as message persistence.
+            if self.permission_policy is not None:
+                self.session.permission_grants = self.permission_policy.export_grants()
             self.store.save(self.session)
+
+    def _scrub_env_names(self) -> list[str]:
+        """Provider-key env vars to scrub from subprocess children (RISKS/GUARDRAILS §6).
+
+        Empty when the operator opted out (``subprocess_inherit_provider_keys=true``).
+        Computed per turn so keys exported by ``load_dotenv`` at startup are covered.
+        """
+        if self.settings.subprocess_inherit_provider_keys:
+            return []
+        from zakcode.secrets import provider_key_env_names
+
+        return provider_key_env_names()
 
     async def _egress_env(self) -> dict[str, str]:
         """Subprocess ``HTTP(S)_PROXY`` env for the egress sandbox, or ``{}`` when it is off.
@@ -849,6 +865,7 @@ class AgentLoop:
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
             egress_env=await self._egress_env(),
+            scrub_env=self._scrub_env_names(),
         )
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -1060,6 +1077,7 @@ class AgentLoop:
             extra_workspace_roots=self.extra_workspace_roots,
             spawner=self.spawner,
             egress_env=await self._egress_env(),
+            scrub_env=self._scrub_env_names(),
         )
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written

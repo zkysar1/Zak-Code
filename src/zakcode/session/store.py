@@ -132,6 +132,12 @@ class Session(BaseModel):
     messages: list[Message] = Field(default_factory=list)
     created_at: str = Field(default_factory=_now_iso)
     usages: list[Usage] = Field(default_factory=list)
+    #: Operator permission grants persisted across restarts (audit P0-2d / D12 / Q5).
+    #: Record shape: {kind, tool, args_scope, mode_at_grant, timestamp} — see
+    #: ``PermissionPolicy.export_grants``. Schema v1 stays append-only: an OLDER build
+    #: simply drops this field on load, which only ever fails SAFE (the operator is
+    #: re-asked; a grant is never invented).
+    permission_grants: list[dict[str, str]] = Field(default_factory=list)
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""

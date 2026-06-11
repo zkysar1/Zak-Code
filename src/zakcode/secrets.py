@@ -16,7 +16,9 @@ in memory in the first place."
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Mapping
 
 _REDACTED = "[REDACTED]"
 
@@ -99,3 +101,24 @@ def strip_url_credentials(url: str | None) -> str | None:
 
 
 __all__ = ["redact_secrets", "strip_url_credentials"]
+
+
+# ── subprocess env hygiene (RISKS: provider keys reach subprocesses) ──────────
+
+#: Exact provider/service key variable names scrubbed from subprocess environments,
+#: in addition to the ``*_API_KEY`` suffix rule in :func:`provider_key_env_names`.
+_PROVIDER_KEY_ENV_EXACT = frozenset(
+    {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"}
+)
+
+
+def provider_key_env_names(environ: Mapping[str, str] | None = None) -> list[str]:
+    """Names of provider-credential variables present in ``environ`` (default os.environ).
+
+    Matches the known exact names plus the ``*_API_KEY`` suffix convention, so a newly
+    added provider's key is scrubbed without a code change. Used to build the env-scrub
+    list handed to subprocess tools (GUARDRAILS §6; opt out via
+    ``ZAKCODE_SUBPROCESS_INHERIT_PROVIDER_KEYS=true``).
+    """
+    env = os.environ if environ is None else environ
+    return sorted(n for n in env if n in _PROVIDER_KEY_ENV_EXACT or n.endswith("_API_KEY"))

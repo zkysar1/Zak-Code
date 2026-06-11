@@ -155,6 +155,12 @@ class ToolContext(BaseModel):
     #: Extra environment for subprocess tools (bash/powershell) — e.g. ``HTTP(S)_PROXY`` pointing
     #: at the egress proxy when the network-egress sandbox is on. Empty for an ordinary turn.
     egress_env: dict[str, str] = Field(default_factory=dict)
+    #: Environment-variable NAMES removed from the inherited environment before a
+    #: subprocess tool spawns its child (the provider-key scrub — see RISKS / GUARDRAILS
+    #: §6). Built by the loop from ``zakcode.secrets.provider_key_env_names``; empty when
+    #: the operator opted out via ``subprocess_inherit_provider_keys=true``. Removal runs
+    #: LAST, after ``egress_env`` is overlaid, so nothing can resurrect a scrubbed key.
+    scrub_env: list[str] = Field(default_factory=list)
 
     @property
     def all_workspace_roots(self) -> list[Path]:
