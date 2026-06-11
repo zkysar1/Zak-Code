@@ -126,6 +126,14 @@ class Settings(BaseSettings):
     max_iterations: int = Field(
         default=50, ge=1, description="Hard cap on agent-loop iterations per turn."
     )
+    # Bounded retry for RATE-LIMITED provider calls only (a 429 is the one failure
+    # class where waiting is the documented remedy). Other provider errors are never
+    # retried — they end the turn gracefully with stop_reason="provider_error".
+    provider_max_retries: int = Field(
+        default=3,
+        ge=0,
+        description="Retries (with backoff) after a rate-limited provider call; 0 disables.",
+    )
     permission_mode: str = Field(
         default="ask", description="One of: ask | acceptEdits | allow | deny."
     )

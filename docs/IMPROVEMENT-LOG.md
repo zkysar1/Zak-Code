@@ -63,7 +63,7 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 |---|---|---|---|
 | PR-0 | Consolidation: reabsorb zds-llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test + **env truth** (`load_dotenv`, `.env.example` rewrite, GROQ key panel — pulled forward per D10) | M | **implemented**, awaiting review |
 | PR-1 | Provider metadata: Groq + OpenAI + **Anthropic statics** (registry entries, key panel, `.env.example` lines — key-free, satisfy acceptance 1/3/4), response-shape tests (Anthropic thinking / `reasoning_content`, Groq usage), mock cost-extraction tests (acceptance 10) | M | **implemented** (branch `pr-1-provider-metadata`, stacked on PR-0) |
-| PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | not started |
+| PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | **implemented** (branch `pr-2-provider-resilience`, stacked on PR-1) |
 | PR-3 | `PermissionMode.AUTONOMOUS` (**omni ruling, D12**: dangerous-pattern match = deterministic hard DENY, never a prompt, attended or headless; structured tool-error + log) + `tool_trust_overrides: dict[tool, mode]` (**may not loosen the dangerous floor in autonomous**) + grant persistence (JSON in session doc; grants resolve ASK→ALLOW only, never override DENY; record `{tool, args_scope, mode_at_grant, timestamp}`; tighter-mode resume ignores looser-mode grants; Zachary's formal OK still pending — Q5) + **subprocess provider-key env scrub** (from PR #3 review; opt-out for scripts that need keys) | M-L | not started |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | not started |
 | PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md, starlette/httpx2 dep bump | S (batched) | not started |
@@ -290,6 +290,19 @@ PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
   it merges. (d) **Unknown #5 fully closed**: `_fails.txt` was a local gitignored
   scratch dump, never repo-tracked; omni corrected the audit, deleted the file; all
   three tests pass everywhere.
+- **D14 (2026-06-10, Zachary):** blanket approval of all standing recommendations
+  ("fully approved") — closes **Q5**: grant persistence as a JSON object in the
+  session document is formally approved (with omni's D12(b) constraints). Also a
+  standing goal: complete the whole ladder autonomously, fresh-eyes review between
+  phases, agent makes long-term strategic decisions.
+- **D15 (2026-06-10, agent — PR-2 design):** retry ONLY `RateLimited` (waiting is the
+  documented remedy for a 429; retrying auth/context/generic failures wastes spend and
+  masks bugs); backoff = `retry_after` when given else `1s·2^(attempt-1)`, clamped to
+  `[0, 30s]` so a hostile Retry-After can't stall a turn; **mid-stream failures are
+  never retried** (deltas already reached the client — a retry would duplicate them);
+  partial streamed text of a failed turn is NOT persisted (session stays at the last
+  message boundary); `TurnResult.error` carries the redacted detail; streaming
+  surfaces failure as `AgentStatus` (AgentDone schema unchanged — client contract).
 - **D13 (2026-06-10, agent — PR #3 scope question resolved by revert):**
   `.env.example`'s uncommented default model reverted to `ollama_chat/llama3.1`
   (matches the code default; fresh-install posture unchanged). Flipping the
@@ -391,9 +404,8 @@ cost-accounting test instead of a fallback table.
   work headlessly now. PR #3 opened.
 - **Q4 (Zachary):** when an Anthropic key exists, say so → unpark the LIVE Anthropic
   items (statics already return in PR-1 per D11d).
-- **Q5 (Zachary):** approve the grant-persistence format — JSON object inside the
-  existing session-store document (audit unknown #4 says principal approves first;
-  omni has blessed it technically with the D12(b) constraints).
+- **Q5 — CLOSED 2026-06-10 (D14):** Zachary approved the grant-persistence format
+  (JSON in the session document, with omni's D12(b) constraints).
 - **Q6 (Zachary):** should the FRESH-INSTALL default model flip from local
   (`ollama_chat/llama3.1`) to a cloud model (e.g. `groq/llama-3.3-70b-versatile`)?
   Reverted to local for now (D13) — say the word and it's a one-line change.
@@ -423,6 +435,15 @@ cost-accounting test instead of a fallback table.
   OS keys stripped: info panel ✓, one-token Groq completion ✓. Suite: **1406 green**.
   Note for next session: first `git push` attempt hung (no upstream was set) —
   confirm the branch actually reached origin before opening the PR.
+- **2026-06-10 (PR-2):** Implemented on `pr-2-provider-resilience` (stacked on PR-1):
+  `Settings.provider_max_retries` (default 3); `AgentLoop._call_provider` retries
+  RateLimited with `retry_after`-aware capped backoff at the buffered site; streaming
+  path retries only BEFORE the first event (mid-stream = terminal, no duplicate
+  deltas); any surviving `ProviderError` → `stop_reason="provider_error"`,
+  `TurnResult.error`, `degraded=True`, `AgentStatus` on the stream, session left at
+  the last message boundary. 9 new tests (acceptance #8 `test_rate_limit_retry` by
+  name); design rationale in D15. Suite: **1425 green**. loop.py diff confined to
+  the two call sites + helpers, per the omni sequencing agreement.
 - **2026-06-10 (PR #3 review):** omni's verdict: **LGTM pending two amendments** —
   every premise independently reproduced (ADR-0007 evidence, move correctness, test
   arithmetic, Groq pricing to the digit). Amendments landed in this commit:
