@@ -17,9 +17,7 @@ def _fake_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
     monkeypatch.setattr(Path, "home", lambda: home)
 
 
-def test_identity_paths_default_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_identity_paths_default_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """agent_identity_dir=None produces the same 3-path list as before."""
     _fake_home(monkeypatch, tmp_path / "home")
     paths = identity_paths(tmp_path / "ws", agent_identity_dir=None)
@@ -50,9 +48,7 @@ def test_identity_paths_with_agent_dir_absolute(
     assert paths[0] == abs_dir / "self.md"
 
 
-def test_load_identity_from_agent_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_identity_from_agent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """self.md found at agent_identity_dir wins over workspace candidates."""
     _fake_home(monkeypatch, tmp_path / "home")
     ws = tmp_path / "ws"
@@ -93,9 +89,7 @@ def test_load_identity_agent_dir_truncation(
     ws = tmp_path / "ws"
     agent_dir = ws / "agents" / "omni"
     agent_dir.mkdir(parents=True)
-    (agent_dir / "self.md").write_text(
-        "x" * (MAX_IDENTITY_CHARS + 100), encoding="utf-8"
-    )
+    (agent_dir / "self.md").write_text("x" * (MAX_IDENTITY_CHARS + 100), encoding="utf-8")
     text, err = load_identity(ws, agent_identity_dir="agents/omni")
     assert err is None
     assert text is not None and len(text) == MAX_IDENTITY_CHARS

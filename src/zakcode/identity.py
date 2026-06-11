@@ -48,11 +48,13 @@ def identity_paths(
         if not d.is_absolute():
             d = ws / d
         paths.append(d / IDENTITY_FILENAME)
-    paths.extend([
-        ws / ".zakcode" / IDENTITY_FILENAME,
-        ws / IDENTITY_FILENAME,
-        Path.home() / ".config" / "zakcode" / IDENTITY_FILENAME,
-    ])
+    paths.extend(
+        [
+            ws / ".zakcode" / IDENTITY_FILENAME,
+            ws / IDENTITY_FILENAME,
+            Path.home() / ".config" / "zakcode" / IDENTITY_FILENAME,
+        ]
+    )
     return paths
 
 

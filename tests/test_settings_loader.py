@@ -33,21 +33,24 @@ def test_load_settings_no_file(tmp_path: Path) -> None:
 
 
 def test_load_settings_stop_maps_to_turn_end(tmp_path: Path) -> None:
-    _write_settings(tmp_path, {
-        "hooks": {
-            "Stop": [
-                {
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": "bash core/scripts/stop-hook.sh",
-                            "timeout": 60,
-                        }
-                    ]
-                }
-            ]
-        }
-    })
+    _write_settings(
+        tmp_path,
+        {
+            "hooks": {
+                "Stop": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "bash core/scripts/stop-hook.sh",
+                                "timeout": 60,
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+    )
     specs, errors = load_settings_hooks(tmp_path)
     assert len(specs) == 1
     assert specs[0].event is HookEvent.TURN_END
@@ -61,18 +64,16 @@ def test_load_settings_stop_maps_to_turn_end(tmp_path: Path) -> None:
 
 
 def test_load_settings_pre_tool_use_matcher(tmp_path: Path) -> None:
-    _write_settings(tmp_path, {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "Bash",
-                    "hooks": [
-                        {"type": "command", "command": "echo hi"}
-                    ]
-                }
-            ]
-        }
-    })
+    _write_settings(
+        tmp_path,
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}
+                ]
+            }
+        },
+    )
     specs, _ = load_settings_hooks(tmp_path)
     assert len(specs) == 1
     assert specs[0].event is HookEvent.PRE_TOOL_USE
@@ -83,17 +84,10 @@ def test_load_settings_pre_tool_use_matcher(tmp_path: Path) -> None:
 
 
 def test_load_settings_dangerous_autonomous_denied(tmp_path: Path) -> None:
-    _write_settings(tmp_path, {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "hooks": [
-                        {"type": "command", "command": "rm -rf /"}
-                    ]
-                }
-            ]
-        }
-    })
+    _write_settings(
+        tmp_path,
+        {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "rm -rf /"}]}]}},
+    )
     specs, errors = load_settings_hooks(tmp_path, permission_mode="autonomous")
     assert specs == []
     assert any("DENIED" in v for v in errors.values())
@@ -103,17 +97,10 @@ def test_load_settings_dangerous_autonomous_denied(tmp_path: Path) -> None:
 
 
 def test_load_settings_dangerous_ask_allowed(tmp_path: Path) -> None:
-    _write_settings(tmp_path, {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "hooks": [
-                        {"type": "command", "command": "rm -rf /"}
-                    ]
-                }
-            ]
-        }
-    })
+    _write_settings(
+        tmp_path,
+        {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "rm -rf /"}]}]}},
+    )
     specs, errors = load_settings_hooks(tmp_path, permission_mode="ask")
     assert len(specs) == 1
     assert any("WARNING" in v for v in errors.values())
@@ -123,17 +110,10 @@ def test_load_settings_dangerous_ask_allowed(tmp_path: Path) -> None:
 
 
 def test_load_settings_unknown_event_skipped(tmp_path: Path) -> None:
-    _write_settings(tmp_path, {
-        "hooks": {
-            "MadeUpEvent": [
-                {
-                    "hooks": [
-                        {"type": "command", "command": "echo hi"}
-                    ]
-                }
-            ]
-        }
-    })
+    _write_settings(
+        tmp_path,
+        {"hooks": {"MadeUpEvent": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}},
+    )
     specs, errors = load_settings_hooks(tmp_path)
     assert specs == []
     assert "MadeUpEvent" in errors
@@ -144,17 +124,10 @@ def test_load_settings_unknown_event_skipped(tmp_path: Path) -> None:
 
 
 def test_load_settings_stop_failure_skipped(tmp_path: Path) -> None:
-    _write_settings(tmp_path, {
-        "hooks": {
-            "StopFailure": [
-                {
-                    "hooks": [
-                        {"type": "command", "command": "echo hi"}
-                    ]
-                }
-            ]
-        }
-    })
+    _write_settings(
+        tmp_path,
+        {"hooks": {"StopFailure": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}},
+    )
     specs, errors = load_settings_hooks(tmp_path)
     assert specs == []
     assert "StopFailure" in errors
@@ -165,17 +138,16 @@ def test_load_settings_stop_failure_skipped(tmp_path: Path) -> None:
 
 
 def test_load_settings_timeout_honored(tmp_path: Path) -> None:
-    _write_settings(tmp_path, {
-        "hooks": {
-            "SessionStart": [
-                {
-                    "hooks": [
-                        {"type": "command", "command": "echo hi", "timeout": 120}
-                    ]
-                }
-            ]
-        }
-    })
+    _write_settings(
+        tmp_path,
+        {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "echo hi", "timeout": 120}]}
+                ]
+            }
+        },
+    )
     specs, _ = load_settings_hooks(tmp_path)
     assert specs[0].timeout == 120.0
 
@@ -184,20 +156,16 @@ def test_load_settings_timeout_honored(tmp_path: Path) -> None:
 
 
 def test_load_settings_both_dirs_merged(tmp_path: Path) -> None:
-    _write_settings(tmp_path, {
-        "hooks": {
-            "SessionStart": [
-                {"hooks": [{"type": "command", "command": "echo claude"}]}
-            ]
-        }
-    }, subdir=".claude")
-    _write_settings(tmp_path, {
-        "hooks": {
-            "SessionEnd": [
-                {"hooks": [{"type": "command", "command": "echo zakcode"}]}
-            ]
-        }
-    }, subdir=".zakcode")
+    _write_settings(
+        tmp_path,
+        {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo claude"}]}]}},
+        subdir=".claude",
+    )
+    _write_settings(
+        tmp_path,
+        {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": "echo zakcode"}]}]}},
+        subdir=".zakcode",
+    )
     specs, _ = load_settings_hooks(tmp_path)
     assert len(specs) == 2
     events = {s.event for s in specs}
@@ -210,16 +178,15 @@ def test_load_settings_both_dirs_merged(tmp_path: Path) -> None:
 
 def test_load_settings_drop_env_populated(tmp_path: Path) -> None:
     """Every spec from settings.json has drop_env set (TE-R1)."""
-    _write_settings(tmp_path, {
-        "hooks": {
-            "PreToolUse": [
-                {"hooks": [{"type": "command", "command": "echo hi"}]}
-            ],
-            "Stop": [
-                {"hooks": [{"type": "command", "command": "bash stop.sh"}]}
-            ],
-        }
-    })
+    _write_settings(
+        tmp_path,
+        {
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"type": "command", "command": "echo hi"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "bash stop.sh"}]}],
+            }
+        },
+    )
     specs, _ = load_settings_hooks(tmp_path)
     assert len(specs) == 2
     for spec in specs:

@@ -20,9 +20,7 @@ async def test_session_end_enriched_data(tmp_path: Path) -> None:
         workspace_root=str(tmp_path),
         permission_mode="allow",
     )
-    agent.hook_manager.register_lifecycle(
-        HookEvent.SESSION_END, lambda p: captured.append(p)
-    )
+    agent.hook_manager.register_lifecycle(HookEvent.SESSION_END, lambda p: captured.append(p))
     await agent.arun_turn("hello")
     await agent.aclose()
 
@@ -54,9 +52,7 @@ async def test_pre_compact_enriched_data(tmp_path: Path) -> None:
         default_model="scripted/test",
         workspace_root=str(tmp_path),
     )
-    agent.hook_manager.register_lifecycle(
-        HookEvent.PRE_COMPACT, lambda p: captured.append(p)
-    )
+    agent.hook_manager.register_lifecycle(HookEvent.PRE_COMPACT, lambda p: captured.append(p))
     for i in range(6):
         agent.session.add_message(Message.user(f"m{i}"))
         agent.session.add_message(Message.assistant_text(f"r{i}"))
@@ -91,9 +87,7 @@ async def test_session_end_shell_hook_receives_enriched_data(tmp_path: Path) -> 
     )
     script = tmp_path / "hook.py"
     script.write_text(body, encoding="utf-8")
-    spec = HookSpec(
-        event=HookEvent.SESSION_END, command=[sys.executable, str(script)]
-    )
+    spec = HookSpec(event=HookEvent.SESSION_END, command=[sys.executable, str(script)])
     agent = Agent(
         provider=ScriptedProvider(script=[reply("ok")]),
         hook_manager=HookManager([spec]),

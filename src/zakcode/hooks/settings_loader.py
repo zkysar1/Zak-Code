@@ -143,9 +143,7 @@ def load_settings_hooks(
                     key = f"{event_name}/{i}/{j}"
                     if danger:
                         if permission_mode == "autonomous":
-                            errors[key] = (
-                                f"DENIED in autonomous mode: {danger}"
-                            )
+                            errors[key] = f"DENIED in autonomous mode: {danger}"
                             logger.warning(
                                 "settings.json hook %s denied (autonomous): %s",
                                 key,

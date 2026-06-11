@@ -396,13 +396,16 @@ class AgentLoop:
         ):
             return
         # Let a host serialize learning/state before the transcript is compacted.
-        await self._fire_lifecycle(HookEvent.PRE_COMPACT, {
-            "trigger": "auto",
-            "session_summary": {
-                "session_id": self.session.id,
-                "message_count": len(self.session.messages),
+        await self._fire_lifecycle(
+            HookEvent.PRE_COMPACT,
+            {
+                "trigger": "auto",
+                "session_summary": {
+                    "session_id": self.session.id,
+                    "message_count": len(self.session.messages),
+                },
             },
-        })
+        )
         try:
             result = await self.compactor.compact(
                 self.session.messages, summarize=self._summarize_for_compaction
@@ -424,13 +427,16 @@ class AgentLoop:
         """
         if self.compactor is None:
             return False
-        await self._fire_lifecycle(HookEvent.PRE_COMPACT, {
-            "trigger": "manual",
-            "session_summary": {
-                "session_id": self.session.id,
-                "message_count": len(self.session.messages),
+        await self._fire_lifecycle(
+            HookEvent.PRE_COMPACT,
+            {
+                "trigger": "manual",
+                "session_summary": {
+                    "session_id": self.session.id,
+                    "message_count": len(self.session.messages),
+                },
             },
-        })
+        )
         result = await self.compactor.compact(
             self.session.messages, summarize=self._summarize_for_compaction
         )
