@@ -52,6 +52,10 @@ from zakcode.usage import Usage
 # rather than raising. Set once at import time. ``setattr`` avoids a spurious
 # attr-defined error (litellm ships no type stubs for this module global).
 setattr(litellm, "drop_params", True)  # noqa: B010
+# Don't print litellm's "Give Feedback / Get Help" banner to the console on every
+# provider exception — errors reach the operator through the ProviderError taxonomy,
+# not via a library writing directly to stdout mid-conversation.
+setattr(litellm, "suppress_debug_info", True)  # noqa: B010
 
 logger = logging.getLogger("zakcode.providers")
 

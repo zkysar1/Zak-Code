@@ -46,7 +46,11 @@ waiting *for*: a transient spinner (`thinking…`, `running read…`) on the ter
 (real terminals only — hermetic tests never see it), a pulsing `· thinking…` line on
 the web. Anything that takes over the terminal's bottom line (the permission
 prompter) calls `zakcode.cli.render.suspend_live(console)` first; the renderer
-restarts the spinner on its next event.
+restarts the spinner on its next event. The spinner is gated by
+`live_feedback_supported()`: on Windows it runs only under a modern host (Windows
+Terminal / VS Code / ConEmu, detected via their env vars) because the legacy conhost
+snaps the viewport to the cursor on every repaint — breaking scrollback and smearing
+the bottom line into the prompt. `ZAKCODE_NO_SPINNER=1` disables it anywhere.
 
 ## Color: three tiers, four states
 

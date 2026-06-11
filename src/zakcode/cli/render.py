@@ -30,6 +30,8 @@ Two subtle pieces:
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import AsyncIterator
 from typing import cast
 
@@ -70,6 +72,29 @@ def suspend_live(console: Console) -> None:
     status = _LIVE_STATUS.pop(id(console), None)
     if status is not None:
         status.stop()
+
+
+#: Terminal hosts that handle a Live bottom line well set one of these env vars.
+_MODERN_TERM_VARS = ("WT_SESSION", "TERM_PROGRAM", "ConEmuANSI", "ANSICON")
+
+
+def live_feedback_supported(console: Console) -> bool:
+    """Whether the transient wait spinner is safe on this terminal.
+
+    The spinner repaints the bottom line several times a second. The legacy
+    Windows console (conhost) snaps the viewport to the cursor on every write,
+    which makes scrollback unusable during a turn and can smear the spinner into
+    the input line — so on Windows the spinner only runs under a modern host
+    (Windows Terminal, VS Code, ConEmu — detected via the env vars they set).
+    ``ZAKCODE_NO_SPINNER`` force-disables it anywhere.
+    """
+    if os.environ.get("ZAKCODE_NO_SPINNER"):
+        return False
+    if not console.is_terminal:
+        return False
+    if sys.platform == "win32":
+        return any(os.environ.get(var) for var in _MODERN_TERM_VARS)
+    return True
 
 
 #: Max lines of shell/run output shown inline in a result block (then "... (+N more)").
@@ -200,8 +225,12 @@ class StreamRenderer:
         self._block_gap = False
         #: True when the last printed row was blank — separator blanks coalesce
         #: through :meth:`_blank` so adjacent blocks never stack two empty lines.
-        self._just_blank = False
-        self._live = self.console.is_terminal if live_feedback is None else live_feedback
+        #: Starts True: the REPL prints one blank under the submitted input, so a
+        #: turn that opens with a tool block must not add a second.
+        self._just_blank = True
+        self._live = (
+            live_feedback_supported(self.console) if live_feedback is None else live_feedback
+        )
 
     def _blank(self) -> None:
         """Print one separating blank line, coalescing with one just printed."""
@@ -257,8 +286,12 @@ class StreamRenderer:
         if not self._live:
             return
         suspend_live(self.console)
+        # 4 repaints/second is enough for a wait pulse and keeps the bottom-line
+        # churn low on slower terminal hosts.
         status = self.console.status(
-            Text(label + self._g["ellipsis"], style="status"), spinner="dots"
+            Text(label + self._g["ellipsis"], style="status"),
+            spinner="dots",
+            refresh_per_second=4,
         )
         status.start()
         _LIVE_STATUS[id(self.console)] = status

@@ -481,6 +481,36 @@ async def test_render_no_spinner_output_off_terminal() -> None:
     assert "thinking" not in buffer.getvalue()
 
 
+def test_live_feedback_gated_off_legacy_windows_console(monkeypatch) -> None:
+    # The legacy conhost snaps the viewport to the cursor on every Live repaint
+    # (breaking scrollback, smearing the input line), so the spinner only runs
+    # under a modern host there. ZAKCODE_NO_SPINNER disables it anywhere.
+    from zakcode.cli.render import live_feedback_supported
+
+    term = Console(file=io.StringIO(), force_terminal=True, width=80)
+    for var in ("ZAKCODE_NO_SPINNER", "WT_SESSION", "TERM_PROGRAM", "ConEmuANSI", "ANSICON"):
+        monkeypatch.delenv(var, raising=False)
+
+    # Non-terminal consoles (hermetic tests, pipes) never spin.
+    plain = Console(file=io.StringIO(), force_terminal=False)
+    assert live_feedback_supported(plain) is False
+
+    # Legacy Windows console: gated off; a modern host's env var turns it on.
+    monkeypatch.setattr("zakcode.cli.render.sys.platform", "win32")
+    assert live_feedback_supported(term) is False
+    monkeypatch.setenv("WT_SESSION", "1")
+    assert live_feedback_supported(term) is True
+
+    # Anywhere else a real terminal is enough.
+    monkeypatch.delenv("WT_SESSION")
+    monkeypatch.setattr("zakcode.cli.render.sys.platform", "linux")
+    assert live_feedback_supported(term) is True
+
+    # The explicit kill switch wins everywhere.
+    monkeypatch.setenv("ZAKCODE_NO_SPINNER", "1")
+    assert live_feedback_supported(term) is False
+
+
 def test_suspend_live_stops_and_clears_the_spinner() -> None:
     from zakcode.cli.render import _LIVE_STATUS, suspend_live
 
