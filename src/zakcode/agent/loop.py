@@ -61,7 +61,7 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -259,8 +259,15 @@ class AgentLoop:
         memory_provider: MemoryProvider | None = None,
         summarizer_provider: Provider | None = None,
         attempt_cap: int = 3,
+        model_failover: Callable[[ProviderError], tuple[Provider, str] | None] | None = None,
     ) -> None:
         self.provider = provider
+        # Runtime model failover seam (PKG-AUTO): on a NON-rate-limit provider failure
+        # the loop asks this callback for a replacement ``(provider, description)`` —
+        # once per turn, and on the streaming path only before any event reached the
+        # client (a mid-stream retry would re-yield text already rendered). ``None``
+        # (default, and always for injected/test providers) = unchanged behavior.
+        self.model_failover = model_failover
         # Optional separate provider for compaction summaries (per-role model routing): a mind
         # can route the cheap "summarizer" role to a cheaper/local model than the generator.
         # ``None`` falls back to ``provider`` — so the default path is unchanged.
@@ -881,6 +888,7 @@ class AgentLoop:
         iterations = 0
         stop_reason = "max_iterations"
         turn_error = ""
+        failed_over = False  # runtime model failover fires at most once per turn
 
         # Doom-loop tracking: the signature of the previous iteration's tool-call
         # batch and how many times in a row we have now seen it.
@@ -927,19 +935,39 @@ class AgentLoop:
             system = self._build_system(restrict_now)
             call_messages = await self._messages_for_call(user_text, iterations)
 
-            try:
-                result = await self._call_provider(
-                    call_messages, system=system, tools=tool_defs or None
-                )
-            except ProviderError as exc:
-                # A provider failure that survives the retry budget ends the TURN, not
-                # the process: state was last persisted at a message boundary (so it is
-                # consistent), and the caller sees stop_reason="provider_error" +
-                # degraded so an outer harness can wait/retry/alert. (audit P0-4)
-                stop_reason = "provider_error"
-                turn_error = str(exc)
-                logger.error("turn aborted by provider error: %s", turn_error)
-                self._refund_iteration()  # no model work happened this iteration
+            result: LLMResult | None = None
+            while result is None:
+                try:
+                    result = await self._call_provider(
+                        call_messages, system=system, tools=tool_defs or None
+                    )
+                except ProviderError as exc:
+                    # Runtime model failover (PKG-AUTO): once per turn, a NON-rate-limit
+                    # failure may swap to a replacement provider and retry in place.
+                    # (A RateLimited reaching here already exhausted its retry budget —
+                    # waiting longer, not switching, is its remedy; spec: non-rate-limit.)
+                    if (
+                        not failed_over
+                        and self.model_failover is not None
+                        and not isinstance(exc, RateLimited)
+                    ):
+                        switched = self.model_failover(exc)
+                        if switched is not None:
+                            self.provider, note = switched
+                            failed_over = True
+                            logger.warning("switching model: %s", note)
+                            continue
+                    # A provider failure that survives the retry budget (and any
+                    # failover) ends the TURN, not the process: state was last
+                    # persisted at a message boundary (so it is consistent), and the
+                    # caller sees stop_reason="provider_error" + degraded so an outer
+                    # harness can wait/retry/alert. (audit P0-4)
+                    stop_reason = "provider_error"
+                    turn_error = str(exc)
+                    logger.error("turn aborted by provider error: %s", turn_error)
+                    self._refund_iteration()  # no model work happened this iteration
+                    break
+            if result is None:
                 break
 
             logger.debug(
@@ -1105,6 +1133,7 @@ class AgentLoop:
         iterations = 0
         stop_reason = "max_iterations"
         turn_error = ""
+        failed_over = False  # runtime model failover fires at most once per turn
 
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
@@ -1211,6 +1240,16 @@ class AgentLoop:
                             continue
                         provider_failure = str(exc)
                     except ProviderError as exc:
+                        # Runtime model failover (PKG-AUTO), streaming twin: only
+                        # before any event reached the client — a later retry would
+                        # re-yield text already rendered, so mid-stream stays terminal.
+                        if not received_any and not failed_over and self.model_failover is not None:
+                            switched = self.model_failover(exc)
+                            if switched is not None:
+                                self.provider, note = switched
+                                failed_over = True
+                                yield AgentStatus(message=f"switching model: {note}")
+                                continue  # fresh accumulators, retry on the new provider
                         provider_failure = str(exc)
                     break
 

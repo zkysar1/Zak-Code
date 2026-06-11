@@ -62,6 +62,11 @@ class Capabilities(BaseModel):
     """Static facts about a model, used for routing and context budgeting."""
 
     supports_tools: bool = True
+    #: The model nominally supports tools but fails them in practice (e.g. emits a
+    #: format its host rejects). Reliability is capability METADATA, not a hardcoded
+    #: sort: the auto-resolver skips tools-unreliable models whenever the session
+    #: has tools registered, so the rule survives future model additions. (D21)
+    tools_unreliable: bool = False
     supports_vision: bool = False
     supports_caching: bool = False
     context_window: int = 8192

@@ -29,7 +29,8 @@ from zakcode.events import AgentEvent
 from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
 from zakcode.messages import Message
 from zakcode.permissions import PermissionPolicy, PermissionPrompter
-from zakcode.providers.base import Provider
+from zakcode.providers.base import Provider, ProviderError
+from zakcode.providers.resolve import AUTO_SENTINEL, ResolvedModel
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
@@ -225,6 +226,24 @@ class Agent:
         # Whether the provider was injected (so per-role model routing can't rebuild it from
         # settings — an injected provider is used for every role) vs built from settings.
         self._provider_injected = provider is not None
+        # default_model == "auto" engages the availability resolver (PKG-AUTO): resolve
+        # to a concrete model BEFORE anything reads default_model (provider build,
+        # session record, role routing). Skipped when a provider is injected — hermetic
+        # callers must never trigger a network probe. Resolution failure is LOUD
+        # (ModelResolutionError with a per-source diagnosis).
+        self.model_resolution: ResolvedModel | None = None
+        if not self._provider_injected and self.settings.default_model == AUTO_SENTINEL:
+            from zakcode.providers.resolve import resolver_for
+
+            self.model_resolution = resolver_for(self.settings).resolve(require_tools=True)
+            self.settings = self.settings.model_copy(
+                update={"default_model": self.model_resolution.model}
+            )
+            logger.info(
+                "auto model resolution: %s (%s)",
+                self.model_resolution.model,
+                self.model_resolution.reason,
+            )
         # Cache of role providers built for a non-default model, keyed by model string, so
         # spawning N sub-agents on the same role model doesn't rebuild the litellm wrapper N×.
         self._provider_cache: dict[str, Provider] = {}
@@ -232,6 +251,8 @@ class Agent:
             self.provider = provider
         else:
             self.provider = self._build_provider(self.settings.default_model)
+        #: The model currently driving the main loop (failover may move it off default).
+        self._active_model = self.settings.default_model
         self.registry = default_registry(self.settings)
         self.store = session_store
         self.session = session or Session(
@@ -527,6 +548,10 @@ class Agent:
                 if "summarizer" in self.settings.model_roles
                 else None
             ),
+            # Runtime model failover (PKG-AUTO): once per turn, on a non-rate-limit
+            # provider failure, the loop may swap to a new provider we build here.
+            # None when the provider was injected (it can't be rebuilt from settings).
+            model_failover=(None if self._provider_injected else self._model_failover),
         )
 
     def _build_provider(self, model: str) -> Provider:
@@ -554,6 +579,38 @@ class Agent:
             mode=_resolve_tool_calling_mode(role_settings.tool_calling_mode, model),
             single_tool_per_turn=True,
         )
+
+    def _model_failover(self, exc: ProviderError) -> tuple[Provider, str] | None:
+        """Pick a replacement model after a provider failure (the loop's failover seam).
+
+        Precedence (D19): an explicitly configured ``fallback_model`` is the override
+        of the auto chain — it is tried first (if not already active); otherwise, when
+        the session started from ``default_model="auto"``, auto resolution re-runs
+        WITHOUT the probe cache (re-probe on failure) and with the failed model
+        excluded. Returns ``(new_provider, description)`` or ``None`` when there is
+        nowhere better to go (the loop then ends the turn as provider_error).
+        """
+        failed = self._active_model
+        fallback = self.settings.fallback_model
+        if fallback and fallback != failed:
+            new_model, reason = fallback, "fallback_model (explicit override)"
+        elif self.model_resolution is not None:
+            from zakcode.providers.resolve import ModelResolutionError, resolver_for
+
+            try:
+                resolved = resolver_for(self.settings, use_cache=False).resolve(
+                    require_tools=True, exclude={failed}
+                )
+            except ModelResolutionError as resolution_exc:
+                logger.warning("auto re-resolution found no alternative: %s", resolution_exc)
+                return None
+            new_model, reason = resolved.model, resolved.reason
+        else:
+            return None
+        logger.warning("model failover: %s -> %s (%s) after: %s", failed, new_model, reason, exc)
+        provider = self._provider_for(new_model)
+        self._active_model = new_model
+        return provider, f"{failed} -> {new_model} ({reason})"
 
     def _provider_for(self, model: str | None) -> Provider:
         """Resolve a per-role model string to a :class:`Provider` (the model-routing seam).
