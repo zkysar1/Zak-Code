@@ -267,3 +267,51 @@ def test_loop_scrub_list_respects_opt_out(monkeypatch, tmp_path) -> None:
         settings=load_settings(workspace_root=tmp_path, subprocess_inherit_provider_keys=True),
     )
     assert inheriting._scrub_env_names() == []
+
+
+# ── fresh-eyes review additions (PR-3 self-review) ────────────────────────────
+
+
+def test_autonomous_unknown_tool_mirrors_allow_semantics() -> None:
+    """An unknown tool (no spec) is treated as the strongest tier; autonomous's
+    ceiling covers it, so it auto-allows — the same posture as 'allow' mode. This
+    test pins that deliberate semantic so a future change is a conscious one."""
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
+    assert _auth(policy, None, {"anything": 1}) == (True, "")
+    # ...but a dangerous argument still hard-denies even for an unknown tool.
+    allowed, reason = _auth(policy, None, DANGEROUS)
+    assert not allowed and "dangerous" in reason
+
+
+def test_config_validator_recognizes_every_permission_mode() -> None:
+    """The config-side literal mode set (kept literal to avoid an import cycle)
+    must track the PermissionMode enum — a new mode added to one but not the other
+    would silently reject valid config or accept an unknown mode."""
+    for mode in PermissionMode:
+        # Each enum value must load cleanly as a tool_trust_overrides value...
+        settings = load_settings(tool_trust_overrides={"bash": mode.value})
+        assert settings.tool_trust_overrides == {"bash": mode.value}
+    # ...and the validator still rejects junk.
+    import pytest as _pytest
+
+    with _pytest.raises(Exception, match="unrecognized permission mode"):
+        load_settings(tool_trust_overrides={"bash": "not-a-mode"})
+
+
+def test_restore_is_idempotent_across_save_cycles() -> None:
+    """Save → restore → save must not grow the grant log (review finding lock-in)."""
+    import asyncio as _asyncio
+
+    prompter = ScriptedPrompter([PermissionOutcome.ALLOW_SESSION])
+    first = PermissionPolicy(PermissionMode.ASK, prompter=prompter)
+    _asyncio.run(first.authorize(WRITE, {"path": "a"}))
+    exported = first.export_grants()
+    assert len(exported) == 1
+
+    second = PermissionPolicy(PermissionMode.ASK)
+    second.restore_grants(exported)
+    second.restore_grants(exported)  # double-restore (e.g. a buggy caller): no growth
+    assert len(second.export_grants()) == 1
+    third = PermissionPolicy(PermissionMode.ASK)
+    third.restore_grants(second.export_grants())
+    assert len(third.export_grants()) == 1  # stable across generations

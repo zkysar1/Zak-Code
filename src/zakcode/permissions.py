@@ -28,7 +28,9 @@ Authorization combines two independent checks, and the stricter wins:
 2. **Dangerous-pattern blocklist.** Shell commands matching :data:`DANGEROUS_PATTERNS`
    (``rm -rf /``, ``sudo``, ``mkfs``, fork bombs, raw device writes, ``DROP TABLE`` …)
    can only ever *tighten* a decision: an otherwise-allowed catastrophic command is
-   escalated to a confirmation prompt (or denied in ``deny`` mode). It never loosens.
+   escalated to a confirmation prompt — except in ``autonomous`` mode, where it is a
+   deterministic hard DENY (no prompt exists to escalate to) — and is denied outright
+   in ``deny`` mode. It never loosens.
 """
 
 from __future__ import annotations
@@ -528,6 +530,8 @@ class PermissionPolicy:
         for record in records or []:
             if not isinstance(record, dict):
                 continue
+            if record in self._grant_log:
+                continue  # dedup: a doc with repeated records must not grow the log
             kind = record.get("kind")
             tool = record.get("tool")
             scope = record.get("args_scope")
