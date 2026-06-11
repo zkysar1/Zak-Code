@@ -742,6 +742,7 @@ def _build_chat_agent(
         enable_rules=enable_rules,
         enable_memory=enable_memory,
         enable_compaction=True,
+        enable_settings_hooks=True,
         **overrides,
     )
 

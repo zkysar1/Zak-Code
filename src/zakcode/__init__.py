@@ -213,6 +213,7 @@ class Agent:
         enable_memory: bool = False,
         memory_provider: MemoryProvider | None = None,
         enable_compaction: bool = False,
+        enable_settings_hooks: bool = False,
         **setting_overrides: Any,
     ) -> None:
         self.settings = settings or load_settings(**setting_overrides)
@@ -256,6 +257,24 @@ class Agent:
         # a fresh session carries no grants, so this is a no-op there.
         self.permission_policy.restore_grants(self.session.permission_grants)
         self.hook_manager = hook_manager or HookManager()
+        # settings.json hook ingestion (PR-T5).  TE-R3(3): when a caller passes
+        # BOTH enable_settings_hooks=True AND a programmatic hook_manager, the
+        # settings.json specs are APPENDED to the existing manager's shell_hooks.
+        if enable_settings_hooks:
+            from zakcode.hooks.settings_loader import load_settings_hooks
+
+            _specs, _errs = load_settings_hooks(
+                self.settings.workspace_root,
+                permission_mode=str(self.settings.permission_mode),
+            )
+            for _key, _err in _errs.items():
+                logger.warning("settings.json hook %s: %s", _key, _err)
+            if _specs:
+                if hook_manager is not None:
+                    # TE-R3(3): append, don't replace.
+                    self.hook_manager.shell_hooks.extend(_specs)
+                else:
+                    self.hook_manager = HookManager(shell_hooks=_specs)
         # One-shot guard so aclose() (and its SESSION_END encode step) runs at most once.
         self._closed = False
         # Slash-command registry (M6) — plugins register commands here; clients

@@ -37,6 +37,16 @@ logger = logging.getLogger("zakcode.hooks")
 DEFAULT_HOOK_TIMEOUT = 10.0
 
 
+def _scrubbed_env(drop: list[str]) -> dict[str, str]:
+    """Return a copy of ``os.environ`` with *drop* names removed."""
+    import os
+
+    child_env = dict(os.environ)
+    for name in drop:
+        child_env.pop(name, None)
+    return child_env
+
+
 class HookEvent(StrEnum):
     """Lifecycle points a hook can fire on.
 
@@ -172,6 +182,10 @@ class HookSpec(BaseModel):
     command: list[str] = Field(..., description="argv array; run WITHOUT a shell.")
     matcher: str = "*"  # glob over the tool name; '*' = every tool
     timeout: float = DEFAULT_HOOK_TIMEOUT
+    # Env-var names to scrub from the child environment before spawning.  Populated
+    # by the settings_loader for workspace-sourced hooks (TE-R1: provider-key hygiene
+    # applies to ALL workspace hooks, not just TURN_END).
+    drop_env: list[str] = Field(default_factory=list)
 
     def matches(self, tool_name: str) -> bool:
         return fnmatch.fnmatch(tool_name, self.matcher)
@@ -516,12 +530,14 @@ class HookManager:
         if not spec.command:
             return None
         stdin_bytes = payload.model_dump_json().encode("utf-8")
+        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
@@ -576,12 +592,14 @@ class HookManager:
         if not spec.command:
             return
         stdin_bytes = payload.model_dump_json().encode("utf-8")
+        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
@@ -623,12 +641,14 @@ class HookManager:
         if not spec.command:
             return None
         stdin_bytes = payload.model_dump_json().encode("utf-8")
+        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
