@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 _UNICODE: dict[str, str] = {
     "dot": "·",
     "arrow": "→",
+    "branch": "└",
     "prompt": "›",
     "ok": "✓",
     "fail": "✗",
@@ -38,6 +39,7 @@ _UNICODE: dict[str, str] = {
 _ASCII: dict[str, str] = {
     "dot": "-",
     "arrow": "->",
+    "branch": "`-",
     "prompt": ">",
     "ok": "[ok]",
     "fail": "[x]",

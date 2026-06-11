@@ -25,14 +25,18 @@ ZAK_THEME = Theme(
         "tool.marker": "dim",
         "tool.verb": "cyan",
         "tool.target": "bold",
+        "tool.connector": "dim",
         "arg.key": "dim",
         "arg.value": "default",
         # semantic states
         "ok": "green",
         "err": "bold red",
         "warn": "yellow",
-        # out-of-band / chrome
-        "status": "dim",
+        # out-of-band / chrome — status notices are loop interventions (rate limits,
+        # stuck recovery): an accent glyph + italic body so they read apart from both
+        # the assistant's prose and the dim chrome, instead of vanishing into dim.
+        "status": "italic",
+        "status.glyph": "yellow",
         "footer": "dim",
         "rule.line": "dim",
         "notice.dim": "dim",

@@ -7,6 +7,17 @@ chrome so the assistant's own words and the salient tool target are the brightes
 on screen. No agent logic, no network, no provider imports — feed a fake async generator
 into :meth:`StreamRenderer.render` over a ``Console`` backed by ``io.StringIO`` to test it.
 
+Spatial grammar (shared with the bundled web client — see ``docs/UX.md``):
+
+* a tool call and its result form **one block**: ``→ verb  target`` with a
+  ``└ ✓ summary`` connector line directly beneath, previews indented under that;
+* one blank line separates blocks (prose run / tool block / status), never lines
+  within a block, so related output reads as a unit;
+* every turn closes with a one-line footer rule (``── 2 iter · 15.3k tok · $0.02 ──``);
+* while the loop is waiting (model thinking, tool running) a transient spinner shows
+  what it is waiting **for** — real terminals only, suspended by :func:`suspend_live`
+  whenever something else (the permission prompter) needs the bottom line.
+
 Two subtle pieces:
 
 * *Fence-safe flushing* (:func:`split_on_safe_boundary`): streamed text is released only
@@ -25,6 +36,7 @@ from typing import cast
 from rich.console import Console
 from rich.padding import Padding
 from rich.rule import Rule
+from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text
 
@@ -41,6 +53,24 @@ from zakcode.events import (
 from zakcode.usage import Usage
 
 _FENCE = "```"
+
+#: One live spinner per console (keyed by ``id``), so anything about to take over the
+#: terminal — the permission prompter, an input read — can stop it via suspend_live.
+_LIVE_STATUS: dict[int, Status] = {}
+
+
+def suspend_live(console: Console) -> None:
+    """Stop the live spinner attached to ``console`` (no-op when none is active).
+
+    The spinner is a :class:`rich.status.Status` whose refresh thread repaints the
+    bottom line; anything that reads input or prints a prompt on the same console
+    must call this first or the spinner draws over it. The renderer restarts the
+    spinner on its next event, so callers never need to resume it.
+    """
+    status = _LIVE_STATUS.pop(id(console), None)
+    if status is not None:
+        status.stop()
+
 
 #: Max lines of shell/run output shown inline in a result block (then "... (+N more)").
 _RUN_OUTPUT_LINES = 12
@@ -144,44 +174,97 @@ class StreamRenderer:
 
     Prose streams as bright text in the document margin (a ``·`` marker on the first
     row of a reply); a fenced code block renders once via ``rich.Syntax`` when it
-    closes. Tool calls render as ``→ verb  target`` and their results as a status-
-    colored ``✓/✗ name · summary`` line (a unified-diff preview when applicable). Usage
-    is accumulated and summarized in a footer printed on :class:`AgentDone`. All glyphs
-    resolve to cp1252-safe ASCII fallbacks when the console cannot encode them.
+    closes. A tool call and its result render as one block — ``→ verb  target`` with a
+    ``└ ✓ summary`` connector beneath (a unified-diff or shell-output preview under
+    that). Usage is accumulated and summarized in a one-line footer rule printed on
+    :class:`AgentDone`. While the loop is waiting a transient spinner names what it is
+    waiting for ("thinking", the running verb) — only on a real terminal, so hermetic
+    StringIO tests never see it. All glyphs resolve to cp1252-safe ASCII fallbacks
+    when the console cannot encode them.
     """
 
-    def __init__(self, console: Console | None = None) -> None:
+    def __init__(
+        self, console: Console | None = None, *, live_feedback: bool | None = None
+    ) -> None:
         self.console = console if console is not None else Console()
         self._g = resolve_glyphs(self.console)
         self._text_buffer = ""
         self._usage = Usage()
         self._tool_names: dict[str, str] = {}
         self._assistant_marked = False
+        #: id of the most recent tool call printed — its result attaches without
+        #: repeating the verb; an out-of-order result names its tool instead.
+        self._last_call_id: str | None = None
+        #: True right after a tool/status block: the next prose run opens with a
+        #: blank line so blocks keep the one-blank-line rhythm.
+        self._block_gap = False
+        #: True when the last printed row was blank — separator blanks coalesce
+        #: through :meth:`_blank` so adjacent blocks never stack two empty lines.
+        self._just_blank = False
+        self._live = self.console.is_terminal if live_feedback is None else live_feedback
+
+    def _blank(self) -> None:
+        """Print one separating blank line, coalescing with one just printed."""
+        if not self._just_blank:
+            self.console.print()
+            self._just_blank = True
+
+    def _out(self, renderable: object) -> None:
+        """Print a content row (and remember the bottom row is no longer blank)."""
+        self.console.print(renderable)
+        self._just_blank = False
 
     async def render(self, events: AsyncIterator[AgentEvent]) -> AgentDone | None:
         """Consume ``events``, render them, and return the final ``AgentDone`` (or None)."""
         done: AgentDone | None = None
         self._assistant_marked = False
 
-        async for event in events:
-            if isinstance(event, AgentTextDelta):
-                self._on_text_delta(event.text)
-            elif isinstance(event, AgentToolCall):
-                self._on_tool_call(event)
-            elif isinstance(event, AgentToolResult):
-                self._on_tool_result(event)
-            elif isinstance(event, AgentStatus):
-                self._on_status(event)
-            elif isinstance(event, AgentUsage):
-                self._on_usage(event)
-            elif isinstance(event, AgentDone):
-                done = event
-                break
+        self._spin("thinking")
+        try:
+            async for event in events:
+                if isinstance(event, AgentTextDelta):
+                    self._unspin()
+                    self._on_text_delta(event.text)
+                elif isinstance(event, AgentToolCall):
+                    self._unspin()
+                    verb = self._on_tool_call(event)
+                    self._spin(verb)
+                elif isinstance(event, AgentToolResult):
+                    self._unspin()
+                    self._on_tool_result(event)
+                    self._spin("thinking")
+                elif isinstance(event, AgentStatus):
+                    self._unspin()
+                    self._on_status(event)
+                    self._spin("thinking")
+                elif isinstance(event, AgentUsage):
+                    self._on_usage(event)  # no console output — leave the spinner be
+                elif isinstance(event, AgentDone):
+                    done = event
+                    break
+        finally:
+            self._unspin()
 
         self._flush_remaining_text()
         if done is not None:
             self._print_footer(done)
         return done
+
+    # -- live wait feedback ---------------------------------------------------
+
+    def _spin(self, label: str) -> None:
+        """Show a transient spinner naming what the loop is waiting for."""
+        if not self._live:
+            return
+        suspend_live(self.console)
+        status = self.console.status(
+            Text(label + self._g["ellipsis"], style="status"), spinner="dots"
+        )
+        status.start()
+        _LIVE_STATUS[id(self.console)] = status
+
+    def _unspin(self) -> None:
+        suspend_live(self.console)
 
     # -- per-event handlers -------------------------------------------------
 
@@ -206,16 +289,26 @@ class StreamRenderer:
                 if line.strip() == "":
                     continue  # swallow leading blank lines before the first content
                 self._assistant_marked = True
+                self._open_block_gap()
                 marker = Text(self._g["dot"] + " ", style="assistant.marker")
-                self.console.print(marker + _inline_md(line, self._g))
+                self._out(Padding(marker + _inline_md(line, self._g), (0, 0, 0, 2)))
             elif line.strip() == "":
-                self.console.print()
+                self._blank()  # coalesced: runs of blank prose lines render as one
+                self._block_gap = False  # the prose's own blank already separates blocks
             else:
-                self.console.print(Padding(_inline_md(line, self._g), (0, 0, 0, 2)))
+                self._open_block_gap()
+                self._out(Padding(_inline_md(line, self._g), (0, 0, 0, 4)))
+
+    def _open_block_gap(self) -> None:
+        """Print the one blank line that separates a new block from a tool/status block."""
+        if self._block_gap:
+            self._blank()
+            self._block_gap = False
 
     def _print_code(self, lang: str, body: str) -> None:
         if not body.strip():
             return
+        self._block_gap = False  # the code block prints its own surrounding blanks
         syntax = Syntax(
             body,
             lang or "text",
@@ -223,15 +316,20 @@ class StreamRenderer:
             background_color="default",
             word_wrap=True,
         )
-        self.console.print()
-        self.console.print(Padding(syntax, (0, 0, 0, 4)))
-        self.console.print()
+        self._blank()
+        self._out(Padding(syntax, (0, 0, 0, 4)))
+        self._blank()
 
-    def _on_tool_call(self, event: AgentToolCall) -> None:
+    def _on_tool_call(self, event: AgentToolCall) -> str:
         verb, target = _format_tool_call(event.name, event.arguments)
         self._tool_names[event.id] = verb
-        self.console.print()
-        self.console.print(
+        self._last_call_id = event.id
+        self._block_gap = False
+        # A prose run that resumes after this block is a NEW block: give it its own
+        # `·` marker rather than rendering it as an orphaned continuation.
+        self._assistant_marked = False
+        self._blank()
+        self._out(
             Padding(
                 Text.assemble(
                     (self._g["arrow"] + " ", "tool.marker"),
@@ -241,21 +339,30 @@ class StreamRenderer:
                 (0, 0, 0, 2),
             )
         )
+        return verb
 
-    def _result_head(self, name: str, state: str, summary: str) -> Padding:
+    def _result_head(self, name: str | None, state: str, summary: str) -> Padding:
+        """The ``└ ✓ summary`` connector line that attaches a result to its call.
+
+        ``name`` is only shown when the result did not immediately follow its own
+        call line (out-of-order results), so the common adjacent pair stays terse.
+        """
         glyph = self._g["fail"] if state == "err" else self._g["ok"]
-        return Padding(
-            Text.assemble(
-                (glyph + " ", state),
-                (name + " ", "tool.marker"),
-                (self._g["dot"] + " ", "tool.marker"),
-                (summary, "notice.dim"),
-            ),
-            (0, 0, 0, 4),
+        line = Text.assemble(
+            (self._g["branch"] + " ", "tool.connector"),
+            (glyph + " ", state),
         )
+        if name:
+            line.append_text(Text(name + " " + self._g["dot"] + " ", style="tool.marker"))
+        line.append_text(Text(summary, style="notice.dim"))
+        return Padding(line, (0, 0, 0, 2))
 
     def _on_tool_result(self, event: AgentToolResult) -> None:
         name = self._tool_names.get(event.tool_use_id, "tool")
+        attached = event.tool_use_id == self._last_call_id
+        head_name = None if attached else name
+        self._last_call_id = None
+        self._block_gap = True  # whatever prints next starts a new block
         state = "err" if event.is_error else "ok"
         output = str(event.output)
 
@@ -268,35 +375,46 @@ class StreamRenderer:
                 summary = "failed"
             else:
                 summary = f"{n} line{'' if n == 1 else 's'}" if n else "no output"
-            self.console.print(self._result_head(name, state, summary))
+            self._out(self._result_head(head_name, state, summary))
             preview = lines[:_RUN_OUTPUT_LINES]
             if preview:
-                self.console.print(
-                    Padding(Text("\n".join(preview), style="notice.dim"), (0, 0, 0, 6))
-                )
+                self._out(Padding(Text("\n".join(preview), style="notice.dim"), (0, 0, 0, 6)))
             if n > _RUN_OUTPUT_LINES:
                 more = n - _RUN_OUTPUT_LINES
                 tail = f"{self._g['ellipsis']} (+{more} more line{'' if more == 1 else 's'})"
-                self.console.print(Padding(Text(tail, style="notice.dim"), (0, 0, 0, 6)))
+                self._out(Padding(Text(tail, style="notice.dim"), (0, 0, 0, 6)))
             return
 
-        summary = _first_line(output) or ("error" if event.is_error else "ok")
-        self.console.print(self._result_head(name, state, summary))
-        diff = _diff_preview(output)
+        diff = _diff_preview(output, glyphs=self._g)
         if diff is not None:
-            self.console.print(Padding(diff, (0, 0, 0, 6)))
+            # A diff result summarizes as change counts; the preview shows the lines.
+            adds = sum(
+                1 for ln in output.splitlines() if ln.startswith("+") and not ln.startswith("+++")
+            )
+            dels = sum(
+                1 for ln in output.splitlines() if ln.startswith("-") and not ln.startswith("---")
+            )
+            summary = f"+{adds} -{dels}"
+        else:
+            summary = _first_line(output) or ("error" if event.is_error else "ok")
+        self._out(self._result_head(head_name, state, summary))
+        if diff is not None:
+            self._out(Padding(diff, (0, 0, 0, 6)))
         elif event.is_error:
             extra = "\n".join(output.splitlines()[1:6]).rstrip()
             if extra:
-                self.console.print(Padding(Text(extra, overflow="fold"), (0, 0, 0, 6)))
+                self._out(Padding(Text(extra, overflow="fold"), (0, 0, 0, 6)))
 
     def _on_status(self, event: AgentStatus) -> None:
-        self.console.print(
+        self._assistant_marked = False  # prose resuming after a notice is a new block
+        self._open_block_gap()
+        self._out(
             Padding(
-                Text.assemble((self._g["status"] + " ", "status"), (event.message, "status")),
+                Text.assemble((self._g["status"] + " ", "status.glyph"), (event.message, "status")),
                 (0, 0, 0, 2),
             )
         )
+        self._block_gap = True
 
     def _on_usage(self, event: AgentUsage) -> None:
         self._usage = self._usage + event.usage
@@ -311,14 +429,31 @@ class StreamRenderer:
     def _print_footer(self, done: AgentDone) -> None:
         usage = done.usage if done.usage.total_tokens else self._usage
         g = self._g
-        line = (
-            f"{g['dot']} {done.iterations} iter "
+        self._blank()
+        if done.stop_reason != "completed":
+            # A turn that stopped early (stuck / doom_loop / max_iterations / ...) must
+            # not end silently — the dim footer alone is easy to read past.
+            self._out(
+                Padding(
+                    Text.assemble(
+                        (g["bang"] + " ", "warn"),
+                        (f"stopped early: {done.stop_reason}", "warn"),
+                    ),
+                    (0, 0, 0, 2),
+                )
+            )
+        stats = (
+            f"{done.iterations} iter "
             f"{g['dot']} {_humanize_tokens(usage.total_tokens)} "
             f"{g['dot']} ${usage.cost_usd:.4f}"
         )
-        self.console.print()
-        self.console.print(Padding(Rule(characters=g["hline"], style="rule.line"), (0, 0, 0, 2)))
-        self.console.print(Padding(Text(line, style="footer"), (0, 0, 0, 2)))
+        rule = Rule(
+            Text(stats, style="footer"),
+            characters=g["hline"],
+            style="rule.line",
+            align="left",
+        )
+        self.console.print(Padding(rule, (0, 0, 0, 2)))
 
 
 def _inline_md(line: str, glyphs: dict[str, str]) -> Text:
@@ -390,14 +525,18 @@ def _tool_target(arguments: object) -> str:
     return _abbrev_value(arguments, limit=120)
 
 
-def _diff_preview(output: str) -> Text | None:
+#: Max diff lines shown in a result preview (then "… (+N more)").
+_DIFF_PREVIEW_LINES = 6
+
+
+def _diff_preview(output: str, *, glyphs: dict[str, str] | None = None) -> Text | None:
     """A small colored unified-diff preview, or ``None`` if the output is not a diff.
 
     Gated on a real unified-diff SIGNATURE — an ``@@`` hunk header, or a ``--- ``/``+++ ``
     file-header pair — before colorizing. Without the gate, ordinary tool output whose
     lines merely begin with ``-``/``+`` (markdown bullets, an ``ls -l`` listing, a file
     read) was mis-painted as a red/green diff and truncated; the signature gate prevents
-    that false positive.
+    that false positive. Truncation is always marked (``… (+N more)``), never silent.
     """
     lines = output.splitlines()
     has_hunk = any(ln.startswith("@@") for ln in lines)
@@ -410,7 +549,7 @@ def _diff_preview(output: str) -> Text | None:
     if len(diff_lines) < 2:
         return None
     text = Text()
-    for ln in diff_lines[:6]:
+    for ln in diff_lines[:_DIFF_PREVIEW_LINES]:
         if ln.startswith("+"):
             style = "diff.add"
         elif ln.startswith("-"):
@@ -418,6 +557,10 @@ def _diff_preview(output: str) -> Text | None:
         else:
             style = "diff.ctx"
         text.append(ln + "\n", style=style)
+    if len(diff_lines) > _DIFF_PREVIEW_LINES:
+        more = len(diff_lines) - _DIFF_PREVIEW_LINES
+        ellipsis = (glyphs or {}).get("ellipsis", "...")
+        text.append(f"{ellipsis} (+{more} more line{'' if more == 1 else 's'})", style="notice.dim")
     text.rstrip()
     return text
 

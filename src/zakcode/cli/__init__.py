@@ -20,6 +20,7 @@ import typer
 from rich.console import Console, Group, RenderableType
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -33,7 +34,7 @@ from zakcode.cli._layout import (
     read_prompt,
 )
 from zakcode.cli._theme import ZAK_THEME
-from zakcode.cli.render import StreamRenderer
+from zakcode.cli.render import StreamRenderer, suspend_live
 from zakcode.config import Settings, load_settings
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
@@ -187,6 +188,11 @@ Anything else is sent to the agent as a turn.\
 """
 
 
+def _dim(console: Console, msg: str) -> None:
+    """One dim line in the shared document margin (the slash-command notice style)."""
+    console.print(margin(Text(msg, style="notice.dim")))
+
+
 def _abbrev(value: object, *, limit: int = 80) -> str:
     """One-line, length-capped rendering of an argument value for a prompt."""
     text = str(value).replace("\n", " ").replace("\r", " ")
@@ -233,6 +239,9 @@ class ConsolePermissionPrompter:
         self.console = console
 
     async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
+        # The renderer's wait-spinner repaints the bottom line; stop it before the
+        # panel + input prompt take over (it restarts on the next stream event).
+        suspend_live(self.console)
         g = resolve_glyphs(self.console)
         args = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
         args.add_column(style="arg.key", min_width=8, no_wrap=True)
@@ -323,21 +332,21 @@ def _render_hooks(console: Console, agent: Agent) -> None:
     shell = manager.shell_hooks
     in_proc = sum(len(v) for v in manager.in_process.values())
     if not shell and not in_proc:
-        console.print("[dim]no hooks configured.[/dim]")
+        _dim(console, "no hooks configured.")
         return
     for spec in shell:
         line = Text(spec.event.value, style="notice.dim")
         line.append(f" [{spec.matcher}] -> {' '.join(spec.command)}")
-        console.print(line)
+        console.print(margin(line))
     if in_proc:
-        console.print(Text(f"{in_proc} in-process hook(s) registered.", style="notice.dim"))
+        _dim(console, f"{in_proc} in-process hook(s) registered.")
 
 
 def _render_agents(console: Console, agent: Agent) -> None:
     """List the sub-agent types available for delegation (the /agents cmd)."""
     spawner = agent.loop.spawner
     if spawner is None:
-        console.print("[dim]delegation is not enabled for this session.[/dim]")
+        _dim(console, "delegation is not enabled for this session.")
         return
     default = spawner.default_type()
     for name in spawner.available_types():
@@ -353,18 +362,21 @@ def _run_plan(console: Console, agent: Agent, task: str) -> None:
     """
     spawner = agent.loop.spawner
     if spawner is None:
-        console.print("[dim]delegation is not enabled for this session.[/dim]")
+        _dim(console, "delegation is not enabled for this session.")
         return
     if not task:
-        console.print("[dim]usage: /plan <what you want planned>[/dim]")
+        _dim(console, "usage: /plan <what you want planned>")
         return
-    console.print("[dim]planning (read-only)...[/dim]")
+    _dim(console, "planning (read-only)...")
     try:
         result = _run_async(spawner.spawn(type_name="plan", prompt=task))
     except ProviderError as exc:
         notice_error(console, "provider error", str(exc))
         return
-    console.print(result.summary or "[dim](the planner produced no plan)[/dim]")
+    if result.summary:
+        console.print(margin(Text(result.summary)))
+    else:
+        _dim(console, "(the planner produced no plan)")
 
 
 def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
@@ -377,38 +389,39 @@ def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
     """
     manager = agent.extension_manager
     if manager is None:
-        console.print("[dim]MCP is not enabled for this session.[/dim]")
+        _dim(console, "MCP is not enabled for this session.")
         return
     action = (arg.strip().split(maxsplit=1) or ["list"])[0] if arg.strip() else "list"
     if action == "connect":
-        console.print("[dim]connecting MCP servers...[/dim]")
+        _dim(console, "connecting MCP servers...")
         report = _run_async(agent.connect_mcp())
         if report is None:
-            console.print("[dim]MCP is not enabled.[/dim]")
+            _dim(console, "MCP is not enabled.")
             return
         if report.registered:
-            console.print(f"[green]registered {len(report.registered)} tool(s):[/green]")
+            console.print(margin(f"[green]registered {len(report.registered)} tool(s):[/green]"))
             for name in report.registered:
                 console.print(f"    [green]+[/green] {name}")
         if report.deferred:
-            console.print(
-                f"[dim]{len(report.deferred)} more tool(s) registered but hidden "
-                "(use tool_search to surface them).[/dim]"
+            _dim(
+                console,
+                f"{len(report.deferred)} more tool(s) registered but hidden "
+                "(use tool_search to surface them).",
             )
         for server, err in report.failed.items():
             console.print(f"    [red]x[/red] {server}: {err}")
         if not report.registered and not report.deferred and not report.failed:
-            console.print("[dim]no MCP tools discovered.[/dim]")
+            _dim(console, "no MCP tools discovered.")
         return
     names = manager.server_names
     if not names and not agent.mcp_config_errors:
-        console.print("[dim]no MCP servers configured.[/dim]")
+        _dim(console, "no MCP servers configured.")
         return
     for name in names:
         console.print(f"  [bold]{name}[/bold]")
     for server, err in agent.mcp_config_errors.items():
         console.print(f"  [red]{server}[/red]: {err}")
-    console.print("[dim]use /mcp connect to spawn servers and register their tools.[/dim]")
+    _dim(console, "use /mcp connect to spawn servers and register their tools.")
 
 
 def _render_plugins(console: Console, agent: Agent) -> None:
@@ -416,10 +429,10 @@ def _render_plugins(console: Console, agent: Agent) -> None:
     report = agent.plugin_report
     errors = agent.plugin_discovery_errors
     if report is None:
-        console.print("[dim]plugins are not enabled for this session.[/dim]")
+        _dim(console, "plugins are not enabled for this session.")
         return
     if not report.loaded and not report.skipped and not report.failed and not errors:
-        console.print("[dim]no plugins discovered.[/dim]")
+        _dim(console, "no plugins discovered.")
         return
     # Built with Text + console-resolved glyphs (never f-string markup) so a cp1252
     # console can't crash on a glyph and a plugin-supplied name/reason can't inject or
@@ -453,16 +466,14 @@ def _render_skills(console: Console, agent: Agent) -> None:
     registry = getattr(agent, "skill_registry", None)
     g = resolve_glyphs(console)
     if registry is None or len(registry) == 0:
-        console.print("[dim]no skills discovered.[/dim]")
+        _dim(console, "no skills discovered.")
     else:
         for name, desc in registry.catalog():
             line = Text.assemble(("  ", ""), (name, "bold"))
             if desc:
                 line.append(f" {g['dash']} {desc}", style="notice.dim")
             console.print(line)
-        console.print(
-            Text("invoke a skill with /<name> to load its instructions.", style="notice.dim")
-        )
+        _dim(console, "invoke a skill with /<name> to load its instructions.")
     for name, err in getattr(agent, "skill_errors", {}).items():
         line = Text.assemble(("  ", ""), (name, "err"))
         line.append(f" ({err})", style="notice.dim")
@@ -489,10 +500,12 @@ def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
         notice_error(console, "could not load skill", f"{result.name}: {result.error}")
         return True
     console.print(
-        Text.assemble(
-            ("loaded skill ", "notice.dim"),
-            (result.name, "bold"),
-            ("; describe your task and it will apply.", "notice.dim"),
+        margin(
+            Text.assemble(
+                ("loaded skill ", "notice.dim"),
+                (result.name, "bold"),
+                ("; describe your task and it will apply.", "notice.dim"),
+            )
         )
     )
     return True
@@ -531,6 +544,10 @@ def _print_banner(console: Console, agent: Agent) -> None:
         Text(""),
         hints,
         cmds,
+        Text(""),
+        # Close the banner with the same rule the per-turn footer uses, so the
+        # session header and every turn share one delimiting language.
+        Rule(characters=g["hline"], style="rule.line"),
     )
     console.print(Padding(block, (1, 0, 0, 2)))
     # Surface a self.md that was present but failed to load (unreadable / empty after
@@ -824,10 +841,10 @@ def chat(
                 notice_info(console, "bye")
                 break
             if command == "/help":
-                console.print(_CHAT_HELP)
+                console.print(margin(_CHAT_HELP))
                 continue
             if command == "/model":
-                console.print(agent.settings.default_model)
+                console.print(margin(Text(agent.settings.default_model)))
                 continue
             if command == "/permissions":
                 _render_permissions(console, agent)
@@ -848,11 +865,20 @@ def chat(
                 continue
             if command == "/cost":
                 usage = agent.session.cumulative_usage()
+                dot = f" {GLYPHS['dot']} "
                 console.print(
-                    f"[dim]prompt={usage.prompt_tokens} "
-                    f"completion={usage.completion_tokens} "
-                    f"total={usage.total_tokens} "
-                    f"cost=${usage.cost_usd:.4f}[/dim]"
+                    margin(
+                        Text.assemble(
+                            (f"total={usage.total_tokens} tok", "arg.value"),
+                            (
+                                f"  (prompt {usage.prompt_tokens} / "
+                                f"completion {usage.completion_tokens})",
+                                "notice.dim",
+                            ),
+                            (dot, "notice.dim"),
+                            (f"${usage.cost_usd:.4f}", "arg.value"),
+                        )
+                    )
                 )
                 continue
             if command == "/agents":
@@ -872,10 +898,9 @@ def chat(
                 continue
             if command == "/compact":
                 did = _run_async(agent.loop.compact_now())
-                console.print(
-                    "[dim]compacted older history into a summary.[/dim]"
-                    if did
-                    else "[dim]nothing to compact yet.[/dim]"
+                _dim(
+                    console,
+                    "compacted older history into a summary." if did else "nothing to compact yet.",
                 )
                 continue
             # A bare /<skill-name> invokes a discovered skill (loads its body).
@@ -893,9 +918,11 @@ def chat(
             if cmd_result is not None:
                 # Opaque plugin output: render as plain Text so a bare [/] can't raise
                 # MarkupError (crashing the REPL) and style tags can't drop the literal.
-                console.print(Text(cmd_result.output, style="err" if cmd_result.is_error else ""))
+                console.print(
+                    margin(Text(cmd_result.output, style="err" if cmd_result.is_error else ""))
+                )
                 continue
-            console.print(f"[dim]{command} is not yet supported.[/dim]")
+            _dim(console, f"{command} is not yet supported.")
             continue
 
         # Stream the model response token by token through the renderer. A fresh
@@ -927,17 +954,23 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         notice_error(console, f"could not reach server at {base_url}", str(exc))
         raise typer.Exit(code=1) from exc
 
-    console.print(
+    banner = Group(
         Text.assemble(
             ("Zak Code", "banner.title"),
             (f" {__version__} ", "banner.version"),
             (f"{GLYPHS['dash']} connected to {base_url}", "notice.dim"),
-        )
+        ),
+        Text(""),
+        kv_table(
+            [("session", session_id)]
+            + ([("model", f"{model} (per-request override)")] if model else [])
+        ),
+        Text(""),
+        Text("Type /exit to quit. (Server mode: turns run headless.)", style="notice.dim"),
+        Text(""),
+        Rule(characters=GLYPHS["hline"], style="rule.line"),
     )
-    console.print(f"[dim]session[/dim]  {session_id}")
-    if model:
-        console.print(f"[dim]model[/dim]    {model} [dim](per-request override)[/dim]")
-    console.print("[dim]Type /exit to quit. (Server mode: turns run headless.)[/dim]\n")
+    console.print(Padding(banner, (1, 0, 0, 2)))
 
     # One event loop for the whole session (never one per turn) — see
     # _SESSION_LOOP / _shutdown_session_loop.

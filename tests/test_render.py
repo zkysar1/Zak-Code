@@ -388,6 +388,111 @@ def test_diff_preview_colorizes_real_unified_diff() -> None:
     assert _diff_preview("--- a/x.py\n+++ b/x.py\n-removed\n+added") is not None
 
 
+# ── the Zak look (docs/UX.md): tool blocks, footer rule, wait feedback ────────
+
+
+@pytest.mark.asyncio
+async def test_render_result_attaches_to_its_call_without_repeating_verb() -> None:
+    # An adjacent call/result pair is one block: the connector line carries only the
+    # state + summary; the verb is already on the call line directly above.
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentToolCall(id="t1", name="read_file", arguments={"path": "a.txt"}),
+        AgentToolResult(tool_use_id="t1", output="42 lines", is_error=False),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert "└" in out  # the connector groups result under call
+    assert out.count("read") == 1  # verb on the call line only, not repeated
+
+
+@pytest.mark.asyncio
+async def test_render_out_of_order_result_names_its_tool() -> None:
+    # A result that does not directly follow its own call line names its tool so the
+    # operator can still pair them.
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentToolCall(id="t1", name="read_file", arguments={"path": "a.txt"}),
+        AgentToolCall(id="t2", name="grep", arguments={"pattern": "x"}),
+        AgentToolResult(tool_use_id="t1", output="ok", is_error=False),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    assert buffer.getvalue().count("read") == 2  # call line + the out-of-order result
+
+
+@pytest.mark.asyncio
+async def test_render_prose_after_tool_block_gets_one_gap() -> None:
+    # Blocks keep the one-blank-line rhythm: result line, ONE blank, then prose.
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentToolCall(id="t1", name="read_file", arguments={"path": "a.txt"}),
+        AgentToolResult(tool_use_id="t1", output="ok", is_error=False),
+        AgentTextDelta(text="after the tool\n"),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    lines = buffer.getvalue().splitlines()
+    idx = next(i for i, ln in enumerate(lines) if "after the tool" in ln)
+    assert lines[idx - 1].strip() == ""  # exactly one separating blank
+    assert lines[idx - 2].strip() != ""
+
+
+@pytest.mark.asyncio
+async def test_render_footer_flags_abnormal_stop_reason() -> None:
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentDone(stop_reason="doom_loop", iterations=4, usage=_usage(10, 10)),
+    ]
+    await renderer.render(_astream(events))
+    assert "stopped early: doom_loop" in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_render_clean_stop_reason_is_quiet() -> None:
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage(10, 10)),
+    ]
+    await renderer.render(_astream(events))
+    assert "stopped early" not in buffer.getvalue()
+
+
+def test_diff_preview_marks_truncation() -> None:
+    from zakcode.cli.render import _diff_preview
+
+    body = "\n".join(["@@ -1 +1 @@"] + [f"+line {i}" for i in range(9)])
+    out = _diff_preview(body)
+    assert out is not None
+    assert "(+4 more lines)" in out.plain  # 10 diff lines, 6 shown, 4 marked
+
+
+@pytest.mark.asyncio
+async def test_render_no_spinner_output_off_terminal() -> None:
+    # Hermetic consoles (StringIO) are not terminals: the wait spinner must never
+    # write into captured output.
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentTextDelta(text="hi\n"),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    assert "thinking" not in buffer.getvalue()
+
+
+def test_suspend_live_stops_and_clears_the_spinner() -> None:
+    from zakcode.cli.render import _LIVE_STATUS, suspend_live
+
+    renderer, _buffer = _make_renderer()
+    renderer._live = True  # force the spinner on despite the StringIO console
+    renderer._spin("waiting")
+    assert id(renderer.console) in _LIVE_STATUS
+    suspend_live(renderer.console)  # what the permission prompter calls
+    assert id(renderer.console) not in _LIVE_STATUS
+    suspend_live(renderer.console)  # idempotent: no error when nothing is live
+
+
 @pytest.mark.asyncio
 async def test_render_run_result_shows_output_lines() -> None:
     # A run/bash result shows the program's real output + a line count, not just line 1

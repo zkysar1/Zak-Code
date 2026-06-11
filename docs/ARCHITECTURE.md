@@ -105,8 +105,8 @@ FastAPI app wrapping the core (see API surface below). Serializes the core's `Ag
 Key types: `create_app()`, request/response Pydantic models (`ChatRequest`, `ChatResponse`, `SessionInfo`, `ToolInfo`), `EventSerializer`.
 
 ### `cli/`
-The Typer CLI — a thin client that **calls the core in-process** (no HTTP). Runs a REPL and one-shot mode, renders the `AgentEvent` stream with stream-safe-boundary flushing (never render half a code fence), shows a live status line (iterations, tokens, compaction, active model, pending approvals), and prompts for permission escalations.
-Key types: the Typer `app`, `Renderer`, `CliPermissionPrompter`, `StatusLine`.
+The Typer CLI — a thin client that **calls the core in-process** (no HTTP). Runs a REPL and one-shot mode, renders the `AgentEvent` stream with stream-safe-boundary flushing (never render half a code fence), shows live wait feedback (a transient spinner naming what the loop is waiting for) and a per-turn footer rule (iterations, tokens, cost), and prompts for permission escalations. The visual language — gutter glyphs, block grouping, color tiers — is shared with the bundled web client and specified in [`UX.md`](UX.md).
+Key types: the Typer `app`, `StreamRenderer`, `ConsolePermissionPrompter`.
 
 ## Data flow of one agent turn
 
