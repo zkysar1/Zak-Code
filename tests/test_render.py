@@ -511,6 +511,24 @@ def test_live_feedback_gated_off_legacy_windows_console(monkeypatch) -> None:
     assert live_feedback_supported(term) is False
 
 
+@pytest.mark.asyncio
+async def test_spinner_label_matches_ux_spec(monkeypatch) -> None:
+    # UX.md and the web client both label the tool wait "running <verb>..." -- the
+    # terminal must agree (it shipped as the bare verb in #9; pinned here).
+    renderer, _buffer = _make_renderer()
+    labels: list[str] = []
+    monkeypatch.setattr(renderer, "_spin", labels.append)
+    events: list[AgentEvent] = [
+        AgentToolCall(id="t1", name="read_file", arguments={"path": "x.py"}),
+        AgentToolResult(tool_use_id="t1", output="ok", is_error=False),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    # stream start spins "thinking", the tool call re-labels it "running read",
+    # the tool result returns to "thinking"
+    assert labels == ["thinking", "running read", "thinking"]
+
+
 def test_suspend_live_stops_and_clears_the_spinner() -> None:
     from zakcode.cli.render import _LIVE_STATUS, suspend_live
 

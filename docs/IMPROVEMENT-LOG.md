@@ -524,3 +524,9 @@ cost-accounting test instead of a fallback table.
   semantics per audit text; trust tiers as `tool_trust_overrides`; Anthropic statics
   back into PR-1 (key-free). Added the Acceptance-test map. Unknown #5's three
   named tests pass on Windows — ubuntu CI on PR #3 is the cross-platform probe.
+- **2026-06-11 (omni):** Post-#9 spec-consistency fix from the PR #9 review record
+  (review posted after the merge — found nothing blocking): the terminal tool-wait
+  spinner showed the bare verb (`read...`) while UX.md and the web client both
+  specify `running read...`. render.py now passes `"running " + verb`;
+  `test_spinner_label_matches_ux_spec` pins all three surfaces in agreement.
+  Suite: **1466 green**, ruff + mypy clean.

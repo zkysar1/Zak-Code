@@ -257,7 +257,7 @@ class StreamRenderer:
                 elif isinstance(event, AgentToolCall):
                     self._unspin()
                     verb = self._on_tool_call(event)
-                    self._spin(verb)
+                    self._spin("running " + verb)
                 elif isinstance(event, AgentToolResult):
                     self._unspin()
                     self._on_tool_result(event)
