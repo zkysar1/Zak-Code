@@ -57,6 +57,14 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+# Library logging etiquette (PR-4 review): a NullHandler on the package root so an
+# application that configures no logging sees NOTHING on stderr — Python's lastResort
+# handler would otherwise print every ``zakcode.*`` WARNING (e.g. permission denials,
+# which the CLI already renders in its own UI). Operators opt in by configuring
+# handlers/levels for the ``zakcode`` hierarchy; the library never configures global
+# logging and never silences anyone else's.
+logging.getLogger("zakcode").addHandler(logging.NullHandler())
+
 
 # Provider prefixes whose *native* (function-calling) tool path is unreliable via
 # litellm: they advertise tool support (``litellm.supports_function_calling`` returns

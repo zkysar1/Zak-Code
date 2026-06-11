@@ -54,6 +54,14 @@ class SaveSkillTool(Tool):
                     "items": {"type": "string"},
                     "description": "Optional advisory list of tools the skill uses.",
                 },
+                "extras": {
+                    "type": "object",
+                    "description": (
+                        "Optional extra frontmatter (string or list-of-string values) "
+                        "preserved verbatim — e.g. a host framework's cognitive metadata "
+                        "like minimum_mode or companion_scripts."
+                    ),
+                },
                 "overwrite": {
                     "type": "boolean",
                     "description": "Replace an existing skill of the same name (default false).",
@@ -82,6 +90,21 @@ class SaveSkillTool(Tool):
             [t for t in raw_tools if isinstance(t, str)] if isinstance(raw_tools, list) else None
         )
         overwrite = bool(args.get("overwrite", False))
+        raw_extras = args.get("extras")
+        extras: dict[str, str | list[str]] | None = None
+        if isinstance(raw_extras, dict):
+            # Keep only round-trippable shapes (str, or list of str); junk is dropped
+            # rather than erroring so a slightly-off model call still saves the skill.
+            extras = {}
+            for key, value in raw_extras.items():
+                if not isinstance(key, str) or not key.strip():
+                    continue
+                if (
+                    isinstance(value, str)
+                    or isinstance(value, list)
+                    and all(isinstance(v, str) for v in value)
+                ):
+                    extras[key.strip()] = value
         try:
             path = save_skill(
                 name.strip(),
@@ -89,6 +112,7 @@ class SaveSkillTool(Tool):
                 body,
                 skills_dir=self._skills_dir,
                 allowed_tools=allowed_tools,
+                extras=extras,
                 overwrite=overwrite,
             )
         except SkillError as exc:
