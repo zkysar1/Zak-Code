@@ -1,4 +1,4 @@
-﻿# Improvement Log — working plan, decisions, assumptions
+# Improvement Log — working plan, decisions, assumptions
 
 **What this is.** The living working document for the 2026-06 improvement engagement
 (omni's audit → external work package). Maintained by the implementing agent (Claude
@@ -579,3 +579,12 @@ cost-accounting test instead of a fallback table.
   opt-in — flipping the default is a one-line decision left open deliberately);
   cost-ceiling config deferred ("consider" in spec; no consumer yet). Rider
   (litellm warnings) had already landed in #16.
+- **2026-06-11 (omni, review fixes on #17):** streaming failover now resets the
+  RateLimited retry budget for the replacement provider (buffered-path parity —
+  `_call_provider` resets its attempt counter per call; the streaming twin's
+  counter is outer-scoped and survived the failover `continue`); `.env.example`
+  llama-3.3-70b annotation corrected to tools-UNRELIABLE (it contradicted this
+  PR's own registry marking) with gpt-oss-120b added as the reliable groq
+  example; stray UTF-8 BOM stripped from this file. Everything else verified
+  clean: spec 10/10 clauses, loop seam 7/7 safety points, hermeticity (incl.
+  the construction-time probe binding), key handling. 1541 green.

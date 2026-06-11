@@ -1248,6 +1248,10 @@ class AgentLoop:
                             if switched is not None:
                                 self.provider, note = switched
                                 failed_over = True
+                                # The replacement provider gets a FULL RateLimited retry
+                                # budget (the buffered path's _call_provider resets its
+                                # attempt counter per call — keep the paths symmetric).
+                                retry_attempts = 0
                                 yield AgentStatus(message=f"switching model: {note}")
                                 continue  # fresh accumulators, retry on the new provider
                         provider_failure = str(exc)
