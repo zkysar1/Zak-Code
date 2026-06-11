@@ -213,6 +213,8 @@ class Agent:
         enable_memory: bool = False,
         memory_provider: MemoryProvider | None = None,
         enable_compaction: bool = False,
+        enable_settings_hooks: bool | None = None,
+        agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
     ) -> None:
         self.settings = settings or load_settings(**setting_overrides)
@@ -256,6 +258,30 @@ class Agent:
         # a fresh session carries no grants, so this is a no-op there.
         self.permission_policy.restore_grants(self.session.permission_grants)
         self.hook_manager = hook_manager or HookManager()
+        # settings.json hook ingestion (PR-T5).  TE-R3(3): when a caller passes
+        # BOTH enable_settings_hooks=True AND a programmatic hook_manager, the
+        # settings.json specs are APPENDED to the existing manager's shell_hooks.
+        # None defers to Settings.settings_hooks (ZAKCODE_SETTINGS_HOOKS); an explicit
+        # True/False from the host wins either way.
+        if (
+            enable_settings_hooks
+            if enable_settings_hooks is not None
+            else self.settings.settings_hooks
+        ):
+            from zakcode.hooks.settings_loader import load_settings_hooks
+
+            _specs, _errs = load_settings_hooks(
+                self.settings.workspace_root,
+                permission_mode=str(self.settings.permission_mode),
+            )
+            for _key, _err in _errs.items():
+                logger.warning("settings.json hook %s: %s", _key, _err)
+            if _specs:
+                if hook_manager is not None:
+                    # TE-R3(3): append, don't replace.
+                    self.hook_manager.shell_hooks.extend(_specs)
+                else:
+                    self.hook_manager = HookManager(shell_hooks=_specs)
         # One-shot guard so aclose() (and its SESSION_END encode step) runs at most once.
         self._closed = False
         # Slash-command registry (M6) — plugins register commands here; clients
@@ -305,7 +331,9 @@ class Agent:
         elif enable_identity:
             from zakcode.identity import load_identity
 
-            self.identity, self.identity_error = load_identity(self.settings.workspace_root)
+            self.identity, self.identity_error = load_identity(
+                self.settings.workspace_root, agent_identity_dir=agent_identity_dir
+            )
             # An operator-authored self.md that fails to load (unreadable, or empty after
             # frontmatter) is a silent footgun: the intended persona is gone with no signal.
             # Log it like rule-discovery failures so it surfaces; clients (e.g. the CLI banner)
@@ -651,6 +679,10 @@ class Agent:
                         event=HookEvent.SESSION_END,
                         session_id=self.session.id,
                         cwd=str(self.settings.workspace_root),
+                        data={
+                            "trigger": "session_end",
+                            "session_summary": self._session_summary(),
+                        },
                     )
                 )
         if self.memory is not None:
@@ -659,6 +691,15 @@ class Agent:
         with contextlib.suppress(Exception):
             await self.loop.aclose()  # tear down the egress-proxy listener (no-op when off)
         await self.aclose_mcp()
+
+    def _session_summary(self) -> dict[str, Any]:
+        """Build a session-summary dict for lifecycle hook payloads (PR-T7)."""
+        return {
+            "session_id": self.session.id,
+            "message_count": len(self.session.messages),
+            "total_usage": self.session.cumulative_usage().model_dump(),
+            "created_at": self.session.created_at,
+        }
 
     @classmethod
     def for_workspace(cls, path: str | Path, **setting_overrides: Any) -> Agent:

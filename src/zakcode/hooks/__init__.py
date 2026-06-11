@@ -37,6 +37,16 @@ logger = logging.getLogger("zakcode.hooks")
 DEFAULT_HOOK_TIMEOUT = 10.0
 
 
+def _scrubbed_env(drop: list[str]) -> dict[str, str]:
+    """Return a copy of ``os.environ`` with *drop* names removed."""
+    import os
+
+    child_env = dict(os.environ)
+    for name in drop:
+        child_env.pop(name, None)
+    return child_env
+
+
 class HookEvent(StrEnum):
     """Lifecycle points a hook can fire on.
 
@@ -60,6 +70,11 @@ class HookEvent(StrEnum):
     # triggering query in the LifecyclePayload ``data`` map. The seam a learning layer records
     # (query -> skill) from to learn habitual skill preferences (it does NOT pick skills).
     ON_SKILL_SELECTED = "OnSkillSelected"
+    # Fired when the loop is about to end a turn. Unlike lifecycle events (observe-only)
+    # and unlike PRE_TOOL_USE (which gates individual tool calls), TURN_END gates the
+    # turn's exit. A BLOCK decision vetoes the stop, injects a continuation prompt, and
+    # re-enters the iteration loop.
+    TURN_END = "TurnEnd"
 
 
 class HookDecision(StrEnum):
@@ -135,6 +150,31 @@ class LifecyclePayload(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class TurnEndPayload(BaseModel):
+    """Payload for TURN_END hooks.
+
+    Field names match Claude Code's Stop-hook stdin protocol so Mind's
+    stop-hook.sh works unmodified: it reads ``session_id`` and
+    ``last_assistant_message`` via ``json.load(sys.stdin).get()``.
+    """
+
+    event: HookEvent = HookEvent.TURN_END
+    session_id: str = ""
+    cwd: str = ""
+    stop_reason: str = ""
+    iterations: int = 0
+    max_iterations: int = 0
+    degraded: bool = False
+    last_assistant_message: str = ""
+
+
+class TurnEndResult(BaseModel):
+    """Aggregate result of running TURN_END hooks."""
+
+    vetoed: bool = False
+    continuation_prompt: str = ""
+
+
 class HookSpec(BaseModel):
     """A configured shell hook: when to fire, what to run, and how long to wait."""
 
@@ -142,6 +182,10 @@ class HookSpec(BaseModel):
     command: list[str] = Field(..., description="argv array; run WITHOUT a shell.")
     matcher: str = "*"  # glob over the tool name; '*' = every tool
     timeout: float = DEFAULT_HOOK_TIMEOUT
+    # Env-var names to scrub from the child environment before spawning.  Populated
+    # by the settings_loader for workspace-sourced hooks (TE-R1: provider-key hygiene
+    # applies to ALL workspace hooks, not just TURN_END).
+    drop_env: list[str] = Field(default_factory=list)
 
     def matches(self, tool_name: str) -> bool:
         return fnmatch.fnmatch(tool_name, self.matcher)
@@ -158,6 +202,12 @@ ContextHook = Callable[[LLMContextPayload], "str | None | Awaitable[str | None]"
 #: An in-process lifecycle hook: ``(payload) -> None`` run for side effects only.
 #: May be sync or async; its return value is ignored.
 LifecycleHook = Callable[[LifecyclePayload], "None | Awaitable[None]"]
+
+#: An in-process TURN_END hook: ``(payload) -> TurnEndResult | None`` (None == allow/no-op).
+#: May be sync or async; both are awaited safely by the manager.
+InProcessTurnEndHook = Callable[
+    [TurnEndPayload], "TurnEndResult | None | Awaitable[TurnEndResult | None]"
+]
 
 
 class HookManager:
@@ -176,6 +226,8 @@ class HookManager:
         self.context_hooks: list[ContextHook] = list(context or [])
         # Session-lifecycle in-process hooks, keyed by event (observe-only).
         self.lifecycle_hooks: dict[HookEvent, list[LifecycleHook]] = {}
+        # TURN_END in-process hooks: veto-capable, first veto wins and stops the chain.
+        self.turn_end_hooks: list[InProcessTurnEndHook] = []
 
     def register(self, event: HookEvent, hook: InProcessHook) -> None:
         """Add an in-process hook (used by the plugin surface later)."""
@@ -195,6 +247,10 @@ class HookManager:
         """Add an in-process session-lifecycle hook (observe-only)."""
         self.lifecycle_hooks.setdefault(event, []).append(hook)
 
+    def register_turn_end(self, hook: InProcessTurnEndHook) -> None:
+        """Add an in-process ``TURN_END`` hook (veto-capable)."""
+        self.turn_end_hooks.append(hook)
+
     def has_lifecycle_hooks(self, event: HookEvent) -> bool:
         """Whether any hook would fire for ``event`` (cheap pre-check)."""
         if self.lifecycle_hooks.get(event):
@@ -203,6 +259,8 @@ class HookManager:
 
     def has_hooks(self, event: HookEvent, tool_name: str) -> bool:
         """Whether any hook would fire for ``event`` on ``tool_name`` (cheap pre-check)."""
+        if event is HookEvent.TURN_END and self.turn_end_hooks:
+            return True
         if self.in_process.get(event):
             return True
         return any(h.event is event and h.matches(tool_name) for h in self.shell_hooks)
@@ -279,6 +337,125 @@ class HookManager:
             if spec.event is payload.event:
                 await self._run_lifecycle_shell(spec, payload)
 
+    # ── TURN_END dispatch (veto-capable) ─────────────────────────────────────
+
+    async def run_turn_end(
+        self, payload: TurnEndPayload, *, drop_env: list[str] | None = None
+    ) -> TurnEndResult:
+        """Run TURN_END hooks; first veto wins and stops the chain.
+
+        In-process hooks run first, then shell hooks. Both can veto (block the turn
+        end). ``drop_env`` lists env-var names to scrub from shell-hook children
+        (provider-key hygiene).
+        """
+        for hook in self.turn_end_hooks:
+            result = await self._run_turn_end_in_process(hook, payload)
+            if result is not None and result.vetoed:
+                return result
+        for spec in self.shell_hooks:
+            if spec.event is not HookEvent.TURN_END:
+                continue
+            result = await self._run_turn_end_shell(spec, payload, drop_env=drop_env)
+            if result.vetoed:
+                return result
+        return TurnEndResult()
+
+    @staticmethod
+    async def _run_turn_end_in_process(
+        hook: InProcessTurnEndHook, payload: TurnEndPayload
+    ) -> TurnEndResult | None:
+        """Run one in-process TURN_END hook; errors fail-open."""
+        try:
+            outcome = hook(payload)
+            if asyncio.iscoroutine(outcome):
+                outcome = await outcome
+            if outcome is None or isinstance(outcome, TurnEndResult):
+                return outcome
+            logger.warning("turn_end in-process hook returned %r; ignoring", type(outcome))
+            return None
+        except Exception as exc:  # noqa: BLE001 — a bad hook never breaks the loop
+            logger.warning("turn_end in-process hook raised %s: %s", type(exc).__name__, exc)
+            return None
+
+    async def _run_turn_end_shell(
+        self,
+        spec: HookSpec,
+        payload: TurnEndPayload,
+        *,
+        drop_env: list[str] | None = None,
+    ) -> TurnEndResult:
+        """Run one TURN_END shell hook.
+
+        Protocol (Claude Code Stop-hook compatible):
+        - Exit 0 + stdout JSON ``{"decision":"block","reason":"..."}`` → vetoed
+        - Exit 0 + empty stdout (or ``{"decision":"allow"}``) → allow
+        - Exit 2 + stdout message → vetoed (native Zak-Code exit-2 protocol)
+        - Non-zero (except 2) / timeout / crash / spawn failure → fail-open allow
+        """
+        if not spec.command:
+            return TurnEndResult()
+        stdin_bytes = payload.model_dump_json().encode("utf-8")
+
+        # Build a scrubbed child env (provider-key hygiene).
+        import os
+
+        child_env = {**os.environ}
+        for name in drop_env or []:
+            child_env.pop(name, None)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *spec.command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=child_env,
+                **new_group_kwargs(),
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("turn_end hook %r failed to start: %s", spec.command, exc)
+            return TurnEndResult()
+
+        try:
+            stdout, _stderr = await asyncio.wait_for(
+                proc.communicate(stdin_bytes), timeout=spec.timeout
+            )
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            await terminate_process_tree(proc)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            logger.warning("turn_end hook %r timed out after %ss", spec.command, spec.timeout)
+            return TurnEndResult()
+        except Exception as exc:  # noqa: BLE001 — never propagate a hook failure
+            logger.warning("turn_end hook %r errored: %s", spec.command, exc)
+            return TurnEndResult()
+
+        code = proc.returncode
+        text = (stdout or b"").decode("utf-8", errors="replace").strip()
+
+        # Native exit-2 protocol: vetoed with the stdout text as the prompt.
+        if code == 2:
+            return TurnEndResult(vetoed=True, continuation_prompt=text or "Continue.")
+
+        if code != 0:
+            # Non-zero (non-2) exit: fail-open.
+            return TurnEndResult()
+
+        # Exit 0: check stdout for the Claude Code decision JSON.
+        if not text:
+            return TurnEndResult()
+        try:
+            doc = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return TurnEndResult()
+        if isinstance(doc, dict) and doc.get("decision") == "block":
+            reason = doc.get("reason", "Continue.")
+            return TurnEndResult(
+                vetoed=True,
+                continuation_prompt=reason if isinstance(reason, str) else "Continue.",
+            )
+        return TurnEndResult()
+
     # ── aggregation helpers ───────────────────────────────────────────────────
 
     @staticmethod
@@ -353,12 +530,14 @@ class HookManager:
         if not spec.command:
             return None
         stdin_bytes = payload.model_dump_json().encode("utf-8")
+        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
@@ -413,12 +592,14 @@ class HookManager:
         if not spec.command:
             return
         stdin_bytes = payload.model_dump_json().encode("utf-8")
+        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
@@ -460,12 +641,14 @@ class HookManager:
         if not spec.command:
             return None
         stdin_bytes = payload.model_dump_json().encode("utf-8")
+        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
@@ -539,9 +722,12 @@ __all__ = [
     "HookPayload",
     "LLMContextPayload",
     "LifecyclePayload",
+    "TurnEndPayload",
+    "TurnEndResult",
     "HookSpec",
     "HookManager",
     "InProcessHook",
+    "InProcessTurnEndHook",
     "ContextHook",
     "LifecycleHook",
     "DEFAULT_HOOK_TIMEOUT",

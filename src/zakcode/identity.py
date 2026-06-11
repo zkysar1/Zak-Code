@@ -31,17 +31,37 @@ MAX_IDENTITY_CHARS = 2_048
 IDENTITY_FILENAME = "self.md"
 
 
-def identity_paths(workspace_root: str | os.PathLike[str]) -> list[Path]:
-    """Candidate ``self.md`` locations, highest precedence first."""
+def identity_paths(
+    workspace_root: str | os.PathLike[str],
+    agent_identity_dir: str | os.PathLike[str] | None = None,
+) -> list[Path]:
+    """Candidate ``self.md`` locations, highest precedence first.
+
+    When *agent_identity_dir* is given (e.g. ``"agents/omni"``), its
+    ``self.md`` is prepended as the highest-precedence candidate. A relative
+    path is resolved against *workspace_root*; an absolute path is used as-is.
+    """
     ws = Path(workspace_root)
-    return [
-        ws / ".zakcode" / IDENTITY_FILENAME,
-        ws / IDENTITY_FILENAME,
-        Path.home() / ".config" / "zakcode" / IDENTITY_FILENAME,
-    ]
+    paths: list[Path] = []
+    if agent_identity_dir is not None:
+        d = Path(agent_identity_dir)
+        if not d.is_absolute():
+            d = ws / d
+        paths.append(d / IDENTITY_FILENAME)
+    paths.extend(
+        [
+            ws / ".zakcode" / IDENTITY_FILENAME,
+            ws / IDENTITY_FILENAME,
+            Path.home() / ".config" / "zakcode" / IDENTITY_FILENAME,
+        ]
+    )
+    return paths
 
 
-def load_identity(workspace_root: str | os.PathLike[str]) -> tuple[str | None, str | None]:
+def load_identity(
+    workspace_root: str | os.PathLike[str],
+    agent_identity_dir: str | os.PathLike[str] | None = None,
+) -> tuple[str | None, str | None]:
     """Discover and load the operator agent identity.
 
     Returns ``(identity_text, error)``: the first existing ``self.md`` (frontmatter stripped,
@@ -50,7 +70,7 @@ def load_identity(workspace_root: str | os.PathLike[str]) -> tuple[str | None, s
     stripping frontmatter. Never raises, and never returns an empty-string identity (which
     would blank the default identity line) — an empty file is reported as an error instead.
     """
-    for path in identity_paths(workspace_root):
+    for path in identity_paths(workspace_root, agent_identity_dir=agent_identity_dir):
         if not path.is_file():
             continue
         try:
