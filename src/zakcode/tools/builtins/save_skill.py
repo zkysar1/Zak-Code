@@ -99,11 +99,8 @@ class SaveSkillTool(Tool):
             for key, value in raw_extras.items():
                 if not isinstance(key, str) or not key.strip():
                     continue
-                if (
-                    isinstance(value, str)
-                    or isinstance(value, list)
-                    and all(isinstance(v, str) for v in value)
-                ):
+                is_str_list = isinstance(value, list) and all(isinstance(v, str) for v in value)
+                if isinstance(value, str) or is_str_list:
                     extras[key.strip()] = value
         try:
             path = save_skill(
