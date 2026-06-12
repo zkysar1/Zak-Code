@@ -94,18 +94,33 @@ def test_chat_streams_assistant_text_and_exits(monkeypatch) -> None:
     assert CANNED_TEXT in result.stdout
 
 
-def test_chat_eof_exits_cleanly(monkeypatch) -> None:
+def test_chat_eof_exits_cleanly_with_bookend(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    # No "/exit" — EOF on the empty stream must still exit 0.
+    # No "/exit" — EOF on the empty stream must still exit 0, with the close bookend.
     result = runner.invoke(app, ["chat"], input="")
     assert result.exit_code == 0
+    assert "session closed" in result.stdout
+    assert "goodbye" in result.stdout
+
+
+def test_chat_exit_prints_session_close_bookend(monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    result = runner.invoke(app, ["chat"], input="/exit\n")
+    assert result.exit_code == 0
+    assert "session closed" in result.stdout
+    assert "goodbye" in result.stdout
 
 
 def test_chat_slash_help_and_model(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     result = runner.invoke(app, ["chat"], input="/help\n/model\n/exit\n")
     assert result.exit_code == 0
-    assert "Slash commands" in result.stdout
+    # The grouped /help layout: three section headings + the full command set.
+    for section in ("session", "agent", "integrations"):
+        assert section in result.stdout
+    for command in ("/permissions", "/plan", "/mcp", "/compact", "/skills"):
+        assert command in result.stdout
+    assert "ctrl-c interrupts a running reply" in result.stdout
     assert load_settings().default_model in result.stdout
 
 
@@ -235,6 +250,11 @@ class _FakeConsole:
     def file(self) -> io.StringIO:
         return self._buf
 
+    @property
+    def width(self) -> int:
+        # The prompter's panel() clamps its box width against the console width.
+        return self._console.width
+
 
 async def test_console_prompter_allow_once() -> None:
     prompter = ConsolePermissionPrompter(_FakeConsole("y"))
@@ -318,15 +338,18 @@ _ = PermissionMode
 @pytest.mark.parametrize(
     "answer,expected",
     [
+        ("1", PermissionOutcome.ALLOW_ONCE),
         ("y", PermissionOutcome.ALLOW_ONCE),
         ("yes", PermissionOutcome.ALLOW_ONCE),
         ("allow once", PermissionOutcome.ALLOW_ONCE),
         ("allow", PermissionOutcome.ALLOW_ONCE),
+        ("2", PermissionOutcome.ALLOW_SESSION),
         ("a", PermissionOutcome.ALLOW_SESSION),
         ("always", PermissionOutcome.ALLOW_SESSION),
         ("session", PermissionOutcome.ALLOW_SESSION),
         ("allow for session", PermissionOutcome.ALLOW_SESSION),
         ("ALLOW FOR SESSION", PermissionOutcome.ALLOW_SESSION),
+        ("3", PermissionOutcome.DENY_ONCE),
         ("n", PermissionOutcome.DENY_ONCE),
         ("no", PermissionOutcome.DENY_ONCE),
         ("deny", PermissionOutcome.DENY_ONCE),
@@ -348,14 +371,53 @@ async def test_console_prompter_accepts_spelled_out_session() -> None:
     assert await prompter.confirm(_request()) is PermissionOutcome.ALLOW_SESSION
 
 
-async def test_console_prompter_shows_key_hints_literally() -> None:
-    # Regression: the keys must be visible. With rich markup, "[y]" is parsed as a
-    # tag and dropped from the rendered line; parens survive.
+async def test_console_prompter_shows_numbered_options_and_keys() -> None:
+    # The §2 panel: numbered options with their single-key hints, and the prompt
+    # advertising both forms. Keys render literally (never parsed as "[y]" markup).
     console = _FakeConsole("y")
     await ConsolePermissionPrompter(console).confirm(_request())
     blob = "\n".join(console.lines)
-    assert "(y)" in blob and "(a)" in blob and "(n)" in blob
+    assert "allow once" in blob
+    assert "allow for this session" in blob
+    assert "tell Zak what to do instead" in blob
+    for key in ("1", "2", "3", "y", "a", "n"):
+        assert key in blob
+    assert "permit (1-3 or y/a/n)" in blob
     assert "[y]" not in blob
+
+
+async def test_console_prompter_accepts_numbered_answer() -> None:
+    prompter = ConsolePermissionPrompter(_FakeConsole("2"))
+    assert await prompter.confirm(_request()) is PermissionOutcome.ALLOW_SESSION
+
+
+async def test_console_prompter_humanizes_tier() -> None:
+    # The §3 panel: the blast radius reads as words; the raw enum name never prints.
+    console = _FakeConsole("n")
+    await ConsolePermissionPrompter(console).confirm(_request())
+    blob = "\n".join(console.lines)
+    assert "full access — touches paths outside the workspace" in blob
+    assert "DANGER_FULL_ACCESS" not in blob
+
+
+async def test_console_prompter_pauses_active_wait_line(monkeypatch) -> None:
+    # The prompter pauses the REPL's live wait line before the panel owns the tty
+    # and resumes it after the decision (the _ACTIVE_WAIT handle contract).
+    import zakcode.cli as cli
+
+    calls: list[str] = []
+
+    class FakeWait:
+        def pause(self) -> None:
+            calls.append("pause")
+
+        def resume(self) -> None:
+            calls.append("resume")
+
+    monkeypatch.setattr(cli, "_ACTIVE_WAIT", FakeWait())
+    prompter = ConsolePermissionPrompter(_FakeConsole("y"))
+    assert await prompter.confirm(_request()) is PermissionOutcome.ALLOW_ONCE
+    assert calls == ["pause", "resume"]
 
 
 # ── session event loop (one loop per REPL, never one per turn) ─────────────────
@@ -437,7 +499,7 @@ def test_render_plugins_is_ascii_safe_and_markup_immune(monkeypatch) -> None:
     _render_plugins(console, agent)  # must not raise MarkupError or UnicodeEncodeError
     out = buf.getvalue()
     assert "✓" not in out and "✗" not in out  # raw unicode glyphs never emitted
-    assert "[ok]" in out  # ok glyph fell back to ASCII
+    assert "+ good" in out  # ok glyph fell back to the single-char ASCII "+"
     assert "skip [/] me" in out  # the bare close tag rendered literally, not parsed
     assert "boom [bold]" in out  # style tags rendered literally, not consumed
 
@@ -463,3 +525,124 @@ def test_render_skills_is_ascii_safe_and_markup_immune(monkeypatch) -> None:
     assert "—" not in out  # em-dash fell back to ASCII
     assert "greet [/]" in out  # literal, not parsed as markup
     assert "missing [bold]" in out
+
+
+# ── the welcome banner (panel + daily tip + value truncation) ──────────────────
+
+
+def _buffer_console(
+    *, force_terminal: bool = False, width: int = 90
+) -> tuple[Console, io.StringIO]:
+    buf = io.StringIO()
+    return (
+        Console(
+            file=buf,
+            force_terminal=force_terminal,
+            legacy_windows=False,
+            no_color=True,
+            width=width,
+            theme=ZAK_THEME,
+        ),
+        buf,
+    )
+
+
+def test_print_banner_welcome_panel_off_tty() -> None:
+    from zakcode.cli import _print_banner
+
+    console, buf = _buffer_console()
+    _print_banner(console, FakeAgent())
+    out = buf.getvalue()
+    assert "✦ Zak Code" in out
+    for label in ("model", "workspace", "permissions", "session"):
+        assert label in out
+    assert "/help for commands" in out
+    assert "/exit to quit" in out
+    assert "tip:" not in out  # off-tty: hermetic output never carries the daily tip
+
+
+def test_print_banner_tip_on_tty() -> None:
+    from zakcode.cli import _TIPS, _print_banner
+
+    console, buf = _buffer_console(force_terminal=True)
+    _print_banner(console, FakeAgent())
+    out = buf.getvalue()
+    assert "tip:" in out
+    assert any(tip in out for tip in _TIPS)
+
+
+def test_print_banner_left_truncates_long_values() -> None:
+    from zakcode.cli import _print_banner
+    from zakcode.config import Settings
+
+    agent = FakeAgent()
+    long_root = "C:\\very\\" + "deep\\" * 30 + "workspace-tail"
+    agent.settings = Settings(default_model="scripted/test", workspace_root=long_root)
+    console, buf = _buffer_console()
+    _print_banner(console, agent)
+    out = buf.getvalue()
+    assert "workspace-tail" in out  # the filename end survives
+    assert long_root not in out  # over-long value was left-truncated
+    assert "…" in out  # with a leading ellipsis
+
+
+# ── the wait line (REPL-owned; auto-disabled off-tty / legacy / by env) ────────
+
+
+def test_start_wait_disabled_off_tty() -> None:
+    from zakcode.cli import _start_wait
+
+    console, _buf = _buffer_console(force_terminal=False)
+    assert _start_wait(console) is None
+
+
+def test_start_wait_honors_no_spinner_env(monkeypatch) -> None:
+    from zakcode.cli import _start_wait
+
+    monkeypatch.setenv("ZAKCODE_NO_SPINNER", "1")
+    console, _buf = _buffer_console(force_terminal=True)
+    assert _start_wait(console) is None
+
+
+def test_start_wait_disabled_on_legacy_conhost(monkeypatch) -> None:
+    from zakcode.cli import _start_wait
+
+    monkeypatch.delenv("ZAKCODE_NO_SPINNER", raising=False)
+    buf = io.StringIO()
+    console = Console(
+        file=buf,
+        force_terminal=True,
+        legacy_windows=True,
+        no_color=True,
+        width=90,
+        theme=ZAK_THEME,
+    )
+    assert _start_wait(console) is None
+
+
+def test_start_wait_sets_and_clears_active_handle(monkeypatch) -> None:
+    import zakcode.cli as cli
+
+    monkeypatch.delenv("ZAKCODE_NO_SPINNER", raising=False)
+    console, _buf = _buffer_console(force_terminal=True)
+    handle = cli._start_wait(console)
+    assert handle is not None  # tty + modern terminal: the wait line exists
+    try:
+        assert cli._ACTIVE_WAIT is handle  # the prompter can find it to pause
+    finally:
+        handle.stop()
+    assert cli._ACTIVE_WAIT is None  # stop() clears the module handle
+
+
+def test_wait_handle_verb_tracks_outstanding_tools() -> None:
+    from zakcode.cli import _WaitHandle
+
+    console, _buf = _buffer_console(force_terminal=True)
+    handle = _WaitHandle(console)  # never started: observe() only moves the verb
+    handle.observe(AgentToolCall(id="t1", name="bash", arguments={}))
+    assert handle.line.verb == "Running"
+    handle.observe(AgentToolCall(id="t2", name="bash", arguments={}))
+    handle.observe(AgentToolResult(tool_use_id="t1", output="", is_error=False))
+    assert handle.line.verb == "Running"  # one call still outstanding
+    handle.observe(AgentToolResult(tool_use_id="t2", output="", is_error=False))
+    assert handle.line.verb != "Running"  # all results in: back to a gerund

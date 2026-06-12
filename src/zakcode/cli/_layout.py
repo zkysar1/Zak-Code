@@ -1,17 +1,27 @@
 """Render-only layout primitives shared by the REPL and the stream renderer.
 
-Common building blocks so every surface presents one consistent look: a 2-column
-document margin, borderless aligned key/value tables, headings, the input prompt, and
-the standard notice lines (info / warn / error). Pure presentation over a rich
-Console — no agent logic lives here.
+Common building blocks so every surface presents one consistent look: the
+hanging-indent :func:`block` (the column grid's single primitive), the :func:`rail`
+that binds result bodies to their tool block, the ceremonial :func:`panel` (welcome
+box, permission panel — the only two boxes that ever exist), borderless aligned
+key/value tables, headings, the input prompt, and the standard notice lines
+(info / warn / error). Pure presentation over a rich Console — no agent logic
+lives here.
+
+Column grid: cols 0–1 are the document margin; block markers sit at col 2 with
+their body at col 4; receipts (``└``) and rail rows (``│``) sit at col 4 with their
+body at col 6. Wrapped text always lands under the body column, never under the
+marker — the ragged left edge is structurally impossible.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from rich.box import ROUNDED
 from rich.console import Console, RenderableType
 from rich.padding import Padding
+from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
@@ -21,6 +31,76 @@ from zakcode.cli._glyphs import resolve_glyphs
 def margin(renderable: RenderableType, *, left: int = 2) -> Padding:
     """Wrap a renderable in the shared left document margin."""
     return Padding(renderable, (0, 0, 0, left))
+
+
+def block(
+    console: Console,
+    body: RenderableType,
+    *,
+    marker: str = "",
+    marker_style: str = "",
+    indent: int = 2,
+) -> Padding:
+    """The hanging-indent primitive: a 2-wide gutter cell + a body cell.
+
+    An empty ``marker`` renders an empty gutter — continuation lines of a prose
+    group keep identical column math without repeating the group's marker.
+    ``console`` is part of the shared primitive signature (its glyph-resolving
+    siblings need it); the grid itself is console-independent.
+    """
+    grid = Table.grid(padding=0)
+    grid.add_column(width=2)
+    grid.add_column(overflow="fold")
+    grid.add_row(Text(marker, style=marker_style) if marker else Text(""), body)
+    return margin(grid, left=indent)
+
+
+def rail(
+    console: Console,
+    lines: Sequence[Text | str],
+    *,
+    bar_style: str = "tool.bar",
+) -> Padding:
+    """A result region: every row is the ``│`` glyph at col 4 + its line at col 6.
+
+    Blank source lines render as a bare-rail row, keeping the region continuous.
+    Wrapped continuations of a long line hang under the body column (the rail is
+    not repeated mid-wrap — previews are line-shaped).
+    """
+    g = resolve_glyphs(console)
+    grid = Table.grid(padding=0)
+    grid.add_column(width=2)
+    grid.add_column(overflow="fold")
+    for line in lines:
+        body = line if isinstance(line, Text) else Text(line)
+        grid.add_row(Text(g["bar"], style=bar_style), body)
+    return margin(grid, left=4)
+
+
+def panel(
+    console: Console,
+    title: str,
+    body: RenderableType,
+    *,
+    border_style: str,
+) -> Padding:
+    """One of the two ceremonial boxes (welcome, permission), indented to col 2.
+
+    Width floor 24 keeps degenerate consoles renderable; cap 60 keeps the box an
+    object, not a region.
+    """
+    width = max(24, min(console.width - 4, 60))
+    return margin(
+        Panel(
+            body,
+            box=ROUNDED,
+            title=title or None,
+            title_align="left",
+            border_style=border_style,
+            width=width,
+            padding=(1, 2),
+        )
+    )
 
 
 def kv_table(rows: Sequence[tuple[str, str]], *, label_style: str = "banner.label") -> Table:
@@ -45,33 +125,37 @@ def prompt_str(console: Console) -> str:
 
 
 def read_prompt(console: Console) -> str:
-    """Print one leading blank line, then read a line of input at the prompt.
+    """Print TWO leading blank lines (the turn seam), then read a line of input.
 
-    Raises ``EOFError`` / ``KeyboardInterrupt`` exactly like ``console.input`` — the
-    REPL catches those to exit cleanly.
+    The two-blank seam is the macro beat between turns; the renderer's first gap
+    prints the single blank under the echoed prompt. Raises ``EOFError`` /
+    ``KeyboardInterrupt`` exactly like ``console.input`` — the REPL catches those
+    to exit cleanly.
     """
+    console.print()
     console.print()
     return console.input(prompt_str(console))
 
 
 def notice_info(console: Console, msg: str) -> None:
-    """A dim, low-key notice (``· bye``, ``· Started a fresh session.``)."""
+    """A dim, low-key notice (``· session closed — goodbye``)."""
     g = resolve_glyphs(console)
     console.print()
     console.print(margin(Text.assemble((g["dot"] + " ", "notice.dim"), (msg, "notice.dim"))))
 
 
 def notice_warn(console: Console, msg: str) -> None:
-    """A visible (non-dim) warning notice, e.g. the interrupt line."""
+    """A visible (non-dim) warning notice — the REPL Ctrl-C interrupt line."""
     g = resolve_glyphs(console)
     console.print()
-    console.print(margin(Text.assemble((g["bang"] + " ", "warn"), (msg, "warn"))))
+    console.print(block(console, Text(msg, style="warn"), marker=g["bang"], marker_style="warn"))
 
 
 def notice_error(console: Console, label: str, detail: str = "") -> None:
-    """An error notice: a bold-red label line + an optional folded detail block."""
+    """An error notice: ``✗ label`` + detail lines behind a red rail, full fg."""
     g = resolve_glyphs(console)
     console.print()
-    console.print(margin(Text.assemble((g["fail"] + " ", "err"), (label, "err"))))
+    console.print(block(console, Text(label, style="err"), marker=g["fail"], marker_style="err"))
     if detail:
-        console.print(Padding(Text(detail, overflow="fold"), (0, 0, 0, 6)))
+        rows = [Text(line, style="err.body", overflow="fold") for line in detail.splitlines()]
+        console.print(rail(console, rows, bar_style="tool.bar.err"))

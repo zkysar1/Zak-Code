@@ -1,48 +1,50 @@
 """Streaming TUI renderer for the CLI chat (rendering only).
 
-Consumes a stream of :class:`~zakcode.events.AgentEvent` objects and renders them with
-``rich`` in the "minimal-gutter" look: structure comes from a thin colored marker in a
-2-column document margin plus one-blank-line rhythm, with ``dim`` reserved strictly for
-chrome so the assistant's own words and the salient tool target are the brightest things
-on screen. No agent logic, no network, no provider imports — feed a fake async generator
-into :meth:`StreamRenderer.render` over a ``Console`` backed by ``io.StringIO`` to test it.
+Consumes a stream of :class:`~zakcode.events.AgentEvent` objects and renders them
+with ``rich`` in the Zak look: a two-level marker grammar (``●`` block / ``└``
+receipt) on a fixed column grid, a continuous ``│`` rail binding every result body
+to its block (red under a failed tool), synthesized receipts with durations from an
+injectable monotonic clock, and a state-colored turn receipt::
 
-Spatial grammar (shared with the bundled web client — see ``docs/UX.md``):
+    ● Read(src/config.py)
+      └ 134 lines · 0.1s
 
-* a tool call and its result form **one block**: ``→ verb  target`` with a
-  ``└ ✓ summary`` connector line directly beneath, previews indented under that;
-* one blank line separates blocks (prose run / tool block / status), never lines
-  within a block, so related output reads as a unit;
-* every turn closes with a one-line footer rule (``── 2 iter · 15.3k tok · $0.02 ──``);
-* while the loop is waiting (model thinking, tool running) a transient spinner shows
-  what it is waiting **for** — real terminals only, suspended by :func:`suspend_live`
-  whenever something else (the permission prompter) needs the bottom line.
+    ● done · 3 iterations · 15.3k tokens · $0.023 · 41.2s
+
+No agent logic, no network, no provider imports — feed a fake async generator into
+:meth:`StreamRenderer.render` over a ``Console`` backed by ``io.StringIO`` to test
+it (pass a fake ``clock`` for exact durations).
+
+Spacing is a small state machine (see ``docs/UX.md``): every block opens with
+:meth:`StreamRenderer._gap` (one blank, coalesced) and never prints a trailing
+blank; a tool result directly after its own call line skips the gap so the group
+stays contiguous; the rendered transcript never contains two consecutive blank
+lines. The wait line lives in the REPL layer, never here.
 
 Two subtle pieces:
 
-* *Fence-safe flushing* (:func:`split_on_safe_boundary`): streamed text is released only
-  up to the last newline that is **not** inside an open code fence, so a half-written
-  fenced block never renders.
-* *Segment routing* (:func:`iter_segments`): a fence-safe ``emit`` is split into ordered
-  prose / code runs; prose streams as bright text in the margin, while a completed fenced
-  block is rendered once via ``rich.Syntax`` (highlighted), never half-drawn.
+* *Fence-safe flushing* (:func:`split_on_safe_boundary`): streamed text is released
+  only up to the last newline that is **not** inside an open code fence, so a
+  half-written fenced block never renders.
+* *Segment routing* (:func:`iter_segments`): a fence-safe ``emit`` is split into
+  ordered prose / code runs; prose streams line-at-a-time in the margin, while a
+  completed fenced block is rendered once via ``rich.Syntax``, never half-drawn.
 """
 
 from __future__ import annotations
 
 import os
-import sys
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from typing import cast
 
 from rich.console import Console
 from rich.padding import Padding
-from rich.rule import Rule
-from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text
 
-from zakcode.cli._glyphs import resolve_glyphs
+from zakcode.cli._glyphs import _ASCII, _UNICODE, resolve_glyphs
+from zakcode.cli._layout import block, rail
 from zakcode.events import (
     AgentDone,
     AgentEvent,
@@ -56,64 +58,51 @@ from zakcode.usage import Usage
 
 _FENCE = "```"
 
-#: One live spinner per console (keyed by ``id``), so anything about to take over the
-#: terminal — the permission prompter, an input read — can stop it via suspend_live.
-_LIVE_STATUS: dict[int, Status] = {}
 
+#: Run/Fetch output above this many lines is truncated head+tail (terminal
+#: summaries like ``42 passed`` always survive).
+_RUN_CAP = 12
+_RUN_HEAD = 6
+_RUN_TAIL = 4
 
-def suspend_live(console: Console) -> None:
-    """Stop the live spinner attached to ``console`` (no-op when none is active).
+#: Max diff lines shown in a result preview (then a dim-italic hidden-count row).
+_DIFF_PREVIEW_LINES = 12
 
-    The spinner is a :class:`rich.status.Status` whose refresh thread repaints the
-    bottom line; anything that reads input or prints a prompt on the same console
-    must call this first or the spinner draws over it. The renderer restarts the
-    spinner on its next event, so callers never need to resume it.
-    """
-    status = _LIVE_STATUS.pop(id(console), None)
-    if status is not None:
-        status.stop()
+#: Max preview rows for Search / Glob results (then ``… +N more``).
+_LIST_PREVIEW_LINES = 5
 
+#: Max error-detail rail rows under a failed tool's receipt.
+_ERROR_DETAIL_LINES = 8
 
-#: Terminal hosts that handle a Live bottom line well set one of these env vars.
-_MODERN_TERM_VARS = ("WT_SESSION", "TERM_PROGRAM", "ConEmuANSI", "ANSICON")
+#: Tool args middle-truncate at this many chars; paths keep their tail instead.
+_ARG_LIMIT = 64
 
+#: Map a tool name to the bold display name on the call line; unknown tools
+#: title-case their parts (``some_tool`` -> ``SomeTool``).
+_DISPLAY_NAME = {
+    "read_file": "Read",
+    "write_file": "Write",
+    "edit_file": "Edit",
+    "list_dir": "List",
+    "glob": "Glob",
+    "grep": "Search",
+    "bash": "Run",
+    "powershell": "Run",
+    "web_fetch": "Fetch",
+    "web_search": "WebSearch",
+    "todo_write": "Todo",
+    "task": "Task",
+}
 
-def live_feedback_supported(console: Console) -> bool:
-    """Whether the transient wait spinner is safe on this terminal.
-
-    The spinner repaints the bottom line several times a second. The legacy
-    Windows console (conhost) snaps the viewport to the cursor on every write,
-    which makes scrollback unusable during a turn and can smear the spinner into
-    the input line — so on Windows the spinner only runs under a modern host
-    (Windows Terminal, VS Code, ConEmu — detected via the env vars they set).
-    ``ZAKCODE_NO_SPINNER`` force-disables it anywhere.
-    """
-    if os.environ.get("ZAKCODE_NO_SPINNER"):
-        return False
-    if not console.is_terminal:
-        return False
-    if sys.platform == "win32":
-        return any(os.environ.get(var) for var in _MODERN_TERM_VARS)
-    return True
-
-
-#: Max lines of shell/run output shown inline in a result block (then "... (+N more)").
-_RUN_OUTPUT_LINES = 12
-
-#: Map a tool name to the short verb shown in the gutter; unknown tools use their name.
-_VERB_MAP = {
-    "read_file": "read",
-    "write_file": "write",
-    "edit_file": "edit",
-    "list_dir": "list",
-    "glob": "glob",
-    "grep": "grep",
-    "bash": "run",
-    "powershell": "run",
-    "web_fetch": "fetch",
-    "web_search": "search",
-    "todo_write": "todo",
-    "task": "task",
+#: Footer label per ``done.stop_reason`` (``{dash}`` resolves per console so the
+#: outcome survives ASCII mode); unknown reasons print ``reason.replace("_", " ")``.
+_STOP_LABEL = {
+    "completed": "done",
+    "max_iterations": "stopped early {dash} max iterations",
+    "provider_error": "provider error",
+    "doom_loop": "stopped {dash} repeating itself",
+    "stuck": "stopped {dash} no progress",
+    "recipe_stalled": "stopped {dash} recipe stalled",
 }
 
 
@@ -194,112 +183,149 @@ def iter_segments(text: str) -> list[tuple[str, object]]:
     return segments
 
 
+def _env_glyphs() -> dict[str, str]:
+    """Console-free glyph fallback for the exported helpers.
+
+    The permission prompter calls :func:`display_call` without a renderer in hand;
+    honor the forced-ASCII switch there. The encoding-probed fallback needs a real
+    console and arrives via the ``glyphs`` argument instead.
+    """
+    return dict(_ASCII) if os.environ.get("ZAKCODE_ASCII") else dict(_UNICODE)
+
+
+def _display_name(name: str) -> str:
+    return _DISPLAY_NAME.get(name) or "".join(part.title() for part in name.split("_"))
+
+
+def display_call(name: str, arguments: object, *, glyphs: dict[str, str] | None = None) -> Text:
+    """The call headline: bold display name + dim parens + condensed argument.
+
+    Shared by the renderer's tool-call line and the permission panel so the two can
+    never drift. Commands get a dim ``$ `` prefix; args middle-truncate at 64 chars;
+    paths truncate from the left so the filename survives.
+    """
+    g = glyphs or _env_glyphs()
+    is_command, args = _condense_args(arguments, g)
+    out = Text()
+    out.append(_display_name(name), style="tool.name")
+    out.append("(", style="tool.paren")
+    if is_command:
+        out.append("$ ", style="tool.paren")
+    if args:
+        out.append(args, style="tool.args")
+    out.append(")", style="tool.paren")
+    return out
+
+
+def _condense_args(arguments: object, g: dict[str, str]) -> tuple[bool, str]:
+    """Condense a tool's arguments to one display string (True marks a command)."""
+    ellipsis = g["ellipsis"]
+    if isinstance(arguments, dict):
+        command = arguments.get("command")
+        if isinstance(command, str) and command:
+            return True, _squeeze_middle(_one_line(command), _ARG_LIMIT, ellipsis)
+        pattern = arguments.get("pattern")
+        if isinstance(pattern, str) and pattern:
+            # Search/Glob calls read "pattern in scope" when a scope is given.
+            scope = ""
+            for key in ("glob", "path"):
+                value = arguments.get(key)
+                if isinstance(value, str) and value:
+                    scope = value
+                    break
+            text = f"{pattern} in {scope}" if scope else pattern
+            return False, _squeeze_middle(_one_line(text), _ARG_LIMIT, ellipsis)
+        for key in ("path", "file_path"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value:
+                return False, _squeeze_path(value, _ARG_LIMIT, ellipsis)
+        for key in ("query", "url", "name"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value:
+                return False, _squeeze_middle(_one_line(value), _ARG_LIMIT, ellipsis)
+        for value in arguments.values():
+            if isinstance(value, str) and value:
+                return False, _squeeze_middle(_one_line(value), _ARG_LIMIT, ellipsis)
+        return False, ""
+    return False, _squeeze_middle(_one_line(str(arguments)), _ARG_LIMIT, ellipsis)
+
+
 class StreamRenderer:
     """Render an :class:`~zakcode.events.AgentEvent` stream to a ``rich`` console.
 
-    Prose streams as bright text in the document margin (a ``·`` marker on the first
-    row of a reply); a fenced code block renders once via ``rich.Syntax`` when it
-    closes. A tool call and its result render as one block — ``→ verb  target`` with a
-    ``└ ✓ summary`` connector beneath (a unified-diff or shell-output preview under
-    that). Usage is accumulated and summarized in a one-line footer rule printed on
-    :class:`AgentDone`. While the loop is waiting a transient spinner names what it is
-    waiting for ("thinking", the running verb) — only on a real terminal, so hermetic
-    StringIO tests never see it. All glyphs resolve to cp1252-safe ASCII fallbacks
-    when the console cannot encode them.
+    Prose streams line-at-a-time with one ``●`` per prose group (continuations keep
+    an empty gutter); a fenced code block renders once via ``rich.Syntax`` when it
+    closes. A tool call and its result form one contiguous block — the bold
+    headline, a ``└`` receipt synthesized per tool (with a duration from the
+    injectable ``clock``), and rail-bound preview rows. The turn ends in a
+    state-colored ``●`` receipt whose body begins with the outcome word. All glyphs
+    resolve to cp1252-safe ASCII fallbacks when the console cannot encode them.
     """
 
     def __init__(
-        self, console: Console | None = None, *, live_feedback: bool | None = None
+        self, console: Console | None = None, clock: Callable[[], float] | None = None
     ) -> None:
         self.console = console if console is not None else Console()
         self._g = resolve_glyphs(self.console)
+        self._clock: Callable[[], float] = clock if clock is not None else time.monotonic
         self._text_buffer = ""
         self._usage = Usage()
+        #: tool_use_id -> display name (receipts are synthesized per display name).
         self._tool_names: dict[str, str] = {}
-        self._assistant_marked = False
-        #: id of the most recent tool call printed — its result attaches without
-        #: repeating the verb; an out-of-order result names its tool instead.
+        #: tool_use_id -> clock() at the call line (keyed by id — parallel calls exist).
+        self._tool_started: dict[str, float] = {}
+        #: id of the most recently printed call line — only its own result may bind
+        #: contiguously beneath it; any other result detaches and names its tool.
         self._last_call_id: str | None = None
-        #: True right after a tool/status block: the next prose run opens with a
-        #: blank line so blocks keep the one-blank-line rhythm.
-        self._block_gap = False
-        #: True when the last printed row was blank — separator blanks coalesce
-        #: through :meth:`_blank` so adjacent blocks never stack two empty lines.
-        #: Starts True: the REPL prints one blank under the submitted input, so a
-        #: turn that opens with a tool block must not add a second.
-        self._just_blank = True
-        self._live = (
-            live_feedback_supported(self.console) if live_feedback is None else live_feedback
-        )
-
-    def _blank(self) -> None:
-        """Print one separating blank line, coalescing with one just printed."""
-        if not self._just_blank:
-            self.console.print()
-            self._just_blank = True
-
-    def _out(self, renderable: object) -> None:
-        """Print a content row (and remember the bottom row is no longer blank)."""
-        self.console.print(renderable)
-        self._just_blank = False
+        self._turn_start = 0.0
+        self._assistant_marked = False
+        #: was the last physical line written blank (gaps coalesce through _gap).
+        self._at_blank = False
+        #: None | "prose" | "code" | "tool_call" | "tool" | "status".
+        self._last_block: str | None = None
 
     async def render(self, events: AsyncIterator[AgentEvent]) -> AgentDone | None:
         """Consume ``events``, render them, and return the final ``AgentDone`` (or None)."""
         done: AgentDone | None = None
+        self._turn_start = self._clock()
+        self._at_blank = False
+        self._last_block = None
         self._assistant_marked = False
 
-        self._spin("thinking")
-        try:
-            async for event in events:
-                if isinstance(event, AgentTextDelta):
-                    self._unspin()
-                    self._on_text_delta(event.text)
-                elif isinstance(event, AgentToolCall):
-                    self._unspin()
-                    verb = self._on_tool_call(event)
-                    self._spin("running " + verb)
-                elif isinstance(event, AgentToolResult):
-                    self._unspin()
-                    self._on_tool_result(event)
-                    self._spin("thinking")
-                elif isinstance(event, AgentStatus):
-                    self._unspin()
-                    self._on_status(event)
-                    self._spin("thinking")
-                elif isinstance(event, AgentUsage):
-                    self._on_usage(event)  # no console output — leave the spinner be
-                elif isinstance(event, AgentDone):
-                    done = event
-                    break
-        finally:
-            self._unspin()
+        async for event in events:
+            if isinstance(event, AgentTextDelta):
+                self._on_text_delta(event.text)
+            elif isinstance(event, AgentToolCall):
+                self._on_tool_call(event)
+            elif isinstance(event, AgentToolResult):
+                self._on_tool_result(event)
+            elif isinstance(event, AgentStatus):
+                self._on_status(event)
+            elif isinstance(event, AgentUsage):
+                self._on_usage(event)
+            elif isinstance(event, AgentDone):
+                done = event
+                break
 
         self._flush_remaining_text()
         if done is not None:
             self._print_footer(done)
         return done
 
-    # -- live wait feedback ---------------------------------------------------
+    # -- the blank-line state machine -----------------------------------------
 
-    def _spin(self, label: str) -> None:
-        """Show a transient spinner naming what the loop is waiting for."""
-        if not self._live:
-            return
-        suspend_live(self.console)
-        # 4 repaints/second is enough for a wait pulse and keeps the bottom-line
-        # churn low on slower terminal hosts.
-        status = self.console.status(
-            Text(label + self._g["ellipsis"], style="status"),
-            spinner="dots",
-            refresh_per_second=4,
-        )
-        status.start()
-        _LIVE_STATUS[id(self.console)] = status
+    def _gap(self) -> None:
+        """Print one separating blank line iff the last line written was not blank."""
+        if not self._at_blank:
+            self.console.print()
+            self._at_blank = True
 
-    def _unspin(self) -> None:
-        suspend_live(self.console)
+    def _out(self, renderable: object) -> None:
+        """Print a content row (the bottom line is no longer blank)."""
+        self.console.print(renderable)
+        self._at_blank = False
 
-    # -- per-event handlers -------------------------------------------------
+    # -- per-event handlers ----------------------------------------------------
 
     def _on_text_delta(self, text: str) -> None:
         self._text_buffer += text
@@ -316,32 +342,45 @@ class StreamRenderer:
             else:
                 self._print_prose(cast("str", payload))
 
-    def _print_prose(self, block: str) -> None:
-        for line in block.split("\n"):
+    def _print_prose(self, prose: str) -> None:
+        for line in prose.split("\n"):
+            if line.strip() == "":
+                # model blank lines never print directly; runs collapse to one gap
+                self._gap()
+                continue
             if not self._assistant_marked:
-                if line.strip() == "":
-                    continue  # swallow leading blank lines before the first content
+                self._gap()
+                self._out(
+                    block(
+                        self.console,
+                        _inline_md(line, self._g),
+                        marker=self._g["marker"],
+                        marker_style="assistant.marker",
+                    )
+                )
                 self._assistant_marked = True
-                self._open_block_gap()
-                marker = Text(self._g["dot"] + " ", style="assistant.marker")
-                self._out(Padding(marker + _inline_md(line, self._g), (0, 0, 0, 2)))
-            elif line.strip() == "":
-                self._blank()  # coalesced: runs of blank prose lines render as one
-                self._block_gap = False  # the prose's own blank already separates blocks
             else:
-                self._open_block_gap()
-                self._out(Padding(_inline_md(line, self._g), (0, 0, 0, 4)))
-
-    def _open_block_gap(self) -> None:
-        """Print the one blank line that separates a new block from a tool/status block."""
-        if self._block_gap:
-            self._blank()
-            self._block_gap = False
+                if line.lstrip().startswith("#"):
+                    self._gap()  # headings force a blank line above
+                self._out(block(self.console, _inline_md(line, self._g)))
+            self._last_block = "prose"
 
     def _print_code(self, lang: str, body: str) -> None:
+        # Assistant code blocks are the assistant's voice, not a tool region: no
+        # rail — a gap above, a dim language tag at col 4, the body at col 6.
         if not body.strip():
             return
-        self._block_gap = False  # the code block prints its own surrounding blanks
+        self._gap()
+        if lang:
+            self._out(
+                block(
+                    self.console,
+                    Text(lang, style="code.tag"),
+                    marker=self._g["dot"],
+                    marker_style="code.tag",
+                    indent=4,
+                )
+            )
         syntax = Syntax(
             body,
             lang or "text",
@@ -349,110 +388,168 @@ class StreamRenderer:
             background_color="default",
             word_wrap=True,
         )
-        self._blank()
-        self._out(Padding(syntax, (0, 0, 0, 4)))
-        self._blank()
-
-    def _on_tool_call(self, event: AgentToolCall) -> str:
-        verb, target = _format_tool_call(event.name, event.arguments)
-        self._tool_names[event.id] = verb
-        self._last_call_id = event.id
-        self._block_gap = False
-        # A prose run that resumes after this block is a NEW block: give it its own
-        # `·` marker rather than rendering it as an orphaned continuation.
+        self._out(Padding(syntax, (0, 0, 0, 6)))
+        self._last_block = "code"
         self._assistant_marked = False
-        self._blank()
+
+    def _on_tool_call(self, event: AgentToolCall) -> None:
+        # A pre-tool sentence without a trailing newline is still buffered; flush it
+        # so prose always precedes its tool block (the stream's text content block is
+        # complete once a tool call is emitted — no future delta can extend it).
+        self._flush_remaining_text()
+        self._gap()
+        self._tool_names[event.id] = _display_name(event.name)
+        self._tool_started[event.id] = self._clock()
+        self._last_call_id = event.id
         self._out(
-            Padding(
-                Text.assemble(
-                    (self._g["arrow"] + " ", "tool.marker"),
-                    (verb + "  ", "tool.verb"),
-                    (target, "tool.target"),
-                ),
-                (0, 0, 0, 2),
+            block(
+                self.console,
+                display_call(event.name, event.arguments, glyphs=self._g),
+                marker=self._g["marker_tool"],
+                marker_style="tool.marker",
             )
         )
-        return verb
-
-    def _result_head(self, name: str | None, state: str, summary: str) -> Padding:
-        """The ``└ ✓ summary`` connector line that attaches a result to its call.
-
-        ``name`` is only shown when the result did not immediately follow its own
-        call line (out-of-order results), so the common adjacent pair stays terse.
-        """
-        glyph = self._g["fail"] if state == "err" else self._g["ok"]
-        line = Text.assemble(
-            (self._g["branch"] + " ", "tool.connector"),
-            (glyph + " ", state),
-        )
-        if name:
-            line.append_text(Text(name + " " + self._g["dot"] + " ", style="tool.marker"))
-        line.append_text(Text(summary, style="notice.dim"))
-        return Padding(line, (0, 0, 0, 2))
+        self._last_block = "tool_call"
+        self._assistant_marked = False
 
     def _on_tool_result(self, event: AgentToolResult) -> None:
-        name = self._tool_names.get(event.tool_use_id, "tool")
-        attached = event.tool_use_id == self._last_call_id
-        head_name = None if attached else name
+        # Group binding: a result stays contiguous only under its OWN call line —
+        # an interleaved/out-of-order result detaches and names its tool instead.
+        attached = self._last_block == "tool_call" and event.tool_use_id == self._last_call_id
+        if not attached:
+            self._gap()
         self._last_call_id = None
-        self._block_gap = True  # whatever prints next starts a new block
-        state = "err" if event.is_error else "ok"
+        name = self._tool_names.pop(event.tool_use_id, "")
+        started = self._tool_started.pop(event.tool_use_id, None)
+        duration = "" if started is None else _fmt_duration(self._clock() - started)
         output = str(event.output)
+        lines = output.splitlines()
 
-        if name == "run":
-            # Shell output is the whole point — show the program's real stdout/stderr
-            # (capped), not just its first line, so the user can see what actually ran.
-            lines = output.splitlines()
-            n = len(lines)
-            if event.is_error:
-                summary = "failed"
-            else:
-                summary = f"{n} line{'' if n == 1 else 's'}" if n else "no output"
-            self._out(self._result_head(head_name, state, summary))
-            preview = lines[:_RUN_OUTPUT_LINES]
-            if preview:
-                self._out(Padding(Text("\n".join(preview), style="notice.dim"), (0, 0, 0, 6)))
-            if n > _RUN_OUTPUT_LINES:
-                more = n - _RUN_OUTPUT_LINES
-                tail = f"{self._g['ellipsis']} (+{more} more line{'' if more == 1 else 's'})"
-                self._out(Padding(Text(tail, style="notice.dim"), (0, 0, 0, 6)))
-            return
-
-        diff = _diff_preview(output, glyphs=self._g)
-        if diff is not None:
-            # A diff result summarizes as change counts; the preview shows the lines.
-            adds = sum(
-                1 for ln in output.splitlines() if ln.startswith("+") and not ln.startswith("+++")
+        summary, rows = self._synthesize_result(name, lines, is_error=event.is_error)
+        if not attached:
+            head = Text.assemble(
+                ((name or "Tool") + " ", "result.summary"),
+                (self._g["dot"] + " ", "result.summary"),
             )
-            dels = sum(
-                1 for ln in output.splitlines() if ln.startswith("-") and not ln.startswith("---")
-            )
-            summary = f"+{adds} -{dels}"
-        else:
-            summary = _first_line(output) or ("error" if event.is_error else "ok")
-        self._out(self._result_head(head_name, state, summary))
-        if diff is not None:
-            self._out(Padding(diff, (0, 0, 0, 6)))
-        elif event.is_error:
-            extra = "\n".join(output.splitlines()[1:6]).rstrip()
-            if extra:
-                self._out(Padding(Text(extra, overflow="fold"), (0, 0, 0, 6)))
-
-    def _on_status(self, event: AgentStatus) -> None:
-        self._assistant_marked = False  # prose resuming after a notice is a new block
-        self._open_block_gap()
+            head.append_text(summary)
+            summary = head
+        if duration:
+            summary.append(f" {self._g['dot']} {duration}", style="result.summary")
         self._out(
-            Padding(
-                Text.assemble((self._g["status"] + " ", "status.glyph"), (event.message, "status")),
-                (0, 0, 0, 2),
+            block(
+                self.console,
+                summary,
+                marker=self._g["elbow"],
+                marker_style="result.connector",
+                indent=4,
             )
         )
-        self._block_gap = True
+        if rows:
+            bar_style = "tool.bar.err" if event.is_error else "tool.bar"
+            self._out(rail(self.console, rows, bar_style=bar_style))
+        self._last_block = "tool"
+
+    def _synthesize_result(
+        self, name: str, lines: list[str], *, is_error: bool
+    ) -> tuple[Text, list[Text]]:
+        """The ``└`` receipt summary + the rail rows beneath it, per display name."""
+        g = self._g
+        n = len(lines)
+
+        if is_error:
+            # Errors restructure, not just recolor: ✗ first line on the receipt,
+            # detail rows at full fg behind a (red) rail. Truncation always marked.
+            first = lines[0] if lines else "error"
+            summary = Text.assemble((g["fail"] + " ", "err"), (first, "err"))
+            rows = [Text(ln, style="err.body") for ln in lines[1 : 1 + _ERROR_DETAIL_LINES]]
+            hidden = len(lines) - 1 - _ERROR_DETAIL_LINES
+            if hidden > 0:
+                rows.append(
+                    Text(f"{g['ellipsis']} +{_plural(hidden, 'line')}", style="result.more")
+                )
+            return summary, rows
+
+        if name in ("Run", "Fetch"):
+            label = _plural(n, "line") if n else "no output"
+            if n > _RUN_CAP:
+                hidden = n - _RUN_HEAD - _RUN_TAIL
+                rows = [Text(ln, style="result.output") for ln in lines[:_RUN_HEAD]]
+                rows.append(
+                    Text(
+                        f"{g['ellipsis']} +{_plural(hidden, 'line')} {g['ellipsis']}",
+                        style="result.more",
+                    )
+                )
+                rows += [Text(ln, style="result.output") for ln in lines[-_RUN_TAIL:]]
+            else:
+                rows = [Text(ln, style="result.output") for ln in lines]
+            return Text(label, style="result.summary"), rows
+
+        if name == "Search":
+            summary = Text(_plural(n, "match", "matches"), style="result.summary")
+            rows = [Text(ln, style="result.output") for ln in lines[:_LIST_PREVIEW_LINES]]
+            if n > _LIST_PREVIEW_LINES:
+                more = n - _LIST_PREVIEW_LINES
+                rows.append(Text(f"{g['ellipsis']} +{more} more", style="result.more"))
+            return summary, rows
+
+        if name == "Glob":
+            summary = Text(_plural(n, "file"), style="result.summary")
+            rows = [Text(ln, style="result.output") for ln in lines[:_LIST_PREVIEW_LINES]]
+            if n > _LIST_PREVIEW_LINES:
+                more = n - _LIST_PREVIEW_LINES
+                rows.append(Text(f"{g['ellipsis']} +{more} more", style="result.more"))
+            return summary, rows
+
+        if name == "Edit":
+            diff_rows = _diff_preview("\n".join(lines), glyphs=g)
+            if diff_rows is not None:
+                adds = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+                dels = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+                return Text(f"+{adds} -{dels}", style="result.summary"), diff_rows
+            return Text(_plural(n, "line"), style="result.summary"), []
+
+        if name == "Write":
+            return Text("written", style="result.summary"), []
+
+        if name == "Todo":
+            items = [ln for ln in lines if ln.strip()]
+            rows = [self._todo_row(ln) for ln in lines]
+            return Text(_plural(len(items), "item"), style="result.summary"), rows
+
+        # Read / List / unknown tools: a count, no preview.
+        return Text(_plural(n, "line"), style="result.summary"), []
+
+    def _todo_row(self, line: str) -> Text:
+        # Format-tolerant: only "[x] " / "[ ] " prefixes glyph-map; others pass through.
+        if line.startswith("[x] "):
+            return Text.assemble(
+                (self._g["todo_done"] + " ", "todo.done"), (line[4:], "result.output")
+            )
+        if line.startswith("[ ] "):
+            return Text.assemble(
+                (self._g["todo_open"] + " ", "todo.open"), (line[4:], "result.output")
+            )
+        return Text(line, style="result.output")
+
+    def _on_status(self, event: AgentStatus) -> None:
+        self._flush_remaining_text()  # buffered prose precedes the notice (see _on_tool_call)
+        self._gap()
+        self._out(
+            block(
+                self.console,
+                Text(event.message, style="status"),
+                marker=self._g["dot"],
+                marker_style="status",
+            )
+        )
+        self._last_block = "status"
+        self._assistant_marked = False
 
     def _on_usage(self, event: AgentUsage) -> None:
         self._usage = self._usage + event.usage
 
-    # -- helpers ------------------------------------------------------------
+    # -- helpers ----------------------------------------------------------------
 
     def _flush_remaining_text(self) -> None:
         if self._text_buffer:
@@ -462,50 +559,59 @@ class StreamRenderer:
     def _print_footer(self, done: AgentDone) -> None:
         usage = done.usage if done.usage.total_tokens else self._usage
         g = self._g
-        self._blank()
-        if done.stop_reason != "completed":
-            # A turn that stopped early (stuck / doom_loop / max_iterations / ...) must
-            # not end silently — the dim footer alone is easy to read past.
-            self._out(
-                Padding(
-                    Text.assemble(
-                        (g["bang"] + " ", "warn"),
-                        (f"stopped early: {done.stop_reason}", "warn"),
-                    ),
-                    (0, 0, 0, 2),
+        label, marker_style = self._stop_label(done)
+        sep = f" {g['dot']} "
+        body = Text(
+            sep.join(
+                (
+                    label,
+                    f"{done.iterations} iterations",
+                    _humanize_tokens(usage.total_tokens),
+                    _fmt_cost(usage.cost_usd),
+                    _fmt_duration(self._clock() - self._turn_start),
                 )
-            )
-        stats = (
-            f"{done.iterations} iter "
-            f"{g['dot']} {_humanize_tokens(usage.total_tokens)} "
-            f"{g['dot']} ${usage.cost_usd:.4f}"
+            ),
+            style="footer",
         )
-        rule = Rule(
-            Text(stats, style="footer"),
-            characters=g["hline"],
-            style="rule.line",
-            align="left",
+        self._gap()
+        self._out(block(self.console, body, marker=g["marker"], marker_style=marker_style))
+
+    def _stop_label(self, done: AgentDone) -> tuple[str, str]:
+        """The footer's leading outcome word(s) + the marker's state style."""
+        reason = done.stop_reason
+        template = _STOP_LABEL.get(reason)
+        label = (
+            template.format(dash=self._g["dash"])
+            if template is not None
+            else reason.replace("_", " ")
         )
-        self.console.print(Padding(rule, (0, 0, 0, 2)))
+        if reason == "completed":
+            return label, "ok"
+        if reason == "provider_error":
+            if done.error:
+                label += f" {self._g['dash']} {done.error.splitlines()[0]}"
+            return label, "err"
+        return label, "warn"
 
 
 def _inline_md(line: str, glyphs: dict[str, str]) -> Text:
     """Render one prose line with lightweight inline markdown.
 
     Handles list bullets (``- ``/``* `` -> the bullet glyph), ATX headings (``##`` ->
-    bold), ``**bold**`` and ``` `code` ```. Built by hand with ``Text.append`` so model
-    text can never inject rich console markup (the markup=False safety we rely on).
+    ``md.h``), ``**bold**`` and ``` `code` ```. Built by hand with ``Text.append`` so
+    model text can never inject rich console markup (the markup=False safety we rely
+    on).
     """
     stripped = line.lstrip(" ")
     lead = line[: len(line) - len(stripped)]
     out = Text(lead)
     if stripped[:2] in ("- ", "* "):
-        out.append(glyphs["bullet"] + " ", style="dim")
+        out.append(glyphs["bullet"] + " ", style="md.bullet")
         out.append_text(_inline_spans(stripped[2:]))
         return out
     if stripped.startswith("#"):
         body = _inline_spans(stripped.lstrip("#").lstrip())
-        body.stylize("bold")
+        body.stylize("md.h")
         out.append_text(body)
         return out
     out.append_text(_inline_spans(stripped))
@@ -526,7 +632,7 @@ def _inline_spans(text: str) -> Text:
         if text[i] == "`":
             end = text.find("`", i + 1)
             if end != -1:
-                out.append(text[i + 1 : end], style="cyan")
+                out.append(text[i + 1 : end], style="md.code")
                 i = end + 1
                 continue
         out.append(text[i])
@@ -534,42 +640,14 @@ def _inline_spans(text: str) -> Text:
     return out
 
 
-def _format_tool_call(name: str, arguments: object) -> tuple[str, str]:
-    """Map a tool call to ``(verb, target)`` for the gutter line."""
-    verb = _VERB_MAP.get(name, name)
-    return verb, _tool_target(arguments)
-
-
-def _tool_target(arguments: object) -> str:
-    """The single salient argument to show after the verb (path / command / pattern)."""
-    if not isinstance(arguments, dict):
-        return _abbrev_value(arguments)
-    for key in ("command",):
-        value = arguments.get(key)
-        if isinstance(value, str) and value:
-            return "$ " + _abbrev_value(value, limit=120)
-    for key in ("path", "file_path", "pattern", "query", "url", "name"):
-        value = arguments.get(key)
-        if isinstance(value, str) and value:
-            return _abbrev_value(value, limit=120)
-    for value in arguments.values():
-        if isinstance(value, str) and value:
-            return _abbrev_value(value, limit=120)
-    return _abbrev_value(arguments, limit=120)
-
-
-#: Max diff lines shown in a result preview (then "… (+N more)").
-_DIFF_PREVIEW_LINES = 6
-
-
-def _diff_preview(output: str, *, glyphs: dict[str, str] | None = None) -> Text | None:
-    """A small colored unified-diff preview, or ``None`` if the output is not a diff.
+def _diff_preview(output: str, *, glyphs: dict[str, str] | None = None) -> list[Text] | None:
+    """Rail rows for a colored unified-diff preview, or ``None`` if not a diff.
 
     Gated on a real unified-diff SIGNATURE — an ``@@`` hunk header, or a ``--- ``/``+++ ``
     file-header pair — before colorizing. Without the gate, ordinary tool output whose
     lines merely begin with ``-``/``+`` (markdown bullets, an ``ls -l`` listing, a file
     read) was mis-painted as a red/green diff and truncated; the signature gate prevents
-    that false positive. Truncation is always marked (``… (+N more)``), never silent.
+    that false positive. Truncation is always marked (``… +N lines``), never silent.
     """
     lines = output.splitlines()
     has_hunk = any(ln.startswith("@@") for ln in lines)
@@ -581,39 +659,70 @@ def _diff_preview(output: str, *, glyphs: dict[str, str] | None = None) -> Text 
     diff_lines = [ln for ln in lines if ln[:1] in ("+", "-", "@")]
     if len(diff_lines) < 2:
         return None
-    text = Text()
-    for ln in diff_lines[:_DIFF_PREVIEW_LINES]:
-        if ln.startswith("+"):
+    g = glyphs or _env_glyphs()
+    rows: list[Text] = []
+    for ln in lines[:_DIFF_PREVIEW_LINES]:
+        if ln.startswith(("@@", "---", "+++")):
+            style = "diff.meta"
+        elif ln.startswith("+"):
             style = "diff.add"
         elif ln.startswith("-"):
             style = "diff.del"
         else:
             style = "diff.ctx"
-        text.append(ln + "\n", style=style)
-    if len(diff_lines) > _DIFF_PREVIEW_LINES:
-        more = len(diff_lines) - _DIFF_PREVIEW_LINES
-        ellipsis = (glyphs or {}).get("ellipsis", "...")
-        text.append(f"{ellipsis} (+{more} more line{'' if more == 1 else 's'})", style="notice.dim")
-    text.rstrip()
-    return text
+        # Style as a SPAN, not the Text's base style: the rail grid left-justifies
+        # rows, and base-styled pad spaces would smear the add/del background band
+        # past the text — the spec pins bands to text extent only.
+        row = Text()
+        row.append(ln, style=style)
+        rows.append(row)
+    if len(lines) > _DIFF_PREVIEW_LINES:
+        hidden = len(lines) - _DIFF_PREVIEW_LINES
+        rows.append(Text(f"{g['ellipsis']} +{_plural(hidden, 'line')}", style="result.more"))
+    return rows
 
 
-def _abbrev_value(value: object, *, limit: int = 40) -> str:
-    text = str(value)
-    if "\n" in text:
-        text = text.splitlines()[0]
-    return text if len(text) <= limit else text[: limit - 3] + "..."
+def _one_line(text: str) -> str:
+    return text.splitlines()[0] if "\n" in text else text
 
 
-def _first_line(output: object, *, limit: int = 80) -> str:
-    text = str(output).strip()
-    if not text:
-        return ""
-    first = text.splitlines()[0]
-    return first if len(first) <= limit else first[: limit - 3] + "..."
+def _squeeze_middle(text: str, limit: int, ellipsis: str) -> str:
+    """Middle-truncate: queries/commands keep their head AND their tail."""
+    if len(text) <= limit:
+        return text
+    head = (limit - 1) // 2
+    tail = limit - 1 - head
+    return text[:head] + ellipsis + text[-tail:]
+
+
+def _squeeze_path(path: str, limit: int, ellipsis: str) -> str:
+    """Left-truncate with a leading ellipsis so the filename survives."""
+    if len(path) <= limit:
+        return path
+    return ellipsis + path[-(limit - 1) :]
+
+
+def _plural(n: int, noun: str, plural: str | None = None) -> str:
+    return f"{n} {noun if n == 1 else (plural or noun + 's')}"
+
+
+def _fmt_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+
+
+def _fmt_cost(cost: float) -> str:
+    # :.4f with trailing zeros stripped down to a minimum of 2 decimals:
+    # 0.0230 -> $0.023, 0.0004 -> $0.0004, 0.0 -> $0.00, 1.5 -> $1.50.
+    whole, frac = f"{cost:.4f}".split(".")
+    frac = frac.rstrip("0")
+    if len(frac) < 2:
+        frac = frac.ljust(2, "0")
+    return f"${whole}.{frac}"
 
 
 def _humanize_tokens(n: int) -> str:
     if n < 1000:
-        return f"{n} tok"
-    return f"{n / 1000:.1f}k tok"
+        return f"{n} tokens"
+    return f"{n / 1000:.1f}k tokens"

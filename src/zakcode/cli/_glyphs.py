@@ -1,11 +1,16 @@
 """Terminal glyphs with cp1252-safe ASCII fallbacks (render-only support).
 
 A Windows console on the legacy cp1252 code page cannot encode many glyphs a modern
-TUI wants (``→ ✓ ✗ · …``); printing them raises ``UnicodeEncodeError`` or shows
+TUI wants (``✦ ● └ │ ✓ ✗ …``); printing them raises ``UnicodeEncodeError`` or shows
 mojibake. This module (a) best-effort upgrades the streams to UTF-8, (b) probes
 whether the console can actually encode our glyph set, and (c) exposes one frozen
 table resolved to unicode or ASCII accordingly. It is the single place a non-ASCII
 glyph literal may appear — every other module pulls from :func:`resolve_glyphs`.
+
+Every gutter-cell glyph (markers, ``elbow``, ``bar``, state marks) is exactly one
+character in BOTH modes, so the col 2/4/6 column grid is identical under
+``ZAKCODE_ASCII``. Multi-char fallbacks (``...``, ``--``) are inline-only — they
+never occupy a gutter cell.
 """
 
 from __future__ import annotations
@@ -20,37 +25,59 @@ if TYPE_CHECKING:
 
 #: Preferred glyphs.
 _UNICODE: dict[str, str] = {
-    "dot": "·",
-    "arrow": "→",
-    "branch": "└",
+    "spark": "✦",
+    "spark_soft": "✧",
+    "marker": "●",
+    "marker_tool": "●",
     "prompt": "›",
+    "elbow": "└",
+    "bar": "│",
     "ok": "✓",
     "fail": "✗",
     "bang": "!",
     "bullet": "•",
+    "dot": "·",
     "dash": "—",
     "ellipsis": "…",
-    "status": "┄",
     "hline": "─",
     "add": "+",
     "del": "-",
+    "todo_done": "✓",
+    "todo_open": "○",
+    "spin1": "·",
+    "spin2": "✦",
+    "spin3": "✶",
+    "spin4": "✧",
 }
 #: cp1252-safe fallbacks (used when the console cannot encode the unicode set).
+#: ``marker_tool`` falls back to ``o`` (vs the prose marker's ``*``) so a
+#: monochrome/NO_COLOR transcript still distinguishes prose from tools. The spinner
+#: frames are always rendered via ``Text`` (never markup-parsed), so ``\\`` and
+#: ``|`` are safe literals.
 _ASCII: dict[str, str] = {
-    "dot": "-",
-    "arrow": "->",
-    "branch": "`-",
+    "spark": "*",
+    "spark_soft": "*",
+    "marker": "*",
+    "marker_tool": "o",
     "prompt": ">",
-    "ok": "[ok]",
-    "fail": "[x]",
+    "elbow": "\\",
+    "bar": "|",
+    "ok": "+",
+    "fail": "x",
     "bang": "!",
     "bullet": "-",
+    "dot": "-",
     "dash": "--",
     "ellipsis": "...",
-    "status": ".",
     "hline": "-",
     "add": "+",
     "del": "-",
+    "todo_done": "+",
+    "todo_open": "o",
+    "spin1": "-",
+    "spin2": "\\",
+    "spin3": "|",
+    "spin4": "/",
 }
 
 #: Every distinct non-ASCII glyph we might print — the encode probe target.
