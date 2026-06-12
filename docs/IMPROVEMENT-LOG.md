@@ -224,6 +224,33 @@ ordering) — internal/omni. #3 (thinking through litellm) — PR-1 tests will s
 `test_discover_valid_plugin`, `test_discovered_register_is_callable`) — all three
 PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
 
+## Parity backlog (PKG-PARITY) — added 2026-06-11
+
+A second, broader engagement: a full fresh-eyes parity review of Zak-Code against
+**claw-code (Claude Code), Hermes, and goose** — not just the Claude-Code surface in
+PARITY.md. Method: a 104-agent / ~5.7M-token workflow (8 lanes × 4 codebases → gap
+synthesis → adversarial verification against the real code → one plan). **Full verdict,
+themes, the 30-item verified backlog, and the "already at-or-ahead, do NOT rebuild" list
+live in [`PARITY-GAP-ANALYSIS.md`](PARITY-GAP-ANALYSIS.md)** (D22). Headline: core
+engineering is at par-or-ahead of all three; the gaps are *delivered breadth*
+(provider-resilience wiring + operability surface), not architecture.
+
+**P1 quick-reference (11; full detail in the parity doc):** (1) failover +
+`ContextWindowExceeded` compact-then-retry — *failover half likely already done by
+PKG-AUTO #17; re-verify, only the compact-retry sub-item should remain*; (2) emit
+`cache_control` + cache-token accounting; (3) headless `zakcode run` with `--json`; (4)
+cost/token budget stop; (5) `finish_reason` truncation continuation; (6) normalize commands
+before blocklist match; (7) strip invisible Unicode at untrusted boundaries; (8)
+overflow-to-file + per-turn output budget; (9) context-overflow progressive prune; (10)
+wire CLI session resume + `/fork`; (11) `settings.json` merge + profiles `[CLEAN-ROOM]`
+— *note: per-user config home `~/.zakcode` already merged (#16), which may cover part of
+this; re-verify*.
+
+> **Freshness:** the review snapshotted the `pr-5-tooling` tree; PKG-AUTO (#17), TurnEnd
+> (#12/#18), provider-retry fixes (#13/#15), and the UX track (#9-#11) merged afterward.
+> Items #1 (failover) and #30 (outer-loop continuation) are likely partly addressed —
+> re-verify against `main` before building. Everything else stands. Coordinate with omni.
+
 ## Decisions
 
 - **D1 (2026-06-10, Zachary):** Skip Anthropic for now — no API key available.
@@ -328,6 +355,21 @@ PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
   resolver must be a pluggable interface so "zakpick" (task-category model
   routing) lands later without API breakage. Sequencing: restack → omni merges
   the stack → PKG-AUTO starts → omni starts the internal TurnEnd seam post-#5.
+- **D22 (2026-06-11, Zachary → agent, ultracode):** commissioned a full parity review
+  of Zak-Code vs **claw-code + Hermes + goose** ("get to par with these three
+  harnesses"). Ran as a 104-agent / ~5.7M-token workflow; output is
+  `docs/PARITY-GAP-ANALYSIS.md` + the *Parity backlog* section above. Verdict:
+  at-par-or-ahead on core engineering, behind on provider-resilience wiring and
+  operability breadth; 30 verified items (11 P1), 18 already-ahead. Numbered D22 to
+  clear omni's commit-referenced D20 (per-user config home, #16) and D21 (PKG-AUTO,
+  #17), which are cited in merged work but not yet written into this log's body.
+  Clean-room rule enforced on every claw-code reader; `[CLEAN-ROOM]` items must be
+  re-expressed, never copied; study material extracted to
+  `C:\ZakNoCloud\_zakcode_research\` (read-only, gitignored, never in-repo). The
+  review snapshotted the pre-merge `pr-5-tooling` tree, so parity-#1 (failover) and
+  parity-#30 (outer-loop continuation) are likely partly addressed by the
+  since-merged PKG-AUTO (#17) and TurnEnd (#18) — flagged in the doc; re-verify
+  before building; coordinate with omni so the `fallback_model` seam isn't wired twice.
 - **D16 (2026-06-10, agent — PR-4 logging scope):** the audit's P1-5 names "67 bare
   except handlers"; instrumenting all 67 mechanically would add noise without value.
   Delivered the TARGETED set instead: `registry.execute`'s wrapped tool exceptions
