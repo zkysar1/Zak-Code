@@ -227,9 +227,14 @@ PROTECTED_PATH_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "VCS internals (.git/)",
     ),
     (
-        # ``.env`` and ``.env.<environment>`` (secrets), but NOT .env.example/.sample/.template.
+        # ``.env`` and layered/backup secrets (``.env.local``, ``.env.production.local``,
+        # ``.env.local.bak``, ``.env~``) — any chain of dotted segments — but NOT a template
+        # whose FIRST suffix is example/sample/template/dist (``.env.example``). The negative
+        # lookahead guards only the first segment; ``~`` (editor backup) is an accepted terminator.
         re.compile(
-            r"(?:^|[\\/\s\"'=>])\.env(?:\.(?!example|sample|template|dist)\w+)?(?=$|[\\/\s\"'])",
+            r"(?:^|[\\/\s\"'=>])"
+            r"\.env(?:\.(?!example|sample|template|dist)\w+(?:\.\w+)*)?"
+            r"(?=$|[\\/\s\"'~])",
             re.IGNORECASE,
         ),
         "secrets file (.env)",

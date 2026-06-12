@@ -69,6 +69,13 @@ def _matches(path: str) -> bool:
         ".env",
         ".env.local",
         ".env.production",
+        # layered (Next.js/Vite) + backup secrets — any chain of dotted segments (review finding)
+        ".env.development.local",
+        ".env.production.local",
+        ".env.test.local",
+        ".env.local.bak",
+        ".env~",
+        "config/.env.staging.local",
         "config/.env",
         "/abs/path/.env",
         ".git/config",
