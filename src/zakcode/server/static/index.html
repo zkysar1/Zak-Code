@@ -5,189 +5,369 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Zak Code</title>
   <style>
-    /* ── The Zak look (docs/UX.md): same spatial grammar as the terminal client.
-       Gutter glyphs (› · → └ ┄) in a fixed left column, content beside them; one
-       blank-line rhythm between blocks; dim reserved for chrome; cyan = active,
-       green = ok, red = err, yellow = attention. ─────────────────────────────── */
-    :root {
-      color-scheme: dark;
-      --bg: #0e1116; --panel: #151a23; --line: #242c3b; --code-bg: #131826;
-      --fg: #dde3ee; --dim: #828ca1;
-      --accent: #6cd1da;   /* cyan: the prompt, the assistant marker, tool verbs   */
-      --ok: #8ecf96; --err: #e2697b; --warn: #e0bf76;
-      --add: #8ecf96; --del: #e2697b;
+    /* ── The Zak look (docs/UX.md): the terminal grammar in proportional type.
+       Every hex lives in :root (dark default, light via prefers-color-scheme).
+       --brand paints only: the spark, the ›/● markers, focus rings, links, the
+       connection dot. Boxes are soft surfaces; motion is 120–150ms. ─────────── */
+    :root {                              /* dark (default) */
+      color-scheme: dark light;
+      --bg:        #14171d;  --surface: #1b2026;  --inset: #0f1217;
+      --line:      #2a313a;  --line-soft: #20262e;
+      --fg:        #e9ecef;  --muted:   #99a3ae;  --faint: #66707b;
+      --brand:     #38b6df;
+      --ok:        #5fc88a;  --err:     #e5646e;  --warn:  #d9a13f;
+      --add-bg:    #173321;  --add-fg:  #a9d8b4;
+      --del-bg:    #391d22;  --del-fg:  #e3a9b0;
+      --shadow:    0 8px 24px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.4);
+      --font-prose: system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
     }
+    @media (prefers-color-scheme: light) { :root {
+      --bg:        #faf9f7;  --surface: #ffffff;  --inset: #f2f0ec;
+      --line:      #e2dfd9;  --line-soft: #eceae5;
+      --fg:        #33312d;  --muted:   #6e6b64;  --faint: #a3a09a;
+      --brand:     #117ba8;
+      --ok:        #2c8a55;  --err:     #c23d49;  --warn:  #9a6b1f;
+      --add-bg:    #e3f2e6;  --add-fg:  #1d5e35;
+      --del-bg:    #fae3e5;  --del-fg:  #8f303a;
+      --shadow:    0 8px 24px rgba(40,35,25,.08), 0 1px 2px rgba(40,35,25,.10);
+    }}
+
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body {
       margin: 0; background: var(--bg); color: var(--fg);
-      font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font: 15px/1.65 var(--font-prose);
       display: flex; flex-direction: column;
     }
-
-    /* ── header: brand + session facts left, live usage right ── */
-    header {
-      flex: none; display: flex; align-items: baseline; gap: 1rem;
-      padding: .65rem 1.25rem; background: var(--panel);
-      border-bottom: 1px solid var(--line);
-    }
-    header .brand { font-weight: 600; color: var(--accent); }
-    header .meta { color: var(--dim); font-size: .8rem; flex: 1; min-width: 0;
-                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    header .usage { color: var(--dim); font-size: .8rem; white-space: nowrap; }
-
-    /* ── the log: one centered, breathable column ── */
-    main { flex: 1; overflow-y: auto; }
-    #log { max-width: 52rem; margin: 0 auto; padding: 1.5rem 1.25rem 2.5rem; }
-    .block { display: grid; grid-template-columns: 1.6rem 1fr; margin: 1rem 0; }
-    .block > .g { color: var(--dim); user-select: none; }
-    .block > .body { min-width: 0; overflow-wrap: break-word; }
-
-    .user > .g { color: var(--accent); font-weight: 600; }
-    .user > .body { color: var(--fg); white-space: pre-wrap; }
-
-    .assistant > .g { color: var(--accent); }
-    .assistant .line { white-space: pre-wrap; min-height: 1.2em; }
-    .assistant .line code { color: var(--accent); }
-    .assistant .line .b { font-weight: 600; }
-    .assistant pre.code {
-      margin: .6rem 0; padding: .65rem .9rem; overflow-x: auto;
-      background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px;
-      white-space: pre;
-    }
-
-    /* ── tool block: the call line with its result attached beneath ── */
-    .tool { margin: 1rem 0; }
-    .tool .call { display: grid; grid-template-columns: 1.6rem 1fr; }
-    .tool .call .g { color: var(--dim); user-select: none; }
-    .tool .call .verb { color: var(--accent); margin-right: .75rem; }
-    .tool .call .target { font-weight: 600; overflow-wrap: anywhere; }
-    .tool .result { margin: 0; }
-    .tool .result summary, .tool .result .head {
-      display: grid; grid-template-columns: 1.6rem 1fr; list-style: none; cursor: pointer;
-    }
-    .tool .result .head { cursor: default; }
-    .tool .result summary::-webkit-details-marker { display: none; }
-    .tool .result summary:hover .sum { color: var(--fg); }
-    .tool .result .g { color: var(--dim); user-select: none; }
-    .tool .result .state.ok { color: var(--ok); }
-    .tool .result .state.err { color: var(--err); }
-    .tool .result .sum { color: var(--dim); }
-    .tool .result pre {
-      margin: .35rem 0 0 1.6rem; padding: .55rem .9rem; overflow-x: auto;
-      color: var(--dim); background: var(--code-bg);
-      border: 1px solid var(--line); border-radius: 6px; white-space: pre;
-    }
-    .tool .result pre .add { color: var(--add); }
-    .tool .result pre .del { color: var(--del); }
-    .tool .result.err pre { color: var(--err); border-color: #5a3038; }
-
-    /* ── out-of-band: loop status notices + the live wait indicator ── */
-    .status > .g { color: var(--warn); }
-    .status > .body { font-style: italic; }
-    .thinking { color: var(--dim); font-style: italic; animation: pulse 1.6s ease-in-out infinite; }
+    /* one shared rule: streaming digits never jitter */
+    .mono, .meta, .receipt, .chip, .tool-summary { font-variant-numeric: tabular-nums; }
+    :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    a { color: var(--brand); text-decoration: underline; }
     @keyframes pulse { 50% { opacity: .35; } }
 
-    /* ── turn footer: the same one-line stats rule the terminal prints ── */
-    .turn-rule { display: flex; align-items: center; gap: .75rem; margin: 1.25rem 0;
-                 color: var(--dim); font-size: .8rem; white-space: nowrap; }
-    .turn-rule::before { content: ""; width: 2rem; border-top: 1px solid var(--line); }
-    .turn-rule::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
-    .stopped { color: var(--warn); }
-    .errline { color: var(--err); }
+    /* ── header: 48px surface bar ── */
+    header {
+      flex: none; height: 48px; display: flex; align-items: center;
+      justify-content: space-between; gap: 1rem; padding: 0 1rem;
+      background: var(--surface); border-bottom: 1px solid var(--line);
+    }
+    header .brand { display: flex; align-items: center; gap: .5rem; font-size: 15px; font-weight: 600; }
+    header .spark { color: var(--brand); }
+    header .right { display: flex; align-items: center; gap: .75rem; min-width: 0; }
+    .chip {
+      font: 12px/1.5 var(--font-mono); color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .conn { display: flex; align-items: center; gap: .4rem; flex: none; }
+    .conn .cdot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
+    .conn .cdot.connecting { background: var(--brand); animation: pulse 1.2s ease-in-out infinite; }
+    .conn .cdot.open { background: var(--ok); }
+    .conn .clabel { color: var(--muted); font-size: 12px; }
 
-    /* ── permission approval: the terminal's yellow panel, as a bar ── */
+    /* ── transcript: one centered 44rem column (spaciousness guard: do not widen) ── */
+    main { flex: 1 1 auto; overflow-y: auto; }
+    #log { max-width: 44rem; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+    #log > :first-child { margin-top: 0; }
+    .row { display: grid; grid-template-columns: 1.75rem 1fr; margin-top: .9rem; }
+    .row > .g { user-select: none; }
+    .row > .body { min-width: 0; overflow-wrap: break-word; }
+
+    .row.user { margin-top: 2.25rem; }
+    .row.user > .g { color: var(--brand); font-family: var(--font-mono); font-weight: 600; }
+    .row.user > .body { font-weight: 500; color: var(--fg); white-space: pre-wrap; }
+
+    /* assistant marker: an 8px brand dot anchored to the group's first line */
+    .row.assistant .adot {
+      display: block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--brand); margin-top: .55em;
+    }
+    .prose > :first-child { margin-top: 0; }
+    .prose p { margin: .55rem 0 0; white-space: pre-wrap; }
+    .prose h1, .prose h2, .prose h3 { font-weight: 600; margin: .9em 0 .4em; }
+    .prose h1 { font-size: 1.3em; } .prose h2 { font-size: 1.15em; } .prose h3 { font-size: 1em; }
+    .prose ul { margin: .55rem 0 0; padding-left: 1.25rem; }
+    .prose li::marker { color: var(--muted); }
+    .prose code {
+      font-family: var(--font-mono); font-size: 86%;
+      background: var(--inset); border: 1px solid var(--line-soft);
+      border-radius: 4px; padding: .08em .35em;
+    }
+
+    .codeblock { position: relative; margin: .55rem 0 0; }
+    .codeblock pre {
+      margin: 0; padding: .75rem 1rem; overflow-x: auto;
+      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 8px;
+      font: 13px/1.5 var(--font-mono);
+    }
+    .codeblock .lang {
+      position: absolute; top: .45rem; right: 3.4rem;
+      font: 11px/1.5 var(--font-mono); text-transform: uppercase; color: var(--faint);
+    }
+    .codeblock .copy {
+      position: absolute; top: .35rem; right: .5rem;
+      font: 11px/1.5 var(--font-mono); color: var(--muted);
+      background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+      padding: .1rem .45rem; cursor: pointer;
+      opacity: 0; transition: opacity 120ms ease;
+    }
+    .codeblock:hover .copy, .codeblock .copy:focus-visible { opacity: 1; }
+
+    /* ── tool cards: one <details> per call ── */
+    details.tool {
+      margin-top: .9rem; background: var(--surface);
+      border: 1px solid var(--line); border-radius: 8px;
+      font: 13px/1.5 var(--font-mono); overflow: hidden;
+    }
+    details.tool.err { border-left: 2px solid var(--err); }
+    .tool summary {
+      display: flex; align-items: center; gap: .55rem;
+      padding: .5rem .75rem; cursor: pointer; list-style: none;
+    }
+    .tool summary::-webkit-details-marker { display: none; }
+    .tool.empty summary { cursor: default; }
+    .tool .tdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .tool .tdot.pending { animation: pulse 1.2s ease-in-out infinite; }
+    .tool .tdot.fail { background: var(--err); }
+    .tool .tname { font-weight: 600; }
+    .tool .targs {
+      color: var(--muted); flex: 1 1 auto; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .tool .receipt { color: var(--muted); font-size: 12px; white-space: nowrap;
+                   overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 45%; }
+    .tool .chev { color: var(--faint); transition: transform 120ms ease; }
+    details[open] > summary .chev { transform: rotate(90deg); }
+    .tool.nochev .chev { display: none; }
+    .tool .tool-out {
+      margin: 0 .75rem .6rem; padding: .6rem .8rem; max-height: 40vh; overflow: auto;
+      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 8px;
+      white-space: pre; color: var(--muted); font: 13px/1.5 var(--font-mono);
+    }
+    .tool.err .tool-out { color: var(--fg); }
+    .tool-out div { min-height: 1.5em; }
+    /* diff bands bleed across the inset's padding: full-width painted lines */
+    .tool-out .add { background: var(--add-bg); color: var(--add-fg); margin: 0 -.8rem; padding: 0 .8rem; }
+    .tool-out .del { background: var(--del-bg); color: var(--del-fg); margin: 0 -.8rem; padding: 0 .8rem; }
+    .tool-out .dmeta { color: var(--faint); }
+
+    /* ── status / consent / turn-receipt rows ── */
+    .row.status > .g, .row.consent > .g { color: var(--muted); font-family: var(--font-mono); }
+    .row.status > .body { font: italic 12px/1.5 var(--font-mono); color: var(--muted); }
+    .row.consent > .body { font: 12px/1.5 var(--font-mono); color: var(--muted); }
+    .row.turnend { margin-top: 1rem; }
+    .row.turnend > .body { font: 12px/1.5 var(--font-mono); color: var(--muted); }
+    .rdot { display: block; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; }
+    .rdot.ok { background: var(--ok); } .rdot.err { background: var(--err); } .rdot.warn { background: var(--warn); }
+
+    .errcard {
+      margin-top: .9rem; padding: .6rem .75rem;
+      background: var(--surface); border: 1px solid var(--line);
+      border-left: 2px solid var(--err); border-radius: 8px;
+      font: 13px/1.5 var(--font-mono); color: var(--fg); white-space: pre-wrap;
+    }
+
+    /* ── empty state ── */
+    #empty { text-align: center; margin-top: 18vh; }
+    #empty .spark { font-size: 28px; color: var(--brand); }
+    #empty .t { font-size: 20px; font-weight: 600; margin-top: .5rem; }
+    #empty .m { margin-top: .4rem; font: 12px/1.5 var(--font-mono); color: var(--muted); }
+    #empty .h { margin-top: .6rem; color: var(--muted); }
+    #empty .pills { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; margin-top: 1.25rem; }
+    .pill {
+      font: 12px/1.5 var(--font-mono); color: var(--muted);
+      background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+      padding: .35rem .8rem; cursor: pointer; transition: color 120ms ease;
+    }
+    .pill:hover { color: var(--fg); }
+
+    /* ── dock: overlay + jump pill + approval + composer, all in-column ── */
+    .dock { flex: none; position: relative; width: 100%; max-width: 44rem; margin: 0 auto; padding: 0 1.25rem; }
+    #stream-status {
+      position: absolute; bottom: calc(100% + .4rem); left: 0; right: 0; text-align: center;
+      pointer-events: none; font: 12px/1.5 var(--font-mono); color: var(--muted);
+      opacity: 0; transition: opacity 150ms ease;
+    }
+    #stream-status.show { opacity: 1; }
+    #stream-status .spark { color: var(--brand); }
+    #jump {
+      position: absolute; bottom: calc(100% + 2.2rem); left: 50%; transform: translateX(-50%);
+      font: 12px/1.5 var(--font-mono); color: var(--fg);
+      background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+      padding: .3rem .8rem; box-shadow: var(--shadow); cursor: pointer;
+      opacity: 0; visibility: hidden; transition: opacity 150ms ease, visibility 150ms;
+    }
+    #jump.show { opacity: 1; visibility: visible; }
+
     #approval {
-      flex: none; display: none; align-items: center; gap: .75rem;
-      max-width: 52rem; width: 100%; margin: 0 auto .75rem; padding: .7rem 1rem;
-      background: #20202b; border: 1px solid var(--warn); border-radius: 8px;
+      margin: 0 1rem .75rem; padding: .75rem .9rem;
+      background: var(--surface); border: 1px solid var(--line);
+      border-left: 3px solid var(--warn); border-radius: 10px; box-shadow: var(--shadow);
     }
-    #approval.show { display: flex; flex-wrap: wrap; }
-    #approval .what { flex: 1; min-width: 14rem; }
-    #approval .what .tool-name { font-weight: 600; }
-    #approval .what .tier { color: var(--warn); }
-    #approval .what .reason { color: var(--dim); display: block; font-size: .85rem; }
+    #approval:not([hidden]) { animation: rise 150ms ease; }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+    .ap-title { font-weight: 600; }
+    .ap-title .ap-tool { margin-left: .5rem; font-weight: 600; font-family: var(--font-mono); font-size: 13px; }
+    .ap-detail {
+      margin-top: .5rem; padding: .5rem .7rem;
+      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 8px;
+      font: 13px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    .ap-detail .ap-reason { color: var(--muted); }
+    .ap-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .65rem; }
+    .ap-actions button {
+      font: 13px/1.5 var(--font-prose); border-radius: 8px; padding: .35rem .8rem; cursor: pointer;
+      background: transparent; color: var(--fg); border: 1px solid var(--line);
+      transition: color 120ms ease, border-color 120ms ease, transform 120ms ease;
+    }
+    .ap-actions button:active { transform: translateY(1px); }
+    .ap-actions .solid { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+    .ap-actions #deny:hover { color: var(--err); border-color: var(--err); }
+    .ap-actions kbd {
+      font: 11px/1.5 var(--font-mono); color: var(--muted);
+      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 4px;
+      padding: 0 .3em; margin-left: .45em;
+    }
+    .ap-actions .solid kbd { background: transparent; color: var(--bg); border-color: var(--bg); opacity: .75; }
 
-    /* ── input bar ── */
-    footer { flex: none; background: var(--panel); border-top: 1px solid var(--line); }
-    form { display: flex; gap: .6rem; max-width: 52rem; margin: 0 auto; padding: .8rem 1.25rem; }
-    .prompt-glyph { color: var(--accent); font-weight: 600; align-self: center; user-select: none; }
-    input[type=text] {
-      flex: 1; background: var(--bg); color: var(--fg); font: inherit;
-      border: 1px solid var(--line); border-radius: 6px; padding: .55rem .8rem;
+    /* ── composer: a floating card; Send morphs in place into Stop ── */
+    #composer {
+      display: flex; align-items: flex-end; gap: .6rem;
+      margin: 0 1rem 1rem; padding: .6rem .75rem;
+      background: var(--surface); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: var(--shadow);
     }
-    input[type=text]:focus { outline: none; border-color: var(--accent); }
-    button {
-      background: var(--accent); color: #0c0f14; border: 0; border-radius: 6px;
-      padding: .55rem 1rem; font: inherit; font-weight: 600; cursor: pointer;
+    #composer:focus-within {
+      box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--brand) 35%, transparent);
     }
-    button.secondary { background: #2c3445; color: var(--fg); }
-    button:disabled { opacity: .45; cursor: not-allowed; }
-    #stop { display: none; background: #2c3445; color: var(--warn); }
-    #stop.show { display: inline-block; }
+    #composer .pglyph {
+      color: var(--brand); font-family: var(--font-mono); font-weight: 600;
+      padding-bottom: .25rem; user-select: none;
+    }
+    #input {
+      flex: 1 1 auto; padding: .25rem 0; background: transparent; border: 0; resize: none;
+      color: var(--fg); font: 16px/1.5 var(--font-prose);
+      max-height: calc(6 * 1.5em + .5rem); overflow-y: auto;
+    }
+    #input:focus-visible { outline: none; }   /* the card carries the ring */
+    #input::placeholder { color: var(--faint); }
+    #send {
+      flex: none; width: 34px; height: 34px; border: 0; border-radius: 50%;
+      background: var(--fg); color: var(--bg); font-size: 15px; line-height: 1; cursor: pointer;
+      transition: border-radius 150ms ease, transform 120ms ease;
+    }
+    #send:hover { transform: translateY(-1px); }
+    #send.stop { border-radius: 8px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: 0s !important; animation-duration: 0s !important; }
+      .tdot.pending, .cdot.connecting { animation: none; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <span class="brand">Zak Code</span>
-    <span class="meta" id="meta">connecting…</span>
-    <span class="usage" id="usage"></span>
+    <div class="brand"><span class="spark" aria-hidden="true">✦</span><span>Zak Code</span></div>
+    <div class="right">
+      <span class="chip" id="chip-model"></span>
+      <span class="chip" id="chip-session"></span>
+      <span class="conn">
+        <span class="cdot connecting" id="conn-dot" aria-hidden="true"></span>
+        <span class="clabel" id="conn-label">connecting</span>
+      </span>
+    </div>
   </header>
 
-  <main><div id="log" aria-live="polite"></div></main>
+  <main id="main">
+    <div id="log" aria-live="polite">
+      <div id="empty">
+        <div class="spark" aria-hidden="true">✦</div>
+        <div class="t">Zak Code</div>
+        <div class="m" id="empty-meta"></div>
+        <div class="h">Ask about this workspace — Zak can read, edit, and run things.</div>
+        <div class="pills">
+          <button type="button" class="pill">explain this codebase</button>
+          <button type="button" class="pill">find a bug and fix it</button>
+          <button type="button" class="pill">run the tests and summarize</button>
+        </div>
+      </div>
+    </div>
+  </main>
 
-  <div id="approval" role="alertdialog" aria-label="permission required">
-    <span class="what" id="approval-what"></span>
-    <button id="allow-once">Allow once</button>
-    <button id="allow-session" class="secondary">Allow for session</button>
-    <button id="deny" class="secondary">Deny</button>
+  <div class="dock">
+    <div id="stream-status" aria-hidden="true"><span class="spark">✦</span> <span id="status-text"></span></div>
+    <button type="button" id="jump">↓ latest</button>
+    <div id="approval" role="alertdialog" aria-label="permission required" aria-describedby="approval-detail" hidden>
+      <div class="ap-title"><span>Permission</span><span class="ap-tool" id="approval-tool"></span></div>
+      <div class="ap-detail" id="approval-detail"></div>
+      <div class="ap-actions">
+        <button type="button" id="allow-once" class="solid">Allow once <kbd>y</kbd></button>
+        <button type="button" id="allow-session">Allow for session <kbd>a</kbd></button>
+        <button type="button" id="deny">Deny <kbd>n</kbd></button>
+      </div>
+    </div>
+    <div id="composer">
+      <span class="pglyph" aria-hidden="true">›</span>
+      <textarea id="input" rows="1" placeholder="Message Zak Code…" autocomplete="off"></textarea>
+      <button type="button" id="send" aria-label="Send">↑</button>
+    </div>
   </div>
-
-  <footer>
-    <form id="form">
-      <span class="prompt-glyph">›</span>
-      <input type="text" id="input" placeholder="Ask Zak Code…" autocomplete="off" />
-      <button type="button" id="stop">Stop</button>
-      <button type="submit" id="send">Send</button>
-    </form>
-  </footer>
 
   <script>
   // ── A thin client: it creates a session, opens the WebSocket, sends user input,
-  //    and RENDERS the server's AgentEvent stream. No agent logic lives here. It
-  //    speaks the same spatial grammar as the terminal renderer (docs/UX.md). ─────
+  //    and RENDERS the server's AgentEvent stream. No agent logic lives here. All
+  //    server/model data reaches the DOM via createElement + textContent only. ────
 
   // The exact AgentEvent discriminator values this renderer handles. Kept in sync
   // with the server's GET /schema/events (the contract test asserts they match).
   const EVENT_TYPES = ["done", "status", "text", "tool_call", "tool_result", "usage"];
 
-  // Mirrors the terminal renderer's verb map: one short verb per known tool.
-  const VERBS = {
-    read_file: "read", write_file: "write", edit_file: "edit", list_dir: "list",
-    glob: "glob", grep: "grep", bash: "run", powershell: "run",
-    web_fetch: "fetch", web_search: "search", todo_write: "todo", task: "task",
+  // Mirrors the terminal renderer's display names: one short name per known tool.
+  const DISPLAY_NAMES = {
+    read_file: "Read", write_file: "Write", edit_file: "Edit", list_dir: "List",
+    glob: "Glob", grep: "Search", bash: "Run", powershell: "Run",
+    web_fetch: "Fetch", web_search: "WebSearch", todo_write: "Todo", task: "Task",
   };
 
+  // Mirrors the terminal footer's stop-reason label map (docs/UX.md).
+  const STOP_LABELS = {
+    completed: "done",
+    max_iterations: "stopped early — max iterations",
+    provider_error: "provider error",
+    doom_loop: "stopped — repeating itself",
+    stuck: "stopped — no progress",
+    recipe_stalled: "stopped — recipe stalled",
+  };
+
+  const CONSENT_LABELS = {
+    allow_once: "allowed once",
+    allow_session: "allowed for session",
+    deny_once: "denied",
+  };
+
+  const main = document.getElementById("main");
   const log = document.getElementById("log");
-  const form = document.getElementById("form");
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
-  const stopBtn = document.getElementById("stop");
-  const meta = document.getElementById("meta");
-  const usageEl = document.getElementById("usage");
+  const jump = document.getElementById("jump");
+  const statusEl = document.getElementById("stream-status");
+  const statusText = document.getElementById("status-text");
   const approval = document.getElementById("approval");
-  const approvalWhat = document.getElementById("approval-what");
+  const approvalTool = document.getElementById("approval-tool");
+  const approvalDetail = document.getElementById("approval-detail");
+  const connDot = document.getElementById("conn-dot");
+  const connLabel = document.getElementById("conn-label");
 
   let ws = null;
   let sessionId = null;
   let turnActive = false;
-  let assistantEl = null;    // element rendering the current assistant prose run
-  let assistantText = "";    // its accumulated raw text (re-segmented on each delta)
-  let lastCall = null;       // {id, verb, el} of the most recent tool-call block
-  let turnUsage = null;      // latest cumulative usage event for this turn
-  let sessionTokens = 0;     // finished turns' tokens (header adds the live turn)
-  let sessionCost = 0;
-  let thinkingEl = null;
+  let turnStart = 0;                            // performance.now() at input send
+  let turnUsage = { total_tokens: 0, cost_usd: 0 };  // per-turn accumulator, reset on send
+  let assistantBody = null;  // current prose group (re-anchors after tool cards/status)
+  let assistantText = "";    // its accumulated raw text (re-rendered on each delta)
+  const toolCards = new Map();  // pending tool cards keyed by tool_call id
+  let approvedTool = "";     // display name for the consent receipt
+  let stick = true;          // stick-to-bottom while within 40px of the bottom
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);
@@ -196,38 +376,96 @@
     return node;
   }
 
-  function append(node) {
-    clearThinking();
-    log.appendChild(node);
-    node.scrollIntoView({ block: "end" });
-    return node;
-  }
-
-  function block(cls, glyph, bodyNode) {
-    const wrap = el("div", "block " + cls);
-    wrap.appendChild(el("span", "g", glyph));
+  function row(cls, gutterNode, bodyNode) {
+    const wrap = el("div", "row " + cls);
+    const g = el("span", "g");
+    if (gutterNode) g.appendChild(gutterNode);
+    wrap.appendChild(g);
     bodyNode.classList.add("body");
     wrap.appendChild(bodyNode);
     return wrap;
   }
 
-  // ── live wait feedback (the terminal's spinner): say WHAT we're waiting for ──
-  function showThinking(label) {
-    clearThinking();
-    thinkingEl = append(el("div", "thinking", "· " + label + "…"));
-  }
-  function clearThinking() {
-    if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+  function add(node) {
+    const empty = document.getElementById("empty");
+    if (empty) empty.remove();
+    log.appendChild(node);
+    follow();
+    return node;
   }
 
-  // ── assistant prose: re-render the run on each delta, fenced code as blocks ──
+  function follow() {
+    if (stick) main.scrollTop = main.scrollHeight;
+    else updateJump();
+  }
+
+  function errCard(text) { return el("div", "errcard mono", text); }
+
+  // ── scroll: follow only near the bottom; detached + streaming → jump pill ──
+  main.addEventListener("scroll", () => {
+    stick = main.scrollHeight - main.scrollTop - main.clientHeight < 40;
+    updateJump();
+  });
+  function updateJump() { jump.classList.toggle("show", !stick && turnActive); }
+  jump.onclick = () => { stick = true; main.scrollTop = main.scrollHeight; updateJump(); };
+
+  // ── stream-status overlay: pinned above the composer, never reflows ──
+  function setStatus(label) { statusText.textContent = label; statusEl.classList.add("show"); }
+  function hideStatus() { statusEl.classList.remove("show"); }
+
+  // ── formatting (mirrors the terminal receipt formats) ──
+  function firstLine(text) { return String(text).split("\n")[0]; }
+
+  function squeezeMiddle(text, limit) {
+    const s = firstLine(text);
+    if (s.length <= limit) return s;
+    const keep = limit - 1;
+    const head = Math.ceil(keep / 2);
+    return s.slice(0, head) + "…" + s.slice(s.length - (keep - head));
+  }
+
+  function titleCase(name) {
+    return String(name).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function displayName(name) { return DISPLAY_NAMES[name] || titleCase(name); }
+
+  function condenseArgs(args) {
+    if (!args || typeof args !== "object") return args === undefined || args === null ? "" : squeezeMiddle(String(args), 64);
+    if (typeof args.command === "string" && args.command) return "$ " + squeezeMiddle(args.command, 62);
+    for (const key of ["path", "file_path", "pattern", "query", "url", "name"]) {
+      if (typeof args[key] === "string" && args[key]) return squeezeMiddle(args[key], 64);
+    }
+    for (const v of Object.values(args)) {
+      if (typeof v === "string" && v) return squeezeMiddle(v, 64);
+    }
+    return squeezeMiddle(JSON.stringify(args), 64);
+  }
+
+  function fmtDur(ms) {
+    const s = ms / 1000;
+    if (s < 60) return s.toFixed(1) + "s";
+    return Math.floor(s / 60) + "m " + Math.floor(s % 60) + "s";
+  }
+
+  function fmtTokens(n) {
+    return n >= 1000 ? (n / 1000).toFixed(1) + "k tokens" : n + " tokens";
+  }
+
+  function fmtCost(c) {
+    let s = (c || 0).toFixed(4);
+    while (s.endsWith("0") && s.split(".")[1].length > 2) s = s.slice(0, -1);
+    return "$" + s;
+  }
+
+  // ── assistant prose: re-render the current group on each delta ──
   function inlineSpans(line, target) {
-    // Non-nested **bold** / `code`, built with textContent (never innerHTML).
+    // Non-nested **bold** / `code`, built with textContent only.
     let i = 0;
     while (i < line.length) {
       if (line.startsWith("**", i)) {
         const end = line.indexOf("**", i + 2);
-        if (end !== -1) { target.appendChild(el("span", "b", line.slice(i + 2, end))); i = end + 2; continue; }
+        if (end !== -1) { target.appendChild(el("strong", "", line.slice(i + 2, end))); i = end + 2; continue; }
       }
       if (line[i] === "`") {
         const end = line.indexOf("`", i + 1);
@@ -243,277 +481,398 @@
     }
   }
 
-  function renderAssistant() {
-    assistantEl.textContent = "";
+  function codeBlock(lang, text) {
+    const wrap = el("div", "codeblock");
+    if (lang) wrap.appendChild(el("span", "lang", lang));
+    const copy = el("button", "copy", "Copy");
+    copy.type = "button";
+    copy.onclick = () => {
+      if (!navigator.clipboard) { copy.textContent = "Copy failed"; }
+      else {
+        navigator.clipboard.writeText(text).then(
+          () => { copy.textContent = "Copied"; },
+          () => { copy.textContent = "Copy failed"; },
+        );
+      }
+      setTimeout(() => { copy.textContent = "Copy"; }, 2000);
+    };
+    wrap.appendChild(copy);
+    wrap.appendChild(el("pre", "mono", text));
+    return wrap;
+  }
+
+  function renderProse() {
+    assistantBody.textContent = "";
     const lines = assistantText.split("\n");
-    let code = null;
-    for (const raw of lines) {
-      if (raw.trimStart().startsWith("```")) {
-        if (code) { code = null; } else { code = el("pre", "code", ""); assistantEl.appendChild(code); }
+    let i = 0, para = null, list = null;
+    while (i < lines.length) {
+      const raw = lines[i];
+      const fence = raw.trimStart().match(/^```(\S*)/);
+      if (fence) {
+        para = null; list = null;
+        const codeLines = [];
+        i += 1;
+        while (i < lines.length && !lines[i].trimStart().startsWith("```")) { codeLines.push(lines[i]); i += 1; }
+        i += 1;  // closing fence (or stream end)
+        assistantBody.appendChild(codeBlock(fence[1], codeLines.join("\n")));
         continue;
       }
-      if (code) { code.textContent += raw + "\n"; continue; }
-      const line = el("div", "line");
-      let body = raw;
-      if (/^\s*[-*] /.test(raw)) { line.appendChild(document.createTextNode("• ")); body = raw.replace(/^\s*[-*] /, ""); }
-      else if (/^\s*#+ /.test(raw)) { line.classList.add("b"); body = raw.replace(/^\s*#+ /, ""); }
-      inlineSpans(body, line);
-      assistantEl.appendChild(line);
+      const h = raw.match(/^\s*(#{1,6})\s+(.*)$/);
+      if (h) {
+        para = null; list = null;
+        const head = el("h" + Math.min(h[1].length, 3), "");
+        inlineSpans(h[2], head);
+        assistantBody.appendChild(head);
+        i += 1; continue;
+      }
+      const b = raw.match(/^\s*[-*]\s+(.*)$/);
+      if (b) {
+        para = null;
+        if (!list) { list = el("ul", ""); assistantBody.appendChild(list); }
+        const li = el("li", "");
+        inlineSpans(b[1], li);
+        list.appendChild(li);
+        i += 1; continue;
+      }
+      if (!raw.trim()) { para = null; list = null; i += 1; continue; }
+      list = null;
+      if (!para) { para = el("p", ""); assistantBody.appendChild(para); }
+      else para.appendChild(document.createTextNode("\n"));
+      inlineSpans(raw, para);
+      i += 1;
     }
   }
 
   function onTextDelta(text) {
-    if (!assistantEl) {
+    if (!assistantBody) {
       assistantText = "";
-      assistantEl = el("div", "");
-      append(block("assistant", "·", assistantEl));
+      assistantBody = el("div", "prose");
+      add(row("assistant", el("span", "adot"), assistantBody));
     }
     assistantText += text;
-    renderAssistant();
-    assistantEl.scrollIntoView({ block: "end" });
+    renderProse();
+    follow();
   }
 
-  // ── tool blocks: call line + attached result (mirrors `→ verb target` / `└ ✓ …`) ──
-  function targetOf(args) {
-    if (!args || typeof args !== "object") return String(args ?? "");
-    if (typeof args.command === "string" && args.command) return "$ " + abbrev(args.command, 120);
-    for (const key of ["path", "file_path", "pattern", "query", "url", "name"]) {
-      if (typeof args[key] === "string" && args[key]) return abbrev(args[key], 120);
-    }
-    for (const v of Object.values(args)) {
-      if (typeof v === "string" && v) return abbrev(v, 120);
-    }
-    return abbrev(JSON.stringify(args), 120);
-  }
-
-  function abbrev(text, limit) {
-    const first = String(text).split("\n")[0];
-    return first.length <= limit ? first : first.slice(0, limit - 1) + "…";
-  }
-
+  // ── tool cards: created pending on tool_call, resolved by id on tool_result ──
   function onToolCall(ev) {
-    assistantEl = null;
-    const verb = VERBS[ev.name] || ev.name;
-    const wrap = el("div", "tool");
-    const call = el("div", "call");
-    call.appendChild(el("span", "g", "→"));
-    const body = el("span", "");
-    body.appendChild(el("span", "verb", verb));
-    body.appendChild(el("span", "target", targetOf(ev.arguments)));
-    call.appendChild(body);
-    wrap.appendChild(call);
-    append(wrap);
-    lastCall = { id: ev.id, verb, el: wrap };
-    showThinking("running " + verb);
+    assistantBody = null;
+    const name = displayName(ev.name);
+    const card = el("details", "tool empty");
+    const sum = el("summary", "tool-summary");
+    const dot = el("span", "tdot pending");
+    const receipt = el("span", "receipt", "…");
+    sum.appendChild(dot);
+    sum.appendChild(el("span", "tname", name));
+    sum.appendChild(el("span", "targs", "(" + condenseArgs(ev.arguments) + ")"));
+    sum.appendChild(receipt);
+    sum.appendChild(el("span", "chev", "▸"));
+    sum.addEventListener("click", (e) => { if (card.classList.contains("empty")) e.preventDefault(); });
+    card.appendChild(sum);
+    add(card);
+    toolCards.set(ev.id, { card, dot, receipt, name, started: performance.now() });
+    setStatus("using tools…");
   }
 
-  function resultSummary(verb, ev) {
-    const out = String(ev.output || "");
-    if (verb === "run") {
-      if (ev.is_error) return "failed";
-      const n = out ? out.split("\n").length : 0;
-      return n ? n + (n === 1 ? " line" : " lines") : "no output";
+  // Synthesized receipts per display name (docs/UX.md), never raw first lines.
+  function receiptText(name, ev, output) {
+    if (ev.is_error) return "✗ " + squeezeMiddle(firstLine(output.trim()), 64);
+    const n = output.trim() ? output.trim().split("\n").length : 0;
+    switch (name) {
+      case "Read": case "List": case "Fetch": return n + (n === 1 ? " line" : " lines");
+      case "Run": return n ? n + (n === 1 ? " line" : " lines") : "no output";
+      case "Search": return n + (n === 1 ? " match" : " matches");
+      case "Glob": return n + (n === 1 ? " file" : " files");
+      case "Edit": {
+        const lines = output.split("\n");
+        if (lines.some((l) => l.startsWith("@@"))) {
+          const a = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
+          const d = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
+          return "+" + a + " -" + d;
+        }
+        return n + (n === 1 ? " line" : " lines");
+      }
+      case "Write": return "written";
+      case "Todo": return n + (n === 1 ? " item" : " items");
+      default: return n + (n === 1 ? " line" : " lines");
     }
-    return abbrev(out.trim(), 80) || (ev.is_error ? "error" : "ok");
+  }
+
+  function fillOutput(body, output) {
+    const lines = output.replace(/\n$/, "").split("\n");
+    const isDiff = lines.some((l) => l.startsWith("@@")) ||
+      (lines.some((l) => l.startsWith("--- ")) && lines.some((l) => l.startsWith("+++ ")));
+    if (!isDiff) { body.textContent = output; return; }
+    for (const line of lines) {
+      let cls = "";
+      if (line.startsWith("@@") || line.startsWith("--- ") || line.startsWith("+++ ")) cls = "dmeta";
+      else if (line.startsWith("+")) cls = "add";
+      else if (line.startsWith("-")) cls = "del";
+      body.appendChild(el("div", cls, line));
+    }
   }
 
   function onToolResult(ev) {
-    const attached = lastCall && lastCall.id === ev.tool_use_id;
-    const verb = attached ? lastCall.verb : "tool";
-    const host = attached ? lastCall.el : append(el("div", "tool"));
-    lastCall = null;
-
-    const state = ev.is_error ? "err" : "ok";
-    const head = document.createDocumentFragment();
-    head.appendChild(el("span", "g", "└"));
-    const sumBody = el("span", "");
-    sumBody.appendChild(el("span", "state " + state, ev.is_error ? "✗ " : "✓ "));
-    if (!attached) sumBody.appendChild(el("span", "sum", verb + " · "));
-    sumBody.appendChild(el("span", "sum", resultSummary(verb, ev)));
-    head.appendChild(sumBody);
-
-    const out = String(ev.output || "");
-    if (out.trim()) {
-      // Full output one click away (errors arrive expanded) — the web's answer to
-      // the terminal's capped preview: nothing floods, nothing is silently lost.
-      const details = el("details", "result " + state);
-      if (ev.is_error) details.open = true;
-      const summary = el("summary", "");
-      summary.appendChild(head);
-      details.appendChild(summary);
-      details.appendChild(outputPre(out));
-      host.appendChild(details);
+    const entry = toolCards.get(ev.tool_use_id);
+    const output = String(ev.output || "");
+    if (!entry) {
+      // Reconnect/replay can deliver a result with no card: render it standalone, never throw.
+      const body = el("div", "meta", "tool result · " + receiptText("", ev, output));
+      add(row("consent", el("span", "", "·"), body));
+      return;
+    }
+    toolCards.delete(ev.tool_use_id);
+    const dur = fmtDur(performance.now() - entry.started);
+    entry.dot.classList.remove("pending");
+    if (ev.is_error) { entry.card.classList.add("err"); entry.dot.classList.add("fail"); }
+    entry.receipt.textContent = receiptText(entry.name, ev, output) + " · " + dur;
+    if (output.trim()) {
+      entry.card.classList.remove("empty");
+      const body = el("div", "tool-out mono");
+      fillOutput(body, output);
+      entry.card.appendChild(body);
+      if (ev.is_error) entry.card.open = true;
     } else {
-      const lone = el("div", "result " + state);
-      const headDiv = el("div", "head");
-      headDiv.appendChild(head);
-      lone.appendChild(headDiv);
-      host.appendChild(lone);
+      entry.card.classList.add("nochev");
     }
-    showThinking("thinking");
+    setStatus(toolCards.size ? "using tools…" : "thinking…");
+    follow();
   }
 
-  function outputPre(out) {
-    const pre = el("pre", "");
-    const lines = out.split("\n");
-    const isDiff = lines.some((l) => l.startsWith("@@")) ||
-      (lines.some((l) => l.startsWith("--- ")) && lines.some((l) => l.startsWith("+++ ")));
-    for (const line of lines) {
-      if (isDiff && line.startsWith("+")) pre.appendChild(el("span", "add", line + "\n"));
-      else if (isDiff && line.startsWith("-")) pre.appendChild(el("span", "del", line + "\n"));
-      else pre.appendChild(document.createTextNode(line + "\n"));
+  // On done / error-frame / interrupt / socket close: nothing may pulse forever.
+  function abandonPending() {
+    for (const entry of toolCards.values()) {
+      entry.dot.classList.remove("pending");
+      entry.receipt.textContent = "interrupted";
+      entry.card.classList.add("nochev");
     }
-    return pre;
+    toolCards.clear();
   }
 
-  function fmtTokens(n) { return n < 1000 ? n + " tok" : (n / 1000).toFixed(1) + "k tok"; }
-
-  function updateUsageHeader(liveTurnUsage) {
-    const tokens = sessionTokens + (liveTurnUsage ? liveTurnUsage.total_tokens : 0);
-    const cost = sessionCost + (liveTurnUsage ? liveTurnUsage.cost_usd : 0);
-    usageEl.textContent = fmtTokens(tokens) + " · $" + cost.toFixed(4);
+  // ── turn receipt: state-colored dot + the terminal's footer line ──
+  function finishTurn(ev) {
+    const usage = (ev.usage && ev.usage.total_tokens) ? ev.usage : turnUsage;
+    let tone = "warn";
+    if (ev.stop_reason === "completed") tone = "ok";
+    else if (ev.stop_reason === "provider_error") tone = "err";
+    let label = STOP_LABELS[ev.stop_reason] || String(ev.stop_reason || "").replace(/_/g, " ");
+    if (ev.stop_reason === "provider_error" && ev.error) label += " — " + firstLine(ev.error);
+    const elapsed = ((performance.now() - turnStart) / 1000).toFixed(1);
+    const body = el("div", "receipt",
+      label + " · " + (ev.iterations || 0) + " iterations · " +
+      fmtTokens(usage.total_tokens || 0) + " · " + fmtCost(usage.cost_usd || 0) + " · " + elapsed + "s");
+    add(row("turnend", el("span", "rdot " + tone), body));
+    endTurn();
   }
 
-  // Render one AgentEvent frame. Returns true if it was a terminal "done" event.
+  function endTurn() {
+    turnActive = false;
+    hideStatus();
+    setSendMode(false);
+    approval.hidden = true;
+    abandonPending();
+    assistantBody = null;
+    updateJump();
+  }
+
+  // Render one AgentEvent frame.
   function renderEvent(ev) {
     switch (ev.event) {
       case "text":
         onTextDelta(ev.text);
-        return false;
+        if (toolCards.size === 0) setStatus("writing…");
+        return;
       case "tool_call":
         onToolCall(ev);
-        return false;
+        return;
       case "tool_result":
         onToolResult(ev);
-        return false;
+        return;
       case "status":
-        assistantEl = null;
-        append(block("status", "┄", el("span", "", ev.message)));
-        if (ev.message === "interrupted") { finishTurn({ stop_reason: "interrupted", iterations: 0, usage: turnUsage }); return true; }
-        showThinking("thinking");
-        return false;
+        assistantBody = null;
+        add(row("status", el("span", "", "·"), el("div", "meta", ev.message)));
+        // The server sends no done frame after a cancel; this status ends the turn.
+        if (ev.message === "interrupted") finishTurn({ stop_reason: "interrupted", iterations: 0, usage: turnUsage });
+        return;
       case "usage":
-        turnUsage = ev.usage;
-        updateUsageHeader(ev.usage);
-        return false;
+        if (ev.usage) {
+          turnUsage = {
+            total_tokens: turnUsage.total_tokens + (ev.usage.total_tokens || 0),
+            cost_usd: turnUsage.cost_usd + (ev.usage.cost_usd || 0),
+          };
+        }
+        return;
       case "done":
         finishTurn(ev);
-        return true;
+        return;
       default:
         // Unknown event type → surface it rather than silently dropping (contract drift).
-        append(el("div", "block errline", "[unknown event: " + JSON.stringify(ev) + "]"));
-        return false;
+        add(errCard("[unknown event: " + JSON.stringify(ev) + "]"));
     }
   }
-
-  function finishTurn(ev) {
-    const usage = (ev.usage && ev.usage.total_tokens) ? ev.usage : (turnUsage || { total_tokens: 0, cost_usd: 0 });
-    sessionTokens += usage.total_tokens || 0;
-    sessionCost += usage.cost_usd || 0;
-    turnUsage = null;
-    updateUsageHeader(null);
-    if (ev.stop_reason && ev.stop_reason !== "completed") {
-      append(el("div", "block stopped", "! stopped early: " + ev.stop_reason));
-    }
-    const iter = ev.iterations || 0;
-    append(el("div", "turn-rule")).appendChild(
-      el("span", "", iter + " iter · " + fmtTokens(usage.total_tokens || 0) + " · $" + (usage.cost_usd || 0).toFixed(4))
-    );
-    endTurn();
-  }
-
-  // ── permission approval (the terminal's yellow panel) ──
-  function showApproval(frame) {
-    approvalWhat.textContent = "";
-    approvalWhat.appendChild(el("span", "tool-name", frame.tool_name));
-    approvalWhat.appendChild(el("span", "tier", "  (" + frame.tier + ")"));
-    if (frame.reason) approvalWhat.appendChild(el("span", "reason", frame.reason));
-    approval.classList.add("show");
-  }
-  function hideApproval() { approval.classList.remove("show"); }
-
-  function sendApproval(outcome) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "approval", outcome }));
-    }
-    hideApproval();
-  }
-  document.getElementById("allow-once").onclick = () => sendApproval("allow_once");
-  document.getElementById("allow-session").onclick = () => sendApproval("allow_session");
-  document.getElementById("deny").onclick = () => sendApproval("deny_once");
-
-  stopBtn.onclick = () => {
-    if (ws && ws.readyState === WebSocket.OPEN && turnActive) {
-      ws.send(JSON.stringify({ type: "interrupt" }));
-    }
-  };
 
   // Server → client frames are either an AgentEvent ({event:...}) or a control frame
   // ({type:...}: action_required / error / status).
   function onFrame(frame) {
     if (frame && typeof frame.event === "string") {
+      // Any event after action_required means the prompt resolved server-side
+      // (e.g. the 120s fail-closed deny) — dismiss a stale card so a late click
+      // can never write a false "allowed" consent receipt.
+      if (!approval.hidden) { approval.hidden = true; setStatus("thinking…"); }
       renderEvent(frame);
       return;
     }
     switch (frame && frame.type) {
-      case "action_required": clearThinking(); showApproval(frame); break;
-      case "error": append(el("div", "block errline", "error: " + frame.detail)); endTurn(); break;
-      case "status": append(block("status", "┄", el("span", "", frame.message))); break;
-      default: append(el("div", "block errline", "[unknown frame: " + JSON.stringify(frame) + "]"));
+      case "action_required":
+        showApproval(frame);
+        setStatus("waiting on you");
+        break;
+      case "error":
+        add(errCard("error: " + frame.detail));
+        endTurn();
+        break;
+      case "status":
+        assistantBody = null; // re-anchor: later prose must not render above this row
+        add(row("status", el("span", "", "·"), el("div", "meta", frame.message)));
+        break;
+      default:
+        add(errCard("[unknown frame: " + JSON.stringify(frame) + "]"));
     }
   }
 
-  function endTurn() {
-    turnActive = false;
-    clearThinking();
-    hideApproval();
-    sendBtn.disabled = false;
-    stopBtn.classList.remove("show");
-    input.disabled = false;
-    assistantEl = null;
-    lastCall = null;
-    input.focus();
+  // ── approval card: warn-edged, scoped y/a/n keys, consent receipt on decision ──
+  function showApproval(frame) {
+    approvedTool = displayName(frame.tool_name);
+    approvalTool.textContent = approvedTool;
+    approvalDetail.textContent = "";
+    const args = frame.arguments || {};
+    if (typeof args.command === "string" && args.command) {
+      approvalDetail.appendChild(el("div", "", "$ " + args.command));
+    } else {
+      for (const [key, value] of Object.entries(args)) {
+        approvalDetail.appendChild(el("div", "", key + "  " + (typeof value === "string" ? value : JSON.stringify(value))));
+      }
+    }
+    if (frame.reason) approvalDetail.appendChild(el("div", "ap-reason", frame.reason));
+    approval.hidden = false;
+    // Focus the primary action: announces the alertdialog to screen readers and
+    // moves focus out of the composer so the advertised y/a/n keys actually work.
+    document.getElementById("allow-once").focus();
+  }
+
+  function sendApproval(outcome) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "approval", outcome }));
+      // The consent audit trail: a permanent receipt — written only when the
+      // decision actually went to the server, so it can never claim a grant
+      // the server didn't receive.
+      const label = CONSENT_LABELS[outcome] || outcome.replace(/_/g, " ");
+      add(row("consent", el("span", "", "·"), el("div", "meta", approvedTool + " — " + label)));
+    }
+    approval.hidden = true;
+    setStatus("thinking…");
+  }
+  document.getElementById("allow-once").onclick = () => sendApproval("allow_once");
+  document.getElementById("allow-session").onclick = () => sendApproval("allow_session");
+  document.getElementById("deny").onclick = () => sendApproval("deny_once");
+
+  // Scoped: never fires while typing in the composer or any editable element, and
+  // never on modified chords — Ctrl/Cmd+A is select-all, not "allow for session".
+  document.addEventListener("keydown", (e) => {
+    if (approval.hidden) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const a = document.activeElement;
+    if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || a.isContentEditable)) return;
+    if (e.key === "y") { e.preventDefault(); sendApproval("allow_once"); }
+    else if (e.key === "a") { e.preventDefault(); sendApproval("allow_session"); }
+    else if (e.key === "n") { e.preventDefault(); sendApproval("deny_once"); }
+  });
+
+  // ── composer: Enter sends, Shift+Enter newline; Send morphs into Stop ──
+  function setSendMode(streaming) {
+    sendBtn.classList.toggle("stop", streaming);
+    sendBtn.textContent = streaming ? "■" : "↑";
+    sendBtn.setAttribute("aria-label", streaming ? "Stop" : "Send");
+  }
+
+  function autoGrow() {
+    input.style.height = "auto";
+    input.style.height = input.scrollHeight + "px";  // CSS max-height caps at 6 rows
+  }
+  input.addEventListener("input", autoGrow);
+  input.addEventListener("keydown", (e) => {
+    // The Enter that commits an IME composition must never send the half-finished
+    // message (keyCode 229 covers Safari's isComposing=false commit quirk).
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  function sendMessage() {
+    const text = input.value.trim();
+    // The textarea stays enabled during a turn (compose ahead); only submission gates.
+    if (!text || turnActive || !ws || ws.readyState !== WebSocket.OPEN) return;
+    add(row("user", el("span", "", "›"), el("div", "", text)));
+    ws.send(JSON.stringify({ type: "input", message: text }));
+    input.value = "";
+    autoGrow();
+    turnActive = true;
+    turnStart = performance.now();
+    turnUsage = { total_tokens: 0, cost_usd: 0 };
+    assistantBody = null;
+    setSendMode(true);
+    setStatus("thinking…");
+    stick = true;
+    follow();
+  }
+
+  sendBtn.onclick = () => {
+    if (turnActive) {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "interrupt" }));
+      return;
+    }
+    sendMessage();
+  };
+
+  // Sample pills prefill the composer (they never send).
+  for (const pill of document.querySelectorAll(".pill")) {
+    pill.onclick = () => { input.value = pill.textContent; autoGrow(); input.focus(); };
+  }
+
+  // ── session bootstrap + socket ──
+  function setConn(state, label) {
+    connDot.className = "cdot " + state;
+    connLabel.textContent = label;
   }
 
   async function init() {
+    setConn("connecting", "connecting");
     try {
       const resp = await fetch("/sessions", { method: "POST" });
       if (!resp.ok) throw new Error("POST /sessions " + resp.status);
       const info = await resp.json();
       sessionId = info.id;
-      meta.textContent = "session " + sessionId.slice(0, 8) + " · " + info.model;
-      updateUsageHeader(null);
+      const id8 = sessionId.slice(0, 8);
+      document.getElementById("chip-model").textContent = info.model;
+      document.getElementById("chip-session").textContent = id8;
+      document.getElementById("empty-meta").textContent = info.model + " · session " + id8;
       openSocket();
     } catch (e) {
-      meta.textContent = "offline";
-      append(el("div", "block errline", "could not create a session: " + e.message));
+      setConn("closed", "disconnected");
+      add(errCard("could not create a session: " + e.message));
     }
   }
 
   function openSocket() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${proto}://${location.host}/ws/${sessionId}`);
+    ws = new WebSocket(proto + "://" + location.host + "/ws/" + sessionId);
+    ws.onopen = () => setConn("open", "connected");
     ws.onmessage = (e) => {
       try { onFrame(JSON.parse(e.data)); }
-      catch { append(el("div", "block errline", "[bad frame]")); }
+      catch { add(errCard("[bad frame]")); }
     };
-    ws.onclose = () => { meta.textContent = "disconnected"; sendBtn.disabled = true; };
-    ws.onerror = () => append(el("div", "block errline", "websocket error"));
+    ws.onclose = () => { setConn("closed", "disconnected"); endTurn(); };
+    ws.onerror = () => add(errCard("websocket error"));
   }
-
-  form.onsubmit = (e) => {
-    e.preventDefault();
-    const text = input.value.trim();
-    if (!text || turnActive || !ws || ws.readyState !== WebSocket.OPEN) return;
-    append(block("user", "›", el("div", "", text)));
-    ws.send(JSON.stringify({ type: "input", message: text }));
-    input.value = "";
-    turnActive = true;
-    sendBtn.disabled = true;
-    stopBtn.classList.add("show");
-    input.disabled = true;
-    showThinking("thinking");
-  };
 
   init();
   </script>

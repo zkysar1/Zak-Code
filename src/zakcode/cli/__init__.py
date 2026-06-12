@@ -13,29 +13,35 @@ import contextlib
 import functools
 import ipaddress
 import os
+import random
+import time
 from collections.abc import AsyncIterator, Callable, Coroutine
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 import typer
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.live import Live
+from rich.markup import escape
 from rich.padding import Padding
-from rich.panel import Panel
-from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
+    heading,
     kv_table,
     margin,
     notice_error,
     notice_info,
     notice_warn,
+    panel,
     read_prompt,
 )
 from zakcode.cli._theme import ZAK_THEME
-from zakcode.cli.render import StreamRenderer, suspend_live
-from zakcode.config import Settings, env_source, load_settings
+from zakcode.cli.render import StreamRenderer, display_call
+from zakcode.config import PermissionTier, Settings, env_source, load_settings
+from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
 from zakcode.secrets import strip_url_credentials
@@ -140,11 +146,27 @@ def version() -> None:
 def info() -> None:
     """Show resolved configuration and detected providers (never prints secrets)."""
     settings = load_settings()
-    table = Table(title=f"Zak Code {__version__}", show_header=False)
-    for label, value in build_info_lines(settings):
-        table.add_row(label, value)
-    console.print(table)
-    console.print("[dim]Start the interactive agent with [bold]zakcode chat[/bold].[/dim]")
+    g = GLYPHS
+    console.print(
+        margin(
+            Text.assemble(
+                (g["spark"] + " ", "brand"),
+                ("Zak Code ", "banner.title"),
+                (__version__, "banner.version"),
+            )
+        )
+    )
+    console.print()
+    console.print(margin(kv_table(build_info_lines(settings))))
+    console.print()
+    console.print(
+        margin(
+            Text.assemble(
+                ("start the interactive agent with ", "banner.hint"),
+                ("zakcode chat", "banner.title"),
+            )
+        )
+    )
 
 
 @app.command(name="eval")
@@ -168,47 +190,107 @@ def eval_(
     with tempfile.TemporaryDirectory(prefix="zakcode-eval-") as workspace, hermetic_env():
         report = run_evals_sync(build_default_suite(workspace))
 
-    table = Table(title="Zak Code - behavioral evals", show_header=True)
+    table = Table(
+        title="Zak Code - behavioral evals",
+        show_header=True,
+        box=None,
+        header_style="banner.label",
+    )
     table.add_column("probe")
     table.add_column("result")
     if verbose:
         table.add_column("detail")
     for r in report.results:
-        mark = "[green]PASS[/green]" if r.passed else "[red]FAIL[/red]"
-        row = [r.name, mark]
+        mark = Text("PASS", style="ok") if r.passed else Text("FAIL", style="err")
+        row: list[RenderableType] = [Text(r.name), mark]
         if verbose:
-            row.append(r.detail if r.passed else f"[red]{r.error}[/red]")
+            row.append(Text(r.detail) if r.passed else Text(r.error or "", style="err"))
         table.add_row(*row)
     console.print(table)
     # ASCII-only summary line: the Windows console default (cp1252) cannot encode
     # marks like U+2713, which would crash rendering on a plain terminal.
     summary = f"{report.passed}/{report.total} passed"
     if report.ok:
-        console.print(f"[green]OK: {summary}[/green]")
+        console.print(Text(f"OK: {summary}", style="ok"))
     else:
-        console.print(f"[red]FAIL: {summary} - {report.failed} failed[/red]")
+        console.print(Text(f"FAIL: {summary} - {report.failed} failed", style="err"))
         raise typer.Exit(code=1)
 
 
 # ── chat: interactive REPL (thin client) ──────────────────────────────────────
 
-_CHAT_HELP = """\
-[bold]Slash commands[/bold]
-  /help          show this help
-  /model         show the active model
-  /permissions   show the permission mode and session grants
-  /hooks         list configured lifecycle hooks
-  /cost          show cumulative token usage and cost this session
-  /agents        list the sub-agent types available for delegation
-  /plan <task>   draft a plan with the read-only planner (does not execute)
-  /mcp [connect] list MCP servers, or connect them and register their tools
-  /plugins       list discovered plugins (loaded / skipped / failed)
-  /skills        list discovered skills (invoke one with /<skill-name>)
-  /compact       summarize older history now to free up context
-  /clear         start a fresh session (clears the transcript)
-  /exit, /quit   leave the chat
-Anything else is sent to the agent as a turn.\
-"""
+#: Rotating banner tips (one per day, never random — stable for eyeball diffs).
+_TIPS: tuple[str, ...] = (
+    "mention a file by path and Zak reads it before answering",
+    "/plan <task> drafts a read-only plan before anything runs",
+    "/compact summarizes older history to free up context",
+    "ctrl-c interrupts a running reply without leaving the chat",
+    "/skills lists what Zak can load; invoke one with /<name>",
+)
+
+#: Grouped /help sections (section heading, (command, description) rows) — the
+#: full current command set, grouped session / agent / integrations.
+_HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "session",
+        (
+            ("/help", "this list"),
+            ("/model", "show the active model"),
+            ("/cost", "session token usage and cost"),
+            ("/compact", "summarize older history to free context"),
+            ("/clear", "start a fresh session"),
+            ("/exit /quit", "leave the chat"),
+        ),
+    ),
+    (
+        "agent",
+        (
+            ("/permissions", "permission mode and session grants"),
+            ("/hooks", "configured lifecycle hooks"),
+            ("/agents", "sub-agent types available for delegation"),
+            ("/plan <task>", "draft a plan (read-only, never executes)"),
+        ),
+    ),
+    (
+        "integrations",
+        (
+            ("/mcp [connect]", "list or connect MCP servers"),
+            ("/plugins", "discovered plugins (loaded / skipped / failed)"),
+            ("/skills", "discovered skills (invoke one with /<name>)"),
+        ),
+    ),
+)
+
+
+def _print_help(console: Console) -> None:
+    """Print the grouped /help layout: spark header, three sections, dim hint."""
+    g = resolve_glyphs(console)
+    console.print(
+        margin(
+            Text.assemble(
+                (g["spark"] + " ", "brand"),
+                ("Zak Code ", "banner.title"),
+                (__version__, "banner.version"),
+            )
+        )
+    )
+    for name, rows in _HELP_SECTIONS:
+        console.print()
+        console.print(Padding(heading(name), (0, 0, 0, 4)))
+        # escape(): table cells parse markup, and "/mcp [connect]" must render
+        # its brackets literally (the same trap as the old "[y]" key hints).
+        console.print(Padding(kv_table([(escape(k), escape(v)) for k, v in rows]), (0, 0, 0, 6)))
+    console.print()
+    console.print(
+        Padding(
+            Text.assemble(
+                ("ctrl-c interrupts a running reply", "banner.hint"),
+                (f" {g['dot']} ", "banner.hint"),
+                ("anything else talks to Zak", "banner.hint"),
+            ),
+            (0, 0, 0, 4),
+        )
+    )
 
 
 def _dim(console: Console, msg: str) -> None:
@@ -225,13 +307,15 @@ def _abbrev(value: object, *, limit: int = 80) -> str:
 def _parse_permission_answer(answer: str) -> PermissionOutcome | None:
     """Map a typed permission answer to an outcome, or ``None`` if unrecognized.
 
-    Accepts the single-key hints (``y`` / ``a`` / ``n``) and the spelled-out phrases
-    shown in the prompt (``allow once`` / ``allow for session`` / ``deny``) plus common
-    synonyms, so an operator who types the words they see is understood rather than
-    silently denied (the original cause of this prompt's confusion).
+    Accepts the option numbers (``1`` / ``2`` / ``3``), the single-key hints
+    (``y`` / ``a`` / ``n``), and the spelled-out phrases shown in the prompt
+    (``allow once`` / ``allow for session`` / ``deny``) plus common synonyms, so an
+    operator who types the words they see is understood rather than silently denied
+    (the original cause of this prompt's confusion).
     """
     a = answer.strip().lower()
     if a in (
+        "2",
         "a",
         "always",
         "session",
@@ -241,68 +325,95 @@ def _parse_permission_answer(answer: str) -> PermissionOutcome | None:
         "allow always",
     ):
         return PermissionOutcome.ALLOW_SESSION
-    if a in ("y", "yes", "o", "once", "allow", "allow once"):
+    if a in ("1", "y", "yes", "o", "once", "allow", "allow once"):
         return PermissionOutcome.ALLOW_ONCE
-    if a in ("n", "no", "d", "deny"):
+    if a in ("3", "n", "no", "d", "deny"):
         return PermissionOutcome.DENY_ONCE
     return None
+
+
+#: Humanized blast-radius labels (the raw enum name never prints). ``{dash}``
+#: resolves per console so the label stays glyph-table-clean in ASCII mode.
+_TIER_LABEL: dict[PermissionTier, str] = {
+    PermissionTier.READ_ONLY: "read-only",
+    PermissionTier.WORKSPACE_WRITE: "writes inside the workspace",
+    PermissionTier.DANGER_FULL_ACCESS: "full access {dash} touches paths outside the workspace",
+}
 
 
 class ConsolePermissionPrompter:
     """Asks the operator to confirm an escalated tool call at the terminal.
 
     Implements the :class:`~zakcode.permissions.PermissionPrompter` protocol. It
-    shows the tool, the *exact* arguments (so the operator approves the real action,
-    not a summary — see ``docs/GUARDRAILS.md`` §3), and the reason it was escalated,
-    then offers allow-once / allow-session / deny. A non-interactive or
-    unrecognized answer defaults to **deny** (fail toward safe).
+    shows the tool call headline (the renderer's own ``display_call``), the
+    humanized blast radius, the *exact* arguments (so the operator approves the
+    real action, not a summary — see ``docs/GUARDRAILS.md`` §3), and the reason it
+    was escalated, then offers the numbered options 1/2/3 with their y/a/n keys.
+    A non-interactive or unrecognized answer defaults to **deny** (fail toward
+    safe). The prompter owns its own spacing: one blank before the panel, one
+    after the decision line — it never touches renderer state.
     """
 
     def __init__(self, console: Console) -> None:
         self.console = console
 
     async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
-        # The renderer's wait-spinner repaints the bottom line; stop it before the
-        # panel + input prompt take over (it restarts on the next stream event).
-        suspend_live(self.console)
+        # The REPL's wait line repaints the bottom row; pause it while the panel
+        # and the blocking input prompt own the screen, resume once decided.
+        wait = _ACTIVE_WAIT
+        if wait is not None:
+            wait.pause()
+        try:
+            return await self._confirm(request)
+        finally:
+            if wait is not None:
+                wait.resume()
+
+    async def _confirm(self, request: PermissionRequest) -> PermissionOutcome:
         g = resolve_glyphs(self.console)
+        dash = g["dash"]
+        tier_label = _TIER_LABEL.get(
+            request.tier, request.tier.name.lower().replace("_", " ")
+        ).format(dash=dash)
+
         args = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False)
         args.add_column(style="arg.key", min_width=8, no_wrap=True)
         args.add_column(style="arg.value", overflow="fold")
         for key, val in request.arguments.items():
-            args.add_row(key, Text(_abbrev(val)))
+            # Both cells as Text: a model-supplied argument NAME containing rich
+            # markup (e.g. "[/]") must print literally, never parse — a MarkupError
+            # here would unwind the whole REPL mid-consent.
+            args.add_row(Text(key), Text(_abbrev(val)))
+
+        options = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False, expand=True)
+        options.add_column(style="perm.key", no_wrap=True)
+        options.add_column(style="perm.option", overflow="fold", ratio=1)
+        options.add_column(style="perm.key", justify="right", no_wrap=True)
+        options.add_row("1", "allow once", "y")
+        options.add_row("2", "allow for this session", "a")
+        options.add_row("3", f"deny {dash} tell Zak what to do instead", "n")
 
         body: list[RenderableType] = [
-            Text.assemble(
-                (request.tool_name + "  ", "tool.target"),
-                ("(" + request.tier.name + ")", "perm.tier"),
-            ),
+            display_call(request.tool_name, request.arguments, glyphs=g),
+            Text(tier_label, style="perm.reason"),
         ]
         if request.reason:
             body.append(Text(request.reason, style="notice.dim"))
         body.append(Text(""))
         body.append(args)
         body.append(Text(""))
-        # Keys shown in (parens), never [brackets]: rich parses "[y]" as a markup tag
-        # and drops it, so the operator never sees the keys (how a typed "allow for
-        # session" once fell through to deny). Show the keys; accept the spelled words.
-        body.append(
-            Text(
-                f"allow once (y) {g['dot']} allow for session (a) {g['dot']} deny (n)",
-                style="notice.dim",
+        body.append(options)
+        self.console.print()
+        self.console.print(
+            panel(
+                self.console,
+                "[perm.title]permission[/perm.title]",
+                Group(*body),
+                border_style="perm.border",
             )
         )
-        panel = Panel(
-            Group(*body),
-            title="permission required",
-            title_align="left",
-            border_style="perm.border",
-            padding=(1, 2),
-        )
-        self.console.print()
-        self.console.print(margin(panel))
 
-        prompt = f"  permit? (y/a/n) [prompt.marker]{g['prompt']}[/prompt.marker] "
+        prompt = f"  permit (1-3 or y/a/n) [prompt.marker]{g['prompt']}[/prompt.marker] "
         for _ in range(3):
             try:
                 # Offload the blocking read so concurrent sub-agents (TaskTool runs children
@@ -311,19 +422,22 @@ class ConsolePermissionPrompter:
                 answer = await asyncio.to_thread(self.console.input, prompt)
             except (EOFError, KeyboardInterrupt):
                 self.console.print(margin(Text("denied", style="notice.dim")))
+                self.console.print()
                 return PermissionOutcome.DENY_ONCE
             decision = _parse_permission_answer(answer)
             if decision is not None:
+                self.console.print()
                 return decision
             self.console.print(
                 margin(
                     Text(
-                        "please answer y (allow once), a (allow for session), or n (deny)",
+                        "please answer 1-3, or y (allow once) / a (allow for session) / n (deny)",
                         style="notice.dim",
                     )
                 )
             )
         self.console.print(margin(Text("no clear answer - denied", style="notice.dim")))
+        self.console.print()
         return PermissionOutcome.DENY_ONCE
 
 
@@ -373,8 +487,10 @@ def _render_agents(console: Console, agent: Agent) -> None:
         return
     default = spawner.default_type()
     for name in spawner.available_types():
-        marker = " [dim](default)[/dim]" if name == default else ""
-        console.print(f"  [bold]{name}[/bold]{marker}")
+        line = Text.assemble(("  ", ""), (name, "bold"))
+        if name == default:
+            line.append(" (default)", style="notice.dim")
+        console.print(line)
 
 
 def _run_plan(console: Console, agent: Agent, task: str) -> None:
@@ -414,6 +530,7 @@ def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
     if manager is None:
         _dim(console, "MCP is not enabled for this session.")
         return
+    g = resolve_glyphs(console)
     action = (arg.strip().split(maxsplit=1) or ["list"])[0] if arg.strip() else "list"
     if action == "connect":
         _dim(console, "connecting MCP servers...")
@@ -422,9 +539,13 @@ def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
             _dim(console, "MCP is not enabled.")
             return
         if report.registered:
-            console.print(margin(f"[green]registered {len(report.registered)} tool(s):[/green]"))
+            console.print(margin(Text(f"registered {len(report.registered)} tool(s):", style="ok")))
             for name in report.registered:
-                console.print(f"    [green]+[/green] {name}")
+                console.print(
+                    Padding(
+                        Text.assemble((g["add"] + " ", "ok"), (name, "arg.value")), (0, 0, 0, 4)
+                    )
+                )
         if report.deferred:
             _dim(
                 console,
@@ -432,7 +553,12 @@ def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
                 "(use tool_search to surface them).",
             )
         for server, err in report.failed.items():
-            console.print(f"    [red]x[/red] {server}: {err}")
+            console.print(
+                Padding(
+                    Text.assemble((g["fail"] + " ", "err"), (f"{server}: {err}", "arg.value")),
+                    (0, 0, 0, 4),
+                )
+            )
         if not report.registered and not report.deferred and not report.failed:
             _dim(console, "no MCP tools discovered.")
         return
@@ -441,9 +567,9 @@ def _render_mcp(console: Console, agent: Agent, arg: str) -> None:
         _dim(console, "no MCP servers configured.")
         return
     for name in names:
-        console.print(f"  [bold]{name}[/bold]")
+        console.print(Text.assemble(("  ", ""), (name, "bold")))
     for server, err in agent.mcp_config_errors.items():
-        console.print(f"  [red]{server}[/red]: {err}")
+        console.print(Text.assemble(("  ", ""), (server, "err"), (f": {err}", "notice.dim")))
     _dim(console, "use /mcp connect to spawn servers and register their tools.")
 
 
@@ -534,45 +660,54 @@ def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
     return True
 
 
+def _trim_kv_value(value: str, limit: int, g: dict[str, str]) -> str:
+    """Left-truncate an over-long banner value so its tail (the filename) survives."""
+    if len(value) <= limit:
+        return value
+    ellipsis = g["ellipsis"]
+    return ellipsis + value[-(max(1, limit - len(ellipsis))) :]
+
+
+def _welcome_panel(console: Console, rows: list[tuple[str, str]], hint: Text) -> Padding:
+    """The welcome box: spark + bold title, dim kv rows, dim hint line."""
+    g = resolve_glyphs(console)
+    # Mirror panel()'s width clamp, then truncate against the box INTERIOR
+    # (borders + padding cost 6 columns) so long values never fold mid-row —
+    # a left-truncated Windows path keeps its tail on one line.
+    width = max(24, min(console.width - 4, 60))
+    limit = max(1, (width - 6) - 20)
+    # Trim first, then escape: cells parse markup, and a real path may contain
+    # literal brackets that must survive (markup immunity, not just truncation).
+    trimmed = [(key, escape(_trim_kv_value(value, limit, g))) for key, value in rows]
+    body = Group(
+        Text.assemble((g["spark"] + " ", "brand"), ("Zak Code", "banner.title")),
+        Text(""),
+        Padding(kv_table(trimmed), (0, 0, 0, 2)),
+        Text(""),
+        Padding(hint, (0, 0, 0, 2)),
+    )
+    return panel(console, "", body, border_style="banner.border")
+
+
 def _print_banner(console: Console, agent: Agent) -> None:
-    """Print the one-shot session banner (model, provider, workspace, perms)."""
+    """Print the one-shot welcome box (model, workspace, perms, session) + tip."""
     settings = agent.settings
-    g = GLYPHS
-    dot = f" {g['dot']} "
-    title = Text.assemble(("Zak Code", "banner.title"), ("  ", ""), (__version__, "banner.version"))
-    facts = kv_table(
-        [
-            ("model", settings.default_model),
-            ("provider", settings.provider),
-            ("workspace", str(settings.workspace_root)),
-            ("perms", settings.permission_mode),
-            ("session", agent.session.id),
-        ]
+    g = resolve_glyphs(console)
+    # "claude-sonnet-4-5 · anthropic", not "anthropic/claude-… · anthropic": the
+    # provider half of the row already names the prefix.
+    model_id = settings.default_model.removeprefix(settings.provider + "/")
+    rows = [
+        ("model", f"{model_id} {g['dot']} {settings.provider}"),
+        ("workspace", str(settings.workspace_root)),
+        ("permissions", settings.permission_mode),
+        ("session", agent.session.id),
+    ]
+    hint = Text.assemble(
+        ("/help for commands", "banner.hint"),
+        (f" {g['dot']} ", "banner.hint"),
+        ("/exit to quit", "banner.hint"),
     )
-    hints = Text.assemble(
-        ("tools  edit (+ read write glob grep bash)", "notice.dim"),
-        (dot, "notice.dim"),
-        ("Ctrl-C interrupts a reply", "notice.dim"),
-    )
-    cmds = Text.assemble(
-        ("/help for commands", "notice.dim"),
-        (dot, "notice.dim"),
-        ("/exit to quit", "notice.dim"),
-    )
-    block = Group(
-        title,
-        Text("interactive chat", style="banner.version"),
-        Text(""),
-        facts,
-        Text(""),
-        hints,
-        cmds,
-        Text(""),
-        # Close the banner with the same rule the per-turn footer uses, so the
-        # session header and every turn share one delimiting language.
-        Rule(characters=g["hline"], style="rule.line"),
-    )
-    console.print(Padding(block, (1, 0, 0, 2)))
+    console.print(_welcome_panel(console, rows, hint))
     # Surface a self.md that was present but failed to load (unreadable / empty after
     # frontmatter) — otherwise the operator silently gets the default identity with no signal.
     identity_error = getattr(agent, "identity_error", None)
@@ -583,6 +718,13 @@ def _print_banner(console: Console, agent: Agent) -> None:
                 (0, 0, 0, 2),
             )
         )
+    # The daily tip: date-ordinal rotation (deterministic within a day) and only on a
+    # real terminal — hermetic StringIO tests never see it.
+    if console.is_terminal:
+        tip = _TIPS[date.today().toordinal() % len(_TIPS)]
+        console.print(
+            margin(Text.assemble((g["spark_soft"] + " ", "brand.soft"), (f"tip: {tip}", "tip")))
+        )
 
 
 #: A factory that produces one turn's event stream. The CLI is agnostic to where
@@ -591,22 +733,172 @@ def _print_banner(console: Console, agent: Agent) -> None:
 StreamFactory = Callable[[], "AsyncIterator[AgentEvent]"]
 
 
+# ── the wait line (REPL-owned; the renderer never animates) ────────────────────
+
+#: The gerund corpus the wait line cycles through between tool calls. All
+#: randomness lives here, never in StreamRenderer (which stays deterministic).
+_GERUNDS: tuple[str, ...] = (
+    "Thinking",
+    "Brewing",
+    "Wiring",
+    "Sketching",
+    "Reading",
+    "Tinkering",
+    "Untangling",
+    "Stitching",
+    "Pondering",
+    "Polishing",
+)
+
+
+class _WaitLine:
+    """The transient wait-line renderable: spark frame + verb + dim elapsed hint.
+
+    A plain renderable hosted in ``rich.live.Live`` — never registered into rich's
+    spinner machinery. Frames are always built via ``Text`` (never markup-parsed),
+    so the ASCII frames ``\\`` and ``|`` are safe literals.
+    """
+
+    def __init__(self, console: Console) -> None:
+        self._g = resolve_glyphs(console)
+        self._start = time.monotonic()
+        self.verb: str = random.choice(_GERUNDS)
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        g = self._g
+        elapsed = time.monotonic() - self._start
+        frames = (g["spin1"], g["spin2"], g["spin3"], g["spin4"])
+        line = Text("  ")
+        line.append(frames[int(elapsed // 0.12) % 4], style="spinner")
+        line.append(f" {self.verb}{g['ellipsis']} ")
+        line.append(f"(ctrl-c to interrupt {g['dot']} {int(elapsed)}s)", style="notice.dim")
+        yield line
+
+
+class _WaitHandle:
+    """One turn's live wait line, with the pause handle the prompter needs.
+
+    The verb goes concrete (``Running…``) while any tool call is outstanding and
+    returns to a fresh gerund once results drain; ``AgentDone`` stops the line so
+    the footer prints onto a clean bottom row.
+    """
+
+    def __init__(self, console: Console) -> None:
+        self.console = console
+        self.line = _WaitLine(console)
+        self._live = Live(self.line, console=console, transient=True, refresh_per_second=8)
+        self._outstanding = 0
+        self._active = False
+        #: Outstanding pause() calls. Concurrent permission prompts share this one
+        #: handle (sub-agents gather on a single prompter), so resume() may only
+        #: restart the live region when the LAST pauser releases — else the first
+        #: decision repaints the spinner over a prompt that still owns stdin.
+        self._pauses = 0
+        #: stop() is terminal: a straggling resume() (e.g. a prompt unwinding after
+        #: the turn was cancelled) must never restart a stopped live region.
+        self._stopped = False
+
+    def start(self) -> None:
+        if self._stopped:
+            return
+        if not self._active:
+            self._live.start()
+            self._active = True
+
+    def pause(self) -> None:
+        """Stop the live region (transient — it erases) so a prompt can own the tty."""
+        self._pauses += 1
+        if self._active:
+            self._live.stop()
+            self._active = False
+
+    def resume(self) -> None:
+        self._pauses = max(0, self._pauses - 1)
+        if self._pauses == 0:
+            self.start()
+
+    def stop(self) -> None:
+        global _ACTIVE_WAIT
+        self._stopped = True
+        if self._active:
+            self._live.stop()
+            self._active = False
+        if _ACTIVE_WAIT is self:
+            _ACTIVE_WAIT = None
+
+    def observe(self, event: AgentEvent) -> None:
+        if isinstance(event, AgentToolCall):
+            self._outstanding += 1
+            self.line.verb = "Running"
+        elif isinstance(event, AgentToolResult):
+            self._outstanding = max(0, self._outstanding - 1)
+            if self._outstanding == 0:
+                self.line.verb = random.choice(_GERUNDS)
+        elif isinstance(event, AgentDone):
+            self.stop()
+
+
+#: The live wait line for the in-flight turn, if any — the permission prompter
+#: pauses it before printing its panel/reading input and resumes after.
+_ACTIVE_WAIT: _WaitHandle | None = None
+
+
+def _start_wait(console: Console) -> _WaitHandle | None:
+    """Start the wait line for a turn, or ``None`` where it must not exist.
+
+    Auto-disabled on legacy conhost (no VT control), off-tty (hermetic tests,
+    pipes), and under ``ZAKCODE_NO_SPINNER``; the next printed ``●`` block is the
+    fallback narrative.
+    """
+    global _ACTIVE_WAIT
+    if console.legacy_windows or not console.is_terminal:
+        return None
+    if os.environ.get("ZAKCODE_NO_SPINNER"):
+        return None
+    handle = _WaitHandle(console)
+    _ACTIVE_WAIT = handle
+    handle.start()
+    return handle
+
+
+async def _watch_stream(
+    stream: AsyncIterator[AgentEvent], wait: _WaitHandle
+) -> AsyncIterator[AgentEvent]:
+    """Feed the wait line from each event without disturbing the stream."""
+    try:
+        async for event in stream:
+            wait.observe(event)
+            yield event
+    finally:
+        aclose = getattr(stream, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
 async def _drive_stream(make_stream: StreamFactory, renderer: StreamRenderer) -> None:
     """Render one streamed turn live.
 
     ``make_stream()`` yields :class:`~zakcode.events.AgentEvent`s (from a local
     agent or a remote server); the renderer writes them to the console
     incrementally. The stream is created here, inside the task's event loop, so a
-    loop-bound transport (e.g. httpx) is constructed on the right loop.
+    loop-bound transport (e.g. httpx) is constructed on the right loop. Where the
+    console supports it, the turn hosts the transient wait line (renderer prints
+    flow above the shared live region).
     """
     stream = make_stream()
+    wait = _start_wait(renderer.console)
+    if wait is not None:
+        stream = _watch_stream(stream, wait)
     try:
         await renderer.render(stream)
     finally:
+        if wait is not None:
+            wait.stop()
         # The renderer breaks out of the stream on AgentDone, leaving the underlying
         # async generator suspended; close it now (if it supports aclose) so it does
         # not pile up across turns until session shutdown. AsyncIterator does not
-        # guarantee aclose(), but our producers (agent/server astream) are async gens.
+        # guarantee aclose(), but our producers (agent/server astream) are async gens
+        # — and the _watch_stream wrapper closes its inner stream on its way out.
         aclose = getattr(stream, "aclose", None)
         if aclose is not None:
             await aclose()
@@ -681,11 +973,18 @@ def _run_streamed_turn(
         return True
     except KeyboardInterrupt:
         task.cancel()
-        # Pump the loop so the task observes the cancellation and unwinds
-        # (its CancelledError handler persists state and re-raises).
-        with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
-            loop.run_until_complete(task)
-        notice_warn(console, "interrupted - turn stopped, returning to prompt")
+        try:
+            # Pump the loop so the task observes the cancellation and unwinds
+            # (its CancelledError handler persists state and re-raises).
+            with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
+                loop.run_until_complete(task)
+        finally:
+            # A SECOND Ctrl-C during the drain aborts the pump before the task's
+            # finally ran — stop the wait line unconditionally here, or its refresh
+            # thread keeps repainting over the next REPL prompt.
+            if _ACTIVE_WAIT is not None:
+                _ACTIVE_WAIT.stop()
+        notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
         return False
 
 
@@ -857,23 +1156,26 @@ def chat(
         try:
             line = read_prompt(console)
         except (EOFError, KeyboardInterrupt):
-            notice_info(console, "bye")
+            notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
             break
 
         stripped = line.strip()
         if not stripped:
             continue
-        # One blank line under the submitted input, so the response (or command
-        # output) never sits flush against the prompt row.
-        console.print()
 
         if stripped.startswith("/"):
             command = stripped.split(maxsplit=1)[0].lower()
             if command in ("/exit", "/quit"):
-                notice_info(console, "bye")
+                notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
                 break
+            if command != "/clear":
+                # One blank under the echoed prompt before command output. /clear is
+                # excluded because its notice_info (like the close bookend) prints
+                # its own leading blank; streamed turns get theirs from the
+                # renderer's first _gap().
+                console.print()
             if command == "/help":
-                console.print(margin(_CHAT_HELP))
+                _print_help(console)
                 continue
             if command == "/model":
                 console.print(margin(Text(agent.settings.default_model)))
@@ -986,23 +1288,17 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         notice_error(console, f"could not reach server at {base_url}", str(exc))
         raise typer.Exit(code=1) from exc
 
-    banner = Group(
-        Text.assemble(
-            ("Zak Code", "banner.title"),
-            (f" {__version__} ", "banner.version"),
-            (f"{GLYPHS['dash']} connected to {base_url}", "notice.dim"),
-        ),
-        Text(""),
-        kv_table(
-            [("session", session_id)]
-            + ([("model", f"{model} (per-request override)")] if model else [])
-        ),
-        Text(""),
-        Text("Type /exit to quit. (Server mode: turns run headless.)", style="notice.dim"),
-        Text(""),
-        Rule(characters=GLYPHS["hline"], style="rule.line"),
+    g = GLYPHS
+    rows = [
+        ("server", base_url),
+        ("model", model if model else "(server default)"),
+        ("session", session_id),
+    ]
+    hint = Text.assemble(
+        (f"server mode: turns run headless {g['dot']} ", "banner.hint"),
+        ("/exit to quit", "banner.hint"),
     )
-    console.print(Padding(banner, (1, 0, 0, 2)))
+    console.print(_welcome_panel(console, rows, hint))
 
     # One event loop for the whole session (never one per turn) — see
     # _SESSION_LOOP / _shutdown_session_loop.
@@ -1014,14 +1310,13 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         try:
             line = read_prompt(console)
         except (EOFError, KeyboardInterrupt):
-            notice_info(console, "bye")
+            notice_info(console, f"session closed {g['dash']} goodbye")
             break
         stripped = line.strip()
         if not stripped:
             continue
-        console.print()  # one blank line under the submitted input
         if stripped.lower() in ("/exit", "/quit"):
-            console.print("[dim]Bye.[/dim]")
+            notice_info(console, f"session closed {g['dash']} goodbye")
             break
 
         renderer = StreamRenderer(console=console)

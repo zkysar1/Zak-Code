@@ -71,6 +71,43 @@ def test_client_can_interrupt_a_turn() -> None:
     assert '"type": "interrupt"' in html or 'type: "interrupt"' in html
 
 
+def test_client_surfaces_unknown_events_and_frames() -> None:
+    # The literal default: arms are the contract-drift tripwire: an unknown event or
+    # control frame must surface visibly in the transcript, never drop silently.
+    html = _html()
+    assert html.count("default:") >= 2
+    assert "[unknown event: " in html
+    assert "[unknown frame: " in html
+
+
+def test_client_handles_every_control_frame_literally() -> None:
+    # onFrame dispatches the server's control frames with literal case arms (no
+    # programmatic dispatch — the regex-able source IS the contract surface).
+    html = _html()
+    for arm in ('case "action_required":', 'case "error":', 'case "status":'):
+        assert arm in html, f"onFrame has no literal arm {arm}"
+
+
+def test_client_sends_exactly_the_three_approval_outcomes() -> None:
+    # The three approval buttons map 1:1 onto the outcomes the bridge accepts.
+    html = _html()
+    sent = set(re.findall(r'sendApproval\("([a-z_]+)"\)', html))
+    assert sent == {"allow_once", "allow_session", "deny_once"}, sent
+
+
+def test_dom_writes_are_textcontent_only() -> None:
+    # Server/model data must never hit innerHTML (markup-injection surface).
+    assert "innerhtml" not in _html().lower()
+
+
+def test_client_is_self_contained() -> None:
+    # No CDN, no external fonts/scripts/styles: the bundled asset works offline.
+    html = _html().lower()
+    assert "<link" not in html
+    assert "<script src" not in html
+    assert "@import" not in html
+
+
 def test_client_creates_session_via_rest() -> None:
     # The thin client bootstraps a session through the documented REST endpoint.
     html = _html()

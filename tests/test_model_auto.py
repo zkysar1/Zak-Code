@@ -42,8 +42,15 @@ from zakcode.tools.base import ToolRegistry
 
 
 @pytest.fixture(autouse=True)
-def _fresh_cache():
+def _fresh_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    # Probe cache is process-global; resolution reads settings from the cwd .env,
+    # the user config home, and real env vars — isolate ALL of them so a dev box's
+    # .env (e.g. a configured ZAKCODE_FALLBACK_MODEL) can never change a verdict.
     clear_probe_cache()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZAKCODE_HOME", str(tmp_path / "confighome"))
+    for var in ("ZAKCODE_FALLBACK_MODEL", "ZAKCODE_DEFAULT_MODEL", "ZAKCODE_AUTO_MODEL_PREFERENCE"):
+        monkeypatch.delenv(var, raising=False)
     yield
     clear_probe_cache()
 
