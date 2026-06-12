@@ -277,7 +277,9 @@ def test_streaming_non_context_provider_error_still_fails_over() -> None:
             self.calls += 1
             raise RequestFailed("boom")
 
-        async def astream(self, messages, *, system=None, tools=None, **kw) -> AsyncIterator[ProviderStreamEvent]:
+        async def astream(
+            self, messages, *, system=None, tools=None, **kw
+        ) -> AsyncIterator[ProviderStreamEvent]:
             self.calls += 1
             raise RequestFailed("boom")
             yield  # unreachable — makes Python treat this as an async generator

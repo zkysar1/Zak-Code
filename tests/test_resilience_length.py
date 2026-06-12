@@ -52,7 +52,9 @@ class ScriptedProvider(Provider):
             yield StreamTextDelta(text=r.text)
         for i, call in enumerate(r.tool_calls):
             yield StreamToolCallDelta(
-                index=i, id=call.id, name=call.name,
+                index=i,
+                id=call.id,
+                name=call.name,
                 arguments_delta=json.dumps(call.arguments),
             )
         yield StreamDone(finish_reason=r.finish_reason)

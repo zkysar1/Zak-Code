@@ -258,7 +258,12 @@ class TextOnlyOverBudgetProvider(Provider):
     async def astream(self, messages, *, system=None, tools=None, **kw):
         import json
 
-        from zakcode.providers.base import StreamDone, StreamTextDelta, StreamToolCallDelta, StreamUsage
+        from zakcode.providers.base import (
+            StreamDone,
+            StreamTextDelta,
+            StreamToolCallDelta,
+            StreamUsage,
+        )
 
         self.calls += 1
         if self.calls == 1:
