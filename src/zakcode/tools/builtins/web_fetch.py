@@ -21,7 +21,13 @@ import asyncio
 import codecs
 from urllib.parse import urlsplit
 
-from zakcode._http import BlockedUrlError, host_allowed, load_httpx, resolve_pinned_url
+from zakcode._http import (
+    BlockedUrlError,
+    host_allowed,
+    load_httpx,
+    pip_install_hint,
+    resolve_pinned_url,
+)
 from zakcode.config import PermissionTier
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.tools.base import (
@@ -40,7 +46,7 @@ _MAX_CHARS = 50_000  # cap chars returned to the model
 _MAX_REDIRECTS = 5
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 _USER_AGENT = "zakcode-webfetch/0.1 (+https://github.com/zkysar1/Zak-Code)"
-_INSTALL_FIX = "install web deps with: pip install 'zakcode[web]'"
+_INSTALL_FIX = f"web_fetch needs the httpx package: {pip_install_hint('httpx')}"
 
 
 def _looks_textual(content_type: str) -> bool:

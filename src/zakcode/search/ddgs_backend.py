@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import asyncio
 
+from zakcode._http import pip_install_hint
 from zakcode.search.base import BackendUnavailable, SearchBackend, SearchError, SearchItem
 
-_INSTALL_FIX = "install web deps with: pip install 'zakcode[web]' (or: pip install ddgs)"
+_INSTALL_FIX = f"the 'ddgs' search backend needs the ddgs package: {pip_install_hint('ddgs')}"
 
 
 class DuckDuckGoBackend(SearchBackend):
