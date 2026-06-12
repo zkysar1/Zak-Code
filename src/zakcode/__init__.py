@@ -264,7 +264,7 @@ class Agent:
         # pass a ``prompter`` so escalations can be approved; with none, 'ask'
         # fails closed (writes/shell denied) — safe for non-interactive use.
         from zakcode.deps_gate import read_declared_packages
-        from zakcode.permissions import compile_deny_patterns
+        from zakcode.permissions import compile_deny_patterns, compile_protected_paths
 
         # Declared-dependency gate (self-remediation Step 1): when enabled, give the policy a
         # lazy reader of the workspace's declared package set. It is invoked only when a command
@@ -285,6 +285,9 @@ class Agent:
             # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load.
             tool_mode_overrides=dict(self.settings.tool_trust_overrides),
             declared_packages=declared_packages,
+            # Protected-path floor extras (self-remediation Step 2): operator-added patterns
+            # appended to the built-in .git/.env/venv/config floor.
+            extra_protected_paths=compile_protected_paths(self.settings.protected_paths),
         )
         # Rehydrate operator grants persisted with the session (audit P0-2d / D12 / Q5).
         # Honored only when the active mode is at least as loose as the grant-time mode;

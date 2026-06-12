@@ -221,6 +221,14 @@ class Settings(BaseSettings):
             "var: one regex per line (regexes may contain commas/spaces), or a JSON array."
         ),
     )
+    protected_paths: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Extra operator protected-path regexes appended to the built-in protected-path "
+            "floor (a write matching one escalates, and hard-denies in autonomous, even under a "
+            "grant). Tighten-only. From an env var: one regex per line, or a JSON array."
+        ),
+    )
     workspace_root: Path = Field(
         default_factory=Path.cwd, description="Root directory the agent operates within."
     )
@@ -286,6 +294,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "denied_commands",
+        "protected_paths",
         "allowed_models",
         "web_allowed_domains",
         "egress_allowed_domains",
@@ -314,7 +323,7 @@ class Settings(BaseSettings):
                 parsed = None
             if isinstance(parsed, list):
                 return parsed
-        if info.field_name == "denied_commands":
+        if info.field_name in ("denied_commands", "protected_paths"):
             return [line.strip() for line in text.splitlines() if line.strip()]
         return [part.strip() for part in text.replace(",", " ").split() if part.strip()]
 

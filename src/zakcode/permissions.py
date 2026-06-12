@@ -211,6 +211,44 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 #: Argument keys whose string values are scanned against DANGEROUS_PATTERNS.
 _SHELL_ARG_KEYS = ("command", "cmd", "script")
 
+#: Protected-path floor (SELF-REMEDIATION Step 2). A write whose target matches one of these
+#: sensitive locations is NEVER auto-allowed: it escalates to a confirmation prompt — and a hard
+#: DENY in ``autonomous`` — even under ``allow``/``acceptEdits`` mode or a per-tool/session grant
+#: (the safety check runs *before* the allow rules). These are the locations an unattended agent
+#: must not silently modify: VCS internals (repo/hook corruption), the secrets file, the
+#: installed dependencies (supply-chain tampering), and the agent's OWN config (a
+#: self-permission-escalation vector). Matched against a write/edit tool's file-path arg;
+#: ``.env.example`` / ``.gitignore`` / ``.github/`` deliberately do NOT match. Tighten-only, like
+#: :data:`DANGEROUS_PATTERNS`. (Shell-driven writes are NOT scanned — a path in an arbitrary
+#: command is usually a read/execute; that residual is the Step 3 sandbox's job.)
+PROTECTED_PATH_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(r"(?:^|[\\/\s\"'=>])\.git[\\/]", re.IGNORECASE),
+        "VCS internals (.git/)",
+    ),
+    (
+        # ``.env`` and ``.env.<environment>`` (secrets), but NOT .env.example/.sample/.template.
+        re.compile(
+            r"(?:^|[\\/\s\"'=>])\.env(?:\.(?!example|sample|template|dist)\w+)?(?=$|[\\/\s\"'])",
+            re.IGNORECASE,
+        ),
+        "secrets file (.env)",
+    ),
+    (
+        re.compile(r"(?:^|[\\/\s\"'=>])(?:\.venv|venv|site-packages)[\\/]", re.IGNORECASE),
+        "virtualenv / installed packages",
+    ),
+    (
+        re.compile(r"(?:^|[\\/\s\"'=>])\.claude[\\/]", re.IGNORECASE),
+        "agent config (.claude/)",
+    ),
+]
+
+#: Argument keys whose string values are filesystem paths checked against
+#: :data:`PROTECTED_PATH_PATTERNS` (write/edit tools use ``path``; the shell-arg keys are also
+#: scanned so a redirect into a protected path is caught best-effort).
+_FILE_ARG_KEYS = ("path", "file_path", "filename", "dest", "destination", "output")
+
 logger = logging.getLogger("zakcode.permissions")
 
 
@@ -232,6 +270,24 @@ def compile_deny_patterns(specs: list[str]) -> list[tuple[re.Pattern[str], str]]
             compiled.append((re.compile(spec, re.IGNORECASE), f"operator deny rule: {spec}"))
         except re.error as exc:
             logger.warning("ignoring invalid deny pattern %r: %s", spec, exc)
+    return compiled
+
+
+def compile_protected_paths(specs: list[str]) -> list[tuple[re.Pattern[str], str]]:
+    """Compile operator-supplied protected-path regex strings (e.g. ``ZAKCODE_PROTECTED_PATHS``).
+
+    Each string is a case-insensitive regex appended to the built-in
+    :data:`PROTECTED_PATH_PATTERNS`; it can only ever tighten (a write matching it escalates /
+    hard-denies in autonomous, never loosens). An invalid regex is skipped with a warning.
+    """
+    compiled: list[tuple[re.Pattern[str], str]] = []
+    for spec in specs:
+        if not isinstance(spec, str) or not spec.strip():
+            continue
+        try:
+            compiled.append((re.compile(spec, re.IGNORECASE), f"operator protected path: {spec}"))
+        except re.error as exc:
+            logger.warning("ignoring invalid protected-path pattern %r: %s", spec, exc)
     return compiled
 
 
@@ -285,6 +341,8 @@ class PermissionPolicy:
         confirm_tools: set[str] | None = None,
         tool_mode_overrides: dict[str, PermissionMode | str] | None = None,
         declared_packages: Callable[[], set[str]] | None = None,
+        protected_path_patterns: list[tuple[re.Pattern[str], str]] | None = None,
+        extra_protected_paths: list[tuple[re.Pattern[str], str]] | None = None,
     ) -> None:
         self.mode = PermissionMode.parse(mode)
         self.prompter = prompter
@@ -312,6 +370,16 @@ class PermissionPolicy:
         # vouches for escalates to ASK (a hard DENY in ``autonomous`` — there is no execution
         # sandbox yet). The provider is invoked only when a command actually names an install.
         self._declared_packages = declared_packages
+        # Protected-path floor (self-remediation Step 2): the built-in PROTECTED_PATH_PATTERNS
+        # plus any operator/project extras (``extra_protected_paths``), appended so they only
+        # ever TIGHTEN. A write to one of these never auto-allows — it re-decides to ASK (hard
+        # DENY in autonomous) even under ``allow`` mode or a grant, closing the "a blanket grant
+        # silently waives a sensitive write" hole. ``protected_path_patterns`` REPLACES the
+        # baseline (used by child_view to pass the already-combined list); ``extra_*`` appends.
+        protected_base = (
+            PROTECTED_PATH_PATTERNS if protected_path_patterns is None else protected_path_patterns
+        )
+        self.protected_path_patterns = [*protected_base, *(extra_protected_paths or [])]
         # 'allow' grants are keyed by TOOL NAME — a grant covers the whole tool for the
         # session (the operator is not re-prompted for every new path/command). 'deny'
         # grants stay keyed by the exact (tool, args) so a block is narrow.
@@ -338,6 +406,7 @@ class PermissionPolicy:
             confirm_tools=self._confirm_tools,
             tool_mode_overrides=dict(self.tool_mode_overrides),
             declared_packages=self._declared_packages,
+            protected_path_patterns=self.protected_path_patterns,
         )
 
     # ── public read accessors (so clients never touch the private sets) ────────
@@ -364,6 +433,7 @@ class PermissionPolicy:
             tool_name in self._session_allow
             and self._dangerous_reason(arguments) is None
             and not self._undeclared_install(arguments)
+            and self._protected_path_reason(arguments) is None
         ):
             # Mirror authorize()'s grant guard (stack review minor #1): a grant may
             # only ever resolve ASK→ALLOW, so this read-only hint must also re-decide —
@@ -401,6 +471,33 @@ class PermissionPolicy:
         after authorization — e.g. a PreToolUse hook that rewrote a command. (audit3 #5)
         """
         return self._dangerous_reason(arguments)
+
+    def _protected_path_reason(self, arguments: dict) -> str | None:
+        """The protected-path floor a write in ``arguments`` matches, or None (Step 2).
+
+        Scans the FILE-PATH args (``path``/``file_path``/…) of a write/edit tool against
+        :data:`PROTECTED_PATH_PATTERNS`. Pure, no I/O. Shell args are deliberately NOT scanned:
+        a path inside an arbitrary command is far more often a READ/EXECUTE (``.venv/bin/python
+        x``, ``cat .git/config``) than a write, so matching it over-blocks legitimate commands —
+        the same "don't parse shell intent" lesson as the dependency gate. A shell-driven write
+        to a protected path is part of the best-effort residual the Step 3 sandbox contains.
+        """
+        for key in _FILE_ARG_KEYS:
+            value = arguments.get(key)
+            if isinstance(value, str):
+                for pattern, description in self.protected_path_patterns:
+                    if pattern.search(value):
+                        return description
+        return None
+
+    def protected_path_reason(self, arguments: dict) -> str | None:
+        """Public: the protected-path reason a write in ``arguments`` matches, or None.
+
+        Mirrors :meth:`dangerous_reason` so the loop can re-apply the protected-path floor to a
+        PreToolUse-rewritten call (so a hook can't rewrite a benign edit into a write to
+        ``.env`` / ``.git/`` / the venv / the agent's config). File-path args only.
+        """
+        return self._protected_path_reason(arguments)
 
     def _undeclared_install(self, arguments: dict) -> list[str]:
         """Package-install targets in the command that NO project manifest declares.
@@ -522,6 +619,20 @@ class PermissionPolicy:
                 f"undeclared package install: {targets} (not in the project's manifests/lockfile)",
             )
 
+        # Protected-path floor (self-remediation Step 2). Same tighten-only shape: a write to a
+        # sensitive location (.git/, .env, the venv, the agent's config) never auto-allows — it
+        # escalates to a (session-grantable) prompt, and is a hard DENY in ``autonomous`` (no
+        # prompt; an unattended agent must not silently corrupt the repo, read/rewrite secrets,
+        # tamper with installed deps, or rewrite its own permissions). The grant fast-paths in
+        # authorize()/auto_allows() re-decide so a blanket grant cannot waive this.
+        protected = self._protected_path_reason(arguments)
+        if protected is not None:
+            if PermissionMode.AUTONOMOUS in (mode, self.mode):
+                return (PermissionDecision.DENY, f"blocked write to a protected path: {protected}")
+            if mode is PermissionMode.DENY or base is PermissionDecision.DENY:
+                return (PermissionDecision.DENY, f"blocked write to a protected path: {protected}")
+            return (PermissionDecision.ASK, f"write to a protected path: {protected}")
+
         if base is PermissionDecision.ALLOW:
             return (base, "")
         if base is PermissionDecision.DENY:
@@ -554,16 +665,18 @@ class PermissionPolicy:
         if key in self._session_deny:
             return (False, "denied for this session")
         # A session 'allow' grant covers the whole TOOL for the rest of the session, so
-        # the operator is not re-prompted for every new path/command. Three things a grant
+        # the operator is not re-prompted for every new path/command. FOUR things a grant
         # can NEVER waive (D12: grants resolve ASK→ALLOW only): the dangerous-command
         # blocklist (a dangerous call re-decides below), an UNDECLARED package install (the
         # dependency gate — a blanket "allow bash" must not silently authorize fetching and
-        # running an unvetted package; it re-decides below to ASK/DENY), and a static DENY —
-        # re-decide so a grant restored into a tighter posture cannot override a hard block.
+        # running an unvetted package), a write to a PROTECTED PATH (.git/.env/venv/config —
+        # Step 2: a blanket grant must not silently authorize a sensitive write), and a static
+        # DENY — re-decide so a grant restored into a tighter posture cannot override a block.
         if (
             tool_name in self._session_allow
             and self._dangerous_reason(arguments) is None
             and not self._undeclared_install(arguments)
+            and self._protected_path_reason(arguments) is None
         ):
             decision, reason = self.decide(spec, arguments)
             if decision is PermissionDecision.DENY:

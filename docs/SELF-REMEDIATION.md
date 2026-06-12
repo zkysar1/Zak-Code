@@ -164,13 +164,30 @@ dep like `ddgs` from the `[web]` extra) while closing the typosquatting/injectio
 > See `dependency_gate` in [CONFIG.md](CONFIG.md), `tests/test_deps_gate.py`, and the
 > `deps_gate` module docstring's *Scope* note.
 
-**Step 2 — Autonomy breadth-downgrade + un-waivable protected-path floor (S).**
+**Step 2 — Autonomy breadth-downgrade + un-waivable protected-path floor (S). ✅ SHIPPED.**
 On entering `autonomous`, drop session grants / per-tool overrides that amount to *arbitrary
 code execution* breadth (a blanket "allow bash for the session" should not auto-carry into
 autonomous); keep narrow, specific grants. Make writes to protected paths (`.git`, `.env`,
 the venv, config) re-check the floor *even under an allow grant* — mirroring Claude Code's
 "safety check runs before allow rules." Small change to `PermissionPolicy`; closes the
 "pre-approved wildcard silently waives the gate" hole. Backed by [[claude-code-auto-mode]].
+
+> **Implemented** as a new tighten-only **protected-path floor** in `PermissionPolicy`
+> (`PROTECTED_PATH_PATTERNS` + `_protected_path_reason`, the `decide()` block after the
+> dependency gate): a write whose path matches a sensitive location — `.git/`, `.env` (not
+> `.env.example`), the venv (`.venv`/`venv`/`site-packages`), or the agent's own `.claude/`
+> config — never auto-allows. It escalates to a (session-grantable) prompt under
+> `allow`/`acceptEdits`, and is a **hard DENY in `autonomous`**, even under a session grant or a
+> per-tool trust override (the grant fast-paths in `authorize()`/`auto_allows()` re-decide, and
+> it is re-applied to a PreToolUse-hook-rewritten call via `protected_path_reason`). This *is*
+> the breadth-downgrade: a blanket grant or loose-mode override can no longer carry sensitive-
+> write breadth past the floor — closing the self-permission-escalation (rewrite `.claude/`),
+> secret-rewrite (`.env`), dependency-tamper (venv), and repo-corruption (`.git/`) vectors an
+> unattended agent must not reach. **Scope:** the floor governs the write/edit tools' path arg;
+> a *shell-driven* write to a protected path is NOT scanned (a path in an arbitrary command is
+> usually a read/execute — `​.venv/bin/python` — so matching it over-blocks), and is part of the
+> best-effort residual the Step 3 sandbox contains. Operator extras via `protected_paths`
+> (CONFIG.md). See `tests/test_protected_paths.py`.
 
 **Step 3 — A real Executor sandbox (L–XL; the substrate that unlocks real autonomy).**
 The parity review already scoped this (pluggable `Executor` behind `run_capturing`): a
