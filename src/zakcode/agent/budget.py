@@ -42,17 +42,42 @@ class ChildLimitExceeded(Exception):
 
 
 class IterationBudget:
-    """A shared count of model iterations for a whole delegation tree."""
+    """A shared count of model iterations — and optional cost/token ceilings — for a whole
+    delegation tree.
 
-    def __init__(self, total: int, *, max_children: int = DEFAULT_MAX_CHILDREN) -> None:
+    The iteration count is the original bound. ``max_cost_usd`` / ``max_tokens`` (parity #4)
+    are optional ceilings on the *cumulative* spend across the whole tree: each loop folds a
+    completed call's actuals via :meth:`add_usage`, and the loop stops with
+    ``stop_reason="budget_exhausted"`` once :meth:`over_budget` is True. Both are
+    POST-completion cumulative checks (total spent so far), not per-call input gating —
+    they bound runaway spend on long delegation trees and large-context models. ``None``
+    (the default) = that ceiling is unbounded, preserving the iteration-only behavior.
+    """
+
+    def __init__(
+        self,
+        total: int,
+        *,
+        max_children: int = DEFAULT_MAX_CHILDREN,
+        max_cost_usd: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
         if total < 0:
             raise ValueError("budget total must be >= 0")
         if max_children < 0:
             raise ValueError("max_children must be >= 0")
+        if max_cost_usd is not None and max_cost_usd < 0:
+            raise ValueError("max_cost_usd must be >= 0")
+        if max_tokens is not None and max_tokens < 0:
+            raise ValueError("max_tokens must be >= 0")
         self._total = total
         self._consumed = 0
         self._max_children = max_children
         self._children_spawned = 0
+        self._max_cost_usd = max_cost_usd
+        self._max_tokens = max_tokens
+        self._cost_spent = 0.0
+        self._tokens_spent = 0
 
     # ── reporting ────────────────────────────────────────────────────────────
 
@@ -79,6 +104,41 @@ class IterationBudget:
     def children_spawned(self) -> int:
         """How many children have been registered against this budget so far."""
         return self._children_spawned
+
+    @property
+    def cost_spent(self) -> float:
+        """Cumulative USD cost folded in across the whole tree."""
+        return self._cost_spent
+
+    @property
+    def tokens_spent(self) -> int:
+        """Cumulative total tokens folded in across the whole tree."""
+        return self._tokens_spent
+
+    # ── cost / token ceilings (parity #4) ─────────────────────────────────────
+
+    def add_usage(self, cost_usd: float = 0.0, total_tokens: int = 0) -> None:
+        """Fold one completed call's actuals into the shared cost/token totals.
+
+        Called by each loop after a model call returns. ``await``-free, so atomic against
+        concurrently-scheduled siblings (like :meth:`try_consume`). Negative inputs are
+        clamped to 0 so a junk usage record can never *reduce* the running total.
+        """
+        self._cost_spent += max(0.0, cost_usd)
+        self._tokens_spent += max(0, total_tokens)
+
+    def cost_exhausted(self) -> bool:
+        """True once cumulative cost has reached the ``max_cost_usd`` ceiling (if set)."""
+        return self._max_cost_usd is not None and self._cost_spent >= self._max_cost_usd
+
+    def tokens_exhausted(self) -> bool:
+        """True once cumulative tokens have reached the ``max_tokens`` ceiling (if set)."""
+        return self._max_tokens is not None and self._tokens_spent >= self._max_tokens
+
+    def over_budget(self) -> bool:
+        """True if either the cost or token ceiling has been crossed — the loop's signal to
+        stop with ``stop_reason="budget_exhausted"``. False when neither ceiling is set."""
+        return self.cost_exhausted() or self.tokens_exhausted()
 
     # ── consuming ────────────────────────────────────────────────────────────
 

@@ -399,7 +399,21 @@ class Agent:
             for sd in extra_skill_dirs:
                 computed_extra_roots.extend(_infer_roots_from_skill_dir(Path(sd)))
 
+        # Build the shared budget when delegation is on (its original reason) OR when an
+        # optional cost/token ceiling is configured (parity #4) — so a single non-delegating
+        # agent still gets a cost cap. None otherwise (the per-turn iteration cap is the only
+        # bound), keeping an ordinary ceiling-free Agent byte-for-byte unchanged.
         shared_budget = budget
+        if shared_budget is None and (
+            enable_subagents
+            or self.settings.max_cost_usd is not None
+            or self.settings.max_tokens is not None
+        ):
+            shared_budget = IterationBudget(
+                self.settings.max_iterations,
+                max_cost_usd=self.settings.max_cost_usd,
+                max_tokens=self.settings.max_tokens,
+            )
         spawner = None
         if enable_subagents:
             from zakcode.agent.subagent import (
@@ -410,7 +424,8 @@ class Agent:
             )
             from zakcode.tools.builtins.task import TaskTool
 
-            shared_budget = budget or IterationBudget(self.settings.max_iterations)
+            # Guaranteed non-None: the construction above runs whenever enable_subagents.
+            assert shared_budget is not None
             runner = SubAgentRunner(
                 provider=self.provider,
                 registry=default_registry(self.settings),  # task-free registry for children
