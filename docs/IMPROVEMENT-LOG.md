@@ -763,7 +763,19 @@ cost-accounting test instead of a fallback table.
   call:** reliably parsing arbitrary shell is unsound, so the gate is documented as **best-effort
   defense-in-depth** — it closes the common/natural spellings (high value, no model), and
   deliberate obfuscation (nested `bash -c`, `eval`, base64) is by design contained by the Step 3
-  sandbox, not chased in the parser. 1742 suite green (clean env), ruff+mypy clean.
+  sandbox, not chased in the parser.
+  **Round-3 (convergence) found the position-locked parser still leaked on COMMON spellings, so
+  it was restructured, not patched:** global/pip-level flags before the verb (`pip -i <index>
+  install`, `uv -q add`, `python -m pip --no-cache-dir install`), Windows backslash venv paths
+  (`.venv\Scripts\pip install` — posix `shlex` ate the backslashes), and a `--save-exact`/
+  `--prefer-dist` regression (boolean npm flags I'd wrongly put in the value-flag list).
+  Fix = **verb-keyword scanning** (find the `install`/`add` verb by scanning, not a fixed slot —
+  so a flag can't push it out of position; unknown value-flags now degrade to a *safe
+  false-positive*, never a miss) + **`posix=False` tokenizing** (matches `agent/recipe.py`, so
+  Windows paths survive) with quote-stripping in `_basename`. This is the principled structural
+  fix, not more special cases. 1767 suite green (clean env), ruff+mypy clean. Three review rounds
+  hardened the parser; the residual is the documented best-effort boundary (Step 3 sandbox).
+  PR opened against main (stacked on the SELF-REMEDIATION doc PR) for binding human review.
   Next on the roadmap: Step 2 (autonomy breadth-downgrade +
   protected-path floor), then Step 3 (the real Executor sandbox — the precondition for
   trustworthy autonomy).

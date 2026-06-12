@@ -88,22 +88,29 @@ _VALUE_FLAGS = {
     "--registry",
     "--index",
     "-d",
-    "--save-exact",
-    "--prefer-dist",
+    # NB: ``--save-exact`` / ``--prefer-dist`` are BOOLEAN npm flags (no value) — they must NOT
+    # be here, or they would swallow the package token after them.
     # pip/uv build + resolution flags that consume the NEXT token as a value — listing them
     # keeps that value from being mis-read as a package name (false-positive escalation).
     "-C",
     "--config-settings",
+    "--config-setting",
     "--no-binary",
     "--only-binary",
     "--global-option",
     "--install-option",
-    "--config-setting",
     "--hash",
     "--platform",
     "--python-version",
     "--implementation",
     "--abi",
+    # uv add value-taking flags whose value is a GROUP/EXTRA NAME (not a package) — keep that
+    # value out of the package list. (NB: do NOT add uvx ``--from`` / ``--with`` here — THEIR
+    # value IS the package to gate, so skipping it would create a bypass.)
+    "--group",
+    "-G",
+    "--optional",
+    "--extra",
 }
 
 _PEP503 = re.compile(r"[-_.]+")
@@ -179,8 +186,12 @@ def _name_from_spec(spec: str, *, npm: bool) -> str | None:
 
 
 def _basename(token: str) -> str:
-    """The lowercased command name from a path/exe token (``C:\\x\\pip.exe`` → ``pip``)."""
-    base = re.split(r"[\\/]", token)[-1].lower()
+    """The lowercased command name from a path/exe token (``C:\\x\\pip.exe`` → ``pip``).
+
+    Strips surrounding quotes first because the command is tokenized with ``posix=False``
+    (so Windows backslash paths survive), which leaves quotes attached to the token.
+    """
+    base = re.split(r"[\\/]", token.strip("\"'"))[-1].lower()
     for suffix in (".exe", ".bat", ".cmd"):
         base = base.removesuffix(suffix)
     return base
@@ -197,25 +208,33 @@ def _is_pip(base: str) -> bool:
     return base in _PIP_NAMES or re.fullmatch(r"pip3(\.\d+)?", base) is not None
 
 
+def _verb_index(toks_low: list[str], start: int, n: int, verbs: tuple[str, ...]) -> int | None:
+    """Index of the first ``verbs`` token at or after ``start`` (else None).
+
+    Used to find an install verb (``install`` / ``add`` …) by SCANNING rather than fixed
+    position, so global/pip-level flags before it (``pip -i URL install``, ``uv -q add``,
+    ``python -m pip --no-cache-dir install``) can't push the verb out of a hard-coded slot and
+    silently dodge the gate. (A flag VALUE that happens to equal the verb is a contrived edge.)
+    """
+    return next((k for k in range(start, n) if toks_low[k] in verbs), None)
+
+
 def _scan_dash_m_pip(toks_low: list[str], n: int) -> int | None:
-    """Index of the first package after ``[-flags] -m pip install`` for a python launcher.
+    """Index of the first package after ``[-flags] -m pip [-flags] install`` for a python launcher.
 
     Tolerates interpreter flags before ``-m`` (``python -E -m pip install``, ``-s``, ``-I``,
-    and the value-taking ``-X opt`` / ``-W spec``), so a hardened interpreter invocation can't
-    dodge the gate. Returns ``None`` if this is not a ``-m pip install``.
+    and the value-taking ``-X opt`` / ``-W spec``) AND pip-level flags between ``pip`` and
+    ``install`` (``python -m pip --no-cache-dir install``), so a hardened/verbose invocation
+    can't dodge the gate. Returns ``None`` if this is not a ``-m pip install``.
     """
     j = 1
     while j < n and toks_low[j].startswith("-") and toks_low[j] != "-m":
         if toks_low[j] in ("-x", "-w"):  # interpreter flags that consume the next token
             j += 1
         j += 1
-    if (
-        j + 2 < n
-        and toks_low[j] == "-m"
-        and _is_pip(toks_low[j + 1])
-        and toks_low[j + 2] == "install"
-    ):
-        return j + 3
+    if j + 1 < n and toks_low[j] == "-m" and _is_pip(toks_low[j + 1]):
+        verb = _verb_index(toks_low, j + 2, n, ("install",))
+        return verb + 1 if verb is not None else None
     return None
 
 
@@ -247,36 +266,43 @@ def _install_scan_start(toks_low: list[str]) -> tuple[bool, int] | None:
     if base == "uvx":
         return (False, 1)
 
-    # uv pip install | uv run pip install | uv tool install/run | uv add  (NOT uv sync / lock)
+    # uv — find the subcommand keyword by SCANNING (so a leading global flag like
+    # ``uv -q add`` / ``uv --project . add`` can't push it off a fixed slot). ``pip``/``tool``/
+    # ``run`` then take their own verb; ``add`` is itself the verb. ``uv sync``/``lock``/``run
+    # <non-pip>`` name no package and return None.
     if base == "uv":
-        if n >= 3 and toks_low[1] == "pip" and toks_low[2] == "install":
-            return (False, 3)
-        if n >= 4 and toks_low[1] == "run" and _is_pip(toks_low[2]) and toks_low[3] == "install":
-            return (False, 4)
-        if n >= 3 and toks_low[1] == "tool" and toks_low[2] in ("install", "run"):
-            return (False, 3)
-        if n >= 2 and toks_low[1] == "add":
-            return (False, 2)
+        for s in range(1, n):
+            tok = toks_low[s]
+            if tok == "add":
+                return (False, s + 1)
+            if tok == "pip":
+                verb = _verb_index(toks_low, s + 1, n, ("install",))
+                return (False, verb + 1) if verb is not None else None
+            if tok == "tool":
+                verb = _verb_index(toks_low, s + 1, n, ("install", "run"))
+                return (False, verb + 1) if verb is not None else None
+            if tok == "run":  # only ``uv run pip install`` is an install; ``uv run <x>`` is not
+                p = next((k for k in range(s + 1, n) if _is_pip(toks_low[k])), None)
+                if p is None:
+                    return None
+                verb = _verb_index(toks_low, p + 1, n, ("install",))
+                return (False, verb + 1) if verb is not None else None
         return None
 
-    # pip install … / pip3 install … / pip3.11 install … / pipx install …
-    # (tolerate flags before the verb: ``pip -q install foo``)
+    # pip / pip3 / pip3.11 / pipx — scan for the ``install`` verb (so a global value-taking
+    # option before it, ``pip -i <index> install <pkg>``, can't dodge the gate).
     if base == "pipx" or _is_pip(base):
-        verb = next((j for j in range(1, n) if toks_low[j] == "install"), None)
-        if verb is not None and all(toks_low[j].startswith("-") for j in range(1, verb)):
-            return (False, verb + 1)
-        return None
+        verb = _verb_index(toks_low, 1, n, ("install",))
+        return (False, verb + 1) if verb is not None else None
 
     if base == "poetry":
-        if n >= 2 and toks_low[1] == "add":
-            return (False, 2)
-        return None
+        verb = _verb_index(toks_low, 1, n, ("add",))
+        return (False, verb + 1) if verb is not None else None
 
-    # npm / pnpm / yarn  <verb> …
+    # npm / pnpm / yarn — scan for an install verb (tolerates a leading ``-g`` etc).
     if base in _NPM_FAMILY:
-        if n >= 2 and toks_low[1] in _NPM_VERBS:
-            return (True, 2)
-        return None
+        verb = _verb_index(toks_low, 1, n, tuple(_NPM_VERBS))
+        return (True, verb + 1) if verb is not None else None
 
     return None
 
@@ -299,8 +325,11 @@ def installed_specs(command: str) -> list[str]:
         if not seg:
             continue
         try:
-            # comments=True drops a trailing ``# …`` so its words aren't read as packages.
-            tokens = shlex.split(seg, posix=True, comments=True)
+            # posix=False so Windows backslash paths (``.venv\\Scripts\\pip``) survive
+            # tokenizing (matches agent/recipe.py); comments=True drops a trailing ``# …`` so
+            # its words aren't read as packages. Quotes stay on tokens — _basename and
+            # _name_from_spec strip them.
+            tokens = shlex.split(seg, posix=False, comments=True)
         except ValueError:
             tokens = seg.split("#", 1)[0].split()
         # Strip leading no-op prefixes so the real installer head is found: a PowerShell call

