@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -82,6 +83,20 @@ class CostProvider(Provider):
             usage=Usage(total_tokens=self._tokens, cost_usd=self._cost),
         )
 
+    async def astream(self, messages, *, system=None, tools=None, **kw):
+        # Streaming twin: a tool-call delta + a usage event (so the per-event budget fold
+        # at the StreamUsage handler runs) + done. Keeps the turn going absent a budget stop.
+        import json
+
+        from zakcode.providers.base import StreamDone, StreamToolCallDelta, StreamUsage
+
+        self.calls += 1
+        yield StreamToolCallDelta(
+            index=0, id=f"c{self.calls}", name="noop", arguments_delta=json.dumps({})
+        )
+        yield StreamUsage(usage=Usage(total_tokens=self._tokens, cost_usd=self._cost))
+        yield StreamDone(finish_reason="tool_calls")
+
     def count_tokens(self, messages, *, system=None) -> int:
         return 0
 
@@ -123,6 +138,30 @@ def test_loop_no_ceiling_never_budget_stops() -> None:
     provider = CostProvider(cost_per_call=1.0)
     result = asyncio.run(_loop(provider, budget).arun_turn("go"))
     assert result.stop_reason != "budget_exhausted"
+
+
+def test_streaming_stops_on_cost_budget() -> None:
+    budget = IterationBudget(50, max_cost_usd=0.10)
+    provider = CostProvider(cost_per_call=0.04)
+    loop = _loop(provider, budget)
+    done = asyncio.run(_drain(loop, "go"))
+    assert done.stop_reason == "budget_exhausted"
+    assert provider.calls == 3  # 0.04 x 3 = 0.12 >= 0.10
+
+
+def test_streaming_stops_on_token_budget() -> None:
+    budget = IterationBudget(50, max_tokens=250)
+    provider = CostProvider(cost_per_call=0.0, tokens_per_call=100)
+    done = asyncio.run(_drain(_loop(provider, budget), "go"))
+    assert done.stop_reason == "budget_exhausted"
+    assert provider.calls == 3  # 100 x 3 = 300 >= 250
+
+
+async def _drain(loop: AgentLoop, text: str) -> Any:
+    last = None
+    async for ev in loop.astream_turn(text):
+        last = ev
+    return last  # the terminal AgentDone
 
 
 def test_facade_builds_budget_from_settings_without_delegation() -> None:

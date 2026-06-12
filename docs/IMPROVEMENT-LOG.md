@@ -224,6 +224,36 @@ ordering) — internal/omni. #3 (thinking through litellm) — PR-1 tests will s
 `test_discover_valid_plugin`, `test_discovered_register_is_callable`) — all three
 PASS on the Windows dev box; PR #3's ubuntu CI run is the cross-platform probe.
 
+## Resilience cluster engagement (PKG-PARITY P1, 2026-06-11)
+
+After PR #19 (parity analysis), Zachary commissioned the **provider-resilience cluster**
+(the highest-ROI P1 dead-wiring). **Re-verified against current `main` first** (a
+6-agent workflow) — main had moved far ahead, so the scope shrank:
+
+- **#1 failover — DROPPED, already shipped by PKG-AUTO #17** (`Agent._model_failover`:
+  `fallback_model` override + auto re-resolution). Left untouched; my work *guards* it.
+- **Built (branch `resilience-cluster`, PR pending):** #1b ContextWindowExceeded
+  compact-then-retry (caught above the failover branch so an overflow never mis-routes
+  into model-switching); #2 `cache_control` emission (Anthropic-only) + cache-token
+  accounting in `Usage`; #4 cost/token budget stop (shared-budget ceilings →
+  `budget_exhausted`, non-vetoable); #5 `finish_reason` length continuation (bounded,
+  flags `degraded`, before TURN_END, no veto-budget draw).
+- **37 new tests; 1596 green** (clean env). Fresh-eyes review: 33 candidates → **0
+  blocking/major**; actioned the CONFIG.md drift + a streaming-budget test gap + a
+  recovery diagnostic-log; deferred a strict context non-progress guard (D23) and the
+  buffered/streaming DRY refactor (consistent with the file's established twin structure).
+- **Baseline note (flag for omni):** `tests/test_model_auto.py` (PKG-AUTO #17) fails on a
+  dev box with a local `.env` because it doesn't isolate `ZAKCODE_FALLBACK_MODEL`; it is
+  CI-green. Not touched (omni's file); validated my work in a clean env. A 2-line
+  `monkeypatch.delenv` per test would harden it.
+
+- **D23 (2026-06-11, agent):** deferred the strict "only retry if the compacted prompt is
+  strictly smaller" guard on ContextWindowExceeded recovery (review #1, rated
+  robustness-only). The `_MAX_CONTEXT_RECOVERY=2` bound + graceful `provider_error`
+  degradation already guarantee termination; a strict guard tangles with the cap-test
+  semantics for marginal gain. Took the cheap half — a before/after message-count
+  diagnostic log — so an overflowing-summary edge case is still observable.
+
 ## Decisions
 
 - **D1 (2026-06-10, Zachary):** Skip Anthropic for now — no API key available.

@@ -1055,15 +1055,24 @@ class AgentLoop:
                     # falls through to the same graceful provider_error terminal.
                     if context_recoveries < _MAX_CONTEXT_RECOVERY and await self.compact_now():
                         context_recoveries += 1
+                        # Rebuild the message list from the now-compacted session — the
+                        # pre-compaction ``call_messages`` is the oversized transcript that
+                        # just overflowed, so retrying with it would fail identically. Log
+                        # the before/after message count so an overflowing-summary edge case
+                        # (compaction ran but the prompt is still too big) is diagnosable; a
+                        # strict "only retry if strictly smaller" guard is deliberately NOT
+                        # added — the _MAX_CONTEXT_RECOVERY bound already guarantees
+                        # termination, and the guard tangles with the cap semantics. (review #1)
+                        before = len(call_messages)
+                        call_messages = await self._messages_for_call(user_text, iterations)
                         logger.warning(
-                            "context window exceeded; compacted and retrying (%d/%d)",
+                            "context window exceeded; compacted %d -> %d messages, "
+                            "retrying (%d/%d)",
+                            before,
+                            len(call_messages),
                             context_recoveries,
                             _MAX_CONTEXT_RECOVERY,
                         )
-                        # Rebuild the message list from the now-compacted session — the
-                        # pre-compaction ``call_messages`` is the oversized transcript that
-                        # just overflowed, so retrying with it would fail identically.
-                        call_messages = await self._messages_for_call(user_text, iterations)
                         continue
                     stop_reason = "provider_error"
                     turn_error = str(exc)
@@ -1510,10 +1519,15 @@ class AgentLoop:
                         ):
                             context_recoveries += 1
                             # Rebuild from the compacted session (the prior call_messages
-                            # is the oversized transcript that just overflowed).
+                            # is the oversized transcript that just overflowed). See the
+                            # buffered twin for the before/after-count diagnostic rationale.
+                            before = len(call_messages)
                             call_messages = await self._messages_for_call(user_text, iterations)
                             logger.warning(
-                                "context window exceeded; compacted and retrying (%d/%d)",
+                                "context window exceeded; compacted %d -> %d messages, "
+                                "retrying (%d/%d)",
+                                before,
+                                len(call_messages),
                                 context_recoveries,
                                 _MAX_CONTEXT_RECOVERY,
                             )
