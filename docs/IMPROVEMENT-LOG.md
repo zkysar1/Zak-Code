@@ -656,3 +656,24 @@ cost-accounting test instead of a fallback table.
   non-vetoable trio, doom-veto pairing+reset double-threshold proof, payload
   contents, streaming status + budget-zero, fail-open crash, env/Agent
   plumbing). Suite 1556 green.
+- **2026-06-11 (dev, D22 — frontend visual overhaul, "claude-polish"):** Zachary
+  directed a ground-up restyle of both clients to reach visual parity with the
+  reference harnesses (Claude Code public look, goose, hermes-agent — studied
+  clean-room: goose/hermes from their public repos, Claude Code from its
+  publicly observable rendering only; a local "from leaked.zip" claw-code copy
+  was explicitly NOT used, per the charter). Design produced by a 13-agent
+  fan-out (6 recon reviewers -> 3 competing specs -> 3 judges -> synthesis;
+  winner "claude-polish" 160 vs 136.5 vs 131), implemented by 3 builders from
+  the pinned spec. Shape: one azure spark (color(38)) as the entire brand;
+  `●` block / `└` receipt grammar with hanging indents and a `│` rail binding
+  result bodies (red under failure); injectable-clock durations on every
+  receipt and a state-colored turn receipt replacing the footer rule; painted
+  diff bands; head+tail run truncation; welcome + permission as the only two
+  boxes (numbered options, humanized tiers); grouped /help; REPL-owned gerund
+  wait line (conhost/off-tty/ZAKCODE_NO_SPINNER disabled); web client rebuilt
+  on the identical grammar (44rem column, tool cards with pending/orphan/
+  abandoned lifecycle, stream-status overlay, scoped y/a/n approvals with
+  consent receipts, dark+light). docs/UX.md rewritten as the binding
+  cross-client contract incl. the shared-grammar mapping table. Integration
+  fixes: spec's invalid light-mode hex (#ecease5 -> #eceae5), ARCHITECTURE
+  footer wording, orphaned suspend_live deleted. Suite 1592 green.
