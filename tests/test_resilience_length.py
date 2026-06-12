@@ -8,6 +8,7 @@ branch (a truncated tool-call response self-heals via the normal round-trip). He
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from zakcode.providers.base import (
     ProviderStreamEvent,
     StreamDone,
     StreamTextDelta,
+    StreamToolCallDelta,
     ToolCall,
 )
 from zakcode.session.store import Session
@@ -48,6 +50,13 @@ class ScriptedProvider(Provider):
         r = self._next()
         if r.text:
             yield StreamTextDelta(text=r.text)
+        for i, call in enumerate(r.tool_calls):
+            yield StreamToolCallDelta(
+                index=i,
+                id=call.id,
+                name=call.name,
+                arguments_delta=json.dumps(call.arguments),
+            )
         yield StreamDone(finish_reason=r.finish_reason)
 
     def count_tokens(self, messages, *, system=None) -> int:
@@ -162,3 +171,75 @@ def test_streaming_length_truncation_continues() -> None:
     assert provider.calls == 2
     statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
     assert any("truncated" in s for s in statuses)
+
+
+def test_streaming_bounded() -> None:
+    """After _MAX_LENGTH_CONTINUATIONS, a still-truncated answer is accepted as-is."""
+    provider = ScriptedProvider([_truncated()])  # always truncated
+    loop = _loop(provider)
+    events = asyncio.run(_collect(loop, "go"))
+    done = events[-1]
+    assert done.stop_reason == "completed"
+    assert done.degraded
+    assert provider.calls == _MAX_LENGTH_CONTINUATIONS + 1  # initial + N continuations
+
+
+def test_streaming_max_tokens_finish_reason_also_continues() -> None:
+    """Anthropic-style 'max_tokens' finish reason is treated as truncation too."""
+    provider = ScriptedProvider(
+        [LLMResult(text="partial", finish_reason="max_tokens"), _complete()]
+    )
+    events = asyncio.run(_collect(_loop(provider), "go"))
+    done = events[-1]
+    assert done.stop_reason == "completed"
+    assert provider.calls == 2
+
+
+def test_streaming_empty_truncated_does_not_continue() -> None:
+    """A length finish with NO text is not a continuable answer (empty-completion path)."""
+    provider = ScriptedProvider([LLMResult(text="", finish_reason="length")])
+    events = asyncio.run(_collect(_loop(provider), "go"))
+    done = events[-1]
+    assert done.stop_reason == "completed"
+    assert provider.calls == 1  # no continuation
+
+
+def test_streaming_length_with_tool_calls_does_not_continue() -> None:
+    """A truncated response that still carries tool calls is NOT short-circuited — it goes
+    through the normal tool round-trip (continuing would break tool_use/tool_result)."""
+    truncated_with_tool = LLMResult(
+        text="thinking",
+        finish_reason="length",
+        tool_calls=[ToolCall(id="c1", name="noop", arguments={})],
+    )
+    provider = ScriptedProvider([truncated_with_tool, _complete()])
+    loop = _loop(provider)
+    events = asyncio.run(_collect(loop, "go"))
+    done = events[-1]
+    assert done.stop_reason == "completed"
+    assert provider.calls == 2
+    # The guard must route through the tool round-trip, not the continuation:
+    # c1 is answered by a real tool_result, and no continuation rail was injected.
+    result_ids = {
+        b.tool_use_id
+        for m in loop.session.messages
+        if m.role == "tool"
+        for b in m.blocks
+        if getattr(b, "type", None) == "tool_result"
+    }
+    assert "c1" in result_ids
+    assert not any(
+        m.role == "user" and "cut off at the output limit" in (m.text or "")
+        for m in loop.session.messages
+    )
+
+
+def test_streaming_length_continuation_then_max_iterations() -> None:
+    """Outer-bound correctness: a perpetually-truncated turn capped by max_iterations
+    reports max_iterations, never a clean completed. Each continuation consumes an
+    iteration, so max_iterations still bounds the turn."""
+    provider = ScriptedProvider([_truncated()])
+    events = asyncio.run(_collect(_loop(provider, max_iterations=2), "go"))
+    done = events[-1]
+    assert done.stop_reason == "max_iterations"
+    assert done.degraded

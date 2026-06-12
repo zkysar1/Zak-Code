@@ -164,6 +164,154 @@ async def _drain(loop: AgentLoop, text: str) -> Any:
     return last  # the terminal AgentDone
 
 
+# ── pairing coverage for the budget_exhausted break ─────────────────────────
+
+
+def _tool_use_ids(session: Session) -> set[str]:
+    """Collect all tool_use block IDs from the persisted session."""
+    ids: set[str] = set()
+    for m in session.messages:
+        for b in m.blocks:
+            if hasattr(b, "type") and b.type == "tool_use":
+                ids.add(b.id)
+    return ids
+
+
+def _tool_result_ids(session: Session) -> set[str]:
+    """Collect all tool_result block IDs from the persisted session."""
+    ids: set[str] = set()
+    for m in session.messages:
+        for b in m.blocks:
+            if hasattr(b, "type") and b.type == "tool_result":
+                ids.add(b.tool_use_id)
+    return ids
+
+
+def _synthetic_budget_results(session: Session) -> list[Any]:
+    """Return all tool_result blocks carrying data={'budget_exhausted': True}."""
+    return [
+        b
+        for m in session.messages
+        if m.role == "tool"
+        for b in m.blocks
+        if getattr(b, "data", None) and b.data.get("budget_exhausted")
+    ]
+
+
+def test_buffered_budget_pairs_dangling_tool_use() -> None:
+    """When the budget-crossing iteration returns tool calls, the synthetic error
+    tool_results pair them so the session has no dangling tool_use blocks."""
+    budget = IterationBudget(50, max_cost_usd=0.10)
+    provider = CostProvider(cost_per_call=0.04)
+    loop = _loop(provider, budget)
+    result = asyncio.run(loop.arun_turn("go"))
+    assert result.stop_reason == "budget_exhausted"
+    # Every tool_use in the session must have a matching tool_result.
+    assert _tool_use_ids(loop.session) == _tool_result_ids(loop.session)
+    # The final iteration's tool calls were never executed; they got synthetic
+    # error results with is_error=True and data={'budget_exhausted': True}.
+    synthetics = _synthetic_budget_results(loop.session)
+    assert len(synthetics) >= 1  # at least the over-budget batch
+    assert all(b.is_error for b in synthetics)
+    assert all(b.data == {"budget_exhausted": True} for b in synthetics)
+
+
+def test_streaming_budget_pairs_dangling_tool_use() -> None:
+    """Streaming twin: same pairing guarantee as the buffered path."""
+    budget = IterationBudget(50, max_cost_usd=0.10)
+    provider = CostProvider(cost_per_call=0.04)
+    loop = _loop(provider, budget)
+    done = asyncio.run(_drain(loop, "go"))
+    assert done.stop_reason == "budget_exhausted"
+    assert _tool_use_ids(loop.session) == _tool_result_ids(loop.session)
+    synthetics = _synthetic_budget_results(loop.session)
+    assert len(synthetics) >= 1
+    assert all(b.is_error for b in synthetics)
+    assert all(b.data == {"budget_exhausted": True} for b in synthetics)
+
+
+class TextOnlyOverBudgetProvider(Provider):
+    """Returns tool calls on early iterations, then a text-only response on the
+    iteration that crosses the budget -- so the guard fires without tool_calls."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def acomplete(self, messages, *, system=None, tools=None, **kw) -> LLMResult:
+        self.calls += 1
+        if self.calls == 1:
+            # First call: tool call, pushes budget to 0.05 (under 0.10 ceiling).
+            from zakcode.providers.base import ToolCall
+
+            return LLMResult(
+                text="working",
+                tool_calls=[ToolCall(id=f"c{self.calls}", name="noop", arguments={})],
+                usage=Usage(total_tokens=50, cost_usd=0.05),
+            )
+        # Second call: text-only (no tool calls), pushes budget to 0.11 (over 0.10).
+        return LLMResult(
+            text="done",
+            tool_calls=[],
+            usage=Usage(total_tokens=50, cost_usd=0.06),
+        )
+
+    async def astream(self, messages, *, system=None, tools=None, **kw):
+        import json
+
+        from zakcode.providers.base import (
+            StreamDone,
+            StreamTextDelta,
+            StreamToolCallDelta,
+            StreamUsage,
+        )
+
+        self.calls += 1
+        if self.calls == 1:
+            yield StreamToolCallDelta(
+                index=0, id=f"c{self.calls}", name="noop", arguments_delta=json.dumps({})
+            )
+            yield StreamUsage(usage=Usage(total_tokens=50, cost_usd=0.05))
+            yield StreamDone(finish_reason="tool_calls")
+        else:
+            yield StreamTextDelta(text="done")
+            yield StreamUsage(usage=Usage(total_tokens=50, cost_usd=0.06))
+            yield StreamDone(finish_reason="stop")
+
+    def count_tokens(self, messages, *, system=None) -> int:
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=8192)
+
+
+def test_buffered_no_tool_calls_budget_stop_no_synthetic() -> None:
+    """When the budget-crossing iteration returns NO tool calls, the guard is
+    conditional: no synthetic tool_result message is injected."""
+    budget = IterationBudget(50, max_cost_usd=0.10)
+    provider = TextOnlyOverBudgetProvider()
+    loop = _loop(provider, budget)
+    result = asyncio.run(loop.arun_turn("go"))
+    assert result.stop_reason == "budget_exhausted"
+    # No synthetic budget_exhausted results should exist -- the final iteration
+    # had no tool calls, so there was nothing to pair.
+    synthetics = _synthetic_budget_results(loop.session)
+    assert len(synthetics) == 0
+    # The session should still be clean: all tool_use ids paired.
+    assert _tool_use_ids(loop.session) == _tool_result_ids(loop.session)
+
+
+def test_streaming_no_tool_calls_budget_stop_no_synthetic() -> None:
+    """Streaming twin of the no-tool-calls guard test."""
+    budget = IterationBudget(50, max_cost_usd=0.10)
+    provider = TextOnlyOverBudgetProvider()
+    loop = _loop(provider, budget)
+    done = asyncio.run(_drain(loop, "go"))
+    assert done.stop_reason == "budget_exhausted"
+    synthetics = _synthetic_budget_results(loop.session)
+    assert len(synthetics) == 0
+    assert _tool_use_ids(loop.session) == _tool_result_ids(loop.session)
+
+
 def test_facade_builds_budget_from_settings_without_delegation() -> None:
     """A plain Agent (no sub-agents) still gets a cost cap when configured."""
     import zakcode
