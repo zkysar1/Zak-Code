@@ -219,6 +219,30 @@ def _last_assistant_text(turn_assistant: list[Message]) -> str:
     return ""
 
 
+def _unexecuted_tool_results(tool_calls: list[ToolCall], reason: str, marker: str) -> Message:
+    """Synthetic error results for tool_use blocks that will never execute.
+
+    A break taken after the assistant message is persisted but before its tool
+    batch runs leaves dangling ``tool_use`` blocks in the session; on resume,
+    strict providers reject the transcript (assistant ``tool_use`` followed by
+    a user message with no ``tool_result``). Answering each call with an
+    ``is_error`` result first keeps the session replayable — the same pairing
+    contract the doom-loop veto epilogue maintains. Used by the
+    ``budget_exhausted`` and non-veto ``doom_loop`` break sites (both twins).
+    """
+    return Message.tool_results(
+        [
+            ToolResultBlock(
+                tool_use_id=call.id,
+                output=reason,
+                is_error=True,
+                data={marker: True},
+            )
+            for call in tool_calls
+        ]
+    )
+
+
 def _denial_remedy(tier: PermissionTier | None) -> str:
     """Name the concrete way to grant a denied tool, keyed by its required permission tier.
 
@@ -1138,6 +1162,18 @@ class AgentLoop:
                         self.budget.cost_spent,
                         self.budget.tokens_spent,
                     )
+                    if result.has_tool_calls:
+                        # The batch will never execute — pair its tool_use blocks
+                        # before ending the turn so the session stays resumable.
+                        self.session.add_message(
+                            _unexecuted_tool_results(
+                                result.tool_calls,
+                                "Not executed: the cost/token budget was exhausted "
+                                "before this tool batch ran.",
+                                "budget_exhausted",
+                            )
+                        )
+                        self._persist()
                     break
 
             # An empty completion (no text, no tool calls) ends the turn cleanly.
@@ -1264,6 +1300,18 @@ class AgentLoop:
                     stuck.reset()
                     continue
                 stop_reason = "doom_loop"
+                # Same pairing contract as the veto epilogue above: the repeated
+                # batch never executes, so answer its tool_use blocks before the
+                # turn ends. (post-merge review of #20, finding 1 — pre-existing gap)
+                self.session.add_message(
+                    _unexecuted_tool_results(
+                        result.tool_calls,
+                        "Not executed: this exact tool batch has been repeated "
+                        "with no progress; the turn ended here.",
+                        "doom_loop_intervention",
+                    )
+                )
+                self._persist()
                 break
 
             # Each call runs through the permission + hook gate (a denial, veto, or
@@ -1540,7 +1588,16 @@ class AgentLoop:
                         # Runtime model failover (PKG-AUTO), streaming twin: only
                         # before any event reached the client — a later retry would
                         # re-yield text already rendered, so mid-stream stays terminal.
-                        if not received_any and not failed_over and self.model_failover is not None:
+                        # The isinstance exclusion mirrors the buffered path's
+                        # defense-in-depth: a reorder of the except clauses above
+                        # must not mis-route RateLimited / ContextWindowExceeded
+                        # into failover.
+                        if (
+                            not received_any
+                            and not failed_over
+                            and self.model_failover is not None
+                            and not isinstance(exc, RateLimited | ContextWindowExceeded)
+                        ):
                             switched = self.model_failover(exc)
                             if switched is not None:
                                 self.provider, note = switched
@@ -1587,6 +1644,18 @@ class AgentLoop:
                         self.budget.cost_spent,
                         self.budget.tokens_spent,
                     )
+                    if tool_calls:
+                        # Pairing fix, identical to the buffered twin: the batch
+                        # will never execute — answer its tool_use blocks first.
+                        self.session.add_message(
+                            _unexecuted_tool_results(
+                                tool_calls,
+                                "Not executed: the cost/token budget was exhausted "
+                                "before this tool batch ran.",
+                                "budget_exhausted",
+                            )
+                        )
+                        self._persist()
                     yield AgentStatus(message="stopping: cost/token budget exhausted")
                     break
 
@@ -1711,6 +1780,16 @@ class AgentLoop:
                         yield AgentStatus(message="turn_end hook vetoed stop; continuing")
                         continue
                     stop_reason = "doom_loop"
+                    # Pairing fix, identical to the buffered twin (non-veto break).
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            tool_calls,
+                            "Not executed: this exact tool batch has been repeated "
+                            "with no progress; the turn ended here.",
+                            "doom_loop_intervention",
+                        )
+                    )
+                    self._persist()
                     yield AgentStatus(message="stopping: repeated identical tool calls")
                     break
 

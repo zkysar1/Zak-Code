@@ -241,7 +241,9 @@ async def test_turn_end_doom_loop_veto_pairs_and_resets(tmp_path: Path) -> None:
     # without it the very next identical batch would re-trip immediately).
     assert result.iterations == 2 * DOOM_LOOP_THRESHOLD
     assert [p.stop_reason for p in hook.payloads] == ["doom_loop", "doom_loop"]
-    # Pairing fix: the vetoed batch's tool_use got a synthetic error tool_result.
+    # Pairing fix: the vetoed batch's tool_use got a synthetic error tool_result,
+    # and the FINAL (non-veto) doom_loop break pairs its unexecuted batch too —
+    # two interventions total, so the resumed session has no dangling tool_use.
     synthetic = [
         b
         for m in loop.session.messages
@@ -249,8 +251,8 @@ async def test_turn_end_doom_loop_veto_pairs_and_resets(tmp_path: Path) -> None:
         for b in m.blocks
         if getattr(b, "data", None) and b.data.get("doom_loop_intervention")
     ]
-    assert len(synthetic) == 1
-    assert synthetic[0].is_error
+    assert len(synthetic) == 2
+    assert all(b.is_error for b in synthetic)
 
 
 # ── payload contents ──────────────────────────────────────────────────────────
