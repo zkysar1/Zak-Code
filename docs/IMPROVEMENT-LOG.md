@@ -773,9 +773,15 @@ cost-accounting test instead of a fallback table.
   so a flag can't push it out of position; unknown value-flags now degrade to a *safe
   false-positive*, never a miss) + **`posix=False` tokenizing** (matches `agent/recipe.py`, so
   Windows paths survive) with quote-stripping in `_basename`. This is the principled structural
-  fix, not more special cases. 1767 suite green (clean env), ruff+mypy clean. Three review rounds
-  hardened the parser; the residual is the documented best-effort boundary (Step 3 sandbox).
-  PR opened against main (stacked on the SELF-REMEDIATION doc PR) for binding human review.
+  fix, not more special cases. **Round-4 (final pre-merge, Zachary-requested) found two last
+  common-spelling bypasses, both fixed:** `uv run --with <pkg>` (fetches+runs an ephemeral PyPI
+  dep — the `uv run` branch only handled `uv run pip install`, while sibling `uvx --with`/`uv
+  tool run --with` were caught — an inconsistent gap, now gated like uvx); and npm `-p`/`-d`
+  (lowercase shorts that pip/uv use as value flags but npm treats as BOOLEAN, so `npm install
+  -p <pkg>` swallowed the package — fixed by splitting value-flags into ecosystem-specific sets
+  `_VALUE_FLAGS`/`_NPM_VALUE_FLAGS`). 1781 suite green (clean env), ruff+mypy clean. Four review
+  rounds total hardened the parser; the residual is the documented best-effort boundary (Step 3
+  sandbox). **MERGED to main** (PR #25 doc then PR #26 gate).
   Next on the roadmap: Step 2 (autonomy breadth-downgrade +
   protected-path floor), then Step 3 (the real Executor sandbox — the precondition for
   trustworthy autonomy).

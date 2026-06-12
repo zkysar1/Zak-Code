@@ -113,6 +113,20 @@ _VALUE_FLAGS = {
     "--extra",
 }
 
+#: npm-family value-taking flags. SEPARATE from the pip/uv set because some short flags collide:
+#: npm's ``-p``/``-d`` are BOOLEAN (``--save-prod`` / a loglevel), but pip/uv's ``-p`` takes a
+#: value (``--python``). Applying the pip set to an npm command would swallow the package after
+#: ``npm install -p <pkg>`` and silently bypass the gate.
+_NPM_VALUE_FLAGS = {
+    "--registry",
+    "--prefix",
+    "-w",
+    "--workspace",
+    "--omit",
+    "--include",
+    "--save-prefix",
+}
+
 _PEP503 = re.compile(r"[-_.]+")
 #: Shell command/control separators we split a command on before scanning each segment. Splits
 #: on ``&&`` / ``||`` and the single-char operators ``; | & ( ) { }`` + newline — so a lone ``&``
@@ -281,12 +295,18 @@ def _install_scan_start(toks_low: list[str]) -> tuple[bool, int] | None:
             if tok == "tool":
                 verb = _verb_index(toks_low, s + 1, n, ("install", "run"))
                 return (False, verb + 1) if verb is not None else None
-            if tok == "run":  # only ``uv run pip install`` is an install; ``uv run <x>`` is not
+            if tok == "run":
+                # ``uv run pip install …`` → gate that pip install.
                 p = next((k for k in range(s + 1, n) if _is_pip(toks_low[k])), None)
-                if p is None:
-                    return None
-                verb = _verb_index(toks_low, p + 1, n, ("install",))
-                return (False, verb + 1) if verb is not None else None
+                if p is not None:
+                    verb = _verb_index(toks_low, p + 1, n, ("install",))
+                    return (False, verb + 1) if verb is not None else None
+                # ``uv run --with <pkg>`` / ``--from <pkg>`` fetches + imports an ephemeral PyPI
+                # dep, the same fetch-and-run vector as ``uvx --with`` (which IS gated). Gate
+                # from here (over-reports the trailing command, like uvx — tighten-only).
+                if any(toks_low[k] in ("--with", "--from") for k in range(s + 1, n)):
+                    return (False, s + 1)
+                return None  # plain ``uv run <cmd>`` names no package
         return None
 
     # pip / pip3 / pip3.11 / pipx — scan for the ``install`` verb (so a global value-taking
@@ -345,10 +365,11 @@ def installed_specs(command: str) -> list[str]:
         if start is None:
             continue
         npm, i = start
+        value_flags = _NPM_VALUE_FLAGS if npm else _VALUE_FLAGS
         while i < len(tokens):
             tok = tokens[i]
             if tok.startswith("-"):
-                if tok in _VALUE_FLAGS and "=" not in tok:
+                if tok in value_flags and "=" not in tok:
                     i += 1  # also consume this flag's value token
                 i += 1
                 continue

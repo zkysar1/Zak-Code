@@ -282,6 +282,65 @@ def test_uvx_from_still_gates_the_real_package() -> None:
     assert "pypi:requests-evil" in specs
 
 
+# ── final pre-merge review: uv run --with, and npm -p/-d boolean-flag collision ───────
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "uv run --with evilpkg python script.py",
+        "uv run --from evilpkg cowsay",
+        "uv run --with a --with evilpkg python",  # multiple --with; evilpkg still gated
+    ],
+)
+def test_uv_run_with_gates_the_ephemeral_package(command: str) -> None:
+    # `uv run --with <pkg>` fetches + imports an ephemeral PyPI dep (same vector as uvx --with),
+    # so the package must be gated. (The trailing command may be over-reported — tighten-only.)
+    assert "pypi:evilpkg" in installed_specs(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "uv run pytest",  # just runs a command — no install
+        "uv run python script.py",
+        "uv run --no-project python",
+    ],
+)
+def test_uv_run_without_with_is_not_gated(command: str) -> None:
+    assert installed_specs(command) == []
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # npm -p/-d are BOOLEAN on npm — must NOT swallow the package (pip/uv -p takes a value)
+        ("npm install -p left-pad", ["npm:left-pad"]),
+        ("npm install -d left-pad", ["npm:left-pad"]),
+        ("npm i -p evilpkg", ["npm:evilpkg"]),
+        ("pnpm add -p evilpkg", ["npm:evilpkg"]),
+        ("yarn add -p evilpkg", ["npm:evilpkg"]),
+    ],
+)
+def test_npm_boolean_short_flags_do_not_swallow_the_package(
+    command: str, expected: list[str]
+) -> None:
+    assert installed_specs(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # ...but uv/pip -p (--python) DOES take a value — that must still be consumed, not gated
+        ("uv pip install -p python3.11 requests", ["pypi:requests"]),
+        ("uv add -p 3.11 requests", ["pypi:requests"]),
+        ("pip install --python /usr/bin/python3 requests", ["pypi:requests"]),
+    ],
+)
+def test_pip_uv_value_flags_still_consume_their_value(command: str, expected: list[str]) -> None:
+    assert installed_specs(command) == expected
+
+
 def test_normalize_is_pep503() -> None:
     assert normalize("Foo_Bar") == "foo-bar"
     assert normalize("Foo.Bar__Baz") == "foo-bar-baz"
