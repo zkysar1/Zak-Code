@@ -435,6 +435,19 @@ class PermissionPolicy:
         # ``specs`` and ``declared`` are ecosystem-tagged; compare tagged, return the human name.
         return [display_name(spec) for spec in specs if spec not in declared]
 
+    def undeclared_install_reason(self, arguments: dict) -> str | None:
+        """Public: a reason if ``arguments`` install a package no manifest declares, else None.
+
+        Mirrors :meth:`dangerous_reason` so a caller can re-apply the dependency gate to
+        arguments that changed AFTER authorization — e.g. the loop's re-check of a command a
+        PreToolUse hook rewrote (audit3 #5), so a hook can't turn an authorized ``echo hi`` into
+        an undeclared ``pip install evil``. Returns None when the gate is off or all declared.
+        """
+        undeclared = self._undeclared_install(arguments)
+        if not undeclared:
+            return None
+        return "undeclared package install: " + ", ".join(undeclared)
+
     def decide(self, spec: ToolSpec | None, arguments: dict) -> tuple[PermissionDecision, str]:
         """Return the static (pre-prompt, stateless) verdict and a human reason.
 

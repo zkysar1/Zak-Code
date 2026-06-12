@@ -751,9 +751,19 @@ cost-accounting test instead of a fallback table.
   install could ride a prior grant unprompted in interactive modes; the gate is now
   un-waivable by a grant (re-decides in `authorize()`/`auto_allows()`, mirroring the dangerous
   floor). Deferred F6 (per-command manifest re-parse has no cache — minor perf; the re-read is
-  intentional for freshness, so a naive cache would risk staleness). 71 tests total, 1716
-  suite green (clean env), ruff+mypy clean. The review hit a session limit mid-run, so the
-  parser-bypass / permission-invariants / wiring finder angles still need a re-run to close the
-  pass before the PR opens. Next on the roadmap: Step 2 (autonomy breadth-downgrade +
+  intentional for freshness, so a naive cache would risk staleness).
+  **Round-2 review (after the session-limit reset) re-ran the 3 cut-short angles and found 8
+  more, all fixed:** (A) `uv tool install`/`uvx`/`uv tool run`, (C) versioned pip `pip3.11`,
+  (E) interpreter flags before `-m` (`python -E -m pip install`), (D) `env`/`FOO=bar` env-prefix,
+  (B) lone `&` background + `(…)`/`{…}` subshell separators — five **blocking** parser bypasses
+  where an undeclared install ran UNPROMPTED; (F, blocking) the PreToolUse hook-rewrite seam
+  re-checked only the dangerous floor, not the gate — added `undeclared_install_reason()` + a
+  loop re-check mirroring audit3 #5; plus two **major** false-positives (G unknown value-bearing
+  flags, H trailing `#` comments) that over-blocked legitimate declared installs. **Architectural
+  call:** reliably parsing arbitrary shell is unsound, so the gate is documented as **best-effort
+  defense-in-depth** — it closes the common/natural spellings (high value, no model), and
+  deliberate obfuscation (nested `bash -c`, `eval`, base64) is by design contained by the Step 3
+  sandbox, not chased in the parser. 1742 suite green (clean env), ruff+mypy clean.
+  Next on the roadmap: Step 2 (autonomy breadth-downgrade +
   protected-path floor), then Step 3 (the real Executor sandbox — the precondition for
   trustworthy autonomy).

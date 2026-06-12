@@ -170,6 +170,58 @@ def test_installed_specs_flags_url_and_vcs_installs() -> None:
     ]
 
 
+# ── round-2 review: install-detection evasions that must NOT slip past the parser ────
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # uv tool install / uvx / uv tool run (fetch-and-run vectors) — round-2 finding A
+        ("uv tool install evil", ["pypi:evil"]),
+        ("uv tool run evil", ["pypi:evil"]),
+        ("uvx evil-pkg", ["pypi:evil-pkg"]),
+        # versioned pip console scripts — finding C
+        ("pip3.11 install evil", ["pypi:evil"]),
+        ("/usr/bin/pip3.12 install evil", ["pypi:evil"]),
+        # interpreter flags before -m — finding E
+        ("python -E -m pip install httpx", ["pypi:httpx"]),
+        ("python -s -I -m pip install httpx", ["pypi:httpx"]),
+        ("python -X faulthandler -m pip install httpx", ["pypi:httpx"]),
+        # env-assignment prefix / env wrapper — finding D
+        ("FOO=bar pip install evil", ["pypi:evil"]),
+        ("PIP_INDEX_URL=http://x pip install evil", ["pypi:evil"]),
+        ("env FOO=bar pip install evil", ["pypi:evil"]),
+        ("env pip install evil", ["pypi:evil"]),
+        ("A=1 uv add evil", ["pypi:evil"]),
+        # background '&' and subshell / brace group — finding B
+        ("echo hi & pip install evil", ["pypi:evil"]),
+        ("true & uv add evil", ["pypi:evil"]),
+        ("(pip install evil)", ["pypi:evil"]),
+        ("{ pip install evil; }", ["pypi:evil"]),
+    ],
+)
+def test_installed_specs_detects_evasive_install_forms(command: str, expected: list[str]) -> None:
+    assert installed_specs(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # trailing '#' comment must not become packages — finding H
+        ("pip install requests # pin for prod", ["pypi:requests"]),
+        ("uv add rich  # nice output", ["pypi:rich"]),
+        # unknown value-bearing flags: the VALUE must not be read as a package — finding G
+        ("pip install --config-settings editable_mode=compat foo", ["pypi:foo"]),
+        ("pip install --no-binary :all: foo", ["pypi:foo"]),
+        ("pip install --only-binary lxml requests", ["pypi:requests"]),
+    ],
+)
+def test_installed_specs_no_false_positive_tokens(command: str, expected: list[str]) -> None:
+    # The false-positive fixes (no '#'/flag-value tokens) keep a DECLARED install from being
+    # wrongly escalated; here we assert the parser yields exactly the real package(s).
+    assert installed_specs(command) == expected
+
+
 def test_normalize_is_pep503() -> None:
     assert normalize("Foo_Bar") == "foo-bar"
     assert normalize("Foo.Bar__Baz") == "foo-bar-baz"
@@ -365,6 +417,45 @@ def test_declared_install_allowed_in_autonomous() -> None:
     policy = _policy(PermissionMode.AUTONOMOUS, {"requests"})
     decision, _ = policy.decide(SHELL, {"command": "uv add requests"})
     assert decision is PermissionDecision.ALLOW
+
+
+def test_evasive_install_form_is_gated_in_autonomous() -> None:
+    # Round-2 findings end-to-end: each evasion now reaches the autonomous hard-DENY.
+    policy = _policy(PermissionMode.AUTONOMOUS, {"requests"})
+    for cmd in (
+        "uvx evil",
+        "uv tool install evil",
+        "pip3.11 install evil",
+        "FOO=bar pip install evil",
+        "echo hi & pip install evil",
+        "(pip install evil)",
+        "python -E -m pip install evil",
+    ):
+        decision, _ = policy.decide(SHELL, {"command": cmd})
+        assert decision is PermissionDecision.DENY, cmd
+
+
+def test_declared_install_with_trailing_comment_passes_through() -> None:
+    # The comment fix must not turn a fully-declared install into a wrongful DENY (finding H).
+    policy = _policy(PermissionMode.AUTONOMOUS, {"requests"})
+    decision, _ = policy.decide(SHELL, {"command": "pip install requests  # retry after flake"})
+    assert decision is PermissionDecision.ALLOW
+
+
+def test_undeclared_install_reason_accessor() -> None:
+    # The public accessor the loop uses to re-apply the gate after a hook rewrite (finding F).
+    policy = _policy(PermissionMode.ALLOW, {"requests"})
+    assert policy.undeclared_install_reason({"command": "pip install evil"}) is not None
+    assert "evil" in policy.undeclared_install_reason({"command": "pip install evil"})
+    assert policy.undeclared_install_reason({"command": "pip install requests"}) is None
+    assert policy.undeclared_install_reason({"command": "git status"}) is None
+    # gate off → always None
+    assert (
+        PermissionPolicy(PermissionMode.ALLOW).undeclared_install_reason(
+            {"command": "pip install evil"}
+        )
+        is None
+    )
 
 
 def test_lockfile_and_local_installs_are_not_gated() -> None:

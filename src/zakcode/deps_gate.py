@@ -25,6 +25,20 @@ Design choices, deliberately conservative:
 * **URL / VCS installs are always treated as undeclared** (``git+…``, ``https://…``,
   ``*.whl``) — they fetch code that no manifest pinned, the same risk class as the named-but-
   undeclared case.
+
+**Scope — best-effort, defense-in-depth (NOT a complete boundary).** :func:`installed_specs`
+recognises the package-manager invocations real commands actually use, including the launcher
+spellings the project's own ``pip_install_hint`` emits — bare/versioned ``pip``/``pip3.11``,
+``python [-flags] -m pip install``, full interpreter paths, ``uv pip/run pip/add/tool install``,
+``uvx``, ``pipx``, ``poetry add``, npm-family verbs — and sees through leading ``&`` / ``env`` /
+``FOO=bar`` prefixes, ``&&`` / ``;`` / ``|`` / ``&`` / ``(…)`` / ``{…}`` separators, and trailing
+``#`` comments. It does **not** attempt to defeat deliberate obfuscation — an install hidden
+inside a nested shell string (``bash -c "pip install evil"``), reached via ``xargs``/``eval``, or
+base64/`$()`-decoded at runtime — because reliably parsing arbitrary shell is not soundly
+possible. That residual is by design the job of the **execution sandbox (SELF-REMEDIATION
+Step 3)**, which contains the blast radius regardless of whether the command was classified
+correctly. This gate closes the common/natural undeclared-install vector (high value, no model);
+it is a layer, not the whole wall.
 """
 
 from __future__ import annotations
@@ -76,10 +90,31 @@ _VALUE_FLAGS = {
     "-d",
     "--save-exact",
     "--prefer-dist",
+    # pip/uv build + resolution flags that consume the NEXT token as a value — listing them
+    # keeps that value from being mis-read as a package name (false-positive escalation).
+    "-C",
+    "--config-settings",
+    "--no-binary",
+    "--only-binary",
+    "--global-option",
+    "--install-option",
+    "--config-setting",
+    "--hash",
+    "--platform",
+    "--python-version",
+    "--implementation",
+    "--abi",
 }
 
 _PEP503 = re.compile(r"[-_.]+")
-_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|\n]")
+#: Shell command/control separators we split a command on before scanning each segment. Splits
+#: on ``&&`` / ``||`` and the single-char operators ``; | & ( ) { }`` + newline — so a lone ``&``
+#: (background), a ``|`` pipe, or a ``(…)`` / ``{…}`` group can't hide an install in a segment
+#: whose head token is some OTHER command. (``&&`` is matched before the single ``&``.)
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&(){}\n]")
+#: A leading shell environment-variable assignment (``FOO=bar pip install …``) — stripped so the
+#: assignment isn't mistaken for the installer head token.
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def normalize(name: str) -> str:
@@ -157,51 +192,76 @@ def _is_python_launcher(token: str) -> bool:
     return base in ("python", "py") or re.fullmatch(r"python3(\.\d+)?", base) is not None
 
 
+def _is_pip(base: str) -> bool:
+    """True for ``pip`` / ``pip3`` / a versioned console script (``pip3.11``, ``pip3.12``)."""
+    return base in _PIP_NAMES or re.fullmatch(r"pip3(\.\d+)?", base) is not None
+
+
+def _scan_dash_m_pip(toks_low: list[str], n: int) -> int | None:
+    """Index of the first package after ``[-flags] -m pip install`` for a python launcher.
+
+    Tolerates interpreter flags before ``-m`` (``python -E -m pip install``, ``-s``, ``-I``,
+    and the value-taking ``-X opt`` / ``-W spec``), so a hardened interpreter invocation can't
+    dodge the gate. Returns ``None`` if this is not a ``-m pip install``.
+    """
+    j = 1
+    while j < n and toks_low[j].startswith("-") and toks_low[j] != "-m":
+        if toks_low[j] in ("-x", "-w"):  # interpreter flags that consume the next token
+            j += 1
+        j += 1
+    if (
+        j + 2 < n
+        and toks_low[j] == "-m"
+        and _is_pip(toks_low[j + 1])
+        and toks_low[j + 2] == "install"
+    ):
+        return j + 3
+    return None
+
+
 def _install_scan_start(toks_low: list[str]) -> tuple[bool, int] | None:
     """Resolve the package-manager invocation to ``(is_npm, index)`` or ``None``.
 
-    ``index`` is where package tokens begin (just past the install verb). This sees through
-    the launcher prefixes that the project's OWN self-fix hint emits — ``python -m pip
-    install``, ``uv pip install``, ``"<full/path/python.exe>" -m pip install`` — not just a
-    bare ``pip``/``uv``, so an undeclared install can't slip past the gate by spelling the
-    invocation differently. Returns ``None`` for non-installs and for no-named-package
-    installs (``uv sync``, ``npm ci``, ``pip download`` …).
+    ``index`` is where package tokens begin (just past the install verb). This sees through the
+    launcher spellings real commands (and the project's OWN ``pip_install_hint``) use — bare
+    ``pip``/``pip3``/versioned ``pip3.11``, ``python [-flags] -m pip install``, a full
+    interpreter path, ``uv pip/run pip/add/tool install``, ``uvx``, ``pipx``, ``poetry add``,
+    npm-family verbs — so an undeclared install can't slip past the gate just by spelling the
+    invocation differently. Returns ``None`` for non-installs and no-named-package installs
+    (``uv sync``, ``npm ci``, ``pip download`` …). Leading ``&`` / ``env`` / ``FOO=bar`` prefixes
+    are stripped by the caller before this runs.
     """
     n = len(toks_low)
     if n == 0:
         return None
     head = toks_low[0]
 
-    # python -m pip install …  (any launcher spelling, incl. a full path to the interpreter)
+    # python [-flags] -m pip install …  (any launcher spelling, incl. a full interpreter path)
     if _is_python_launcher(head):
-        if (
-            n >= 4
-            and toks_low[1] == "-m"
-            and toks_low[2] in _PIP_NAMES
-            and toks_low[3] == "install"
-        ):
-            return (False, 4)
-        return None
+        start = _scan_dash_m_pip(toks_low, n)
+        return (False, start) if start is not None else None
 
     base = _basename(head)
 
-    # uv pip install … | uv run pip install … | uv add …  (NOT uv sync / uv lock / uv run <x>)
+    # uvx <pkg> — uv's download-and-run shorthand; every non-flag arg is a fetched package.
+    if base == "uvx":
+        return (False, 1)
+
+    # uv pip install | uv run pip install | uv tool install/run | uv add  (NOT uv sync / lock)
     if base == "uv":
         if n >= 3 and toks_low[1] == "pip" and toks_low[2] == "install":
             return (False, 3)
-        if (
-            n >= 4
-            and toks_low[1] == "run"
-            and toks_low[2] in _PIP_NAMES
-            and toks_low[3] == "install"
-        ):
+        if n >= 4 and toks_low[1] == "run" and _is_pip(toks_low[2]) and toks_low[3] == "install":
             return (False, 4)
+        if n >= 3 and toks_low[1] == "tool" and toks_low[2] in ("install", "run"):
+            return (False, 3)
         if n >= 2 and toks_low[1] == "add":
             return (False, 2)
         return None
 
-    # pip install … / pip3 install …  (tolerate flags before the verb: ``pip -q install foo``)
-    if base in _PIP_NAMES or base == "pipx":
+    # pip install … / pip3 install … / pip3.11 install … / pipx install …
+    # (tolerate flags before the verb: ``pip -q install foo``)
+    if base == "pipx" or _is_pip(base):
         verb = next((j for j in range(1, n) if toks_low[j] == "install"), None)
         if verb is not None and all(toks_low[j].startswith("-") for j in range(1, verb)):
             return (False, verb + 1)
@@ -228,8 +288,10 @@ def installed_specs(command: str) -> list[str]:
     only read manifests when this returns something. Each entry is tagged with its ecosystem
     (``pypi:requests`` / ``npm:left-pad``) to match :func:`read_declared_packages`. Returns
     ``[]`` for a non-install, or a lockfile/manifest/local install that names no loose package.
-    Handles ``&&`` / ``;`` / ``|`` chained commands by scanning each segment, and sees through a
-    leading PowerShell call operator (``& "C:\\py.exe" -m pip install …``).
+    Splits ``&&`` / ``||`` / ``;`` / ``|`` / ``&`` / ``(…)`` / ``{…}`` and scans each segment,
+    strips trailing ``#`` comments, and sees through leading PowerShell ``&`` and shell
+    ``env`` / ``FOO=bar`` prefixes — so an install can't hide behind a different command, a
+    background ``&``, a subshell, a comment, or an env-assignment prefix.
     """
     found: list[str] = []
     for segment in _SEGMENT_SPLIT.split(command):
@@ -237,11 +299,15 @@ def installed_specs(command: str) -> list[str]:
         if not seg:
             continue
         try:
-            tokens = shlex.split(seg, posix=True)
+            # comments=True drops a trailing ``# …`` so its words aren't read as packages.
+            tokens = shlex.split(seg, posix=True, comments=True)
         except ValueError:
-            tokens = seg.split()
-        # See through a leading PowerShell call operator so ``& <py> -m pip install`` is caught.
-        if tokens and tokens[0] == "&":
+            tokens = seg.split("#", 1)[0].split()
+        # Strip leading no-op prefixes so the real installer head is found: a PowerShell call
+        # operator ``&``, an ``env`` wrapper, and shell env-assignments (``FOO=bar pip …``).
+        while tokens and (
+            tokens[0] == "&" or tokens[0].lower() == "env" or _ENV_ASSIGN.match(tokens[0])
+        ):
             tokens = tokens[1:]
         if not tokens:
             continue

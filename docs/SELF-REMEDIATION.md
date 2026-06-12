@@ -147,11 +147,22 @@ dep like `ddgs` from the `[web]` extra) while closing the typosquatting/injectio
 
 > **Implemented** in `src/zakcode/deps_gate.py` (a pure parser + manifest reader) and wired
 > into `PermissionPolicy.decide` as a tighten-only check after the dangerous-pattern floor;
-> toggled by the `dependency_gate` setting (default on). The parser is launcher-aware — it
-> sees through `python -m pip install`, `uv pip install`, and the full-interpreter-path form
-> the project's own `pip_install_hint` emits — so the self-fix path can't dodge the gate by
-> spelling the install differently. `uv sync` / `npm ci` / editable + local installs pass
-> through untouched. See `dependency_gate` in [CONFIG.md](CONFIG.md) and `tests/test_deps_gate.py`.
+> toggled by the `dependency_gate` setting (default on). It is **un-waivable by a blanket
+> session grant** (`authorize()`/`auto_allows()` re-decide an undeclared install) and is
+> re-applied to a PreToolUse-hook-rewritten command (`undeclared_install_reason`), mirroring the
+> dangerous floor. The parser is launcher-aware and ecosystem-tagged — it sees through
+> `python [-flags] -m pip install`, `uv pip/tool install`, `uvx`, versioned `pip3.11`, full
+> interpreter paths, `env`/`FOO=bar` prefixes, `&`/`(…)` separators and `#` comments, and keeps
+> pip vs npm namespaces separate — so the self-fix path can't dodge the gate by spelling the
+> install differently. `uv sync` / `npm ci` / editable + local installs pass through untouched.
+>
+> **Best-effort, by design.** This is defense-in-depth, not a complete boundary: it closes the
+> common/natural undeclared-install spellings, but reliably parsing *arbitrary* shell is
+> unsound, so a deliberately obfuscated install (nested `bash -c "…"`, `xargs`/`eval`,
+> base64/`$()`-decoded at runtime) can still slip the parser. Containing that residual is
+> precisely **Step 3's** job — the sandbox makes a missed classification survivable regardless.
+> See `dependency_gate` in [CONFIG.md](CONFIG.md), `tests/test_deps_gate.py`, and the
+> `deps_gate` module docstring's *Scope* note.
 
 **Step 2 — Autonomy breadth-downgrade + un-waivable protected-path floor (S).**
 On entering `autonomous`, drop session grants / per-tool overrides that amount to *arbitrary
