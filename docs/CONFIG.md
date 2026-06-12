@@ -57,6 +57,7 @@ here — adding a Settings field without documenting it fails CI.
 | `subprocess_inherit_provider_keys` | `ZAKCODE_SUBPROCESS_INHERIT_PROVIDER_KEYS` | `false` | When false (default), `*_API_KEY` vars are scrubbed from bash/powershell children. |
 | `dependency_gate` | `ZAKCODE_DEPENDENCY_GATE` | `true` | When true (default), a shell command that installs a package the project's manifests/lockfile don't declare (pip/uv/poetry/npm…) escalates to a prompt — and hard-denies in `autonomous`. Tighten-only; `uv sync`/`npm ci`/declared/editable installs pass through. See [SELF-REMEDIATION.md](SELF-REMEDIATION.md). |
 | `denied_commands` | `ZAKCODE_DENIED_COMMANDS` | `[]` | Extra deny regexes appended to the dangerous-command blocklist (newline-separated or JSON array); tighten-only. |
+| `protected_paths` | `ZAKCODE_PROTECTED_PATHS` | `[]` | Extra protected-path regexes appended to the built-in floor (`.git/`, `.env`, the venv, `.claude/`). A write matching one escalates to a prompt — and hard-denies in `autonomous` — even under `allow`/`acceptEdits` or a grant. Tighten-only. See [SELF-REMEDIATION.md](SELF-REMEDIATION.md) Step 2. |
 | `workspace_root` | `ZAKCODE_WORKSPACE_ROOT` | current dir | Root directory the agent operates within. |
 
 ## Web tools & egress

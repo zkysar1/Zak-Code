@@ -767,6 +767,18 @@ class AgentLoop:
                             "reason": undeclared,
                         },
                     )
+                protected = self.permission_policy.protected_path_reason(arguments)
+                if protected is not None:
+                    return ToolResultBlock(
+                        tool_use_id=call.id,
+                        output=(
+                            f"Blocked: a hook rewrote {call.name!r} into a write to a protected "
+                            f"path ({protected}); the protected-path floor is never waived by a "
+                            "rewrite."
+                        ),
+                        is_error=True,
+                        data={"hook_blocked": True, "protected_path": True, "reason": protected},
+                    )
 
         # 3. Execute (registry.execute wraps any failure into an error ToolResult).
         tool_res = await self.registry.execute(call.name, arguments, ctx)

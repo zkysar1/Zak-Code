@@ -785,3 +785,28 @@ cost-accounting test instead of a fallback table.
   Next on the roadmap: Step 2 (autonomy breadth-downgrade +
   protected-path floor), then Step 3 (the real Executor sandbox — the precondition for
   trustworthy autonomy).
+
+- **2026-06-12 (dev, D27 — self-remediation Step 2: un-waivable protected-path floor):** built
+  Step 2 on Zachary's "move on to step two". New tighten-only floor in `PermissionPolicy`
+  (`PROTECTED_PATH_PATTERNS` + `_protected_path_reason`, a `decide()` block after the dependency
+  gate): a WRITE whose path arg matches a sensitive location — `.git/`, `.env` (not
+  `.env.example`/`.gitignore`/`.github/`), the venv (`.venv`/`venv`/`site-packages`), or the
+  agent's own `.claude/` config — never auto-allows. Escalates to a (session-grantable) prompt
+  under `allow`/`acceptEdits`; **hard DENY in `autonomous`**; un-waivable by a session grant OR a
+  per-tool trust override (the `authorize()`/`auto_allows()` grant fast-paths re-decide; loose
+  modes still hit the floor in `decide()`) AND re-applied to a PreToolUse-hook-rewritten call
+  (`protected_path_reason()`, mirroring audit3 #5). This realises BOTH halves of the Step 2 spec:
+  the protected-path floor, and the "breadth-downgrade" (a blanket grant/override can no longer
+  carry sensitive-write breadth past the floor — closing self-permission-escalation via
+  `.claude/`, secret-rewrite via `.env`, dependency-tamper via the venv, repo-corruption via
+  `.git/`). `child_view` propagates the combined pattern list; operator extras via the new
+  `protected_paths` setting (`compile_protected_paths`, wired in the facade). **KEY SCOPING
+  DECISION (the Step-1 lesson, reapplied):** the floor scans the write/edit tools' PATH arg, NOT
+  shell commands — a path inside an arbitrary command is usually a read/execute (`.venv/bin/python
+  -m pytest`, `cat .git/config`), so scanning shell over-blocks (it broke `test_agent_e2e` on the
+  first cut); shell-driven writes to protected paths are best-effort residual the Step 3 sandbox
+  contains. 38 new tests (`tests/test_protected_paths.py`); 1819 suite green (clean env),
+  ruff+mypy clean. Docs: SELF-REMEDIATION Step 2 ✅ SHIPPED, CONFIG.md + `.env.example`
+  (`protected_paths`). Next: fresh-eyes review → PR. Then Step 3 (the Executor sandbox — the big
+  one, the precondition for trustworthy autonomy that makes every best-effort residual above
+  survivable).
