@@ -263,8 +263,19 @@ class Agent:
         # from settings.permission_mode (default 'ask'). An interactive client may
         # pass a ``prompter`` so escalations can be approved; with none, 'ask'
         # fails closed (writes/shell denied) — safe for non-interactive use.
+        from zakcode.deps_gate import read_declared_packages
         from zakcode.permissions import compile_deny_patterns
 
+        # Declared-dependency gate (self-remediation Step 1): when enabled, give the policy a
+        # lazy reader of the workspace's declared package set. It is invoked only when a command
+        # actually names an install, and re-reads each time so a package added mid-session is
+        # recognised. ``None`` (gate off) leaves the policy's pure matrix unchanged.
+        workspace_root = self.settings.workspace_root
+        declared_packages = (
+            (lambda: read_declared_packages(workspace_root))
+            if self.settings.dependency_gate
+            else None
+        )
         self.permission_policy = permission_policy or PermissionPolicy(
             self.settings.permission_mode,
             prompter=prompter,
@@ -273,6 +284,7 @@ class Agent:
             confirm_tools={"web_fetch"} if self.settings.web_fetch_confirm else None,
             # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load.
             tool_mode_overrides=dict(self.settings.tool_trust_overrides),
+            declared_packages=declared_packages,
         )
         # Rehydrate operator grants persisted with the session (audit P0-2d / D12 / Q5).
         # Honored only when the active mode is at least as loose as the grant-time mode;

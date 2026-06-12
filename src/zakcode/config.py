@@ -201,6 +201,18 @@ class Settings(BaseSettings):
         default=False,
         description="Let bash/powershell children inherit provider API keys (default: scrubbed).",
     )
+    # Declared-vs-undeclared dependency gate (self-remediation Step 1; docs/SELF-REMEDIATION.md).
+    # When on (default), a shell command that installs a package the project's manifests/lockfile
+    # do not declare (pip/uv/poetry/npm/pnpm/yarn) is escalated to a confirmation prompt — and is a
+    # hard DENY in ``autonomous`` mode, where there is no prompt and no execution sandbox yet. This
+    # closes the typosquatting / malicious-dependency / injection-escalation vector while letting
+    # the agent freely (re)install what the project already vouches for, ``uv sync``, ``npm ci``,
+    # and editable/local installs. Tighten-only: it can never loosen a verdict. Set false to
+    # disable the gate entirely (installs are then governed by mode + the dangerous blocklist only).
+    dependency_gate: bool = Field(
+        default=True,
+        description="Escalate/deny installs of packages not declared in the project's manifests.",
+    )
     denied_commands: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         description=(

@@ -711,3 +711,77 @@ cost-accounting test instead of a fallback table.
   cross-client contract incl. the shared-grammar mapping table. Integration
   fixes: spec's invalid light-mode hex (#ecease5 -> #eceae5), ARCHITECTURE
   footer wording, orphaned suspend_live deleted. Suite 1592 green.
+
+- **2026-06-12 (dev, D26 — self-remediation Step 1: declared-vs-undeclared dependency
+  gate):** built the first concrete step of the SELF-REMEDIATION roadmap (D-doc PR #25),
+  on which this PR stacks. New pure module `src/zakcode/deps_gate.py` — `installed_specs`
+  parses a shell command into the package identities it would EXPLICITLY install, and
+  `read_declared_packages` reads the project's declared set from `pyproject.toml`
+  (project + optional + PEP 735 groups + poetry), `uv.lock` (full resolved set),
+  `requirements*.txt`, and `package.json`. Wired into `PermissionPolicy.decide` as a
+  **tighten-only** check placed AFTER the dangerous-pattern floor: an install of a package
+  no manifest declares escalates ALLOW→ASK, and is a deterministic hard DENY in
+  `autonomous` (session-wide or per-tool) — there is no execution sandbox yet, so an
+  undeclared install can't auto-run headless. Declared installs, `uv sync`/`npm ci`, and
+  editable/local installs (`pip install .`/`-e .`/`-r req.txt`) pass through untouched;
+  URL/VCS installs are always treated as undeclared. **Key design call:** the parser is
+  *launcher-aware* — it sees through `python -m pip install`, `uv pip install`,
+  `uv run pip install`, a leading PowerShell `&`, and a full-interpreter-path invocation —
+  precisely the shapes the project's OWN `pip_install_hint` (D-fix-install-hints / PR #22)
+  emits, so the self-fix path it was built to enable cannot dodge its own gate by spelling
+  the install differently. Gated on an injected `declared_packages` callable (default
+  `None` → OFF, so the pure decision matrix is unchanged for every existing caller); the
+  Agent facade wires it lazily from `workspace_root` when the new `dependency_gate` setting
+  (default **on**) is true. The manifest read happens only when a command actually names an
+  install, and a read failure fails toward ASK, never a crash. The suite caught two real
+  parser bugs during the build (npm scoped names `@scope/pkg` were dropped by the local-path
+  guard; a marker fragment leaked a stray quote into a name), both fixed. Docs travel with it:
+  CONFIG.md row, `.env.example` knob, RISKS supply-chain row upgraded, SELF-REMEDIATION Step 1
+  marked ✅ SHIPPED.
+  **Fresh-eyes adversarial review round (per the standing per-phase-review rule) surfaced and
+  fixed 7 more:** (F1) modern Poetry 1.2+ `[tool.poetry.group.*.dependencies]` weren't read;
+  (F2) the `requirements*.txt` glob was root-/prefix-only — broadened to `*requirements*.txt`
+  + `requirements/*.txt`; (F3) `-r`/`--requirement` includes are now followed (cycle-guarded);
+  (F4) a non-string `name` in `uv.lock` raised `AttributeError`, breaking the "never raises"
+  contract — now type-guarded; (F5, the one over-PERMISSIVE hole) the flat pip+npm declared
+  set let an npm-declared name vouch for a PyPI install of the same string — fixed by
+  **ecosystem-tagging** every identity (`pypi:`/`npm:`) end-to-end so a name only vouches
+  within its own ecosystem; and (the security-relevant one) a blanket **session ALLOW grant**
+  on `bash` re-checked only the dangerous floor + static DENY, not the gate — so an undeclared
+  install could ride a prior grant unprompted in interactive modes; the gate is now
+  un-waivable by a grant (re-decides in `authorize()`/`auto_allows()`, mirroring the dangerous
+  floor). Deferred F6 (per-command manifest re-parse has no cache — minor perf; the re-read is
+  intentional for freshness, so a naive cache would risk staleness).
+  **Round-2 review (after the session-limit reset) re-ran the 3 cut-short angles and found 8
+  more, all fixed:** (A) `uv tool install`/`uvx`/`uv tool run`, (C) versioned pip `pip3.11`,
+  (E) interpreter flags before `-m` (`python -E -m pip install`), (D) `env`/`FOO=bar` env-prefix,
+  (B) lone `&` background + `(…)`/`{…}` subshell separators — five **blocking** parser bypasses
+  where an undeclared install ran UNPROMPTED; (F, blocking) the PreToolUse hook-rewrite seam
+  re-checked only the dangerous floor, not the gate — added `undeclared_install_reason()` + a
+  loop re-check mirroring audit3 #5; plus two **major** false-positives (G unknown value-bearing
+  flags, H trailing `#` comments) that over-blocked legitimate declared installs. **Architectural
+  call:** reliably parsing arbitrary shell is unsound, so the gate is documented as **best-effort
+  defense-in-depth** — it closes the common/natural spellings (high value, no model), and
+  deliberate obfuscation (nested `bash -c`, `eval`, base64) is by design contained by the Step 3
+  sandbox, not chased in the parser.
+  **Round-3 (convergence) found the position-locked parser still leaked on COMMON spellings, so
+  it was restructured, not patched:** global/pip-level flags before the verb (`pip -i <index>
+  install`, `uv -q add`, `python -m pip --no-cache-dir install`), Windows backslash venv paths
+  (`.venv\Scripts\pip install` — posix `shlex` ate the backslashes), and a `--save-exact`/
+  `--prefer-dist` regression (boolean npm flags I'd wrongly put in the value-flag list).
+  Fix = **verb-keyword scanning** (find the `install`/`add` verb by scanning, not a fixed slot —
+  so a flag can't push it out of position; unknown value-flags now degrade to a *safe
+  false-positive*, never a miss) + **`posix=False` tokenizing** (matches `agent/recipe.py`, so
+  Windows paths survive) with quote-stripping in `_basename`. This is the principled structural
+  fix, not more special cases. **Round-4 (final pre-merge, Zachary-requested) found two last
+  common-spelling bypasses, both fixed:** `uv run --with <pkg>` (fetches+runs an ephemeral PyPI
+  dep — the `uv run` branch only handled `uv run pip install`, while sibling `uvx --with`/`uv
+  tool run --with` were caught — an inconsistent gap, now gated like uvx); and npm `-p`/`-d`
+  (lowercase shorts that pip/uv use as value flags but npm treats as BOOLEAN, so `npm install
+  -p <pkg>` swallowed the package — fixed by splitting value-flags into ecosystem-specific sets
+  `_VALUE_FLAGS`/`_NPM_VALUE_FLAGS`). 1781 suite green (clean env), ruff+mypy clean. Four review
+  rounds total hardened the parser; the residual is the documented best-effort boundary (Step 3
+  sandbox). **MERGED to main** (PR #25 doc then PR #26 gate).
+  Next on the roadmap: Step 2 (autonomy breadth-downgrade +
+  protected-path floor), then Step 3 (the real Executor sandbox — the precondition for
+  trustworthy autonomy).
