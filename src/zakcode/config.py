@@ -144,6 +144,21 @@ class Settings(BaseSettings):
     max_iterations: int = Field(
         default=50, ge=1, description="Hard cap on agent-loop iterations per turn."
     )
+    # Optional cost/token ceilings (parity #4), bounding CUMULATIVE spend across a turn and
+    # its whole sub-agent delegation tree (one shared budget). A completed call's actuals are
+    # folded in post-completion; once a ceiling is crossed the turn stops with
+    # stop_reason="budget_exhausted". None (default) = that ceiling is unbounded, so behavior
+    # is unchanged. These are spend guards, not per-call input caps.
+    max_cost_usd: float | None = Field(
+        default=None,
+        ge=0,
+        description="Stop the turn-tree once cumulative model cost (USD) reaches this; None = off.",
+    )
+    max_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        description="Stop the turn-tree once cumulative total tokens reach this; None = off.",
+    )
     # Bounded retry for RATE-LIMITED provider calls only (a 429 is the one failure
     # class where waiting is the documented remedy). Other provider errors are never
     # retried — they end the turn gracefully with stop_reason="provider_error".

@@ -49,6 +49,8 @@ here — adding a Settings field without documenting it fails CI.
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
 | `max_iterations` | `ZAKCODE_MAX_ITERATIONS` | `50` | Hard cap on agent-loop iterations per turn. |
+| `max_cost_usd` | `ZAKCODE_MAX_COST_USD` | _(unset)_ | Stop the turn (and its whole sub-agent tree) once cumulative model cost in USD reaches this ceiling (`stop_reason="budget_exhausted"`). Unset = no cost bound. |
+| `max_tokens` | `ZAKCODE_MAX_TOKENS` | _(unset)_ | Stop the turn-tree once cumulative total tokens reach this ceiling (`stop_reason="budget_exhausted"`). Unset = no token bound. A cumulative spend guard, not a per-call output cap. |
 | `turn_end_veto_budget` | `ZAKCODE_TURN_END_VETO_BUDGET` | `0` | Max times per turn a `TURN_END` hook may veto a vetoable stop (`completed` / `doom_loop` / `stuck`) and re-enter the loop with its continuation prompt (the Claude-Code-Stop-hook seam). `0` disables the gate entirely. `max_iterations` / `provider_error` / `recipe_stalled` are never vetoable. |
 | `permission_mode` | `ZAKCODE_PERMISSION_MODE` | `ask` | `ask` \| `acceptEdits` \| `allow` \| `autonomous` \| `deny`. `autonomous` never prompts; catastrophic commands hard-deny. |
 | `tool_trust_overrides` | `ZAKCODE_TOOL_TRUST_OVERRIDES` | `{}` | Per-tool mode overrides (JSON, tool → mode), loosen or tighten. Cannot loosen the dangerous floor in an autonomous session. |

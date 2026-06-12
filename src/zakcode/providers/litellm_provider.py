@@ -96,6 +96,30 @@ def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
 
+#: The system-prompt stable/dynamic split marker (parity #2 prompt caching). It MUST equal
+#: ``zakcode.agent.prompt.DYNAMIC_BOUNDARY`` — kept as a local literal (rather than importing
+#: the agent layer into the vendor adapter) and asserted equal by ``test_prompt_cache`` so a
+#: drift fails CI rather than silently disabling the cache breakpoint.
+_CACHE_BOUNDARY = "--- DYNAMIC_BOUNDARY ---"
+
+
+def _supports_cache_control(model: str) -> bool:
+    """Whether to emit Anthropic ``cache_control`` content blocks for ``model`` (parity #2).
+
+    Gated to Anthropic only: litellm maps ``cache_control`` onto Anthropic's prompt-cache
+    beta (adding the beta header itself), whereas OpenAI caches automatically and would
+    reject the annotation. Requires the static registry's ``supports_caching`` flag too, so
+    a future Anthropic model marked non-caching is respected. Never raises.
+    """
+    prefix = model.split("/", 1)[0].lower() if "/" in model else ""
+    if not (prefix == "anthropic" or model.lower().startswith("claude")):
+        return False
+    try:
+        return get_capabilities(model).supports_caching
+    except Exception:  # noqa: BLE001 — a capability probe must never fail a request build
+        return False
+
+
 def _max_stop_sequences(model: str) -> int | None:
     """The backend's max number of ``stop`` sequences, when known.
 
@@ -308,6 +332,16 @@ class LiteLLMProvider(Provider):
         if total == 0 and (prompt or completion):
             total = prompt + completion
 
+        # Prompt-cache accounting (parity #2). litellm normalizes Anthropic's
+        # ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` onto the usage
+        # object; OpenAI's automatic caching reports a read count nested under
+        # ``prompt_tokens_details.cached_tokens``. Probe both shapes; absent fields read 0.
+        cache_read = cls._coerce_int(_get(usage_obj, "cache_read_input_tokens"))
+        if cache_read == 0:
+            details = _get(usage_obj, "prompt_tokens_details")
+            cache_read = cls._coerce_int(_get(details, "cached_tokens"))
+        cache_creation = cls._coerce_int(_get(usage_obj, "cache_creation_input_tokens"))
+
         cost = 0.0
         hidden = _get(response, "_hidden_params")
         if isinstance(hidden, dict):
@@ -318,6 +352,8 @@ class LiteLLMProvider(Provider):
             completion_tokens=completion,
             total_tokens=total,
             cost_usd=cost,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
         )
 
     @classmethod
@@ -461,6 +497,10 @@ class LiteLLMProvider(Provider):
         Factored out of :meth:`acomplete` so the request shape (model, endpoint,
         tool wiring) is unit-testable without a network call.
         """
+        # Prompt caching (parity #2): stamp cache_control on the stable system prefix for
+        # caching-capable Anthropic models. Mutates wire_messages[0] in place; a no-op for
+        # every other backend and for a system prompt with no DYNAMIC_BOUNDARY.
+        self._apply_prompt_cache(wire_messages)
         call_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": wire_messages,
@@ -501,6 +541,32 @@ class LiteLLMProvider(Provider):
         # Allow per-call overrides (e.g. max_tokens) without re-listing them.
         call_kwargs.update(kw)
         return call_kwargs
+
+    def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
+        """Rewrite the leading system message into cached + uncached content blocks.
+
+        When the model supports cache_control (Anthropic) and the system content is a plain
+        string carrying :data:`_CACHE_BOUNDARY`, split it there: the STABLE prefix (identity,
+        tool guidance — constant for the session) becomes a ``cache_control: ephemeral`` text
+        block, and the DYNAMIC tail (git status, recalled memory — changes per turn) a plain
+        block, so the cache breakpoint is stable across turns. A no-op (leaves the plain
+        string) for any other backend or a system prompt with no boundary. Mutates in place.
+        """
+        if not _supports_cache_control(self.model):
+            return
+        if not wire_messages or wire_messages[0].get("role") != "system":
+            return
+        content = wire_messages[0].get("content")
+        if not isinstance(content, str) or _CACHE_BOUNDARY not in content:
+            return
+        cut = content.find(_CACHE_BOUNDARY) + len(_CACHE_BOUNDARY)
+        stable, dynamic = content[:cut], content[cut:]
+        blocks: list[dict[str, Any]] = [
+            {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}}
+        ]
+        if dynamic.strip():
+            blocks.append({"type": "text", "text": dynamic})
+        wire_messages[0] = {**wire_messages[0], "content": blocks}
 
     async def acomplete(
         self,

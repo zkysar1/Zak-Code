@@ -42,10 +42,19 @@ Stop conditions
 * ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4).
   A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried up
   to ``Settings.provider_max_retries`` times with ``retry_after``-aware backoff;
-  any other :class:`~zakcode.providers.base.ProviderError` is terminal immediately.
-  Either way the TURN ends gracefully — session persisted at a message boundary,
-  ``TurnResult.error`` carrying the (already secret-redacted) detail — instead of
-  the exception unwinding an unattended session.
+  a :class:`~zakcode.providers.base.ContextWindowExceeded` is recovered up to
+  ``_MAX_CONTEXT_RECOVERY`` times by force-compacting and retrying the same call in
+  place (parity #1b); any other :class:`~zakcode.providers.base.ProviderError` is
+  terminal immediately (after any one-shot model failover). Either way the TURN ends
+  gracefully — session persisted at a message boundary, ``TurnResult.error`` carrying
+  the (already secret-redacted) detail — instead of unwinding an unattended session.
+* ``"budget_exhausted"`` — an optional cumulative cost/token ceiling
+  (``Settings.max_cost_usd`` / ``max_tokens``, shared across the whole sub-agent tree)
+  was crossed (parity #4). A hard, non-vetoable bound like ``max_iterations``.
+
+A ``finish_reason`` of ``length``/``max_tokens`` on a final (no-tool-calls) answer is
+auto-continued up to ``_MAX_LENGTH_CONTINUATIONS`` times rather than mis-reported as a
+clean completion (parity #5); such a turn sets ``degraded``.
 
 ``TurnResult.degraded`` (and the streaming ``AgentDone.degraded``) is a thin roll-up:
 True when the turn engaged failure-recovery or ended in a non-clean terminal.
@@ -97,6 +106,7 @@ from zakcode.memory import MemoryProvider
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import (
+    ContextWindowExceeded,
     LLMResult,
     ModelOutputRejected,
     Provider,
@@ -136,6 +146,22 @@ DOOM_LOOP_THRESHOLD = 3
 #: ``_RETRY_MAX_DELAY`` so a hostile/huge Retry-After can't stall a turn for minutes.
 _RETRY_BASE_DELAY = 1.0
 _RETRY_MAX_DELAY = 30.0
+
+#: How many times a single turn may recover from a :class:`ContextWindowExceeded` by
+#: force-compacting and retrying the same call in place (parity #1b/#9). Bounded so an
+#: un-compactable session (nothing old enough to summarize) fails gracefully as
+#: ``provider_error`` instead of looping. The recovery does NOT draw an iteration unit —
+#: it is the same logical call, retried on a smaller transcript.
+_MAX_CONTEXT_RECOVERY = 2
+
+#: Finish reasons that mean the model's output was cut off at the token cap (parity #5):
+#: OpenAI reports ``length``; litellm maps Anthropic's ``max_tokens`` stop reason similarly.
+_LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+#: How many times a single turn may auto-continue a length-truncated FINAL answer before
+#: accepting it as-is. Each continuation is a real new iteration (draws iteration + budget),
+#: so it is bounded separately from — and far below — the iteration cap.
+_MAX_LENGTH_CONTINUATIONS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -232,9 +258,10 @@ def _fence_injected_context(texts: list[str]) -> str:
 _DEGRADED_STOP_REASONS = {"stuck", "doom_loop", "recipe_stalled", "provider_error"}
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
-#: deliberately NOT vetoable: ``max_iterations`` and ``provider_error`` are hard bounds
-#: (budget / infrastructure — a hook must not override them), and ``recipe_stalled`` is
-#: the recipe gate's own bounded give-up (re-entering would stall the same way again).
+#: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` / ``provider_error``
+#: are hard bounds (iteration / spend / infrastructure — a hook must not override them), and
+#: ``recipe_stalled`` is the recipe gate's own bounded give-up (re-entering would stall the
+#: same way again).
 _VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck"})
 
 
@@ -962,6 +989,9 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        context_recoveries = 0  # ContextWindowExceeded compact-then-retry count (parity #1b)
+        length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
 
         # Doom-loop tracking: the signature of the previous iteration's tool-call
         # batch and how many times in a row we have now seen it.
@@ -1014,15 +1044,46 @@ class AgentLoop:
                     result = await self._call_provider(
                         call_messages, system=system, tools=tool_defs or None
                     )
+                except ContextWindowExceeded as exc:
+                    # The request overflowed the model's window. Force a compaction and
+                    # retry the SAME call in place (parity #1b/#9) — this is recovery of
+                    # one logical call on a smaller transcript, not a new iteration, so it
+                    # draws no iteration/budget unit. Caught ABOVE ``ProviderError`` (it
+                    # subclasses it) so a context overflow never reaches the failover
+                    # branch below. Bounded by ``_MAX_CONTEXT_RECOVERY``; if compaction
+                    # cannot help (nothing old enough to summarize, or the cap is hit) it
+                    # falls through to the same graceful provider_error terminal.
+                    if context_recoveries < _MAX_CONTEXT_RECOVERY and await self.compact_now():
+                        context_recoveries += 1
+                        logger.warning(
+                            "context window exceeded; compacted and retrying (%d/%d)",
+                            context_recoveries,
+                            _MAX_CONTEXT_RECOVERY,
+                        )
+                        # Rebuild the message list from the now-compacted session — the
+                        # pre-compaction ``call_messages`` is the oversized transcript that
+                        # just overflowed, so retrying with it would fail identically.
+                        call_messages = await self._messages_for_call(user_text, iterations)
+                        continue
+                    stop_reason = "provider_error"
+                    turn_error = str(exc)
+                    logger.error(
+                        "turn aborted: context window exceeded, compaction could not recover: %s",
+                        turn_error,
+                    )
+                    self._refund_iteration()
+                    break
                 except ProviderError as exc:
                     # Runtime model failover (PKG-AUTO): once per turn, a NON-rate-limit
                     # failure may swap to a replacement provider and retry in place.
                     # (A RateLimited reaching here already exhausted its retry budget —
-                    # waiting longer, not switching, is its remedy; spec: non-rate-limit.)
+                    # waiting longer, not switching, is its remedy; spec: non-rate-limit.
+                    # ContextWindowExceeded is handled above and excluded here as
+                    # defense-in-depth so a reorder can't mis-route it into failover.)
                     if (
                         not failed_over
                         and self.model_failover is not None
-                        and not isinstance(exc, RateLimited)
+                        and not isinstance(exc, RateLimited | ContextWindowExceeded)
                     ):
                         switched = self.model_failover(exc)
                         if switched is not None:
@@ -1055,8 +1116,52 @@ class AgentLoop:
             turn_usage = turn_usage + result.usage
             self._persist()
 
+            # Cost/token budget stop (parity #4): fold this call's actuals into the shared
+            # budget and stop if a configured ceiling is crossed. Non-vetoable (a TURN_END
+            # hook cannot override a spend cap) by virtue of not being in
+            # _VETOABLE_STOP_REASONS — a hard bound like max_iterations.
+            if self.budget is not None:
+                self.budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
+                if self.budget.over_budget():
+                    stop_reason = "budget_exhausted"
+                    logger.info(
+                        "turn stopped: budget exhausted (cost=$%.4f, tokens=%d)",
+                        self.budget.cost_spent,
+                        self.budget.tokens_spent,
+                    )
+                    break
+
             # An empty completion (no text, no tool calls) ends the turn cleanly.
             if not result.has_tool_calls:
+                # Length-truncation continuation (parity #5): a final answer cut off at the
+                # output cap must not be reported as a clean "completed". Continue it (a new
+                # iteration, bounded) and flag the turn degraded. Runs BEFORE the TURN_END
+                # hook (#18) so a hook only ever sees the resolved completion. Scoped to the
+                # no-tool-calls branch: a truncated response carrying tool calls self-heals
+                # via the normal tool round-trip, and injecting a user message there would
+                # break tool_use/tool_result pairing for strict providers.
+                if (
+                    result.finish_reason in _LENGTH_FINISH_REASONS
+                    and result.text
+                    and length_continuations < _MAX_LENGTH_CONTINUATIONS
+                ):
+                    length_continuations += 1
+                    turn_degraded = True
+                    self.session.add_message(
+                        Message.user(
+                            _control_rail(
+                                "Your previous response was cut off at the output limit. "
+                                "Continue exactly where you left off."
+                            )
+                        )
+                    )
+                    self._persist()
+                    # A continuation is fresh work — clear the stall guards so it re-enters
+                    # the loop cleanly (it must not instantly trip doom/stuck).
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 # Recipe gate: a create-and-run turn may not end until the written file
                 # has actually been run successfully. Nudge the model to verify; give up
                 # gracefully (recipe_stalled) once the attempt cap is hit.
@@ -1224,7 +1329,7 @@ class AgentLoop:
             usage=turn_usage,
             stop_reason=stop_reason,
             error=turn_error,
-            degraded=stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
+            degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
         )
 
     def run_turn(self, user_text: str) -> TurnResult:
@@ -1276,6 +1381,9 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        context_recoveries = 0  # ContextWindowExceeded compact-then-retry count (parity #1b)
+        length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
         # This turn's assistant messages — kept only for the TURN_END payload's
         # ``last_assistant_message`` (the buffered path reuses its result list).
         turn_assistant: list[Message] = []
@@ -1332,6 +1440,7 @@ class AgentLoop:
                 # rendered, so a mid-stream failure is terminal for the turn instead.
                 # The accumulators are rebuilt per attempt so a retried call can never
                 # inherit partial state (defense in depth on top of the no-event gate).
+                stream_finish_reason: str | None = None
                 while True:
                     text_parts: list[str] = []
                     accumulator = ToolCallAccumulator()
@@ -1350,11 +1459,14 @@ class AgentLoop:
                                 accumulator.add(ev)
                             elif isinstance(ev, StreamUsage):
                                 turn_usage = turn_usage + ev.usage
+                                if self.budget is not None:
+                                    self.budget.add_usage(ev.usage.cost_usd, ev.usage.total_tokens)
                                 self.session.add_usage(ev.usage)
                             elif isinstance(ev, StreamDone):
-                                # finish_reason is advisory here; the loop's own stop
-                                # conditions decide the turn's stop_reason. Break the inner
-                                # stream and assemble the assistant message.
+                                # The loop's own stop conditions decide the turn's
+                                # stop_reason, but a ``length`` finish triggers truncation
+                                # continuation below (parity #5), so capture it here.
+                                stream_finish_reason = ev.finish_reason
                                 break
                     except RateLimited as exc:
                         if not received_any and retry_attempts < self.provider_max_retries:
@@ -1382,6 +1494,32 @@ class AgentLoop:
                                 )
                             )
                             await asyncio.sleep(delay)
+                            continue
+                        provider_failure = str(exc)
+                    except ContextWindowExceeded as exc:
+                        # Compact-then-retry (parity #1b), streaming twin. A context
+                        # overflow is detected at request time, before any delta streams,
+                        # so ``received_any`` is False and retrying re-yields nothing the
+                        # client saw. Caught ABOVE ``ProviderError`` (it subclasses it) so
+                        # it never reaches the failover branch. Bounded; on failure it
+                        # falls through to the same graceful provider_error terminal.
+                        if (
+                            not received_any
+                            and context_recoveries < _MAX_CONTEXT_RECOVERY
+                            and await self.compact_now()
+                        ):
+                            context_recoveries += 1
+                            # Rebuild from the compacted session (the prior call_messages
+                            # is the oversized transcript that just overflowed).
+                            call_messages = await self._messages_for_call(user_text, iterations)
+                            logger.warning(
+                                "context window exceeded; compacted and retrying (%d/%d)",
+                                context_recoveries,
+                                _MAX_CONTEXT_RECOVERY,
+                            )
+                            yield AgentStatus(
+                                message="context window exceeded; compacted and retrying"
+                            )
                             continue
                         provider_failure = str(exc)
                     except ProviderError as exc:
@@ -1425,8 +1563,44 @@ class AgentLoop:
                 turn_assistant.append(assistant_msg)
                 self._persist()
 
+                # Cost/token budget stop (parity #4), streaming twin. Usage was folded into
+                # the budget as StreamUsage events arrived; check after the call assembles.
+                # Non-vetoable, like the buffered path.
+                if self.budget is not None and self.budget.over_budget():
+                    stop_reason = "budget_exhausted"
+                    logger.info(
+                        "turn stopped: budget exhausted (cost=$%.4f, tokens=%d)",
+                        self.budget.cost_spent,
+                        self.budget.tokens_spent,
+                    )
+                    yield AgentStatus(message="stopping: cost/token budget exhausted")
+                    break
+
                 # No tool calls → the turn is complete.
                 if not tool_calls:
+                    # Length-truncation continuation (parity #5), streaming twin. See the
+                    # buffered path for the rationale and the no-tool-calls scoping.
+                    if (
+                        stream_finish_reason in _LENGTH_FINISH_REASONS
+                        and assistant_text
+                        and length_continuations < _MAX_LENGTH_CONTINUATIONS
+                    ):
+                        length_continuations += 1
+                        turn_degraded = True
+                        self.session.add_message(
+                            Message.user(
+                                _control_rail(
+                                    "Your previous response was cut off at the output limit. "
+                                    "Continue exactly where you left off."
+                                )
+                            )
+                        )
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="response truncated; continuing")
+                        continue
                     if cursor.needs_verification():
                         if not cursor.can_nudge():
                             stop_reason = "recipe_stalled"
@@ -1613,7 +1787,7 @@ class AgentLoop:
             iterations=iterations,
             usage=turn_usage,
             error=turn_error,
-            degraded=stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
+            degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
         )
 
     @staticmethod
