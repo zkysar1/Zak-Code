@@ -231,7 +231,7 @@ A second, broader engagement: a full fresh-eyes parity review of Zak-Code agains
 PARITY.md. Method: a 104-agent / ~5.7M-token workflow (8 lanes × 4 codebases → gap
 synthesis → adversarial verification against the real code → one plan). **Full verdict,
 themes, the 30-item verified backlog, and the "already at-or-ahead, do NOT rebuild" list
-live in [`PARITY-GAP-ANALYSIS.md`](PARITY-GAP-ANALYSIS.md)** (D22). Headline: core
+live in [`PARITY-GAP-ANALYSIS.md`](PARITY-GAP-ANALYSIS.md)** (D25). Headline: core
 engineering is at par-or-ahead of all three; the gaps are *delivered breadth*
 (provider-resilience wiring + operability surface), not architecture.
 
@@ -385,14 +385,16 @@ After PR #19 (parity analysis), Zachary commissioned the **provider-resilience c
   resolver must be a pluggable interface so "zakpick" (task-category model
   routing) lands later without API breakage. Sequencing: restack → omni merges
   the stack → PKG-AUTO starts → omni starts the internal TurnEnd seam post-#5.
-- **D22 (2026-06-11, Zachary → agent, ultracode):** commissioned a full parity review
+- **D25 (2026-06-11, Zachary → agent, ultracode):** commissioned a full parity review
   of Zak-Code vs **claw-code + Hermes + goose** ("get to par with these three
   harnesses"). Ran as a 104-agent / ~5.7M-token workflow; output is
   `docs/PARITY-GAP-ANALYSIS.md` + the *Parity backlog* section above. Verdict:
   at-par-or-ahead on core engineering, behind on provider-resilience wiring and
-  operability breadth; 30 verified items (11 P1), 18 already-ahead. Numbered D22 to
-  clear omni's commit-referenced D20 (per-user config home, #16) and D21 (PKG-AUTO,
-  #17), which are cited in merged work but not yet written into this log's body.
+  operability breadth; 30 verified items (11 P1), 18 already-ahead. Originally
+  numbered D22 to clear omni's commit-referenced D20 (per-user config home, #16) and
+  D21 (PKG-AUTO, #17); renumbered D22→D25 in the 06-12 collision cleanup — three
+  entries claimed D22, and #21's claude-polish keeps it because its squash-commit
+  subject (5fbfb21) cites D22 immutably; omni's TurnEnd entry became D24.
   Clean-room rule enforced on every claw-code reader; `[CLEAN-ROOM]` items must be
   re-expressed, never copied; study material extracted to
   `C:\ZakNoCloud\_zakcode_research\` (read-only, gitignored, never in-repo). The
@@ -660,7 +662,8 @@ cost-accounting test instead of a fallback table.
   example; stray UTF-8 BOM stripped from this file. Everything else verified
   clean: spec 10/10 clauses, loop seam 7/7 safety points, hermeticity (incl.
   the construction-time probe binding), key handling. 1541 green.
-- **2026-06-11 (omni, D22 — TurnEnd T2/T3/T4: loop break-site veto gates):**
+- **2026-06-11 (omni, D24 — TurnEnd T2/T3/T4: loop break-site veto gates;
+  logged as D22 at merge, renumbered in the 06-12 collision cleanup):**
   the Stop-hook seam goes live in the loop. `AgentLoop` ctor gains
   `turn_end_veto_budget: int = 0`; at the three VETOABLE break sites
   (`completed` / `doom_loop` / `stuck`, both paths) a new `_fire_turn_end`
@@ -686,7 +689,8 @@ cost-accounting test instead of a fallback table.
   non-vetoable trio, doom-veto pairing+reset double-threshold proof, payload
   contents, streaming status + budget-zero, fail-open crash, env/Agent
   plumbing). Suite 1556 green.
-- **2026-06-11 (dev, D22 — frontend visual overhaul, "claude-polish"):** Zachary
+- **2026-06-11 (dev, D22 — frontend visual overhaul, "claude-polish"; keeps D22
+  in the 06-12 collision cleanup — commit 5fbfb21's subject cites it immutably):** Zachary
   directed a ground-up restyle of both clients to reach visual parity with the
   reference harnesses (Claude Code public look, goose, hermes-agent — studied
   clean-room: goose/hermes from their public repos, Claude Code from its
