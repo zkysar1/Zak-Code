@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -45,6 +46,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from zakcode.config import PermissionTier
+from zakcode.deps_gate import display_name, installed_specs
 
 if TYPE_CHECKING:
     from zakcode.tools.base import ToolSpec
@@ -282,6 +284,7 @@ class PermissionPolicy:
         extra_dangerous_patterns: list[tuple[re.Pattern[str], str]] | None = None,
         confirm_tools: set[str] | None = None,
         tool_mode_overrides: dict[str, PermissionMode | str] | None = None,
+        declared_packages: Callable[[], set[str]] | None = None,
     ) -> None:
         self.mode = PermissionMode.parse(mode)
         self.prompter = prompter
@@ -301,6 +304,14 @@ class PermissionPolicy:
         # (e.g. ``web_fetch`` egress when ``web_fetch_confirm`` is on). Like the dangerous-pattern
         # check this can only TIGHTEN a verdict — but unlike it, the prompt is session-grantable.
         self._confirm_tools = set(confirm_tools or ())
+        # Declared-vs-undeclared dependency gate (self-remediation Step 1, see
+        # ``docs/SELF-REMEDIATION.md``). A callable that returns the project's declared
+        # package set (read lazily from manifests). ``None`` = gate OFF (the default, so the
+        # pure decision matrix and every existing caller are unchanged). Like the dangerous
+        # and confirm checks this only ever TIGHTENS: an install of a package no manifest
+        # vouches for escalates to ASK (a hard DENY in ``autonomous`` — there is no execution
+        # sandbox yet). The provider is invoked only when a command actually names an install.
+        self._declared_packages = declared_packages
         # 'allow' grants are keyed by TOOL NAME — a grant covers the whole tool for the
         # session (the operator is not re-prompted for every new path/command). 'deny'
         # grants stay keyed by the exact (tool, args) so a block is narrow.
@@ -326,6 +337,7 @@ class PermissionPolicy:
             dangerous_patterns=self.dangerous_patterns,
             confirm_tools=self._confirm_tools,
             tool_mode_overrides=dict(self.tool_mode_overrides),
+            declared_packages=self._declared_packages,
         )
 
     # ── public read accessors (so clients never touch the private sets) ────────
@@ -348,11 +360,17 @@ class PermissionPolicy:
         tool_name = spec.name if spec is not None else "<unknown>"
         if self._key(tool_name, arguments) in self._session_deny:
             return False
-        if tool_name in self._session_allow and self._dangerous_reason(arguments) is None:
+        if (
+            tool_name in self._session_allow
+            and self._dangerous_reason(arguments) is None
+            and not self._undeclared_install(arguments)
+        ):
             # Mirror authorize()'s grant guard (stack review minor #1): a grant may
             # only ever resolve ASK→ALLOW, so this read-only hint must also re-decide —
             # else the recipe harness-run could auto-fire a call that authorize would
-            # statically DENY (e.g. a grant restored into a tighter posture).
+            # statically DENY (e.g. a grant restored into a tighter posture). A grant
+            # likewise cannot waive the dependency gate (an undeclared install re-decides
+            # below, exactly like the dangerous floor).
             decision, _ = self.decide(spec, arguments)
             return decision is not PermissionDecision.DENY
         decision, _ = self.decide(spec, arguments)
@@ -384,6 +402,39 @@ class PermissionPolicy:
         """
         return self._dangerous_reason(arguments)
 
+    def _undeclared_install(self, arguments: dict) -> list[str]:
+        """Package-install targets in the command that NO project manifest declares.
+
+        Always empty when the gate is off (no ``declared_packages`` provider injected), so
+        the pure decision matrix is unchanged by default. When on, it parses each shell
+        argument for an explicit install (:func:`zakcode.deps_gate.installed_specs`) and —
+        only if some package is actually named — reads the declared set and returns the ones
+        not in it. The manifest read is wrapped: a read failure yields an empty declared set
+        (so every named package counts as undeclared → escalate), never a crash.
+        """
+        if self._declared_packages is None:
+            return []
+        specs: list[str] = []
+        seen: set[str] = set()
+        for key in _SHELL_ARG_KEYS:
+            value = arguments.get(key)
+            if isinstance(value, str) and value.strip():
+                for spec in installed_specs(value):
+                    if spec not in seen:
+                        seen.add(spec)
+                        specs.append(spec)
+        if not specs:  # no explicit install named → no manifest read, gate is a no-op
+            return []
+        try:
+            declared = self._declared_packages()
+        except Exception:  # pragma: no cover - never let a manifest read crash authorization
+            logger.warning(
+                "dependency gate: declared-package read failed; treating none as declared"
+            )
+            declared = set()
+        # ``specs`` and ``declared`` are ecosystem-tagged; compare tagged, return the human name.
+        return [display_name(spec) for spec in specs if spec not in declared]
+
     def decide(self, spec: ToolSpec | None, arguments: dict) -> tuple[PermissionDecision, str]:
         """Return the static (pre-prompt, stateless) verdict and a human reason.
 
@@ -392,6 +443,10 @@ class PermissionPolicy:
         mode for the named tool — but when the SESSION mode is ``autonomous``, a
         dangerous-pattern match is a hard DENY regardless of any per-tool loosening
         (D12 invariant: overrides cannot loosen the dangerous floor in autonomous).
+
+        The dependency gate (when enabled) is the same shape of tighten-only check,
+        applied after the dangerous-pattern one: an install of a package the project's
+        manifests/lockfile do not declare escalates to ASK (hard DENY in autonomous).
         """
         tool_name = spec.name if spec is not None else "<unknown>"
         mode = self.tool_mode_overrides.get(tool_name, self.mode)
@@ -427,6 +482,33 @@ class PermissionPolicy:
             # Force a confirmation even if tier/mode would have auto-allowed.
             return (PermissionDecision.ASK, f"dangerous command: {danger}")
 
+        # Declared-vs-undeclared dependency gate (self-remediation Step 1). Tighten-only,
+        # exactly like the dangerous-pattern check above: an install of a package no manifest
+        # vouches for is the typosquatting / malicious-dependency / injection-escalation
+        # vector. In ``autonomous`` (session-wide or per-tool) it is a deterministic hard DENY
+        # — there is no execution sandbox yet — surfaced as a recoverable tool error. In
+        # ``deny`` (or when tier/mode already denies) it stays DENY; otherwise it escalates to
+        # a (session-grantable) prompt. Declared installs and lockfile/local installs pass
+        # through untouched. The gate is OFF unless a provider was injected (default).
+        undeclared = self._undeclared_install(arguments)
+        if undeclared:
+            targets = ", ".join(undeclared)
+            if PermissionMode.AUTONOMOUS in (mode, self.mode):
+                return (
+                    PermissionDecision.DENY,
+                    f"blocked undeclared package install: {targets} "
+                    "(not in the project's manifests/lockfile)",
+                )
+            if mode is PermissionMode.DENY or base is PermissionDecision.DENY:
+                return (
+                    PermissionDecision.DENY,
+                    f"blocked undeclared package install: {targets}",
+                )
+            return (
+                PermissionDecision.ASK,
+                f"undeclared package install: {targets} (not in the project's manifests/lockfile)",
+            )
+
         if base is PermissionDecision.ALLOW:
             return (base, "")
         if base is PermissionDecision.DENY:
@@ -459,11 +541,17 @@ class PermissionPolicy:
         if key in self._session_deny:
             return (False, "denied for this session")
         # A session 'allow' grant covers the whole TOOL for the rest of the session, so
-        # the operator is not re-prompted for every new path/command. Two things a grant
+        # the operator is not re-prompted for every new path/command. Three things a grant
         # can NEVER waive (D12: grants resolve ASK→ALLOW only): the dangerous-command
-        # blocklist (a dangerous call re-decides below), and a static DENY — re-decide
-        # so a grant restored into a tighter posture cannot override a hard block.
-        if tool_name in self._session_allow and self._dangerous_reason(arguments) is None:
+        # blocklist (a dangerous call re-decides below), an UNDECLARED package install (the
+        # dependency gate — a blanket "allow bash" must not silently authorize fetching and
+        # running an unvetted package; it re-decides below to ASK/DENY), and a static DENY —
+        # re-decide so a grant restored into a tighter posture cannot override a hard block.
+        if (
+            tool_name in self._session_allow
+            and self._dangerous_reason(arguments) is None
+            and not self._undeclared_install(arguments)
+        ):
             decision, reason = self.decide(spec, arguments)
             if decision is PermissionDecision.DENY:
                 return (False, reason)

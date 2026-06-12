@@ -711,3 +711,49 @@ cost-accounting test instead of a fallback table.
   cross-client contract incl. the shared-grammar mapping table. Integration
   fixes: spec's invalid light-mode hex (#ecease5 -> #eceae5), ARCHITECTURE
   footer wording, orphaned suspend_live deleted. Suite 1592 green.
+
+- **2026-06-12 (dev, D26 — self-remediation Step 1: declared-vs-undeclared dependency
+  gate):** built the first concrete step of the SELF-REMEDIATION roadmap (D-doc PR #25),
+  on which this PR stacks. New pure module `src/zakcode/deps_gate.py` — `installed_specs`
+  parses a shell command into the package identities it would EXPLICITLY install, and
+  `read_declared_packages` reads the project's declared set from `pyproject.toml`
+  (project + optional + PEP 735 groups + poetry), `uv.lock` (full resolved set),
+  `requirements*.txt`, and `package.json`. Wired into `PermissionPolicy.decide` as a
+  **tighten-only** check placed AFTER the dangerous-pattern floor: an install of a package
+  no manifest declares escalates ALLOW→ASK, and is a deterministic hard DENY in
+  `autonomous` (session-wide or per-tool) — there is no execution sandbox yet, so an
+  undeclared install can't auto-run headless. Declared installs, `uv sync`/`npm ci`, and
+  editable/local installs (`pip install .`/`-e .`/`-r req.txt`) pass through untouched;
+  URL/VCS installs are always treated as undeclared. **Key design call:** the parser is
+  *launcher-aware* — it sees through `python -m pip install`, `uv pip install`,
+  `uv run pip install`, a leading PowerShell `&`, and a full-interpreter-path invocation —
+  precisely the shapes the project's OWN `pip_install_hint` (D-fix-install-hints / PR #22)
+  emits, so the self-fix path it was built to enable cannot dodge its own gate by spelling
+  the install differently. Gated on an injected `declared_packages` callable (default
+  `None` → OFF, so the pure decision matrix is unchanged for every existing caller); the
+  Agent facade wires it lazily from `workspace_root` when the new `dependency_gate` setting
+  (default **on**) is true. The manifest read happens only when a command actually names an
+  install, and a read failure fails toward ASK, never a crash. The suite caught two real
+  parser bugs during the build (npm scoped names `@scope/pkg` were dropped by the local-path
+  guard; a marker fragment leaked a stray quote into a name), both fixed. Docs travel with it:
+  CONFIG.md row, `.env.example` knob, RISKS supply-chain row upgraded, SELF-REMEDIATION Step 1
+  marked ✅ SHIPPED.
+  **Fresh-eyes adversarial review round (per the standing per-phase-review rule) surfaced and
+  fixed 7 more:** (F1) modern Poetry 1.2+ `[tool.poetry.group.*.dependencies]` weren't read;
+  (F2) the `requirements*.txt` glob was root-/prefix-only — broadened to `*requirements*.txt`
+  + `requirements/*.txt`; (F3) `-r`/`--requirement` includes are now followed (cycle-guarded);
+  (F4) a non-string `name` in `uv.lock` raised `AttributeError`, breaking the "never raises"
+  contract — now type-guarded; (F5, the one over-PERMISSIVE hole) the flat pip+npm declared
+  set let an npm-declared name vouch for a PyPI install of the same string — fixed by
+  **ecosystem-tagging** every identity (`pypi:`/`npm:`) end-to-end so a name only vouches
+  within its own ecosystem; and (the security-relevant one) a blanket **session ALLOW grant**
+  on `bash` re-checked only the dangerous floor + static DENY, not the gate — so an undeclared
+  install could ride a prior grant unprompted in interactive modes; the gate is now
+  un-waivable by a grant (re-decides in `authorize()`/`auto_allows()`, mirroring the dangerous
+  floor). Deferred F6 (per-command manifest re-parse has no cache — minor perf; the re-read is
+  intentional for freshness, so a naive cache would risk staleness). 71 tests total, 1716
+  suite green (clean env), ruff+mypy clean. The review hit a session limit mid-run, so the
+  parser-bypass / permission-invariants / wiring finder angles still need a re-run to close the
+  pass before the PR opens. Next on the roadmap: Step 2 (autonomy breadth-downgrade +
+  protected-path floor), then Step 3 (the real Executor sandbox — the precondition for
+  trustworthy autonomy).

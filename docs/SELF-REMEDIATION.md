@@ -135,7 +135,7 @@ the policy layers; the gap is the *containment substrate*.
 The order is deliberate: **floor → containment → then, only maybe, a classifier.** Each step
 makes self-remediation safer *without* trusting a smarter judge.
 
-**Step 1 — Declared-dependency self-remediation gate (S–M; ship first).**
+**Step 1 — Declared-dependency self-remediation gate (S–M; ship first). ✅ SHIPPED.**
 A new check on package-install commands (`pip install`, `uv add/pip`, `npm/pnpm/yarn add`,
 `poetry add`): **auto-allow only when every named package already appears in the repo's
 lockfile/manifest** (`uv.lock`, `pyproject.toml`, `package.json`/lockfile); route any new or
@@ -144,6 +144,14 @@ undeclared package to ASK (and hard-deny in `autonomous`, since there's no sandb
 directly fixes the original pain point (it lets the agent autonomously install a *declared*
 dep like `ddgs` from the `[web]` extra) while closing the typosquatting/injection vector.
 *This is the concrete "safe self-remediation" first move.* Backed by [[permission-modes]].
+
+> **Implemented** in `src/zakcode/deps_gate.py` (a pure parser + manifest reader) and wired
+> into `PermissionPolicy.decide` as a tighten-only check after the dangerous-pattern floor;
+> toggled by the `dependency_gate` setting (default on). The parser is launcher-aware — it
+> sees through `python -m pip install`, `uv pip install`, and the full-interpreter-path form
+> the project's own `pip_install_hint` emits — so the self-fix path can't dodge the gate by
+> spelling the install differently. `uv sync` / `npm ci` / editable + local installs pass
+> through untouched. See `dependency_gate` in [CONFIG.md](CONFIG.md) and `tests/test_deps_gate.py`.
 
 **Step 2 — Autonomy breadth-downgrade + un-waivable protected-path floor (S).**
 On entering `autonomous`, drop session grants / per-tool overrides that amount to *arbitrary
