@@ -227,5 +227,82 @@ def test_streaming_context_overflow_unrecoverable_is_terminal() -> None:
     assert done.degraded
 
 
+def test_streaming_context_overflow_no_compactor_is_terminal() -> None:
+    provider = OverflowProvider(overflows=5)
+    loop = _make_loop(provider, compactor=None)
+    events = asyncio.run(_collect(loop, "hi"))
+    done = events[-1]
+    assert done.stop_reason == "provider_error"
+    assert provider.calls == 1
+
+
+def test_streaming_context_overflow_recovery_is_bounded() -> None:
+    """After _MAX_CONTEXT_RECOVERY compactions in one turn, a further overflow is terminal."""
+    provider = OverflowProvider(overflows=_MAX_CONTEXT_RECOVERY + 5)
+    compactor = StubCompactor(succeeds=True)
+    loop = _make_loop(provider, compactor)
+    events = asyncio.run(_collect(loop, "hi"))
+    done = events[-1]
+    assert done.stop_reason == "provider_error"
+    # initial call + _MAX_CONTEXT_RECOVERY retries, then it gives up
+    assert provider.calls == _MAX_CONTEXT_RECOVERY + 1
+    assert compactor.compact_calls == _MAX_CONTEXT_RECOVERY
+
+
+def test_streaming_context_overflow_never_triggers_model_failover() -> None:
+    """The except-order guard: a ContextWindowExceeded must NOT reach the failover branch."""
+    failover_calls: list[ProviderError] = []
+
+    def _failover(exc: ProviderError) -> tuple[Provider, str] | None:
+        failover_calls.append(exc)
+        return (OverflowProvider(overflows=0), "should-not-happen")
+
+    provider = OverflowProvider(overflows=1)
+    compactor = StubCompactor(succeeds=True)
+    loop = _make_loop(provider, compactor, model_failover=_failover)
+    events = asyncio.run(_collect(loop, "hi"))
+    done = events[-1]
+    assert done.stop_reason == "completed"
+    assert failover_calls == []  # failover was never consulted for a context overflow
+
+
+def test_streaming_non_context_provider_error_still_fails_over() -> None:
+    """Control: a NON-context ProviderError still reaches failover (guard is surgical)."""
+
+    class StreamOneBoomProvider(Provider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def acomplete(self, messages, *, system=None, tools=None, **kw) -> LLMResult:
+            self.calls += 1
+            raise RequestFailed("boom")
+
+        async def astream(self, messages, *, system=None, tools=None, **kw) -> AsyncIterator[ProviderStreamEvent]:
+            self.calls += 1
+            raise RequestFailed("boom")
+            yield  # unreachable — makes Python treat this as an async generator
+
+        def count_tokens(self, messages, *, system=None) -> int:
+            return 0
+
+        def capabilities(self) -> Capabilities:
+            return Capabilities(supports_tools=True, context_window=8192)
+
+    seen: list[ProviderError] = []
+
+    def _failover(exc: ProviderError) -> tuple[Provider, str] | None:
+        seen.append(exc)
+        return (OverflowProvider(overflows=0), "switched")  # recovers on the new provider
+
+    loop = _make_loop(StreamOneBoomProvider(), compactor=None, model_failover=_failover)
+    events = asyncio.run(_collect(loop, "hi"))
+    done = events[-1]
+    assert done.stop_reason == "completed"
+    assert len(seen) == 1 and isinstance(seen[0], RequestFailed)
+    # verify the failover status surfaced on the stream
+    statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
+    assert any("switching model" in s for s in statuses)
+
+
 def test_module_constant_is_sane() -> None:
     assert _MAX_CONTEXT_RECOVERY >= 1
