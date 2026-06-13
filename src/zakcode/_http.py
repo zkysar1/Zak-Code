@@ -24,12 +24,34 @@ from __future__ import annotations
 import ipaddress
 import json
 import socket
+import sys
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 #: Cap on a search backend's JSON response body. The endpoints are operator-configured (Tavily /
 #: SearXNG), not controlled, but a misbehaving/compromised one must not OOM the process.
 _MAX_JSON_BYTES = 5 * 1024 * 1024
+
+
+def pip_install_hint(*packages: str) -> str:
+    """A remediation command for a missing OPTIONAL dependency that actually works here.
+
+    Two things every prior hint got wrong (and that made an agent's own fix-attempt fail):
+
+    * **It targets the RIGHT interpreter.** zakcode commonly runs from a uv ``.venv`` or a
+      ``uv tool`` env, while a bare ``pip`` on the shell PATH resolves to a *different*
+      Python — so a plain ``pip install`` lands in the wrong environment and doesn't fix
+      the running process. Anchoring to ``sys.executable`` installs into zakcode's own
+      interpreter. (uv-managed envs may lack ``pip`` itself, so the ``uv pip`` form is
+      offered first — it never needs pip inside the target venv.)
+    * **It names real PyPI packages**, not ``zakcode[web]`` — zakcode is not published to
+      an index, so ``pip install zakcode[web]`` fails with "Could not find a version".
+
+    Returns e.g. ``uv pip install --python "<py>" ddgs httpx  (or: "<py>" -m pip install ...)``.
+    """
+    pkgs = " ".join(packages)
+    py = sys.executable or "python"
+    return f'uv pip install --python "{py}" {pkgs}  (or: "{py}" -m pip install {pkgs})'
 
 
 class BlockedUrlError(ValueError):
@@ -63,9 +85,7 @@ def load_httpx() -> Any:
     try:
         import httpx
     except ImportError as exc:  # pragma: no cover - exercised via monkeypatch in tests
-        raise ImportError(
-            "httpx is required for web tools; install it with: pip install 'zakcode[web]'"
-        ) from exc
+        raise ImportError(f"httpx is required for web tools; {pip_install_hint('httpx')}") from exc
     return httpx
 
 

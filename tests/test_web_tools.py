@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from zakcode import _http
-from zakcode._http import BlockedUrlError, ensure_url_allowed, resolve_pinned_url
+from zakcode._http import BlockedUrlError, ensure_url_allowed, pip_install_hint, resolve_pinned_url
 from zakcode.config import Settings
 from zakcode.search import make_search_backend
 from zakcode.search.base import (
@@ -223,7 +223,24 @@ async def test_ddgs_backend_reports_unavailable_without_dep(
     monkeypatch.setitem(sys.modules, "ddgs", None)
     with pytest.raises(BackendUnavailable) as ei:
         await DuckDuckGoBackend().search("python")
-    assert ei.value.fix and "zakcode[web]" in ei.value.fix
+    # The fix names the real package and targets THIS interpreter (not the unpublished
+    # zakcode[web] extra, which fails with "Could not find a version"). See pip_install_hint.
+    fix = ei.value.fix
+    assert fix and "ddgs" in fix and "zakcode[web]" not in fix
+    assert sys.executable in fix and "pip install" in fix
+
+
+def test_pip_install_hint_is_actionable() -> None:
+    """The remediation command targets THIS interpreter and names real PyPI packages —
+    the two things that made an agent's own fix-attempt fail (wrong Python; unpublished
+    zakcode[web]). Covers both the uv and bare-pip forms."""
+    import sys
+
+    hint = pip_install_hint("ddgs", "httpx")
+    assert "zakcode[web]" not in hint  # the unpublished extra never works
+    assert "ddgs httpx" in hint  # real packages
+    assert sys.executable in hint  # self-targeting
+    assert "uv pip install" in hint and "-m pip install" in hint  # both managers offered
 
 
 async def test_tavily_backend_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -473,14 +490,18 @@ async def test_web_fetch_defangs_content(tmp_path: Path, monkeypatch: pytest.Mon
 async def test_web_fetch_missing_httpx_reports_install_fix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import sys
+
     from zakcode.tools.builtins import web_fetch
 
     def _no_httpx() -> object:
-        raise ImportError("httpx is required for web tools; install: pip install 'zakcode[web]'")
+        raise ImportError("httpx is required for web tools")
 
     monkeypatch.setattr(web_fetch, "load_httpx", _no_httpx)
     res = await WebFetchTool().execute({"url": "http://93.184.216.34/"}, _ctx(tmp_path))
-    assert res.is_error and res.fix and "zakcode[web]" in res.fix
+    # The fix is actionable: names httpx, targets this interpreter, not the unpublished extra.
+    assert res.is_error and res.fix and "httpx" in res.fix and "zakcode[web]" not in res.fix
+    assert sys.executable in res.fix
 
 
 async def test_web_fetch_disables_compression_and_pins_ip(
