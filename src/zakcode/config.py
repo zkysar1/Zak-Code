@@ -229,6 +229,20 @@ class Settings(BaseSettings):
             "grant). Tighten-only. From an env var: one regex per line, or a JSON array."
         ),
     )
+    # Project-verifier gate (R1): a shell command that proves the workspace is still healthy
+    # (e.g. ``uv run poe check``, ``pytest -q``, ``npm test``). When set, a turn that CHANGED code
+    # may not finish ``completed`` until this command has run successfully — the harness runs it
+    # itself when it would auto-allow (allow/autonomous modes or a prior grant), else it nudges the
+    # model to run it; after a bounded number of attempts a still-failing turn ends
+    # ``verification_failed`` (degraded). Deliberately domain-AGNOSTIC: the engine never guesses
+    # the command — an operator/mind/skill provides it. Unset (default) = no project gate (the
+    # always-on recipe gate that verifies a freshly written script still applies).
+    verify_command: str | None = Field(
+        default=None,
+        description=(
+            "Shell command that verifies the workspace (tests/lint); gates completion after edits."
+        ),
+    )
     workspace_root: Path = Field(
         default_factory=Path.cwd, description="Root directory the agent operates within."
     )

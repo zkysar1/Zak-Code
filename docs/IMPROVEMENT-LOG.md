@@ -893,3 +893,25 @@ cost-accounting test instead of a fallback table.
   delegation summaries; (watch) a facts/assumptions ledger. Caveat recorded in the report: "simple beats
   agentic" on SWE-bench, so the planning layer's justification is weak-model support + multi-turn
   coherence + UX, not benchmark-chasing — keep it sharp.
+
+- **2026-06-14 (dev, branch `claude/sdk-task-decomposition-024ug1` — implement the two research
+  P0s):** acted on `docs/research/task-planning-decomposition.md`.
+  - **R1 — project-verifier gate (the report's strongest lever: external verification ≫ self-critique).**
+    New pure `agent/verify.py` `VerificationGate` (mirrors `RecipeCursor`/`StuckTracker`): arms when a
+    turn changes code (successful `write_file`/`edit_file`), satisfied when a run tool executes the
+    configured command successfully (`_commands_match` is token-contiguous, tolerant of wrappers like
+    `cd x && <cmd>`). New `Settings.verify_command` (`ZAKCODE_VERIFY_COMMAND`). Wired into BOTH loop
+    paths between the recipe gate and the plan gate via `_try_project_verify` (mirrors
+    `_try_harness_verify`: harness runs it only when it would auto-allow, else nudges; bounded by
+    `attempt_cap` → `verification_failed` degraded). New `verification_failed` in
+    `_DEGRADED_STOP_REASONS`. **Domain-agnostic** — the engine never guesses the command; inert when
+    unset (recipe gate unchanged). Docs: CONFIG.md, .env.example, ARCHITECTURE.md.
+  - **R2 — task dependencies.** `Task.blocked_by: list[str]`. `normalize()` now sanitizes edges into a
+    DAG (`_sanitize_dependencies` drops self/unknown; `_break_dependency_cycles` drops back-edges) —
+    fail-open so a malformed graph never freezes the agent. `current()` returns the first actionable
+    leaf whose deps are all terminal, with a fail-open fallback. `update_plan` exposes `blocked_by`
+    (referenced by the position ids shown in the plan); `render()` annotates "(after …)".
+  - Tests: `tests/test_verify.py` (gate unit + hermetic loop integration with fake write/bash tools —
+    no real subprocess) and dependency cases in `tests/test_tasks.py`. **1781 green, ruff + mypy clean.**
+  - Remaining (not done): P1 capability-triggered decomposition (wire StuckTracker → "decompose this
+    step") + planner-role model; P2 plan-review gate, richer delegation summaries, facts ledger.

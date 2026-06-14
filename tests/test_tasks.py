@@ -177,6 +177,34 @@ def test_focus_enforced_before_derivation_leaves_no_stale_parent() -> None:
     assert net.tasks[1].status == "pending"  # derived AFTER demotion — not stale in_progress
 
 
+def test_dependencies_reorder_current_until_satisfied() -> None:
+    # Step 1 depends on step 2, so the frontier is step 2 first.
+    net = _net(Task(title="write tests", blocked_by=["2"]), Task(title="implement"))
+    assert net.current().title == "implement"
+    # Once the dependency is done, the dependent step becomes current.
+    net.tasks[1].status = "done"
+    net.normalize()
+    assert net.current().title == "write tests"
+    assert "(after 2)" in net.render()
+
+
+def test_dependencies_drop_self_unknown_and_cycles_failopen() -> None:
+    # 1 depends on {2, 9 (unknown), 1 (self)}; 2 depends on 1 -> a 1<->2 cycle.
+    net = _net(Task(title="a", blocked_by=["2", "9", "1"]), Task(title="b", blocked_by=["1"]))
+    # self + unknown dropped; the cycle is broken so the graph is a DAG.
+    assert net.tasks[0].blocked_by == ["2"]
+    assert net.tasks[1].blocked_by == []  # the back-edge 2->1 was dropped
+    # Crucially, the agent is never frozen: current() still returns an actionable leaf.
+    assert net.current() is not None
+
+
+def test_blocked_dependency_does_not_remove_work_from_the_gate() -> None:
+    # A step waiting on an unfinished dependency still "owes work" (drives the completion gate).
+    net = _net(Task(title="a"), Task(title="b", blocked_by=["1"]))
+    assert {t.title for t in net.actionable_remaining()} == {"a", "b"}
+    assert not net.is_complete()
+
+
 def test_normalize_is_idempotent() -> None:
     net = _net(
         Task(

@@ -75,6 +75,11 @@ class Task(BaseModel):
     status: TaskStatus = "pending"
     #: Optional one-line detail or acceptance criterion ("prints DONE", "all tests pass").
     note: str = ""
+    #: Ids of earlier steps that must reach a terminal status before THIS step is actionable
+    #: (a dependency edge, e.g. ``["1", "2"]``). Validated by :meth:`TaskNetwork.normalize`:
+    #: unknown ids, self-references, and cycles are dropped (fail-open), so a malformed graph
+    #: can never freeze the agent. Empty (the default) = no dependencies, i.e. document order.
+    blocked_by: list[str] = Field(default_factory=list)
     children: list[Task] = Field(default_factory=list)
 
     def is_compound(self) -> bool:
@@ -100,15 +105,18 @@ class TaskNetwork(BaseModel):
         """Re-establish every structural invariant; return human-readable advisories.
 
         Idempotent and total — safe to call on any (even model-authored, possibly malformed)
-        tree. It (1) assigns dotted ids by position, (2) enforces a single focused
-        ``in_progress`` primitive (the first in document order wins; later ones are demoted to
-        ``pending``), then (3) derives every compound's status from its children bottom-up.
-        Focus is enforced BEFORE derivation so a demoted child can never leave its parent with
-        a stale ``in_progress`` status. Returned strings are surfaced to the model by the tool
-        so a demotion or an under-decomposed node is visible, never silent.
+        tree. It (1) assigns dotted ids by position, (2) sanitizes dependency edges
+        (``blocked_by``): drops self-references, unknown ids, and cycles so the graph is always a
+        DAG, (3) enforces a single focused ``in_progress`` primitive (the first in document order
+        wins; later ones are demoted to ``pending``), then (4) derives every compound's status
+        from its children bottom-up. Focus is enforced BEFORE derivation so a demoted child can
+        never leave its parent with a stale ``in_progress`` status. Returned strings are surfaced
+        to the model by the tool so a demotion, a dropped edge, or an under-decomposed node is
+        visible, never silent.
         """
         advisories: list[str] = []
         self._assign_ids(self.tasks, prefix="")
+        self._sanitize_dependencies(advisories)
         self._enforce_single_focus(advisories)
         for task in self.tasks:
             self._derive_status(task, advisories)
@@ -119,6 +127,56 @@ class TaskNetwork(BaseModel):
         for index, task in enumerate(tasks, start=1):
             task.id = f"{prefix}{index}"
             TaskNetwork._assign_ids(task.children, prefix=f"{task.id}.")
+
+    def _sanitize_dependencies(self, advisories: list[str]) -> None:
+        """Make ``blocked_by`` a valid DAG: drop self/unknown references, then break cycles.
+
+        Fail-open by design — a malformed dependency graph must never freeze the agent, so every
+        invalid edge is dropped (with an advisory) rather than raised. Runs after ids are assigned
+        so references resolve against the current positions.
+        """
+        by_id = {t.id: t for t in self._iter()}
+        for task in self._iter():
+            kept: list[str] = []
+            for dep in task.blocked_by:
+                if dep == task.id:
+                    advisories.append(f"task {task.id} cannot depend on itself; dropped.")
+                elif dep not in by_id:
+                    advisories.append(f"task {task.id} depends on unknown step {dep!r}; dropped.")
+                elif dep not in kept:  # de-duplicate, preserve order
+                    kept.append(dep)
+            task.blocked_by = kept
+        self._break_dependency_cycles(by_id, advisories)
+
+    @staticmethod
+    def _break_dependency_cycles(by_id: dict[str, Task], advisories: list[str]) -> None:
+        """Drop the back-edges that would make ``blocked_by`` cyclic (depth-first, fail-open)."""
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color = dict.fromkeys(by_id, WHITE)
+
+        def visit(tid: str) -> None:
+            color[tid] = GRAY
+            task = by_id[tid]
+            kept: list[str] = []
+            for dep in task.blocked_by:
+                if color[dep] == GRAY:  # back-edge into the current stack -> would cycle
+                    advisories.append(
+                        f"dropped dependency {tid} -> {dep} (it would create a cycle)."
+                    )
+                    continue
+                kept.append(dep)
+                if color[dep] == WHITE:
+                    visit(dep)
+            task.blocked_by = kept
+            color[tid] = BLACK
+
+        for tid in by_id:
+            if color[tid] == WHITE:
+                visit(tid)
+
+    def _deps_satisfied(self, task: Task, by_id: dict[str, Task]) -> bool:
+        """True when every dependency of ``task`` has reached a terminal status."""
+        return all(by_id[d].status in _TERMINAL for d in task.blocked_by if d in by_id)
 
     @staticmethod
     def _derive_status(task: Task, advisories: list[str]) -> None:
@@ -190,16 +248,25 @@ class TaskNetwork(BaseModel):
         return not self.tasks
 
     def current(self) -> Task | None:
-        """The task the model should be working on now: the first ``in_progress`` leaf, else
-        the first non-terminal, non-blocked leaf in document order, else ``None`` (plan done)."""
+        """The task the model should be working on now.
+
+        Order of preference: the first ``in_progress`` leaf; else the first non-terminal,
+        non-``blocked`` leaf in document order **whose dependencies are all satisfied**; else
+        (fail-open, so a tangled dependency graph can never freeze the agent) the first
+        non-terminal, non-``blocked`` leaf ignoring dependencies; else ``None`` (plan done).
+        """
         leaves = self.leaves()
+        by_id = {t.id: t for t in self._iter()}
         for leaf in leaves:
             if leaf.status == "in_progress":
                 return leaf
-        for leaf in leaves:
-            if leaf.status not in _TERMINAL and leaf.status != "blocked":
+        actionable = [
+            leaf for leaf in leaves if leaf.status not in _TERMINAL and leaf.status != "blocked"
+        ]
+        for leaf in actionable:
+            if self._deps_satisfied(leaf, by_id):
                 return leaf
-        return None
+        return actionable[0] if actionable else None
 
     def actionable_remaining(self) -> list[Task]:
         """Leaves that still owe work — neither finished (``done``/``cancelled``) nor blocked.
@@ -246,7 +313,8 @@ class TaskNetwork(BaseModel):
                 indent = "  " * (depth + 1)
                 marker = "  <- current" if node.id == current_id else ""
                 detail = f" — {node.note}" if node.note else ""
-                lines.append(f"{indent}[{glyph}] {node.id} {node.title}{detail}{marker}")
+                deps = f" (after {', '.join(node.blocked_by)})" if node.blocked_by else ""
+                lines.append(f"{indent}[{glyph}] {node.id} {node.title}{detail}{deps}{marker}")
                 render_nodes(node.children, depth + 1)
 
         render_nodes(self.tasks, 0)

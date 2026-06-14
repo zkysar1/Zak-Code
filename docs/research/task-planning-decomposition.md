@@ -206,9 +206,13 @@ coherence**, and **UX visibility** — not benchmark-chasing.
 
 ## 4. Prioritized recommendations
 
-### P0 — highest leverage
+### P0 — highest leverage  ✅ IMPLEMENTED 2026-06-14 (both R1 and R2)
 
 **R1. Generalize the verification gate from "run the script" to the project's real verifier.**
+**[IMPLEMENTED]** — `agent/verify.py` `VerificationGate` + `Settings.verify_command`; wired into both
+loop paths between the recipe gate and the plan gate, ending `verification_failed` (degraded) after
+a bounded number of attempts. Domain-agnostic (operator/mind/skill provides the command; inert when
+unset). Original recommendation:
 Today `RecipeCursor` gates completion on running a written *script*. The evidence says the biggest
 reliability lever is gating "done" on a **sound external verifier**. Extend the gate so that, when a
 verifier is *discoverable*, a turn that changed code can't finish `completed` until it passes — e.g.
@@ -222,6 +226,9 @@ is precisely the upgrade. *Risk:* over-gating/slow turns — make it bounded (li
 skippable, and only-when-a-verifier-is-known.
 
 **R2. Add optional task dependencies (`blocked_by`) to `TaskNetwork`.**
+**[IMPLEMENTED]** — `Task.blocked_by`; `normalize()` sanitizes edges into a DAG (drops self/unknown/
+cyclic, fail-open); `current()` respects dependencies with a fail-open fallback; `update_plan`
+exposes `blocked_by`; `render()` annotates "(after …)". Original recommendation:
 The frontier is dependency-aware plans (Claude Code `addBlocks`/`addBlockedBy`, LlamaIndex
 `SubTask.dependencies`, LLMCompiler/Devin DAGs). A `blocked_by: list[task_id]` field lets `current()`/
 `actionable_remaining()` respect real ordering and unlocks safe parallel execution of independent

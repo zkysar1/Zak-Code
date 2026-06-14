@@ -138,3 +138,12 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   later turns until the model clears it with `update_plan`. A future enhancement could make
   `kind` model-settable to activate the under-decomposition gate, and route a `planner` role
   model (`Settings.model_roles`) to a cheaper model for decomposition.
+
+  - **Update (2026-06-14):** the research survey (`docs/research/task-planning-decomposition.md`)
+    confirmed the design and prioritized follow-ups; the two **P0**s are now implemented on this
+    branch — **R1** a domain-agnostic project-verifier gate (`agent/verify.py` +
+    `Settings.verify_command`: a turn that changed code can't finish until the configured
+    tests/lint command passes; ends `verification_failed` (degraded) after a bounded number of
+    attempts; inert when unset), and **R2** optional task **dependencies**
+    (`Task.blocked_by`, sanitized into a DAG, frontier-aware). The undecomposed-gate /
+    model-settable-`kind` and planner-role-model ideas remain future (P1/P2) work.

@@ -84,6 +84,7 @@ from zakcode.agent.lessons import LessonWriter
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
 from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
+from zakcode.agent.verify import VerificationGate
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -286,7 +287,13 @@ def _fence_injected_context(texts: list[str]) -> str:
 #: Terminal stop reasons that mean the turn did not finish cleanly — used to roll a single
 #: ``degraded`` confidence signal up onto :class:`TurnResult` / ``AgentDone`` (Bet 2 idea #6)
 #: so a client can flag a struggling turn without re-deriving it from the stop reason.
-_DEGRADED_STOP_REASONS = {"stuck", "doom_loop", "recipe_stalled", "provider_error"}
+_DEGRADED_STOP_REASONS = {
+    "stuck",
+    "doom_loop",
+    "recipe_stalled",
+    "verification_failed",
+    "provider_error",
+}
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
 #: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` / ``provider_error``
@@ -932,6 +939,40 @@ class AgentLoop:
         )
         return call, block
 
+    async def _try_project_verify(
+        self, verify: VerificationGate, ctx: ToolContext
+    ) -> tuple[ToolCall, ToolResultBlock] | None:
+        """Issue a harness-side run of the configured project verify command (R1).
+
+        Mirrors :meth:`_try_harness_verify`: runs the command through the SAME
+        ``_execute_tool_call`` gate, but ONLY when the synthetic ``bash`` would auto-allow
+        without a prompt — otherwise returns ``None`` so the caller falls back to nudging the
+        model. The real output is fed back to the gate (so a pass/fail is recorded) and appended
+        as a trusted user observation. Returns the ``(call, block)`` it ran (so the streaming path
+        can surface it), else ``None``.
+        """
+        command = verify.command
+        if command is None:
+            return None
+        call = ToolCall(
+            id=f"verify_run_{verify.harness_runs}", name="bash", arguments={"command": command}
+        )
+        if self.permission_policy is not None:
+            bash_tool = self.registry.get("bash")
+            bash_spec = bash_tool.spec if bash_tool is not None else None
+            if not self.permission_policy.auto_allows(bash_spec, call.arguments):
+                return None  # would prompt / is blocked -> fall back to the nudge
+        block = await self._execute_tool_call(call, ctx)
+        verify.harness_runs += 1
+        verify.observe([call], [block])
+        # Real shell stdout folded into a TRUSTED user message — defang protocol/template
+        # sentinels so it cannot forge a frame in the next text-protocol turn. (audit2 #2)
+        safe_output = defang_untrusted(block.output)
+        self.session.add_message(
+            Message.user(f"[harness] I ran the project checks to verify:\n{safe_output}")
+        )
+        return call, block
+
     def _readonly_tool_names(self) -> list[str]:
         """Active tool names at the ``READ_ONLY`` tier — the set allowed during a stuck
         NARROW step so the model is forced to investigate before mutating again.
@@ -1148,6 +1189,12 @@ class AgentLoop:
             # on ANY ambiguity), so always-on can never over-gate a turn.
             acceptance=extract_acceptance(user_text),
         )
+        # Project-verifier gate (R1): inert unless a verify command is configured; arms only when
+        # this turn actually changes code, then requires the project's checks to pass before
+        # finishing. Domain-agnostic — the engine never guesses the command.
+        verify = VerificationGate(
+            command=self.settings.verify_command, attempt_cap=self.attempt_cap
+        )
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
         stuck = StuckTracker()
@@ -1339,6 +1386,21 @@ class AgentLoop:
                             self._refund_iteration()
                     self._persist()
                     continue
+                # Project-verifier gate (R1): a turn that changed code may not finish until the
+                # configured project checks pass. Prefer a harness-issued run (auto-allow only);
+                # else nudge the model. Bounded by attempt_cap -> ends verification_failed
+                # (degraded) rather than looping. Inert unless a verify command is configured.
+                if verify.needs_verification():
+                    if not verify.can_attempt():
+                        stop_reason = "verification_failed"
+                        break
+                    if await self._try_project_verify(verify, ctx) is None:
+                        self.session.add_message(Message.user(_control_rail(verify.nudge())))
+                        if not result.text:
+                            self._refund_iteration()
+                    verify.consume_attempt()
+                    self._persist()
+                    continue
                 # Plan gate: a turn carrying a plan with still-open steps should not quietly
                 # finish. Nudge the model to complete them (or mark them done/cancelled);
                 # bounded by _MAX_PLAN_NUDGES so a deliberate finish can never deadlock — past
@@ -1465,6 +1527,7 @@ class AgentLoop:
                 self._persist()
 
             cursor.observe(result.tool_calls, result_blocks)
+            verify.observe(result.tool_calls, result_blocks)
 
             # Stuck detection + recovery ladder: nudge -> narrow-to-read-only -> stop.
             # Generalizes the (exact-repeat) doom guard above to the many ways a weak model
@@ -1597,6 +1660,12 @@ class AgentLoop:
             # Always extract a stated expected-output literal — high-precision (returns None
             # on ANY ambiguity), so always-on can never over-gate a turn.
             acceptance=extract_acceptance(user_text),
+        )
+        # Project-verifier gate (R1): inert unless a verify command is configured; arms only when
+        # this turn actually changes code, then requires the project's checks to pass before
+        # finishing. Domain-agnostic — the engine never guesses the command.
+        verify = VerificationGate(
+            command=self.settings.verify_command, attempt_cap=self.attempt_cap
         )
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
         stuck = StuckTracker()
@@ -1856,6 +1925,35 @@ class AgentLoop:
                                 self._refund_iteration()
                         self._persist()
                         continue
+                    # Project-verifier gate (streaming twin): changed code must pass the configured
+                    # project checks before finishing; surface a harness-issued run live, else
+                    # nudge. Bounded -> verification_failed (degraded). Inert unless configured.
+                    if verify.needs_verification():
+                        if not verify.can_attempt():
+                            stop_reason = "verification_failed"
+                            yield AgentStatus(
+                                message="stopping: project checks did not pass after changes"
+                            )
+                            break
+                        vrun = await self._try_project_verify(verify, ctx)
+                        if vrun is not None:
+                            vcall, vblock = vrun
+                            yield AgentToolCall(
+                                id=vcall.id, name=vcall.name, arguments=vcall.arguments
+                            )
+                            yield AgentToolResult(
+                                tool_use_id=vblock.tool_use_id,
+                                output=vblock.output,
+                                is_error=vblock.is_error,
+                            )
+                            yield AgentStatus(message="ran the project checks to verify")
+                        else:
+                            self.session.add_message(Message.user(_control_rail(verify.nudge())))
+                            if not assistant_text:
+                                self._refund_iteration()
+                        verify.consume_attempt()
+                        self._persist()
+                        continue
                     # Plan gate (streaming twin of the buffered path): don't quietly finish
                     # with open plan steps; nudge, bounded by _MAX_PLAN_NUDGES, then complete
                     # (degraded) rather than deadlock.
@@ -1979,6 +2077,7 @@ class AgentLoop:
                     self._persist()
 
                 cursor.observe(tool_calls, result_blocks)
+                verify.observe(tool_calls, result_blocks)
 
                 # Stuck detection + recovery ladder (see _run_turn); surfaced live as
                 # AgentStatus notes so a client can show the recovery happening.
