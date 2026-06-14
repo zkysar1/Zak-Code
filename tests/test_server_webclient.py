@@ -53,9 +53,17 @@ def test_events_schema_endpoint(tmp_path: Path) -> None:
     assert "$defs" in schema or "oneOf" in schema or "anyOf" in schema
 
 
-def test_event_type_names_are_the_six(tmp_path: Path) -> None:
+def test_event_type_names(tmp_path: Path) -> None:
     # The contract surface the web client must handle, asserted at its source.
-    assert event_type_names() == ["done", "status", "text", "tool_call", "tool_result", "usage"]
+    assert event_type_names() == [
+        "done",
+        "status",
+        "task_update",
+        "text",
+        "tool_call",
+        "tool_result",
+        "usage",
+    ]
 
 
 def test_index_served_at_root(tmp_path: Path) -> None:
