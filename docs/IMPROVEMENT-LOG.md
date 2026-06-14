@@ -965,3 +965,19 @@ cost-accounting test instead of a fallback table.
   high-frequency approval-fatigue pattern emerges after a sandbox lands, and even then as
   propose-policy-enforced-deterministically. **Self-remediation roadmap is now effectively
   complete except Step 3 (the sandbox), which is parked pending an explicit greenlight.**
+
+- **2026-06-14 (dev, branch `fix/test-endpoint-env-isolation` — test hermeticity, post-#28
+  fresh-eyes follow-up):** the fresh-eyes review after landing #28 flagged that `uv run poe check`
+  was RED locally (2 failures in `tests/test_endpoint_config.py`) while CI was GREEN — a
+  non-hermetic test, not a code defect. Root cause: a developer's `.env` reaches `Settings()` two
+  ways — pydantic-settings reads the `.env` file directly, AND `load_settings`' `load_dotenv` step
+  exports it into `os.environ` so litellm can see provider keys (see `test_dotenv.py`). The two
+  tests asserting the UNCONFIGURED defaults (`api_base`/`api_key` is None) therefore failed against
+  a dev `ZAKCODE_API_BASE`; CI has no `.env`, so the drift was invisible there. Fix (surgical,
+  matches the existing `test_dotenv.py` `monkeypatch.delenv(..., raising=False)` pattern): the two
+  default-asserting tests now clear `ZAKCODE_API_BASE`/`ZAKCODE_API_KEY` from the env AND pass
+  `Settings(_env_file=None)`, neutralizing both the env-var and the file source so they assert true
+  defaults regardless of a local `.env`. Exactly 2 tests affected (full suite confirmed); zero blast
+  radius on the other 33 env-touching tests. **Local `poe check` now green (ruff+format+mypy clean,
+  1884 passed, 5 skipped).** Deferred (scope): a conftest autouse fixture clearing `ZAKCODE_*` for
+  whole-suite hermeticity — revisit only if a third default-asserting test trips the same wire.
