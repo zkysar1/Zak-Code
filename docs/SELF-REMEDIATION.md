@@ -199,10 +199,22 @@ self-remediation"** — it is the layer that makes a classifier mistake or a mis
 *survivable*. Report the active isolation level on every shell `ToolResult`. Backed by
 [[codex-security]], [[agentdojo]].
 
-**Step 4 — Per-task tool filter (M; after sandbox).**
+**Step 4 — Per-task tool filter (M; after sandbox). ✅ SHIPPED.**
 Narrow the exposed toolset to what the planned task needs *before* untrusted content enters
 context (AgentDojo's most effective single defense). Builds on the existing tool-budget /
 schema-filter machinery. Backed by [[agentdojo]].
+
+> **Implemented** as an operator-set, glob-based **tool-exposure filter** on `ToolRegistry`
+> (`set_exposure_filter(allow, deny)` + `exposure_allows` + `exposed_names`), wired from the
+> `tool_exposure_allow` / `tool_exposure_deny` settings. Enforced at BOTH seams: a filtered-out
+> tool is omitted from `definitions()` and the system-prompt list (the model never sees it),
+> AND the loop's execution seam rejects a model call to it (so a tool named from prior knowledge
+> or injected content still can't run). It composes over the active set (sticky against
+> `tool_search` re-activation), propagates into sub-agent `subset()`s, is exposure-only (never
+> loosens the permission gate; trusted internal `execute()` callers are unaffected), and is set
+> before a task runs. **Deliberately operator-controlled, not model-decided** — a model-chosen
+> filter would be defeated by the very injection it defends against; a wrapping orchestrator
+> (e.g. the Mind framework) declares each task's scope. See `tests/test_tool_exposure.py`.
 
 **Step 5 — *(Optional, last)* a gray-zone risk check that proposes, never enforces.**
 Only if Steps 1–4 leave a real residual: a check that runs **only** in the narrow gray band,
@@ -211,6 +223,21 @@ shape), never as the runtime decision-maker — so a prompt-injected proposal st
 escape the symbolic floor. Given our local-model target and the ~74%-F1 ceiling, treat this
 as a **convenience to reduce asks, never a security boundary.** Backed by [[progent]],
 [[conseca]], [[r-judge]].
+
+> **Decision (2026-06-14): NOT building Step 5 now — and likely never as specced.** The
+> research is unambiguous that a classifier is the weakest layer (~74% F1 ceiling, worse on a
+> small/local model), valuable only as a *convenience to reduce prompts*, never a boundary. With
+> Steps 1, 2, and 4 shipped, the deterministic layer is strong: the dependency gate, the
+> protected-path floor, the deny-first mode ceiling + dangerous-command floor, and now the
+> per-task tool filter already cover the concrete self-remediation and injection-escalation
+> vectors **deterministically**. The honest remaining gap is **containment (Step 3, the
+> sandbox)** — a model-quality-independent guarantee — *not* a smarter judge. Spending effort on
+> a gray-zone classifier now would add model-dependent complexity for marginal utility while the
+> higher-value, model-independent layer (Step 3) is still open. **Recommendation: close the
+> self-remediation roadmap at Steps 1/2/4 + the existing floor; revisit Step 5 only if, after a
+> sandbox lands, a *specific* high-frequency "always asks for X benign thing" approval-fatigue
+> pattern emerges — and even then build it as propose-policy-enforced-deterministically, never
+> as a runtime decision-maker.**
 
 ## 5. The honest tradeoffs
 

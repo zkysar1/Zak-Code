@@ -550,13 +550,13 @@ class AgentLoop:
         return True
 
     def _tool_specs(self, restrict_to: set[str] | None = None) -> list[ToolSpec]:
-        # Only ACTIVE (exposed) tools, so the system-prompt tool summary matches the
-        # schemas sent via ``definitions()`` — lazily-registered MCP tools stay out
-        # of the prompt until surfaced (M5 lazy discovery / tool budget). ``restrict_to``
-        # (a stuck NARROW step) further limits the summary to those canonical names, so the
-        # prompt does not advertise tools withheld from that iteration's schema.
+        # Only EXPOSED tools — active AND passing the operator's exposure filter (Step 4) — so
+        # the system-prompt tool summary matches the schemas sent via ``definitions()``:
+        # lazily-registered MCP tools stay out until surfaced (M5), and a filtered-out tool is
+        # never named. ``restrict_to`` (a stuck NARROW step) further limits the summary to those
+        # canonical names, so the prompt does not advertise tools withheld from that iteration.
         specs: list[ToolSpec] = []
-        for name in self.registry.active_names():
+        for name in self.registry.exposed_names():
             tool = self.registry.get(name)
             if tool is not None and (restrict_to is None or tool.spec.name in restrict_to):
                 specs.append(tool.spec)
@@ -698,6 +698,21 @@ class AgentLoop:
                 ),
                 is_error=True,
                 data={"step_restricted": True, "tool": call.name},
+            )
+
+        # 0b. Per-task tool-exposure filter (Step 4): a tool the operator filtered out of this
+        # task's scope is never advertised — but reject it at the execution seam too, so a model
+        # that names a hidden tool from prior knowledge (or via injected content) still cannot
+        # invoke it. Exposure-only; trusted internal callers use registry.execute() directly.
+        if not self.registry.exposure_allows(call.name):
+            return ToolResultBlock(
+                tool_use_id=call.id,
+                output=(
+                    f"Tool {call.name!r} is not available in this task's tool scope "
+                    "(restricted by the operator's tool-exposure filter)."
+                ),
+                is_error=True,
+                data={"tool_not_exposed": True, "tool": call.name},
             )
 
         # 1. Permission gate (only when a policy is injected; see __init__).

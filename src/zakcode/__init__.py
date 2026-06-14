@@ -254,6 +254,14 @@ class Agent:
         #: The model currently driving the main loop (failover may move it off default).
         self._active_model = self.settings.default_model
         self.registry = default_registry(self.settings)
+        # Per-task tool-exposure filter (self-remediation Step 4): narrow the model-facing
+        # toolset to the operator's allow/deny globs before any (possibly untrusted) content
+        # enters context. Applied lazily at definitions()-time, so it also covers MCP tools
+        # discovered later via connect_mcp(). Empty lists (the default) = no restriction.
+        self.registry.set_exposure_filter(
+            allow=list(self.settings.tool_exposure_allow),
+            deny=list(self.settings.tool_exposure_deny),
+        )
         self.store = session_store
         self.session = session or Session(
             cwd=str(self.settings.workspace_root),
