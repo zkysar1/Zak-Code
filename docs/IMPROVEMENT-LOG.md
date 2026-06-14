@@ -965,3 +965,17 @@ cost-accounting test instead of a fallback table.
   high-frequency approval-fatigue pattern emerges after a sandbox lands, and even then as
   propose-policy-enforced-deterministically. **Self-remediation roadmap is now effectively
   complete except Step 3 (the sandbox), which is parked pending an explicit greenlight.**
+
+- **2026-06-14 (Zachary → dev, D29 — Step 3 sandbox FORMALLY DEFERRED):** after a walkthrough of
+  what Step 3 is, whether other harnesses ship it, and how important it is, Zachary decided to
+  defer it deliberately. Rationale captured in SELF-REMEDIATION §4 (Step 3 decision block):
+  the sandbox is the one model-quality-independent guarantee, but its importance is conditional —
+  **defense-in-depth for attended/interactive use (the current mode, where the shipped
+  deterministic layers + human backstop already protect), the precondition only for
+  unattended/headless autonomy.** Cost/ROI is currently poor: L–XL, platform-specific, and the
+  primary runtime is **Windows** (weakest/hardest isolation story — worst ROI quadrant). Industry
+  practice splits the same way (cloud agents sandbox by default because they're already
+  containerized; local-first harnesses run on the host behind a permission gate, where Zak Code
+  is). **Revisit when the use case shifts to unattended operation OR a Linux/container
+  deployment.** With this, the self-remediation engagement is wrapped: Steps 1/2/4 shipped to
+  main, Step 5 declined, Step 3 deferred with a clear revisit trigger.
