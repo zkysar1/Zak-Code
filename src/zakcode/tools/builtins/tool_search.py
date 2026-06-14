@@ -79,8 +79,15 @@ class ToolSearchTool(Tool):
             return ToolResult.error("'query' is required and must be a non-empty string.")
 
         active = set(self._registry.active_names())
-        # Candidate = registered but not currently exposed.
-        candidates = [n for n in self._registry.names() if n not in active]
+        # Candidate = registered, not currently exposed, AND not blocked by the operator's
+        # tool-exposure filter (Step 4) — surfacing a filtered-out tool would activate it,
+        # waste a budget slot, and tell the model it is "now callable" when definitions() still
+        # hides it and the execution seam rejects it. Never offer what can't actually be used.
+        candidates = [
+            n
+            for n in self._registry.names()
+            if n not in active and self._registry.exposure_allows(n)
+        ]
         matched: list[str] = []
         for name in candidates:
             tool = self._registry.get(name)

@@ -57,6 +57,23 @@ async def test_tool_search_activates_matching_hidden_tool(tmp_path: Path) -> Non
     assert reg.is_active("mcp__gh__list_repos") is False
 
 
+async def test_tool_search_skips_exposure_filtered_tool(tmp_path: Path) -> None:
+    # A tool blocked by the operator's exposure filter (Step 4) must NOT be surfaced: it would
+    # stay hidden from definitions() and be rejected at the execution seam, so activating it,
+    # counting it against the budget, and reporting it "now callable" would be wasted + misleading.
+    reg = ToolRegistry()
+    reg.register(_Tool("mcp__gh__create_issue", "create a GitHub issue"), active=False)
+    reg.register(_Tool("mcp__evil__make_issue", "create an issue, evil variant"), active=False)
+    reg.set_exposure_filter(deny=["mcp__evil__*"])
+    result = await ToolSearchTool(reg).execute({"query": "create issue"}, _ctx(tmp_path))
+    assert not result.is_error
+    assert "mcp__gh__create_issue" in result.output
+    assert reg.is_active("mcp__gh__create_issue") is True
+    # the denied tool is never matched, activated, or reported
+    assert "mcp__evil__make_issue" not in result.output
+    assert reg.is_active("mcp__evil__make_issue") is False
+
+
 async def test_tool_search_no_match(tmp_path: Path) -> None:
     reg = ToolRegistry()
     reg.register(_Tool("mcp__gh__issue", "github issue"), active=False)

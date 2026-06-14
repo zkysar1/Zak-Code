@@ -938,3 +938,30 @@ cost-accounting test instead of a fallback table.
   - Updated 6 pre-existing tests that asserted the old PLAN toolset / prompt-suffix (intended
     changes). New tests in `test_loop_planning.py` (R3 + R5) and `test_subagent_planning.py` (R4 + R6).
     **1790 green, ruff + mypy clean.** Docs: CONFIG.md, .env.example, ARCHITECTURE.md, ADR-0008, report.
+
+- **2026-06-14 (dev, D28 — self-remediation Step 4: per-task tool-exposure filter; + Step 5
+  decision):** Zachary said "get step 4 done, think about step 5" (Step 3, the sandbox, deferred
+  as too big a refactor for now). **Step 4 = an operator-set, glob-based tool-exposure filter**
+  on `ToolRegistry` (`set_exposure_filter(allow, deny)` + `exposure_allows` + `exposed_names`),
+  wired from new settings `tool_exposure_allow` / `tool_exposure_deny` (glob over canonical names;
+  deny wins). Narrows the model-facing toolset to a task-appropriate subset — AgentDojo's single
+  most effective injection defense (a tool never offered can't be hijacked). **Enforced at BOTH
+  seams:** omitted from `definitions()` + the system-prompt list (`_tool_specs` now uses
+  `exposed_names()`), AND the loop's execution seam rejects a model call to a filtered-out tool
+  (closing the "model names a hidden tool from prior knowledge / injected content" hole). Composes
+  over the active set (sticky vs `tool_search` re-activation), propagates into sub-agent
+  `subset()`s, exposure-only (never loosens the permission gate; trusted internal `execute()`
+  callers unaffected). **Deliberately operator-controlled, NOT model-decided** (a model-chosen
+  filter is defeated by the injection it defends against — a wrapping orchestrator like Mind
+  declares each task's scope). 15 new tests (`tests/test_tool_exposure.py`), 1841 suite green
+  (clean env), ruff+mypy clean. Docs: SELF-REMEDIATION Step 4 ✅ SHIPPED, CONFIG.md, `.env.example`,
+  RISKS prompt-injection row.
+  **Step 5 decision: NOT building it (likely never as specced).** A gray-zone classifier is the
+  weakest layer (~74% F1, worse on a local model), a convenience-to-reduce-prompts at best, never
+  a boundary. With Steps 1/2/4 + the deny-first floor shipped, the deterministic layer covers the
+  concrete vectors; the honest remaining gap is **containment (Step 3, the sandbox)** — a
+  model-quality-independent guarantee — not a smarter judge. Recommendation logged in
+  SELF-REMEDIATION §4: close the roadmap at 1/2/4 + floor; revisit Step 5 only if a specific
+  high-frequency approval-fatigue pattern emerges after a sandbox lands, and even then as
+  propose-policy-enforced-deterministically. **Self-remediation roadmap is now effectively
+  complete except Step 3 (the sandbox), which is parked pending an explicit greenlight.**

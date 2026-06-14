@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from enum import StrEnum
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -243,6 +244,11 @@ class ToolRegistry:
         # mechanism behind MCP's lazy tool discovery / tool budget (M5). Tools
         # registered ``active=True`` (the default) behave exactly as before.
         self._active: set[str] = set()
+        # Per-task tool-exposure filter (self-remediation Step 4): operator-set glob
+        # allow/deny over canonical names. Empty = no restriction (default). It narrows the
+        # model-facing surface only — see :meth:`set_exposure_filter`.
+        self._exposure_allow: list[str] = []
+        self._exposure_deny: list[str] = []
 
     def register(
         self, tool: Tool, *, aliases: list[str] | None = None, active: bool = True
@@ -316,18 +322,65 @@ class ToolRegistry:
         self._active.discard(canonical)
         return True
 
+    def set_exposure_filter(
+        self, allow: list[str] | None = None, deny: list[str] | None = None
+    ) -> None:
+        """Restrict which tools are EXPOSED to the model (least-privilege; self-remediation Step 4).
+
+        ``allow`` — glob patterns over canonical tool names; when non-empty, ONLY tools matching
+        a pattern are advertised. ``deny`` — globs whose matches are NEVER advertised (deny wins
+        over allow). Both default to no restriction. This narrows the model-facing surface (the
+        schemas in :meth:`definitions` AND the system-prompt list) so a tool the task does not
+        need is never offered — the most effective single prompt-injection defense (AgentDojo):
+        a tool the model can neither see nor (with the loop's execution guard, via
+        :meth:`exposure_allows`) invoke cannot be hijacked by injected content. Exposure-only:
+        it never loosens the permission gate, and trusted internal callers of :meth:`execute`
+        are unaffected. Patterns are case-sensitive globs (``mcp__*``, ``web_*``) matched against
+        canonical names, so a pattern covers a tool's aliases too. Set before a task runs.
+        """
+        self._exposure_allow = [p for p in (allow or []) if isinstance(p, str) and p.strip()]
+        self._exposure_deny = [p for p in (deny or []) if isinstance(p, str) and p.strip()]
+
+    def exposure_allows(self, name: str) -> bool:
+        """Whether ``name`` (canonical/alias) passes the exposure filter (allow/deny globs).
+
+        Independent of active state — the loop's execution seam uses this to reject a model call
+        to a filtered-out tool even if the model named it from prior knowledge. No filter set
+        (the default) → always True.
+        """
+        canonical = self._canonical(name)
+        if any(fnmatchcase(canonical, pat) for pat in self._exposure_deny):
+            return False
+        if not self._exposure_allow:
+            return True
+        return any(fnmatchcase(canonical, pat) for pat in self._exposure_allow)
+
+    def exposed_names(self) -> list[str]:
+        """Canonical names actually offered to the model now: active AND passing the filter."""
+        return [name for name in self.active_names() if self.exposure_allows(name)]
+
     def definitions(self, allowed: list[str] | None = None) -> list[dict[str, Any]]:
         """OpenAI-shaped tool definitions to send to the model.
 
         ``allowed`` (canonical names or aliases) restricts the exposed set; ``None``
         exposes the currently **active** tools (every tool, unless some were
-        registered inactive for lazy discovery — see :meth:`register`).
+        registered inactive for lazy discovery — see :meth:`register`). The
+        operator's exposure filter (:meth:`set_exposure_filter`) is applied on top of
+        either, so a filtered-out tool is never advertised regardless of ``allowed``/active.
         """
         if allowed is None:
-            chosen = [t for name, t in self._tools.items() if name in self._active]
+            chosen = [
+                t
+                for name, t in self._tools.items()
+                if name in self._active and self.exposure_allows(name)
+            ]
         else:
             wanted = {self._canonical(a) for a in allowed}
-            chosen = [t for name, t in self._tools.items() if name in wanted]
+            chosen = [
+                t
+                for name, t in self._tools.items()
+                if name in wanted and self.exposure_allows(name)
+            ]
         return [t.spec.to_openai() for t in chosen]
 
     async def execute(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -365,6 +418,11 @@ class ToolRegistry:
             if canonical in wanted:
                 aliases = [a for a, target in self._aliases.items() if target == canonical]
                 sub.register(tool, aliases=aliases)
+        # Carry the operator's exposure filter into the child: a tool the operator denied for the
+        # session must stay hidden from a delegated sub-agent too (a sub-agent reads untrusted
+        # content as well). The child's own allowed_tools (the ``names`` here) and this filter
+        # compose — both must permit a tool for it to be offered.
+        sub.set_exposure_filter(self._exposure_allow, self._exposure_deny)
         return sub
 
 

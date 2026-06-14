@@ -253,6 +253,23 @@ class Settings(BaseSettings):
         default=False,
         description="Require a plan (update_plan) before the first mutating tool runs in a turn.",
     )
+    # Per-task tool-exposure filter (self-remediation Step 4): narrow which tools are advertised
+    # to the model (and invocable) to a task-appropriate subset — the most effective single
+    # prompt-injection defense (a tool that's never offered can't be hijacked by injected
+    # content). Glob patterns over canonical tool names; ``deny`` wins over ``allow``. Exposure
+    # only — never loosens the permission gate. From an env var: comma/space-separated globs or a
+    # JSON array (e.g. ZAKCODE_TOOL_EXPOSURE_DENY=bash,powershell,mcp__*).
+    tool_exposure_allow: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "If non-empty, ONLY tools matching these globs (canonical names) are exposed to the "
+            "model. Empty = no allow restriction."
+        ),
+    )
+    tool_exposure_deny: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Tool-name globs never exposed to the model (wins over the allow list).",
+    )
     workspace_root: Path = Field(
         default_factory=Path.cwd, description="Root directory the agent operates within."
     )
@@ -320,6 +337,8 @@ class Settings(BaseSettings):
         "denied_commands",
         "protected_paths",
         "allowed_models",
+        "tool_exposure_allow",
+        "tool_exposure_deny",
         "web_allowed_domains",
         "egress_allowed_domains",
         "auto_model_preference",
