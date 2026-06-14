@@ -235,9 +235,12 @@ The frontier is dependency-aware plans (Claude Code `addBlocks`/`addBlockedBy`, 
 leaves later. This is additive to our compound/primitive model and arguably **more useful than deeper
 nesting**. Keep it optional (empty = today's behavior).
 
-### P1 — solid, evidence-backed
+### P1 — solid, evidence-backed  ✅ IMPLEMENTED 2026-06-14 (R3 + R4)
 
-**R3. Capability-triggered decomposition + an anti-over-planning floor (ADaPT).**
+**R3. Capability-triggered decomposition + an anti-over-planning floor (ADaPT).** **[IMPLEMENTED]** —
+`AgentLoop._decompose_hint()` appends a "break this step into sub-steps" suggestion to the stuck-ladder
+nudge when the current step is a primitive; the prompt's planning guidance now sets a ~3-step
+complexity floor and warns against over-decomposition. Original recommendation:
 - Wire our existing **`StuckTracker`** to decomposition: when a *primitive* step trips the stuck
   ladder, nudge the model to **decompose that step into sub-steps** (decompose-on-failure), rather
   than only narrowing tools. This is ADaPT's core mechanism, reusing machinery we already have.
@@ -246,24 +249,36 @@ nesting**. Keep it optional (empty = today's behavior).
   (Codex), and warn against over-decomposition (overthinking inverse-U). Optionally add a soft nudge
   if the model over-plans a trivial request.
 
-**R4. Route decomposition through the `planner` role model when configured.**
+**R4. Route decomposition through the `planner` role model when configured.** **[IMPLEMENTED]** —
+the planner-role routing already existed (`plan_def = PLAN.model_copy(update={"model": roles.get("planner")})`);
+made concrete by adding `update_plan` to the planner's toolset so it produces a *structured* plan
+(not just prose) on the planner model. We kept the single-threaded inline design (no planner/executor
+split) per the "keep it sharp" caveat. Original recommendation:
 We already have `Settings.model_roles['planner']` for the PLAN sub-agent. Strong-planner + weak-executor
 is a proven win (ADaPT; LangChain "big model plans, small executes"; goose `GOOSE_PLANNER_MODEL`). Let
 the *decomposition* path optionally use the planner model — a cheap, local-model-friendly lever.
 
-### P2 — optional / future
+### P2 — optional / future  ✅ R5 + R6 IMPLEMENTED 2026-06-14; R7 deferred (per its own recommendation)
 
-**R5. Optional "review plan before executing" gate (Plan Mode for the main loop).** Claude Code, Cursor,
+**R5. Optional "review plan before executing" gate (Plan Mode for the main loop).** **[IMPLEMENTED]**
+as an opt-in, off-by-default `Settings.require_plan` harness gate: the first *mutating* tool is
+withheld until a plan exists (read-only work is never gated), bounded → fails open, never deadlocks.
+(Shipped as harness-enforced "plan before you act" rather than interactive approval, which fits the
+headless/autonomous posture.) Original recommendation: Claude Code, Cursor,
 Devin, and goose all gate execution on an approved plan. We have a read-only PLAN *sub-agent* but no
 "approve the plan, then execute" checkpoint in the main loop. Lower priority given our near-term
 auto-decomposition altitude, but a natural extension and a real human-in-the-loop safety feature.
 
-**R6. Richer delegation summaries (guard the lossy boundary).** Our `task` tool returns child summaries;
+**R6. Richer delegation summaries (guard the lossy boundary).** **[IMPLEMENTED]** — every sub-agent's
+prompt now carries a shared structured-handoff instruction (`subagent._HANDOFF`): end with a
+self-contained summary (what you did, key files/decisions, what remains), since the final message is
+the only thing passed back. (We already serialize writes by path — read-parallel/write-sequential.)
+Original recommendation: Our `task` tool returns child summaries;
 OpenHands' crude concat and Cognition's edit-apply anti-pattern warn this boundary loses implicit
 context. Keep **read-parallel/write-sequential** (we already serialize writes by path) and consider a
 structured handoff (objective + outputs + key decisions) over a bare summary.
 
-**R7. (Watch, don't build yet) A facts/assumptions ledger.** Magentic-One's Task Ledger separates
+**R7. (Watch, don't build yet — DEFERRED, per this recommendation) A facts/assumptions ledger.** Magentic-One's Task Ledger separates
 *verified facts vs guesses* from the plan — powerful for long horizons but likely over-engineering for
 our near-term layer. Note for the higher-level "mind," not the core.
 

@@ -148,7 +148,9 @@ async def _probe_plan_mode_readonly(workspace: str) -> str:
     from zakcode.agent.subagent import PLAN, READ_ONLY_TOOLS
     from zakcode.tools.builtins.default_registry import default_registry
 
-    assert PLAN.allowed_tools == READ_ONLY_TOOLS, PLAN.allowed_tools
+    # READ_ONLY_TOOLS plus update_plan (READ_ONLY — touches only the in-memory plan), and NO
+    # write/exec tools: Plan Mode's read-only-on-the-workspace guarantee stays schema-enforced.
+    assert PLAN.allowed_tools == [*READ_ONLY_TOOLS, "update_plan"], PLAN.allowed_tools
     plan_registry = default_registry().subset(PLAN.allowed_tools or [])
     names = set(plan_registry.active_names())
     for write_tool in ("write_file", "edit_file", "bash"):

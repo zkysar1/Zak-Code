@@ -147,3 +147,14 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     attempts; inert when unset), and **R2** optional task **dependencies**
     (`Task.blocked_by`, sanitized into a DAG, frontier-aware). The undecomposed-gate /
     model-settable-`kind` and planner-role-model ideas remain future (P1/P2) work.
+
+  - **Update (2026-06-14, follow-ups):** the P1/P2 research recommendations are now implemented on
+    this branch too — **R3** capability-triggered decomposition (a stuck primitive step gets a
+    "break it into sub-steps" nudge; prompt complexity floor + anti-over-decomposition guidance),
+    **R4** the read-only planner can emit a *structured* plan (`update_plan` added to its toolset;
+    planner-role model routing already existed), **R5** an opt-in, off-by-default `require_plan`
+    gate (withhold the first mutating tool until a plan exists; bounded, fail-open), and **R6** a
+    shared structured-handoff instruction on every sub-agent. **R7** (a facts/assumptions ledger)
+    stays DEFERRED, per its own "watch, don't build" recommendation — it belongs to the higher-level
+    mind, not the near-term core. The single-threaded inline design was kept (no planner/executor
+    split) per the report's "keep it sharp; simple beats agentic" caveat.

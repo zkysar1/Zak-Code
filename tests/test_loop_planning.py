@@ -10,15 +10,24 @@ buffered and streaming paths (the base ``astream`` wraps ``acomplete``).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from zakcode.agent.loop import AgentLoop
+from zakcode.config import PermissionTier, Settings
 from zakcode.events import AgentTaskUpdate
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
 from zakcode.tasks import Task, TaskNetwork
-from zakcode.tools.base import ToolContext
+from zakcode.tools.base import (
+    ConcurrencyClass,
+    Tool,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+    ToolSpec,
+)
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.usage import Usage
@@ -181,3 +190,102 @@ async def test_streaming_emits_task_update_event() -> None:
     last = updates[-1]
     assert "Current plan" in last.plan
     assert last.total == 2 and [t["title"] for t in last.tasks] == ["A", "B"]
+
+
+# ── R3: capability-triggered decomposition hint (decompose-on-stuck) ──────────
+
+
+def test_decompose_hint_targets_a_primitive_current_step() -> None:
+    loop, session = _loop(_Scripted([_done()]))
+    session.task_network = TaskNetwork(tasks=[Task(title="big step")])
+    session.task_network.normalize()
+    assert "smaller sub-steps" in loop._decompose_hint()  # current step is primitive
+
+
+def test_decompose_hint_is_empty_without_a_primitive_current_step() -> None:
+    loop, session = _loop(_Scripted([_done()]))
+    assert loop._decompose_hint() == ""  # no plan
+    # an already-decomposed (compound) current step is not re-suggested for decomposition
+    session.task_network = TaskNetwork(
+        tasks=[Task(title="g", kind="compound", children=[Task(title="leaf", status="done")])]
+    )
+    session.task_network.normalize()
+    assert loop._decompose_hint() == ""
+
+
+# ── R5: opt-in plan-first gate (plan before you mutate) ───────────────────────
+
+
+class _FakeWrite(Tool):
+    spec = ToolSpec(
+        name="write_file",
+        description="fake write",
+        required_permission=PermissionTier.WORKSPACE_WRITE,
+        concurrency=ConcurrencyClass.NEVER_PARALLEL,
+    )
+
+    def __init__(self) -> None:
+        self.runs = 0
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.runs += 1
+        return ToolResult.ok("written")
+
+
+def _plan_first_loop(provider: Provider, write: _FakeWrite) -> tuple[AgentLoop, Session]:
+    reg = ToolRegistry()
+    reg.register(write)
+    reg.register(UpdatePlanTool())
+    session = Session(cwd="/tmp", model="t/m")
+    loop = AgentLoop(
+        provider, reg, session, settings=Settings(require_plan=True), max_iterations=20
+    )
+    return loop, session
+
+
+def _write_call() -> LLMResult:
+    return LLMResult(
+        text="",
+        tool_calls=[ToolCall(id="w", name="write_file", arguments={"path": "a.txt"})],
+        usage=Usage(total_tokens=1),
+    )
+
+
+@pytest.mark.asyncio
+async def test_plan_first_withholds_a_mutation_until_a_plan_exists() -> None:
+    write = _FakeWrite()
+    # write (withheld) -> plan -> write (now allowed) -> done
+    provider = _Scripted(
+        [_write_call(), _plan_call([{"title": "a"}, {"title": "b"}]), _write_call(), _done()]
+    )
+    loop, _ = _plan_first_loop(provider, write)
+    result = await loop.arun_turn("edit something")
+    assert result.stop_reason == "completed"
+    assert write.runs == 1  # the write ran only AFTER a plan existed
+
+
+@pytest.mark.asyncio
+async def test_plan_first_fails_open_after_the_cap() -> None:
+    write = _FakeWrite()
+    # model never plans, just keeps trying to write; after the cap the write goes through
+    provider = _Scripted([_write_call()] * 6)
+    loop, _ = _plan_first_loop(provider, write)
+    result = await loop.arun_turn("edit something")
+    assert write.runs >= 1  # not deadlocked — fails open and the write eventually executes
+    assert result.stop_reason in {"completed", "max_iterations", "doom_loop"}
+
+
+@pytest.mark.asyncio
+async def test_plan_first_is_off_by_default() -> None:
+    write = _FakeWrite()
+    reg = ToolRegistry()
+    reg.register(write)
+    reg.register(UpdatePlanTool())
+    loop = AgentLoop(
+        _Scripted([_write_call(), _done()]),
+        reg,
+        Session(cwd="/tmp", model="t/m"),
+        max_iterations=20,
+    )
+    await loop.arun_turn("edit something")
+    assert write.runs == 1  # no gate -> the write runs immediately, no plan required

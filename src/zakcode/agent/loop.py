@@ -171,6 +171,10 @@ _MAX_LENGTH_CONTINUATIONS = 3
 #: after the cap the turn completes (flagged ``degraded`` because the plan was left unresolved).
 _MAX_PLAN_NUDGES = 2
 
+#: How many times the plan-first gate (R5, opt-in) may withhold a mutating batch to demand a plan
+#: before letting it through anyway (fail-open). Bounded so ``require_plan`` can never deadlock.
+_MAX_PLAN_FIRST_NUDGES = 2
+
 logger = logging.getLogger(__name__)
 
 #: Fence wrapping ``PRE_LLM_CALL``-injected context. The body is untrusted by design
@@ -657,6 +661,22 @@ class AgentLoop:
             complete=network.is_complete(),
         )
 
+    def _decompose_hint(self) -> str:
+        """A 'break the current step down' suffix for a stuck nudge (R3 / ADaPT).
+
+        Capability-triggered decomposition: when the model is stuck AND the live plan's current
+        step is a primitive (not already decomposed), suggest splitting it into sub-steps — the
+        research finding that decomposing *on executor failure* beats fixed up-front plans.
+        Empty when there is no plan or the current step is already compound.
+        """
+        current = self.session.task_network.current()
+        if current is None or current.is_compound():
+            return ""
+        return (
+            f" If step {current.id} ({current.title}) is harder than it looked, break it into "
+            "smaller sub-steps with update_plan and tackle them one at a time."
+        )
+
     def _plan_gate_nudge(self) -> str | None:
         """The plan-completion nudge, or ``None`` when the plan permits finishing.
 
@@ -991,6 +1011,24 @@ class AgentLoop:
                 names.append(name)
         return names
 
+    def _is_mutating(self, call: ToolCall) -> bool:
+        """Whether ``call`` would change the workspace/system (not a READ_ONLY-tier tool).
+
+        Used by the opt-in plan-first gate (R5): read-only investigation is never gated, only the
+        first write/edit/shell action. An unknown tool is treated as mutating (fail-closed for the
+        gate's purpose — better to ask for a plan than to wave through an unrecognized call)."""
+        tool = self.registry.get(call.name)
+        return tool is None or tool.spec.required_permission is not PermissionTier.READ_ONLY
+
+    def _plan_first_blocks(self, calls: list[ToolCall]) -> bool:
+        """True when the opt-in plan-first gate should withhold this batch: ``require_plan`` is on,
+        no plan exists yet, and the batch contains a mutating call."""
+        return (
+            self.settings.require_plan
+            and self.session.task_network.is_empty()
+            and any(self._is_mutating(c) for c in calls)
+        )
+
     def _is_read_only_safe(self, call: ToolCall) -> bool:
         """Whether ``call`` may join a concurrent batch.
 
@@ -1182,6 +1220,7 @@ class AgentLoop:
             task_network=self.session.task_network,
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
+        plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
             attempt_cap=self.attempt_cap,
@@ -1505,6 +1544,37 @@ class AgentLoop:
                 self._persist()
                 break
 
+            # Plan-first gate (R5, opt-in): withhold a mutating batch until a plan exists, so the
+            # model plans before it acts. Bounded by _MAX_PLAN_FIRST_NUDGES then fails open (the
+            # action runs) so it can never deadlock. Read-only investigation is never gated.
+            if (
+                self._plan_first_blocks(result.tool_calls)
+                and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
+            ):
+                plan_first_nudges += 1
+                self.session.add_message(
+                    _unexecuted_tool_results(
+                        result.tool_calls,
+                        "Not executed: lay out a plan with update_plan before making changes "
+                        "(plan-first is enabled).",
+                        "plan_first",
+                    )
+                )
+                self.session.add_message(
+                    Message.user(
+                        _control_rail(
+                            "Before editing, break this multi-step task into steps with "
+                            "update_plan, then proceed."
+                        )
+                    )
+                )
+                self._refund_iteration()  # the batch never executed — no work happened
+                self._persist()
+                last_signature = None
+                repeat_count = 0
+                stuck.reset()
+                continue
+
             # Each call runs through the permission + hook gate (a denial, veto, or
             # tool error becomes an error result fed back so the model can recover —
             # it never aborts the turn). A wholly read-only batch runs concurrently.
@@ -1554,7 +1624,9 @@ class AgentLoop:
                 stop_reason = "stuck"
                 break
             if action is StuckAction.NUDGE:
-                self.session.add_message(Message.user(_control_rail(stuck.nudge_message())))
+                self.session.add_message(
+                    Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
+                )
                 self._persist()
             elif action is StuckAction.NARROW:
                 self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
@@ -1654,6 +1726,7 @@ class AgentLoop:
             task_network=self.session.task_network,
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
+        plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
             attempt_cap=self.attempt_cap,
@@ -2050,6 +2123,37 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: repeated identical tool calls")
                     break
 
+                # Plan-first gate (R5, opt-in; streaming twin): withhold a mutating batch until a
+                # plan exists. Bounded -> fails open. Read-only investigation is never gated.
+                if (
+                    self._plan_first_blocks(tool_calls)
+                    and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
+                ):
+                    plan_first_nudges += 1
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            tool_calls,
+                            "Not executed: lay out a plan with update_plan before making changes "
+                            "(plan-first is enabled).",
+                            "plan_first",
+                        )
+                    )
+                    self.session.add_message(
+                        Message.user(
+                            _control_rail(
+                                "Before editing, break this multi-step task into steps with "
+                                "update_plan, then proceed."
+                            )
+                        )
+                    )
+                    self._refund_iteration()
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    yield AgentStatus(message="plan-first: plan the task before editing")
+                    continue
+
                 # Execute each call sequentially through the SAME gate as the buffered
                 # path (_execute_tool_call), surfacing call + result events live. (The
                 # streaming path stays sequential to preserve interleaved event order;
@@ -2104,7 +2208,9 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break
                 if action is StuckAction.NUDGE:
-                    self.session.add_message(Message.user(_control_rail(stuck.nudge_message())))
+                    self.session.add_message(
+                        Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
+                    )
                     self._persist()
                     yield AgentStatus(message="recovering: no progress — nudging a rethink")
                 elif action is StuckAction.NARROW:

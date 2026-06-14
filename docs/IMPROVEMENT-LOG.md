@@ -915,3 +915,26 @@ cost-accounting test instead of a fallback table.
     no real subprocess) and dependency cases in `tests/test_tasks.py`. **1781 green, ruff + mypy clean.**
   - Remaining (not done): P1 capability-triggered decomposition (wire StuckTracker → "decompose this
     step") + planner-role model; P2 plan-review gate, richer delegation summaries, facts ledger.
+
+- **2026-06-14 (dev, branch `claude/sdk-task-decomposition-024ug1` — research P1/P2 follow-ups):**
+  implemented the remaining recommendations from `docs/research/task-planning-decomposition.md`.
+  - **R3 capability-triggered decomposition:** `AgentLoop._decompose_hint()` appends a "break step N
+    into sub-steps with update_plan" suggestion to the stuck-ladder NUDGE when the live plan's
+    `current()` is a primitive (ADaPT's decompose-on-failure, reusing the existing StuckTracker). The
+    prompt's `_PLANNING` guidance now sets a ~3-step complexity floor and warns against
+    over-decomposition (Claude Code's 3+ heuristic; Codex "no single-step plans"; overthinking).
+  - **R4 planner-model decomposition:** the planner-role routing already existed; made concrete by
+    adding `update_plan` to `PLAN.allowed_tools` (READ_ONLY, so Plan Mode stays read-only on the
+    workspace) + a planner instruction to structure the plan. No planner/executor split (kept the
+    single-threaded design per the report's caveat).
+  - **R5 plan-first gate (opt-in):** `Settings.require_plan` (`ZAKCODE_REQUIRE_PLAN`, default false).
+    New `_is_mutating`/`_plan_first_blocks`; both loop paths withhold a mutating batch (pairing its
+    tool_use blocks with recoverable errors + a nudge) until a plan exists, bounded by
+    `_MAX_PLAN_FIRST_NUDGES` then fail-open. Read-only investigation is never gated.
+  - **R6 structured handoff:** `subagent._HANDOFF` appended to every sub-agent prompt via
+    `prompt_builder_for` (the child's final message is the only thing returned, so require a
+    self-contained summary — addresses the lossy-boundary failure mode).
+  - **R7:** deferred per its own recommendation (facts ledger belongs to the mind).
+  - Updated 6 pre-existing tests that asserted the old PLAN toolset / prompt-suffix (intended
+    changes). New tests in `test_loop_planning.py` (R3 + R5) and `test_subagent_planning.py` (R4 + R6).
+    **1790 green, ruff + mypy clean.** Docs: CONFIG.md, .env.example, ARCHITECTURE.md, ADR-0008, report.

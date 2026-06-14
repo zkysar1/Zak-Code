@@ -243,6 +243,16 @@ class Settings(BaseSettings):
             "Shell command that verifies the workspace (tests/lint); gates completion after edits."
         ),
     )
+    # Plan-first gate (R5, opt-in, OFF by default). When true, the harness will not run a MUTATING
+    # tool (write/edit/shell) until the model has laid out a plan with update_plan — "plan before
+    # you act", the harness-enforced-planning pole. Read-only investigation is never gated, and the
+    # gate is bounded (after a few nudges it lets the action through, fail-open) so it can never
+    # deadlock. Off by default because forcing a plan on trivial turns is counterproductive; an
+    # operator/mind that wants the discipline opts in.
+    require_plan: bool = Field(
+        default=False,
+        description="Require a plan (update_plan) before the first mutating tool runs in a turn.",
+    )
     workspace_root: Path = Field(
         default_factory=Path.cwd, description="Root directory the agent operates within."
     )
