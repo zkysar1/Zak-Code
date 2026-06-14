@@ -875,3 +875,21 @@ cost-accounting test instead of a fallback table.
       gate; route a `planner` role model for decomposition.
     - Risk surface is contained: new code is additive, the gate is bounded (cannot deadlock),
       the substrate is pure + well-tested, and the session field is append-only/back-compatible.
+
+- **2026-06-14 (research, branch `claude/sdk-task-decomposition-024ug1` — best-in-class task-planning
+  survey):** ran a multi-agent deep-research sweep (~25 systems, ~40 papers) benchmarking our HTN
+  planning layer against the field. Full cited report: `docs/research/task-planning-decomposition.md`.
+  Verdict: our fundamentals (model-driven `update_plan`, single-`in_progress`, cache-safe re-injection,
+  self-arming bounded gate, completed-plan reset, full-replace) are on the best-in-class path and match
+  what Claude Code/Codex/Amp converged on. Prioritized next steps (NOT yet implemented):
+  **P0** — (R1) generalize the completion gate from "run the script" to the project's real verifier
+  (tests/lint/typecheck) when discoverable, kept domain-agnostic (skill-provided/detected); strongest
+  evidence in the literature is external-sound-verification ≫ self-critique. (R2) add optional task
+  **dependencies** (`blocked_by`) — the frontier (Claude Code's new `TaskUpdate addBlocks/addBlockedBy`,
+  LlamaIndex `SubTask.dependencies`, LLMCompiler/Devin DAGs) moved to dependency-aware plans.
+  **P1** — (R3) capability-triggered decomposition: wire `StuckTracker` to nudge "decompose this step"
+  on a stuck primitive (ADaPT), plus a complexity floor (~3+ steps, no single-step plans, anti-over-plan).
+  (R4) route decomposition through the `planner` role model. **P2** — optional plan-review gate; richer
+  delegation summaries; (watch) a facts/assumptions ledger. Caveat recorded in the report: "simple beats
+  agentic" on SWE-bench, so the planning layer's justification is weak-model support + multi-turn
+  coherence + UX, not benchmark-chasing — keep it sharp.
