@@ -61,6 +61,22 @@ class AgentStatus(BaseModel):
     message: str
 
 
+class AgentTaskUpdate(BaseModel):
+    """The live hierarchical plan changed — a client may render the task list.
+
+    ``plan`` is the human-readable checklist; ``tasks`` is the structured tree (each node:
+    ``id, title, status, kind, note, children``) for a rich client that draws its own UI.
+    Advisory, like :class:`AgentStatus`: a client may render or ignore it.
+    """
+
+    event: Literal["task_update"] = "task_update"
+    plan: str = ""
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    finished: int = 0
+    total: int = 0
+    complete: bool = False
+
+
 class AgentUsage(BaseModel):
     """Cumulative token/cost usage for the turn so far."""
 
@@ -86,7 +102,13 @@ class AgentDone(BaseModel):
 
 
 AgentEvent = Annotated[
-    AgentTextDelta | AgentToolCall | AgentToolResult | AgentStatus | AgentUsage | AgentDone,
+    AgentTextDelta
+    | AgentToolCall
+    | AgentToolResult
+    | AgentStatus
+    | AgentTaskUpdate
+    | AgentUsage
+    | AgentDone,
     Field(discriminator="event"),
 ]
 
@@ -96,6 +118,7 @@ __all__ = [
     "AgentToolCall",
     "AgentToolResult",
     "AgentStatus",
+    "AgentTaskUpdate",
     "AgentUsage",
     "AgentDone",
     "AgentEvent",

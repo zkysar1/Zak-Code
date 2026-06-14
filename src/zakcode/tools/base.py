@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, model_validator
 
 from zakcode.config import PermissionTier
+from zakcode.tasks import TaskNetwork
 
 logger = logging.getLogger("zakcode.tools")
 
@@ -164,6 +165,11 @@ class ToolContext(BaseModel):
     #: the operator opted out via ``subprocess_inherit_provider_keys=true``. Removal runs
     #: LAST, after ``egress_env`` is overlaid, so nothing can resurrect a scrubbed key.
     scrub_env: list[str] = Field(default_factory=list)
+    #: The live hierarchical plan (:class:`~zakcode.tasks.TaskNetwork`) for this loop's
+    #: session — the seam the ``update_plan`` tool rewrites and the loop then persists and
+    #: re-injects. ``None`` for a bare/ungated loop that does not wire planning, so the
+    #: tool degrades to a recoverable error rather than raising.
+    task_network: TaskNetwork | None = None
 
     @property
     def all_workspace_roots(self) -> list[Path]:
