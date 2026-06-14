@@ -237,3 +237,16 @@ def test_facade_default_no_filter(tmp_path) -> None:
     agent = zakcode.Agent(workspace_root=tmp_path)
     # default: no restriction — bash (a registered builtin) is exposed
     assert agent.registry.exposure_allows("bash") is True
+
+
+def test_facade_subagent_registry_inherits_filter(tmp_path) -> None:
+    import zakcode
+
+    # A denied tool must NOT be re-exposed to a delegated sub-agent: the child (task-free)
+    # registry the SubAgentRunner holds must carry the same exposure filter as the parent.
+    agent = zakcode.Agent(
+        workspace_root=tmp_path, enable_subagents=True, tool_exposure_deny=["bash"]
+    )
+    child_registry = agent.loop.spawner._runner.registry
+    assert child_registry.exposure_allows("bash") is False
+    assert child_registry.exposure_allows("read_file") is True
