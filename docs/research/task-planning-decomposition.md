@@ -143,12 +143,23 @@ verifier, or both.
    expensive and hurts long horizons; never-plan caps performance (Learning-When-to-Plan, 2509.03581).
    Hand-authored decomposition templates **don't generalize** past their authored size (Chain of
    Thoughtlessness, 2405.04776) → prefer dynamic, failure-triggered decomposition.
-4. **Keeping the plan salient (cache-safe)?** Universal practice is **re-injection/"recitation"**:
-   Cline re-injects every 6 messages (survives summarization), Roo puts a REMINDERS table in
-   `environment_details`, Claude Code re-reads via `TaskList`. **Goal/plan drift is a documented
-   failure** (recency dominance in autoregressive models; 2505.02709) and recitation is the
-   mitigation. Cache-safety = keep it an **ephemeral tail injection, never mutate the cached prefix**
-   — which is exactly what we do.
+4. **Keeping the plan salient (cache-safe)?** Universal practice is **re-injection / "recitation"**:
+   Manus pioneered it (constantly rewrite `todo.md` so the goal is "recited into the end of the
+   context," after models forget goals ~50 tool calls in); Anthropic frames it identically
+   ("rewriting the todo list pushes the global plan into the model's recent attention span, avoiding
+   lost-in-the-middle"); Cline re-injects every 6 messages (survives summarization), Roo puts a
+   REMINDERS table in `environment_details`, Claude Code re-reads via `TaskList`. **The cache
+   interaction has a precise, documented answer: re-injection is cache-safe iff you APPEND at the
+   tail, never mutate the prefix.** Caching is exact-prefix ("a change anywhere in the prefix
+   recomputes everything after it"), so the rule is *freeze the system prompt + tool defs, put the
+   volatile plan in the newest message*; Claude Code literally appends a `<system-reminder>` rather
+   than editing earlier context. Recitation (wants the plan at the tail for recent-attention) and
+   caching (wants the prefix frozen) are therefore **aligned, not in tension** — and our ephemeral
+   tail injection is exactly this pattern. The failure it fights — **plan/goal drift** — is severe
+   and quantified: agents "fail to revise stale steps, forget earlier steps (context rot), and
+   prematurely conclude," and **even Claude Opus 4.5 abandons its own plan >50% of the time**
+   (2601.17915; drift mechanism 2505.02709, 2509.03581). *This >50% abandonment rate is the single
+   strongest justification for harness-enforced salience + a completion gate — i.e. our design.*
 5. **Decomposition depth / single vs parallel focus?** Stop when the executor *can* do the step;
    recurse when it can't (ADaPT). Right-size granularity (actionable but not bloated). **Single
    `in_progress` focus is the near-universal convention** (Claude Code/Cursor/Codex/Amp) — we match it.
@@ -204,8 +215,11 @@ verifier is *discoverable*, a turn that changed code can't finish `completed` un
 a tests/lint/typecheck command. **Keep it domain-agnostic:** do not hardcode `pytest`/`poe`; let the
 verifier be **provided by a skill or detected** (and fall back to today's behavior when none is
 known). This is the coding analogue of SWE-bench's test gate and SWE-agent's per-edit linter, and it
-operationalizes the report's strongest finding. *Risk:* over-gating/slow turns — make it bounded
-(like the recipe gate), skippable, and only-when-a-verifier-is-known.
+operationalizes the report's strongest finding. Note even Claude Code only *instructs the model*
+("ONLY mark a task completed when you have FULLY accomplished it… not if tests fail") — that is
+model-driven self-checking, which a model abandons >50% of the time; making it **harness-enforced**
+is precisely the upgrade. *Risk:* over-gating/slow turns — make it bounded (like the recipe gate),
+skippable, and only-when-a-verifier-is-known.
 
 **R2. Add optional task dependencies (`blocked_by`) to `TaskNetwork`.**
 The frontier is dependency-aware plans (Claude Code `addBlocks`/`addBlockedBy`, LlamaIndex
