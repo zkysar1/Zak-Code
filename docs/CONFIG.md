@@ -58,6 +58,8 @@ here — adding a Settings field without documenting it fails CI.
 | `dependency_gate` | `ZAKCODE_DEPENDENCY_GATE` | `true` | When true (default), a shell command that installs a package the project's manifests/lockfile don't declare (pip/uv/poetry/npm…) escalates to a prompt — and hard-denies in `autonomous`. Tighten-only; `uv sync`/`npm ci`/declared/editable installs pass through. See [SELF-REMEDIATION.md](SELF-REMEDIATION.md). |
 | `denied_commands` | `ZAKCODE_DENIED_COMMANDS` | `[]` | Extra deny regexes appended to the dangerous-command blocklist (newline-separated or JSON array); tighten-only. |
 | `protected_paths` | `ZAKCODE_PROTECTED_PATHS` | `[]` | Extra protected-path regexes appended to the built-in floor (`.git/`, `.env`, the venv, `.claude/`). A write matching one escalates to a prompt — and hard-denies in `autonomous` — even under `allow`/`acceptEdits` or a grant. Tighten-only. See [SELF-REMEDIATION.md](SELF-REMEDIATION.md) Step 2. |
+| `tool_exposure_allow` | `ZAKCODE_TOOL_EXPOSURE_ALLOW` | `[]` | Per-task tool filter (Step 4). If non-empty, ONLY tools whose canonical name matches one of these globs are exposed to the model (and invocable). Empty = no allow restriction. Comma/space-separated or JSON. |
+| `tool_exposure_deny` | `ZAKCODE_TOOL_EXPOSURE_DENY` | `[]` | Tool-name globs NEVER exposed to the model (wins over the allow list), e.g. `bash,powershell,mcp__*`. Narrows attack surface (a tool the model can't see can't be hijacked by injected content); exposure-only, never loosens the permission gate. See [SELF-REMEDIATION.md](SELF-REMEDIATION.md) Step 4. |
 | `workspace_root` | `ZAKCODE_WORKSPACE_ROOT` | current dir | Root directory the agent operates within. |
 
 ## Web tools & egress

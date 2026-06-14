@@ -254,6 +254,14 @@ class Agent:
         #: The model currently driving the main loop (failover may move it off default).
         self._active_model = self.settings.default_model
         self.registry = default_registry(self.settings)
+        # Per-task tool-exposure filter (self-remediation Step 4): narrow the model-facing
+        # toolset to the operator's allow/deny globs before any (possibly untrusted) content
+        # enters context. Applied lazily at definitions()-time, so it also covers MCP tools
+        # discovered later via connect_mcp(). Empty lists (the default) = no restriction.
+        self.registry.set_exposure_filter(
+            allow=list(self.settings.tool_exposure_allow),
+            deny=list(self.settings.tool_exposure_deny),
+        )
         self.store = session_store
         self.session = session or Session(
             cwd=str(self.settings.workspace_root),
@@ -441,9 +449,20 @@ class Agent:
 
             # Guaranteed non-None: the construction above runs whenever enable_subagents.
             assert shared_budget is not None
+            # Task-free registry for children (omits the ``task`` tool to bar delegation
+            # recursion). It must carry the SAME tool-exposure filter (Step 4): a tool the
+            # operator denied for the session must stay hidden from a delegated sub-agent too
+            # (a sub-agent reads untrusted content as well), else a `bash`-denied session could
+            # spawn a child that still has `bash`. (subset() also copies the filter, covering the
+            # allowed_tools path; this covers the full-registry path.)
+            child_registry = default_registry(self.settings)
+            child_registry.set_exposure_filter(
+                allow=list(self.settings.tool_exposure_allow),
+                deny=list(self.settings.tool_exposure_deny),
+            )
             runner = SubAgentRunner(
                 provider=self.provider,
-                registry=default_registry(self.settings),  # task-free registry for children
+                registry=child_registry,
                 settings=self.settings,
                 budget=shared_budget,
                 permission_policy=self.permission_policy,
