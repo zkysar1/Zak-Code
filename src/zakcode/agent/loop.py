@@ -605,6 +605,16 @@ class AgentLoop:
             return self.session.messages
         return [*self.session.messages, *tail]
 
+    def _reset_completed_plan(self) -> None:
+        """Drop a fully-finished plan at the start of a new turn.
+
+        A completed prior goal's checklist must not bleed into an unrelated next turn (neither
+        re-injected into context nor re-emitted as a ``task_update``). An UNFINISHED plan is
+        left intact, so genuine multi-turn work carries its plan forward.
+        """
+        if self.session.task_network.is_complete():
+            self.session.task_network.tasks = []
+
     def _plan_reminder(self) -> Message | None:
         """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
         network = self.session.task_network
@@ -1099,6 +1109,7 @@ class AgentLoop:
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
         await self._maybe_compact()
+        self._reset_completed_plan()
         self.session.add_message(Message.user(user_text))
         self._persist()
 
@@ -1547,6 +1558,7 @@ class AgentLoop:
         """
         await self._fire_session_start_once()
         await self._maybe_compact()
+        self._reset_completed_plan()
         self.session.add_message(Message.user(user_text))
         self._persist()
 

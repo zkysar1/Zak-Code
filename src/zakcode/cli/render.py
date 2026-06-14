@@ -91,6 +91,7 @@ _DISPLAY_NAME = {
     "web_fetch": "Fetch",
     "web_search": "WebSearch",
     "todo_write": "Todo",
+    "update_plan": "Todo",
     "task": "Task",
 }
 

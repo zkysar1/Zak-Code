@@ -100,18 +100,18 @@ class TaskNetwork(BaseModel):
         """Re-establish every structural invariant; return human-readable advisories.
 
         Idempotent and total — safe to call on any (even model-authored, possibly malformed)
-        tree. It (1) assigns dotted ids by position, (2) coerces a childless ``compound`` to
-        ``primitive`` only for status purposes (it stays compound-but-under-decomposed so the
-        gate can flag it), (3) derives every compound's status from its children bottom-up, and
-        (4) enforces a single focused ``in_progress`` primitive (the first in document order
-        wins; later ones are demoted to ``pending``). Returned strings are surfaced to the model
-        by the tool so a demotion or an under-decomposed node is visible, never silent.
+        tree. It (1) assigns dotted ids by position, (2) enforces a single focused
+        ``in_progress`` primitive (the first in document order wins; later ones are demoted to
+        ``pending``), then (3) derives every compound's status from its children bottom-up.
+        Focus is enforced BEFORE derivation so a demoted child can never leave its parent with
+        a stale ``in_progress`` status. Returned strings are surfaced to the model by the tool
+        so a demotion or an under-decomposed node is visible, never silent.
         """
         advisories: list[str] = []
         self._assign_ids(self.tasks, prefix="")
+        self._enforce_single_focus(advisories)
         for task in self.tasks:
             self._derive_status(task, advisories)
-        self._enforce_single_focus(advisories)
         return advisories
 
     @staticmethod

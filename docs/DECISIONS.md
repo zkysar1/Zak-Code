@@ -93,3 +93,48 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   fully supported as `zakcode.providers.*` modules. If an external consumer ever
   materializes, re-extraction is mechanical — the modules stay pydantic-only by enforced
   contract, so the boundary survives the merge.
+
+
+## ADR-0008 — Hierarchical task-network planning in the cognitive core
+
+- **Status:** Accepted (2026-06-14)
+- **Context:** The engine had a strong *reactive* cognition stack (recipe gate, stuck
+  ladder, doom-loop guard, write-grounding, lessons) but **no task-management substrate** —
+  no decomposition of a goal into steps, no progress tracking, no "what's next?" Worse,
+  `ARCHITECTURE.md` claimed a "live TODO list re-injected near the end of context" that did
+  not exist in code. The owner wanted Zak Code to be a drop-in replacement for Claude Code's
+  domain-agnostic cognitive core (skills carry domain knowledge), with planning bolstered at
+  the **first/near-term layer** — "what am I doing immediately next", decompose-to-primitives
+  then execute — explicitly NOT the long-horizon, multi-layer planning a higher "mind"
+  (ayoai-mind) owns. The owner had researched HTN/PDDL and asked that decomposition, "one of
+  the most basic forms," be done "extremely well, not lazy."
+- **Decision:** Add a **hierarchical task network** as the engine substrate (`zakcode/tasks.py`):
+  every node is **compound** (a goal that must be decomposed into `children` before it is
+  actionable; its status is *derived* from its children, never set directly) or **primitive**
+  (a directly-executable step). The network computes the **frontier** (next actionable
+  primitive), enforces a single focused `in_progress` step, and renders the live checklist.
+  The model authors it via the **`update_plan` tool** (full-replace, TodoWrite-style — robust
+  for weak models; the harness re-numbers ids and re-derives invariants each edit). The loop
+  **re-injects** the plan near the end of context each iteration (ephemeral, non-persisted —
+  cache-safe) and runs a **bounded, self-arming plan gate** that refuses to quietly finish a
+  turn with open steps (nudge → complete `degraded`, never deadlock). The plan **persists on
+  `Session.task_network`** so it spans turns. A `task_update` `AgentEvent` lets clients render
+  the list. **The engine owns decomposition structure + discipline; the *method* for how to
+  decompose a given kind of task is domain knowledge that stays in skills**, preserving the
+  clean-room, vendor/domain-agnostic boundary.
+  - Owner-chosen design forks: **hybrid enforcement** (model-driven tool + harness
+    re-injection + self-arming gate, not a hard up-front planning gate); **persist in session**
+    (not per-turn); **real hierarchy, done rigorously** (not a flat checklist; but a
+    lightweight HTN — no PDDL solver/world-model in the core, which would require a domain
+    model the architecture places in skills).
+- **Consequences:** The engine now plans proactively, not just recovers reactively, and the
+  long-aspirational re-injection claim is real. Decomposition method is `kind`-inferred (a step
+  with subtasks is compound, else primitive), so the model expresses hierarchy by nesting, not
+  by a flag — there is no model-settable "compound-but-undecomposed" state (`undecomposed()`
+  and its advisory are defensive, reachable only by constructing a network directly). The plan
+  gate adds at most `_MAX_PLAN_NUDGES` (2) extra iterations to a struggling turn. An unfinished
+  plan deliberately carries across turns (and is re-nudged) until completed or cleared — correct
+  HTN behavior (don't silently abandon a plan), at the cost of a stale incomplete plan haunting
+  later turns until the model clears it with `update_plan`. A future enhancement could make
+  `kind` model-settable to activate the under-decomposition gate, and route a `planner` role
+  model (`Settings.model_roles`) to a cheaper model for decomposition.

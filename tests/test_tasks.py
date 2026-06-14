@@ -163,6 +163,20 @@ def test_render_marks_current_and_shows_progress_and_glyphs() -> None:
     assert "[ ] 3 test" in out
 
 
+def test_focus_enforced_before_derivation_leaves_no_stale_parent() -> None:
+    # Two compounds each with an in_progress child. Single-focus keeps only the first child
+    # in_progress; the second parent MUST derive to pending, not a stale in_progress. (This is
+    # the bug that the old derive-then-enforce ordering produced.)
+    net = _net(
+        Task(title="g1", kind="compound", children=[Task(title="a", status="in_progress")]),
+        Task(title="g2", kind="compound", children=[Task(title="b", status="in_progress")]),
+    )
+    assert net.tasks[0].children[0].status == "in_progress"
+    assert net.tasks[0].status == "in_progress"
+    assert net.tasks[1].children[0].status == "pending"  # demoted by single-focus
+    assert net.tasks[1].status == "pending"  # derived AFTER demotion — not stale in_progress
+
+
 def test_normalize_is_idempotent() -> None:
     net = _net(
         Task(

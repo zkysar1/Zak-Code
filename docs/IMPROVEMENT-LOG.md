@@ -810,3 +810,68 @@ cost-accounting test instead of a fallback table.
   (`protected_paths`). Next: fresh-eyes review → PR. Then Step 3 (the Executor sandbox — the big
   one, the precondition for trustworthy autonomy that makes every best-effort residual above
   survivable).
+
+- **2026-06-14 (dev, branch `claude/sdk-task-decomposition-024ug1` — first-layer task
+  decomposition / HTN planning):** built the missing proactive-planning layer on the owner's
+  ask to bolster near-term task decomposition (keep the domain-agnostic core + skills
+  abstraction; this is the "what's next" layer, NOT ayoai-mind's long-horizon planning). Full
+  rationale + owner-chosen forks in **ADR-0008**. Summary for a future agent:
+
+  - **`src/zakcode/tasks.py` (NEW, pure, top-level next to `messages.py`/`usage.py`):**
+    `TaskNetwork` + `Task`. Compound (decomposed; status DERIVED from children) vs primitive
+    (actionable). `normalize()` (called by the tool every edit) assigns dotted ids, **enforces
+    single-focus BEFORE deriving parent status** (ordering matters — see the fresh-eyes bug
+    below), and derives compound status bottom-up. `current()`/`leaves()`/`actionable_remaining()`/
+    `progress()`/`is_complete()`/`render()`. Placed top-level (not in `agent/`) to avoid an
+    `agent → session` import cycle, since `Session` holds it.
+  - **`src/zakcode/tools/builtins/update_plan.py` (NEW, aliases `plan`/`todo`):** the model's
+    TodoWrite-style full-replace handle. `kind` is INFERRED from presence of `subtasks` (depth
+    capped at 3 via explicit nested schema — no recursive `$ref`). READ_ONLY (planning never
+    gated) + NeverParallel. Mutates `ctx.task_network` in place (the loop persists it). Registered
+    in `default_registry.py`.
+  - **`src/zakcode/tools/base.py`:** `ToolContext.task_network` (the injection seam, like `spawner`).
+  - **`src/zakcode/session/store.py`:** `Session.task_network` — append-only on schema v1 (no
+    version bump; same pattern as `permission_grants`; older builds drop it / re-derive).
+  - **`src/zakcode/agent/loop.py`:** (1) `_messages_for_call` re-injects the live plan as an
+    ephemeral, non-persisted tail message (LAST = highest salience) — fulfils the previously
+    aspirational re-injection claim; (2) `_plan_gate_nudge` + `_MAX_PLAN_NUDGES=2`: a bounded,
+    self-arming completion gate (sibling to the recipe gate) — won't finish with open steps,
+    then completes `degraded` rather than deadlock; (3) `_reset_completed_plan` at turn start
+    drops a FINISHED plan so it doesn't bleed into the next turn (an unfinished plan persists);
+    (4) `_task_update_event` emitted on the streaming path when the plan render changes. Wired
+    on BOTH `_run_turn` and `astream_turn`.
+  - **`src/zakcode/events.py`:** `AgentTaskUpdate` added to the `AgentEvent` union (`plan` text +
+    structured `tasks` + `finished`/`total`/`complete`).
+  - **`src/zakcode/agent/prompt.py`:** domain-agnostic `_PLANNING` guidance (decompose multi-step
+    work; one `in_progress`; just-in-time decomposition OK; skip for trivial single actions).
+  - **Clients (deprioritized per owner, but completed coherently):** web client (`index.html`)
+    handles `task_update` (textContent-only) and maps `update_plan`→`Todo`; CLI maps
+    `update_plan`→`Todo` so the tool result renders via the pre-existing `_todo_row` checklist
+    grammar. The CLI gracefully IGNORES the `task_update` event (no double-render; the tool
+    result already shows the plan in the transcript) — a rich client should use `task_update`
+    for a persistent panel instead.
+  - **Tests:** `tests/test_tasks.py` (network), `tests/test_loop_planning.py` (re-injection,
+    gate nudge→degraded, gate-inert-when-complete, no-plan, cross-turn reset/persist, malformed
+    input, streaming event), plus registry/render/webclient-contract updates. **1770 green,
+    ruff + mypy clean (`uv run poe check`).**
+
+  - **Fresh-eyes review findings (all fixed before this entry):**
+    1. **`normalize()` ordering bug** — deriving compound status BEFORE enforcing single-focus
+       left a parent stale `in_progress` after its child was demoted (two compounds each with an
+       in_progress child). Fixed: enforce focus first, then derive. Regression test added.
+    2. **`update_plan` with all-malformed `tasks`** would silently wipe an existing plan and
+       return an empty success. Fixed: reject without mutating; guard + test.
+    3. **Completed plan bleeding across turns** — a finished checklist was re-injected/re-emitted
+       on the next unrelated turn. Fixed: `_reset_completed_plan` at turn start; tests for both
+       reset (complete) and persist (incomplete).
+
+  - **Merge checklist / handoff (no PR opened yet — owner to decide):**
+    - [ ] `uv run poe check` green (currently: 1770 passed, 11 skipped — skips are fastapi extra
+      + powershell + live-provider, all environmental).
+    - [ ] Open PR from `claude/sdk-task-decomposition-024ug1` → `main` if/when the owner asks.
+    - [ ] Optional polish (out of scope here): rich-client persistent task panel using
+      `task_update`; suppress/collapse the `update_plan` tool result in the web transcript to
+      avoid double-render; consider model-settable `kind` to activate the under-decomposition
+      gate; route a `planner` role model for decomposition.
+    - Risk surface is contained: new code is additive, the gate is bounded (cannot deadlock),
+      the substrate is pure + well-tested, and the session field is append-only/back-compatible.

@@ -140,6 +140,13 @@ class UpdatePlanTool(Tool):
             return ToolResult.ok("Plan cleared.", data={"task_count": 0})
 
         built = [_build_task(t, _MAX_DEPTH) for t in tasks if isinstance(t, dict)]
+        if not built:
+            # Every item was malformed (no objects). Don't wipe an existing plan over a bad
+            # call — leave it untouched and tell the model how to shape the input.
+            return ToolResult.error(
+                "no valid steps found: each item in 'tasks' must be an object with a 'title'",
+                fix='e.g. [{"title": "first step"}, {"title": "second step"}]',
+            )
         network.tasks = built
         advisories = network.normalize()
 

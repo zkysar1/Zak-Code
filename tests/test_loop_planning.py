@@ -9,13 +9,18 @@ buffered and streaming paths (the base ``astream`` wraps ``acomplete``).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from zakcode.agent.loop import AgentLoop
 from zakcode.events import AgentTaskUpdate
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
+from zakcode.tasks import Task, TaskNetwork
+from zakcode.tools.base import ToolContext
 from zakcode.tools.builtins.default_registry import default_registry
+from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.usage import Usage
 
 
@@ -115,6 +120,54 @@ async def test_no_plan_means_no_gate() -> None:
     assert result.stop_reason == "completed"
     assert result.degraded is False
     assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_plan_is_reset_at_next_turn_start() -> None:
+    # Turn 1 completes a plan; turn 2 (unrelated) must start clean — the finished checklist is
+    # neither carried forward nor re-injected.
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "done"}]),
+            _done("turn one finished"),
+            _done("turn two answer"),
+        ]
+    )
+    loop, session = _loop(provider)
+    await loop.arun_turn("first goal")
+    assert session.task_network.is_complete()
+
+    await loop.arun_turn("a different question")
+    assert session.task_network.is_empty()  # the completed plan was reset at turn start
+    # The new turn's provider call saw no plan re-injected.
+    assert not any("[plan]" in m.text for m in provider.seen[-1])
+
+
+@pytest.mark.asyncio
+async def test_incomplete_plan_persists_across_turns() -> None:
+    # An UNFINISHED plan carries forward and is re-injected on the next turn (multi-turn work).
+    provider = _Scripted(
+        [_plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}])]
+        + [_done()] * 8
+    )
+    loop, session = _loop(provider)
+    await loop.arun_turn("start the work")
+    assert not session.task_network.is_empty() and not session.task_network.is_complete()
+
+    n_calls_after_turn1 = provider.calls
+    await loop.arun_turn("keep going")
+    # The first provider call of turn 2 re-injected the still-open plan.
+    assert any("[plan]" in m.text for m in provider.seen[n_calls_after_turn1])
+
+
+@pytest.mark.asyncio
+async def test_update_plan_rejects_all_malformed_without_wiping_existing_plan() -> None:
+    net = TaskNetwork(tasks=[Task(title="keep me", status="in_progress")])
+    net.normalize()
+    ctx = ToolContext(workspace_root=Path("/tmp"), task_network=net)
+    res = await UpdatePlanTool().execute({"tasks": [1, "nope", None]}, ctx)
+    assert res.is_error
+    assert [t.title for t in net.tasks] == ["keep me"]  # untouched by the bad call
 
 
 @pytest.mark.asyncio
