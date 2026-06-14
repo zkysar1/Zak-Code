@@ -199,6 +199,29 @@ self-remediation"** — it is the layer that makes a classifier mistake or a mis
 *survivable*. Report the active isolation level on every shell `ToolResult`. Backed by
 [[codex-security]], [[agentdojo]].
 
+> **Decision (2026-06-14): DEFERRED — deliberately, not neglected.** The sandbox is the one
+> *model-quality-independent* guarantee and the honest remaining gap, but its importance is
+> conditional on the deployment mode, and the cost/ROI is currently poor for this project:
+> - **Attended/interactive use (how Zak Code is run today, with a human approving escalations):**
+>   the shipped deterministic layers — deny-first mode ceiling + never-waivable dangerous floor,
+>   the declared-dependency gate (Step 1), the protected-path floor (Step 2), and the per-task
+>   tool-exposure filter (Step 4) — plus the human backstop already give strong protection. The
+>   sandbox is defense-in-depth here, **not a gate**.
+> - **Unattended/headless autonomy (agent running on its own over untrusted content):** the
+>   sandbox becomes the **precondition** — it's what turns a missed classification from
+>   catastrophic into survivable. Don't widen to true headless self-remediation without it.
+> - **Cost/ROI now:** it's L–XL and platform-specific, and the primary dev/runtime here is
+>   **Windows**, whose isolation story (Job Object/AppContainer) is the weakest and hardest of the
+>   three OSes — the worst ROI quadrant. It pays off far better on Linux/containers, where it is
+>   also much easier to do airtight.
+>
+> **Revisit when** the use case shifts to unattended operation **or** a Linux/container
+> deployment — at which point it's both genuinely necessary and substantially easier. Until
+> then, the deterministic layers are the right place to have invested. (Note: industry practice
+> splits the same way — cloud agents like OpenAI Codex / Devin sandbox by default because they're
+> *already* containerized; local-first harnesses commonly run on the host behind a permission
+> gate, exactly where Zak Code is.)
+
 **Step 4 — Per-task tool filter (M; after sandbox). ✅ SHIPPED.**
 Narrow the exposed toolset to what the planned task needs *before* untrusted content enters
 context (AgentDojo's most effective single defense). Builds on the existing tool-budget /
