@@ -915,6 +915,7 @@ def test_display_call_shapes() -> None:
     )
     assert display_call("unknown_tool", {"x": "y"}).plain == "UnknownTool(y)"
     assert display_call("todo_write", {}).plain == "Todo()"
+    assert display_call("update_plan", {}).plain == "Todo()"  # the real plan tool renders as Todo
 
 
 def test_display_call_truncation_directions() -> None:

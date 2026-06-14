@@ -34,8 +34,10 @@ def _runner(tmp_path: Path) -> SubAgentRunner:
 
 
 def test_plan_definition_is_read_only() -> None:
-    assert PLAN.allowed_tools == READ_ONLY_TOOLS
-    assert _WRITE_TOOLS.isdisjoint(set(READ_ONLY_TOOLS))
+    # The planner gets the read-only tools plus update_plan (itself READ_ONLY — it only touches the
+    # in-memory plan), so it can structure a plan but still cannot edit the workspace.
+    assert PLAN.allowed_tools == [*READ_ONLY_TOOLS, "update_plan"]
+    assert _WRITE_TOOLS.isdisjoint(set(PLAN.allowed_tools))
     assert PLAN.system_suffix and "PLAN MODE" in PLAN.system_suffix
 
 

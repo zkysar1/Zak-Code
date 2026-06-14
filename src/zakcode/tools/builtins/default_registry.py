@@ -12,6 +12,7 @@ from zakcode.tools.builtins.grep import GrepTool
 from zakcode.tools.builtins.list_dir import ListDirTool
 from zakcode.tools.builtins.powershell import PowerShellTool
 from zakcode.tools.builtins.read_file import ReadFileTool
+from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.tools.builtins.web_fetch import WebFetchTool
 from zakcode.tools.builtins.web_search import WebSearchTool
 from zakcode.tools.builtins.write_file import WriteFileTool
@@ -43,6 +44,7 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(ListDirTool(), aliases=["ls", "dir"])
     registry.register(GlobTool(), aliases=["find"])
     registry.register(GrepTool(), aliases=["search", "rg"])
+    registry.register(UpdatePlanTool(), aliases=["plan", "todo"])
     registry.register(BashTool(), aliases=["sh", "shell"])
     registry.register(PowerShellTool(), aliases=["pwsh"])
     registry.register(WebSearchTool(make_search_backend(settings)), aliases=["websearch"])

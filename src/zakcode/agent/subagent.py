@@ -73,6 +73,17 @@ class SubAgentResult(BaseModel):
     usage: Usage = Field(default_factory=Usage)
 
 
+#: Appended to EVERY sub-agent's prompt (R6): the child's final message is the ONLY thing
+#: passed back to the parent (:meth:`SubAgentRunner._summarize`), so a lossy or context-assuming
+#: summary is the documented multi-agent failure mode. Require a self-contained, structured
+#: handoff so the parent never has to reconstruct what the child did.
+_HANDOFF = (
+    "Handoff: when you finish, end with a brief, self-contained summary for the agent that "
+    "delegated to you — what you did, the key files or decisions, and anything that remains or "
+    "is uncertain. Your final message is the ONLY thing passed back; the parent cannot see your "
+    "intermediate steps, so do not refer to them."
+)
+
 #: The read-only built-in tools (those that never mutate the workspace). The planner
 #: (Plan Mode) is restricted to exactly these, so the write tools (write_file /
 #: edit_file / bash) are ABSENT from its tool schema entirely: the model is never
@@ -93,12 +104,16 @@ GENERAL_PURPOSE = SubAgentDefinition(
 PLAN = SubAgentDefinition(
     name="plan",
     description="A read-only planner: investigates and returns a step-by-step plan, never edits.",
-    allowed_tools=READ_ONLY_TOOLS,
+    # READ_ONLY_TOOLS plus update_plan (itself READ_ONLY — it only touches the in-memory plan,
+    # never the workspace), so the planner can structure its plan hierarchically (and runs on the
+    # model_roles['planner'] model when configured) rather than only emitting prose.
+    allowed_tools=[*READ_ONLY_TOOLS, "update_plan"],
     system_suffix=(
         "You are in PLAN MODE. You have read-only tools only and cannot modify the "
-        "workspace. Investigate the request, then return a clear, ordered, step-by-step "
-        "plan describing exactly what changes should be made and why. Do not attempt to "
-        "make changes yourself; produce the plan as your final answer."
+        "workspace. Investigate the request, lay out the steps with the update_plan tool "
+        "(decompose to primitive actions; use blocked_by for dependencies), then return a "
+        "clear, ordered, step-by-step plan as your final answer. Do not attempt to make "
+        "changes yourself."
     ),
 )
 
@@ -155,9 +170,12 @@ class SubAgentRunner:
 
         The parent's always-on rules are carried through so a sub-agent obeys the
         same operator guidance; the definition's ``system_suffix`` (e.g. Plan Mode)
-        coexists with them in the stable tier.
+        coexists with them in the stable tier. The shared structured-handoff
+        instruction (:data:`_HANDOFF`, R6) is appended for every sub-agent type.
         """
-        return SystemPromptBuilder(extra_instructions=definition.system_suffix, rules=self.rules)
+        suffix = definition.system_suffix
+        combined = f"{suffix}\n\n{_HANDOFF}" if suffix and suffix.strip() else _HANDOFF
+        return SystemPromptBuilder(extra_instructions=combined, rules=self.rules)
 
     async def run(self, definition: SubAgentDefinition, prompt: str) -> SubAgentResult:
         """Run one sub-agent to completion and return its condensed summary.

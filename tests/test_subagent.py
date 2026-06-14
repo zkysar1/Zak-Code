@@ -194,7 +194,10 @@ def test_prompt_builder_carries_system_suffix(tmp_path: Path) -> None:
     runner = _runner(tmp_path, _OneShotProvider("x"), _registry(), IterationBudget(10))
     definition = SubAgentDefinition(name="planner", system_suffix="Produce a plan; do not edit.")
     builder = runner.prompt_builder_for(definition)
-    assert builder.extra_instructions == "Produce a plan; do not edit."
+    # The definition's suffix is carried, with the shared structured-handoff instruction appended.
+    assert builder.extra_instructions is not None
+    assert "Produce a plan; do not edit." in builder.extra_instructions
+    assert "Handoff:" in builder.extra_instructions
 
 
 # ── summary fallback (M4-review MAJOR-2) ─────────────────────────────────────────

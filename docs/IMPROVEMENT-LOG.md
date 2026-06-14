@@ -811,6 +811,134 @@ cost-accounting test instead of a fallback table.
   one, the precondition for trustworthy autonomy that makes every best-effort residual above
   survivable).
 
+- **2026-06-14 (dev, branch `claude/sdk-task-decomposition-024ug1` — first-layer task
+  decomposition / HTN planning):** built the missing proactive-planning layer on the owner's
+  ask to bolster near-term task decomposition (keep the domain-agnostic core + skills
+  abstraction; this is the "what's next" layer, NOT ayoai-mind's long-horizon planning). Full
+  rationale + owner-chosen forks in **ADR-0008**. Summary for a future agent:
+
+  - **`src/zakcode/tasks.py` (NEW, pure, top-level next to `messages.py`/`usage.py`):**
+    `TaskNetwork` + `Task`. Compound (decomposed; status DERIVED from children) vs primitive
+    (actionable). `normalize()` (called by the tool every edit) assigns dotted ids, **enforces
+    single-focus BEFORE deriving parent status** (ordering matters — see the fresh-eyes bug
+    below), and derives compound status bottom-up. `current()`/`leaves()`/`actionable_remaining()`/
+    `progress()`/`is_complete()`/`render()`. Placed top-level (not in `agent/`) to avoid an
+    `agent → session` import cycle, since `Session` holds it.
+  - **`src/zakcode/tools/builtins/update_plan.py` (NEW, aliases `plan`/`todo`):** the model's
+    TodoWrite-style full-replace handle. `kind` is INFERRED from presence of `subtasks` (depth
+    capped at 3 via explicit nested schema — no recursive `$ref`). READ_ONLY (planning never
+    gated) + NeverParallel. Mutates `ctx.task_network` in place (the loop persists it). Registered
+    in `default_registry.py`.
+  - **`src/zakcode/tools/base.py`:** `ToolContext.task_network` (the injection seam, like `spawner`).
+  - **`src/zakcode/session/store.py`:** `Session.task_network` — append-only on schema v1 (no
+    version bump; same pattern as `permission_grants`; older builds drop it / re-derive).
+  - **`src/zakcode/agent/loop.py`:** (1) `_messages_for_call` re-injects the live plan as an
+    ephemeral, non-persisted tail message (LAST = highest salience) — fulfils the previously
+    aspirational re-injection claim; (2) `_plan_gate_nudge` + `_MAX_PLAN_NUDGES=2`: a bounded,
+    self-arming completion gate (sibling to the recipe gate) — won't finish with open steps,
+    then completes `degraded` rather than deadlock; (3) `_reset_completed_plan` at turn start
+    drops a FINISHED plan so it doesn't bleed into the next turn (an unfinished plan persists);
+    (4) `_task_update_event` emitted on the streaming path when the plan render changes. Wired
+    on BOTH `_run_turn` and `astream_turn`.
+  - **`src/zakcode/events.py`:** `AgentTaskUpdate` added to the `AgentEvent` union (`plan` text +
+    structured `tasks` + `finished`/`total`/`complete`).
+  - **`src/zakcode/agent/prompt.py`:** domain-agnostic `_PLANNING` guidance (decompose multi-step
+    work; one `in_progress`; just-in-time decomposition OK; skip for trivial single actions).
+  - **Clients (deprioritized per owner, but completed coherently):** web client (`index.html`)
+    handles `task_update` (textContent-only) and maps `update_plan`→`Todo`; CLI maps
+    `update_plan`→`Todo` so the tool result renders via the pre-existing `_todo_row` checklist
+    grammar. The CLI gracefully IGNORES the `task_update` event (no double-render; the tool
+    result already shows the plan in the transcript) — a rich client should use `task_update`
+    for a persistent panel instead.
+  - **Tests:** `tests/test_tasks.py` (network), `tests/test_loop_planning.py` (re-injection,
+    gate nudge→degraded, gate-inert-when-complete, no-plan, cross-turn reset/persist, malformed
+    input, streaming event), plus registry/render/webclient-contract updates. **1770 green,
+    ruff + mypy clean (`uv run poe check`).**
+
+  - **Fresh-eyes review findings (all fixed before this entry):**
+    1. **`normalize()` ordering bug** — deriving compound status BEFORE enforcing single-focus
+       left a parent stale `in_progress` after its child was demoted (two compounds each with an
+       in_progress child). Fixed: enforce focus first, then derive. Regression test added.
+    2. **`update_plan` with all-malformed `tasks`** would silently wipe an existing plan and
+       return an empty success. Fixed: reject without mutating; guard + test.
+    3. **Completed plan bleeding across turns** — a finished checklist was re-injected/re-emitted
+       on the next unrelated turn. Fixed: `_reset_completed_plan` at turn start; tests for both
+       reset (complete) and persist (incomplete).
+
+  - **Merge checklist / handoff (no PR opened yet — owner to decide):**
+    - [ ] `uv run poe check` green (currently: 1770 passed, 11 skipped — skips are fastapi extra
+      + powershell + live-provider, all environmental).
+    - [ ] Open PR from `claude/sdk-task-decomposition-024ug1` → `main` if/when the owner asks.
+    - [ ] Optional polish (out of scope here): rich-client persistent task panel using
+      `task_update`; suppress/collapse the `update_plan` tool result in the web transcript to
+      avoid double-render; consider model-settable `kind` to activate the under-decomposition
+      gate; route a `planner` role model for decomposition.
+    - Risk surface is contained: new code is additive, the gate is bounded (cannot deadlock),
+      the substrate is pure + well-tested, and the session field is append-only/back-compatible.
+
+- **2026-06-14 (research, branch `claude/sdk-task-decomposition-024ug1` — best-in-class task-planning
+  survey):** ran a multi-agent deep-research sweep (~25 systems, ~40 papers) benchmarking our HTN
+  planning layer against the field. Full cited report: `docs/research/task-planning-decomposition.md`.
+  Verdict: our fundamentals (model-driven `update_plan`, single-`in_progress`, cache-safe re-injection,
+  self-arming bounded gate, completed-plan reset, full-replace) are on the best-in-class path and match
+  what Claude Code/Codex/Amp converged on. Prioritized next steps (NOT yet implemented):
+  **P0** — (R1) generalize the completion gate from "run the script" to the project's real verifier
+  (tests/lint/typecheck) when discoverable, kept domain-agnostic (skill-provided/detected); strongest
+  evidence in the literature is external-sound-verification ≫ self-critique. (R2) add optional task
+  **dependencies** (`blocked_by`) — the frontier (Claude Code's new `TaskUpdate addBlocks/addBlockedBy`,
+  LlamaIndex `SubTask.dependencies`, LLMCompiler/Devin DAGs) moved to dependency-aware plans.
+  **P1** — (R3) capability-triggered decomposition: wire `StuckTracker` to nudge "decompose this step"
+  on a stuck primitive (ADaPT), plus a complexity floor (~3+ steps, no single-step plans, anti-over-plan).
+  (R4) route decomposition through the `planner` role model. **P2** — optional plan-review gate; richer
+  delegation summaries; (watch) a facts/assumptions ledger. Caveat recorded in the report: "simple beats
+  agentic" on SWE-bench, so the planning layer's justification is weak-model support + multi-turn
+  coherence + UX, not benchmark-chasing — keep it sharp.
+
+- **2026-06-14 (dev, branch `claude/sdk-task-decomposition-024ug1` — implement the two research
+  P0s):** acted on `docs/research/task-planning-decomposition.md`.
+  - **R1 — project-verifier gate (the report's strongest lever: external verification ≫ self-critique).**
+    New pure `agent/verify.py` `VerificationGate` (mirrors `RecipeCursor`/`StuckTracker`): arms when a
+    turn changes code (successful `write_file`/`edit_file`), satisfied when a run tool executes the
+    configured command successfully (`_commands_match` is token-contiguous, tolerant of wrappers like
+    `cd x && <cmd>`). New `Settings.verify_command` (`ZAKCODE_VERIFY_COMMAND`). Wired into BOTH loop
+    paths between the recipe gate and the plan gate via `_try_project_verify` (mirrors
+    `_try_harness_verify`: harness runs it only when it would auto-allow, else nudges; bounded by
+    `attempt_cap` → `verification_failed` degraded). New `verification_failed` in
+    `_DEGRADED_STOP_REASONS`. **Domain-agnostic** — the engine never guesses the command; inert when
+    unset (recipe gate unchanged). Docs: CONFIG.md, .env.example, ARCHITECTURE.md.
+  - **R2 — task dependencies.** `Task.blocked_by: list[str]`. `normalize()` now sanitizes edges into a
+    DAG (`_sanitize_dependencies` drops self/unknown; `_break_dependency_cycles` drops back-edges) —
+    fail-open so a malformed graph never freezes the agent. `current()` returns the first actionable
+    leaf whose deps are all terminal, with a fail-open fallback. `update_plan` exposes `blocked_by`
+    (referenced by the position ids shown in the plan); `render()` annotates "(after …)".
+  - Tests: `tests/test_verify.py` (gate unit + hermetic loop integration with fake write/bash tools —
+    no real subprocess) and dependency cases in `tests/test_tasks.py`. **1781 green, ruff + mypy clean.**
+  - Remaining (not done): P1 capability-triggered decomposition (wire StuckTracker → "decompose this
+    step") + planner-role model; P2 plan-review gate, richer delegation summaries, facts ledger.
+
+- **2026-06-14 (dev, branch `claude/sdk-task-decomposition-024ug1` — research P1/P2 follow-ups):**
+  implemented the remaining recommendations from `docs/research/task-planning-decomposition.md`.
+  - **R3 capability-triggered decomposition:** `AgentLoop._decompose_hint()` appends a "break step N
+    into sub-steps with update_plan" suggestion to the stuck-ladder NUDGE when the live plan's
+    `current()` is a primitive (ADaPT's decompose-on-failure, reusing the existing StuckTracker). The
+    prompt's `_PLANNING` guidance now sets a ~3-step complexity floor and warns against
+    over-decomposition (Claude Code's 3+ heuristic; Codex "no single-step plans"; overthinking).
+  - **R4 planner-model decomposition:** the planner-role routing already existed; made concrete by
+    adding `update_plan` to `PLAN.allowed_tools` (READ_ONLY, so Plan Mode stays read-only on the
+    workspace) + a planner instruction to structure the plan. No planner/executor split (kept the
+    single-threaded design per the report's caveat).
+  - **R5 plan-first gate (opt-in):** `Settings.require_plan` (`ZAKCODE_REQUIRE_PLAN`, default false).
+    New `_is_mutating`/`_plan_first_blocks`; both loop paths withhold a mutating batch (pairing its
+    tool_use blocks with recoverable errors + a nudge) until a plan exists, bounded by
+    `_MAX_PLAN_FIRST_NUDGES` then fail-open. Read-only investigation is never gated.
+  - **R6 structured handoff:** `subagent._HANDOFF` appended to every sub-agent prompt via
+    `prompt_builder_for` (the child's final message is the only thing returned, so require a
+    self-contained summary — addresses the lossy-boundary failure mode).
+  - **R7:** deferred per its own recommendation (facts ledger belongs to the mind).
+  - Updated 6 pre-existing tests that asserted the old PLAN toolset / prompt-suffix (intended
+    changes). New tests in `test_loop_planning.py` (R3 + R5) and `test_subagent_planning.py` (R4 + R6).
+    **1790 green, ruff + mypy clean.** Docs: CONFIG.md, .env.example, ARCHITECTURE.md, ADR-0008, report.
+
 - **2026-06-14 (dev, D28 — self-remediation Step 4: per-task tool-exposure filter; + Step 5
   decision):** Zachary said "get step 4 done, think about step 5" (Step 3, the sandbox, deferred
   as too big a refactor for now). **Step 4 = an operator-set, glob-based tool-exposure filter**

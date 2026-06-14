@@ -84,11 +84,13 @@ from zakcode.agent.lessons import LessonWriter
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
 from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
+from zakcode.agent.verify import VerificationGate
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
     AgentEvent,
     AgentStatus,
+    AgentTaskUpdate,
     AgentTextDelta,
     AgentToolCall,
     AgentToolResult,
@@ -162,6 +164,16 @@ _LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
 #: accepting it as-is. Each continuation is a real new iteration (draws iteration + budget),
 #: so it is bounded separately from — and far below — the iteration cap.
 _MAX_LENGTH_CONTINUATIONS = 3
+
+#: How many times a turn may be nudged to resolve its open plan steps before it is allowed to
+#: finish anyway (the plan gate). Bounded like the recipe gate so a model that decides the
+#: remaining steps are unnecessary — but won't mark them done/cancelled — can never deadlock;
+#: after the cap the turn completes (flagged ``degraded`` because the plan was left unresolved).
+_MAX_PLAN_NUDGES = 2
+
+#: How many times the plan-first gate (R5, opt-in) may withhold a mutating batch to demand a plan
+#: before letting it through anyway (fail-open). Bounded so ``require_plan`` can never deadlock.
+_MAX_PLAN_FIRST_NUDGES = 2
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +291,13 @@ def _fence_injected_context(texts: list[str]) -> str:
 #: Terminal stop reasons that mean the turn did not finish cleanly — used to roll a single
 #: ``degraded`` confidence signal up onto :class:`TurnResult` / ``AgentDone`` (Bet 2 idea #6)
 #: so a client can flag a struggling turn without re-deriving it from the stop reason.
-_DEGRADED_STOP_REASONS = {"stuck", "doom_loop", "recipe_stalled", "provider_error"}
+_DEGRADED_STOP_REASONS = {
+    "stuck",
+    "doom_loop",
+    "recipe_stalled",
+    "verification_failed",
+    "provider_error",
+}
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
 #: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` / ``provider_error``
@@ -575,19 +593,107 @@ class AgentLoop:
         (prompt-cache safe) and the conversation on disk stays clean. With no
         context hooks this is exactly ``self.session.messages``.
         """
-        if not self.hook_manager.has_context_hooks():
-            return self.session.messages
-        texts = await self.hook_manager.gather_context(
-            LLMContextPayload(
-                user_text=user_text,
-                cwd=str(self.workspace_root),
-                iteration=iteration,
-                message_count=len(self.session.messages),
+        tail: list[Message] = []
+        if self.hook_manager.has_context_hooks():
+            texts = await self.hook_manager.gather_context(
+                LLMContextPayload(
+                    user_text=user_text,
+                    cwd=str(self.workspace_root),
+                    iteration=iteration,
+                    message_count=len(self.session.messages),
+                )
             )
-        )
-        if not texts:
+            if texts:
+                tail.append(Message.user(_fence_injected_context(texts)))
+        # The live plan is re-injected LAST (highest salience, countering instruction
+        # fade-out) as an ephemeral tail message — never persisted, so the cached
+        # system+history prefix and the on-disk session both stay clean (the plan lives
+        # only in ``session.task_network``).
+        plan_msg = self._plan_reminder()
+        if plan_msg is not None:
+            tail.append(plan_msg)
+        if not tail:
             return self.session.messages
-        return [*self.session.messages, Message.user(_fence_injected_context(texts))]
+        return [*self.session.messages, *tail]
+
+    def _reset_completed_plan(self) -> None:
+        """Drop a fully-finished plan at the start of a new turn.
+
+        A completed prior goal's checklist must not bleed into an unrelated next turn (neither
+        re-injected into context nor re-emitted as a ``task_update``). An UNFINISHED plan is
+        left intact, so genuine multi-turn work carries its plan forward.
+        """
+        if self.session.task_network.is_complete():
+            self.session.task_network.tasks = []
+
+    def _plan_reminder(self) -> Message | None:
+        """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
+        network = self.session.task_network
+        rendered = network.render()
+        if not rendered:
+            return None
+        body = (
+            "[plan] Harness-tracked plan for the current goal. Keep it current with the "
+            "update_plan tool: mark a step done and the next in_progress as you finish each, "
+            "and decompose any step that turns out to be several actions.\n\n" + rendered
+        )
+        undecomposed = network.undecomposed()
+        if undecomposed:
+            titles = ", ".join(f"{t.id} ({t.title})" for t in undecomposed[:3])
+            body += (
+                f"\n\nNote: {titles} are compound goals with no sub-steps yet — decompose them "
+                "into primitive steps before working on them."
+            )
+        return Message.user(body)
+
+    def _task_update_event(self) -> AgentTaskUpdate | None:
+        """A :class:`AgentTaskUpdate` for the current plan, or ``None`` when no plan exists."""
+        network = self.session.task_network
+        rendered = network.render()
+        if not rendered:
+            return None
+        finished, total = network.progress()
+        return AgentTaskUpdate(
+            plan=rendered,
+            tasks=[t.model_dump() for t in network.tasks],
+            finished=finished,
+            total=total,
+            complete=network.is_complete(),
+        )
+
+    def _decompose_hint(self) -> str:
+        """A 'break the current step down' suffix for a stuck nudge (R3 / ADaPT).
+
+        Capability-triggered decomposition: when the model is stuck AND the live plan's current
+        step is a primitive (not already decomposed), suggest splitting it into sub-steps — the
+        research finding that decomposing *on executor failure* beats fixed up-front plans.
+        Empty when there is no plan or the current step is already compound.
+        """
+        current = self.session.task_network.current()
+        if current is None or current.is_compound():
+            return ""
+        return (
+            f" If step {current.id} ({current.title}) is harder than it looked, break it into "
+            "smaller sub-steps with update_plan and tackle them one at a time."
+        )
+
+    def _plan_gate_nudge(self) -> str | None:
+        """The plan-completion nudge, or ``None`` when the plan permits finishing.
+
+        Fires when a plan exists with steps that still owe work (neither done/cancelled nor
+        blocked): the turn should not quietly end with open steps. The model is told to either
+        do them or explicitly mark them done/cancelled — closing the decompose-then-finish loop.
+        """
+        network = self.session.task_network
+        remaining = network.actionable_remaining()
+        if not remaining:
+            return None
+        nxt = remaining[0]
+        return (
+            f"Your plan still has {len(remaining)} open step(s); the next is {nxt.id} "
+            f"({nxt.title}). Finish the remaining steps, or if they are no longer needed mark "
+            "them done/cancelled with update_plan — then end the turn."
+        )
 
     @staticmethod
     def _retry_delay(exc: RateLimited, attempt: int) -> float:
@@ -868,6 +974,40 @@ class AgentLoop:
         )
         return call, block
 
+    async def _try_project_verify(
+        self, verify: VerificationGate, ctx: ToolContext
+    ) -> tuple[ToolCall, ToolResultBlock] | None:
+        """Issue a harness-side run of the configured project verify command (R1).
+
+        Mirrors :meth:`_try_harness_verify`: runs the command through the SAME
+        ``_execute_tool_call`` gate, but ONLY when the synthetic ``bash`` would auto-allow
+        without a prompt — otherwise returns ``None`` so the caller falls back to nudging the
+        model. The real output is fed back to the gate (so a pass/fail is recorded) and appended
+        as a trusted user observation. Returns the ``(call, block)`` it ran (so the streaming path
+        can surface it), else ``None``.
+        """
+        command = verify.command
+        if command is None:
+            return None
+        call = ToolCall(
+            id=f"verify_run_{verify.harness_runs}", name="bash", arguments={"command": command}
+        )
+        if self.permission_policy is not None:
+            bash_tool = self.registry.get("bash")
+            bash_spec = bash_tool.spec if bash_tool is not None else None
+            if not self.permission_policy.auto_allows(bash_spec, call.arguments):
+                return None  # would prompt / is blocked -> fall back to the nudge
+        block = await self._execute_tool_call(call, ctx)
+        verify.harness_runs += 1
+        verify.observe([call], [block])
+        # Real shell stdout folded into a TRUSTED user message — defang protocol/template
+        # sentinels so it cannot forge a frame in the next text-protocol turn. (audit2 #2)
+        safe_output = defang_untrusted(block.output)
+        self.session.add_message(
+            Message.user(f"[harness] I ran the project checks to verify:\n{safe_output}")
+        )
+        return call, block
+
     def _readonly_tool_names(self) -> list[str]:
         """Active tool names at the ``READ_ONLY`` tier — the set allowed during a stuck
         NARROW step so the model is forced to investigate before mutating again.
@@ -885,6 +1025,24 @@ class AgentLoop:
             if tool is not None and tool.spec.required_permission is PermissionTier.READ_ONLY:
                 names.append(name)
         return names
+
+    def _is_mutating(self, call: ToolCall) -> bool:
+        """Whether ``call`` would change the workspace/system (not a READ_ONLY-tier tool).
+
+        Used by the opt-in plan-first gate (R5): read-only investigation is never gated, only the
+        first write/edit/shell action. An unknown tool is treated as mutating (fail-closed for the
+        gate's purpose — better to ask for a plan than to wave through an unrecognized call)."""
+        tool = self.registry.get(call.name)
+        return tool is None or tool.spec.required_permission is not PermissionTier.READ_ONLY
+
+    def _plan_first_blocks(self, calls: list[ToolCall]) -> bool:
+        """True when the opt-in plan-first gate should withhold this batch: ``require_plan`` is on,
+        no plan exists yet, and the batch contains a mutating call."""
+        return (
+            self.settings.require_plan
+            and self.session.task_network.is_empty()
+            and any(self._is_mutating(c) for c in calls)
+        )
 
     def _is_read_only_safe(self, call: ToolCall) -> bool:
         """Whether ``call`` may join a concurrent batch.
@@ -1045,6 +1203,7 @@ class AgentLoop:
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
         await self._maybe_compact()
+        self._reset_completed_plan()
         self.session.add_message(Message.user(user_text))
         self._persist()
 
@@ -1071,13 +1230,24 @@ class AgentLoop:
             spawner=self.spawner,
             egress_env=await self._egress_env(),
             scrub_env=self._scrub_env_names(),
+            # The live plan board the update_plan tool rewrites; the loop persists and
+            # re-injects it. Shared by reference, so the tool's edits are visible here.
+            task_network=self.session.task_network,
         )
+        plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
+        plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
             attempt_cap=self.attempt_cap,
             # Always extract a stated expected-output literal — high-precision (returns None
             # on ANY ambiguity), so always-on can never over-gate a turn.
             acceptance=extract_acceptance(user_text),
+        )
+        # Project-verifier gate (R1): inert unless a verify command is configured; arms only when
+        # this turn actually changes code, then requires the project's checks to pass before
+        # finishing. Domain-agnostic — the engine never guesses the command.
+        verify = VerificationGate(
+            command=self.settings.verify_command, attempt_cap=self.attempt_cap
         )
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
@@ -1270,6 +1440,38 @@ class AgentLoop:
                             self._refund_iteration()
                     self._persist()
                     continue
+                # Project-verifier gate (R1): a turn that changed code may not finish until the
+                # configured project checks pass. Prefer a harness-issued run (auto-allow only);
+                # else nudge the model. Bounded by attempt_cap -> ends verification_failed
+                # (degraded) rather than looping. Inert unless a verify command is configured.
+                if verify.needs_verification():
+                    if not verify.can_attempt():
+                        stop_reason = "verification_failed"
+                        break
+                    if await self._try_project_verify(verify, ctx) is None:
+                        self.session.add_message(Message.user(_control_rail(verify.nudge())))
+                        if not result.text:
+                            self._refund_iteration()
+                    verify.consume_attempt()
+                    self._persist()
+                    continue
+                # Plan gate: a turn carrying a plan with still-open steps should not quietly
+                # finish. Nudge the model to complete them (or mark them done/cancelled);
+                # bounded by _MAX_PLAN_NUDGES so a deliberate finish can never deadlock — past
+                # the cap the turn completes but is flagged degraded (plan left unresolved).
+                plan_nudge = self._plan_gate_nudge()
+                if plan_nudge is not None:
+                    if plan_nudges < _MAX_PLAN_NUDGES:
+                        plan_nudges += 1
+                        self.session.add_message(Message.user(_control_rail(plan_nudge)))
+                        if not result.text:
+                            self._refund_iteration()  # an empty nudged completion did no work
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    turn_degraded = True  # finishing with open plan steps after the nudge cap
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
@@ -1357,6 +1559,37 @@ class AgentLoop:
                 self._persist()
                 break
 
+            # Plan-first gate (R5, opt-in): withhold a mutating batch until a plan exists, so the
+            # model plans before it acts. Bounded by _MAX_PLAN_FIRST_NUDGES then fails open (the
+            # action runs) so it can never deadlock. Read-only investigation is never gated.
+            if (
+                self._plan_first_blocks(result.tool_calls)
+                and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
+            ):
+                plan_first_nudges += 1
+                self.session.add_message(
+                    _unexecuted_tool_results(
+                        result.tool_calls,
+                        "Not executed: lay out a plan with update_plan before making changes "
+                        "(plan-first is enabled).",
+                        "plan_first",
+                    )
+                )
+                self.session.add_message(
+                    Message.user(
+                        _control_rail(
+                            "Before editing, break this multi-step task into steps with "
+                            "update_plan, then proceed."
+                        )
+                    )
+                )
+                self._refund_iteration()  # the batch never executed — no work happened
+                self._persist()
+                last_signature = None
+                repeat_count = 0
+                stuck.reset()
+                continue
+
             # Each call runs through the permission + hook gate (a denial, veto, or
             # tool error becomes an error result fed back so the model can recover —
             # it never aborts the turn). A wholly read-only batch runs concurrently.
@@ -1379,6 +1612,7 @@ class AgentLoop:
                 self._persist()
 
             cursor.observe(result.tool_calls, result_blocks)
+            verify.observe(result.tool_calls, result_blocks)
 
             # Stuck detection + recovery ladder: nudge -> narrow-to-read-only -> stop.
             # Generalizes the (exact-repeat) doom guard above to the many ways a weak model
@@ -1405,7 +1639,9 @@ class AgentLoop:
                 stop_reason = "stuck"
                 break
             if action is StuckAction.NUDGE:
-                self.session.add_message(Message.user(_control_rail(stuck.nudge_message())))
+                self.session.add_message(
+                    Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
+                )
                 self._persist()
             elif action is StuckAction.NARROW:
                 self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
@@ -1472,6 +1708,7 @@ class AgentLoop:
         """
         await self._fire_session_start_once()
         await self._maybe_compact()
+        self._reset_completed_plan()
         self.session.add_message(Message.user(user_text))
         self._persist()
 
@@ -1491,6 +1728,7 @@ class AgentLoop:
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
+        last_plan_render: str | None = None  # last plan emitted, so a task_update fires on change
 
         ctx = ToolContext(
             workspace_root=self.workspace_root,
@@ -1498,13 +1736,24 @@ class AgentLoop:
             spawner=self.spawner,
             egress_env=await self._egress_env(),
             scrub_env=self._scrub_env_names(),
+            # The live plan board the update_plan tool rewrites; the loop persists and
+            # re-injects it. Shared by reference, so the tool's edits are visible here.
+            task_network=self.session.task_network,
         )
+        plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
+        plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
             attempt_cap=self.attempt_cap,
             # Always extract a stated expected-output literal — high-precision (returns None
             # on ANY ambiguity), so always-on can never over-gate a turn.
             acceptance=extract_acceptance(user_text),
+        )
+        # Project-verifier gate (R1): inert unless a verify command is configured; arms only when
+        # this turn actually changes code, then requires the project's checks to pass before
+        # finishing. Domain-agnostic — the engine never guesses the command.
+        verify = VerificationGate(
+            command=self.settings.verify_command, attempt_cap=self.attempt_cap
         )
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
         stuck = StuckTracker()
@@ -1530,6 +1779,13 @@ class AgentLoop:
                     tool_defs = self.registry.definitions()
                 system = self._build_system(restrict_now)
                 call_messages = await self._messages_for_call(user_text, iterations)
+
+                # Emit a task_update whenever the plan changed since the last iteration (e.g.
+                # the previous batch called update_plan), so a client can redraw the task list.
+                task_event = self._task_update_event()
+                if task_event is not None and task_event.plan != last_plan_render:
+                    last_plan_render = task_event.plan
+                    yield task_event
 
                 provider_failure: str | None = None
                 retry_attempts = 0
@@ -1757,6 +2013,52 @@ class AgentLoop:
                                 self._refund_iteration()
                         self._persist()
                         continue
+                    # Project-verifier gate (streaming twin): changed code must pass the configured
+                    # project checks before finishing; surface a harness-issued run live, else
+                    # nudge. Bounded -> verification_failed (degraded). Inert unless configured.
+                    if verify.needs_verification():
+                        if not verify.can_attempt():
+                            stop_reason = "verification_failed"
+                            yield AgentStatus(
+                                message="stopping: project checks did not pass after changes"
+                            )
+                            break
+                        vrun = await self._try_project_verify(verify, ctx)
+                        if vrun is not None:
+                            vcall, vblock = vrun
+                            yield AgentToolCall(
+                                id=vcall.id, name=vcall.name, arguments=vcall.arguments
+                            )
+                            yield AgentToolResult(
+                                tool_use_id=vblock.tool_use_id,
+                                output=vblock.output,
+                                is_error=vblock.is_error,
+                            )
+                            yield AgentStatus(message="ran the project checks to verify")
+                        else:
+                            self.session.add_message(Message.user(_control_rail(verify.nudge())))
+                            if not assistant_text:
+                                self._refund_iteration()
+                        verify.consume_attempt()
+                        self._persist()
+                        continue
+                    # Plan gate (streaming twin of the buffered path): don't quietly finish
+                    # with open plan steps; nudge, bounded by _MAX_PLAN_NUDGES, then complete
+                    # (degraded) rather than deadlock.
+                    plan_nudge = self._plan_gate_nudge()
+                    if plan_nudge is not None:
+                        if plan_nudges < _MAX_PLAN_NUDGES:
+                            plan_nudges += 1
+                            self.session.add_message(Message.user(_control_rail(plan_nudge)))
+                            if not assistant_text:
+                                self._refund_iteration()
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            yield AgentStatus(message="plan has open steps; continuing")
+                            continue
+                        turn_degraded = True
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
                     prompt = await self._fire_turn_end(
@@ -1836,6 +2138,37 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: repeated identical tool calls")
                     break
 
+                # Plan-first gate (R5, opt-in; streaming twin): withhold a mutating batch until a
+                # plan exists. Bounded -> fails open. Read-only investigation is never gated.
+                if (
+                    self._plan_first_blocks(tool_calls)
+                    and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
+                ):
+                    plan_first_nudges += 1
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            tool_calls,
+                            "Not executed: lay out a plan with update_plan before making changes "
+                            "(plan-first is enabled).",
+                            "plan_first",
+                        )
+                    )
+                    self.session.add_message(
+                        Message.user(
+                            _control_rail(
+                                "Before editing, break this multi-step task into steps with "
+                                "update_plan, then proceed."
+                            )
+                        )
+                    )
+                    self._refund_iteration()
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    yield AgentStatus(message="plan-first: plan the task before editing")
+                    continue
+
                 # Execute each call sequentially through the SAME gate as the buffered
                 # path (_execute_tool_call), surfacing call + result events live. (The
                 # streaming path stays sequential to preserve interleaved event order;
@@ -1863,6 +2196,7 @@ class AgentLoop:
                     self._persist()
 
                 cursor.observe(tool_calls, result_blocks)
+                verify.observe(tool_calls, result_blocks)
 
                 # Stuck detection + recovery ladder (see _run_turn); surfaced live as
                 # AgentStatus notes so a client can show the recovery happening.
@@ -1889,7 +2223,9 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break
                 if action is StuckAction.NUDGE:
-                    self.session.add_message(Message.user(_control_rail(stuck.nudge_message())))
+                    self.session.add_message(
+                        Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
+                    )
                     self._persist()
                     yield AgentStatus(message="recovering: no progress — nudging a rethink")
                 elif action is StuckAction.NARROW:

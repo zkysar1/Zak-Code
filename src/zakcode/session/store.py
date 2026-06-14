@@ -42,6 +42,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 
 from zakcode.messages import Message
+from zakcode.tasks import TaskNetwork
 from zakcode.usage import Usage
 
 #: Highest on-disk schema version this build can write and fully understand.
@@ -138,6 +139,11 @@ class Session(BaseModel):
     #: simply drops this field on load, which only ever fails SAFE (the operator is
     #: re-asked; a grant is never invented).
     permission_grants: list[dict[str, str]] = Field(default_factory=list)
+    #: The live hierarchical task network — the agent's near-term plan (see
+    #: :mod:`zakcode.tasks`). Persisted so a multi-step plan spans turns and survives
+    #: ``/resume``. Schema v1 stays append-only: an OLDER build drops this field on load
+    #: (the plan is simply re-derivable from the conversation), so it only ever fails SAFE.
+    task_network: TaskNetwork = Field(default_factory=TaskNetwork)
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""
