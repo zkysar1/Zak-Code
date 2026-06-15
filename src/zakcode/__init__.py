@@ -453,6 +453,8 @@ class Agent:
                 max_cost_usd=self.settings.max_cost_usd,
                 max_tokens=self.settings.max_tokens,
             )
+        # Held so the deep_think sampler can fold its extra calls into the same turn-tree budget.
+        self._shared_budget = shared_budget
         spawner = None
         if enable_subagents:
             from zakcode.agent.subagent import (
@@ -634,6 +636,9 @@ class Agent:
             # quick_code→deep_code latch in the loop — it only ever switches between the two coder
             # models the user configured, never a substitute Zak Code chose.
             main_provider_for=(self._main_provider_for if self._zakpick else None),
+            # deep_think's model access: sample the strongest configured model (zakpick deep_code,
+            # else default_model). Always wired for a real Agent; the tool no-ops on a bare loop.
+            sampler=self._deep_think_sample,
             # TURN_END veto seam (T2/T3/T4): 0 (the default) disables the gate.
             turn_end_veto_budget=self.settings.turn_end_veto_budget,
         )
@@ -747,6 +752,27 @@ class Agent:
         provider, model = self._resolve_task_provider(category)
         self._active_model = model
         return provider
+
+    async def _deep_think_sample(
+        self, prompt: str, *, system: str | None = None, temperature: float = 0.0
+    ) -> str:
+        """The ``deep_think`` :class:`~zakcode.tools.base.Sampler`: one completion on the agent's
+        strongest model (zakpick ``deep_code``, else ``default_model``), with the spend accounted.
+
+        Routes through ``_resolve_task_provider`` so under zakpick a deliberation uses the user's
+        capable coder even when the current turn is on the cheap one. The usage is tagged for the
+        ``/cost`` per-model breakdown and folded into the shared turn-tree budget, so a
+        deliberation's cost is visible and bounded like any other model call — never hidden.
+        """
+        provider, _model = self._resolve_task_provider("deep_code")
+        result = await provider.acomplete(
+            [Message.user(prompt)], system=system, temperature=temperature
+        )
+        with contextlib.suppress(Exception):  # accounting must never break the deliberation
+            self.session.add_usage(result.usage, model=provider.model_id())
+            if self._shared_budget is not None:
+                self._shared_budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
+        return result.text
 
     async def invoke_skill(self, name: str) -> SkillInvocation:
         """Load a discovered skill's body into the session and emit the selection signal.

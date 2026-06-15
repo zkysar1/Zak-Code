@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.bash import BashTool
+from zakcode.tools.builtins.deep_think import DeepThinkTool
 from zakcode.tools.builtins.edit import EditFileTool
 from zakcode.tools.builtins.glob import GlobTool
 from zakcode.tools.builtins.grep import GrepTool
@@ -50,4 +51,7 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(WebSearchTool(make_search_backend(settings)), aliases=["websearch"])
     web_allowlist = settings.web_allowed_domains if settings else None
     registry.register(WebFetchTool(allowed_domains=web_allowlist), aliases=["fetch", "webfetch"])
+    # Opt-in deliberation: only WORKS when a Sampler is wired (the main Agent loop); a bare or
+    # delegated loop exposes it but it returns a clean "unavailable" error.
+    registry.register(DeepThinkTool(), aliases=["deliberate"])
     return registry

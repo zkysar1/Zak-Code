@@ -136,6 +136,25 @@ class SubAgentSpawner(Protocol):
         ...
 
 
+@runtime_checkable
+class Sampler(Protocol):
+    """Produces a single raw model completion for a tool that needs to *deliberate* — i.e.
+    make its own model calls rather than just touch the filesystem (the ``deep_think``
+    best-of-N synthesis tool).
+
+    The wirer (the ``Agent``) points it at the agent's strongest configured model — under
+    zakpick the ``deep_code`` category, otherwise ``default_model`` — and records each call's
+    usage so a deliberation's spend shows in ``/cost`` and counts against the turn budget.
+    ``None`` on :class:`ToolContext` when no provider is wired (a bare/test loop), so a
+    model-using tool degrades to a clean error instead of crashing. ``runtime_checkable`` so
+    pydantic can validate the field structurally.
+    """
+
+    async def __call__(
+        self, prompt: str, *, system: str | None = None, temperature: float = 0.0
+    ) -> str: ...
+
+
 class ToolContext(BaseModel):
     """Ambient state handed to a tool at execution time.
 
@@ -171,6 +190,10 @@ class ToolContext(BaseModel):
     #: re-injects. ``None`` for a bare/ungated loop that does not wire planning, so the
     #: tool degrades to a recoverable error rather than raising.
     task_network: TaskNetwork | None = None
+    #: A :class:`Sampler` for tools that make their own model calls (``deep_think``). The
+    #: ``Agent`` wires it to its strongest model and accounts the spend; ``None`` for a
+    #: bare/test loop, so a model-using tool returns a clean error rather than crashing.
+    sampler: Sampler | None = None
 
     @property
     def all_workspace_roots(self) -> list[Path]:
@@ -431,6 +454,7 @@ __all__ = [
     "ToolSpec",
     "ToolContext",
     "SubAgentSpawner",
+    "Sampler",
     "ToolResult",
     "Tool",
     "ToolRegistry",
