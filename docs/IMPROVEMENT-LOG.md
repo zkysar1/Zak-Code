@@ -1060,3 +1060,18 @@ cost-accounting test instead of a fallback table.
   no migration. Pinned by `test_step_note_is_the_checkable_done_condition` (guidance phrase in the
   built prompt + `done-condition` in the update_plan schema). **`uv run poe check` green: 1895 passed,
   5 skipped.**
+- **2026-06-15 (dev, branch `feat/plan-decomposition-probe` — measure the decomposition behavior):**
+  turned the #36/#37 prompt+schema changes into a *measured behavior*, not just pinned text. The M9
+  behavioral-probe suite (`src/zakcode/evals/probes.py`) had end-to-end probes for completion,
+  safety, plan-mode, doom-loop, recovery, and compaction — but **none for the planning lifecycle**, a
+  real gap given ADR-0008. Added an 8th probe, `plan-decomposition`: it drives the *real* loop with a
+  scripted full-replace plan — a COMPOUND step with two primitive children, each carrying a `note`
+  done-condition — advances the single frontier step by step, and asserts the turn ends `completed`,
+  the plan is fully resolved, the compound's status DERIVES 'done' from its children, every primitive
+  carries a checkable `note`, and the done-condition rides in the re-injected plan render. Honest
+  about scope: with a `ScriptedProvider` it measures that the *harness* runs a well-formed checkable
+  plan to clean completion (the lifecycle the core must never regress) — proving a real model
+  produces good steps is the live-eval's job (a noted future follow-up). Suite wiring updated (count
+  7→8, name set, CLI `8/8 passed`, standalone `test_probe_plan_decomposition`). **`uv run poe check`
+  green: 1896 passed, 5 skipped** (the full-suite gate caught a stale `7/7` CLI assertion the
+  targeted run missed — exactly its job).
