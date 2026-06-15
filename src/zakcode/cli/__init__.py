@@ -957,6 +957,45 @@ def _shutdown_session_loop(loop: asyncio.AbstractEventLoop) -> None:
     asyncio.set_event_loop(None)
 
 
+#: How many clean, un-escalated deep_code turns before the one-time "your deep coder wasn't
+#: needed" advisory fires (zakpick only, once per session — a gentle nudge, never naggy).
+_ZAKPICK_ADVISORY_AFTER = 3
+
+
+def _maybe_zakpick_advisory(console: Console, done: AgentDone | None, state: list[int]) -> None:
+    """Once per session, gently note that the user's deep coder handled routine work without
+    needing to — so they can reconsider their deep_code assignment. Inspired by "Intelligence
+    per Watt" (most turns are easy enough for a smaller model).
+
+    ``state`` is ``[count, shown]`` carried across turns. No-ops unless zakpick is active
+    (``done.routed_category`` is set), the turn ended cleanly on ``deep_code``, and the soft
+    latch never fired (``routed_escalated`` False) — i.e. the strong model wasn't actually
+    exercised. Fires at most once, after :data:`_ZAKPICK_ADVISORY_AFTER` such turns.
+    """
+    if done is None or state[1]:
+        return
+    if (
+        done.routed_category != "deep_code"
+        or done.routed_escalated
+        or done.stop_reason != "completed"
+    ):
+        return
+    state[0] += 1
+    if state[0] < _ZAKPICK_ADVISORY_AFTER:
+        return
+    state[1] = 1
+    console.print(
+        margin(
+            Text(
+                "tip: your deep coder (deep_code) has handled several turns this session "
+                "without ever hitting a struggle signal — if those felt routine, a cheaper "
+                "model in deep_code may keep up. See per-model spend with /cost.",
+                style="tip",
+            )
+        )
+    )
+
+
 def _run_streamed_turn(
     console: Console, make_stream: StreamFactory, renderer: StreamRenderer
 ) -> bool:
@@ -1157,6 +1196,10 @@ def chat(
     _SESSION_LOOP = loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    # zakpick advisory state for this session: [count of clean un-escalated deep_code turns,
+    # 1 once the one-time nudge has fired]. See _maybe_zakpick_advisory.
+    zakpick_advisory = [0, 0]
+
     while True:
         try:
             line = read_prompt(console)
@@ -1317,6 +1360,7 @@ def chat(
         except ProviderError as exc:
             notice_error(console, "provider error", str(exc))
             continue
+        _maybe_zakpick_advisory(console, renderer.last_done, zakpick_advisory)
 
     _shutdown_session_loop(loop)
 

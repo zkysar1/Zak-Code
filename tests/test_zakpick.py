@@ -329,3 +329,89 @@ async def test_loop_tags_usage_with_routed_model(tmp_path: Path) -> None:
     by_model = session.usage_by_model()
     assert "groq/openai/gpt-oss-20b" in by_model  # attributed to the model that actually ran
     assert by_model["groq/openai/gpt-oss-20b"].cost_usd == pytest.approx(0.01)
+
+
+# ── Phase 2: TurnResult routing fields + the "cheaper sufficed" advisory ──────────
+
+
+async def test_turnresult_carries_routing_fields(tmp_path: Path) -> None:
+    from zakcode.agent.loop import AgentLoop
+    from zakcode.session.store import Session
+    from zakcode.tools.base import ToolRegistry
+
+    p = _ScriptedText("done", model="m")
+    loop = AgentLoop(
+        p,
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="t"),
+        main_provider_for=lambda c: p,
+        max_iterations=3,
+    )
+    result = await loop.arun_turn("hi")  # short, clean → quick_code, no escalation
+    assert result.routed_category == "quick_code"
+    assert result.routed_escalated is False
+
+
+async def test_turnresult_routing_none_without_zakpick(tmp_path: Path) -> None:
+    from zakcode.agent.loop import AgentLoop
+    from zakcode.session.store import Session
+    from zakcode.tools.base import ToolRegistry
+
+    loop = AgentLoop(
+        _ScriptedText("done"),
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="t"),
+        max_iterations=3,  # no main_provider_for → zakpick off
+    )
+    result = await loop.arun_turn("hi")
+    assert result.routed_category is None
+
+
+def _advisory_console():
+    import io
+
+    from rich.console import Console
+
+    from zakcode.cli._theme import ZAK_THEME
+
+    buf = io.StringIO()
+    return Console(theme=ZAK_THEME, file=buf, width=100, force_terminal=False), buf
+
+
+def _done(category: str | None, *, escalated: bool = False, stop: str = "completed"):
+    from zakcode.events import AgentDone
+
+    return AgentDone(
+        stop_reason=stop, iterations=1, routed_category=category, routed_escalated=escalated
+    )
+
+
+def test_advisory_fires_once_after_clean_deep_turns() -> None:
+    from zakcode.cli import _ZAKPICK_ADVISORY_AFTER, _maybe_zakpick_advisory
+
+    console, buf = _advisory_console()
+    state = [0, 0]
+    for _ in range(_ZAKPICK_ADVISORY_AFTER):
+        _maybe_zakpick_advisory(console, _done("deep_code"), state)
+    assert "cheaper" in buf.getvalue() and "deep_code" in buf.getvalue()
+    assert state[1] == 1
+    # fires at most once — a further clean deep turn prints nothing more.
+    buf.truncate(0)
+    buf.seek(0)
+    _maybe_zakpick_advisory(console, _done("deep_code"), state)
+    assert buf.getvalue() == ""
+
+
+def test_advisory_ignores_easy_escalated_errored_and_non_zakpick() -> None:
+    from zakcode.cli import _ZAKPICK_ADVISORY_AFTER, _maybe_zakpick_advisory
+
+    console, buf = _advisory_console()
+    state = [0, 0]
+    n = _ZAKPICK_ADVISORY_AFTER + 2
+    for _ in range(n):
+        _maybe_zakpick_advisory(console, _done("quick_code"), state)  # easy turns
+        _maybe_zakpick_advisory(console, _done("deep_code", escalated=True), state)  # needed deep
+        _maybe_zakpick_advisory(console, _done("deep_code", stop="stuck"), state)  # not clean
+        _maybe_zakpick_advisory(console, _done(None), state)  # zakpick off
+    assert buf.getvalue() == ""  # none of these count → no advisory
+    assert state[0] == 0

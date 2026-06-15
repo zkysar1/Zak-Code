@@ -284,6 +284,9 @@ class StreamRenderer:
         self._at_blank = False
         #: None | "prose" | "code" | "tool_call" | "tool" | "status".
         self._last_block: str | None = None
+        #: The most recent turn's terminal event (set by render()); the REPL reads it for
+        #: post-turn signals like the zakpick advisory. None before the first turn.
+        self.last_done: AgentDone | None = None
 
     async def render(self, events: AsyncIterator[AgentEvent]) -> AgentDone | None:
         """Consume ``events``, render them, and return the final ``AgentDone`` (or None)."""
@@ -311,6 +314,10 @@ class StreamRenderer:
         self._flush_remaining_text()
         if done is not None:
             self._print_footer(done)
+        #: The most recent turn's terminal event, so the REPL can read post-turn signals (e.g.
+        #: the zakpick routing fields for the "your deep coder wasn't needed" advisory) without
+        #: threading it back through _drive_stream's bool return.
+        self.last_done = done
         return done
 
     # -- the blank-line state machine -----------------------------------------

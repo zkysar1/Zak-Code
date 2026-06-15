@@ -329,6 +329,13 @@ class TurnResult(BaseModel):
     #: terminal (stuck / doom_loop / recipe_stalled, or any stuck-ladder nudge/narrow
     #: fired). A thin "this turn struggled" roll-up; clean turns leave it False.
     degraded: bool = False
+    #: Under zakpick, the task category the MAIN turn ended on (``"quick_code"`` /
+    #: ``"deep_code"``); ``None`` when zakpick is off. With ``routed_escalated`` it lets a client
+    #: surface the "this ran on your deep coder but never needed to" advisory.
+    routed_category: str | None = None
+    #: Under zakpick, whether a struggle signal escalated the main turn to ``deep_code`` (the
+    #: soft latch fired). False means the classifier's initial pick stood the whole turn.
+    routed_escalated: bool = False
 
 
 class AgentLoop:
@@ -1717,6 +1724,8 @@ class AgentLoop:
             stop_reason=stop_reason,
             error=turn_error,
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
+            routed_category=main_category,  # None when zakpick is off
+            routed_escalated=signal_latched,
         )
 
     def run_turn(self, user_text: str) -> TurnResult:
@@ -2331,6 +2340,8 @@ class AgentLoop:
             usage=turn_usage,
             error=turn_error,
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
+            routed_category=main_category,  # None when zakpick is off
+            routed_escalated=signal_latched,
         )
 
     @staticmethod

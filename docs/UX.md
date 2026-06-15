@@ -154,6 +154,12 @@ All content sits on this grid; nothing else exists:
     single-model session shows only the total (no redundant one-line breakdown). Under
     zakpick a closing dim note flags that compaction/sub-agent costs are not broken out
     here and that a "vs all-deep" savings estimate lands with the cost-metadata seam.
+17. **zakpick "deep coder wasn't needed" advisory.** zakpick-only, at most **once per
+    session**, never naggy. After `_ZAKPICK_ADVISORY_AFTER` (3) turns that ended cleanly
+    on `deep_code` and never tripped the soft latch (`AgentDone.routed_category ==
+    "deep_code"`, `routed_escalated` False, `stop_reason == "completed"`), print one `tip`
+    line suggesting a cheaper `deep_code` model may keep up, pointing at `/cost`. It states
+    an observation and an option — never auto-changes routing (the user owns the choice).
 
 **Wait line (REPL layer, never the renderer):** a transient `rich.live.Live` line —
 spark frame (glyph-swap `· ✦ ✶ ✧`, brand azure; ASCII `- \ | /`) + gerund verb

@@ -99,6 +99,11 @@ class AgentDone(BaseModel):
     #: ``stop_reason == "provider_error"``, so a streaming client consuming only the
     #: terminal event still learns WHY the turn failed; empty on every other stop.
     error: str = ""
+    #: Mirror of ``TurnResult.routed_category`` / ``routed_escalated`` (zakpick): the category the
+    #: main turn ended on (``None`` when zakpick is off) and whether a struggle signal escalated
+    #: it. A client uses these for the "your deep coder wasn't needed" advisory.
+    routed_category: str | None = None
+    routed_escalated: bool = False
 
 
 AgentEvent = Annotated[
