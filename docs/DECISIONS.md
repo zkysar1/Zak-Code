@@ -193,3 +193,15 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     facts/assumptions ledger (**R7**). The cross-system evidence *reinforces* R7's "watch, don't build"
     deferral — every sibling keeps belief/world state at the long-horizon layer, never the near-term
     core, which is exactly the boundary this ADR draws.
+
+  - **Update (2026-06-15, done-conditions via `note`):** completed the verification-as-schema half of
+    the decomposition story WITHOUT adding a field. The survey's "every step carries a checkable
+    done-condition" idea was already structurally present — `Task.note` has always been the
+    "acceptance criterion" slot (parsed by `update_plan`, rendered into the re-injected plan), so a
+    parallel `done_when` field would only have duplicated it (single-source-of-truth; "simple beats
+    agentic" — the explicit push-back-on-over-building call). Instead: sharpened `note`'s role to *the
+    step's checkable done-condition* (in the `Task` docstring AND the `update_plan` schema field
+    description) and wired the `_PLANNING` guidance to record each primitive step's done-condition
+    there. So the just-shipped "steps must be checkable" rule now names WHERE to capture the check, and
+    that check rides in the plan the model re-reads every turn. No data-model change, no migration;
+    pinned by `test_step_note_is_the_checkable_done_condition`.

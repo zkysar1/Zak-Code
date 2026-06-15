@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from zakcode.agent import DYNAMIC_BOUNDARY, SystemPromptBuilder
@@ -91,6 +92,18 @@ def test_planning_guidance_names_primitiveness_criteria(tmp_path: Path) -> None:
     desc = (default_registry().get("update_plan").spec.description or "").lower()
     assert "done-condition" in desc
     assert "figure out how" in desc
+
+
+def test_step_note_is_the_checkable_done_condition(tmp_path: Path) -> None:
+    # verification-as-schema, the lean way: the EXISTING `note` field IS the per-step
+    # done-condition (a new `done_when` field would just duplicate it). The planning guidance
+    # tells the model to record the done-condition in `note`, and the update_plan schema frames
+    # the `note` field itself as a checkable acceptance criterion.
+    prompt = SystemPromptBuilder().build(load_settings(workspace_root=tmp_path)).lower()
+    assert "completion stays checkable" in prompt  # guidance: record the done-condition in note
+
+    params = json.dumps(default_registry().get("update_plan").spec.parameters).lower()
+    assert "done-condition" in params  # the note field schema frames itself as the done-condition
 
 
 def test_tool_specs_are_summarized(tmp_path: Path) -> None:
