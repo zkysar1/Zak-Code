@@ -225,6 +225,15 @@ class Provider(ABC):
         """Return static capabilities for the configured model."""
         raise NotImplementedError
 
+    def model_id(self) -> str:
+        """The litellm model string this provider runs, for per-model cost attribution.
+
+        A concrete provider that knows its model overrides this (the loop tags each call's usage
+        with it for the ``/cost`` breakdown). The default returns ``""`` — a provider without a
+        single fixed model (or a test stub) simply isn't attributed, which is harmless.
+        """
+        return ""
+
     async def astream(
         self,
         messages: list[Message],

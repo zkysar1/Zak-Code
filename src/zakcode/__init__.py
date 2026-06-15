@@ -30,7 +30,7 @@ from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
 from zakcode.messages import Message
 from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.providers.base import Provider, ProviderError
-from zakcode.providers.resolve import AUTO_SENTINEL, ResolvedModel
+from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedModel
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.version import __version__
@@ -232,6 +232,15 @@ class Agent:
         # callers must never trigger a network probe. Resolution failure is LOUD
         # (ModelResolutionError with a per-source diagnosis).
         self.model_resolution: ResolvedModel | None = None
+        # zakpick task-category routing (default_model="zakpick"): route each call site to the
+        # model the user assigned to its category (or the built-in default). Resolve a concrete
+        # STARTUP model now — the deep_code category's model, the safe/capable one — so provider
+        # build / session record / count_tokens have a real model; per-turn routing then
+        # downgrades easy turns. No availability probing: the user's assignment is used directly,
+        # and a bad/missing key fails at call time like any provider error (fallback_model
+        # applies). Gate all zakpick behavior on ``self._zakpick`` — default_model is rewritten
+        # to the startup model below.
+        self._zakpick = False
         if not self._provider_injected and self.settings.default_model == AUTO_SENTINEL:
             from zakcode.providers.resolve import resolver_for
 
@@ -244,6 +253,13 @@ class Agent:
                 self.model_resolution.model,
                 self.model_resolution.reason,
             )
+        elif not self._provider_injected and self.settings.default_model == ZAKPICK_SENTINEL:
+            from zakcode.providers.routing import model_for_category
+
+            self._zakpick = True
+            startup_model = model_for_category("deep_code", self.settings)
+            self.settings = self.settings.model_copy(update={"default_model": startup_model})
+            logger.info("zakpick: routing per task category; startup model %s", startup_model)
         # Cache of role providers built for a non-default model, keyed by model string, so
         # spawning N sub-agents on the same role model doesn't rebuild the litellm wrapper N×.
         self._provider_cache: dict[str, Provider] = {}
@@ -471,15 +487,23 @@ class Agent:
                 extra_workspace_roots=computed_extra_roots,  # same sandbox as the parent
                 rules=rules_text or None,  # sub-agents inherit the parent's always-on rules
                 provider_for=self._provider_for,  # per-role model routing (model_roles)
+                # zakpick: a definition that names a CATEGORY but no model routes by task. Only
+                # wired under zakpick (None otherwise), so the default delegation path is unchanged.
+                provider_for_task=(self._provider_pair_for_task if self._zakpick else None),
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
             # subset omits write tools, so Plan Mode is schema-enforced). Apply optional
             # per-role model overrides: model_roles['subagent'] -> the general delegate,
             # model_roles['planner'] -> the plan sub-agent. model_copy(model=None) leaves the
             # model unset (use default_model), so an empty model_roles is the unchanged default.
+            # The zakpick CATEGORY is set on each definition (delegate/plan); it only routes when
+            # no model override is set AND the runner has the provider_for_task hook (zakpick on),
+            # so model_roles always wins over the category default.
             roles = self.settings.model_roles
-            general_def = GENERAL_PURPOSE.model_copy(update={"model": roles.get("subagent")})
-            plan_def = PLAN.model_copy(update={"model": roles.get("planner")})
+            general_def = GENERAL_PURPOSE.model_copy(
+                update={"model": roles.get("subagent"), "category": "delegate"}
+            )
+            plan_def = PLAN.model_copy(update={"model": roles.get("planner"), "category": "plan"})
             spawner = SubAgentManager(runner, [general_def, plan_def], default=general_def.name)
             self.registry.register(TaskTool())
 
@@ -573,6 +597,16 @@ class Agent:
         if enable_compaction:
             self.compactor = Compactor()
 
+        # Compaction summarizer routing. Precedence: an explicit model_roles['summarizer']
+        # wins; else under zakpick the "summarize" category routes to a cheap model; else None
+        # (use the generator's provider). So model_roles still overrides the zakpick default.
+        if "summarizer" in self.settings.model_roles:
+            summarizer_provider = self._provider_for(self.settings.model_roles["summarizer"])
+        elif self._zakpick:
+            summarizer_provider = self._resolve_task_provider("summarize")[0]
+        else:
+            summarizer_provider = None
+
         self.loop = AgentLoop(
             self.provider,
             self.registry,
@@ -590,17 +624,16 @@ class Agent:
             # Same store the recall hook + remember/recall tools use, so harness-authored
             # recovery lessons (research R1) are recalled next session. None when memory is off.
             memory_provider=self.memory,
-            # Per-role model routing: a cheaper/local model for compaction summaries when the
-            # mind configures model_roles['summarizer']; None = use the generator's provider.
-            summarizer_provider=(
-                self._provider_for(self.settings.model_roles["summarizer"])
-                if "summarizer" in self.settings.model_roles
-                else None
-            ),
+            summarizer_provider=summarizer_provider,
             # Runtime model failover (PKG-AUTO): once per turn, on a non-rate-limit
             # provider failure, the loop may swap to a new provider we build here.
             # None when the provider was injected (it can't be rebuilt from settings).
             model_failover=(None if self._provider_injected else self._model_failover),
+            # zakpick per-turn main-model routing (None unless zakpick is on, so the legacy
+            # single-provider path is byte-identical). The cheap→capable "escalation" is the soft
+            # quick_code→deep_code latch in the loop — it only ever switches between the two coder
+            # models the user configured, never a substitute Zak Code chose.
+            main_provider_for=(self._main_provider_for if self._zakpick else None),
             # TURN_END veto seam (T2/T3/T4): 0 (the default) disables the gate.
             turn_end_veto_budget=self.settings.turn_end_veto_budget,
         )
@@ -646,6 +679,10 @@ class Agent:
         if fallback and fallback != failed:
             new_model, reason = fallback, "fallback_model (explicit override)"
         elif self.model_resolution is not None:
+            # Availability re-resolution is the "auto" recovery path. zakpick never lands here
+            # (its model_resolution stays None): the user assigned a concrete model per category,
+            # so failover is the explicit fallback_model above or nothing — Zak Code never picks
+            # a substitute the user didn't choose.
             from zakcode.providers.resolve import ModelResolutionError, resolver_for
 
             try:
@@ -675,6 +712,41 @@ class Agent:
         if model not in self._provider_cache:
             self._provider_cache[model] = self._build_provider(model)
         return self._provider_cache[model]
+
+    # ── zakpick task-category routing seams (active only when default_model="zakpick") ──────
+
+    def _resolve_task_provider(self, category: str) -> tuple[Provider, str]:
+        """Resolve a zakpick task ``category`` to ``(provider, litellm model string)``.
+
+        Returns the current provider/active model when zakpick is off or a provider was injected
+        (an injected provider can't be rebuilt per model). Otherwise looks up the user's
+        assignment (or the built-in Groq default) for the category and reuses ``_provider_for``
+        so the provider cache and cross-backend endpoint guard apply unchanged. No availability
+        probing — the user's model is used directly; if it fails at call time, ``fallback_model``
+        handles it like any other provider error.
+        """
+        if not self._zakpick or self._provider_injected:
+            return self.provider, self._active_model
+        from zakcode.providers.routing import model_for_category
+
+        model = model_for_category(category, self.settings)
+        return self._provider_for(model), model
+
+    def _provider_pair_for_task(self, category: str) -> tuple[Provider, str]:
+        """``(provider, model)`` for a category-routed sub-agent (plan / delegate)."""
+        return self._resolve_task_provider(category)
+
+    def _main_provider_for(self, category: str) -> Provider:
+        """The loop's main-turn router: select the generator's provider for ``category`` and
+        update the active-model bookkeeping (so a later failover excludes the right model).
+
+        The loop calls this ONLY when the classified category changes, so updating
+        ``_active_model`` here is always a real selection — never a spurious reset that would
+        fight an in-progress failover swap.
+        """
+        provider, model = self._resolve_task_provider(category)
+        self._active_model = model
+        return provider
 
     async def invoke_skill(self, name: str) -> SkillInvocation:
         """Load a discovered skill's body into the session and emit the selection signal.

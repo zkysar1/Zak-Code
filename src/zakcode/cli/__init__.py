@@ -93,9 +93,9 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     Secret-safe: provider keys are reported as ``set (<source>)`` / ``not set``
     only — the source names where the value came from, never what it is.
     """
-    if settings.default_model == "auto":
-        # Resolve live (read-only probes) so the panel answers "which model WOULD
-        # run here, and why" — the diagnosis story for the auto sentinel.
+    if settings.default_model in ("auto", "zakpick"):
+        # Resolve live (read-only probes) so the panel answers "which model WOULD run here,
+        # and why". For `zakpick` this is a friendly per-task table; for `auto`, the single pick.
         from zakcode.providers.resolve import describe_resolution
 
         model_row = describe_resolution(settings)
@@ -694,10 +694,15 @@ def _print_banner(console: Console, agent: Agent) -> None:
     settings = agent.settings
     g = resolve_glyphs(console)
     # "claude-sonnet-4-5 · anthropic", not "anthropic/claude-… · anthropic": the
-    # provider half of the row already names the prefix.
-    model_id = settings.default_model.removeprefix(settings.provider + "/")
+    # provider half of the row already names the prefix. Under zakpick the model varies per
+    # task category, so the row names the mode (the per-task table is on /model + the info panel).
+    if getattr(agent, "_zakpick", False):
+        model_cell = f"zakpick {g['dot']} picks a model per task"
+    else:
+        model_id = settings.default_model.removeprefix(settings.provider + "/")
+        model_cell = f"{model_id} {g['dot']} {settings.provider}"
     rows = [
-        ("model", f"{model_id} {g['dot']} {settings.provider}"),
+        ("model", model_cell),
         ("workspace", str(settings.workspace_root)),
         ("permissions", settings.permission_mode),
         ("session", agent.session.id),
@@ -952,6 +957,45 @@ def _shutdown_session_loop(loop: asyncio.AbstractEventLoop) -> None:
     asyncio.set_event_loop(None)
 
 
+#: How many clean, un-escalated deep_code turns before the one-time "your deep coder wasn't
+#: needed" advisory fires (zakpick only, once per session — a gentle nudge, never naggy).
+_ZAKPICK_ADVISORY_AFTER = 3
+
+
+def _maybe_zakpick_advisory(console: Console, done: AgentDone | None, state: list[int]) -> None:
+    """Once per session, gently note that the user's deep coder handled routine work without
+    needing to — so they can reconsider their deep_code assignment. Inspired by "Intelligence
+    per Watt" (most turns are easy enough for a smaller model).
+
+    ``state`` is ``[count, shown]`` carried across turns. No-ops unless zakpick is active
+    (``done.routed_category`` is set), the turn ended cleanly on ``deep_code``, and the soft
+    latch never fired (``routed_escalated`` False) — i.e. the strong model wasn't actually
+    exercised. Fires at most once, after :data:`_ZAKPICK_ADVISORY_AFTER` such turns.
+    """
+    if done is None or state[1]:
+        return
+    if (
+        done.routed_category != "deep_code"
+        or done.routed_escalated
+        or done.stop_reason != "completed"
+    ):
+        return
+    state[0] += 1
+    if state[0] < _ZAKPICK_ADVISORY_AFTER:
+        return
+    state[1] = 1
+    console.print(
+        margin(
+            Text(
+                "tip: your deep coder (deep_code) has handled several turns this session "
+                "without ever hitting a struggle signal — if those felt routine, a cheaper "
+                "model in deep_code may keep up. See per-model spend with /cost.",
+                style="tip",
+            )
+        )
+    )
+
+
 def _run_streamed_turn(
     console: Console, make_stream: StreamFactory, renderer: StreamRenderer
 ) -> bool:
@@ -1152,6 +1196,10 @@ def chat(
     _SESSION_LOOP = loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    # zakpick advisory state for this session: [count of clean un-escalated deep_code turns,
+    # 1 once the one-time nudge has fired]. See _maybe_zakpick_advisory.
+    zakpick_advisory = [0, 0]
+
     while True:
         try:
             line = read_prompt(console)
@@ -1178,7 +1226,23 @@ def chat(
                 _print_help(console)
                 continue
             if command == "/model":
-                console.print(margin(Text(agent.settings.default_model)))
+                if getattr(agent, "_zakpick", False):
+                    # default_model was rewritten to the concrete startup model; show the live
+                    # per-task table + the one lever instead of a single slug.
+                    from zakcode.providers.routing import describe_zakpick
+
+                    console.print(margin(Text(describe_zakpick(agent.settings))))
+                    console.print(
+                        margin(
+                            Text(
+                                "assign a model per category with ZAKCODE_ZAKPICK_MODELS "
+                                '(JSON, e.g. {"deep_code":{"model":"qwen3:32b","source":"local"}})',
+                                style="dim",
+                            )
+                        )
+                    )
+                else:
+                    console.print(margin(Text(agent.settings.default_model)))
                 continue
             if command == "/permissions":
                 _render_permissions(console, agent)
@@ -1195,6 +1259,9 @@ def chat(
                     extra_skill_dirs=extra_skill_dirs,
                     extra_workspace_roots=extra_roots,
                 )
+                # A fresh session resets the per-session zakpick advisory (count + once-shown
+                # latch), so it never leaks across the documented session boundary.
+                zakpick_advisory[:] = [0, 0]
                 notice_info(console, "started a fresh session")
                 continue
             if command == "/cost":
@@ -1214,6 +1281,35 @@ def chat(
                         )
                     )
                 )
+                # Per-model attribution: only worth showing once a session actually spanned more
+                # than one model (e.g. zakpick routed easy vs hard turns differently). Untagged
+                # entries (empty key) are dropped from the breakdown.
+                by_model = {m: u for m, u in agent.session.usage_by_model().items() if m}
+                if len(by_model) >= 2:
+                    console.print(margin(Text("by model:", style="notice.dim")))
+                    for model_name, model_usage in by_model.items():
+                        console.print(
+                            margin(
+                                Text.assemble(
+                                    (f"  {model_name}", "arg.value"),
+                                    (dot, "notice.dim"),
+                                    (f"{model_usage.total_tokens} tok", "notice.dim"),
+                                    (dot, "notice.dim"),
+                                    (f"${model_usage.cost_usd:.4f}", "arg.value"),
+                                )
+                            )
+                        )
+                    if getattr(agent, "_zakpick", False):
+                        console.print(
+                            margin(
+                                Text(
+                                    "zakpick routes per task; compaction & sub-agent costs are "
+                                    "not broken out here. (a 'vs all-deep' savings estimate lands "
+                                    "with the cost-metadata seam)",
+                                    style="notice.dim",
+                                )
+                            )
+                        )
                 continue
             if command == "/agents":
                 _render_agents(console, agent)
@@ -1267,6 +1363,7 @@ def chat(
         except ProviderError as exc:
             notice_error(console, "provider error", str(exc))
             continue
+        _maybe_zakpick_advisory(console, renderer.last_done, zakpick_advisory)
 
     _shutdown_session_loop(loop)
 

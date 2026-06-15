@@ -27,6 +27,8 @@ from dotenv import dotenv_values, load_dotenv
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from zakcode.providers.routing import ZAKPICK_CATEGORIES, ZakpickModel
+
 
 class PermissionTier(IntEnum):
     """Ordered privilege levels a tool can require.
@@ -60,7 +62,9 @@ class Settings(BaseSettings):
         default="ollama_chat/llama3.1",
         description=(
             "Primary litellm model string (e.g. 'ollama_chat/llama3.1', 'openai/gpt-4o'), "
-            "or 'auto' to resolve by availability at startup."
+            "'auto' to resolve by availability at startup, or 'zakpick' to route each prompt to "
+            "the model you assigned to its task category (see 'zakpick_models' and "
+            "zakcode.providers.routing)."
         ),
     )
     fallback_model: str | None = Field(
@@ -86,6 +90,23 @@ class Settings(BaseSettings):
     model_roles: dict[str, str] = Field(
         default_factory=dict,
         description="Per-role model overrides (keys: planner | subagent | summarizer).",
+    )
+    # Per-CATEGORY model assignments for ``default_model="zakpick"`` (inert otherwise) — the
+    # zakpick interface. Each value is a {model, source} pair (source defaults to "groq"); the
+    # user parks a model on each task category (keys: quick_code | deep_code | summarize | plan |
+    # delegate | classify). Unset categories use the built-in Groq defaults (see
+    # ``zakcode.providers.routing.DEFAULT_CATEGORY_MODELS``), so zakpick works out of the box.
+    # Zak Code never picks a model the user didn't assign and owns no local/cloud tradeoff — a
+    # slow local model is slow; a failing cloud model uses ``fallback_model`` like any other.
+    # From an env var: a JSON object, e.g.
+    # ZAKCODE_ZAKPICK_MODELS={"deep_code":{"model":"qwen3:32b","source":"local"}}.
+    zakpick_models: dict[str, ZakpickModel] = Field(
+        default_factory=dict,
+        description=(
+            "Per-category model assignments for default_model='zakpick' (JSON; keys "
+            "quick_code | deep_code | summarize | plan | delegate | classify; each value "
+            "{model, source}, source defaults to 'groq'). Unset categories use Groq defaults."
+        ),
     )
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     # How tools are offered to the model. ``auto`` (default) uses native
@@ -401,6 +422,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"unrecognized model_roles key(s): {unknown}; recognized roles are "
                 f"{sorted(recognized)}"
+            )
+        return value
+
+    @field_validator("zakpick_models", mode="after")
+    @classmethod
+    def _check_zakpick_models(cls, value: dict[str, ZakpickModel]) -> dict[str, ZakpickModel]:
+        """Reject unrecognized category keys so a typo (e.g. 'planr') fails fast at load rather
+        than silently leaving that category on its default."""
+        unknown = sorted(set(value) - ZAKPICK_CATEGORIES)
+        if unknown:
+            raise ValueError(
+                f"unrecognized zakpick_models key(s): {unknown}; recognized categories are "
+                f"{sorted(ZAKPICK_CATEGORIES)}"
             )
         return value
 

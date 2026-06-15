@@ -146,6 +146,20 @@ All content sits on this grid; nothing else exists:
     blank / panel / `permit … › a` / blank / `└ ✗ receipt`.
 15. **Append-only.** History is never repainted; the only live region is the
     REPL-owned wait line, cleanly replaced (transient) by the next printed block.
+16. **`/cost` per-model breakdown.** After the session total line, when the session
+    spanned **two or more** models (e.g. zakpick routed easy vs hard turns
+    differently), `/cost` prints a dim `by model:` header then one indented
+    `{model} · {tokens} tok · ${cost}` line per model (from
+    `Session.usage_by_model()`, first-used model first; untagged usage is omitted). A
+    single-model session shows only the total (no redundant one-line breakdown). Under
+    zakpick a closing dim note flags that compaction/sub-agent costs are not broken out
+    here and that a "vs all-deep" savings estimate lands with the cost-metadata seam.
+17. **zakpick "deep coder wasn't needed" advisory.** zakpick-only, at most **once per
+    session**, never naggy. After `_ZAKPICK_ADVISORY_AFTER` (3) turns that ended cleanly
+    on `deep_code` and never tripped the soft latch (`AgentDone.routed_category ==
+    "deep_code"`, `routed_escalated` False, `stop_reason == "completed"`), print one `tip`
+    line suggesting a cheaper `deep_code` model may keep up, pointing at `/cost`. It states
+    an observation and an option — never auto-changes routing (the user owns the choice).
 
 **Wait line (REPL layer, never the renderer):** a transient `rich.live.Live` line —
 spark frame (glyph-swap `· ✦ ✶ ✧`, brand azure; ASCII `- \ | /`) + gerund verb
@@ -352,11 +366,41 @@ connection dot. It is **not** a button color.
 - **Scroll** — stick-to-bottom only within 40px of the bottom; when detached during
   streaming, a "↓ latest" pill floats above the composer and re-attaches on click.
 
+## Model display grammar (zakpick) — binding, both clients
+
+When `default_model` is the **zakpick** sentinel (task-category model routing, ADR-0009),
+the model is no longer one slug — it is a model *per task category*. The display contract:
+
+1. **Friendly per-category listing, never a raw slug.** The info panel and the `/model` command
+   render zakpick as a **per-category listing**, one entry per routed category formatted
+   `{category label} → {model} ({source})` — e.g. `easy coding → gpt-oss-20b (groq)`,
+   `hard coding → gpt-oss-120b (groq)` (the current rendering joins them on one line). The
+   user-facing name is the **plain-English category label** (`hard coding`, `easy coding`,
+   `summaries`, `planning`, `delegated work`), never the internal key (`deep_code`, …). A raw
+   litellm slug (`openai/gpt-oss-120b`) is **never** the headline; the model id appears only as
+   the un-prefixed `model` half of the `model (source)` cell.
+2. **Banner.** The welcome-box / header model line for a zakpick session reads
+   **"zakpick · picks a model per task"** (the spark + label grammar; `banner.label` /
+   `banner.value` styles), not a single model string. A concrete or `auto` model still shows
+   its resolved model as before.
+3. **Only routed categories are shown.** The table lists **only** categories that have a real
+   call site (`quick_code`, `deep_code`, `summarize`, `plan`, `delegate`). `classify` is a
+   reserved seam with no live caller, so it is **never advertised** — a panel must never claim
+   a route the engine does not take.
+4. **Web parity.** The web Header model chip and Empty-state `{model}` slot follow the same
+   rule: under zakpick they show the `zakpick · picks a model per task` label (chip) and may
+   expand the per-category `model (source)` table in the identity card; `textContent`-only,
+   no raw slug as the headline, `classify` omitted.
+
 ## Discipline (binding)
 
 - **Brand paints 1–2 character marks only** (`✦ ✧ › ●` and the spinner glyph; web:
   spark, markers, focus rings, links, connection dot) — never a run of text, never a
   button.
+- **Model identity reads friendly, never as plumbing**: under zakpick the headline is
+  `zakpick · picks a model per task` and the per-category table is `model (source)` with
+  plain-English category labels — a raw litellm slug is never the headline, and `classify`
+  (no live call site) is never shown.
 - **Boxes only twice**: the welcome box and the permission panel. Nothing else is
   ever boxed.
 - **No horizontal rules** anywhere in the transcript.

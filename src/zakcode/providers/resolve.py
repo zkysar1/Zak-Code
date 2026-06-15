@@ -36,8 +36,13 @@ from zakcode.providers.registry import get_capabilities
 
 logger = logging.getLogger("zakcode.providers")
 
-#: The sentinel value of ``default_model`` that engages the resolver.
+#: The sentinel value of ``default_model`` that engages the availability resolver.
 AUTO_SENTINEL = "auto"
+
+#: The sentinel value of ``default_model`` that engages zakpick task-category routing (see
+#: :mod:`zakcode.providers.routing`). Like ``auto`` it is resolved to a concrete startup model
+#: at construction; per-call routing to the user's per-category model then happens at each site.
+ZAKPICK_SENTINEL = "zakpick"
 
 #: Read-only probe timeout. Startup cost is bounded by (sources tried) × this.
 _PROBE_TIMEOUT_S = 2.0
@@ -57,9 +62,21 @@ class ResolvedModel:
 
 
 class ModelResolver(Protocol):
-    """The pluggable resolution seam (v1 = availability; zakpick lands here later)."""
+    """The pluggable resolution seam for ``default_model="auto"``.
 
-    def resolve(self, task: str | None = None, *, require_tools: bool = True) -> ResolvedModel:
+    The ``exclude`` parameter is part of the contract (runtime failover drops the just-failed
+    model and re-resolves); :class:`AvailabilityResolver` honors it. (zakpick takes a different,
+    non-availability path — per-category user assignments in :mod:`zakcode.providers.routing` —
+    so it does not implement this Protocol.)
+    """
+
+    def resolve(
+        self,
+        task: str | None = None,
+        *,
+        require_tools: bool = True,
+        exclude: Collection[str] = (),
+    ) -> ResolvedModel:
         """Return a concrete model or raise :class:`ModelResolutionError`."""
         ...
 
@@ -281,7 +298,16 @@ def resolver_for(settings: object, *, use_cache: bool = True) -> AvailabilityRes
 
 
 def describe_resolution(settings: object) -> str:
-    """One-line resolution summary for the info panel (never raises)."""
+    """One-line resolution summary for the info panel (never raises).
+
+    Routes the ``zakpick`` sentinel to its own friendly description (a per-category table);
+    the ``auto`` path resolves the single availability pick.
+    """
+    if getattr(settings, "default_model", None) == ZAKPICK_SENTINEL:
+        # Lazy import: routing imports this module, so importing it at top would cycle.
+        from zakcode.providers.routing import describe_zakpick
+
+        return describe_zakpick(settings)
     try:
         resolved = resolver_for(settings).resolve(require_tools=True)
     except ModelResolutionError as exc:

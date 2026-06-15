@@ -744,6 +744,9 @@ class LiteLLMProvider(Provider):
                     chars += len(args)
         return chars // 4 + 4 * len(wire_messages)
 
+    def model_id(self) -> str:
+        return self.model
+
     def capabilities(self) -> Capabilities:
         caps = get_capabilities(self.model)
         # Best-effort gate: if litellm is confident the model lacks function

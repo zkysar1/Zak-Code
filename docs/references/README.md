@@ -8,3 +8,4 @@ Architecture study notes mined from prior art by the `zakcode-foundation` workfl
 - [`goose.md`](goose.md) — goose architecture digest
 - [`agentic-best-practices.md`](agentic-best-practices.md) — Agentic coding best-practices digest
 - [`litellm.md`](litellm.md) — zak/llm/provider.py
+- [`intelligence-per-watt.md`](intelligence-per-watt.md) — *Intelligence per Watt* (arXiv 2511.07885): evidence that small/local models handle most prompts, and the router-accuracy→savings yardstick for zakpick's deferred classifier-model seam

@@ -31,9 +31,17 @@ class Usage(BaseModel):
     cache_read_tokens: int = 0
     #: Prompt tokens written to the cache this call (Anthropic ``cache_creation_input_tokens``).
     cache_creation_tokens: int = 0
+    #: The litellm model string this call ran on, for per-model cost attribution (e.g. the
+    #: ``/cost`` breakdown under zakpick, where a session spans several models). Empty for older
+    #: persisted records and for aggregate totals (a sum across models has no single model).
+    model: str = ""
 
     def __add__(self, other: Usage) -> Usage:
-        """Combine two usage records (for accumulating a session total)."""
+        """Combine two usage records (for accumulating a session total).
+
+        ``model`` survives only when both operands share it — a sum across different models is a
+        mixed total with no single model, so it collapses to empty.
+        """
         return Usage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
@@ -41,6 +49,7 @@ class Usage(BaseModel):
             cost_usd=self.cost_usd + other.cost_usd,
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_creation_tokens=self.cache_creation_tokens + other.cache_creation_tokens,
+            model=self.model if self.model == other.model else "",
         )
 
 

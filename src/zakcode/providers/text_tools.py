@@ -818,6 +818,10 @@ class TextToolCallingProvider(Provider):
         """
         return self.inner.capabilities()
 
+    def model_id(self) -> str:
+        """Forward the wrapped provider's model string (per-model cost attribution)."""
+        return self.inner.model_id()
+
 
 __all__ = [
     "TOOL_CALLING_MODES",
