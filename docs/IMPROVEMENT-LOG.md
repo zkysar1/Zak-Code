@@ -1047,3 +1047,16 @@ cost-accounting test instead of a fallback table.
   deferred — *reinforced*: every sibling keeps belief/world state at the long-horizon layer, never
   the near-term core. Survey conclusions recorded as an ADR-0008 update in `docs/DECISIONS.md`.
   **`uv run poe check` green: ruff+format+mypy clean, 1894 passed, 5 skipped.**
+- **2026-06-15 (dev, branch `feat/note-done-conditions` — verification-as-schema via the existing
+  `note` field):** the agreed follow-up was an "optional per-task `done_when`" (the schema half of
+  verification-as-schema). On reading `tasks.py` the field **already exists**: `Task.note` is
+  documented as the "acceptance criterion" slot, parsed by `update_plan`, and rendered into the
+  re-injected plan. So a `done_when` field would have just duplicated it — flagged and pivoted to the
+  lean path (single-source-of-truth; the handoff's "push back on over-building"). Delivered the same
+  value through the existing field: sharpened `note`'s role to *the step's checkable done-condition*
+  (the `Task` docstring + the `update_plan` schema field description) and wired `_PLANNING` to record
+  each primitive step's done-condition in `note` — so the #36 "steps must be checkable" rule now names
+  WHERE the check lives, and it rides in the plan the model re-reads every turn. No data-model change,
+  no migration. Pinned by `test_step_note_is_the_checkable_done_condition` (guidance phrase in the
+  built prompt + `done-condition` in the update_plan schema). **`uv run poe check` green: 1895 passed,
+  5 skipped.**

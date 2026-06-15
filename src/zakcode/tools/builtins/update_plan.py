@@ -53,7 +53,12 @@ def _task_schema(depth: int) -> dict[str, Any]:
         },
         "note": {
             "type": "string",
-            "description": "Optional one-line detail or acceptance criterion (e.g. 'tests pass').",
+            "description": (
+                "The step's done-condition: a one-line, checkable acceptance criterion you will "
+                "verify against (e.g. 'tests pass', 'GET /health returns 200'). For a blocked "
+                "step, say why instead. Recommended on every primitive step; omit only if truly "
+                "none applies."
+            ),
         },
         "blocked_by": {
             "type": "array",
