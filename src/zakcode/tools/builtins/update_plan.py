@@ -112,9 +112,10 @@ class UpdatePlanTool(Tool):
         name="update_plan",
         description=(
             "Maintain a hierarchical plan for a multi-step task. Call it FIRST on any task that "
-            "needs more than one action: decompose the goal into ordered, primitive steps (break "
-            "a step into 'subtasks' when it is itself several actions, and use 'blocked_by' when a "
-            "step depends on earlier ones). Then call it again to mark a step done and the next "
+            "needs more than one action: decompose the goal into ordered, primitive steps — each "
+            "with a clear done-condition and no hidden 'figure out how' (break a step into "
+            "'subtasks' when it is itself several actions, and use 'blocked_by' when a step "
+            "depends on earlier ones). Then call it again to mark a step done and the next "
             "one in_progress as you go. Always send the WHOLE plan each time, with every step's "
             "status. Skip it for a single trivial action or anything done in fewer than 3 steps."
         ),

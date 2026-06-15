@@ -1029,3 +1029,21 @@ cost-accounting test instead of a fallback table.
   Tests: 3 unit tests in `test_recipe.py` (bash-preferred-verbatim, powershell-fallback-with-`&`,
   none-when-nothing-auto-allows) — cross-platform, no real subprocess. **`uv run poe check` green:
   ruff+format+mypy clean, 1893 passed, 5 skipped.** Resolves GitHub issue #33.
+- **2026-06-15 (dev+research, branch `feat/primitiveness-criteria` — HTN cross-system survey →
+  decomposition guidance):** the user asked whether Zak Code's task decomposition could learn from
+  the HTN implemented in `Ayoai/Ayoai-Environment-Processor` (and elsewhere). Ran three parallel
+  read-only survey agents over: the Processor (dual **HTN + A\*** over a STRIPS world-model), the
+  higher mind **`Ayoai-Mind`** (aspirations→goals, 22-criterion goal-selector, scope classes), and
+  the omni continual-learning framework's `/decompose` skill. **Finding:** the lean
+  full-replace + nesting-inferred-`kind` + ephemeral-plan + issue-#32 design already structurally
+  handles most borrowable patterns (idempotency back-refs, hierarchical-cycle detection,
+  stale-blocker TTL) — a validation of "simple beats agentic," not a gap. The single additive,
+  philosophy-fitting idea — convergent across `/decompose` AND ayoai-mind — was implemented:
+  sharpen the primitiveness **stopping-rule** with the two criteria a single-action floor omits — a
+  **clear done-condition** and **no hidden 'figure out how'** — in `_PLANNING` (prompt.py) + the
+  `update_plan` tool description. Model-facing guidance only: no schema/infra, cache-stable. Pinned
+  by `test_planning_guidance_names_primitiveness_criteria` (asserts both criteria in the built
+  prompt AND the tool spec, so it can't silently regress). **R7** (facts/assumptions ledger) stays
+  deferred — *reinforced*: every sibling keeps belief/world state at the long-horizon layer, never
+  the near-term core. Survey conclusions recorded as an ADR-0008 update in `docs/DECISIONS.md`.
+  **`uv run poe check` green: ruff+format+mypy clean, 1894 passed, 5 skipped.**
