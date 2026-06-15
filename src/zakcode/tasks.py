@@ -291,6 +291,19 @@ class TaskNetwork(BaseModel):
         finished = sum(1 for leaf in leaves if leaf.status in _TERMINAL)
         return finished, total
 
+    def progress_signature(self) -> str:
+        """A stable ``(id, status, title)`` snapshot of every task in document order.
+
+        Two networks with equal signatures are identical in structure (ids), advancement
+        (statuses), and content (titles): any step transition, decomposition, or plan edit changes
+        it, while an untouched plan reproduces it exactly. The loop's staleness guard (issue #32)
+        compares this across turn-starts to detect an abandoned plan — one the model has neither
+        advanced nor edited — and drop it rather than let it haunt. Including the title makes the
+        guard conservative (any edit resets the idle counter, the fail-safe direction); ``repr`` of
+        a tuple list avoids delimiter-collision ambiguity and is only ever compared for equality.
+        """
+        return repr([(t.id, t.status, t.title) for t in self._iter()])
+
     # ── rendering (the live plan folded back into context) ────────────────────────
 
     def render(self) -> str:
