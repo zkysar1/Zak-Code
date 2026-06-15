@@ -666,6 +666,15 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 >   (the graduated Groq ladder), not a price field. *Trigger:* the engine needs to reason about
 >   price at runtime (e.g. a budget-aware router, or the `/cost` "vs all-deep" savings estimate).
 > - **An `embeddings` category** — *trigger:* an embedding call site exists in the engine.
+>
+> **`deep_think` — opt-in best-of-N self-fusion (D32 / ADR-0010, shipped).** The complement to
+> zakpick's cost-*down* axis: a tool the model invokes on a hard sub-problem that samples the
+> agent's strongest configured model (zakpick `deep_code`, else `default_model`) several times and
+> synthesizes the best answer (prompted by OpenRouter's *Fusion beats Frontier*). One model, the
+> user's own; never automatic; cost attributed in `/cost` + budget-bounded. *Deferred seams:* a
+> multi-provider Fusion panel + judge (*trigger:* single-model best-of-N proves insufficient on a
+> measured task set — it is a 2–3× cost, so opt-in and late); a `deep_think` zakpick category
+> (*trigger:* someone wants deliberation on a different model than `deep_code`).
 
 ---
 

@@ -125,6 +125,7 @@ from zakcode.providers.text_tools import defang_untrusted
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import (
     ConcurrencyClass,
+    Sampler,
     SubAgentSpawner,
     ToolContext,
     ToolRegistry,
@@ -370,9 +371,15 @@ class AgentLoop:
         attempt_cap: int = 3,
         model_failover: Callable[[ProviderError], tuple[Provider, str] | None] | None = None,
         main_provider_for: MainProviderFor | None = None,
+        sampler: Sampler | None = None,
         turn_end_veto_budget: int = 0,
     ) -> None:
         self.provider = provider
+        # Deliberation seam: a Sampler for tools that make their own model calls (deep_think's
+        # best-of-N synthesis). Threaded into every ToolContext; ``None`` (bare/test loop) makes
+        # such a tool return a clean "unavailable" error. The Agent wires it to its strongest
+        # model and accounts the spend.
+        self._sampler = sampler
         # Runtime model failover seam (PKG-AUTO): on a NON-rate-limit provider failure
         # the loop asks this callback for a replacement ``(provider, description)`` —
         # once per turn, and on the streaming path only before any event reached the
@@ -1332,6 +1339,7 @@ class AgentLoop:
             # The live plan board the update_plan tool rewrites; the loop persists and
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
+            sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
@@ -1867,6 +1875,7 @@ class AgentLoop:
             # The live plan board the update_plan tool rewrites; the loop persists and
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
+            sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)

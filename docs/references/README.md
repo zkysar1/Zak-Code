@@ -9,3 +9,4 @@ Architecture study notes mined from prior art by the `zakcode-foundation` workfl
 - [`agentic-best-practices.md`](agentic-best-practices.md) — Agentic coding best-practices digest
 - [`litellm.md`](litellm.md) — zak/llm/provider.py
 - [`intelligence-per-watt.md`](intelligence-per-watt.md) — *Intelligence per Watt* (arXiv 2511.07885): evidence that small/local models handle most prompts, and the router-accuracy→savings yardstick for zakpick's deferred classifier-model seam
+- [`fusion-beats-frontier.md`](fusion-beats-frontier.md) — OpenRouter *Fusion beats Frontier*: ensemble + synthesis beats a single model, and self-fusion (one model, best-of-N + synthesize) carries most of the lift — the basis for the `deep_think` tool

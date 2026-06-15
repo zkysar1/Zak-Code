@@ -168,6 +168,7 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "web_search",
         "web_fetch",
         "update_plan",
+        "deep_think",
     }
     # Aliases resolve to the canonical tools (M1 added "edit" -> edit_file).
     assert reg.get("read") is reg.get("read_file")
@@ -186,6 +187,7 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
     assert reg.get("shell") is reg.get("bash")
     assert reg.get("plan") is reg.get("update_plan")
     assert reg.get("todo") is reg.get("update_plan")
+    assert reg.get("deliberate") is reg.get("deep_think")
     # Aliases are NOT canonical names (silent fallback; not exposed in the prompt).
     assert "cat" not in reg.names() and "search" not in reg.names()
 

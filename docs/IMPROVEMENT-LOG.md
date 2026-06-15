@@ -1151,3 +1151,22 @@ cost-accounting test instead of a fallback table.
   - **Phase 3 — evidence-back the deferred classifier-model seam.** Added the paper digest to
     `docs/references`, cited it in ADR-0009 as the router-accuracy→savings yardstick for *whether* to
     upgrade `classify_main_turn`, and recorded this entry. **1918 tests pass, ruff + mypy clean.**
+- **2026-06-15 (dev, D32 — `deep_think`: opt-in best-of-N self-fusion):** the complement to zakpick's
+  cost-*down* axis — a deliberate "think harder" tool (full rationale in **ADR-0010**; prompted by
+  OpenRouter's *Fusion beats Frontier*, [`references/fusion-beats-frontier.md`](references/fusion-beats-frontier.md)
+  — self-fusion, a model paired with itself, jumped +6.7 pts, so the synthesis step carries most of
+  the lift). Shape: a builtin tool (`deep_think`, alias `deliberate`) the MODEL invokes on one hard
+  question — it samples the agent's strongest configured model (zakpick `deep_code`, else
+  `default_model`) several times at a diversity temperature, then one synthesis pass writes the best
+  combined answer (generate → critique → synthesize). New `Sampler` seam on `ToolContext` (the only
+  path a tool gets LLM access; the `Agent` wires `_deep_think_sample` to `_resolve_task_provider`,
+  records usage to the session for `/cost`, and folds it into the shared turn budget). Constraints
+  honored: one model, the user's OWN (never a model they didn't assign — the ADR-0009 line); never
+  automatic (a normal `READ_ONLY` tool, visible + permission-gated, EXPENSIVE per its description);
+  cost visible (`/cost` per-model) + bounded (`max_cost_usd`/`max_iterations`; operator off-switch via
+  `tool_exposure_deny`); graceful degradation (no sampler → clean error; failed sample tolerated;
+  failed synthesis → fullest candidate). Deliberately NOT a multi-provider panel + judge (self-fusion
+  finding says synthesis carries the lift; single-model best-of-N stays small + vendor-agnostic;
+  `deep_think.py` imports no litellm). Deferred seams (ADR-0010): the multi-provider panel; a
+  `deep_think` zakpick category. New `tests/test_deep_think.py` (10 tests incl. a full-turn
+  integration). **`uv run poe check` green: 1943 passed, 6 skipped, ruff + mypy clean.**

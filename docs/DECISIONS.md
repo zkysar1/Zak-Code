@@ -278,3 +278,46 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   *curation*, not a price field; build when the engine needs to reason about price at runtime, e.g. a
   budget-aware router — also what powers the `/cost` "vs all-deep" savings estimate); and an
   `embeddings` category (build when an embedding call site exists).
+
+## ADR-0010 — `deep_think`: opt-in best-of-N self-fusion deliberation
+
+- **Status:** Accepted (2026-06-15)
+- **Context:** zakpick (ADR-0009) is a cost-*down* axis — route each prompt to a cheaper model.
+  The complementary axis is spending *more* deliberately on a genuinely hard sub-problem. The
+  owner's original brief gestured at this ("maybe do a generate, then filter, then a critic"), and
+  two public results sharpened it: OpenRouter's *Fusion beats Frontier*
+  ([`references/fusion-beats-frontier.md`](references/fusion-beats-frontier.md)) — a panel + judge +
+  synthesizer beats any single model, and crucially a model paired with **itself** ("self-fusion")
+  jumped **+6.7 points**, so *the synthesis step itself* carries most of the lift — and *Intelligence
+  per Watt*. OpenRouter's own guidance is that a coding agent should not run Fusion on everything,
+  but **invoke it selectively, when the model judges a question worth the extra time and cost.**
+- **Decision:** Add `deep_think`, an **opt-in tool** the model calls on one hard, self-contained
+  question. It samples the agent's strongest model several times (best-of-N, diversity temperature),
+  then makes one synthesis pass that reads the candidates and writes the single best answer
+  (generate → critique → synthesize, in one bounded tool). Scoped to Zak Code's constraints:
+  - **Self-fusion, one model, the user's own.** It samples the agent's *strongest configured* model
+    — under zakpick the `deep_code` category, else `default_model` (via `Agent._resolve_task_provider`
+    + the new `Sampler` seam on `ToolContext`). It never reaches for a model the user did not assign,
+    so it owns no provider tradeoff (the line ADR-0009 draws). We deliberately did **not** build the
+    multi-provider panel + separate judge model: the self-fusion finding says synthesis carries most
+    of the lift, and single-model best-of-N keeps the feature small and vendor-agnostic (no
+    cross-model orchestration layer; a possible future seam if a measured need appears).
+  - **The model decides, never automatic.** It is a normal tool — visible in the transcript, gated by
+    permissions, `READ_ONLY` tier — invoked at the model's discretion, with a description that flags
+    it as EXPENSIVE and for hard sub-problems only. Zak Code never fires it on the agent's behalf.
+  - **Cost visible + bounded.** Its extra calls are attributed in the per-model `/cost` breakdown and
+    folded into the shared turn-tree budget, so the 2–3× spend is never hidden, and `max_cost_usd` /
+    `max_iterations` bound it. An operator can disable it with `tool_exposure_deny=["deep_think"]`.
+  - **Degrades gracefully.** No `Sampler` wired (a bare/delegated loop) → a clean "unavailable" error,
+    never a crash; a failed sample is tolerated; a failed synthesis falls back to the fullest
+    candidate. Handlers never raise (the tool contract).
+- **Clean-room provenance:** the *idea* (ensemble/self-consistency + synthesis) is public
+  (self-consistency decoding; OpenRouter's Fusion); the implementation is original and uses only the
+  vendor-agnostic `Provider` abstraction — `deep_think.py` imports no litellm/vendor SDK.
+- **Consequences:** the agent gains a deliberate "think harder" rung that composes with zakpick's
+  cheap→capable escalation (quick_code → deep_code → *deep_think on deep_code*), entirely within the
+  user's configured models and spend controls. **Deferred seams** (future, with triggers): a
+  multi-provider Fusion panel + judge (build only if single-model best-of-N proves insufficient on a
+  measured task set — it is a 2–3× cost, opposite the cost-down motivation, so it stays opt-in and
+  late); a `deep_think` zakpick category so the user can assign a *distinct* model to deliberation
+  (build when someone wants deliberation on a different model than `deep_code`).
