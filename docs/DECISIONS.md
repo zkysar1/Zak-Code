@@ -158,3 +158,15 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     stays DEFERRED, per its own "watch, don't build" recommendation — it belongs to the higher-level
     mind, not the near-term core. The single-threaded inline design was kept (no planner/executor
     split) per the report's "keep it sharp; simple beats agentic" caveat.
+
+  - **Update (2026-06-15, issue #32 — stale-plan auto-clear):** generalized the turn-start plan
+    reset from "drop only a COMPLETED plan" to also drop an **abandoned** one — an unfinished plan
+    that has sat byte-identical across `_MAX_PLAN_IDLE_TURNS` (3) consecutive turn-starts (the model
+    neither advanced nor edited it). Without it, a plan the model forgot to clear re-injected into
+    context + spent the plan-gate's nudges + flagged the turn `degraded` on *every* later turn — a
+    recurring tax for weak local models. Deterministic (a `(id, status, title)` progress signature
+    compared across turns, via the new pure `TaskNetwork.progress_signature()`), conservative (ANY
+    edit resets the idle counter, so an active plan is never auto-cleared; a cleared plan is freely
+    re-creatable), and bounded (a constant threshold; the per-turn plan gate already bounded each
+    turn). Two append-only `Session` fields (`plan_idle_turns`, `plan_signature`); no schema bump;
+    wired identically on both the buffered and streaming loop paths.

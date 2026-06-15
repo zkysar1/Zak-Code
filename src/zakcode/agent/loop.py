@@ -171,6 +171,13 @@ _MAX_LENGTH_CONTINUATIONS = 3
 #: after the cap the turn completes (flagged ``degraded`` because the plan was left unresolved).
 _MAX_PLAN_NUDGES = 2
 
+#: How many consecutive turn-starts an UNFINISHED plan may sit byte-identical (the model neither
+#: advanced nor edited it) before the harness drops it as abandoned (issue #32 — the "haunting
+#: plan" guard). Bounds the recurring tax of a stale plan re-injecting + re-nudging + degrading
+#: every turn forever. An active plan changes its signature and resets the counter, so a live plan
+#: is never auto-cleared; only a genuinely static one is, and the model can always re-plan.
+_MAX_PLAN_IDLE_TURNS = 3
+
 #: How many times the plan-first gate (R5, opt-in) may withhold a mutating batch to demand a plan
 #: before letting it through anyway (fail-open). Bounded so ``require_plan`` can never deadlock.
 _MAX_PLAN_FIRST_NUDGES = 2
@@ -616,15 +623,36 @@ class AgentLoop:
             return self.session.messages
         return [*self.session.messages, *tail]
 
-    def _reset_completed_plan(self) -> None:
-        """Drop a fully-finished plan at the start of a new turn.
+    def _reset_stale_or_completed_plan(self) -> None:
+        """Drop a finished plan (always) or an abandoned one (static for N turns) at turn start.
 
-        A completed prior goal's checklist must not bleed into an unrelated next turn (neither
+        A COMPLETED prior goal's checklist must not bleed into an unrelated next turn (neither
         re-injected into context nor re-emitted as a ``task_update``). An UNFINISHED plan is
-        left intact, so genuine multi-turn work carries its plan forward.
+        normally left intact, so genuine multi-turn work carries its plan forward — EXCEPT when it
+        has sat byte-identical across ``_MAX_PLAN_IDLE_TURNS`` consecutive turn-starts (the model
+        neither advanced nor edited it). Such a plan is treated as abandoned and dropped too, so a
+        stale plan cannot re-inject + re-nudge + degrade every subsequent turn forever (issue #32,
+        the "haunting plan" tax). Active work changes the plan's signature and resets the idle
+        counter, so a live plan is never auto-cleared; a cleared plan is freely re-creatable.
         """
-        if self.session.task_network.is_complete():
-            self.session.task_network.tasks = []
+        session = self.session
+        network = session.task_network
+        if network.is_empty() or network.is_complete():
+            network.tasks = []  # no-op when already empty; clears a finished plan
+            session.plan_idle_turns = 0
+            session.plan_signature = ""
+            return
+        # An unfinished plan: advance the staleness counter, dropping the plan once it stalls.
+        signature = network.progress_signature()
+        if signature == session.plan_signature:
+            session.plan_idle_turns += 1
+        else:
+            session.plan_idle_turns = 0
+            session.plan_signature = signature
+        if session.plan_idle_turns >= _MAX_PLAN_IDLE_TURNS:
+            network.tasks = []
+            session.plan_idle_turns = 0
+            session.plan_signature = ""
 
     def _plan_reminder(self) -> Message | None:
         """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
@@ -691,8 +719,9 @@ class AgentLoop:
         nxt = remaining[0]
         return (
             f"Your plan still has {len(remaining)} open step(s); the next is {nxt.id} "
-            f"({nxt.title}). Finish the remaining steps, or if they are no longer needed mark "
-            "them done/cancelled with update_plan — then end the turn."
+            f"({nxt.title}). Finish the remaining steps, or — if this goal is done or no longer "
+            "active — mark them done/cancelled or clear the whole plan with update_plan, then end "
+            "the turn."
         )
 
     @staticmethod
@@ -1203,7 +1232,7 @@ class AgentLoop:
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
         await self._maybe_compact()
-        self._reset_completed_plan()
+        self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
         self._persist()
 
@@ -1708,7 +1737,7 @@ class AgentLoop:
         """
         await self._fire_session_start_once()
         await self._maybe_compact()
-        self._reset_completed_plan()
+        self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
         self._persist()
 

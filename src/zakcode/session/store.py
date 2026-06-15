@@ -144,6 +144,16 @@ class Session(BaseModel):
     #: ``/resume``. Schema v1 stays append-only: an OLDER build drops this field on load
     #: (the plan is simply re-derivable from the conversation), so it only ever fails SAFE.
     task_network: TaskNetwork = Field(default_factory=TaskNetwork)
+    #: Staleness tracking for the live plan (issue #32 — the "haunting plan" guard). When an
+    #: UNFINISHED plan sits byte-identical across ``_MAX_PLAN_IDLE_TURNS`` consecutive turn-starts
+    #: (the model neither advanced nor edited it), the loop drops it as abandoned so it cannot
+    #: re-inject + re-nudge + degrade every turn forever. ``plan_signature`` is the last turn-start
+    #: ``(id, status, title)`` snapshot; ``plan_idle_turns`` counts consecutive idle turn-starts.
+    #: Both reset whenever the plan changes, completes, or is cleared. Schema v1 stays append-only:
+    #: an OLDER build drops these and only loses the count (fails SAFE — the plan is simply kept,
+    #: the pre-#32 behavior).
+    plan_signature: str = ""
+    plan_idle_turns: int = 0
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""

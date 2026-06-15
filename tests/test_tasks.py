@@ -216,3 +216,26 @@ def test_normalize_is_idempotent() -> None:
     first = net.render()
     net.normalize()
     assert net.render() == first
+
+
+def test_progress_signature_equal_when_untouched_changes_on_any_edit() -> None:
+    # The loop's staleness guard (issue #32) detects an abandoned plan by an UNCHANGED signature
+    # across turn-starts, and protects an active plan because ANY edit changes the signature.
+    net = _net(Task(title="A"), Task(title="B"))
+    sig0 = net.progress_signature()
+    # An identical plan reproduces the signature exactly ("the model did not touch it").
+    assert _net(Task(title="A"), Task(title="B")).progress_signature() == sig0
+    # A status advance changes it.
+    assert _net(Task(title="A", status="done"), Task(title="B")).progress_signature() != sig0
+    # A structural change (decomposition adds child ids) changes it.
+    assert (
+        _net(
+            Task(title="A", kind="compound", children=[Task(title="A1")]),
+            Task(title="B"),
+        ).progress_signature()
+        != sig0
+    )
+    # New content (a retitled step) changes it too — conservative, the fail-safe direction.
+    assert _net(Task(title="A"), Task(title="reworded")).progress_signature() != sig0
+    # An empty network has a stable, distinct signature.
+    assert TaskNetwork().progress_signature() == repr([])

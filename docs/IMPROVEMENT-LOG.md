@@ -995,3 +995,21 @@ cost-accounting test instead of a fallback table.
   radius on the other 33 env-touching tests. **Local `poe check` now green (ruff+format+mypy clean,
   1884 passed, 5 skipped).** Deferred (scope): a conftest autouse fixture clearing `ZAKCODE_*` for
   whole-suite hermeticity — revisit only if a third default-asserting test trips the same wire.
+
+- **2026-06-15 (dev, branch `feat/plan-idle-autoclear` — issue #32, the "haunting plan" fix):**
+  implemented the bounded auto-clear designed in the post-#28 fresh-eyes review. Problem:
+  `_reset_completed_plan` only dropped a plan at turn start when `is_complete()`, so an *abandoned*
+  (unfinished, untouched) plan re-injected + re-nudged + degraded every subsequent turn until the
+  model called `update_plan([])` — the recurring tax weak local models pay. Fix: generalized it to
+  `_reset_stale_or_completed_plan`, which ALSO drops an unfinished plan that has sat byte-identical
+  across `_MAX_PLAN_IDLE_TURNS` (3) consecutive turn-starts. Determinism via a new pure
+  `TaskNetwork.progress_signature()` (`repr` of each task's `(id, status, title)`); two append-only
+  `Session` fields (`plan_idle_turns`, `plan_signature`, no schema bump); the plan-gate completion
+  nudge now names the "clear the whole plan" escape hatch. Conservative by design — any edit
+  (advance, decompose, retitle) resets the counter, so an active plan is never auto-cleared; only a
+  genuinely static one is, and it is freely re-creatable. Wired identically on `_run_turn` and
+  `astream_turn`. Tests: `test_tasks.py` (signature equal-when-untouched / changes-on-any-edit) +
+  `test_loop_planning.py` (unit threshold + counter, active-never-dropped, nudge escape hatch, and
+  both-path integration that an abandoned plan stops haunting). **`uv run poe check` green:
+  ruff+format+mypy clean, 1890 passed, 5 skipped; `--extra server --extra dev` full suite 1890
+  passed.** Design tracked in GitHub issue #32 (resolved by this change).
