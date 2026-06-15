@@ -146,6 +146,14 @@ All content sits on this grid; nothing else exists:
     blank / panel / `permit … › a` / blank / `└ ✗ receipt`.
 15. **Append-only.** History is never repainted; the only live region is the
     REPL-owned wait line, cleanly replaced (transient) by the next printed block.
+16. **`/cost` per-model breakdown.** After the session total line, when the session
+    spanned **two or more** models (e.g. zakpick routed easy vs hard turns
+    differently), `/cost` prints a dim `by model:` header then one indented
+    `{model} · {tokens} tok · ${cost}` line per model (from
+    `Session.usage_by_model()`, first-used model first; untagged usage is omitted). A
+    single-model session shows only the total (no redundant one-line breakdown). Under
+    zakpick a closing dim note flags that compaction/sub-agent costs are not broken out
+    here and that a "vs all-deep" savings estimate lands with the cost-metadata seam.
 
 **Wait line (REPL layer, never the renderer):** a transient `rich.live.Live` line —
 spark frame (glyph-swap `· ✦ ✶ ✧`, brand azure; ASCII `- \ | /`) + gerund verb

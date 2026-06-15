@@ -1235,6 +1235,35 @@ def chat(
                         )
                     )
                 )
+                # Per-model attribution: only worth showing once a session actually spanned more
+                # than one model (e.g. zakpick routed easy vs hard turns differently). Untagged
+                # entries (empty key) are dropped from the breakdown.
+                by_model = {m: u for m, u in agent.session.usage_by_model().items() if m}
+                if len(by_model) >= 2:
+                    console.print(margin(Text("by model:", style="notice.dim")))
+                    for model_name, model_usage in by_model.items():
+                        console.print(
+                            margin(
+                                Text.assemble(
+                                    (f"  {model_name}", "arg.value"),
+                                    (dot, "notice.dim"),
+                                    (f"{model_usage.total_tokens} tok", "notice.dim"),
+                                    (dot, "notice.dim"),
+                                    (f"${model_usage.cost_usd:.4f}", "arg.value"),
+                                )
+                            )
+                        )
+                    if getattr(agent, "_zakpick", False):
+                        console.print(
+                            margin(
+                                Text(
+                                    "zakpick routes per task; compaction & sub-agent costs are "
+                                    "not broken out here. (a 'vs all-deep' savings estimate lands "
+                                    "with the cost-metadata seam)",
+                                    style="notice.dim",
+                                )
+                            )
+                        )
                 continue
             if command == "/agents":
                 _render_agents(console, agent)

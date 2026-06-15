@@ -1404,7 +1404,9 @@ class AgentLoop:
             )
             assistant_msg = self._assistant_message(result)
             self.session.add_message(assistant_msg)
-            self.session.add_usage(result.usage)
+            # Tag the usage with the model that produced it (per-model /cost attribution); under
+            # zakpick self.provider is the model for the current category this iteration.
+            self.session.add_usage(result.usage, model=self.provider.model_id())
             turn_assistant.append(assistant_msg)
             turn_usage = turn_usage + result.usage
             self._persist()
@@ -1883,7 +1885,8 @@ class AgentLoop:
                                 turn_usage = turn_usage + ev.usage
                                 if self.budget is not None:
                                     self.budget.add_usage(ev.usage.cost_usd, ev.usage.total_tokens)
-                                self.session.add_usage(ev.usage)
+                                # Tag with the model for per-model /cost attribution (streaming).
+                                self.session.add_usage(ev.usage, model=self.provider.model_id())
                             elif isinstance(ev, StreamDone):
                                 # The loop's own stop conditions decide the turn's
                                 # stop_reason, but a ``length`` finish triggers truncation

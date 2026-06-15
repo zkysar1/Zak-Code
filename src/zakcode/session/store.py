@@ -149,9 +149,13 @@ class Session(BaseModel):
         """Append ``msg`` to the conversation history."""
         self.messages.append(msg)
 
-    def add_usage(self, usage: Usage) -> None:
-        """Record a single LLM-call ``usage`` entry."""
-        self.usages.append(usage)
+    def add_usage(self, usage: Usage, model: str = "") -> None:
+        """Record a single LLM-call ``usage`` entry, tagged with the ``model`` that produced it.
+
+        ``model`` enables the per-model ``/cost`` breakdown (under zakpick a session spans several
+        models). Empty (the default) preserves the legacy untagged behavior exactly.
+        """
+        self.usages.append(usage.model_copy(update={"model": model}) if model else usage)
 
     def cumulative_usage(self) -> Usage:
         """Return the sum of all recorded usage entries."""
@@ -159,6 +163,19 @@ class Session(BaseModel):
         for usage in self.usages:
             total = total + usage
         return total
+
+    def usage_by_model(self) -> dict[str, Usage]:
+        """Per-model usage totals, for the ``/cost`` attribution breakdown.
+
+        Groups the recorded entries by their ``model`` tag (insertion order preserved, so the
+        first model a session used lists first). Untagged entries (legacy records, or calls made
+        before model tagging) group under the empty-string key.
+        """
+        by_model: dict[str, Usage] = {}
+        for usage in self.usages:
+            current = by_model.get(usage.model)
+            by_model[usage.model] = (current + usage) if current is not None else usage
+        return by_model
 
 
 class SessionStore:

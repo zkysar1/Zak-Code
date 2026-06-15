@@ -219,16 +219,17 @@ def test_non_zakpick_unaffected(tmp_path: Path) -> None:
 class _ScriptedText:
     """A buffered provider that returns fixed text and no tool calls (so the turn completes)."""
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, model: str = "") -> None:
         self.text = text
         self.calls = 0
+        self._model = model
 
     async def acomplete(self, messages, *, system=None, tools=None, response_format=None, **kw):
         from zakcode.providers.base import LLMResult
         from zakcode.usage import Usage
 
         self.calls += 1
-        return LLMResult(text=self.text, usage=Usage(total_tokens=1))
+        return LLMResult(text=self.text, usage=Usage(total_tokens=7, cost_usd=0.01))
 
     def count_tokens(self, messages, *, system=None) -> int:
         return 10
@@ -237,6 +238,9 @@ class _ScriptedText:
         from zakcode.providers.base import Capabilities
 
         return Capabilities(supports_tools=True, context_window=8192)
+
+    def model_id(self) -> str:
+        return self._model
 
 
 async def test_loop_routes_main_turn_by_category(tmp_path: Path) -> None:
@@ -261,3 +265,67 @@ async def test_loop_routes_main_turn_by_category(tmp_path: Path) -> None:
     text = "\n".join(m.text for m in result.assistant_messages)
     assert "cheap answered" in text
     assert cheap.calls >= 1 and strong.calls == 0  # the cheap model drove the easy turn
+
+
+# ── Phase 1: per-model cost attribution ──────────────────────────────────────────
+
+
+def test_usage_carries_model_and_add_collapses_on_mismatch() -> None:
+    from zakcode.usage import Usage
+
+    a = Usage(total_tokens=3, cost_usd=0.01, model="m1")
+    b = Usage(total_tokens=4, cost_usd=0.02, model="m1")
+    c = Usage(total_tokens=5, cost_usd=0.03, model="m2")
+    assert (a + b).model == "m1"  # same model survives the sum
+    assert (a + c).model == ""  # mixed sum has no single model
+    assert (a + b).total_tokens == 7
+
+
+def test_session_usage_by_model_groups(tmp_path: Path) -> None:
+    from zakcode.session.store import Session
+    from zakcode.usage import Usage
+
+    s = Session(cwd=str(tmp_path), model="t")
+    s.add_usage(Usage(total_tokens=3, cost_usd=0.01), model="cheap/m")
+    s.add_usage(Usage(total_tokens=4, cost_usd=0.02), model="deep/m")
+    s.add_usage(Usage(total_tokens=5, cost_usd=0.03), model="cheap/m")
+    by_model = s.usage_by_model()
+    assert by_model["cheap/m"].total_tokens == 8
+    assert by_model["cheap/m"].cost_usd == pytest.approx(0.04)
+    assert by_model["deep/m"].total_tokens == 4
+    assert s.cumulative_usage().total_tokens == 12  # total unchanged by tagging
+
+
+def test_provider_model_id() -> None:
+    # The default Provider returns "" (unattributed); LiteLLM exposes its model and the text
+    # wrapper forwards it — so a routed turn's usage gets the right model tag.
+    from zakcode.config import Settings
+    from zakcode.providers.litellm_provider import LiteLLMProvider
+    from zakcode.providers.text_tools import TextToolCallingProvider
+
+    inner = LiteLLMProvider(Settings(default_model="groq/openai/gpt-oss-120b", workspace_root="."))
+    assert inner.model_id() == "groq/openai/gpt-oss-120b"
+    wrapped = TextToolCallingProvider(inner, mode="text")
+    assert wrapped.model_id() == "groq/openai/gpt-oss-120b"
+    assert _ScriptedText("x").model_id() == ""  # a stub provider is simply unattributed
+
+
+async def test_loop_tags_usage_with_routed_model(tmp_path: Path) -> None:
+    from zakcode.agent.loop import AgentLoop
+    from zakcode.session.store import Session
+    from zakcode.tools.base import ToolRegistry
+
+    cheap = _ScriptedText("done", model="groq/openai/gpt-oss-20b")
+    strong = _ScriptedText("done", model="groq/openai/gpt-oss-120b")
+    session = Session(cwd=str(tmp_path), model="t")
+    loop = AgentLoop(
+        strong,
+        ToolRegistry(),
+        session,
+        main_provider_for=lambda c: cheap if c == "quick_code" else strong,
+        max_iterations=3,
+    )
+    await loop.arun_turn("hi")  # easy turn → quick_code → cheap model tags the usage
+    by_model = session.usage_by_model()
+    assert "groq/openai/gpt-oss-20b" in by_model  # attributed to the model that actually ran
+    assert by_model["groq/openai/gpt-oss-20b"].cost_usd == pytest.approx(0.01)
