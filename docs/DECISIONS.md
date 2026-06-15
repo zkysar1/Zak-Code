@@ -224,6 +224,11 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   `classify` is never shown. **Deferred seams** (future work, with triggers): a cheap difficulty-
   classifier *model* for the `classify` category (today the split is heuristic-only — the category +
   its structured-output shape are pre-wired; build when a real gray-zone classification call site
-  appears); cost/price metadata on `Capabilities` (today the defaults encode cost by *curation*, not a
-  price field; build when the engine needs to reason about price at runtime, e.g. a budget-aware
-  router); and an `embeddings` category (build when an embedding call site exists).
+  appears, **or** when an offline eval shows `classify_main_turn`'s routing accuracy sits well below
+  ~80% on a representative coding set — the yardstick from *Intelligence per Watt* (arXiv 2511.07885;
+  [`references/intelligence-per-watt.md`](references/intelligence-per-watt.md)), which finds an
+  80%-accurate router captures ~80% of the achievable savings, so a crude heuristic near that ceiling
+  is not worth upgrading); cost/price metadata on `Capabilities` (today the defaults encode cost by
+  *curation*, not a price field; build when the engine needs to reason about price at runtime, e.g. a
+  budget-aware router — also what powers the `/cost` "vs all-deep" savings estimate); and an
+  `embeddings` category (build when an embedding call site exists).

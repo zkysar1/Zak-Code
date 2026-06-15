@@ -649,14 +649,22 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 > `providers/routing.py` is vendor-SDK-free (the clean-room contract test stays green). The CLI
 > info panel / `/model` / banner show a friendly `model (source)` per-category table.
 >
+> **zakpick transparency follow-ups (D31, shipped — prompted by *Intelligence per Watt*,
+> arXiv 2511.07885, [`references/intelligence-per-watt.md`](references/intelligence-per-watt.md)):**
+> per-model `/cost` attribution (`Usage.model` + `Session.usage_by_model()`, shown when a session
+> spans ≥2 models) and a once-per-session "your deep coder wasn't needed" advisory
+> (`AgentDone.routed_category`/`routed_escalated`). Both surface savings/observations so the user
+> can tune their own config — never a tool-owned routing decision.
+>
 > **Deferred zakpick seams (future work, with triggers):**
 > - **A difficulty-classifier *model* for the `classify` category** — today the quick/deep split
 >   is heuristic-only; the `classify` category and its structured-output shape are pre-wired.
->   *Trigger:* a real gray-zone classification call site (or measured wins from a model over the
->   heuristic).
+>   *Trigger:* a real gray-zone classification call site, **or** an offline eval showing
+>   `classify_main_turn` routing accuracy well below ~80% on a coding set (the *Intelligence per
+>   Watt* yardstick: an 80%-accurate router already captures ~80% of the savings).
 > - **Cost/price metadata on `Capabilities`** — today the defaults encode cost by *curation*
 >   (the graduated Groq ladder), not a price field. *Trigger:* the engine needs to reason about
->   price at runtime (e.g. a budget-aware router that compares categories).
+>   price at runtime (e.g. a budget-aware router, or the `/cost` "vs all-deep" savings estimate).
 > - **An `embeddings` category** — *trigger:* an embedding call site exists in the engine.
 
 ---

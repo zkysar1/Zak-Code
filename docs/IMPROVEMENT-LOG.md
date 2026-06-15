@@ -1026,3 +1026,20 @@ cost-accounting test instead of a fallback table.
     original** — no reference harness (Claude Code / Hermes / goose) ships task-category routing, so
     provenance is first-principles, not a mirrored design. **1910 tests pass, ruff + mypy clean.**
     CONFIG.md + `.env.example` already updated.
+- **2026-06-15 (dev, D31 — zakpick transparency follow-ups, prompted by *Intelligence per Watt*):**
+  three small phases off the zakpick base, each motivated by arXiv 2511.07885
+  ([`references/intelligence-per-watt.md`](references/intelligence-per-watt.md) — local/small models
+  handle most prompts; an 80%-accurate router captures ~80% of the savings; `gpt-oss-120b` is the best
+  local model, validating our `deep_code` default). The paper's *auto local-vs-cloud router* stays
+  rejected (D30); the value taken is *evidence + transparency*, never a tool-owned routing decision.
+  - **Phase 1 — per-model `/cost` attribution.** `Usage.model` tag (+ `Provider.model_id()`,
+    forwarded by the text wrapper) → `Session.usage_by_model()` → a `/cost` breakdown shown only when
+    a session spanned ≥2 models. Makes the savings the user's config already yields *visible* so they
+    can tune it. A "vs all-deep" savings line is stubbed pending the `Capabilities` cost-metadata seam.
+  - **Phase 2 — "deep coder wasn't needed" advisory.** `TurnResult`/`AgentDone` gain
+    `routed_category` + `routed_escalated`; the REPL counts clean un-escalated `deep_code` turns and,
+    once per session after 3, prints one `tip` suggesting a cheaper `deep_code` model may keep up. An
+    observation + an option, never an auto-switch.
+  - **Phase 3 — evidence-back the deferred classifier-model seam.** Added the paper digest to
+    `docs/references`, cited it in ADR-0009 as the router-accuracy→savings yardstick for *whether* to
+    upgrade `classify_main_turn`, and recorded this entry. **1918 tests pass, ruff + mypy clean.**
