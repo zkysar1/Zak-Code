@@ -11,6 +11,7 @@ from zakcode.agent.prompt import (
     discover_memory,
 )
 from zakcode.config import PermissionTier, load_settings
+from zakcode.tools import default_registry
 from zakcode.tools.base import ConcurrencyClass, ToolSpec
 
 # ── structure ──────────────────────────────────────────────────────────────────
@@ -75,6 +76,21 @@ def test_environment_section_names_the_shell(tmp_path: Path, monkeypatch) -> Non
     posix = SystemPromptBuilder().build(settings)
     assert "- Shell:" in posix
     assert "/bin/sh" in posix
+
+
+def test_planning_guidance_names_primitiveness_criteria(tmp_path: Path) -> None:
+    # The decomposition stopping-rule must name the two criteria a single-action floor alone
+    # omits: a checkable done-condition, and no approach decision still hidden in the step
+    # (convergent across the /decompose + Ayoai-Mind HTN surveys; keeps weak models from
+    # stopping at vague, half-decided steps). Pinned in BOTH the system prompt and the
+    # update_plan tool description — the model reads the latter exactly when it fills 'subtasks'.
+    prompt = SystemPromptBuilder().build(load_settings(workspace_root=tmp_path)).lower()
+    assert "done-condition" in prompt  # clear completion
+    assert "figure out how" in prompt  # no hidden approach decision
+
+    desc = (default_registry().get("update_plan").spec.description or "").lower()
+    assert "done-condition" in desc
+    assert "figure out how" in desc
 
 
 def test_tool_specs_are_summarized(tmp_path: Path) -> None:

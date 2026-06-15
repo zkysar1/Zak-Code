@@ -170,3 +170,26 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     re-creatable), and bounded (a constant threshold; the per-turn plan gate already bounded each
     turn). Two append-only `Session` fields (`plan_idle_turns`, `plan_signature`); no schema bump;
     wired identically on both the buffered and streaming loop paths.
+
+  - **Update (2026-06-15, primitiveness criteria — HTN cross-system survey):** surveyed three
+    sibling HTN/decomposition implementations for transferable ideas — the Ayoai-Environment-Processor
+    (a dual **HTN + A\*** planner over a STRIPS world-model, archive-informed cost weighting,
+    LLM-grounded decomposition); **ayoai-mind** (the higher mind's aspirations→goals layer, a
+    22-criterion goal-selector, scope classification, per-goal verification + blocker-TTL); and the
+    omni continual-learning framework's `/decompose` skill (a model-driven HTN *protocol*:
+    5-criterion primitiveness test, idempotency gate, verification-as-schema). **Headline:** the lean
+    design here already *structurally* neutralizes most of what those systems add machinery for —
+    full-replace `update_plan` moots idempotency back-references (ayoai-mind's own report says so
+    verbatim), `kind`-inferred-from-nesting makes hierarchical cycles and "compound-but-empty" states
+    unrepresentable, and the issue-#32 idle auto-clear subsumes stale-blocker TTLs. The one genuinely
+    additive, philosophy-fitting idea (convergent across `/decompose` AND ayoai-mind) was implemented:
+    the primitiveness **stopping-rule** now names the two criteria a single-action floor omits — a
+    **clear done-condition** and **no approach decision still hidden in the step** — in both the
+    `_PLANNING` system-prompt section and the `update_plan` tool description. Model-facing guidance
+    only: no schema, no infra, cache-stable, and it directly targets weak local models (the reason the
+    HTN exists); maps to this ADR's own noted future work (model-settable `kind` / under-decomposition
+    gate). Deliberately kept OUT as higher-mind / domain-coupled territory: the STRIPS world-model + A\*
+    ordering, archive-weighted goal scoring, scope classification, the 22-criterion selector, and the
+    facts/assumptions ledger (**R7**). The cross-system evidence *reinforces* R7's "watch, don't build"
+    deferral — every sibling keeps belief/world state at the long-horizon layer, never the near-term
+    core, which is exactly the boundary this ADR draws.
