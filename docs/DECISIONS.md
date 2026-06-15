@@ -159,6 +159,52 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     mind, not the near-term core. The single-threaded inline design was kept (no planner/executor
     split) per the report's "keep it sharp; simple beats agentic" caveat.
 
+  - **Update (2026-06-15, issue #32 — stale-plan auto-clear):** generalized the turn-start plan
+    reset from "drop only a COMPLETED plan" to also drop an **abandoned** one — an unfinished plan
+    that has sat byte-identical across `_MAX_PLAN_IDLE_TURNS` (3) consecutive turn-starts (the model
+    neither advanced nor edited it). Without it, a plan the model forgot to clear re-injected into
+    context + spent the plan-gate's nudges + flagged the turn `degraded` on *every* later turn — a
+    recurring tax for weak local models. Deterministic (a `(id, status, title)` progress signature
+    compared across turns, via the new pure `TaskNetwork.progress_signature()`), conservative (ANY
+    edit resets the idle counter, so an active plan is never auto-cleared; a cleared plan is freely
+    re-creatable), and bounded (a constant threshold; the per-turn plan gate already bounded each
+    turn). Two append-only `Session` fields (`plan_idle_turns`, `plan_signature`); no schema bump;
+    wired identically on both the buffered and streaming loop paths.
+
+  - **Update (2026-06-15, primitiveness criteria — HTN cross-system survey):** surveyed three
+    sibling HTN/decomposition implementations for transferable ideas — the Ayoai-Environment-Processor
+    (a dual **HTN + A\*** planner over a STRIPS world-model, archive-informed cost weighting,
+    LLM-grounded decomposition); **ayoai-mind** (the higher mind's aspirations→goals layer, a
+    22-criterion goal-selector, scope classification, per-goal verification + blocker-TTL); and the
+    omni continual-learning framework's `/decompose` skill (a model-driven HTN *protocol*:
+    5-criterion primitiveness test, idempotency gate, verification-as-schema). **Headline:** the lean
+    design here already *structurally* neutralizes most of what those systems add machinery for —
+    full-replace `update_plan` moots idempotency back-references (ayoai-mind's own report says so
+    verbatim), `kind`-inferred-from-nesting makes hierarchical cycles and "compound-but-empty" states
+    unrepresentable, and the issue-#32 idle auto-clear subsumes stale-blocker TTLs. The one genuinely
+    additive, philosophy-fitting idea (convergent across `/decompose` AND ayoai-mind) was implemented:
+    the primitiveness **stopping-rule** now names the two criteria a single-action floor omits — a
+    **clear done-condition** and **no approach decision still hidden in the step** — in both the
+    `_PLANNING` system-prompt section and the `update_plan` tool description. Model-facing guidance
+    only: no schema, no infra, cache-stable, and it directly targets weak local models (the reason the
+    HTN exists); maps to this ADR's own noted future work (model-settable `kind` / under-decomposition
+    gate). Deliberately kept OUT as higher-mind / domain-coupled territory: the STRIPS world-model + A\*
+    ordering, archive-weighted goal scoring, scope classification, the 22-criterion selector, and the
+    facts/assumptions ledger (**R7**). The cross-system evidence *reinforces* R7's "watch, don't build"
+    deferral — every sibling keeps belief/world state at the long-horizon layer, never the near-term
+    core, which is exactly the boundary this ADR draws.
+
+  - **Update (2026-06-15, done-conditions via `note`):** completed the verification-as-schema half of
+    the decomposition story WITHOUT adding a field. The survey's "every step carries a checkable
+    done-condition" idea was already structurally present — `Task.note` has always been the
+    "acceptance criterion" slot (parsed by `update_plan`, rendered into the re-injected plan), so a
+    parallel `done_when` field would only have duplicated it (single-source-of-truth; "simple beats
+    agentic" — the explicit push-back-on-over-building call). Instead: sharpened `note`'s role to *the
+    step's checkable done-condition* (in the `Task` docstring AND the `update_plan` schema field
+    description) and wired the `_PLANNING` guidance to record each primitive step's done-condition
+    there. So the just-shipped "steps must be checkable" rule now names WHERE to capture the check, and
+    that check rides in the plan the model re-reads every turn. No data-model change, no migration;
+    pinned by `test_step_note_is_the_checkable_done_condition`.
 
 ## ADR-0009 — zakpick: task-category model routing via per-category `(model, source)` assignment
 

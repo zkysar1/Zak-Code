@@ -428,6 +428,44 @@ def test_harness_run_verifies_without_the_model(tmp_path: Path) -> None:
     assert "[harness]" in transcript
 
 
+# ── issue #33: the harness-issued run is shell-aware (bash, else powershell) ───
+
+
+def test_harness_shell_call_prefers_bash_verbatim(tmp_path: Path) -> None:
+    # No policy -> the harness gate is unsuppressed: bash is the first registered shell and
+    # its command is passed through verbatim (its cmd.exe / POSIX-sh quoting matches the run cmd).
+    loop = _loop(_ScriptedProvider([LLMResult(text="noop")]), tmp_path)
+    call = loop._harness_shell_call('py "x.py"', "verify_run_0")
+    assert call is not None
+    assert call.name == "bash"
+    assert call.arguments["command"] == 'py "x.py"'  # no `&` prefix on the bash form
+    assert call.id == "verify_run_0"
+
+
+def test_harness_shell_call_falls_back_to_powershell_with_call_operator(tmp_path: Path) -> None:
+    # A powershell-preferred host: the operator granted `powershell` but not `bash`, so the
+    # synthetic bash would prompt. The harness falls back to powershell, and the command is
+    # prefixed with the call operator `&` so a *quoted* exe path executes (issue #33).
+    policy = PermissionPolicy(PermissionMode.ASK)
+    policy._session_allow.add("powershell")  # granted powershell, NOT bash
+    loop = _loop(_ScriptedProvider([LLMResult(text="noop")]), tmp_path, permission_policy=policy)
+    call = loop._harness_shell_call('"C:\\py\\python.exe" "x.py"', "recipe_run_0")
+    assert call is not None
+    assert call.name == "powershell"
+    assert call.arguments["command"] == '& "C:\\py\\python.exe" "x.py"'
+
+
+def test_harness_shell_call_returns_none_when_no_shell_auto_allows(tmp_path: Path) -> None:
+    # ASK mode, neither shell granted: every synthetic run would prompt, so the harness declines
+    # (None) and the caller falls back to nudging the model — the pre-#33 powershell-host behavior.
+    loop = _loop(
+        _ScriptedProvider([LLMResult(text="noop")]),
+        tmp_path,
+        permission_policy=PermissionPolicy(PermissionMode.ASK),
+    )
+    assert loop._harness_shell_call("py x.py", "verify_run_0") is None
+
+
 def test_harness_run_is_bounded_on_a_broken_file(tmp_path: Path) -> None:
     if resolve_run_command("x.py") is None:
         pytest.skip("no python interpreter available")

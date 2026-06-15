@@ -10,8 +10,13 @@ from zakcode.config import Settings, load_settings
 from zakcode.providers.litellm_provider import LiteLLMProvider
 
 
-def test_settings_api_base_and_key_default_none() -> None:
-    s = Settings()
+def test_settings_api_base_and_key_default_none(monkeypatch) -> None:
+    # Hermeticity: a dev `.env` reaches Settings two ways — pydantic reads the file, and
+    # load_settings' load_dotenv step exports it into os.environ. Clear both so this asserts the
+    # true unconfigured defaults (CI has no `.env`; keeps local `poe check` matching CI).
+    monkeypatch.delenv("ZAKCODE_API_BASE", raising=False)
+    monkeypatch.delenv("ZAKCODE_API_KEY", raising=False)
+    s = Settings(_env_file=None)
     assert s.api_base is None
     assert s.api_key is None
 
@@ -41,11 +46,14 @@ def test_explicit_kwargs_override_settings() -> None:
     assert provider.api_base == "http://from-kwarg/v1"
 
 
-def test_api_key_not_forwarded_for_cloud_model_without_api_base() -> None:
+def test_api_key_not_forwarded_for_cloud_model_without_api_base(monkeypatch) -> None:
     # audit3 #6: with no api_base (a bare cloud model), a configured api_key must NOT be
     # forwarded — litellm reads the real key from OPENAI_API_KEY; a stale ZAKCODE_API_KEY
     # shadowing it would break the config-only cloud switch with a spurious AuthError.
-    s = Settings(default_model="openai/gpt-4o", api_key="sk-stale-local-dummy")
+    # Hermeticity: clear a dev `.env`'s ZAKCODE_API_BASE (env var + file) so the "no api_base"
+    # precondition holds locally too (CI has no `.env`; keeps local `poe check` matching CI).
+    monkeypatch.delenv("ZAKCODE_API_BASE", raising=False)
+    s = Settings(default_model="openai/gpt-4o", api_key="sk-stale-local-dummy", _env_file=None)
     provider = LiteLLMProvider(s)
     kwargs = provider._build_kwargs([{"role": "user", "content": "hi"}], None)
     assert "api_key" not in kwargs

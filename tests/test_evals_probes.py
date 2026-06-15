@@ -12,7 +12,7 @@ from zakcode.evals.probes import FlakyTool, build_default_suite
 
 def test_default_suite_has_all_probes(tmp_path: Path) -> None:
     suite = build_default_suite(str(tmp_path))
-    assert len(suite) == 7
+    assert len(suite) == 8
     names = {c.name for c in suite}
     assert names == {
         "completion-detection",
@@ -22,6 +22,7 @@ def test_default_suite_has_all_probes(tmp_path: Path) -> None:
         "partial-failure-recovery",
         "stuck-recovery",
         "long-horizon-compaction",
+        "plan-decomposition",
     }
 
 
@@ -30,7 +31,7 @@ def test_full_suite_all_pass(tmp_path: Path) -> None:
     report = asyncio.run(run_evals(build_default_suite(str(tmp_path))))
     failed = [(r.name, r.error) for r in report.results if not r.passed]
     assert report.ok, f"probes failed: {failed}"
-    assert report.passed == 7
+    assert report.passed == 8
 
 
 # Each probe also runs standalone so a regression names the exact failing behavior.
@@ -71,6 +72,10 @@ def test_probe_stuck_recovery(tmp_path: Path) -> None:
 
 def test_probe_long_horizon_compaction(tmp_path: Path) -> None:
     _run_one(tmp_path, "long-horizon-compaction")
+
+
+def test_probe_plan_decomposition(tmp_path: Path) -> None:
+    _run_one(tmp_path, "plan-decomposition")
 
 
 def test_flaky_tool_fails_once_then_succeeds() -> None:

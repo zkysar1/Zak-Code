@@ -20,8 +20,12 @@ the project must never regress:
 * **long-horizon-compaction** — once history crosses the context-window threshold the
   loop compacts (a model-written summary replaces old turns) and the turn still
   completes.
+* **plan-decomposition** — a decomposed (compound→primitive) plan whose primitive steps carry
+  checkable ``note`` done-conditions advances the single frontier step by step and ends
+  ``completed``; the compound's status DERIVES from its children, and the done-conditions ride
+  in the re-injected plan.
 
-``build_default_suite(workspace)`` returns all seven as :class:`~zakcode.evals.harness.EvalCase`
+``build_default_suite(workspace)`` returns all eight as :class:`~zakcode.evals.harness.EvalCase`
 objects bound to a caller-provided workspace directory (the CLI passes a temp dir).
 """
 
@@ -259,8 +263,58 @@ async def _probe_long_horizon_compaction(workspace: str) -> str:
     return f"history compacted ({provider.summarize_calls} summarization pass(es)); turns completed"
 
 
+async def _probe_plan_decomposition(workspace: str) -> str:
+    """A decomposed, checkable plan runs end-to-end to completion through the real loop.
+
+    Exercises the planning lifecycle the cognitive core must never regress: the model authors a
+    COMPOUND step with two primitive children (each carrying a ``note`` done-condition), advances
+    the single frontier step by step, and finishes only once every step is done. So the plan gate
+    lets the turn end ``completed`` (not ``degraded``), the compound's status DERIVES 'done' from
+    its children, and the checkable done-conditions ride in the re-injected plan.
+    """
+
+    def plan(child1: str, child2: str) -> dict[str, Any]:
+        # Full-replace, TodoWrite-style: the whole plan every call, statuses advancing.
+        return {
+            "tasks": [
+                {
+                    "title": "Build a greet() helper",
+                    "subtasks": [
+                        {"title": "Write greet()", "note": "prints HELLO", "status": child1},
+                        {"title": "Run greet()", "note": "HELLO printed", "status": child2},
+                    ],
+                }
+            ]
+        }
+
+    provider = ScriptedProvider(
+        [
+            call_tool("update_plan", plan("in_progress", "pending"), id="plan-0"),
+            call_tool("update_plan", plan("done", "in_progress"), id="plan-1"),
+            call_tool("update_plan", plan("done", "done"), id="plan-2"),
+            reply("greet() built and verified."),
+        ]
+    )
+    agent = make_agent(provider, workspace_root=workspace)
+    result = await agent.arun_turn("build and verify a greet() helper")
+
+    assert result.stop_reason == "completed", f"expected completed, got {result.stop_reason}"
+    network = agent.loop.session.task_network
+    assert network.is_complete(), "the plan should be fully resolved before the turn ends"
+    assert len(network.tasks) == 1, f"expected one top-level step, got {len(network.tasks)}"
+    parent = network.tasks[0]
+    assert parent.kind == "compound", "the authored step decomposes into children"
+    assert parent.status == "done", "a compound's status must DERIVE 'done' from its children"
+    leaves = network.leaves()
+    assert len(leaves) == 2 and all(leaf.note for leaf in leaves), (
+        "every primitive step carries a checkable done-condition (note)"
+    )
+    assert "prints HELLO" in network.render(), "done-condition must ride in the re-injected plan"
+    return "decomposed plan completed: 2 checkable primitives, compound status derived 'done'"
+
+
 def build_default_suite(workspace: str) -> list[EvalCase]:
-    """The seven behavioral probes, bound to ``workspace`` (a writable temp dir)."""
+    """The eight behavioral probes, bound to ``workspace`` (a writable temp dir)."""
     return [
         EvalCase(
             "completion-detection",
@@ -296,6 +350,12 @@ def build_default_suite(workspace: str) -> list[EvalCase]:
             "long-horizon-compaction",
             "Long histories are compacted (LLM summary) and the turn still completes.",
             lambda: _probe_long_horizon_compaction(workspace),
+        ),
+        EvalCase(
+            "plan-decomposition",
+            "A decomposed, checkable plan runs end-to-end: the frontier advances, the compound's "
+            "status derives, and the turn ends 'completed'.",
+            lambda: _probe_plan_decomposition(workspace),
         ),
     ]
 

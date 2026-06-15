@@ -73,7 +73,11 @@ class Task(BaseModel):
     #: For a primitive task this is authoritative. For a compound task it is IGNORED on input
     #: and overwritten by :meth:`TaskNetwork.normalize` with the status derived from children.
     status: TaskStatus = "pending"
-    #: Optional one-line detail or acceptance criterion ("prints DONE", "all tests pass").
+    #: The step's done-condition — a one-line, checkable acceptance criterion ("prints DONE",
+    #: "all tests pass", "GET /health returns 200"). This IS the verification half of the plan:
+    #: it is what tells the author (and a reader) when the step is objectively finished. For a
+    #: ``blocked`` step, say WHY it is stuck here instead. Optional, but recommended on every
+    #: primitive step; rendered into the re-injected plan so it stays in view.
     note: str = ""
     #: Ids of earlier steps that must reach a terminal status before THIS step is actionable
     #: (a dependency edge, e.g. ``["1", "2"]``). Validated by :meth:`TaskNetwork.normalize`:
@@ -290,6 +294,19 @@ class TaskNetwork(BaseModel):
         total = len(leaves)
         finished = sum(1 for leaf in leaves if leaf.status in _TERMINAL)
         return finished, total
+
+    def progress_signature(self) -> str:
+        """A stable ``(id, status, title)`` snapshot of every task in document order.
+
+        Two networks with equal signatures are identical in structure (ids), advancement
+        (statuses), and content (titles): any step transition, decomposition, or plan edit changes
+        it, while an untouched plan reproduces it exactly. The loop's staleness guard (issue #32)
+        compares this across turn-starts to detect an abandoned plan — one the model has neither
+        advanced nor edited — and drop it rather than let it haunt. Including the title makes the
+        guard conservative (any edit resets the idle counter, the fail-safe direction); ``repr`` of
+        a tuple list avoids delimiter-collision ambiguity and is only ever compared for equality.
+        """
+        return repr([(t.id, t.status, t.title) for t in self._iter()])
 
     # ── rendering (the live plan folded back into context) ────────────────────────
 

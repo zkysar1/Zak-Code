@@ -980,6 +980,114 @@ cost-accounting test instead of a fallback table.
   deployment.** With this, the self-remediation engagement is wrapped: Steps 1/2/4 shipped to
   main, Step 5 declined, Step 3 deferred with a clear revisit trigger.
 
+- **2026-06-14 (dev, branch `fix/test-endpoint-env-isolation` — test hermeticity, post-#28
+  fresh-eyes follow-up):** the fresh-eyes review after landing #28 flagged that `uv run poe check`
+  was RED locally (2 failures in `tests/test_endpoint_config.py`) while CI was GREEN — a
+  non-hermetic test, not a code defect. Root cause: a developer's `.env` reaches `Settings()` two
+  ways — pydantic-settings reads the `.env` file directly, AND `load_settings`' `load_dotenv` step
+  exports it into `os.environ` so litellm can see provider keys (see `test_dotenv.py`). The two
+  tests asserting the UNCONFIGURED defaults (`api_base`/`api_key` is None) therefore failed against
+  a dev `ZAKCODE_API_BASE`; CI has no `.env`, so the drift was invisible there. Fix (surgical,
+  matches the existing `test_dotenv.py` `monkeypatch.delenv(..., raising=False)` pattern): the two
+  default-asserting tests now clear `ZAKCODE_API_BASE`/`ZAKCODE_API_KEY` from the env AND pass
+  `Settings(_env_file=None)`, neutralizing both the env-var and the file source so they assert true
+  defaults regardless of a local `.env`. Exactly 2 tests affected (full suite confirmed); zero blast
+  radius on the other 33 env-touching tests. **Local `poe check` now green (ruff+format+mypy clean,
+  1884 passed, 5 skipped).** Deferred (scope): a conftest autouse fixture clearing `ZAKCODE_*` for
+  whole-suite hermeticity — revisit only if a third default-asserting test trips the same wire.
+
+- **2026-06-15 (dev, branch `feat/plan-idle-autoclear` — issue #32, the "haunting plan" fix):**
+  implemented the bounded auto-clear designed in the post-#28 fresh-eyes review. Problem:
+  `_reset_completed_plan` only dropped a plan at turn start when `is_complete()`, so an *abandoned*
+  (unfinished, untouched) plan re-injected + re-nudged + degraded every subsequent turn until the
+  model called `update_plan([])` — the recurring tax weak local models pay. Fix: generalized it to
+  `_reset_stale_or_completed_plan`, which ALSO drops an unfinished plan that has sat byte-identical
+  across `_MAX_PLAN_IDLE_TURNS` (3) consecutive turn-starts. Determinism via a new pure
+  `TaskNetwork.progress_signature()` (`repr` of each task's `(id, status, title)`); two append-only
+  `Session` fields (`plan_idle_turns`, `plan_signature`, no schema bump); the plan-gate completion
+  nudge now names the "clear the whole plan" escape hatch. Conservative by design — any edit
+  (advance, decompose, retitle) resets the counter, so an active plan is never auto-cleared; only a
+  genuinely static one is, and it is freely re-creatable. Wired identically on `_run_turn` and
+  `astream_turn`. Tests: `test_tasks.py` (signature equal-when-untouched / changes-on-any-edit) +
+  `test_loop_planning.py` (unit threshold + counter, active-never-dropped, nudge escape hatch, and
+  both-path integration that an abandoned plan stops haunting). **`uv run poe check` green:
+  ruff+format+mypy clean, 1890 passed, 5 skipped; `--extra server --extra dev` full suite 1890
+  passed.** Design tracked in GitHub issue #32 (resolved by this change).
+- **2026-06-15 (dev, branch `fix/harness-verify-shell-aware` — issue #33, powershell-host harness
+  auto-run):** the post-#28 fresh-eyes review flagged that `_try_harness_verify` and
+  `_try_project_verify` hardcoded the synthetic verify run as a `bash` ToolCall, so on a
+  powershell-preferred host (where the operator granted `powershell`, not `bash`) `auto_allows`
+  was false and the harness silently fell back to nudging the model instead of auto-running the
+  check. Fix: a shared `AgentLoop._harness_shell_call(command, call_id)` helper that prefers `bash`
+  (its cmd.exe / POSIX-sh quoting matches how `resolve_run_command` / `verify_command` build the
+  command — so zero change to every existing case) and falls back to `powershell` only when bash
+  would prompt or is unregistered. The powershell form is prefixed with the call operator `&` so a
+  *quoted* exe path (`resolve_run_command`'s `sys.executable` fallback) executes rather than being
+  echoed as a string literal; `&` is a no-op before a bare command and survives both run-matchers
+  (`_executed_targets` token split, `_commands_match` token-prefix — both already list `powershell`
+  in `_RUN_TOOLS`). Both verify methods now route through the one helper (symmetric, per the issue).
+  Tests: 3 unit tests in `test_recipe.py` (bash-preferred-verbatim, powershell-fallback-with-`&`,
+  none-when-nothing-auto-allows) — cross-platform, no real subprocess. **`uv run poe check` green:
+  ruff+format+mypy clean, 1893 passed, 5 skipped.** Resolves GitHub issue #33.
+- **2026-06-15 (dev+research, branch `feat/primitiveness-criteria` — HTN cross-system survey →
+  decomposition guidance):** the user asked whether Zak Code's task decomposition could learn from
+  the HTN implemented in `Ayoai/Ayoai-Environment-Processor` (and elsewhere). Ran three parallel
+  read-only survey agents over: the Processor (dual **HTN + A\*** over a STRIPS world-model), the
+  higher mind **`Ayoai-Mind`** (aspirations→goals, 22-criterion goal-selector, scope classes), and
+  the omni continual-learning framework's `/decompose` skill. **Finding:** the lean
+  full-replace + nesting-inferred-`kind` + ephemeral-plan + issue-#32 design already structurally
+  handles most borrowable patterns (idempotency back-refs, hierarchical-cycle detection,
+  stale-blocker TTL) — a validation of "simple beats agentic," not a gap. The single additive,
+  philosophy-fitting idea — convergent across `/decompose` AND ayoai-mind — was implemented:
+  sharpen the primitiveness **stopping-rule** with the two criteria a single-action floor omits — a
+  **clear done-condition** and **no hidden 'figure out how'** — in `_PLANNING` (prompt.py) + the
+  `update_plan` tool description. Model-facing guidance only: no schema/infra, cache-stable. Pinned
+  by `test_planning_guidance_names_primitiveness_criteria` (asserts both criteria in the built
+  prompt AND the tool spec, so it can't silently regress). **R7** (facts/assumptions ledger) stays
+  deferred — *reinforced*: every sibling keeps belief/world state at the long-horizon layer, never
+  the near-term core. Survey conclusions recorded as an ADR-0008 update in `docs/DECISIONS.md`.
+  **`uv run poe check` green: ruff+format+mypy clean, 1894 passed, 5 skipped.**
+- **2026-06-15 (dev, branch `feat/note-done-conditions` — verification-as-schema via the existing
+  `note` field):** the agreed follow-up was an "optional per-task `done_when`" (the schema half of
+  verification-as-schema). On reading `tasks.py` the field **already exists**: `Task.note` is
+  documented as the "acceptance criterion" slot, parsed by `update_plan`, and rendered into the
+  re-injected plan. So a `done_when` field would have just duplicated it — flagged and pivoted to the
+  lean path (single-source-of-truth; the handoff's "push back on over-building"). Delivered the same
+  value through the existing field: sharpened `note`'s role to *the step's checkable done-condition*
+  (the `Task` docstring + the `update_plan` schema field description) and wired `_PLANNING` to record
+  each primitive step's done-condition in `note` — so the #36 "steps must be checkable" rule now names
+  WHERE the check lives, and it rides in the plan the model re-reads every turn. No data-model change,
+  no migration. Pinned by `test_step_note_is_the_checkable_done_condition` (guidance phrase in the
+  built prompt + `done-condition` in the update_plan schema). **`uv run poe check` green: 1895 passed,
+  5 skipped.**
+- **2026-06-15 (dev, branch `feat/plan-decomposition-probe` — measure the decomposition behavior):**
+  turned the #36/#37 prompt+schema changes into a *measured behavior*, not just pinned text. The M9
+  behavioral-probe suite (`src/zakcode/evals/probes.py`) had end-to-end probes for completion,
+  safety, plan-mode, doom-loop, recovery, and compaction — but **none for the planning lifecycle**, a
+  real gap given ADR-0008. Added an 8th probe, `plan-decomposition`: it drives the *real* loop with a
+  scripted full-replace plan — a COMPOUND step with two primitive children, each carrying a `note`
+  done-condition — advances the single frontier step by step, and asserts the turn ends `completed`,
+  the plan is fully resolved, the compound's status DERIVES 'done' from its children, every primitive
+  carries a checkable `note`, and the done-condition rides in the re-injected plan render. Honest
+  about scope: with a `ScriptedProvider` it measures that the *harness* runs a well-formed checkable
+  plan to clean completion (the lifecycle the core must never regress) — proving a real model
+  produces good steps is the live-eval's job (a noted future follow-up). Suite wiring updated (count
+  7→8, name set, CLI `8/8 passed`, standalone `test_probe_plan_decomposition`). **`uv run poe check`
+  green: 1896 passed, 5 skipped** (the full-suite gate caught a stale `7/7` CLI assertion the
+  targeted run missed — exactly its job).
+- **2026-06-15 (dev, branch `feat/live-decomposition-eval` — the honest completion of "measure
+  it"):** the #38 probe proves the HARNESS runs a checkable plan; this proves the model half — that
+  the sharpened guidance *actually makes a real model* write checkable, decomposed plans. New
+  `LIVE_TESTS`-gated `tests/test_live_decomposition.py`: gives a real model a NEUTRAL multi-step task
+  (it says nothing about notes/checkability — so any done-conditions come from the system-prompt
+  guidance, not the task), then scores the authored plan's `note` coverage (skip if the model didn't
+  decompose; assert ≥50% of primitive steps carry a done-condition; the failure message dumps the
+  plan). Same cooperation-bias + provider-error-→-skip pattern as the live smoke tests. **Validated
+  locally for FREE** against the running llama.cpp `llama-server` (Qwen3.5-9B-Q6 on `:8080`, routed
+  via litellm `OPENAI_API_BASE` + a throwaway key → zero OpenAI spend): the 9B authored a clean
+  3-step plan (`/health` endpoint → unit test → README) with a `note` done-condition on **3/3 steps
+  (100% coverage)** in 18.5s — empirical proof the guidance lands. Docstring documents the local
+  llama.cpp invocation (the free path). Skips in the normal gate; **`uv run poe check` green.**
 - **2026-06-14 (dev, D30 — zakpick: task-category model routing):** built the realized form of the
   routing seam reserved since PKG-AUTO (D19/D21 — `ModelResolver.resolve(task=...)`) and the general
   form of `model_roles`. Full rationale + the rejected alternative in **ADR-0009**. Summary for a

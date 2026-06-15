@@ -178,6 +178,13 @@ _MAX_LENGTH_CONTINUATIONS = 3
 #: after the cap the turn completes (flagged ``degraded`` because the plan was left unresolved).
 _MAX_PLAN_NUDGES = 2
 
+#: How many consecutive turn-starts an UNFINISHED plan may sit byte-identical (the model neither
+#: advanced nor edited it) before the harness drops it as abandoned (issue #32 — the "haunting
+#: plan" guard). Bounds the recurring tax of a stale plan re-injecting + re-nudging + degrading
+#: every turn forever. An active plan changes its signature and resets the counter, so a live plan
+#: is never auto-cleared; only a genuinely static one is, and the model can always re-plan.
+_MAX_PLAN_IDLE_TURNS = 3
+
 #: How many times the plan-first gate (R5, opt-in) may withhold a mutating batch to demand a plan
 #: before letting it through anyway (fail-open). Bounded so ``require_plan`` can never deadlock.
 _MAX_PLAN_FIRST_NUDGES = 2
@@ -639,15 +646,36 @@ class AgentLoop:
             return self.session.messages
         return [*self.session.messages, *tail]
 
-    def _reset_completed_plan(self) -> None:
-        """Drop a fully-finished plan at the start of a new turn.
+    def _reset_stale_or_completed_plan(self) -> None:
+        """Drop a finished plan (always) or an abandoned one (static for N turns) at turn start.
 
-        A completed prior goal's checklist must not bleed into an unrelated next turn (neither
+        A COMPLETED prior goal's checklist must not bleed into an unrelated next turn (neither
         re-injected into context nor re-emitted as a ``task_update``). An UNFINISHED plan is
-        left intact, so genuine multi-turn work carries its plan forward.
+        normally left intact, so genuine multi-turn work carries its plan forward — EXCEPT when it
+        has sat byte-identical across ``_MAX_PLAN_IDLE_TURNS`` consecutive turn-starts (the model
+        neither advanced nor edited it). Such a plan is treated as abandoned and dropped too, so a
+        stale plan cannot re-inject + re-nudge + degrade every subsequent turn forever (issue #32,
+        the "haunting plan" tax). Active work changes the plan's signature and resets the idle
+        counter, so a live plan is never auto-cleared; a cleared plan is freely re-creatable.
         """
-        if self.session.task_network.is_complete():
-            self.session.task_network.tasks = []
+        session = self.session
+        network = session.task_network
+        if network.is_empty() or network.is_complete():
+            network.tasks = []  # no-op when already empty; clears a finished plan
+            session.plan_idle_turns = 0
+            session.plan_signature = ""
+            return
+        # An unfinished plan: advance the staleness counter, dropping the plan once it stalls.
+        signature = network.progress_signature()
+        if signature == session.plan_signature:
+            session.plan_idle_turns += 1
+        else:
+            session.plan_idle_turns = 0
+            session.plan_signature = signature
+        if session.plan_idle_turns >= _MAX_PLAN_IDLE_TURNS:
+            network.tasks = []
+            session.plan_idle_turns = 0
+            session.plan_signature = ""
 
     def _plan_reminder(self) -> Message | None:
         """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
@@ -714,8 +742,9 @@ class AgentLoop:
         nxt = remaining[0]
         return (
             f"Your plan still has {len(remaining)} open step(s); the next is {nxt.id} "
-            f"({nxt.title}). Finish the remaining steps, or if they are no longer needed mark "
-            "them done/cancelled with update_plan — then end the turn."
+            f"({nxt.title}). Finish the remaining steps, or — if this goal is done or no longer "
+            "active — mark them done/cancelled or clear the whole plan with update_plan, then end "
+            "the turn."
         )
 
     @staticmethod
@@ -975,15 +1004,48 @@ class AgentLoop:
             data=data,
         )
 
+    def _harness_shell_call(self, command: str, call_id: str) -> ToolCall | None:
+        """A synthetic shell ``ToolCall`` for a harness-issued run that won't raise a prompt.
+
+        Prefers ``bash`` — its cmd.exe / POSIX-sh invocation matches how the run commands
+        (``resolve_run_command`` / ``verify_command``) are quoted — and falls back to
+        ``powershell`` only when ``bash`` would prompt or is unregistered, e.g. a
+        powershell-preferred Windows host that granted ``powershell`` but not ``bash``.
+        Without the fallback the harness auto-run is suppressed and the gate can only nudge
+        the model (issue #33).
+
+        The ``powershell`` form is prefixed with the call operator ``&`` so a quoted
+        executable path (``resolve_run_command``'s ``sys.executable`` fallback) runs rather
+        than being echoed as a string literal. ``&`` is a no-op before a bare command and
+        survives both run-matchers (``_executed_targets`` token split, ``_commands_match``
+        token-prefix).
+
+        Returns the first shell whose call auto-allows WITHOUT a prompt, else ``None`` so the
+        caller nudges the model. With no permission policy the gate is unsuppressed, so the
+        first registered shell (``bash``) wins.
+        """
+        for name in ("bash", "powershell"):
+            tool = self.registry.get(name)
+            if tool is None:
+                continue
+            run = command if name == "bash" else f"& {command}"
+            arguments = {"command": run}
+            if self.permission_policy is None or self.permission_policy.auto_allows(
+                tool.spec, arguments
+            ):
+                return ToolCall(id=call_id, name=name, arguments=arguments)
+        return None
+
     async def _try_harness_verify(
         self, cursor: RecipeCursor, ctx: ToolContext
     ) -> tuple[ToolCall, ToolResultBlock] | None:
         """Issue a harness-side verification run of the pending file.
 
         Always attempted when a target is pending and an interpreter resolves, but ONLY
-        when the synthetic ``bash`` would auto-allow WITHOUT a prompt (allow-mode or a prior
-        ``bash`` grant) — otherwise returns ``None`` so the caller falls back to nudging the
-        model (never an uninitiated prompt). No feature flag: this is the one way the harness
+        when a harness shell (``bash``, else ``powershell`` — see :meth:`_harness_shell_call`)
+        would auto-allow WITHOUT a prompt (allow-mode or a prior grant) — otherwise returns
+        ``None`` so the caller falls back to nudging the model (never an uninitiated prompt).
+        No feature flag: this is the one way the harness
         verifies, gated purely by what can run without prompting. The synthetic call funnels
         through the SAME ``_execute_tool_call`` gate; the real output is fed to the cursor and
         injected as a user message. Returns the ``(call, block)`` it ran (so the streaming
@@ -995,14 +1057,9 @@ class AgentLoop:
         command = resolve_run_command(target)
         if command is None:
             return None
-        call = ToolCall(
-            id=f"recipe_run_{cursor.harness_runs}", name="bash", arguments={"command": command}
-        )
-        if self.permission_policy is not None:
-            bash_tool = self.registry.get("bash")
-            bash_spec = bash_tool.spec if bash_tool is not None else None
-            if not self.permission_policy.auto_allows(bash_spec, call.arguments):
-                return None  # would prompt / is blocked -> fall back to the nudge
+        call = self._harness_shell_call(command, f"recipe_run_{cursor.harness_runs}")
+        if call is None:
+            return None  # would prompt / no shell available -> fall back to the nudge
         block = await self._execute_tool_call(call, ctx)
         cursor.harness_runs += 1
         cursor.observe([call], [block])
@@ -1021,23 +1078,19 @@ class AgentLoop:
         """Issue a harness-side run of the configured project verify command (R1).
 
         Mirrors :meth:`_try_harness_verify`: runs the command through the SAME
-        ``_execute_tool_call`` gate, but ONLY when the synthetic ``bash`` would auto-allow
-        without a prompt — otherwise returns ``None`` so the caller falls back to nudging the
-        model. The real output is fed back to the gate (so a pass/fail is recorded) and appended
+        ``_execute_tool_call`` gate, but ONLY when a harness shell would auto-allow without a
+        prompt (``bash``, else ``powershell`` — see :meth:`_harness_shell_call`) — otherwise
+        returns ``None`` so the caller falls back to nudging the model. The real output is fed
+        back to the gate (so a pass/fail is recorded) and appended
         as a trusted user observation. Returns the ``(call, block)`` it ran (so the streaming path
         can surface it), else ``None``.
         """
         command = verify.command
         if command is None:
             return None
-        call = ToolCall(
-            id=f"verify_run_{verify.harness_runs}", name="bash", arguments={"command": command}
-        )
-        if self.permission_policy is not None:
-            bash_tool = self.registry.get("bash")
-            bash_spec = bash_tool.spec if bash_tool is not None else None
-            if not self.permission_policy.auto_allows(bash_spec, call.arguments):
-                return None  # would prompt / is blocked -> fall back to the nudge
+        call = self._harness_shell_call(command, f"verify_run_{verify.harness_runs}")
+        if call is None:
+            return None  # would prompt / no shell available -> fall back to the nudge
         block = await self._execute_tool_call(call, ctx)
         verify.harness_runs += 1
         verify.observe([call], [block])
@@ -1244,7 +1297,7 @@ class AgentLoop:
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
         await self._maybe_compact()
-        self._reset_completed_plan()
+        self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
         self._persist()
 
@@ -1780,7 +1833,7 @@ class AgentLoop:
         """
         await self._fire_session_start_once()
         await self._maybe_compact()
-        self._reset_completed_plan()
+        self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
         self._persist()
 

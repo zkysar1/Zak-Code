@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from zakcode.agent.loop import AgentLoop
+from zakcode.agent.loop import _MAX_PLAN_IDLE_TURNS, AgentLoop
 from zakcode.config import PermissionTier, Settings
 from zakcode.events import AgentTaskUpdate
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
@@ -289,3 +289,102 @@ async def test_plan_first_is_off_by_default() -> None:
     )
     await loop.arun_turn("edit something")
     assert write.runs == 1  # no gate -> the write runs immediately, no plan required
+
+
+# ── issue #32: bounded auto-clear of a stale / abandoned incomplete plan ───────
+
+
+def test_stale_incomplete_plan_is_dropped_after_idle_turn_threshold() -> None:
+    # Unit: an unfinished plan left byte-identical across turn-starts accrues idle turns and is
+    # dropped once it stalls, so it cannot re-inject + re-nudge + degrade every turn forever.
+    loop, session = _loop(_Scripted([_done()]))
+    session.task_network = TaskNetwork(
+        tasks=[Task(title="A", status="done"), Task(title="B", status="pending")]
+    )
+    session.task_network.normalize()
+
+    loop._reset_stale_or_completed_plan()  # first sighting -> record signature, counter 0
+    assert not session.task_network.is_empty()
+    assert session.plan_idle_turns == 0
+    for k in range(1, _MAX_PLAN_IDLE_TURNS):  # unchanged turn-starts accrue idle turns
+        loop._reset_stale_or_completed_plan()
+        assert not session.task_network.is_empty(), f"dropped too early at idle turn {k}"
+        assert session.plan_idle_turns == k
+    loop._reset_stale_or_completed_plan()  # crosses the threshold -> dropped
+    assert session.task_network.is_empty()
+    assert session.plan_idle_turns == 0 and session.plan_signature == ""
+
+
+def test_active_plan_is_never_dropped_because_each_edit_resets_the_counter() -> None:
+    # Unit: any change (advance or edit) resets the idle counter, so genuine multi-turn work is
+    # never auto-cleared no matter how many turns pass.
+    loop, session = _loop(_Scripted([_done()]))
+    net = TaskNetwork(tasks=[Task(title="A", status="pending"), Task(title="B", status="pending")])
+    session.task_network = net
+    net.normalize()
+    for _ in range(_MAX_PLAN_IDLE_TURNS + 5):
+        # advance the plan a little before each turn-start so the signature keeps changing
+        net.tasks[0].status = "in_progress" if net.tasks[0].status == "pending" else "pending"
+        net.normalize()
+        loop._reset_stale_or_completed_plan()
+        assert not session.task_network.is_empty()
+        assert session.plan_idle_turns == 0  # reset by the change every turn
+
+
+def test_plan_gate_nudge_offers_to_clear_the_plan() -> None:
+    # The completion nudge names the escape hatch (clear the plan) for an abandoned goal.
+    loop, session = _loop(_Scripted([_done()]))
+    session.task_network = TaskNetwork(
+        tasks=[Task(title="A", status="pending"), Task(title="B", status="pending")]
+    )
+    session.task_network.normalize()
+    nudge = loop._plan_gate_nudge()
+    assert nudge is not None
+    assert "clear the whole plan with update_plan" in nudge
+
+
+@pytest.mark.asyncio
+async def test_abandoned_plan_stops_haunting_across_real_turns() -> None:
+    # Integration (buffered): a plan left incomplete and untouched is dropped within a bounded
+    # number of real turns instead of re-injecting + nudging + degrading forever.
+    provider = _Scripted(
+        [_plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}])]
+        + [_done()] * 80
+    )
+    loop, session = _loop(provider)
+    await loop.arun_turn("lay out a plan")
+    assert not session.task_network.is_empty()
+
+    cleared = False
+    for _ in range(_MAX_PLAN_IDLE_TURNS + 3):
+        await loop.arun_turn("an unrelated message")
+        if session.task_network.is_empty():
+            cleared = True
+            break
+    assert cleared, "abandoned plan kept haunting across turns"
+    # Once dropped, a later turn sees no plan re-injected.
+    await loop.arun_turn("later still")
+    assert not any("[plan]" in m.text for m in provider.seen[-1])
+
+
+@pytest.mark.asyncio
+async def test_abandoned_plan_auto_clear_holds_on_streaming_path() -> None:
+    # Parity: the same staleness guard fires on astream_turn (the reset runs at turn start on
+    # both the buffered and streaming paths).
+    provider = _Scripted(
+        [_plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}])]
+        + [_done()] * 80
+    )
+    loop, session = _loop(provider)
+    async for _ in loop.astream_turn("lay out a plan"):
+        pass
+    assert not session.task_network.is_empty()
+
+    cleared = False
+    for _ in range(_MAX_PLAN_IDLE_TURNS + 3):
+        async for _ in loop.astream_turn("unrelated"):
+            pass
+        if session.task_network.is_empty():
+            cleared = True
+            break
+    assert cleared, "abandoned plan kept haunting on the streaming path"
