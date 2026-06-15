@@ -117,6 +117,31 @@ def model_for_category(category: str, settings: object) -> str:
     return model_spec_for_category(category, settings).litellm_string
 
 
+# ── quick-vs-deep classifier thresholds (EXPECT TO TUNE THESE) ───────────────────────
+# These two numbers are the entire heuristic that decides whether a main turn runs on the
+# user's cheap (quick_code) or capable (deep_code) coder. They are deliberately conservative
+# *first* values, chosen to bias toward deep_code (fail UP) so a misjudged turn errs on the side
+# of quality, not a broken-but-cheap result. They WILL need tuning as we gather real usage —
+# treat them as the one knob to turn, and prefer adjusting these constants over adding new signals.
+#
+# How to know they need tuning (the signals to watch, once usage data exists):
+#   * Raise (loosen) them if lots of genuinely-easy turns are landing on deep_code — i.e. cheap
+#     turns we're overpaying for. Symptom: deep_code share is high but those turns rarely trip a
+#     struggle signal (so they didn't actually need the strong model).
+#   * Lower (tighten) them if quick_code turns frequently escalate via the soft latch (stuck /
+#     doom-loop / verify-gate) — i.e. we routed too cheap and paid for it in churn before the
+#     latch flipped to deep_code. Symptom: high latch rate / verify-gate failures on quick turns.
+# Whatever you change, keep the fail-UP bias: when uncertain, deep_code is the safe default.
+#
+#: A request shorter than this many characters is a candidate for the cheap coder. ~600 chars is
+#: roughly a few sentences — a typo fix, a one-liner, a small tweak — vs. a multi-paragraph spec.
+_QUICK_MAX_USER_CHARS = 600
+#: ...and only when the conversation is still using less than this fraction of the model's context
+#: window. Past ~25% there is usually enough accumulated state (files read, prior edits) that the
+#: turn is no longer "quick" regardless of how short the latest message is.
+_QUICK_MAX_CONTEXT_FRAC = 0.25
+
+
 def classify_main_turn(
     *, last_user_len: int, context_frac: float, signal_latched: bool
 ) -> Literal["quick_code", "deep_code"]:
@@ -128,13 +153,15 @@ def classify_main_turn(
       one-way) ALWAYS returns ``deep_code`` — the only promotion trigger, so a turn that starts
       cheap moves to the user's capable coder the moment it struggles. Iteration count is NOT an
       input, so steady-state tool loops stay on the cheap model until a real struggle signal.
-    * Otherwise a short request over a small context (``< 600`` chars and ``< 25%`` of the
-      window) is ``quick_code``; anything longer/larger is ``deep_code``.
+    * Otherwise a short request over a small context (under :data:`_QUICK_MAX_USER_CHARS` chars
+      AND under :data:`_QUICK_MAX_CONTEXT_FRAC` of the window) is ``quick_code``; anything
+      longer/larger is ``deep_code``. Those two thresholds are the tuning knob — see the comment
+      block above them for when and which way to adjust.
     * Any ambiguity resolves to ``deep_code``. Never raises.
     """
     if signal_latched:
         return "deep_code"
-    if last_user_len < 600 and context_frac < 0.25:
+    if last_user_len < _QUICK_MAX_USER_CHARS and context_frac < _QUICK_MAX_CONTEXT_FRAC:
         return "quick_code"
     return "deep_code"
 
