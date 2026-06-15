@@ -118,6 +118,24 @@ async def test_synthesis_failure_falls_back_to_fullest_candidate() -> None:
     assert result.data["synthesized"] is False
 
 
+async def test_empty_synthesis_falls_back_and_labels_honestly() -> None:
+    # Synthesis SUCCEEDS but returns whitespace → fall back to the fullest candidate and label it
+    # synthesized=False (not True), consistent with the exception path.
+    seen = {"n": 0}
+
+    async def sampler(prompt, *, system=None, temperature=0.0):
+        if system == _SYNTH_SYSTEM:
+            return "   "  # empty/whitespace synthesis
+        seen["n"] += 1
+        return "tiny" if seen["n"] == 1 else "the fuller candidate answer"
+
+    result = await DeepThinkTool().execute({"question": "q", "samples": 2}, _ctx(sampler))
+    assert not result.is_error
+    assert result.output == "the fuller candidate answer"
+    assert result.data["synthesized"] is False
+    assert result.data["synthesis_error"] == "empty"
+
+
 def test_deep_think_in_default_registry() -> None:
     from zakcode.tools.builtins.default_registry import default_registry
 

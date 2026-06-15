@@ -160,7 +160,17 @@ class DeepThinkTool(Tool):
                 hint="Deliberated answer (the synthesis step failed; returned the fullest sample).",
             )
         if not answer:
-            answer = max(candidates, key=len)
+            # Synthesis succeeded but produced nothing usable — fall back to the fullest candidate
+            # and label it honestly (synthesized=False), mirroring the exception path above.
+            return ToolResult.ok(
+                max(candidates, key=len),
+                data={
+                    "samples": len(candidates),
+                    "synthesized": False,
+                    "synthesis_error": "empty",
+                },
+                hint="Deliberated answer (the synthesis step returned nothing; fullest sample).",
+            )
         return ToolResult.ok(
             answer,
             data={"samples": len(candidates), "synthesized": True},
