@@ -626,6 +626,39 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 > is a small-model verify-before-finish gate. It is **unrelated** to the deferred *YAML
 > recipes* (declarative Jinja2 workflows) listed in the M10+ deferrals.
 
+### Post-M11 — Model resolution & routing — ✅ zakpick v1 shipped
+
+> **PKG-AUTO** (`default_model: "auto"`) made model selection a startup decision: cheap
+> read-only probes resolve a concrete model by availability, behind a pluggable
+> `ModelResolver` whose `resolve(task=…)` parameter was reserved from day one for routing.
+> **zakpick v1** (ADR-0009) realizes that seam as **task-category model routing** — the
+> general form of `model_roles`. A third `default_model` sentinel `"zakpick"` routes each
+> internal prompt to the model the user assigned to that prompt's **task category**:
+> `quick_code` / `deep_code` (main turn), `summarize` (compaction), `plan` (plan sub-agent),
+> `delegate` (general sub-agent / `task` tool), and the reserved `classify`. The user parks a
+> `(model, source)` pair per category (`Settings.zakpick_models`); `source` is separate from
+> `model` because a name alone is ambiguous (`qwen3-32b` at Groq vs locally). Every category
+> ships a built-in default from Groq's open-source lineup (so they double as "which model to
+> download to run this category locally"; `deep_code`/`delegate` default to the tools-reliable
+> `gpt-oss-120b`). The one automatic decision is an **offline, deterministic** quick-vs-deep
+> coder split (`classify_main_turn`) with a one-way struggle latch — it only ever picks between
+> the user's two configured coder models, never one Zak Code chose. The earlier "dial" /
+> 4-tier-ladder design was **deliberately rejected** so Zak Code doesn't own a local-vs-cloud
+> tradeoff that belongs to the user (ADR-0009); under zakpick `fallback_model` is the only
+> failover. Beyond-parity, Zak-Code-original (no reference harness ships task-category routing).
+> `providers/routing.py` is vendor-SDK-free (the clean-room contract test stays green). The CLI
+> info panel / `/model` / banner show a friendly `model (source)` per-category table.
+>
+> **Deferred zakpick seams (future work, with triggers):**
+> - **A difficulty-classifier *model* for the `classify` category** — today the quick/deep split
+>   is heuristic-only; the `classify` category and its structured-output shape are pre-wired.
+>   *Trigger:* a real gray-zone classification call site (or measured wins from a model over the
+>   heuristic).
+> - **Cost/price metadata on `Capabilities`** — today the defaults encode cost by *curation*
+>   (the graduated Groq ladder), not a price field. *Trigger:* the engine needs to reason about
+>   price at runtime (e.g. a budget-aware router that compares categories).
+> - **An `embeddings` category** — *trigger:* an embedding call site exists in the engine.
+
 ---
 
 ## 3. Sequencing rationale

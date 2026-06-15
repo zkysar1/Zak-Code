@@ -979,3 +979,50 @@ cost-accounting test instead of a fallback table.
   is). **Revisit when the use case shifts to unattended operation OR a Linux/container
   deployment.** With this, the self-remediation engagement is wrapped: Steps 1/2/4 shipped to
   main, Step 5 declined, Step 3 deferred with a clear revisit trigger.
+
+- **2026-06-14 (dev, D30 — zakpick: task-category model routing):** built the realized form of the
+  routing seam reserved since PKG-AUTO (D19/D21 — `ModelResolver.resolve(task=...)`) and the general
+  form of `model_roles`. Full rationale + the rejected alternative in **ADR-0009**. Summary for a
+  future agent:
+  - **Shape.** A third `default_model` sentinel `"zakpick"` (beside `"auto"` + a concrete model).
+    Under it the engine routes each internal prompt to the model the user assigned to that prompt's
+    **task category**, not one model for everything. **The interface is the categories, not a dial:**
+    `quick_code` / `deep_code` (main turn) · `summarize` (compaction) · `plan` (plan sub-agent) ·
+    `delegate` (general sub-agent / `task` tool) · `classify` (reserved seam, no live caller). The user
+    parks a `(model, source)` pair per category via new `Settings.zakpick_models`
+    (`ZAKCODE_ZAKPICK_MODELS`, JSON; `source` defaults `"groq"`). `source` is **separate from `model`**
+    on purpose (a model name alone is ambiguous — `qwen3-32b` runs at Groq *or* locally);
+    `source="local"`→`ollama_chat`, anything else is the litellm prefix
+    (`providers.routing.ZakpickModel.litellm_string`).
+  - **Defaults out of the box** (`DEFAULT_CATEGORY_MODELS`), drawn from Groq's open-source-only lineup
+    (so they double as a "download this to run the category locally" guide), graduated by cost:
+    classify→`llama-3.1-8b-instant`; summarize & quick_code→`gpt-oss-20b`; plan→`qwen3-32b`;
+    deep_code & delegate→`gpt-oss-120b` (tools-**reliable**). `llama-3.3-70b-versatile` avoided
+    (registry `tools_unreliable`). All `source=groq`.
+  - **The one automatic decision** is the quick-vs-deep coder split: `classify_main_turn` — a
+    deterministic, offline pure function of request length + context fraction + a latched struggle
+    signal (no model call, no iteration count) — picks which of the user's **two** coder models drives
+    each turn; a one-way **soft latch** flips to `deep_code` on a real struggle signal (stuck ladder /
+    doom-loop / verify-gate failure). It only ever switches between the two coder models the user
+    already configured — never a model Zak Code chose.
+  - **The pivot (recorded as the headline decision).** An earlier design was a **dial**
+    (local/cloud/save/max) over a curated **4-tier ladder** with runtime source-masking + degrade-down
+    logic. Rejected because it made Zak Code *own a local-vs-cloud tradeoff and tier curation that
+    belong to the user*. The category→model map hands every model-choice back to the user; **they own
+    the consequences** — a slow local model is slow (their choice), a failing cloud model is handled by
+    the existing `fallback_model` seam like any other provider error. Under zakpick `model_failover`
+    uses only an explicit `fallback_model` (else `provider_error`); `model_resolution` stays `None`.
+  - **Ship/seam split.** Shipped: `providers/routing.py` (vendor-SDK-free — contract test green;
+    `ZakpickModel`, `DEFAULT_CATEGORY_MODELS`, `classify_main_turn`, the friendly per-category
+    describe), `Settings.zakpick_models` + validator (`config.py`), `ZAKPICK_SENTINEL` +
+    `describe_resolution` branch (`resolve.py`), `Agent._resolve_task_provider`/`_main_provider_for`
+    (reusing the existing `_provider_for` cache), `main_provider_for` + soft-latch + classifier wiring
+    in `agent/loop.py` (buffered + streaming), `category` + `provider_for_task` on `agent/subagent.py`,
+    CLI info-panel/`/model`/banner showing `model (source)` per category (never raw slugs; only routed
+    categories, so `classify` is never advertised). Deferred seams (in ADR-0009 + ROADMAP, with
+    triggers): a cheap difficulty-classifier *model* for `classify` (heuristic-only today; category +
+    output shape pre-wired); cost/price metadata on `Capabilities` (defaults encode cost by curation,
+    not a price field); an `embeddings` category (no embedding call site yet). **Beyond-parity, Zak-Code
+    original** — no reference harness (Claude Code / Hermes / goose) ships task-category routing, so
+    provenance is first-principles, not a mirrored design. **1910 tests pass, ruff + mypy clean.**
+    CONFIG.md + `.env.example` already updated.

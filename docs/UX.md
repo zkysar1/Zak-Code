@@ -352,11 +352,41 @@ connection dot. It is **not** a button color.
 - **Scroll** — stick-to-bottom only within 40px of the bottom; when detached during
   streaming, a "↓ latest" pill floats above the composer and re-attaches on click.
 
+## Model display grammar (zakpick) — binding, both clients
+
+When `default_model` is the **zakpick** sentinel (task-category model routing, ADR-0009),
+the model is no longer one slug — it is a model *per task category*. The display contract:
+
+1. **Friendly per-category listing, never a raw slug.** The info panel and the `/model` command
+   render zakpick as a **per-category listing**, one entry per routed category formatted
+   `{category label} → {model} ({source})` — e.g. `easy coding → gpt-oss-20b (groq)`,
+   `hard coding → gpt-oss-120b (groq)` (the current rendering joins them on one line). The
+   user-facing name is the **plain-English category label** (`hard coding`, `easy coding`,
+   `summaries`, `planning`, `delegated work`), never the internal key (`deep_code`, …). A raw
+   litellm slug (`openai/gpt-oss-120b`) is **never** the headline; the model id appears only as
+   the un-prefixed `model` half of the `model (source)` cell.
+2. **Banner.** The welcome-box / header model line for a zakpick session reads
+   **"zakpick · picks a model per task"** (the spark + label grammar; `banner.label` /
+   `banner.value` styles), not a single model string. A concrete or `auto` model still shows
+   its resolved model as before.
+3. **Only routed categories are shown.** The table lists **only** categories that have a real
+   call site (`quick_code`, `deep_code`, `summarize`, `plan`, `delegate`). `classify` is a
+   reserved seam with no live caller, so it is **never advertised** — a panel must never claim
+   a route the engine does not take.
+4. **Web parity.** The web Header model chip and Empty-state `{model}` slot follow the same
+   rule: under zakpick they show the `zakpick · picks a model per task` label (chip) and may
+   expand the per-category `model (source)` table in the identity card; `textContent`-only,
+   no raw slug as the headline, `classify` omitted.
+
 ## Discipline (binding)
 
 - **Brand paints 1–2 character marks only** (`✦ ✧ › ●` and the spinner glyph; web:
   spark, markers, focus rings, links, connection dot) — never a run of text, never a
   button.
+- **Model identity reads friendly, never as plumbing**: under zakpick the headline is
+  `zakpick · picks a model per task` and the per-category table is `model (source)` with
+  plain-English category labels — a raw litellm slug is never the headline, and `classify`
+  (no live call site) is never shown.
 - **Boxes only twice**: the welcome box and the permission panel. Nothing else is
   ever boxed.
 - **No horizontal rules** anywhere in the transcript.

@@ -93,9 +93,9 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     Secret-safe: provider keys are reported as ``set (<source>)`` / ``not set``
     only — the source names where the value came from, never what it is.
     """
-    if settings.default_model == "auto":
-        # Resolve live (read-only probes) so the panel answers "which model WOULD
-        # run here, and why" — the diagnosis story for the auto sentinel.
+    if settings.default_model in ("auto", "zakpick"):
+        # Resolve live (read-only probes) so the panel answers "which model WOULD run here,
+        # and why". For `zakpick` this is a friendly per-task table; for `auto`, the single pick.
         from zakcode.providers.resolve import describe_resolution
 
         model_row = describe_resolution(settings)
@@ -694,10 +694,15 @@ def _print_banner(console: Console, agent: Agent) -> None:
     settings = agent.settings
     g = resolve_glyphs(console)
     # "claude-sonnet-4-5 · anthropic", not "anthropic/claude-… · anthropic": the
-    # provider half of the row already names the prefix.
-    model_id = settings.default_model.removeprefix(settings.provider + "/")
+    # provider half of the row already names the prefix. Under zakpick the model varies per
+    # task category, so the row names the mode (the per-task table is on /model + the info panel).
+    if getattr(agent, "_zakpick", False):
+        model_cell = f"zakpick {g['dot']} picks a model per task"
+    else:
+        model_id = settings.default_model.removeprefix(settings.provider + "/")
+        model_cell = f"{model_id} {g['dot']} {settings.provider}"
     rows = [
-        ("model", f"{model_id} {g['dot']} {settings.provider}"),
+        ("model", model_cell),
         ("workspace", str(settings.workspace_root)),
         ("permissions", settings.permission_mode),
         ("session", agent.session.id),
@@ -1178,7 +1183,23 @@ def chat(
                 _print_help(console)
                 continue
             if command == "/model":
-                console.print(margin(Text(agent.settings.default_model)))
+                if getattr(agent, "_zakpick", False):
+                    # default_model was rewritten to the concrete startup model; show the live
+                    # per-task table + the one lever instead of a single slug.
+                    from zakcode.providers.routing import describe_zakpick
+
+                    console.print(margin(Text(describe_zakpick(agent.settings))))
+                    console.print(
+                        margin(
+                            Text(
+                                "assign a model per category with ZAKCODE_ZAKPICK_MODELS "
+                                '(JSON, e.g. {"deep_code":{"model":"qwen3:32b","source":"local"}})',
+                                style="dim",
+                            )
+                        )
+                    )
+                else:
+                    console.print(margin(Text(agent.settings.default_model)))
                 continue
             if command == "/permissions":
                 _render_permissions(console, agent)

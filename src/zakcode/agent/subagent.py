@@ -56,6 +56,11 @@ class SubAgentDefinition(BaseModel):
     allowed_tools: list[str] | None = None
     system_suffix: str | None = None
     model: str | None = None
+    #: zakpick task category for this sub-agent type (e.g. ``"plan"`` / ``"delegate"``). When
+    #: set AND the runner has a ``provider_for_task`` hook AND ``model`` is unset, the child is
+    #: routed by category (the zakpick path). An explicit ``model`` (e.g. a ``model_roles``
+    #: override) always wins, so the existing per-role routing is unchanged.
+    category: str | None = None
 
 
 class SubAgentResult(BaseModel):
@@ -140,6 +145,7 @@ class SubAgentRunner:
         extra_workspace_roots: Sequence[Path] | None = None,
         rules: str | None = None,
         provider_for: Callable[[str | None], Provider] | None = None,
+        provider_for_task: Callable[[str], tuple[Provider, str]] | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -151,6 +157,10 @@ class SubAgentRunner:
         # Agent's model-routing seam). ``None`` here — or a definition with no ``model`` — means
         # every child uses the parent ``provider``, so the default delegation path is unchanged.
         self._provider_for = provider_for
+        # zakpick category routing for a definition that names a ``category`` but no ``model``:
+        # resolves (category) → (provider, concrete model string). ``None`` (non-zakpick) means
+        # a category-only definition falls through to the parent provider, so nothing changes.
+        self._provider_for_task = provider_for_task
         self.workspace_root = workspace_root or settings.workspace_root
         # The parent's multi-root sandbox, so a child gets the SAME roots (not a narrower
         # one) and a delegated --skill-dir-granted path isn't wrongly rejected. (audit4 #4)
@@ -205,6 +215,14 @@ class SubAgentRunner:
             if routed is not self.provider:
                 child_provider = routed
                 child_model = definition.model
+        elif definition.category and self._provider_for_task is not None:
+            # zakpick: an explicit ``model`` (model_roles) wins above; otherwise route by the
+            # definition's task category. The hook returns the resolved (provider, model) so
+            # Session.model records the model that actually runs (same honesty guard).
+            routed, routed_model = self._provider_for_task(definition.category)
+            if routed is not self.provider:
+                child_provider = routed
+                child_model = routed_model
         session = Session(cwd=str(self.workspace_root), model=child_model)
         # A child gets its OWN permission view (same mode + blocklist, isolated session
         # grants) so a child's "allow for session" cannot bleed into the parent/siblings.

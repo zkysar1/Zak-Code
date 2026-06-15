@@ -158,3 +158,72 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     stays DEFERRED, per its own "watch, don't build" recommendation — it belongs to the higher-level
     mind, not the near-term core. The single-threaded inline design was kept (no planner/executor
     split) per the report's "keep it sharp; simple beats agentic" caveat.
+
+
+## ADR-0009 — zakpick: task-category model routing via per-category `(model, source)` assignment
+
+- **Status:** Accepted (2026-06-14)
+- **Context:** Using one capable (often cloud) model for *every* internal prompt is the costly
+  default — a one-line summary, a JSON gate, and a hard refactor all pay the same per-token price,
+  and a small/local model would serve the easy ones fine. The seam for fixing this was reserved from
+  day one: `ModelResolver.resolve(task=...)` (PKG-AUTO / D21) carries a `task` parameter the v1
+  availability resolver ignores, explicitly so "zakpick" task-category routing could land later
+  without API breakage. `Settings.model_roles` (planner / subagent / summarizer → a cheaper model)
+  already proved the pattern for three named roles; zakpick is its general form across *every*
+  internal call site. The question was the **interface**: what does the user actually turn?
+- **Decision:** Add a third `default_model` sentinel, `"zakpick"` (alongside `"auto"` and a concrete
+  model string). Under it the engine routes each internal prompt to the model the user assigned to
+  that prompt's **task category** rather than using one model for everything. The interface is the
+  **categories, not a dial**: `quick_code`, `deep_code`, `summarize`, `plan`, `delegate`, `classify`
+  — mapped to the real call sites (deep_code/quick_code → the main generation turn; summarize →
+  compaction; plan → the plan sub-agent; delegate → the general sub-agent / `task` tool; classify is
+  a reserved seam with no live caller yet). The user parks a `(model, source)` pair on each category
+  via the new `Settings.zakpick_models` (env `ZAKCODE_ZAKPICK_MODELS`, a JSON object keyed by
+  category, each value `{model, source}`, `source` defaulting to `"groq"`). `source` is **deliberately
+  separate from `model`** because a model name alone is ambiguous — `qwen3-32b` runs at Groq *or*
+  locally — so the user states both; `source="local"` maps to the `ollama_chat` backend, any other
+  source is the litellm provider prefix (`zakcode.providers.routing.ZakpickModel.litellm_string`
+  joins them). Out of the box every category has a built-in default drawn from **Groq's published
+  lineup** (Groq serves only open-source models, so the defaults double as a "which open-source model
+  to download to run this category locally" guide), graduated by cost/capability
+  (`DEFAULT_CATEGORY_MODELS`): classify→`llama-3.1-8b-instant`; summarize & quick_code→`gpt-oss-20b`;
+  plan→`qwen3-32b`; deep_code & delegate→`gpt-oss-120b` (tools-**reliable**, the strongest).
+  `llama-3.3-70b-versatile` is deliberately avoided (the registry flags it `tools_unreliable`).
+  **The one automatic decision** is the quick-vs-deep coder split: a cheap, deterministic, offline
+  classifier (`classify_main_turn` — a pure function of request length + context fraction + a latched
+  struggle signal; **no** model call, **no** iteration-count input) picks which of the user's *two*
+  coder models drives each main turn, and a one-way **soft latch** flips to `deep_code` the moment a
+  real struggle signal fires (a stuck-ladder action, a doom-loop, or a verify-gate failure). This
+  escalation only ever switches between the two coder models the user already configured — never a
+  model Zak Code chose.
+  - **The user owns the consequences.** Zak Code never substitutes a model the user didn't assign: a
+    slow local model on a weak GPU is slow (their choice); a rate-limited or failing cloud model is
+    handled by the existing `fallback_model` seam like any other provider error. Under zakpick
+    `model_failover` uses *only* an explicit `fallback_model` (else the turn ends `provider_error`),
+    and `model_resolution` stays `None` (no availability re-resolution) — there is no tier-based
+    active escalation and no source-masking.
+- **Rejected alternative (the key decision):** an earlier "dial" design — a local/cloud/save/max knob
+  over a curated **4-tier ladder** with runtime source-masking and degrade-down logic. It was rejected
+  because it made Zak Code **own a local-vs-cloud tradeoff and tier curation that belong to the user**.
+  The category→model map moves every model-choice back to the user: they say exactly which model (and
+  source) runs each category, and they own the result. A dial would have Zak Code guessing which
+  provider to prefer and quietly degrading between them — precisely the ownership it should not take.
+- **Clean-room provenance:** this is a **Zak-Code-original, beyond-parity** feature — none of the
+  reference harnesses (Claude Code, Hermes, goose) ship task-category model routing, so there is no
+  competitor design to mirror or re-express. Provenance is first-principles reasoning, recorded here.
+  `providers/routing.py` imports **no** litellm/vendor SDK (the contract test stays green); the model
+  strings in `DEFAULT_CATEGORY_MODELS` are *data* (like the candidate lists in
+  `resolve._EXTERNAL_SOURCES`), not a hardcoded vendor sort.
+- **Consequences:** Cost becomes a per-category lever the user controls without leaving the engine
+  vendor-agnostic; the reserved `resolve(task=...)` seam is now realized end-to-end (config validator,
+  `ZAKPICK_SENTINEL` + a `describe_resolution` branch in `resolve.py`, `Agent._resolve_task_provider` /
+  `_main_provider_for` reusing the existing `_provider_for` cache, a `main_provider_for` seam + the
+  classifier wiring + the soft latch in both loop paths, and a `category` field + `provider_for_task`
+  hook on sub-agents). The CLI info panel, `/model`, and banner show a friendly per-category table
+  (`model (source)`, never a raw slug); only categories with a live call site are advertised, so
+  `classify` is never shown. **Deferred seams** (future work, with triggers): a cheap difficulty-
+  classifier *model* for the `classify` category (today the split is heuristic-only — the category +
+  its structured-output shape are pre-wired; build when a real gray-zone classification call site
+  appears); cost/price metadata on `Capabilities` (today the defaults encode cost by *curation*, not a
+  price field; build when the engine needs to reason about price at runtime, e.g. a budget-aware
+  router); and an `embeddings` category (build when an embedding call site exists).

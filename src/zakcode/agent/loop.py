@@ -120,6 +120,7 @@ from zakcode.providers.base import (
     StreamUsage,
     ToolCall,
 )
+from zakcode.providers.routing import classify_main_turn
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import (
@@ -133,6 +134,12 @@ from zakcode.usage import Usage
 
 if TYPE_CHECKING:
     from zakcode.sandbox import EgressProxy
+
+#: The zakpick main-turn router (``Agent._main_provider_for``): maps a ``category`` to the
+#: :class:`Provider` for the main generator and updates the active-model bookkeeping. The loop
+#: calls it only when the classified category CHANGES, so a mid-turn failover swap of
+#: ``self.provider`` within a stable category is never reverted.
+MainProviderFor = Callable[[str], Provider]
 
 #: Fallback iteration budget when neither an explicit value nor settings provide one.
 DEFAULT_MAX_ITERATIONS = 50
@@ -348,6 +355,7 @@ class AgentLoop:
         summarizer_provider: Provider | None = None,
         attempt_cap: int = 3,
         model_failover: Callable[[ProviderError], tuple[Provider, str] | None] | None = None,
+        main_provider_for: MainProviderFor | None = None,
         turn_end_veto_budget: int = 0,
     ) -> None:
         self.provider = provider
@@ -357,6 +365,14 @@ class AgentLoop:
         # client (a mid-stream retry would re-yield text already rendered). ``None``
         # (default, and always for injected/test providers) = unchanged behavior.
         self.model_failover = model_failover
+        # zakpick per-turn main-model routing (default_model="zakpick"): choose the main
+        # generator's model by classified task difficulty (the user's quick_code vs deep_code
+        # model), re-selecting only when the category changes — so a mid-turn failover swap of
+        # self.provider persists, and the soft quick→deep latch on a struggle signal is the
+        # "escalation" (it only ever switches between the two coder models the user configured).
+        # ``None`` (the default, and always for an injected provider) = the legacy single-provider
+        # path, byte-identical. See zakcode.providers.routing.
+        self.main_provider_for = main_provider_for
         # TURN_END veto seam (T2/T3): at a vetoable break site (completed / doom_loop /
         # stuck) the loop runs TURN_END hooks; a veto re-enters the loop with the hook's
         # continuation prompt, at most this many times per turn. 0 (default) disables
@@ -708,6 +724,18 @@ class AgentLoop:
         else:
             delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
         return min(max(delay, 0.0), _RETRY_MAX_DELAY)
+
+    def _context_fraction(self, messages: list[Message]) -> float:
+        """How full the current model's context window is (0..~1), for zakpick classification.
+
+        Best-effort and never fatal: a count/window failure returns ``1.0`` (treated as "large",
+        which biases the classifier toward the harder category — the safe direction).
+        """
+        try:
+            window = self.provider.capabilities().context_window or 1
+            return self.provider.count_tokens(messages) / max(1, window)
+        except Exception:  # noqa: BLE001 — a classification input is best-effort, never fatal
+            return 1.0
 
     async def _call_provider(
         self,
@@ -1218,6 +1246,11 @@ class AgentLoop:
         context_recoveries = 0  # ContextWindowExceeded compact-then-retry count (parity #1b)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
+        # zakpick main-turn routing state (no-op when main_provider_for is None): the last
+        # category the main provider was selected for (so we only re-select on a CHANGE), and
+        # whether a struggle signal has latched the turn to the user's deep coder.
+        main_category: str | None = None
+        signal_latched = False
 
         # Doom-loop tracking: the signature of the previous iteration's tool-call
         # batch and how many times in a row we have now seen it.
@@ -1274,6 +1307,20 @@ class AgentLoop:
                 tool_defs = self.registry.definitions()
             system = self._build_system(restrict_now)
             call_messages = await self._messages_for_call(user_text, iterations)
+            # zakpick: pick the main generator's model by classified difficulty. Re-select only
+            # when the category CHANGES, so a failover/escalation swap of self.provider within a
+            # stable category persists (we never revert it). ``stuck.took_action`` from a prior
+            # iteration latches the harder category.
+            if self.main_provider_for is not None:
+                signal_latched = signal_latched or stuck.took_action
+                category = classify_main_turn(
+                    last_user_len=len(user_text),
+                    context_frac=self._context_fraction(call_messages),
+                    signal_latched=signal_latched,
+                )
+                if category != main_category:
+                    self.provider = self.main_provider_for(category)
+                    main_category = category
 
             result: LLMResult | None = None
             while result is None:
@@ -1448,6 +1495,7 @@ class AgentLoop:
                     if not verify.can_attempt():
                         stop_reason = "verification_failed"
                         break
+                    signal_latched = True  # struggling to verify → latch the user's deep coder
                     if await self._try_project_verify(verify, ctx) is None:
                         self.session.add_message(Message.user(_control_rail(verify.nudge())))
                         if not result.text:
@@ -1508,6 +1556,7 @@ class AgentLoop:
                 repeat_count = 1
                 last_signature = signature
             if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
+                signal_latched = True  # zakpick: a doom loop latches the harder category
                 prompt = await self._fire_turn_end(
                     "doom_loop",
                     iterations=iterations,
@@ -1721,6 +1770,9 @@ class AgentLoop:
         context_recoveries = 0  # ContextWindowExceeded compact-then-retry count (parity #1b)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
+        # zakpick main-turn routing state (no-op when main_provider_for is None) — see _run_turn.
+        main_category: str | None = None
+        signal_latched = False
         # This turn's assistant messages — kept only for the TURN_END payload's
         # ``last_assistant_message`` (the buffered path reuses its result list).
         turn_assistant: list[Message] = []
@@ -1786,6 +1838,20 @@ class AgentLoop:
                 if task_event is not None and task_event.plan != last_plan_render:
                     last_plan_render = task_event.plan
                     yield task_event
+
+                # zakpick main-turn routing (streaming twin of _run_turn): re-select the main
+                # generator's model only when the classified category changes, so a failover or
+                # escalation swap of self.provider within a stable category persists.
+                if self.main_provider_for is not None:
+                    signal_latched = signal_latched or stuck.took_action
+                    category = classify_main_turn(
+                        last_user_len=len(user_text),
+                        context_frac=self._context_fraction(call_messages),
+                        signal_latched=signal_latched,
+                    )
+                    if category != main_category:
+                        self.provider = self.main_provider_for(category)
+                        main_category = category
 
                 provider_failure: str | None = None
                 retry_attempts = 0
@@ -2023,6 +2089,7 @@ class AgentLoop:
                                 message="stopping: project checks did not pass after changes"
                             )
                             break
+                        signal_latched = True  # struggling to verify → latch the user's deep coder
                         vrun = await self._try_project_verify(verify, ctx)
                         if vrun is not None:
                             vcall, vblock = vrun
@@ -2088,6 +2155,7 @@ class AgentLoop:
                     repeat_count = 1
                     last_signature = signature
                 if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
+                    signal_latched = True  # zakpick: a doom loop latches the harder category
                     prompt = await self._fire_turn_end(
                         "doom_loop",
                         iterations=iterations,
