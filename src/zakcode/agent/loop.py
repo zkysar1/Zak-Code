@@ -963,15 +963,48 @@ class AgentLoop:
             data=data,
         )
 
+    def _harness_shell_call(self, command: str, call_id: str) -> ToolCall | None:
+        """A synthetic shell ``ToolCall`` for a harness-issued run that won't raise a prompt.
+
+        Prefers ``bash`` — its cmd.exe / POSIX-sh invocation matches how the run commands
+        (``resolve_run_command`` / ``verify_command``) are quoted — and falls back to
+        ``powershell`` only when ``bash`` would prompt or is unregistered, e.g. a
+        powershell-preferred Windows host that granted ``powershell`` but not ``bash``.
+        Without the fallback the harness auto-run is suppressed and the gate can only nudge
+        the model (issue #33).
+
+        The ``powershell`` form is prefixed with the call operator ``&`` so a quoted
+        executable path (``resolve_run_command``'s ``sys.executable`` fallback) runs rather
+        than being echoed as a string literal. ``&`` is a no-op before a bare command and
+        survives both run-matchers (``_executed_targets`` token split, ``_commands_match``
+        token-prefix).
+
+        Returns the first shell whose call auto-allows WITHOUT a prompt, else ``None`` so the
+        caller nudges the model. With no permission policy the gate is unsuppressed, so the
+        first registered shell (``bash``) wins.
+        """
+        for name in ("bash", "powershell"):
+            tool = self.registry.get(name)
+            if tool is None:
+                continue
+            run = command if name == "bash" else f"& {command}"
+            arguments = {"command": run}
+            if self.permission_policy is None or self.permission_policy.auto_allows(
+                tool.spec, arguments
+            ):
+                return ToolCall(id=call_id, name=name, arguments=arguments)
+        return None
+
     async def _try_harness_verify(
         self, cursor: RecipeCursor, ctx: ToolContext
     ) -> tuple[ToolCall, ToolResultBlock] | None:
         """Issue a harness-side verification run of the pending file.
 
         Always attempted when a target is pending and an interpreter resolves, but ONLY
-        when the synthetic ``bash`` would auto-allow WITHOUT a prompt (allow-mode or a prior
-        ``bash`` grant) — otherwise returns ``None`` so the caller falls back to nudging the
-        model (never an uninitiated prompt). No feature flag: this is the one way the harness
+        when a harness shell (``bash``, else ``powershell`` — see :meth:`_harness_shell_call`)
+        would auto-allow WITHOUT a prompt (allow-mode or a prior grant) — otherwise returns
+        ``None`` so the caller falls back to nudging the model (never an uninitiated prompt).
+        No feature flag: this is the one way the harness
         verifies, gated purely by what can run without prompting. The synthetic call funnels
         through the SAME ``_execute_tool_call`` gate; the real output is fed to the cursor and
         injected as a user message. Returns the ``(call, block)`` it ran (so the streaming
@@ -983,14 +1016,9 @@ class AgentLoop:
         command = resolve_run_command(target)
         if command is None:
             return None
-        call = ToolCall(
-            id=f"recipe_run_{cursor.harness_runs}", name="bash", arguments={"command": command}
-        )
-        if self.permission_policy is not None:
-            bash_tool = self.registry.get("bash")
-            bash_spec = bash_tool.spec if bash_tool is not None else None
-            if not self.permission_policy.auto_allows(bash_spec, call.arguments):
-                return None  # would prompt / is blocked -> fall back to the nudge
+        call = self._harness_shell_call(command, f"recipe_run_{cursor.harness_runs}")
+        if call is None:
+            return None  # would prompt / no shell available -> fall back to the nudge
         block = await self._execute_tool_call(call, ctx)
         cursor.harness_runs += 1
         cursor.observe([call], [block])
@@ -1009,23 +1037,19 @@ class AgentLoop:
         """Issue a harness-side run of the configured project verify command (R1).
 
         Mirrors :meth:`_try_harness_verify`: runs the command through the SAME
-        ``_execute_tool_call`` gate, but ONLY when the synthetic ``bash`` would auto-allow
-        without a prompt — otherwise returns ``None`` so the caller falls back to nudging the
-        model. The real output is fed back to the gate (so a pass/fail is recorded) and appended
+        ``_execute_tool_call`` gate, but ONLY when a harness shell would auto-allow without a
+        prompt (``bash``, else ``powershell`` — see :meth:`_harness_shell_call`) — otherwise
+        returns ``None`` so the caller falls back to nudging the model. The real output is fed
+        back to the gate (so a pass/fail is recorded) and appended
         as a trusted user observation. Returns the ``(call, block)`` it ran (so the streaming path
         can surface it), else ``None``.
         """
         command = verify.command
         if command is None:
             return None
-        call = ToolCall(
-            id=f"verify_run_{verify.harness_runs}", name="bash", arguments={"command": command}
-        )
-        if self.permission_policy is not None:
-            bash_tool = self.registry.get("bash")
-            bash_spec = bash_tool.spec if bash_tool is not None else None
-            if not self.permission_policy.auto_allows(bash_spec, call.arguments):
-                return None  # would prompt / is blocked -> fall back to the nudge
+        call = self._harness_shell_call(command, f"verify_run_{verify.harness_runs}")
+        if call is None:
+            return None  # would prompt / no shell available -> fall back to the nudge
         block = await self._execute_tool_call(call, ctx)
         verify.harness_runs += 1
         verify.observe([call], [block])
