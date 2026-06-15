@@ -1259,6 +1259,9 @@ def chat(
                     extra_skill_dirs=extra_skill_dirs,
                     extra_workspace_roots=extra_roots,
                 )
+                # A fresh session resets the per-session zakpick advisory (count + once-shown
+                # latch), so it never leaks across the documented session boundary.
+                zakpick_advisory[:] = [0, 0]
                 notice_info(console, "started a fresh session")
                 continue
             if command == "/cost":

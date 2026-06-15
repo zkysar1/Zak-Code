@@ -16,6 +16,7 @@ import pytest
 import zakcode
 from zakcode.config import Settings
 from zakcode.providers import routing as r
+from zakcode.providers.base import Provider
 from zakcode.providers.routing import ZakpickModel
 
 
@@ -216,8 +217,10 @@ def test_non_zakpick_unaffected(tmp_path: Path) -> None:
 # ── loop wiring: the main-turn router fires per iteration ────────────────────────
 
 
-class _ScriptedText:
-    """A buffered provider that returns fixed text and no tool calls (so the turn completes)."""
+class _ScriptedText(Provider):
+    """A provider returning fixed text and no tool calls (so the turn completes). Subclasses
+    Provider so it inherits the default ``astream`` — usable on both the buffered and streaming
+    paths from the same stub."""
 
     def __init__(self, text: str, model: str = "") -> None:
         self.text = text
@@ -415,3 +418,118 @@ def test_advisory_ignores_easy_escalated_errored_and_non_zakpick() -> None:
         _maybe_zakpick_advisory(console, _done(None), state)  # zakpick off
     assert buf.getvalue() == ""  # none of these count → no advisory
     assert state[0] == 0
+
+
+# ── Review follow-ups: loop-level escalation, streaming path, precedence ──────────
+
+
+async def test_loop_doom_signal_latches_escalation(tmp_path: Path) -> None:
+    # A real struggle signal (a doom-loop from a repeated identical tool batch) must latch the
+    # turn to the deep coder and report it as an escalation. classify-with-latch→deep_code and
+    # category→provider selection are unit-tested above; this guards that a *real* in-loop signal
+    # drives the report (a wiring regression that silently never latches would fail here).
+    from zakcode.agent.loop import AgentLoop
+    from zakcode.config import PermissionTier
+    from zakcode.providers.base import Capabilities, LLMResult, ToolCall
+    from zakcode.session.store import Session
+    from zakcode.tools.base import (
+        ConcurrencyClass,
+        Tool,
+        ToolContext,
+        ToolRegistry,
+        ToolResult,
+        ToolSpec,
+    )
+
+    class _Echo(Tool):
+        spec = ToolSpec(
+            name="echo",
+            description="echo",
+            parameters={"type": "object", "properties": {}},
+            required_permission=PermissionTier.READ_ONLY,
+            concurrency=ConcurrencyClass.READ_ONLY_SAFE,
+        )
+
+        async def execute(self, args: dict, ctx: ToolContext) -> ToolResult:
+            return ToolResult.ok("ok")
+
+    class _DoomProvider(Provider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def acomplete(self, messages, *, system=None, tools=None, response_format=None, **kw):
+            from zakcode.usage import Usage
+
+            self.calls += 1
+            return LLMResult(
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={})],
+                usage=Usage(total_tokens=1),
+            )
+
+        def count_tokens(self, messages, *, system=None) -> int:
+            return 5
+
+        def capabilities(self) -> Capabilities:
+            return Capabilities(supports_tools=True, context_window=8192)
+
+        def model_id(self) -> str:
+            return "cheap/m"
+
+    cheap = _DoomProvider()
+    deep = _ScriptedText("fixed", model="deep/m")
+    reg = ToolRegistry()
+    reg.register(_Echo())
+    loop = AgentLoop(
+        cheap,
+        reg,
+        Session(cwd=str(tmp_path), model="t"),
+        main_provider_for=lambda c: cheap if c == "quick_code" else deep,
+        max_iterations=10,
+    )
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "doom_loop"
+    assert result.routed_escalated is True
+    assert result.routed_category == "deep_code"
+
+
+async def test_streaming_path_routes_and_tags_usage(tmp_path: Path) -> None:
+    # The CLI runs the STREAMING path in production; mirror the buffered routing test there so the
+    # hand-duplicated streaming twin (selection + usage tag + routed_* on AgentDone) can't diverge.
+    from zakcode.agent.loop import AgentLoop
+    from zakcode.events import AgentDone
+    from zakcode.session.store import Session
+    from zakcode.tools.base import ToolRegistry
+
+    cheap = _ScriptedText("done", model="groq/openai/gpt-oss-20b")
+    strong = _ScriptedText("done", model="groq/openai/gpt-oss-120b")
+    session = Session(cwd=str(tmp_path), model="t")
+    loop = AgentLoop(
+        strong,
+        ToolRegistry(),
+        session,
+        main_provider_for=lambda c: cheap if c == "quick_code" else strong,
+        max_iterations=3,
+    )
+    done = None
+    async for ev in loop.astream_turn("hi"):  # short → quick_code → cheap
+        if isinstance(ev, AgentDone):
+            done = ev
+    assert done is not None and done.routed_category == "quick_code"
+    assert cheap.calls >= 1 and strong.calls == 0
+    assert "groq/openai/gpt-oss-20b" in session.usage_by_model()  # tagged on the streaming path
+
+
+def test_model_roles_wins_over_zakpick_category(tmp_path: Path) -> None:
+    # Under zakpick, an explicit model_roles override still wins over the category default (one
+    # precedence chain, no third mechanism) — the combined case the per-system tests didn't cover.
+    agent = zakcode.Agent(
+        default_model="zakpick",
+        workspace_root=tmp_path,
+        enable_subagents=True,
+        model_roles={"planner": "openai/gpt-4o"},
+    )
+    spawner = agent.loop.spawner
+    assert spawner is not None
+    plan_def = spawner._defs["plan"]  # type: ignore[attr-defined]
+    assert plan_def.model == "openai/gpt-4o"  # explicit role override wins
+    assert plan_def.category == "plan"  # category remains as the fallback when no model is set

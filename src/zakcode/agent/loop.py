@@ -737,6 +737,12 @@ class AgentLoop:
 
         Best-effort and never fatal: a count/window failure returns ``1.0`` (treated as "large",
         which biases the classifier toward the harder category — the safe direction).
+
+        The window is the CURRENT (prior/startup) provider's, measured before the iteration's
+        category re-select may swap models — so when the quick and deep coders have different
+        windows the denominator can be the "other" model's. Harmless with the shipped Groq
+        defaults (quick + deep both 128K), self-corrects from iteration 2, and the soft latch
+        repairs a too-cheap route; routing on a stale window is never a correctness issue.
         """
         try:
             window = self.provider.capabilities().context_window or 1
@@ -1716,6 +1722,12 @@ class AgentLoop:
             iterations,
             turn_usage.total_tokens,
         )
+        # zakpick routing report (coherent regardless of where the turn ended): "escalated" only
+        # under zakpick, and a latch always reports deep_code even if the turn broke before the
+        # next iteration's re-select updated main_category (e.g. a terminal doom-loop).
+        zakpick_on = self.main_provider_for is not None
+        routed_escalated = zakpick_on and signal_latched
+        routed_category = "deep_code" if routed_escalated else main_category
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
@@ -1724,8 +1736,8 @@ class AgentLoop:
             stop_reason=stop_reason,
             error=turn_error,
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
-            routed_category=main_category,  # None when zakpick is off
-            routed_escalated=signal_latched,
+            routed_category=routed_category,  # None when zakpick is off
+            routed_escalated=routed_escalated,
         )
 
     def run_turn(self, user_text: str) -> TurnResult:
@@ -2334,14 +2346,18 @@ class AgentLoop:
             turn_usage.total_tokens,
         )
         yield AgentUsage(usage=turn_usage)
+        # zakpick routing report — see the buffered twin for the coherence rationale.
+        zakpick_on = self.main_provider_for is not None
+        routed_escalated = zakpick_on and signal_latched
+        routed_category = "deep_code" if routed_escalated else main_category
         yield AgentDone(
             stop_reason=stop_reason,
             iterations=iterations,
             usage=turn_usage,
             error=turn_error,
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
-            routed_category=main_category,  # None when zakpick is off
-            routed_escalated=signal_latched,
+            routed_category=routed_category,  # None when zakpick is off
+            routed_escalated=routed_escalated,
         )
 
     @staticmethod

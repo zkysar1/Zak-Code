@@ -314,9 +314,9 @@ class StreamRenderer:
         self._flush_remaining_text()
         if done is not None:
             self._print_footer(done)
-        #: The most recent turn's terminal event, so the REPL can read post-turn signals (e.g.
-        #: the zakpick routing fields for the "your deep coder wasn't needed" advisory) without
-        #: threading it back through _drive_stream's bool return.
+        # Stash the terminal event so the REPL can read post-turn signals (the zakpick routing
+        # fields for the advisory) without threading it back through _drive_stream's bool return.
+        # The attribute doc lives at the __init__ declaration.
         self.last_done = done
         return done
 
