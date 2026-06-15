@@ -1013,3 +1013,19 @@ cost-accounting test instead of a fallback table.
   both-path integration that an abandoned plan stops haunting). **`uv run poe check` green:
   ruff+format+mypy clean, 1890 passed, 5 skipped; `--extra server --extra dev` full suite 1890
   passed.** Design tracked in GitHub issue #32 (resolved by this change).
+- **2026-06-15 (dev, branch `fix/harness-verify-shell-aware` — issue #33, powershell-host harness
+  auto-run):** the post-#28 fresh-eyes review flagged that `_try_harness_verify` and
+  `_try_project_verify` hardcoded the synthetic verify run as a `bash` ToolCall, so on a
+  powershell-preferred host (where the operator granted `powershell`, not `bash`) `auto_allows`
+  was false and the harness silently fell back to nudging the model instead of auto-running the
+  check. Fix: a shared `AgentLoop._harness_shell_call(command, call_id)` helper that prefers `bash`
+  (its cmd.exe / POSIX-sh quoting matches how `resolve_run_command` / `verify_command` build the
+  command — so zero change to every existing case) and falls back to `powershell` only when bash
+  would prompt or is unregistered. The powershell form is prefixed with the call operator `&` so a
+  *quoted* exe path (`resolve_run_command`'s `sys.executable` fallback) executes rather than being
+  echoed as a string literal; `&` is a no-op before a bare command and survives both run-matchers
+  (`_executed_targets` token split, `_commands_match` token-prefix — both already list `powershell`
+  in `_RUN_TOOLS`). Both verify methods now route through the one helper (symmetric, per the issue).
+  Tests: 3 unit tests in `test_recipe.py` (bash-preferred-verbatim, powershell-fallback-with-`&`,
+  none-when-nothing-auto-allows) — cross-platform, no real subprocess. **`uv run poe check` green:
+  ruff+format+mypy clean, 1893 passed, 5 skipped.** Resolves GitHub issue #33.
