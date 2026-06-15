@@ -1075,3 +1075,16 @@ cost-accounting test instead of a fallback table.
   7→8, name set, CLI `8/8 passed`, standalone `test_probe_plan_decomposition`). **`uv run poe check`
   green: 1896 passed, 5 skipped** (the full-suite gate caught a stale `7/7` CLI assertion the
   targeted run missed — exactly its job).
+- **2026-06-15 (dev, branch `feat/live-decomposition-eval` — the honest completion of "measure
+  it"):** the #38 probe proves the HARNESS runs a checkable plan; this proves the model half — that
+  the sharpened guidance *actually makes a real model* write checkable, decomposed plans. New
+  `LIVE_TESTS`-gated `tests/test_live_decomposition.py`: gives a real model a NEUTRAL multi-step task
+  (it says nothing about notes/checkability — so any done-conditions come from the system-prompt
+  guidance, not the task), then scores the authored plan's `note` coverage (skip if the model didn't
+  decompose; assert ≥50% of primitive steps carry a done-condition; the failure message dumps the
+  plan). Same cooperation-bias + provider-error-→-skip pattern as the live smoke tests. **Validated
+  locally for FREE** against the running llama.cpp `llama-server` (Qwen3.5-9B-Q6 on `:8080`, routed
+  via litellm `OPENAI_API_BASE` + a throwaway key → zero OpenAI spend): the 9B authored a clean
+  3-step plan (`/health` endpoint → unit test → README) with a `note` done-condition on **3/3 steps
+  (100% coverage)** in 18.5s — empirical proof the guidance lands. Docstring documents the local
+  llama.cpp invocation (the free path). Skips in the normal gate; **`uv run poe check` green.**
