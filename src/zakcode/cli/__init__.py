@@ -45,7 +45,7 @@ from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
 from zakcode.secrets import strip_url_credentials
-from zakcode.version import __version__
+from zakcode import __version__
 
 if TYPE_CHECKING:
     from zakcode import Agent

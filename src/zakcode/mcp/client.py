@@ -26,7 +26,7 @@ from zakcode.mcp.jsonrpc import (
     result_or_raise,
 )
 from zakcode.mcp.transport import Transport
-from zakcode.version import __version__
+from zakcode import __version__
 
 #: MCP protocol revision this client advertises. Servers echo the version they
 #: support; we record theirs but do not hard-fail on a mismatch.

@@ -33,7 +33,9 @@ from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedModel
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.builtins.default_registry import default_registry
-from zakcode.version import __version__
+from importlib.metadata import version as _pkg_version
+
+__version__: str = _pkg_version("zakcode")
 
 if TYPE_CHECKING:
     # Type-only imports for MCP/plugin annotations. Kept out of the runtime import

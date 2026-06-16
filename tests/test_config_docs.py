@@ -6,15 +6,15 @@ import tomllib
 from pathlib import Path
 
 from zakcode.config import Settings
-from zakcode.version import __version__
+from zakcode import __version__
 
 _ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_sync() -> None:
-    """``zakcode.version.__version__`` and pyproject's ``[project].version`` are kept
-    in sync by hand — this test is the automation (audit P2-2): a bump to one without
-    the other fails CI instead of shipping a mismatched package."""
+    """``zakcode.__version__`` (derived via importlib.metadata from pyproject.toml) and
+    pyproject's ``[project].version`` are the same source — this test guards that the
+    installed package metadata matches the pyproject declaration (audit P2-2)."""
     pyproject = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["version"] == __version__
 

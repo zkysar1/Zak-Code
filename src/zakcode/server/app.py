@@ -71,7 +71,7 @@ from zakcode.server.wire import (
 from zakcode.session.store import Session, SessionNotFound, SessionStore
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
-from zakcode.version import __version__
+from zakcode import __version__
 
 logger = logging.getLogger("zakcode.server")
 
