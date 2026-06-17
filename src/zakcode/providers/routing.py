@@ -71,11 +71,12 @@ def _g(model: str) -> ZakpickModel:
     return ZakpickModel(model=model)
 
 
-#: Out-of-the-box defaults, drawn from Groq's published lineup and graduated by cost/capability
-#: (prices $/1M in·out as of 2026-06): llama-3.1-8b-instant 0.05·0.08, gpt-oss-20b 0.075·0.30,
-#: qwen3-32b 0.29·0.59, gpt-oss-120b 0.15·0.60. ``llama-3.3-70b-versatile`` is deliberately
-#: avoided — the registry flags it tools_unreliable. Each doubles as a "download this to run the
-#: category locally" hint (Groq serves only open-source models).
+#: Out-of-the-box defaults, drawn from Groq's published lineup and graduated by cost/capability.
+#: The live $/1M in·out rates are the single source of truth in ``providers/pricing.py``
+#: (``GROQ_RATES_PER_M``); the provider layer uses them to cost Groq calls litellm cannot price.
+#: ``llama-3.3-70b-versatile`` is deliberately avoided — the registry flags it tools_unreliable.
+#: Each doubles as a "download this to run the category locally" hint (Groq serves only
+#: open-source models).
 DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
     "classify": _g("llama-3.1-8b-instant"),  # cheapest/fastest — JSON gates
     "summarize": _g("openai/gpt-oss-20b"),  # cheap, fast, decent prose; no tools

@@ -57,9 +57,12 @@ class _FakeChoice:
 
 
 class _FakeResponse:
-    def __init__(self, choices: Any, usage: Any = None, hidden: Any = None) -> None:
+    def __init__(
+        self, choices: Any, usage: Any = None, hidden: Any = None, model: Any = None
+    ) -> None:
         self.choices = choices
         self.usage = usage
+        self.model = model
         if hidden is not None:
             self._hidden_params = hidden
 
@@ -432,6 +435,37 @@ def test_extract_cost_string_value() -> None:
 def test_extract_cost_bool_rejected() -> None:
     usage = LiteLLMProvider._extract_usage(
         _FakeResponse([], _FakeUsage(1, 1, 2), hidden={"response_cost": True})
+    )
+    assert usage.cost_usd == 0.0
+
+
+def test_extract_cost_fallback_groq_when_litellm_unpriced() -> None:
+    # litellm leaves response_cost absent/0 for Groq's open lineup; we fall back to
+    # published rates (pricing.GROQ_RATES_PER_M) so /cost is not silently $0.
+    usage = LiteLLMProvider._extract_usage(
+        _FakeResponse([], _FakeUsage(1000, 100, 1100), model="groq/openai/gpt-oss-20b")
+    )
+    # gpt-oss-20b: $0.075/M in, $0.30/M out
+    assert usage.cost_usd == pytest.approx(1000 * 0.075e-6 + 100 * 0.30e-6)
+
+
+def test_extract_cost_real_litellm_cost_beats_fallback() -> None:
+    # A genuine non-zero response_cost must win over the Groq fallback.
+    usage = LiteLLMProvider._extract_usage(
+        _FakeResponse(
+            [],
+            _FakeUsage(1000, 100, 1100),
+            hidden={"response_cost": 0.5},
+            model="groq/openai/gpt-oss-20b",
+        )
+    )
+    assert usage.cost_usd == pytest.approx(0.5)
+
+
+def test_extract_cost_unknown_model_stays_zero() -> None:
+    # A model with no fallback rate (and no litellm cost) stays $0 — never guessed.
+    usage = LiteLLMProvider._extract_usage(
+        _FakeResponse([], _FakeUsage(1000, 100, 1100), model="openai/gpt-4o")
     )
     assert usage.cost_usd == 0.0
 

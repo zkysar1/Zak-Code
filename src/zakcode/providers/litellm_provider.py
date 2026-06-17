@@ -45,6 +45,7 @@ from zakcode.providers.base import (
     StreamUsage,
     ToolCall,
 )
+from zakcode.providers.pricing import estimate_cost_usd
 from zakcode.providers.registry import get_capabilities
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
@@ -346,6 +347,15 @@ class LiteLLMProvider(Provider):
         hidden = _get(response, "_hidden_params")
         if isinstance(hidden, dict):
             cost = cls._coerce_cost(hidden.get("response_cost"))
+        if cost == 0.0:
+            # litellm has no price entry for Groq's open lineup (served via an
+            # OpenAI-compatible endpoint), so response_cost comes back 0 — /cost
+            # and the budget ceiling would silently under-report. Fall back to our
+            # published Groq rates (pricing.GROQ_RATES_PER_M). A genuine non-zero
+            # response_cost (Anthropic, OpenAI proper, …) always wins.
+            cost = estimate_cost_usd(
+                str(_get(response, "model") or ""), prompt, completion, cache_read
+            )
 
         return Usage(
             prompt_tokens=prompt,
