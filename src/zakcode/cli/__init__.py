@@ -1267,12 +1267,21 @@ def chat(
             if command == "/cost":
                 usage = agent.session.cumulative_usage()
                 dot = f" {GLYPHS['dot']} "
+                # Surface cached prompt tokens when the backend reports them (a subset
+                # of prompt_tokens billed at the cache discount) — the visible signal
+                # that prompt caching is actually hitting (Anthropic explicit; OpenAI/
+                # Groq automatic). Absent => 0 => no annotation, no clutter.
+                cached_note = (
+                    f", {usage.cache_read_tokens} cached"
+                    if usage.cache_read_tokens
+                    else ""
+                )
                 console.print(
                     margin(
                         Text.assemble(
                             (f"total={usage.total_tokens} tok", "arg.value"),
                             (
-                                f"  (prompt {usage.prompt_tokens} / "
+                                f"  (prompt {usage.prompt_tokens}{cached_note} / "
                                 f"completion {usage.completion_tokens})",
                                 "notice.dim",
                             ),
