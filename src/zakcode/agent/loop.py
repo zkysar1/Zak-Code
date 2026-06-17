@@ -1009,6 +1009,7 @@ class AgentLoop:
             output=output,
             is_error=tool_res.is_error,
             data=data,
+            artifacts=tool_res.artifacts,
         )
 
     def _harness_shell_call(self, command: str, call_id: str) -> ToolCall | None:
@@ -2155,6 +2156,8 @@ class AgentLoop:
                                 tool_use_id=hblock.tool_use_id,
                                 output=hblock.output,
                                 is_error=hblock.is_error,
+                                data=hblock.data,
+                                artifacts=hblock.artifacts,
                             )
                             cursor.consume_attempt()
                             yield AgentStatus(message="ran the file to verify it works")
@@ -2186,6 +2189,8 @@ class AgentLoop:
                                 tool_use_id=vblock.tool_use_id,
                                 output=vblock.output,
                                 is_error=vblock.is_error,
+                                data=vblock.data,
+                                artifacts=vblock.artifacts,
                             )
                             yield AgentStatus(message="ran the project checks to verify")
                         else:
@@ -2336,6 +2341,8 @@ class AgentLoop:
                         tool_use_id=block.tool_use_id,
                         output=block.output,
                         is_error=block.is_error,
+                        data=block.data,
+                        artifacts=block.artifacts,
                     )
                 if self._batch_did_no_work(result_blocks):
                     self._refund_iteration()

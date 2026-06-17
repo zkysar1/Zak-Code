@@ -150,6 +150,16 @@
     .tool-out .add { background: var(--add-bg); color: var(--add-fg); margin: 0 -.8rem; padding: 0 .8rem; }
     .tool-out .del { background: var(--del-bg); color: var(--del-fg); margin: 0 -.8rem; padding: 0 .8rem; }
     .tool-out .dmeta { color: var(--faint); }
+    .tool .artifacts {
+      margin: 0 .75rem .65rem; display: flex; flex-wrap: wrap; gap: .45rem;
+    }
+    .artifact-link {
+      display: inline-flex; align-items: center; gap: .35rem; max-width: 100%;
+      padding: .25rem .55rem; border: 1px solid var(--line-soft); border-radius: 6px;
+      background: var(--inset); color: var(--brand); text-decoration: none;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .artifact-link .asize { color: var(--muted); }
 
     /* ── status / consent / turn-receipt rows ── */
     .row.status > .g, .row.consent > .g { color: var(--muted); font-family: var(--font-mono); }
@@ -244,6 +254,15 @@
       color: var(--brand); font-family: var(--font-mono); font-weight: 600;
       padding-bottom: .25rem; user-select: none;
     }
+    #attach {
+      flex: none; width: 34px; height: 34px; border-radius: 8px;
+      border: 1px solid var(--line); background: transparent; color: var(--muted);
+      font: 18px/1 var(--font-prose); cursor: pointer;
+      transition: color 120ms ease, border-color 120ms ease, transform 120ms ease;
+    }
+    #attach:hover { color: var(--fg); border-color: var(--brand); transform: translateY(-1px); }
+    #attach:disabled { opacity: .5; cursor: default; transform: none; }
+    #file-input { display: none; }
     #input {
       flex: 1 1 auto; padding: .25rem 0; background: transparent; border: 0; resize: none;
       color: var(--fg); font: 16px/1.5 var(--font-prose);
@@ -308,6 +327,8 @@
     </div>
     <div id="composer">
       <span class="pglyph" aria-hidden="true">›</span>
+      <button type="button" id="attach" aria-label="Attach file">+</button>
+      <input id="file-input" type="file" multiple />
       <textarea id="input" rows="1" placeholder="Message Zak Code…" autocomplete="off"></textarea>
       <button type="button" id="send" aria-label="Send">↑</button>
     </div>
@@ -326,6 +347,9 @@
   const DISPLAY_NAMES = {
     read_file: "Read", write_file: "Write", edit_file: "Edit", list_dir: "List",
     glob: "Glob", grep: "Search", bash: "Run", powershell: "Run",
+    read_docx: "Read Word", read_xlsx: "Read Excel", inspect_image: "Inspect Image",
+    create_docx: "Word", create_xlsx: "Excel", save_image: "Image",
+    create_chart_image: "Chart",
     web_fetch: "Fetch", web_search: "WebSearch", todo_write: "Todo",
     update_plan: "Todo", task: "Task",
   };
@@ -349,6 +373,8 @@
   const main = document.getElementById("main");
   const log = document.getElementById("log");
   const input = document.getElementById("input");
+  const attachBtn = document.getElementById("attach");
+  const fileInput = document.getElementById("file-input");
   const sendBtn = document.getElementById("send");
   const jump = document.getElementById("jump");
   const statusEl = document.getElementById("stream-status");
@@ -369,6 +395,7 @@
   const toolCards = new Map();  // pending tool cards keyed by tool_call id
   let approvedTool = "";     // display name for the consent receipt
   let stick = true;          // stick-to-bottom while within 40px of the bottom
+  const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);
@@ -457,6 +484,83 @@
     let s = (c || 0).toFixed(4);
     while (s.endsWith("0") && s.split(".")[1].length > 2) s = s.slice(0, -1);
     return "$" + s;
+  }
+
+  function fmtBytes(n) {
+    n = Number(n || 0);
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function artifactUrl(artifact) {
+    return "/sessions/" + encodeURIComponent(sessionId) +
+      "/artifacts/" + encodeURIComponent(artifact.id) + "/download";
+  }
+
+  function uploadUrl() {
+    return "/sessions/" + encodeURIComponent(sessionId) + "/uploads";
+  }
+
+  function readAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("could not read file"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function addUploadPrompt(text) {
+    if (!text) return;
+    input.value = input.value.trim()
+      ? input.value.trimEnd() + "\n\n" + text
+      : text;
+    autoGrow();
+    input.focus();
+  }
+
+  async function uploadFiles(files) {
+    if (!files || !files.length || turnActive || !sessionId) return;
+    attachBtn.disabled = true;
+    setStatus("uploading…");
+    try {
+      for (const file of files) {
+        if (file.size > MAX_UPLOAD_BYTES) {
+          add(errCard("upload too large: " + file.name + " (" + fmtBytes(file.size) + ")"));
+          continue;
+        }
+        try {
+          const data = await readAsDataUrl(file);
+          const resp = await fetch(uploadUrl(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filename: file.name, data }),
+          });
+          if (!resp.ok) {
+            let detail = "HTTP " + resp.status;
+            try {
+              const body = await resp.json();
+              if (body && body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+            } catch {}
+            add(errCard("upload failed: " + file.name + "\n" + detail));
+            continue;
+          }
+          const uploaded = await resp.json();
+          const body = el("div", "meta", "uploaded " + (uploaded.artifact?.filename || file.name) + " → " + uploaded.path);
+          add(row("status", el("span", "", "·"), body));
+          addUploadPrompt(uploaded.prompt);
+        } catch (err) {
+          const detail = err && err.message ? err.message : String(err);
+          add(errCard("upload failed: " + file.name + "\n" + detail));
+        }
+      }
+    } finally {
+      hideStatus();
+      attachBtn.disabled = turnActive;
+      fileInput.value = "";
+      follow();
+    }
   }
 
   // ── assistant prose: re-render the current group on each delta ──
@@ -613,13 +717,28 @@
     }
   }
 
+  function artifactList(artifacts) {
+    const wrap = el("div", "artifacts");
+    for (const artifact of artifacts) {
+      const link = el("a", "artifact-link");
+      link.href = artifactUrl(artifact);
+      link.download = artifact.filename || "";
+      link.appendChild(el("span", "", artifact.filename || artifact.path || artifact.id));
+      link.appendChild(el("span", "asize", fmtBytes(artifact.size)));
+      wrap.appendChild(link);
+    }
+    return wrap;
+  }
+
   function onToolResult(ev) {
     const entry = toolCards.get(ev.tool_use_id);
     const output = String(ev.output || "");
+    const artifacts = Array.isArray(ev.artifacts) ? ev.artifacts : [];
     if (!entry) {
       // Reconnect/replay can deliver a result with no card: render it standalone, never throw.
       const body = el("div", "meta", "tool result · " + receiptText("", ev, output));
       add(row("consent", el("span", "", "·"), body));
+      if (artifacts.length) add(row("consent", el("span", "", "."), artifactList(artifacts)));
       return;
     }
     toolCards.delete(ev.tool_use_id);
@@ -627,11 +746,14 @@
     entry.dot.classList.remove("pending");
     if (ev.is_error) { entry.card.classList.add("err"); entry.dot.classList.add("fail"); }
     entry.receipt.textContent = receiptText(entry.name, ev, output) + " · " + dur;
-    if (output.trim()) {
+    if (output.trim() || artifacts.length) {
       entry.card.classList.remove("empty");
-      const body = el("div", "tool-out mono");
-      fillOutput(body, output);
-      entry.card.appendChild(body);
+      if (output.trim()) {
+        const body = el("div", "tool-out mono");
+        fillOutput(body, output);
+        entry.card.appendChild(body);
+      }
+      if (artifacts.length) entry.card.appendChild(artifactList(artifacts));
       if (ev.is_error) entry.card.open = true;
     } else {
       entry.card.classList.add("nochev");
@@ -804,6 +926,7 @@
     sendBtn.classList.toggle("stop", streaming);
     sendBtn.textContent = streaming ? "■" : "↑";
     sendBtn.setAttribute("aria-label", streaming ? "Stop" : "Send");
+    attachBtn.disabled = streaming;
   }
 
   function autoGrow() {
@@ -843,6 +966,10 @@
     }
     sendMessage();
   };
+  attachBtn.onclick = () => {
+    if (!turnActive) fileInput.click();
+  };
+  fileInput.onchange = () => uploadFiles(Array.from(fileInput.files || []));
 
   // Sample pills prefill the composer (they never send).
   for (const pill of document.querySelectorAll(".pill")) {

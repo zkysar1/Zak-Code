@@ -8,6 +8,7 @@ app is exercised through FastAPI's ``TestClient``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from zakcode.agent.loop import TurnResult
+from zakcode.artifacts import ArtifactRef, artifact_from_path
 from zakcode.config import Settings
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta, AgentToolCall, AgentToolResult
 from zakcode.messages import Message, TextBlock, ToolResultBlock, ToolUseBlock
@@ -177,7 +179,21 @@ def test_tools_lists_builtins(client: TestClient) -> None:
     resp = client.get("/tools")
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()}
-    assert {"read_file", "write_file", "edit_file", "bash", "glob", "grep"} <= names
+    assert {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "bash",
+        "glob",
+        "grep",
+        "read_docx",
+        "read_xlsx",
+        "create_docx",
+        "create_xlsx",
+        "inspect_image",
+        "save_image",
+        "create_chart_image",
+    } <= names
     bash = next(t for t in resp.json() if t["name"] == "bash")
     assert bash["required_permission"] == "DANGER_FULL_ACCESS"
 
@@ -202,6 +218,173 @@ def test_session_crud(client: TestClient) -> None:
 
     assert client.get(f"/sessions/{sid}").status_code == 404
     assert client.delete(f"/sessions/{sid}").status_code == 404
+
+
+def test_session_artifacts_list_and_download(tmp_path: Path) -> None:
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    report = tmp_path / "reports" / "hello.txt"
+    report.parent.mkdir()
+    report.write_text("hello artifact", encoding="utf-8")
+    artifact = artifact_from_path(report, workspace_root=tmp_path, created_by_tool="write_file")
+    session = Session(cwd=str(tmp_path), model="scripted/test")
+    session.add_message(
+        Message.tool_results(
+            [ToolResultBlock(tool_use_id="c1", output="wrote", artifacts=[artifact])]
+        )
+    )
+    store.save(session)
+    app = create_app(settings=settings, store=store, agent_factory=_factory)
+    local_client = TestClient(app)
+
+    listed = local_client.get(f"/sessions/{session.id}/artifacts")
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == artifact.id
+
+    downloaded = local_client.get(f"/sessions/{session.id}/artifacts/{artifact.id}/download")
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"hello artifact"
+    assert "hello.txt" in downloaded.headers["content-disposition"]
+
+
+def test_session_upload_saves_file_and_records_downloadable_artifact(tmp_path: Path) -> None:
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(settings=settings, store=store, agent_factory=_factory)
+    local_client = TestClient(app)
+    session_id = local_client.post("/sessions").json()["id"]
+
+    payload = base64.b64encode(b"hello upload").decode("ascii")
+    uploaded = local_client.post(
+        f"/sessions/{session_id}/uploads",
+        json={"filename": "notes.txt", "data": payload},
+    )
+
+    assert uploaded.status_code == 201
+    body = uploaded.json()
+    assert body["path"].startswith(f"uploads/{session_id[:8]}/")
+    assert body["path"].endswith("notes.txt")
+    assert body["bytes"] == len(b"hello upload")
+    assert body["artifact"]["kind"] == "text"
+    assert body["artifact"]["created_by_tool"] == "upload"
+    assert body["suggested_tool"] == "read_file"
+    assert "read_file" in body["prompt"]
+    assert (tmp_path / body["path"]).read_bytes() == b"hello upload"
+
+    listed = local_client.get(f"/sessions/{session_id}/artifacts")
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == body["artifact"]["id"]
+
+    downloaded = local_client.get(
+        f"/sessions/{session_id}/artifacts/{body['artifact']['id']}/download"
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"hello upload"
+
+
+def test_session_upload_allocates_unique_names_without_clobbering(tmp_path: Path) -> None:
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(settings=settings, store=store, agent_factory=_factory)
+    local_client = TestClient(app)
+    session_id = local_client.post("/sessions").json()["id"]
+
+    first = local_client.post(
+        f"/sessions/{session_id}/uploads",
+        json={
+            "filename": "notes.txt",
+            "data": base64.b64encode(b"first").decode("ascii"),
+        },
+    ).json()
+    second = local_client.post(
+        f"/sessions/{session_id}/uploads",
+        json={
+            "filename": "notes.txt",
+            "data": base64.b64encode(b"second").decode("ascii"),
+        },
+    ).json()
+
+    assert first["path"].endswith("notes.txt")
+    assert second["path"].endswith("notes-2.txt")
+    assert (tmp_path / first["path"]).read_bytes() == b"first"
+    assert (tmp_path / second["path"]).read_bytes() == b"second"
+    assert len(local_client.get(f"/sessions/{session_id}/artifacts").json()) == 2
+
+
+def test_session_upload_sanitizes_filename_and_rejects_bad_base64(tmp_path: Path) -> None:
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(settings=settings, store=store, agent_factory=_factory)
+    local_client = TestClient(app)
+    session_id = local_client.post("/sessions").json()["id"]
+
+    payload = "data:text/plain;base64," + base64.b64encode(b"safe").decode("ascii")
+    uploaded = local_client.post(
+        f"/sessions/{session_id}/uploads",
+        json={"filename": "../CON.txt", "data": payload},
+    )
+
+    assert uploaded.status_code == 201
+    body = uploaded.json()
+    assert body["artifact"]["filename"] == "_CON.txt"
+    saved_path = (tmp_path / body["path"]).resolve()
+    saved_path.relative_to(tmp_path.resolve())
+    assert saved_path.is_file()
+
+    rejected = local_client.post(
+        f"/sessions/{session_id}/uploads",
+        json={"filename": "bad.txt", "data": "not-base64"},
+    )
+    assert rejected.status_code == 400
+
+
+def test_session_artifact_download_rejects_changed_file(tmp_path: Path) -> None:
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    report = tmp_path / "out.txt"
+    report.write_text("first", encoding="utf-8")
+    artifact = artifact_from_path(report, workspace_root=tmp_path)
+    session = Session(cwd=str(tmp_path), model="scripted/test")
+    session.add_message(
+        Message.tool_results(
+            [ToolResultBlock(tool_use_id="c1", output="wrote", artifacts=[artifact])]
+        )
+    )
+    store.save(session)
+    report.write_text("second", encoding="utf-8")
+    app = create_app(settings=settings, store=store, agent_factory=_factory)
+
+    resp = TestClient(app).get(f"/sessions/{session.id}/artifacts/{artifact.id}/download")
+
+    assert resp.status_code == 409
+
+
+def test_session_artifact_download_rejects_path_escape(tmp_path: Path) -> None:
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    outside = tmp_path.parent / "secret-artifact.txt"
+    outside.write_text("secret", encoding="utf-8")
+    artifact = ArtifactRef(
+        id="escape",
+        path="../secret-artifact.txt",
+        filename="secret-artifact.txt",
+        mime_type="text/plain",
+        size=len("secret"),
+        sha256="0" * 64,
+        kind="text",
+    )
+    session = Session(cwd=str(tmp_path), model="scripted/test")
+    session.add_message(
+        Message.tool_results(
+            [ToolResultBlock(tool_use_id="c1", output="wrote", artifacts=[artifact])]
+        )
+    )
+    store.save(session)
+    app = create_app(settings=settings, store=store, agent_factory=_factory)
+
+    resp = TestClient(app).get(f"/sessions/{session.id}/artifacts/{artifact.id}/download")
+
+    assert resp.status_code == 404
 
 
 # ── chat (buffered) ──────────────────────────────────────────────────────────────

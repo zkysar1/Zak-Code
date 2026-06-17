@@ -6,6 +6,7 @@ import contextlib
 import os
 import tempfile
 
+from zakcode.artifacts import ArtifactError, artifact_from_path
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -97,9 +98,22 @@ class WriteFileTool(Tool):
                     os.unlink(tmp_name)
                 raise
 
+            artifacts = []
+            with contextlib.suppress(ArtifactError, OSError):
+                artifacts.append(
+                    artifact_from_path(
+                        resolved,
+                        workspace_root=ctx.workspace_root,
+                        created_by_tool=self.spec.name,
+                    )
+                )
+            result_data = {"path": str(resolved), "bytes": len(data)}
+            if artifacts:
+                result_data["artifact_id"] = artifacts[0].id
             return ToolResult.ok(
                 f"Wrote {len(data)} bytes to {path}",
-                data={"path": str(resolved), "bytes": len(data)},
+                data=result_data,
+                artifacts=artifacts,
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to write {path!r}: {exc}")

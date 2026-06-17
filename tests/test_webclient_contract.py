@@ -47,6 +47,22 @@ def test_client_handles_every_event_type() -> None:
         assert f'case "{name}":' in html, f"renderer has no case for event '{name}'"
 
 
+def test_client_renders_artifact_download_links() -> None:
+    html = _html()
+    assert "artifactUrl" in html
+    assert "/artifacts/" in html
+    assert ".download" in html
+
+
+def test_client_can_upload_files_to_session() -> None:
+    html = _html()
+    assert 'id="file-input"' in html
+    assert 'id="attach"' in html
+    assert "/uploads" in html
+    assert "readAsDataURL" in html
+    assert "uploadFiles" in html
+
+
 def test_client_speaks_ws_protocol_verbs() -> None:
     # The client must send the exact WS client-message shapes the server parses:
     # {type:"input"} to start a turn and {type:"approval", outcome:...} for the

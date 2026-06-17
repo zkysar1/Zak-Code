@@ -23,6 +23,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from zakcode.artifacts import ArtifactRef
 from zakcode.usage import Usage
 
 
@@ -49,6 +50,8 @@ class AgentToolResult(BaseModel):
     tool_use_id: str
     output: str = ""
     is_error: bool = False
+    data: dict[str, Any] | None = None
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
 
 
 class AgentStatus(BaseModel):

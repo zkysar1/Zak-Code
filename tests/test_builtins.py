@@ -33,6 +33,11 @@ async def test_write_then_read_round_trip(ctx: ToolContext) -> None:
     res = await write.execute({"path": "sub/hello.txt", "content": "hi there"}, ctx)
     assert not res.is_error, res.output
     assert (ctx.workspace_root / "sub" / "hello.txt").read_text() == "hi there"
+    assert len(res.artifacts) == 1
+    assert res.artifacts[0].path == "sub/hello.txt"
+    assert res.artifacts[0].filename == "hello.txt"
+    assert res.data is not None
+    assert res.data["artifact_id"] == res.artifacts[0].id
 
     res = await read.execute({"path": "sub/hello.txt"}, ctx)
     assert not res.is_error
@@ -163,6 +168,13 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "list_dir",
         "glob",
         "grep",
+        "read_docx",
+        "read_xlsx",
+        "create_docx",
+        "create_xlsx",
+        "inspect_image",
+        "save_image",
+        "create_chart_image",
         "bash",
         "powershell",
         "web_search",
@@ -183,6 +195,15 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
     assert reg.get("find") is reg.get("glob")
     assert reg.get("search") is reg.get("grep")
     assert reg.get("rg") is reg.get("grep")
+    assert reg.get("read_word") is reg.get("read_docx")
+    assert reg.get("read_excel") is reg.get("read_xlsx")
+    assert reg.get("word") is reg.get("create_docx")
+    assert reg.get("docx") is reg.get("create_docx")
+    assert reg.get("excel") is reg.get("create_xlsx")
+    assert reg.get("xlsx") is reg.get("create_xlsx")
+    assert reg.get("image_info") is reg.get("inspect_image")
+    assert reg.get("image") is reg.get("save_image")
+    assert reg.get("chart") is reg.get("create_chart_image")
     assert reg.get("sh") is reg.get("bash")
     assert reg.get("shell") is reg.get("bash")
     assert reg.get("plan") is reg.get("update_plan")

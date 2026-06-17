@@ -17,6 +17,8 @@ Endpoints (see ``docs/ARCHITECTURE.md`` — Server API surface):
 * ``GET  /sessions``          — list stored sessions
 * ``POST /sessions``          — create a session
 * ``GET  /sessions/{id}``     — fetch one session's summary
+* ``GET  /sessions/{id}/artifacts`` — list downloadable artifacts
+* ``POST /sessions/{id}/uploads``   — attach a user file to the session
 * ``DELETE /sessions/{id}``   — delete a session
 * ``POST /chat``              — run one buffered turn → :class:`ChatResponse`
 * ``POST /chat/stream``       — run one turn, streaming ``AgentEvent``s as SSE
@@ -32,10 +34,14 @@ with the only secret-bearing field (``api_key``) excluded at the model level.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import hmac
 import json
 import logging
+import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -46,7 +52,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
+from zakcode import __version__
 from zakcode.agent.loop import TurnResult
+from zakcode.artifacts import (
+    ArtifactChangedError,
+    ArtifactError,
+    ArtifactRef,
+    artifact_from_path,
+    resolve_artifact_path,
+)
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
@@ -60,6 +74,8 @@ from zakcode.server.wire import (
     CompleteResponse,
     SessionInfo,
     ToolInfo,
+    UploadRequest,
+    UploadResponse,
     WSActionRequired,
     WSApproval,
     WSInterrupt,
@@ -71,7 +87,6 @@ from zakcode.server.wire import (
 from zakcode.session.store import Session, SessionNotFound, SessionStore
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
-from zakcode import __version__
 
 logger = logging.getLogger("zakcode.server")
 
@@ -85,6 +100,19 @@ WS_UNAUTHORIZED_CODE = 1008
 #: The only HTTP path served without a bearer token when auth is enabled (liveness probes
 #: from a load balancer / orchestrator must not need a credential).
 _AUTH_EXEMPT_PATHS = frozenset({"/health"})
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+_UPLOAD_DATA_URL_RE = re.compile(
+    r"^data:(?P<mime>[-\w.+/]+(?:;[-\w=.+]+)*);base64,(?P<data>.*)$", re.S
+)
+_UPLOAD_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+_WINDOWS_RESERVED_FILENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 
 
 def _extract_bearer(header: str | None) -> str | None:
@@ -130,6 +158,110 @@ def _subprotocol_token(header: str | None) -> str | None:
     if len(parts) == 2 and parts[0].lower() == "bearer":
         return parts[1]
     return None
+
+
+def _decode_upload_data(data: str) -> bytes:
+    """Decode raw base64 or a browser ``data:*;base64,...`` URL with a hard byte cap."""
+    payload = data.strip()
+    match = _UPLOAD_DATA_URL_RE.match(payload)
+    if match:
+        payload = match.group("data")
+    compact = "".join(payload.split())
+    # Reject obviously oversized payloads before allocating decoded bytes. Base64 expands 3
+    # bytes to 4 chars; the small padding margin keeps exact-limit files valid.
+    if len(compact) > ((_MAX_UPLOAD_BYTES + 2) // 3) * 4 + 8:
+        raise ValueError(f"upload is too large (max {_MAX_UPLOAD_BYTES} bytes)")
+    try:
+        blob = base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("'data' must be valid base64 bytes or a base64 data URL") from exc
+    if not blob:
+        raise ValueError("upload decoded to an empty file")
+    if len(blob) > _MAX_UPLOAD_BYTES:
+        raise ValueError(f"upload is too large ({len(blob)} bytes; max {_MAX_UPLOAD_BYTES})")
+    return blob
+
+
+def _safe_upload_filename(filename: str) -> str:
+    """Return a single safe filename component, preserving ordinary Unicode names."""
+    raw_name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    name = _UPLOAD_FILENAME_RE.sub("_", raw_name).strip(" .")
+    if not name:
+        name = "upload.bin"
+    if len(name) > 180:
+        suffix = Path(name).suffix[:32]
+        stem = Path(name).stem[: max(1, 180 - len(suffix))]
+        name = f"{stem}{suffix}" if suffix else stem
+    stem = Path(name).stem.upper()
+    if stem in _WINDOWS_RESERVED_FILENAMES:
+        name = f"_{name}"
+    return name
+
+
+def _unique_upload_path(workspace_root: Path, session: Session, filename: str) -> Path:
+    """Allocate a non-clobbering upload path under ``uploads/<session>/``."""
+    root = workspace_root.resolve()
+    upload_dir = (root / "uploads" / session.id[:8]).resolve()
+    try:
+        upload_dir.relative_to(root)
+    except ValueError as exc:  # pragma: no cover - defensive; path is internally derived
+        raise ValueError("upload directory escaped the workspace") from exc
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    path = upload_dir / filename
+    if not path.exists():
+        return path
+    parsed = Path(filename)
+    stem = parsed.stem or "upload"
+    suffix = parsed.suffix
+    for index in range(2, 1000):
+        candidate = upload_dir / f"{stem}-{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise ValueError("could not allocate a unique upload filename")
+
+
+def _write_upload_file(target: Path, file_bytes: bytes) -> None:
+    """Write an upload without clobbering a concurrently-created file."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    fd = os.open(target, flags)
+    wrapped = False
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            wrapped = True
+            handle.write(file_bytes)
+    except Exception:
+        if not wrapped:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            target.unlink()
+        raise
+
+
+def _reader_tool_for_artifact(artifact: ArtifactRef) -> str:
+    """Best first reader for an uploaded artifact."""
+    suffix = Path(artifact.filename).suffix.lower()
+    if suffix == ".docx":
+        return "read_docx"
+    if suffix in {".xlsx", ".xlsm"}:
+        return "read_xlsx"
+    if artifact.kind == "image":
+        return "inspect_image"
+    if artifact.kind == "text":
+        return "read_file"
+    return ""
+
+
+def _upload_prompt(artifact: ArtifactRef, suggested_tool: str) -> str:
+    """Prompt text the browser can place in the composer after a successful upload."""
+    quoted_path = f"`{artifact.path}`"
+    if suggested_tool:
+        return (
+            f"Please inspect the uploaded file {quoted_path} with `{suggested_tool}` "
+            "and summarize it."
+        )
+    return f"Please inspect the uploaded file {quoted_path} and tell me what you can do with it."
 
 
 class AgentLike(Protocol):
@@ -338,6 +470,23 @@ def create_app(
         resolved_store.save(session)
         return session
 
+    def _load_session_or_404(session_id: str) -> Session:
+        try:
+            return resolved_store.load(session_id)
+        except SessionNotFound as exc:
+            raise HTTPException(status_code=404, detail=f"no session {session_id!r}") from exc
+
+    def _session_artifacts(session: Session) -> list[ArtifactRef]:
+        """Collect unique artifacts recorded by uploads and tool results."""
+        artifacts: dict[str, ArtifactRef] = {
+            artifact.id: artifact for artifact in session.uploaded_artifacts
+        }
+        for message in session.messages:
+            for block in message.blocks:
+                for artifact in getattr(block, "artifacts", []):
+                    artifacts[artifact.id] = artifact
+        return list(artifacts.values())
+
     # ── meta endpoints ─────────────────────────────────────────────────────────
 
     @app.get("/health")
@@ -390,10 +539,86 @@ def create_app(
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str) -> SessionInfo:
+        return SessionInfo.from_session(_load_session_or_404(session_id))
+
+    @app.get("/sessions/{session_id}/artifacts")
+    def list_session_artifacts(session_id: str) -> list[ArtifactRef]:
+        return _session_artifacts(_load_session_or_404(session_id))
+
+    @app.post("/sessions/{session_id}/uploads", status_code=201)
+    def upload_session_file(session_id: str, request: UploadRequest) -> UploadResponse:
+        session = _load_session_or_404(session_id)
+        if session.id in inflight:
+            raise HTTPException(
+                status_code=409,
+                detail=f"a turn is already running for session {session.id!r}",
+            )
         try:
-            return SessionInfo.from_session(resolved_store.load(session_id))
-        except SessionNotFound as exc:
-            raise HTTPException(status_code=404, detail=f"no session {session_id!r}") from exc
+            file_bytes = _decode_upload_data(request.data)
+            filename = _safe_upload_filename(request.filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        target: Path | None = None
+        try:
+            for _attempt in range(1000):
+                candidate = _unique_upload_path(resolved_settings.workspace_root, session, filename)
+                try:
+                    _write_upload_file(candidate, file_bytes)
+                except FileExistsError:
+                    continue
+                target = candidate
+                break
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"failed to save upload: {exc}") from exc
+        if target is None:
+            raise HTTPException(status_code=409, detail="could not allocate upload filename")
+
+        try:
+            artifact = artifact_from_path(
+                target,
+                workspace_root=resolved_settings.workspace_root,
+                created_by_tool="upload",
+            )
+        except ArtifactError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        session.uploaded_artifacts = [
+            item for item in session.uploaded_artifacts if item.id != artifact.id
+        ]
+        session.uploaded_artifacts.append(artifact)
+        resolved_store.save(session)
+        suggested_tool = _reader_tool_for_artifact(artifact)
+        return UploadResponse(
+            path=artifact.path,
+            bytes=artifact.size,
+            artifact=artifact,
+            suggested_tool=suggested_tool,
+            prompt=_upload_prompt(artifact, suggested_tool),
+        )
+
+    @app.get("/sessions/{session_id}/artifacts/{artifact_id}/download")
+    def download_session_artifact(session_id: str, artifact_id: str) -> FileResponse:
+        session = _load_session_or_404(session_id)
+        artifact = next(
+            (item for item in _session_artifacts(session) if item.id == artifact_id),
+            None,
+        )
+        if artifact is None:
+            raise HTTPException(status_code=404, detail=f"no artifact {artifact_id!r}")
+        try:
+            path = resolve_artifact_path(
+                artifact,
+                workspace_root=resolved_settings.workspace_root,
+                verify_digest=True,
+            )
+        except ArtifactChangedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ArtifactError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return FileResponse(path, media_type=artifact.mime_type, filename=artifact.filename)
 
     @app.delete("/sessions/{session_id}", status_code=204)
     def delete_session(session_id: str) -> None:

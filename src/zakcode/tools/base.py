@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, model_validator
 
+from zakcode.artifacts import ArtifactRef
 from zakcode.config import PermissionTier
 from zakcode.tasks import TaskNetwork
 
@@ -205,7 +206,8 @@ class ToolResult(BaseModel):
     """The outcome of a tool invocation.
 
     ``output`` is the text the model sees; ``data`` optionally carries structured results
-    losslessly alongside it.
+    losslessly alongside it. ``artifacts`` names files a client can download/preview without
+    pushing binary content back through the model prompt.
 
     ``hint`` and ``fix`` are the optional *rails* a tool can hand the model: ``hint`` is a
     suggested next step on success (e.g. "saved -- reply and end"), ``fix`` is the concrete
@@ -219,22 +221,33 @@ class ToolResult(BaseModel):
     output: str = ""
     is_error: bool = False
     data: dict[str, Any] | None = None
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
     hint: str | None = None
     fix: str | None = None
 
     @classmethod
     def ok(
-        cls, output: str, *, data: dict[str, Any] | None = None, hint: str | None = None
+        cls,
+        output: str,
+        *,
+        data: dict[str, Any] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        hint: str | None = None,
     ) -> ToolResult:
         """A successful result, optionally with a next-step ``hint``."""
-        return cls(output=output, is_error=False, data=data, hint=hint)
+        return cls(output=output, is_error=False, data=data, artifacts=artifacts or [], hint=hint)
 
     @classmethod
     def error(
-        cls, message: str, *, data: dict[str, Any] | None = None, fix: str | None = None
+        cls,
+        message: str,
+        *,
+        data: dict[str, Any] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+        fix: str | None = None,
     ) -> ToolResult:
         """An error result (still a value, never an exception), optionally with a ``fix``."""
-        return cls(output=message, is_error=True, data=data, fix=fix)
+        return cls(output=message, is_error=True, data=data, artifacts=artifacts or [], fix=fix)
 
 
 class Tool(ABC):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from zakcode.artifacts import ArtifactRef
 from zakcode.messages import (
     ContentBlock,
     Message,
@@ -85,3 +86,21 @@ def test_content_block_discriminated_union() -> None:
 
     thinking = adapter.validate_python({"type": "thinking", "text": "hmm"})
     assert isinstance(thinking, ThinkingBlock)
+
+
+def test_tool_result_block_carries_artifacts() -> None:
+    artifact = ArtifactRef(
+        id="a1",
+        path="out/report.docx",
+        filename="report.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size=12,
+        sha256="0" * 64,
+        kind="document",
+        created_by_tool="create_docx",
+    )
+    original = ToolResultBlock(tool_use_id="t1", output="wrote report", artifacts=[artifact])
+
+    restored = ToolResultBlock.model_validate_json(original.model_dump_json())
+
+    assert restored.artifacts == [artifact]

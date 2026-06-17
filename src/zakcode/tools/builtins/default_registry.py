@@ -10,7 +10,9 @@ from zakcode.tools.builtins.deep_think import DeepThinkTool
 from zakcode.tools.builtins.edit import EditFileTool
 from zakcode.tools.builtins.glob import GlobTool
 from zakcode.tools.builtins.grep import GrepTool
+from zakcode.tools.builtins.images import CreateChartImageTool, InspectImageTool, SaveImageTool
 from zakcode.tools.builtins.list_dir import ListDirTool
+from zakcode.tools.builtins.office import CreateDocxTool, CreateXlsxTool, ReadDocxTool, ReadXlsxTool
 from zakcode.tools.builtins.powershell import PowerShellTool
 from zakcode.tools.builtins.read_file import ReadFileTool
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
@@ -45,6 +47,13 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(ListDirTool(), aliases=["ls", "dir"])
     registry.register(GlobTool(), aliases=["find"])
     registry.register(GrepTool(), aliases=["search", "rg"])
+    registry.register(ReadDocxTool(), aliases=["read_word"])
+    registry.register(ReadXlsxTool(), aliases=["read_excel"])
+    registry.register(CreateDocxTool(), aliases=["docx", "word"])
+    registry.register(CreateXlsxTool(), aliases=["xlsx", "excel"])
+    registry.register(InspectImageTool(), aliases=["image_info"])
+    registry.register(SaveImageTool(), aliases=["image"])
+    registry.register(CreateChartImageTool(), aliases=["chart"])
     registry.register(UpdatePlanTool(), aliases=["plan", "todo"])
     registry.register(BashTool(), aliases=["sh", "shell"])
     registry.register(PowerShellTool(), aliases=["pwsh"])
