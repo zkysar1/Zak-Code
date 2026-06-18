@@ -103,6 +103,12 @@ _ACCEPT_RE = re.compile(
 # "extension" is digits) are NOT mistaken for filenames. Generic by design — it replaces a
 # hand-maintained extension allowlist that silently missed ``.csv``/``.xml``/``.log``/...
 _FILENAME_RE = re.compile(r"^\S+\.[A-Za-z]{1,8}$")
+# A CLI OPTION FLAG (``-v``, ``--top N``, ``--help``) is a usage/synopsis token, never an
+# expected-stdout literal — but it reads like one when a request says e.g. "Print the top 10
+# ... Support a `--top N` flag". A leading ``-`` followed by a LETTER is the flag shape; a
+# leading ``-`` then a DIGIT is kept, so a genuine negative-number output (``-5``, ``-3.14``)
+# is NOT mistaken for a flag. (Generic, like the filename guard — not a hardcoded blocklist.)
+_CLI_FLAG_RE = re.compile(r"^--?[A-Za-z]")
 
 
 def extract_acceptance(user_text: str) -> str | None:
@@ -126,6 +132,8 @@ def extract_acceptance(user_text: str) -> str | None:
     if not value or len(value) > 200 or "\n" in value:
         return None
     if "/" in value or "\\" in value or _FILENAME_RE.match(value):
+        return None
+    if _CLI_FLAG_RE.match(value):  # a CLI option flag (e.g. `--top N`, `-v`), not expected stdout
         return None
     return value
 
@@ -167,6 +175,21 @@ def _tokenize(command: str) -> list[str]:
         return command.split()
 
 
+def _segments(command: str) -> list[list[str]]:
+    """Split a command into execution segments at shell separators (``&&``/``|``/``;``/...).
+
+    Token matching is per-segment so an interpreter (or a test runner) in one segment never
+    blesses a token that lives in another.
+    """
+    segments: list[list[str]] = [[]]
+    for tok in _tokenize(command):
+        if tok in _SEGMENT_SEPARATORS:
+            segments.append([])
+        else:
+            segments[-1].append(tok)
+    return segments
+
+
 def _executed_targets(command: str, targets: set[str]) -> set[str]:
     """The subset of ``targets`` (basenames) that ``command`` actually *executes*.
 
@@ -179,15 +202,8 @@ def _executed_targets(command: str, targets: set[str]) -> set[str]:
     """
     if not command or not targets:
         return set()
-    segments: list[list[str]] = [[]]
-    for tok in _tokenize(command):
-        if tok in _SEGMENT_SEPARATORS:
-            segments.append([])
-        else:
-            segments[-1].append(tok)
-
     executed: set[str] = set()
-    for seg in segments:
+    for seg in _segments(command):
         if not seg:
             continue
         head = _interpreter_name(seg[0])
@@ -204,6 +220,53 @@ def _executed_targets(command: str, targets: set[str]) -> set[str]:
             if stripped.startswith(("./", ".\\")) and (b := _basename_any(stripped)) in targets:
                 executed.add(b)
     return executed
+
+
+#: Test-runner heads whose SUCCESSFUL (exit-0) run verifies the written code through its
+#: tests. A runner DISCOVERS and IMPORTS the modules under test, so their filenames never
+#: appear as execution tokens (``pytest test_x.py`` runs ``test_x.py`` but only imports
+#: ``x.py``) — yet a green suite is a STRONGER signal than a bare run that the code works.
+#: Recognized structurally (mirroring _executed_targets' per-segment split), multi-language to
+#: match the gate's cross-language arming — never a vendor branch.
+_TEST_RUNNER_HEADS = {"pytest", "py.test", "jest", "vitest", "mocha", "ava", "rspec"}
+#: Modules run as ``python -m <module>`` (or ``py -m unittest``) that execute a test suite.
+_TEST_RUNNER_MODULES = {"pytest", "unittest", "nose2"}
+
+
+def _runs_test_suite(command: str) -> bool:
+    """True if any segment of ``command`` invokes a recognized test runner.
+
+    A green run of one satisfies the verify-before-finish gate (a test runner exercises the
+    written modules through their tests, importing them rather than naming them as execution
+    tokens). Covers bare runners (``pytest``), the ``<launcher> -m <module>`` form
+    (``python -m pytest`` / ``py -m unittest``), and the ``<tool> test`` subcommand of common
+    toolchains (``npm``/``pnpm``/``yarn`` ``test``, ``deno``/``bun``/``go`` ``test``,
+    ``cargo test``, ``node --test``). Per-segment, so ``cd sub && pytest`` is handled.
+    """
+    if not command:
+        return False
+    for seg in _segments(command):
+        if not seg:
+            continue
+        head = _interpreter_name(seg[0])
+        body = [t.strip().strip("'\"").lower() for t in seg[1:]]
+        if head in _TEST_RUNNER_HEADS:
+            return True
+        # `python -m pytest` / `py -m unittest`: an interpreter head with `-m <runner module>`.
+        if head in _INTERPRETERS and "-m" in body:
+            i = body.index("-m")
+            if i + 1 < len(body) and body[i + 1] in _TEST_RUNNER_MODULES:
+                return True
+        # `<tool> test` subcommand forms.
+        if head in {"npm", "pnpm", "yarn"} and "test" in body:
+            return True
+        if head in {"deno", "bun", "go"} and body[:1] == ["test"]:
+            return True
+        if head == "cargo" and "test" in body:
+            return True
+        if head == "node" and "--test" in body:
+            return True
+    return False
 
 
 def _runnable_path(call: ToolCall, result: ToolResultBlock) -> str | None:
@@ -267,6 +330,12 @@ class RecipeCursor:
         self._abs_targets: list[str] = []  # their paths, in write order (for the harness run)
         self._verified: set[str] = set()  # basenames that have been run successfully
         self.harness_runs = 0  # how many harness-issued verification runs were issued
+        # A green run of a recognized test runner (pytest/unittest/jest/...) verifies the
+        # written code THROUGH its tests — the modules are imported, never named as execution
+        # tokens — so it satisfies the gate as a whole (see :func:`_runs_test_suite`). This is
+        # what stops a create-with-tests turn that runs `pytest` green from falsely stalling as
+        # recipe_stalled. Reset by a fresh runnable write (the new code is unverified again).
+        self._suite_verified = False
         # Recovery tracking (research R1): per-target, the command whose run of a created file
         # FAILED — so a later SUCCESS that runs the SAME target is recorded as a recovery, and a
         # never-failed file's first-try success is never misattributed as one. (review2 #3)
@@ -275,12 +344,16 @@ class RecipeCursor:
 
     @property
     def verified(self) -> bool:
-        """True once EVERY runnable written this turn has been run successfully.
+        """True once the written runnables are verified this turn — by EITHER path:
 
-        Per-target (not one turn-wide flag), so writing two files and running only one no
-        longer marks the whole turn verified — the gate keeps its 'run what you wrote'
-        promise across multiple files.
+        * a recognized test runner ran green (``_suite_verified``), which exercises every
+          written module through its tests (they are imported, not named as run tokens); OR
+        * EVERY runnable written this turn has been run successfully (per-target — so writing
+          two files and running only one does not mark the whole turn verified; the gate keeps
+          its 'run what you wrote' promise across multiple files).
         """
+        if self._suite_verified:
+            return True
         return bool(self._targets) and self._targets <= self._verified
 
     def observe(self, calls: list[ToolCall], results: list[ToolResultBlock]) -> None:
@@ -310,6 +383,9 @@ class RecipeCursor:
                     self._targets.add(base)
                     self._abs_targets.append(path)
                     self._verified.discard(base)  # a fresh write must be re-verified
+                    # ...and it invalidates a prior green test run: the new/edited code has
+                    # not been exercised by the suite yet, so re-require verification.
+                    self._suite_verified = False
             elif call.name in _RUN_TOOLS and self.wrote_runnable:
                 command = call.arguments.get("command")
                 if not isinstance(command, str):
@@ -330,6 +406,14 @@ class RecipeCursor:
                         self._recovered_command = command
                         for base in recovered:
                             self._failed_by_target.pop(base, None)
+                # A green run of a recognized test runner (this is the success path — is_error
+                # is False here) verifies the written modules through their tests even though
+                # their filenames are imported, not named as run tokens. It satisfies the gate
+                # as a whole — but only when no exact-output literal was demanded (a suite run
+                # does not demonstrate a specific stdout string, so an acceptance check still
+                # requires a direct run that prints it).
+                if self.acceptance is None and _runs_test_suite(command):
+                    self._suite_verified = True
 
     @property
     def recovered_command(self) -> str | None:
@@ -338,8 +422,13 @@ class RecipeCursor:
         return self._recovered_command
 
     def needs_verification(self) -> bool:
-        """True when the turn should not end yet: a runnable file written, not yet run."""
-        return self.enabled and self.wrote_runnable and not (self._targets <= self._verified)
+        """True when the turn should not end yet: a runnable file written, not yet verified.
+
+        Verification is satisfied by a per-target run OR a green test-runner run — see the
+        :attr:`verified` property. (``wrote_runnable`` implies ``_targets`` is non-empty, so
+        this is the old ``not (_targets <= _verified)`` plus the green-suite short-circuit.)
+        """
+        return self.enabled and self.wrote_runnable and not self.verified
 
     def can_nudge(self) -> bool:
         """Whether another verification attempt is allowed before giving up (recipe_stalled)."""

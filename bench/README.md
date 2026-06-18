@@ -14,14 +14,24 @@ not shipped library code. Run it manually; it is not part of CI.
 bench/
   run_task.py            # run ONE task headless, print a JSON result
   run_suite.py           # run several tasks in parallel, print a summary table
+  diag_task.py           # run ONE task and dump the tool-call transcript (why a gate fired)
   probe_tool_use_failed.py  # diagnostic: inspect a provider's raw text vs tool_calls
   tasks/
     01-wordfreq/         # task.json + held-out verify.py
     02-median-bug/       # + workspace/ seed files (bugfix task)
     03-lru/
     04-todo-cli/         # multi-file CLI stretch task (store.py + cli.py)
+    05-ledger/           # multi-file CLI + atomic transfers (ledger.py + cli.py)
   results/               # run artifacts (.log/.json) — gitignored, regenerable
 ```
+
+The runner puts ITS OWN interpreter dir first on `PATH` for the agent's subprocess tools
+(`_ensure_interpreter_on_path`), so a bare `python -m pytest` the agent issues resolves to
+this (pytest-capable) venv — mirroring a user running zakcode inside an activated project
+venv. Without it the agent's subprocess hits the *system* python (often no pytest), its
+verification fails, and the recipe gate stalls a turn whose code is actually fine — while the
+oracle, run with the venv python, passes. (That mismatch was the old `recipe_stalled`-but-
+oracle-passes artifact.)
 
 A task dir holds `task.json` (`{id, title, prompt, max_iterations?, max_cost_usd?,
 verify_timeout_s?}`), an optional `workspace/` seed copied into the temp run dir, and a
@@ -38,6 +48,9 @@ verify_timeout_s?}`), an optional `workspace/` seed copied into the temp run dir
 
 # the suite (see run_suite.py header for flags)
 ./.venv/Scripts/python.exe bench/run_suite.py
+
+# why did a gate fire? dump the agent's tool-call transcript (names + commands + is_error)
+./.venv/Scripts/python.exe bench/diag_task.py bench/tasks/01-wordfreq
 ```
 
 ## Benchmarking a different model / provider (no code change)
@@ -74,11 +87,33 @@ Upstream confirmation of the Groq tool-call failure mode: pydantic-ai #4350, Ope
 
 ## Open testing backlog
 
-See the handoff brief. In short: (1) supplier comparison — Gemini 2.5 Flash / DeepSeek V3 /
-Fireworks via `ZBENCH_*`; (2) flag `gpt-oss-120b` `tools_unreliable` in `registry.py`
-(ripples into `AvailabilityResolver`); (3) `recipe_stalled` over-fires on successful runs
-(01 + 04 pass the oracle but report `stop_reason=recipe_stalled`); (4) `04` stall on
-llama-text; (5) broaden task coverage with harder multi-file tasks.
+See the handoff brief. Status:
+
+- **(2) DONE** — `groq/openai/gpt-oss-120b` is flagged `tools_unreliable` in `registry.py`; the
+  `AvailabilityResolver` groq pick is now `qwen/qwen3-32b`, and the runtime failover crosses
+  provider once it is excluded.
+- **(3) DONE** — the `recipe_stalled` over-fire is fixed: the recipe gate now credits a green
+  test-runner run, `extract_acceptance` no longer false-matches a CLI flag (`--top N`), and the
+  runner exposes a pytest-capable interpreter (above). 01-wordfreq now completes, and neither 01
+  nor 04 reports `recipe_stalled`. (04 can still `doom_loop` — a genuine gpt-4o-mini limitation:
+  it repeatedly emits an invalid f-string that the `write_file` Python-validity firewall refuses.)
+- **(5) DONE (first task)** — added `05-ledger` (multi-file CLI + atomic transfers; the held-out
+  oracle was validated to PASS against a correct reference implementation).
+- **(1) PARTIAL — named suppliers need keys** — only `OPENAI_API_KEY` + `GROQ_API_KEY` are
+  present here, so Gemini 2.5 Flash / DeepSeek V3 / Fireworks could not be run. With the
+  available providers the comparison re-affirms the current default tier: `openai/gpt-4o-mini`
+  is the reliable deep model (01 completes and passes the oracle), while `groq/llama-3.3-70b`
+  (text mode) is unreliable on the deep set (in this run 03 passed after a doom-loop; 01 and 04
+  failed). Re-run the deep set with `ZBENCH_DEEP_SOURCE`/`ZBENCH_DEEP_MODEL` once a
+  Gemini/DeepSeek/Fireworks key exists.
+- **(4) DIAGNOSED — a model limitation, not a harness bug** — on the complex 04 prompt
+  `groq/llama-3.3-70b` in text mode ignores the `<tool_call>` protocol and "answers" with a
+  Markdown ```python code block (no tool call — not even its native `<function=...>` form), so
+  the loop sees no tool call and completes in **one** iteration having written nothing. The text
+  parser is strict by design (precision over recall — prose must not false-trip it), so there is
+  no safe parser change; the gap is the model not following the protocol. A bounded text-mode
+  nudge ("you wrote code but emitted no `<tool_call>` — emit one to actually create the file")
+  is a possible future improvement, but needs its own validation. See `diag_task.py` output.
 
 ## Constraints
 

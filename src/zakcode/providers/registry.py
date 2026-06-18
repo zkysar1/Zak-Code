@@ -107,6 +107,14 @@ _CAPABILITIES: dict[str, Capabilities] = {
     ),
     "groq/openai/gpt-oss-120b": Capabilities(
         supports_tools=True,
+        # Nominal tool support, unreliable in PRACTICE — so the auto-resolver skips it when
+        # tools are in play, exactly like llama-3.3-70b above. It is a REASONING model: under a
+        # real multi-tool schema it emits malformed NATIVE tool calls that Groq's strict parser
+        # rejects with `tool_use_failed` (near-deterministically), and in text mode its output
+        # goes to the reasoning channel so `content` comes back empty — broken in BOTH modes.
+        # (live-verified 2026-06-18; bench deep set 0/3 — see bench/README.md; PR #45 root
+        # cause. Upstream: pydantic-ai #4350, OpenHands #10187.)
+        tools_unreliable=True,
         supports_vision=False,
         supports_caching=False,
         context_window=131_072,
