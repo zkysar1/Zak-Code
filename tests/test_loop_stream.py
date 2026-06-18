@@ -361,10 +361,11 @@ async def test_doom_loop_stops_turn(tmp_path: Any) -> None:
     assert isinstance(done, AgentDone)
     assert done.stop_reason == "doom_loop"
 
-    # The advisory status precedes done.
+    # Two advisories now: the bounded recovery nudge first, then the final doom stop.
     statuses = [e for e in events if isinstance(e, AgentStatus)]
-    assert len(statuses) == 1
-    assert "repeated identical tool calls" in statuses[0].message
+    assert len(statuses) == 2
+    assert "recovering" in statuses[0].message  # the recovery attempt
+    assert "repeated identical tool calls" in statuses[1].message  # the give-up
 
 
 @pytest.mark.anyio

@@ -697,7 +697,9 @@ async def test_loop_doom_signal_latches_escalation(tmp_path: Path) -> None:
         max_iterations=10,
     )
     result = await loop.arun_turn("hi")
-    assert result.stop_reason == "doom_loop"
+    # The doom signal latches escalation to the deep coder; the built-in recovery then re-enters on
+    # that deep model, which completes -- escalation + recovery rescue the turn instead of dooming.
+    assert result.stop_reason == "completed"
     assert result.routed_escalated is True
     assert result.routed_category == "deep_code"
 

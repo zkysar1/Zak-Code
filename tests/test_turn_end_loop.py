@@ -230,20 +230,20 @@ async def test_turn_end_fire_refuses_non_vetoable_reasons(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_turn_end_doom_loop_veto_pairs_and_resets(tmp_path: Path) -> None:
     hook = RecordingHook([_veto("Different approach, please."), None])
-    # Identical batch forever; doom fires at the threshold, the veto re-enters,
-    # and the RESET means the guard needs a full fresh streak to fire again.
-    provider = ScriptedProvider([_same_call(i) for i in range(2 * DOOM_LOOP_THRESHOLD + 1)])
-    loop = _make_loop(provider, tmp_path, max_iterations=10, turn_end_veto_budget=5)
+    # Identical batch forever. Three doom cycles now: the built-in RECOVERY fires first (one nudge
+    # + re-enter, the hook is NOT consulted), THEN the turn_end veto re-enters, THEN the final
+    # non-veto break. The RESET means each needs a full fresh streak -> 3 * THRESHOLD iterations.
+    provider = ScriptedProvider([_same_call(i) for i in range(3 * DOOM_LOOP_THRESHOLD + 1)])
+    loop = _make_loop(provider, tmp_path, max_iterations=12, turn_end_veto_budget=5)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("repeat")
     assert result.stop_reason == "doom_loop"
-    # threshold iterations -> veto -> threshold MORE iterations (proves the reset:
-    # without it the very next identical batch would re-trip immediately).
-    assert result.iterations == 2 * DOOM_LOOP_THRESHOLD
+    assert result.iterations == 3 * DOOM_LOOP_THRESHOLD
+    # The turn_end hook is consulted only after the recovery is spent: twice (veto, then None).
     assert [p.stop_reason for p in hook.payloads] == ["doom_loop", "doom_loop"]
-    # Pairing fix: the vetoed batch's tool_use got a synthetic error tool_result,
-    # and the FINAL (non-veto) doom_loop break pairs its unexecuted batch too —
-    # two interventions total, so the resumed session has no dangling tool_use.
+    # Pairing fix: the vetoed batch's tool_use got a synthetic error tool_result, and the FINAL
+    # (non-veto) doom_loop break pairs its unexecuted batch too — two `doom_loop_intervention`
+    # markers (the recovery's own pairing uses the distinct `doom_recovery` marker, not counted).
     synthetic = [
         b
         for m in loop.session.messages

@@ -176,8 +176,9 @@ async def _probe_doom_loop_halt(workspace: str) -> str:
     agent = make_agent(provider, workspace_root=workspace)
     result = await agent.arun_turn("keep writing")
     assert result.stop_reason == "doom_loop", result.stop_reason
-    # Halted early — far below a runaway count (DOOM_LOOP_THRESHOLD = 3).
-    assert result.iterations <= 5, result.iterations
+    # Halted early — far below a runaway count: THRESHOLD (3) repeats, one recovery attempt, then
+    # THRESHOLD more = 6, still far below the iteration budget.
+    assert result.iterations <= 7, result.iterations
     return f"identical repeated tool call halted as 'doom_loop' after {result.iterations} iters"
 
 
