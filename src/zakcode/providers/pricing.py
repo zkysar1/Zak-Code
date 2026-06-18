@@ -62,9 +62,7 @@ def estimate_cost_usd(
     cached = max(0, min(int(cache_read_tokens), prompt))
     full_in = prompt - cached
     cost = (
-        full_in * in_rate
-        + cached * in_rate * GROQ_CACHED_INPUT_FACTOR
-        + completion * out_rate
+        full_in * in_rate + cached * in_rate * GROQ_CACHED_INPUT_FACTOR + completion * out_rate
     ) / 1_000_000.0
     return cost
 

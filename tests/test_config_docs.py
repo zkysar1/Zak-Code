@@ -5,8 +5,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from zakcode.config import Settings
 from zakcode import __version__
+from zakcode.config import Settings
 
 _ROOT = Path(__file__).resolve().parents[1]
 

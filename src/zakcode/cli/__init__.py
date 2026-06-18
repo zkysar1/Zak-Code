@@ -27,6 +27,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
+from zakcode import __version__
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
     heading,
@@ -45,7 +46,6 @@ from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
 from zakcode.secrets import strip_url_credentials
-from zakcode import __version__
 
 if TYPE_CHECKING:
     from zakcode import Agent
@@ -1272,9 +1272,7 @@ def chat(
                 # that prompt caching is actually hitting (Anthropic explicit; OpenAI/
                 # Groq automatic). Absent => 0 => no annotation, no clutter.
                 cached_note = (
-                    f", {usage.cache_read_tokens} cached"
-                    if usage.cache_read_tokens
-                    else ""
+                    f", {usage.cache_read_tokens} cached" if usage.cache_read_tokens else ""
                 )
                 console.print(
                     margin(
