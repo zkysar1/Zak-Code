@@ -1684,11 +1684,14 @@ class AgentLoop:
                 # Completion-review gate (bounded): a turn that CHANGED code may not finish until
                 # the agent re-verifies it satisfied the request — send it back to check every
                 # requirement against what is ACTUALLY on disk and finish any abandoned/failed op,
-                # which catches "declared done while a requirement was silently dropped". Bounded
-                # by ``completion_review_attempts`` so it converges; inert unless configured.
+                # which catches "declared done while a requirement was silently dropped". Scoped to
+                # COMPLEX (non-quick_code) turns: it would over-work a simple one-line fix (a quick
+                # bugfix ran to max_iterations with it on), and the payoff is on hard tasks.
+                # Bounded by ``completion_review_attempts`` so it converges; off unless that is set.
                 if (
                     self.completion_review_attempts > 0
                     and cursor.wrote_runnable
+                    and main_category != "quick_code"
                     and completion_reviews < self.completion_review_attempts
                 ):
                     completion_reviews += 1
@@ -2376,6 +2379,7 @@ class AgentLoop:
                     if (
                         self.completion_review_attempts > 0
                         and cursor.wrote_runnable
+                        and main_category != "quick_code"
                         and completion_reviews < self.completion_review_attempts
                     ):
                         completion_reviews += 1
