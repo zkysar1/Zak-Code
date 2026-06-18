@@ -71,19 +71,38 @@ def _g(model: str) -> ZakpickModel:
     return ZakpickModel(model=model)
 
 
-#: Out-of-the-box defaults, drawn from Groq's published lineup and graduated by cost/capability.
-#: The live $/1M in·out rates are the single source of truth in ``providers/pricing.py``
-#: (``GROQ_RATES_PER_M``); the provider layer uses them to cost Groq calls litellm cannot price.
-#: ``llama-3.3-70b-versatile`` is deliberately avoided — the registry flags it tools_unreliable.
-#: Each doubles as a "download this to run the category locally" hint (Groq serves only
-#: open-source models).
+def _o(model: str) -> ZakpickModel:
+    """A first-party OpenAI default (litellm reads ``OPENAI_API_KEY`` directly)."""
+    return ZakpickModel(model=model, source="openai")
+
+
+#: Out-of-the-box defaults, graduated by cost/capability. The cheap, read-only, and
+#: easy-turn categories stay on Groq's fast open models; the TOOL-HEAVY capable tier
+#: (deep_code, delegate) runs on a first-party model whose NATIVE function-calling is
+#: reliable. The live Groq $/1M in·out rates are the single source of truth in
+#: ``providers/pricing.py`` (``GROQ_RATES_PER_M``); openai-source models are priced by
+#: litellm directly.
+#:
+#: Why deep_code/delegate moved OFF Groq's open models (live-verified 2026-06-18):
+#:   * ``openai/gpt-oss-120b`` emits malformed NATIVE tool calls that Groq's strict parser
+#:     rejects with ``tool_use_failed`` — near-deterministically on a multi-tool schema, so
+#:     every hard turn died with provider_error (it is a REASONING model, so the text-tool
+#:     fallback returns empty content — broken in both modes).
+#:   * ``groq/llama-3.3-70b-versatile`` is also tools_unreliable natively (pseudo-XML
+#:     rejected); the text protocol works for FOCUSED tasks but stalls on complex multi-file
+#:     prompts, and Groq does not cache it (costly across agentic iterations).
+#:   * ``openai/gpt-4o-mini`` completed the full deep-task benchmark (incl. a multi-file
+#:     task) with plain native tool calling and ~85% prompt-cache hit — most reliable AND
+#:     cheapest per completed task. Requires ``OPENAI_API_KEY``; a Groq-only fork should
+#:     override deep_code/delegate to ``llama-3.3-70b-versatile`` with
+#:     ``ZAKCODE_TOOL_CALLING_MODE=text`` (focused tasks) instead.
 DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
     "classify": _g("llama-3.1-8b-instant"),  # cheapest/fastest — JSON gates
     "summarize": _g("openai/gpt-oss-20b"),  # cheap, fast, decent prose; no tools
-    "quick_code": _g("openai/gpt-oss-20b"),  # cheap + tools-reliable family — easy turns
+    "quick_code": _g("openai/gpt-oss-20b"),  # cheap, tools-OK on easy turns
     "plan": _g("qwen/qwen3-32b"),  # strong reasoning for decomposition (read-only)
-    "deep_code": _g("openai/gpt-oss-120b"),  # tools-RELIABLE, strongest — hard turns
-    "delegate": _g("openai/gpt-oss-120b"),  # tools-reliable, capable — general execution
+    "deep_code": _o("gpt-4o-mini"),  # tools-RELIABLE native + cached — hard turns
+    "delegate": _o("gpt-4o-mini"),  # tools-reliable native — general execution
 }
 
 #: Categories with a LIVE routable call site in v1, so the info panel only advertises routes the
