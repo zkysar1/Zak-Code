@@ -1945,7 +1945,13 @@ class AgentLoop:
                 # Bounded RateLimited retry for THIS provider call (audit P0-4). A retry
                 # is only safe while NO event has arrived yet — once deltas streamed to
                 # the client, re-issuing the call would re-yield text the client already
-                # rendered, so a mid-stream failure is terminal for the turn instead.
+                # rendered, so a mid-stream RateLimited is terminal for the turn instead.
+                # EXCEPTION: ModelOutputRejected (the provider rejected the model's own
+                # malformed tool call, Groq ``tool_use_failed``) IS retried even mid-stream
+                # — its partial output is known-invalid, so a small duplicate text fragment
+                # is the right price for not killing the turn. Without this, deep models
+                # that emit a malformed tool call mid-stream die with provider_error even
+                # though the documented remedy is a retry (base.py ModelOutputRejected).
                 # The accumulators are rebuilt per attempt so a retried call can never
                 # inherit partial state (defense in depth on top of the no-event gate).
                 stream_finish_reason: str | None = None
@@ -1953,6 +1959,13 @@ class AgentLoop:
                     text_parts: list[str] = []
                     accumulator = ToolCallAccumulator()
                     received_any = False
+                    # Usage is accumulated per-attempt and committed ONLY after the attempt
+                    # streams to completion. A mid-stream failure discards the attempt (it
+                    # retries or terminates), so folding usage as events arrive would
+                    # double-count a retried ModelOutputRejected attempt and over-report
+                    # /cost (fresh-eyes review of the mid-stream-retry exemption below).
+                    attempt_usage = Usage()
+                    saw_usage = False
                     try:
                         async for ev in self.provider.astream(
                             call_messages,
@@ -1966,19 +1979,33 @@ class AgentLoop:
                             elif isinstance(ev, StreamToolCallDelta):
                                 accumulator.add(ev)
                             elif isinstance(ev, StreamUsage):
-                                turn_usage = turn_usage + ev.usage
-                                if self.budget is not None:
-                                    self.budget.add_usage(ev.usage.cost_usd, ev.usage.total_tokens)
-                                # Tag with the model for per-model /cost attribution (streaming).
-                                self.session.add_usage(ev.usage, model=self.provider.model_id())
+                                attempt_usage = attempt_usage + ev.usage
+                                saw_usage = True
                             elif isinstance(ev, StreamDone):
                                 # The loop's own stop conditions decide the turn's
                                 # stop_reason, but a ``length`` finish triggers truncation
                                 # continuation below (parity #5), so capture it here.
                                 stream_finish_reason = ev.finish_reason
                                 break
+                        # The attempt streamed to completion without raising — commit its
+                        # usage exactly once. A retried/terminal attempt leaves via the
+                        # except below and never reaches here, so its usage is dropped.
+                        turn_usage = turn_usage + attempt_usage
+                        if self.budget is not None:
+                            self.budget.add_usage(
+                                attempt_usage.cost_usd, attempt_usage.total_tokens
+                            )
+                        if saw_usage:
+                            # Tag with the model for per-model /cost attribution (streaming).
+                            self.session.add_usage(attempt_usage, model=self.provider.model_id())
                     except RateLimited as exc:
-                        if not received_any and retry_attempts < self.provider_max_retries:
+                        # A generic mid-stream RateLimited is terminal (re-yielding rendered
+                        # text would duplicate it), but ModelOutputRejected is retried even
+                        # mid-stream — the provider rejected the model's own malformed tool
+                        # call, so the partial stream is known-invalid and re-issuing is the
+                        # documented recovery (base.py). Still bounded by provider_max_retries.
+                        retryable = not received_any or isinstance(exc, ModelOutputRejected)
+                        if retryable and retry_attempts < self.provider_max_retries:
                             retry_attempts += 1
                             delay = self._retry_delay(exc, retry_attempts)
                             # ModelOutputRejected subclasses RateLimited for its retry
@@ -2087,7 +2114,7 @@ class AgentLoop:
                 self._persist()
 
                 # Cost/token budget stop (parity #4), streaming twin. Usage was folded into
-                # the budget as StreamUsage events arrived; check after the call assembles.
+                # the budget when the call completed (above); check after the call assembles.
                 # Non-vetoable, like the buffered path.
                 if self.budget is not None and self.budget.over_budget():
                     stop_reason = "budget_exhausted"
