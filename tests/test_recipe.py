@@ -11,7 +11,9 @@ harness run WOULD prompt, the gate falls back to nudging the model instead.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import shutil
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -205,6 +207,116 @@ def test_cursor_rewrite_unverifies_a_file() -> None:
     assert c.needs_verification() is True
 
 
+# ── green test-runner run satisfies the gate (item 3: recipe_stalled over-fire) ──
+
+
+def test_cursor_verified_by_pytest_module_run() -> None:
+    # The canonical over-fire case: a module + its pytest file are written, and the model
+    # verifies with `python -m pytest test_x.py`. pytest IMPORTS the module (never names it as
+    # a run token), so the per-target check alone would falsely stall — the green suite satisfies
+    # the gate. (This is the bench 01-wordfreq / 03-lru shape.)
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w1", "write_file", path="wordfreq.py")], [_r("w1", path="wordfreq.py")])
+    c.observe(
+        [_c("w2", "write_file", path="test_wordfreq.py")], [_r("w2", path="test_wordfreq.py")]
+    )
+    assert c.needs_verification() is True
+    c.observe([_c("r", "bash", command="python -m pytest test_wordfreq.py")], [_r("r")])
+    assert c.needs_verification() is False
+
+
+def test_cursor_verified_by_bare_pytest() -> None:
+    # Bare `pytest -q` (no file arg) discovers and runs the suite; a green run satisfies the gate.
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w1", "write_file", path="lru.py")], [_r("w1", path="lru.py")])
+    c.observe([_c("w2", "write_file", path="test_lru.py")], [_r("w2", path="test_lru.py")])
+    c.observe([_c("r", "bash", command="pytest -q")], [_r("r")])
+    assert c.needs_verification() is False
+
+
+def test_cursor_multifile_library_verified_by_pytest() -> None:
+    # 04-todo-cli shape: two library modules imported by the test file. Neither store.py nor
+    # cli.py is ever executed directly, yet a green `pytest test_todo.py` verifies them both —
+    # the per-target gate could never be satisfied for an imported-only library otherwise.
+    c = RecipeCursor(enabled=True)
+    for f in ("store.py", "cli.py", "test_todo.py"):
+        c.observe([_c(f, "write_file", path=f)], [_r(f, path=f)])
+    assert c.needs_verification() is True
+    c.observe([_c("r", "bash", command="python -m pytest test_todo.py")], [_r("r")])
+    assert c.needs_verification() is False
+
+
+def test_cursor_failed_pytest_does_not_verify() -> None:
+    # A failing suite (non-zero exit -> is_error) verifies nothing; the gate still holds.
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="a.py")], [_r("w", path="a.py")])
+    c.observe([_c("w2", "write_file", path="test_a.py")], [_r("w2", path="test_a.py")])
+    c.observe([_c("r", "bash", command="pytest")], [_r("r", is_error=True)])
+    assert c.needs_verification() is True
+
+
+def test_cursor_pytest_does_not_bypass_acceptance() -> None:
+    # With a stated expected-output literal, a green suite is NOT enough (it does not demonstrate
+    # the program prints the literal) — a direct run that prints it is still required.
+    c = RecipeCursor(enabled=True, acceptance="pong")
+    c.observe([_c("w", "write_file", path="p.py")], [_r("w", path="p.py")])
+    c.observe([_c("r", "bash", command="pytest")], [_r("r", output="1 passed")])
+    assert c.needs_verification() is True
+    c.observe([_c("r2", "bash", command="py p.py")], [_r("r2", output="pong\n[exit code: 0]")])
+    assert c.needs_verification() is False
+
+
+def test_cursor_rewrite_after_pytest_re_requires_verification() -> None:
+    # A green suite satisfies the gate; editing a module afterward invalidates it (the new code
+    # was not exercised) — the turn must run its tests again before finishing.
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w1", "write_file", path="a.py")], [_r("w1", path="a.py")])
+    c.observe([_c("w2", "write_file", path="test_a.py")], [_r("w2", path="test_a.py")])
+    c.observe([_c("r", "bash", command="pytest")], [_r("r")])
+    assert c.needs_verification() is False
+    c.observe([_c("w3", "edit_file", path="a.py")], [_r("w3", path="a.py")])
+    assert c.needs_verification() is True
+
+
+def test_runs_test_suite_recognizes_runners() -> None:
+    from zakcode.agent import recipe as _recipe
+
+    runs = [
+        "pytest",
+        "pytest -q test_x.py",
+        "py.test",
+        "python -m pytest",
+        "py -m unittest",
+        "python -m unittest discover",
+        "cd sub && pytest",
+        "jest",
+        "vitest run",
+        "npm test",
+        "pnpm test",
+        "yarn test",
+        "deno test",
+        "bun test",
+        "go test ./...",
+        "cargo test",
+        "node --test",
+        "rspec",
+    ]
+    for cmd in runs:
+        assert _recipe._runs_test_suite(cmd) is True, cmd
+    not_runs = [
+        "py app.py",
+        "node app.js",
+        "echo test",
+        "cat test_x.py",
+        "python build.py",
+        "git add test_x.py",
+        "python -m http.server",
+        "go build ./...",
+    ]
+    for cmd in not_runs:
+        assert _recipe._runs_test_suite(cmd) is False, cmd
+
+
 # ── loop integration ──────────────────────────────────────────────────────────
 
 
@@ -258,6 +370,37 @@ def test_recipe_gate_completes_when_model_runs_the_file(tmp_path: Path) -> None:
     assert provider.calls == 3  # write, run, done — gate satisfied by the model's own run
 
 
+def test_recipe_gate_completes_when_model_runs_pytest(tmp_path: Path) -> None:
+    # item 3 regression: a create-with-tests turn whose verification is a GREEN pytest run must
+    # finish `completed`, not stall as `recipe_stalled` — even though the module under test is
+    # imported by the suite and never executed directly. (Reproduces the bench over-fire where
+    # 01-wordfreq / 04-todo-cli passed the held-out oracle but reported recipe_stalled.)
+    if importlib.util.find_spec("pytest") is None:
+        pytest.skip("pytest not importable")
+    pyrun = f'"{sys.executable}" -m pytest -q'
+    write_mod = LLMResult(
+        tool_calls=[
+            _c("w1", "write_file", path="mymod.py", content="def add(a, b):\n    return a + b\n")
+        ]
+    )
+    write_test = LLMResult(
+        tool_calls=[
+            _c(
+                "w2",
+                "write_file",
+                path="test_mymod.py",
+                content="from mymod import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+            )
+        ]
+    )
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=pyrun)])
+    done = LLMResult(text="All done!")
+    provider = _ScriptedProvider([write_mod, write_test, run, done])
+    result = asyncio.run(_loop(provider, tmp_path).arun_turn("build mymod.py and its tests"))
+    assert result.stop_reason == "completed"  # the green suite satisfied the gate
+    assert result.degraded is False  # ...and the turn is not flagged a struggle
+
+
 # ── Slice 2b-C: deterministic acceptance COMPARE ──────────────────────────────
 
 
@@ -289,6 +432,19 @@ def test_extract_acceptance_keeps_numeric_literals() -> None:
     # A numeric literal is NOT a filename (its "extension" is digits) and is kept.
     assert extract_acceptance("it prints `3.14`") == "3.14"
     assert extract_acceptance("it prints `v1.2`") == "v1.2"
+
+
+def test_extract_acceptance_rejects_cli_flags() -> None:
+    # A CLI option flag reads like an expected literal in "Print the top 10 ... `--top N` flag",
+    # but it is a usage token, not stdout — reject it (else the recipe gate would demand the
+    # program print `--top N`, which it never will → a FALSE recipe_stalled, the exact bench
+    # 01-wordfreq over-fire). (item 3)
+    assert extract_acceptance("Print the top 10 by default. Support a `--top N` flag.") is None
+    assert extract_acceptance("it prints `-v`") is None
+    assert extract_acceptance("prints `--help`") is None
+    # ...but a genuine negative-number output is NOT a flag (dash then digit) and is kept.
+    assert extract_acceptance("it prints `-5`") == "-5"
+    assert extract_acceptance("it prints `-3.14`") == "-3.14"
 
 
 def test_cursor_acceptance_requires_output_match() -> None:
