@@ -32,8 +32,10 @@ from typing import Literal
 from pydantic import BaseModel
 
 #: The task categories zakpick routes on. These ARE the strings passed as the routing ``task``.
-#: ``classify`` is reserved for a future cheap difficulty-classifier side-call and has no live
-#: call site in v1 (so it is never advertised to the user) — see docs/DECISIONS.md ADR-0009.
+#: ``classify`` powers the cheap difficulty side-call that routes the main turn quick-vs-deep
+#: (:func:`should_consult_classifier` → :func:`classify_main_turn`'s ``difficulty_hint``). It is
+#: an INTERNAL meta-route, not user-facing main work, so it stays out of
+#: :data:`ROUTED_CATEGORIES` (the info panel only advertises where real work runs). See ADR-0009.
 ZakpickCategory = Literal["quick_code", "deep_code", "summarize", "plan", "delegate", "classify"]
 
 #: Recognized override keys for ``Settings.zakpick_models`` (the validator rejects others).
@@ -106,8 +108,9 @@ DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
 }
 
 #: Categories with a LIVE routable call site in v1, so the info panel only advertises routes the
-#: engine actually takes (a receipt must never claim a route it doesn't make). ``classify`` is a
-#: documented seam with no in-process caller yet, so it is omitted here.
+#: engine actually takes (a receipt must never claim a route it doesn't make). ``classify`` IS
+#: now called (the difficulty side-call), but it is an internal meta-route that picks BETWEEN
+#: quick_code/deep_code rather than running user-facing work, so it stays omitted here.
 ROUTED_CATEGORIES: tuple[str, ...] = ("deep_code", "quick_code", "plan", "summarize", "delegate")
 
 #: Plain-English labels for the internal category names (no jargon leaks to the user).
@@ -163,7 +166,11 @@ _QUICK_MAX_CONTEXT_FRAC = 0.25
 
 
 def classify_main_turn(
-    *, last_user_len: int, context_frac: float, signal_latched: bool
+    *,
+    last_user_len: int,
+    context_frac: float,
+    signal_latched: bool,
+    difficulty_hint: Literal["quick_code", "deep_code"] | None = None,
 ) -> Literal["quick_code", "deep_code"]:
     """Classify the main turn's difficulty — deterministic, offline, and biased to **fail UP**.
 
@@ -173,15 +180,85 @@ def classify_main_turn(
       one-way) ALWAYS returns ``deep_code`` — the only promotion trigger, so a turn that starts
       cheap moves to the user's capable coder the moment it struggles. Iteration count is NOT an
       input, so steady-state tool loops stay on the cheap model until a real struggle signal.
-    * Otherwise a short request over a small context (under :data:`_QUICK_MAX_USER_CHARS` chars
-      AND under :data:`_QUICK_MAX_CONTEXT_FRAC` of the window) is ``quick_code``; anything
-      longer/larger is ``deep_code``. Those two thresholds are the tuning knob — see the comment
-      block above them for when and which way to adjust.
+    * ``difficulty_hint`` — a SCOPE judgment from the cheap ``classify``-model side-call
+      (:func:`should_consult_classifier`), supplied when available. It OVERRIDES the length
+      heuristic below, because message length is a poor proxy for difficulty (a terse "build a
+      PDF reader and maker" is a deep task no character count reveals). A ``"deep_code"`` hint
+      routes straight to the capable coder; a ``"quick_code"`` hint still yields to the
+      context-size guard (lots of accumulated state is no longer a quick turn). Once a hint
+      exists, length is NEVER used to pick ``quick_code``.
+    * Otherwise (no hint — the classifier was unavailable, or a bare/legacy loop) a short
+      request over a small context (under :data:`_QUICK_MAX_USER_CHARS` chars AND under
+      :data:`_QUICK_MAX_CONTEXT_FRAC` of the window) is ``quick_code``; anything longer/larger
+      is ``deep_code``. Those two thresholds are the legacy tuning knob.
     * Any ambiguity resolves to ``deep_code``. Never raises.
     """
     if signal_latched:
         return "deep_code"
+    if difficulty_hint is not None:
+        if difficulty_hint == "deep_code":
+            return "deep_code"
+        # A "quick" scope verdict still defers to the context-size guard.
+        return "quick_code" if context_frac < _QUICK_MAX_CONTEXT_FRAC else "deep_code"
     if last_user_len < _QUICK_MAX_USER_CHARS and context_frac < _QUICK_MAX_CONTEXT_FRAC:
+        return "quick_code"
+    return "deep_code"
+
+
+# ── difficulty side-call (the activated ``classify`` category) ───────────────────────
+# The quick-vs-deep split above used to read message LENGTH, which mis-routes a terse but huge
+# request ("build a pdf reader and maker") onto the cheap coder. Instead, for exactly the
+# ambiguous case (short request, small context — where the length rule would say quick), the
+# engine spends ONE cheap ``classify``-model call to judge the request's SCOPE and feeds the
+# verdict back as :func:`classify_main_turn`'s ``difficulty_hint``. The call is made by the
+# Agent (it needs a provider); these helpers are the pure policy it uses, kept here next to the
+# thresholds. Failure of that call FAILS UP to ``deep_code`` — never a length-based guess.
+
+#: JSON schema for the difficulty side-call: a single enum, so even a small/fast model can
+#: emit it reliably (it is a plain JSON gate, no tools — the path Groq's open models handle).
+DIFFICULTY_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {"difficulty": {"type": "string", "enum": ["quick", "deep"]}},
+    "required": ["difficulty"],
+    "additionalProperties": False,
+}
+
+
+def should_consult_classifier(user_text: str, context_frac: float) -> bool:
+    """Whether the difficulty side-call is worth a model call for this turn.
+
+    Only the AMBIGUOUS case — a short request over a small context, i.e. exactly where the
+    length heuristic would (often wrongly) pick ``quick_code`` — is worth the call. A long
+    request or an already-large context is decided ``deep_code`` with NO call (the safe
+    direction; length only ever fast-paths UP to deep, never down to quick).
+    """
+    return len(user_text) < _QUICK_MAX_USER_CHARS and context_frac < _QUICK_MAX_CONTEXT_FRAC
+
+
+def difficulty_system_prompt() -> str:
+    """System prompt for the one-shot difficulty classifier (cheap model, JSON out)."""
+    return (
+        "You are a fast router for a coding agent. Classify the user's request by the SCOPE of "
+        "work it implies, NOT by how long the message is.\n"
+        '- "quick": a small, bounded change a capable coder finishes in a few steps — a typo or '
+        "one-line fix, a tiny tweak, a single short function, or answering a question about the "
+        "code.\n"
+        '- "deep": substantial or open-ended work — building a feature, adding a module/tool, '
+        "multi-file changes, design or refactoring, or anything ambiguous or ambitious.\n"
+        'A request can be SHORT yet "deep" — e.g. "build a pdf reader and maker" or "add auth" '
+        'are deep. When unsure, answer "deep".\n'
+        'Reply with ONLY a JSON object: {"difficulty": "quick"} or {"difficulty": "deep"}.'
+    )
+
+
+def parse_difficulty(data: object) -> Literal["quick_code", "deep_code"]:
+    """Map a validated classifier result to a routing category; anything unexpected FAILS UP.
+
+    Only an explicit ``{"difficulty": "quick"}`` yields ``quick_code``; every other value —
+    ``"deep"``, a missing/odd field, or a non-dict — resolves to ``deep_code`` (the capable,
+    reliable coder), so a garbled verdict can never strand a real task on the cheap model.
+    """
+    if isinstance(data, dict) and data.get("difficulty") == "quick":
         return "quick_code"
     return "deep_code"
 
@@ -212,5 +289,9 @@ __all__ = [
     "model_spec_for_category",
     "model_for_category",
     "classify_main_turn",
+    "DIFFICULTY_SCHEMA",
+    "should_consult_classifier",
+    "difficulty_system_prompt",
+    "parse_difficulty",
     "describe_zakpick",
 ]

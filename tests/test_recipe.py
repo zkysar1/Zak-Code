@@ -401,6 +401,60 @@ def test_recipe_gate_completes_when_model_runs_pytest(tmp_path: Path) -> None:
     assert result.degraded is False  # ...and the turn is not flagged a struggle
 
 
+# ── completion-review gate: a code-changing turn re-verifies before finishing ──
+
+
+_REVIEW_PHRASE = "re-read the user's original request"
+
+
+def test_completion_review_sends_a_code_turn_back_once(tmp_path: Path) -> None:
+    # With completion_review_attempts=1, a turn that wrote a runnable file is sent back ONCE to
+    # self-verify before it may finish — the mechanism that catches "declared done with work
+    # silently dropped". The model ran its file (recipe satisfied), then the review fires.
+    run_cmd = resolve_run_command("prog.py")
+    if run_cmd is None:
+        pytest.skip("no python interpreter available")
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
+    done = LLMResult(text="All done!")
+    provider = _ScriptedProvider([write, run, done, done])
+    loop = _loop(provider, tmp_path, completion_review_attempts=1)
+    result = asyncio.run(loop.arun_turn("make prog.py"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 4  # write, run, done(->review), done -> complete
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert transcript.count(_REVIEW_PHRASE) == 1  # sent back exactly once (bounded)
+
+
+def test_completion_review_off_by_default(tmp_path: Path) -> None:
+    # Default (attempts=0): no review nudge — byte-identical to before this feature.
+    run_cmd = resolve_run_command("prog.py")
+    if run_cmd is None:
+        pytest.skip("no python interpreter available")
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
+    done = LLMResult(text="All done!")
+    provider = _ScriptedProvider([write, run, done])
+    loop = _loop(provider, tmp_path)  # completion_review_attempts defaults to 0
+    result = asyncio.run(loop.arun_turn("make prog.py"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 3  # write, run, done — no review round
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert _REVIEW_PHRASE not in transcript
+
+
+def test_completion_review_inert_when_no_code_changed(tmp_path: Path) -> None:
+    # A turn that changed NO code (no runnable write) is never sent back, even when enabled —
+    # the gate is about verifying produced code, not gating a plain answer.
+    provider = _ScriptedProvider([LLMResult(text="2 + 2 = 4")])
+    loop = _loop(provider, tmp_path, completion_review_attempts=2)
+    result = asyncio.run(loop.arun_turn("what is 2+2?"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 1
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert _REVIEW_PHRASE not in transcript
+
+
 # ── Slice 2b-C: deterministic acceptance COMPARE ──────────────────────────────
 
 
