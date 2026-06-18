@@ -70,8 +70,10 @@ def test_defaults_are_groq_and_graduated() -> None:
     assert r.model_for_category("summarize", s) == "groq/openai/gpt-oss-20b"
     assert r.model_for_category("quick_code", s) == "groq/openai/gpt-oss-20b"
     assert r.model_for_category("plan", s) == "groq/qwen/qwen3-32b"
-    assert r.model_for_category("deep_code", s) == "groq/openai/gpt-oss-120b"  # tools-reliable
-    assert r.model_for_category("delegate", s) == "groq/openai/gpt-oss-120b"
+    # deep_code/delegate moved to a first-party model whose native tool-calling is reliable
+    # (Groq's open models emit tool calls its strict parser rejects — see routing.py rationale).
+    assert r.model_for_category("deep_code", s) == "openai/gpt-4o-mini"  # reliable native + cached
+    assert r.model_for_category("delegate", s) == "openai/gpt-4o-mini"
 
 
 def test_default_avoids_tools_unreliable_model() -> None:
@@ -79,6 +81,18 @@ def test_default_avoids_tools_unreliable_model() -> None:
     s = Settings(default_model="zakpick", workspace_root=".")
     routed = {r.model_for_category(c, s) for c in r.ROUTED_CATEGORIES}
     assert all("llama-3.3-70b" not in m for m in routed)
+
+
+def test_deep_tier_uses_reliable_first_party_native_tool_calling() -> None:
+    # The tool-heavy capable tier (deep_code, delegate) must NOT route to Groq's open
+    # models, whose native tool calls Groq's strict parser rejects with tool_use_failed
+    # (gpt-oss-120b malformed JSON; llama-3.3 pseudo-XML). Live-verified 2026-06-18:
+    # gpt-4o-mini completes the deep-task benchmark natively; the Groq open models do not.
+    s = Settings(default_model="zakpick", workspace_root=".")
+    for category in ("deep_code", "delegate"):
+        spec = r.model_spec_for_category(category, s)
+        assert spec.source != "groq", f"{category} must not be a Groq open model"
+        assert "gpt-oss" not in spec.model and "llama-3.3" not in spec.model
 
 
 def test_user_override_wins_and_flips_source() -> None:
@@ -133,7 +147,7 @@ def test_describe_zakpick_shows_model_and_source_not_classify() -> None:
     s = Settings(default_model="zakpick", workspace_root=".")
     out = r.describe_zakpick(s)
     assert out.startswith("zakpick —")
-    assert "gpt-oss-120b (groq)" in out  # model (source), not a raw litellm slug
+    assert "gpt-4o-mini (openai)" in out  # model (source), not a raw litellm slug
     assert "classification" not in out  # seam-only category is never advertised
 
 
@@ -153,8 +167,8 @@ def test_agent_zakpick_startup_uses_deep_code_model(tmp_path: Path) -> None:
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
     assert agent._zakpick is True
     # startup model = the deep_code category's model (the safe/capable one).
-    assert agent.settings.default_model == "groq/openai/gpt-oss-120b"
-    assert agent.session.model == "groq/openai/gpt-oss-120b"
+    assert agent.settings.default_model == "openai/gpt-4o-mini"
+    assert agent.session.model == "openai/gpt-4o-mini"
 
 
 def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
@@ -162,7 +176,7 @@ def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
     summ_provider, summ_model = agent._resolve_task_provider("summarize")
     deep_provider, deep_model = agent._resolve_task_provider("deep_code")
     assert summ_model == "groq/openai/gpt-oss-20b"
-    assert deep_model == "groq/openai/gpt-oss-120b"
+    assert deep_model == "openai/gpt-4o-mini"
     assert summ_provider is not deep_provider  # different models → distinct cached providers
 
 
@@ -171,7 +185,7 @@ def test_agent_main_provider_updates_active_model(tmp_path: Path) -> None:
     agent._main_provider_for("quick_code")
     assert agent._active_model == "groq/openai/gpt-oss-20b"  # easy turn → quick coder
     agent._main_provider_for("deep_code")
-    assert agent._active_model == "groq/openai/gpt-oss-120b"  # hard turn → deep coder
+    assert agent._active_model == "openai/gpt-4o-mini"  # hard turn → reliable deep coder
 
 
 def test_agent_override_changes_startup_and_routing(tmp_path: Path) -> None:
