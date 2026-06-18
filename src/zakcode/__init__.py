@@ -785,19 +785,27 @@ class Agent:
             parse_difficulty,
             should_consult_classifier,
         )
+        from zakcode.providers.structured import (
+            StructuredValidationError,
+            coerce_structured,
+            make_response_format,
+        )
 
         if not should_consult_classifier(user_text, context_frac):
             return "deep_code"  # long / large-context -> capable coder, no model call
         provider, model = self._resolve_task_provider("classify")
         try:
-            from zakcode.providers.structured import complete_structured
-
-            result = await complete_structured(
-                provider,
+            # json_OBJECT mode (native JSON), NOT json_schema: litellm implements a json_schema
+            # response_format on Groq via FUNCTION CALLING, and Groq's open models (incl. the
+            # cheap llama-3.1-8b classifier) flakily emit a malformed tool call the provider
+            # rejects (tool_use_failed) — the very unreliability zakpick routes around. Plain JSON
+            # mode sidesteps the tool path; the trivial {"difficulty": ...} object is validated
+            # locally against DIFFICULTY_SCHEMA below.
+            result = await provider.acomplete(
                 [Message.user(user_text)],
                 system=difficulty_system_prompt(),
-                schema=DIFFICULTY_SCHEMA,
-                max_repairs=1,
+                response_format=make_response_format(None),
+                temperature=0.0,
             )
         except ProviderError:
             return "deep_code"  # classifier unavailable -> fail UP to the reliable coder
@@ -805,9 +813,11 @@ class Agent:
             self.session.add_usage(result.usage, model=model)
             if self._shared_budget is not None:
                 self._shared_budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
-        if not result.valid:
-            return "deep_code"  # no schema-valid verdict after the repair budget -> fail UP
-        return parse_difficulty(result.data)
+        try:
+            data = coerce_structured(result.text, schema=DIFFICULTY_SCHEMA)
+        except StructuredValidationError:
+            return "deep_code"  # output was not schema-valid JSON -> fail UP
+        return parse_difficulty(data)
 
     async def _deep_think_sample(
         self, prompt: str, *, system: str | None = None, temperature: float = 0.0
