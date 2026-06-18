@@ -652,6 +652,9 @@ class Agent:
             sampler=self._deep_think_sample,
             # TURN_END veto seam (T2/T3/T4): 0 (the default) disables the gate.
             turn_end_veto_budget=self.settings.turn_end_veto_budget,
+            # Completion-review gate: 0 (the default) disables it; when >0, a code-changing turn
+            # is sent back that many times to verify it satisfied the request before finishing.
+            completion_review_attempts=self.settings.completion_review_attempts,
         )
 
     def _build_provider(self, model: str) -> Provider:

@@ -199,6 +199,17 @@ class Settings(BaseSettings):
         ge=0,
         description="Max TURN_END hook vetoes per turn (Stop-hook seam); 0 disables.",
     )
+
+    # Completion-review gate: when a turn CHANGED code (wrote a runnable file) and the agent tries
+    # to finish, send it back this many times to re-read the request and verify EVERY requirement
+    # against what is actually on disk — and finish any abandoned/failed operation — before
+    # completing. Bounded so it converges (an unbounded "don't finish until perfect" loops forever
+    # on a model that can't reach perfect). 0 (default) disables it; behavior is unchanged.
+    completion_review_attempts: int = Field(
+        default=0,
+        ge=0,
+        description="Self-review rounds before a code-changing turn may finish; 0 disables.",
+    )
     permission_mode: str = Field(
         default="ask",
         description="One of: ask | acceptEdits | allow | autonomous | deny.",
