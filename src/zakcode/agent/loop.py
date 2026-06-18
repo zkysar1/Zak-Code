@@ -157,6 +157,18 @@ DOOM_LOOP_THRESHOLD = 3
 _RETRY_BASE_DELAY = 1.0
 _RETRY_MAX_DELAY = 30.0
 
+#: Resample temperature for a ModelOutputRejected retry (Groq ``tool_use_failed``). At
+#: ``temperature=0.0`` the model is deterministic, so re-issuing the SAME request re-emits
+#: the SAME malformed tool call and the retry is futile (observed: temp 0.0 recovered 0/2
+#: runs, temp 0.7 recovered 1/2). Each rejection retry re-issues at
+#: ``min(1.0, _REJECTION_RETRY_TEMP_FLOOR + _REJECTION_RETRY_TEMP_STEP * (attempt - 1))``
+#: so the model samples a different — and likely well-formed — call. Only rejection retries
+#: perturb; a plain 429 keeps the configured temperature (waiting, not resampling, is its
+#: remedy). 1.0 is the clamp ceiling: universally accepted, and a strict improvement over a
+#: dead turn even when the configured temperature was lower.
+_REJECTION_RETRY_TEMP_FLOOR = 0.5
+_REJECTION_RETRY_TEMP_STEP = 0.3
+
 #: How many times a single turn may recover from a :class:`ContextWindowExceeded` by
 #: force-compacting and retrying the same call in place (parity #1b/#9). Bounded so an
 #: un-compactable session (nothing old enough to summarize) fails gracefully as
@@ -768,6 +780,17 @@ class AgentLoop:
             delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
         return min(max(delay, 0.0), _RETRY_MAX_DELAY)
 
+    @staticmethod
+    def _rejection_retry_temperature(attempt: int) -> float:
+        """Temperature for rejection-retry ``attempt`` (1-based).
+
+        Escalates from the floor so a deterministic (temp-0) re-emit of a malformed tool
+        call is broken — the retry samples a different, likely well-formed call. Clamped
+        to 1.0. Applied ONLY to :class:`ModelOutputRejected` retries; a plain 429 keeps
+        the configured temperature.
+        """
+        return min(1.0, _REJECTION_RETRY_TEMP_FLOOR + _REJECTION_RETRY_TEMP_STEP * (attempt - 1))
+
     def _context_fraction(self, messages: list[Message]) -> float:
         """How full the current model's context window is (0..~1), for zakpick classification.
 
@@ -803,9 +826,18 @@ class AgentLoop:
         an unattended session.
         """
         attempt = 0
+        next_temperature: float | None = None
         while True:
+            # A rejection retry resamples at a raised temperature so a deterministic
+            # (temp-0) re-emit of the malformed tool call is broken; every other call
+            # (first attempt, or a plain 429 retry) uses the configured temperature.
+            call_kw: dict[str, Any] = (
+                {} if next_temperature is None else {"temperature": next_temperature}
+            )
             try:
-                return await self.provider.acomplete(messages, system=system, tools=tools)
+                return await self.provider.acomplete(
+                    messages, system=system, tools=tools, **call_kw
+                )
             except RateLimited as exc:
                 if attempt >= self.provider_max_retries:
                     raise
@@ -817,6 +849,11 @@ class AgentLoop:
                     "provider rejected a malformed tool call"
                     if isinstance(exc, ModelOutputRejected)
                     else "provider rate-limited"
+                )
+                next_temperature = (
+                    self._rejection_retry_temperature(attempt)
+                    if isinstance(exc, ModelOutputRejected)
+                    else None
                 )
                 logger.warning(
                     "%s; retry %d/%d in %.1fs",
@@ -1941,6 +1978,7 @@ class AgentLoop:
 
                 provider_failure: str | None = None
                 retry_attempts = 0
+                next_temperature: float | None = None
 
                 # Bounded RateLimited retry for THIS provider call (audit P0-4). A retry
                 # is only safe while NO event has arrived yet — once deltas streamed to
@@ -1966,11 +2004,17 @@ class AgentLoop:
                     # /cost (fresh-eyes review of the mid-stream-retry exemption below).
                     attempt_usage = Usage()
                     saw_usage = False
+                    # A rejection retry resamples at a raised temperature (see the buffered
+                    # twin); every other attempt uses the configured temperature.
+                    call_kw: dict[str, Any] = (
+                        {} if next_temperature is None else {"temperature": next_temperature}
+                    )
                     try:
                         async for ev in self.provider.astream(
                             call_messages,
                             system=system,
                             tools=tool_defs or None,
+                            **call_kw,
                         ):
                             received_any = True
                             if isinstance(ev, StreamTextDelta):
@@ -2008,6 +2052,11 @@ class AgentLoop:
                         if retryable and retry_attempts < self.provider_max_retries:
                             retry_attempts += 1
                             delay = self._retry_delay(exc, retry_attempts)
+                            next_temperature = (
+                                self._rejection_retry_temperature(retry_attempts)
+                                if isinstance(exc, ModelOutputRejected)
+                                else None
+                            )
                             # ModelOutputRejected subclasses RateLimited for its retry
                             # semantics; the operator-facing notice names the real cause.
                             reason = (
