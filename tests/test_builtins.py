@@ -172,6 +172,8 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "read_xlsx",
         "create_docx",
         "create_xlsx",
+        "read_pdf",
+        "create_pdf",
         "inspect_image",
         "save_image",
         "create_chart_image",
@@ -201,6 +203,9 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
     assert reg.get("docx") is reg.get("create_docx")
     assert reg.get("excel") is reg.get("create_xlsx")
     assert reg.get("xlsx") is reg.get("create_xlsx")
+    assert reg.get("readpdf") is reg.get("read_pdf")
+    assert reg.get("pdf") is reg.get("create_pdf")
+    assert reg.get("makepdf") is reg.get("create_pdf")
     assert reg.get("image_info") is reg.get("inspect_image")
     assert reg.get("image") is reg.get("save_image")
     assert reg.get("chart") is reg.get("create_chart_image")
