@@ -12,6 +12,9 @@ the project must never regress:
   tools at all (schema-enforced), so a plan can never mutate the workspace.
 * **doom-loop-halt** — a model that repeats the same tool call forever is stopped
   with ``stop_reason="doom_loop"`` instead of burning the whole iteration budget.
+* **doom-loop-recovery** — a model that repeats an identical call is given ONE bounded
+  recovery nudge (verify state, change tack), re-enters, and breaks the loop to complete —
+  proving a confidently-wrong loop is recovered, not just abandoned at ``doom_loop``.
 * **partial-failure-recovery** — a tool that fails once then succeeds is retried by
   the model and the turn completes (no doom-loop, no crash).
 * **stuck-recovery** — a model stuck on varying-arg failures (which the exact-repeat
@@ -25,7 +28,7 @@ the project must never regress:
   ``completed``; the compound's status DERIVES from its children, and the done-conditions ride
   in the re-injected plan.
 
-``build_default_suite(workspace)`` returns all eight as :class:`~zakcode.evals.harness.EvalCase`
+``build_default_suite(workspace)`` returns all nine as :class:`~zakcode.evals.harness.EvalCase`
 objects bound to a caller-provided workspace directory (the CLI passes a temp dir).
 """
 
@@ -182,6 +185,32 @@ async def _probe_doom_loop_halt(workspace: str) -> str:
     return f"identical repeated tool call halted as 'doom_loop' after {result.iterations} iters"
 
 
+async def _probe_doom_loop_recovery(workspace: str) -> str:
+    """An identical-call loop is RESCUED by the bounded recovery nudge, then completes.
+
+    The companion to ``doom-loop-halt``: the model repeats the same call up to the doom threshold,
+    the loop injects ONE recovery nudge (verify the real state, change tack) and re-enters, and the
+    model breaks out and finishes — proving a confidently-wrong loop is recovered, not abandoned.
+    """
+    target = Path(workspace) / "scratch.txt"
+    same = call_tool("write_file", {"path": str(target), "content": "x"})
+
+    def responder(messages: list[Message], system: str | None, i: int) -> LLMResult:
+        # Repeat the identical batch until the recovery nudge fires (the 3rd repeat), then,
+        # having been told to change tack, finish instead of repeating into a doom_loop.
+        if i < 3:
+            return same
+        return reply("understood — taking a different approach; done")
+
+    provider = ScriptedProvider([reply("unused")], responder=responder)
+    agent = make_agent(provider, workspace_root=workspace)
+    result = await agent.arun_turn("keep writing")
+    assert result.stop_reason == "completed", result.stop_reason  # rescued, not 'doom_loop'
+    # It finished only AFTER the doom threshold (3 identical repeats) + the recovery re-enter.
+    assert result.iterations >= 4, result.iterations
+    return f"doom-loop recovery nudge unstuck the model; completed after {result.iterations} iters"
+
+
 async def _probe_partial_failure_recovery(workspace: str) -> str:
     """A tool that fails once then succeeds is retried; the turn completes."""
     flaky = FlakyTool()
@@ -315,7 +344,7 @@ async def _probe_plan_decomposition(workspace: str) -> str:
 
 
 def build_default_suite(workspace: str) -> list[EvalCase]:
-    """The eight behavioral probes, bound to ``workspace`` (a writable temp dir)."""
+    """The nine behavioral probes, bound to ``workspace`` (a writable temp dir)."""
     return [
         EvalCase(
             "completion-detection",
@@ -336,6 +365,11 @@ def build_default_suite(workspace: str) -> list[EvalCase]:
             "doom-loop-halt",
             "An identical-call loop is stopped with stop_reason='doom_loop'.",
             lambda: _probe_doom_loop_halt(workspace),
+        ),
+        EvalCase(
+            "doom-loop-recovery",
+            "An identical-call loop is rescued by the bounded recovery nudge, then completes.",
+            lambda: _probe_doom_loop_recovery(workspace),
         ),
         EvalCase(
             "partial-failure-recovery",
