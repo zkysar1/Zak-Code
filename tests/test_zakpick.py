@@ -130,13 +130,84 @@ def test_classify_main_turn(
 
 def test_classify_has_no_iteration_input() -> None:
     # Regression fence: steady-state tool loops must NOT promote on iteration count, only on a
-    # real struggle signal — so the signature carries no iteration parameter.
+    # real struggle signal — so the signature carries no iteration parameter (difficulty_hint is
+    # the SCOPE verdict, not iteration count).
     import inspect
 
     assert set(inspect.signature(r.classify_main_turn).parameters) == {
         "last_user_len",
         "context_frac",
         "signal_latched",
+        "difficulty_hint",
+    }
+
+
+# ── difficulty side-call: SCOPE judgment overrides length (the real fix) ──────────
+
+
+def test_classify_main_turn_difficulty_hint_overrides_length() -> None:
+    # A SCOPE 'deep' verdict routes a SHORT message to deep_code — length no longer picks quick.
+    assert (
+        r.classify_main_turn(
+            last_user_len=15, context_frac=0.0, signal_latched=False, difficulty_hint="deep_code"
+        )
+        == "deep_code"
+    )
+    # A 'quick' verdict over a small context -> quick_code...
+    assert (
+        r.classify_main_turn(
+            last_user_len=15, context_frac=0.0, signal_latched=False, difficulty_hint="quick_code"
+        )
+        == "quick_code"
+    )
+    # ...but a 'quick' verdict still yields to the context-size guard (accumulated state).
+    assert (
+        r.classify_main_turn(
+            last_user_len=15, context_frac=0.9, signal_latched=False, difficulty_hint="quick_code"
+        )
+        == "deep_code"
+    )
+    # A latched struggle signal still wins over any hint.
+    assert (
+        r.classify_main_turn(
+            last_user_len=15, context_frac=0.0, signal_latched=True, difficulty_hint="quick_code"
+        )
+        == "deep_code"
+    )
+    # No hint (classifier unavailable / bare loop) -> the legacy length heuristic (short -> quick).
+    assert (
+        r.classify_main_turn(last_user_len=15, context_frac=0.0, signal_latched=False)
+        == "quick_code"
+    )
+
+
+def test_should_consult_classifier() -> None:
+    # The ambiguous case (short + small context, where the length rule would say quick) is the
+    # only one worth a model call.
+    assert r.should_consult_classifier("add pdf support", 0.0) is True
+    # A long request is decided deep_code with NO call (length only fast-paths UP to deep).
+    assert r.should_consult_classifier("x" * 2000, 0.0) is False
+    # An already-large context is decided deep_code with NO call.
+    assert r.should_consult_classifier("tiny", 0.9) is False
+
+
+def test_parse_difficulty_fails_up() -> None:
+    assert r.parse_difficulty({"difficulty": "quick"}) == "quick_code"
+    assert r.parse_difficulty({"difficulty": "deep"}) == "deep_code"
+    # Anything unexpected resolves to deep_code — never strand a real task on the cheap model.
+    assert r.parse_difficulty({"difficulty": "enormous"}) == "deep_code"
+    assert r.parse_difficulty({}) == "deep_code"
+    assert r.parse_difficulty(None) == "deep_code"
+    assert r.parse_difficulty("quick") == "deep_code"  # not even a dict
+
+
+def test_difficulty_schema_validates_a_verdict() -> None:
+    from zakcode.providers.structured import coerce_structured
+
+    # The schema accepts the two enum values and rejects anything else (so a garbled verdict
+    # is caught by complete_structured's validation, then fails up in parse_difficulty).
+    assert coerce_structured('{"difficulty": "deep"}', schema=r.DIFFICULTY_SCHEMA) == {
+        "difficulty": "deep"
     }
 
 
@@ -282,6 +353,131 @@ async def test_loop_routes_main_turn_by_category(tmp_path: Path) -> None:
     text = "\n".join(m.text for m in result.assistant_messages)
     assert "cheap answered" in text
     assert cheap.calls >= 1 and strong.calls == 0  # the cheap model drove the easy turn
+
+
+async def test_loop_difficulty_classifier_routes_short_but_deep(tmp_path: Path) -> None:
+    # The real fix: a SHORT prompt the length heuristic would send to quick_code is routed to the
+    # capable coder when the injected SCOPE classifier judges it deep ("build a pdf reader").
+    from zakcode.agent.loop import AgentLoop
+    from zakcode.session.store import Session
+    from zakcode.tools.base import ToolRegistry
+
+    cheap = _ScriptedText("cheap answered")
+    strong = _ScriptedText("strong answered")
+    seen: list[str] = []
+
+    def main_for(category: str):
+        seen.append(category)
+        return cheap if category == "quick_code" else strong
+
+    async def classifier(user_text: str, context_frac: float):
+        return "deep_code"
+
+    loop = AgentLoop(
+        cheap,
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="t"),
+        main_provider_for=main_for,
+        difficulty_classifier=classifier,
+        max_iterations=3,
+    )
+    result = await loop.arun_turn("add pdf support")  # SHORT — length alone would say quick_code
+    text = "\n".join(m.text for m in result.assistant_messages)
+    assert "strong answered" in text  # the SCOPE classifier routed it to the capable coder
+    assert strong.calls >= 1 and cheap.calls == 0
+    assert "deep_code" in seen and "quick_code" not in seen
+    assert result.routed_category == "deep_code"
+    assert result.routed_escalated is False  # deep from the start, not an escalation
+
+
+async def test_loop_difficulty_classifier_quick_routes_cheap(tmp_path: Path) -> None:
+    # A genuinely small task: the classifier says quick, so the cheap coder drives (no overpay).
+    from zakcode.agent.loop import AgentLoop
+    from zakcode.session.store import Session
+    from zakcode.tools.base import ToolRegistry
+
+    cheap = _ScriptedText("cheap answered")
+    strong = _ScriptedText("strong answered")
+
+    async def classifier(user_text: str, context_frac: float):
+        return "quick_code"
+
+    loop = AgentLoop(
+        strong,
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="t"),
+        main_provider_for=lambda c: cheap if c == "quick_code" else strong,
+        difficulty_classifier=classifier,
+        max_iterations=3,
+    )
+    result = await loop.arun_turn("fix the typo on line 5")
+    assert "cheap answered" in "\n".join(m.text for m in result.assistant_messages)
+    assert cheap.calls >= 1 and strong.calls == 0
+    assert result.routed_category == "quick_code"
+
+
+def _classify_stub(json_text: str) -> _ScriptedText:
+    """A provider that returns a fixed JSON body (the classify side-call's verdict)."""
+    return _ScriptedText(json_text)
+
+
+async def test_agent_classify_difficulty_judges_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
+    deep = _classify_stub('{"difficulty": "deep"}')
+    monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (deep, "classify/m"))
+    assert await agent._classify_difficulty("add pdf support", 0.0) == "deep_code"
+    assert deep.calls == 1  # the cheap classify model was consulted exactly once
+
+    quick = _classify_stub('{"difficulty": "quick"}')
+    monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (quick, "classify/m"))
+    assert await agent._classify_difficulty("fix the typo on line 5", 0.0) == "quick_code"
+
+
+async def test_agent_classify_difficulty_long_skips_the_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
+    stub = _classify_stub('{"difficulty": "quick"}')
+    monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (stub, "classify/m"))
+    # A long request fast-paths to deep_code with NO model call (length only escalates UP).
+    assert await agent._classify_difficulty("x" * 2000, 0.0) == "deep_code"
+    assert stub.calls == 0
+
+
+async def test_agent_classify_difficulty_fails_up_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
+
+    class _Raises(Provider):
+        async def acomplete(self, messages, *, system=None, tools=None, response_format=None, **kw):
+            from zakcode.providers.base import RequestFailed
+
+            raise RequestFailed("classify model down")
+
+        def count_tokens(self, messages, *, system=None) -> int:
+            return 0
+
+        def capabilities(self):
+            from zakcode.providers.base import Capabilities
+
+            return Capabilities()
+
+    monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (_Raises(), "classify/m"))
+    # A provider error during classification FAILS UP to the reliable coder, never crashes.
+    assert await agent._classify_difficulty("add pdf support", 0.0) == "deep_code"
+
+
+async def test_agent_classify_difficulty_fails_up_on_garbage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
+    garbage = _classify_stub("I think this is a deep task, but here is prose, not JSON.")
+    monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (garbage, "classify/m"))
+    # Output that never validates as the schema also fails up to deep_code.
+    assert await agent._classify_difficulty("add pdf support", 0.0) == "deep_code"
 
 
 # ── Phase 1: per-model cost attribution ──────────────────────────────────────────

@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
@@ -638,6 +638,15 @@ class Agent:
             # quick_code→deep_code latch in the loop — it only ever switches between the two coder
             # models the user configured, never a substitute Zak Code chose.
             main_provider_for=(self._main_provider_for if self._zakpick else None),
+            # zakpick base-difficulty router: a cheap classify-model call judges each turn's SCOPE
+            # (quick vs deep) instead of message length, so a terse-but-large request ("build a pdf
+            # reader") reaches the capable coder instead of stalling the cheap one. Wired only for a
+            # real (rebuildable) zakpick provider; None elsewhere keeps the length heuristic.
+            difficulty_classifier=(
+                self._classify_difficulty
+                if (self._zakpick and not self._provider_injected)
+                else None
+            ),
             # deep_think's model access: sample the strongest configured model (zakpick deep_code,
             # else default_model). Always wired for a real Agent; the tool no-ops on a bare loop.
             sampler=self._deep_think_sample,
@@ -754,6 +763,51 @@ class Agent:
         provider, model = self._resolve_task_provider(category)
         self._active_model = model
         return provider
+
+    async def _classify_difficulty(
+        self, user_text: str, context_frac: float
+    ) -> Literal["quick_code", "deep_code"]:
+        """zakpick base-difficulty router (the activated ``classify`` category): judge the
+        request's SCOPE with a cheap classify-model call, not its LENGTH — a terse "build a pdf
+        reader and maker" is a deep task no character count reveals. Returns ``"quick_code"`` or
+        ``"deep_code"``.
+
+        Only the AMBIGUOUS short case (where the length heuristic would say quick) consults the
+        model; a long request or an already-large context fast-paths to ``deep_code`` with NO
+        call. Any failure — provider error, or output that never validated — FAILS UP to
+        ``deep_code``, so Zak Code never guesses "quick" from length. The cheap call's spend is
+        accounted on the session + shared budget like any other model call (tagged to the classify
+        model), so it is visible in ``/cost`` and bounded by the turn-tree budget — never hidden.
+        """
+        from zakcode.providers.routing import (
+            DIFFICULTY_SCHEMA,
+            difficulty_system_prompt,
+            parse_difficulty,
+            should_consult_classifier,
+        )
+
+        if not should_consult_classifier(user_text, context_frac):
+            return "deep_code"  # long / large-context -> capable coder, no model call
+        provider, model = self._resolve_task_provider("classify")
+        try:
+            from zakcode.providers.structured import complete_structured
+
+            result = await complete_structured(
+                provider,
+                [Message.user(user_text)],
+                system=difficulty_system_prompt(),
+                schema=DIFFICULTY_SCHEMA,
+                max_repairs=1,
+            )
+        except ProviderError:
+            return "deep_code"  # classifier unavailable -> fail UP to the reliable coder
+        with contextlib.suppress(Exception):  # accounting must never break routing
+            self.session.add_usage(result.usage, model=model)
+            if self._shared_budget is not None:
+                self._shared_budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
+        if not result.valid:
+            return "deep_code"  # no schema-valid verdict after the repair budget -> fail UP
+        return parse_difficulty(result.data)
 
     async def _deep_think_sample(
         self, prompt: str, *, system: str | None = None, temperature: float = 0.0

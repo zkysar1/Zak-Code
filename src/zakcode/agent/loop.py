@@ -70,9 +70,9 @@ import asyncio
 import contextlib
 import logging
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -141,6 +141,13 @@ if TYPE_CHECKING:
 #: calls it only when the classified category CHANGES, so a mid-turn failover swap of
 #: ``self.provider`` within a stable category is never reverted.
 MainProviderFor = Callable[[str], Provider]
+
+#: The zakpick base-difficulty router (``Agent._classify_difficulty``): judge a turn's SCOPE
+#: (quick_code vs deep_code) with a cheap ``classify``-model call instead of message length.
+#: Async (it may make a model call); the loop calls it at most ONCE per turn and feeds the
+#: verdict to :func:`~zakcode.providers.routing.classify_main_turn` as ``difficulty_hint``.
+#: ``None`` (a bare/legacy loop) keeps the pure length heuristic — byte-identical to before.
+DifficultyClassifier = Callable[[str, float], Awaitable[Literal["quick_code", "deep_code"]]]
 
 #: Fallback iteration budget when neither an explicit value nor settings provide one.
 DEFAULT_MAX_ITERATIONS = 50
@@ -383,6 +390,7 @@ class AgentLoop:
         attempt_cap: int = 3,
         model_failover: Callable[[ProviderError], tuple[Provider, str] | None] | None = None,
         main_provider_for: MainProviderFor | None = None,
+        difficulty_classifier: DifficultyClassifier | None = None,
         sampler: Sampler | None = None,
         turn_end_veto_budget: int = 0,
     ) -> None:
@@ -406,6 +414,11 @@ class AgentLoop:
         # ``None`` (the default, and always for an injected provider) = the legacy single-provider
         # path, byte-identical. See zakcode.providers.routing.
         self.main_provider_for = main_provider_for
+        # zakpick base-difficulty router: judge the main turn's SCOPE with a cheap classify-model
+        # call instead of message LENGTH (a terse "build a pdf reader and maker" is a deep task no
+        # character count reveals). Called at most once per turn; its verdict feeds
+        # classify_main_turn's ``difficulty_hint``. ``None`` (bare/legacy loop) keeps the heuristic.
+        self.difficulty_classifier = difficulty_classifier
         # TURN_END veto seam (T2/T3): at a vetoable break site (completed / doom_loop /
         # stuck) the loop runs TURN_END hooks; a veto re-enters the loop with the hook's
         # continuation prompt, at most this many times per turn. 0 (default) disables
@@ -1361,6 +1374,8 @@ class AgentLoop:
         # category the main provider was selected for (so we only re-select on a CHANGE), and
         # whether a struggle signal has latched the turn to the user's deep coder.
         main_category: str | None = None
+        # The cheap SCOPE verdict (quick_code/deep_code), computed once per turn; None until then.
+        base_difficulty: Literal["quick_code", "deep_code"] | None = None
         signal_latched = False
 
         # Doom-loop tracking: the signature of the previous iteration's tool-call
@@ -1425,10 +1440,21 @@ class AgentLoop:
             # iteration latches the harder category.
             if self.main_provider_for is not None:
                 signal_latched = signal_latched or stuck.took_action
+                ctx_frac = self._context_fraction(call_messages)
+                # Judge the request's SCOPE once per turn (not its length): the cheap classifier
+                # catches a terse-but-large task that the length heuristic would mis-route to the
+                # cheap coder. Skipped when already latched (deep wins) or absent (length only).
+                if (
+                    base_difficulty is None
+                    and not signal_latched
+                    and self.difficulty_classifier is not None
+                ):
+                    base_difficulty = await self.difficulty_classifier(user_text, ctx_frac)
                 category = classify_main_turn(
                     last_user_len=len(user_text),
-                    context_frac=self._context_fraction(call_messages),
+                    context_frac=ctx_frac,
                     signal_latched=signal_latched,
+                    difficulty_hint=base_difficulty,
                 )
                 if category != main_category:
                     self.provider = self.main_provider_for(category)
@@ -1894,6 +1920,8 @@ class AgentLoop:
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None) — see _run_turn.
         main_category: str | None = None
+        # cheap SCOPE verdict, computed once per turn
+        base_difficulty: Literal["quick_code", "deep_code"] | None = None
         signal_latched = False
         # This turn's assistant messages — kept only for the TURN_END payload's
         # ``last_assistant_message`` (the buffered path reuses its result list).
@@ -1967,10 +1995,20 @@ class AgentLoop:
                 # escalation swap of self.provider within a stable category persists.
                 if self.main_provider_for is not None:
                     signal_latched = signal_latched or stuck.took_action
+                    ctx_frac = self._context_fraction(call_messages)
+                    # SCOPE-judge the turn once (see the buffered path): the cheap classifier
+                    # catches a terse-but-large task length alone would mis-route to quick_code.
+                    if (
+                        base_difficulty is None
+                        and not signal_latched
+                        and self.difficulty_classifier is not None
+                    ):
+                        base_difficulty = await self.difficulty_classifier(user_text, ctx_frac)
                     category = classify_main_turn(
                         last_user_len=len(user_text),
-                        context_frac=self._context_fraction(call_messages),
+                        context_frac=ctx_frac,
                         signal_latched=signal_latched,
+                        difficulty_hint=base_difficulty,
                     )
                     if category != main_category:
                         self.provider = self.main_provider_for(category)
