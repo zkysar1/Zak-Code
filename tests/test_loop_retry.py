@@ -88,7 +88,9 @@ class FlakyStreamProvider(FlakyProvider):
             raise self._failures.pop(0)
         yield StreamTextDelta(text="hello")
         if self._fail_midstream is not None:
-            raise self._fail_midstream
+            exc = self._fail_midstream
+            self._fail_midstream = None  # consume once: a retried stream succeeds (recovery tests)
+            raise exc
         yield StreamDone(finish_reason="stop")
 
 
@@ -343,3 +345,82 @@ def test_streaming_model_output_rejected_retries_with_clear_status(
     statuses = [getattr(ev, "message", "") for ev in events]
     assert any("malformed tool call" in s for s in statuses)
     assert not any("rate limited" in s for s in statuses)
+
+
+def test_streaming_midstream_model_output_rejected_retries(fast_sleep: list[float]) -> None:
+    """The real groq ``tool_use_failed`` bug: gpt-oss-120b emits a malformed tool call
+    AFTER streaming deltas, so ``received_any`` is True and the generic gate would strand it
+    as ``provider_error``. ModelOutputRejected is exempt from that gate — it retries and
+    recovers — UNLIKE a generic mid-stream RateLimited (test above) which stays terminal.
+    """
+    from zakcode.providers.base import ModelOutputRejected
+
+    provider = FlakyStreamProvider(
+        [], fail_midstream=ModelOutputRejected("malformed tool call (tool_use_failed)")
+    )
+    loop = _make_loop(provider)
+    events = asyncio.run(_collect(loop, "hi"))
+    assert events[-1].stop_reason == "completed"  # recovered, NOT provider_error
+    assert not events[-1].degraded
+    assert provider.stream_calls == 2  # mid-stream rejection + one retry that succeeds
+    statuses = [getattr(ev, "message", "") for ev in events]
+    assert any("malformed tool call" in s for s in statuses)
+    assert not any("rate limited" in s for s in statuses)
+
+
+def test_streaming_midstream_rejection_retry_does_not_double_count_usage(
+    fast_sleep: list[float],
+) -> None:
+    """Regression (fresh-eyes review of the mid-stream retry fix): a retried
+    ModelOutputRejected must NOT bill the FAILED attempt's usage. Usage is folded only
+    after an attempt streams to completion, so a provider that reports usage *before*
+    raising mid-stream — then reports it again on the clean retry — leaves the turn
+    charged for exactly ONE attempt, not two.
+    """
+    from zakcode.agent.budget import IterationBudget
+    from zakcode.providers.base import ModelOutputRejected, StreamUsage
+    from zakcode.usage import Usage
+
+    class UsageThenRejectProvider(Provider):
+        """Emits usage, then raises ModelOutputRejected mid-stream on the FIRST call;
+        on the retry it re-emits the same usage and completes cleanly."""
+
+        def __init__(self) -> None:
+            self.stream_calls = 0
+
+        async def astream(self, messages, *, system=None, tools=None, **kw):
+            self.stream_calls += 1
+            yield StreamTextDelta(text="partial")
+            yield StreamUsage(usage=Usage(total_tokens=100, cost_usd=0.02))
+            if self.stream_calls == 1:
+                raise ModelOutputRejected("malformed tool call (tool_use_failed)")
+            yield StreamDone(finish_reason="stop")
+
+        async def acomplete(self, messages, *, system=None, tools=None, **kw):
+            return LLMResult(text="unused")
+
+        def count_tokens(self, messages, *, system=None) -> int:
+            return 0
+
+        def capabilities(self) -> Capabilities:
+            return Capabilities(supports_tools=True, context_window=8192)
+
+    budget = IterationBudget(10)
+    provider = UsageThenRejectProvider()
+    settings = load_settings(workspace_root=Path.cwd())
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        Session(cwd="/tmp/work", model="test/model"),
+        settings=settings,
+        budget=budget,
+    )
+    done = asyncio.run(_collect(loop, "hi"))[-1]
+    assert done.stop_reason == "completed"
+    assert provider.stream_calls == 2  # mid-stream rejection + retry
+    # The failed attempt's usage was dropped: exactly ONE attempt is billed.
+    assert budget.cost_spent == pytest.approx(0.02)
+    assert budget.tokens_spent == 100
+    totals = loop.session.cumulative_usage()
+    assert totals.total_tokens == 100
+    assert totals.cost_usd == pytest.approx(0.02)
