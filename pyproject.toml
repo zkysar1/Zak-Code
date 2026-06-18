@@ -99,6 +99,11 @@ artifacts = [
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# bench/ is a standalone benchmark/eval harness (Lane-D model-routing experiments), not
+# shipped library code. It is intentionally excluded from the lint+format gate: its task
+# fixtures and quick experiment scripts are not held to the package's style bar, and
+# `pytest` already skips it via `testpaths = ["tests"]` (mypy via `packages = ["zakcode"]`).
+extend-exclude = ["bench"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

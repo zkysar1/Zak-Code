@@ -76,3 +76,8 @@ desktop.ini
 
 # Claude Code local session state (not project config)
 .claude/
+
+# Benchmark run artifacts — the harness + tasks under bench/ ARE committed, but each
+# run's logs/JSON are reproducible output, not source. Baseline numbers live in
+# bench/README.md instead. (Keeps the dev's future runs from showing up as noise.)
+bench/results/

@@ -1,0 +1,8 @@
+{
+  "id": "03-lru",
+  "title": "Algorithm from scratch: LRU cache to a fixed interface",
+  "max_iterations": 35,
+  "max_cost_usd": 0.5,
+  "verify_timeout_s": 90,
+  "prompt": "Create a file `lru.py` in this workspace defining a class `LRUCache` with this exact interface:\n\n- `__init__(self, capacity)`: initialize with a positive integer capacity.\n- `get(self, key)`: return the value for key, or -1 if the key is not present. A successful get counts as a use (makes the key most-recently-used).\n- `put(self, key, value)`: insert or update the value for key (counts as a use). If inserting a new key exceeds capacity, evict the least-recently-used key first.\n\nAlso create `test_lru.py` with pytest tests covering eviction order, update-as-use, and the capacity boundary. Ensure `python -m pytest test_lru.py` passes."
+}
