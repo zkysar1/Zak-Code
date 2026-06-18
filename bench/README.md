@@ -97,10 +97,23 @@ See the handoff brief. Status:
   runner exposes a pytest-capable interpreter (above). 01-wordfreq now completes, and neither 01
   nor 04 reports `recipe_stalled`. (04 can still `doom_loop` — a genuine gpt-4o-mini limitation:
   it repeatedly emits an invalid f-string that the `write_file` Python-validity firewall refuses.)
-- **(5) IN PROGRESS** — added `05-ledger` (multi-file CLI + atomic transfers, held-out oracle).
-- **(1) OPEN, needs keys** — supplier comparison vs Gemini 2.5 Flash / DeepSeek V3 / Fireworks
-  via `ZBENCH_*` (blocked until those provider keys exist in the environment).
-- **(4) OPEN** — `04` stall on groq `llama-3.3-70b` text mode (turn-1 prose, no tool call).
+- **(5) DONE (first task)** — added `05-ledger` (multi-file CLI + atomic transfers; the held-out
+  oracle was validated to PASS against a correct reference implementation).
+- **(1) PARTIAL — named suppliers need keys** — only `OPENAI_API_KEY` + `GROQ_API_KEY` are
+  present here, so Gemini 2.5 Flash / DeepSeek V3 / Fireworks could not be run. With the
+  available providers the comparison re-affirms the current default tier: `openai/gpt-4o-mini`
+  is the reliable deep model (01 completes and passes the oracle), while `groq/llama-3.3-70b`
+  (text mode) is unreliable on the deep set (in this run 03 passed after a doom-loop; 01 and 04
+  failed). Re-run the deep set with `ZBENCH_DEEP_SOURCE`/`ZBENCH_DEEP_MODEL` once a
+  Gemini/DeepSeek/Fireworks key exists.
+- **(4) DIAGNOSED — a model limitation, not a harness bug** — on the complex 04 prompt
+  `groq/llama-3.3-70b` in text mode ignores the `<tool_call>` protocol and "answers" with a
+  Markdown ```python code block (no tool call — not even its native `<function=...>` form), so
+  the loop sees no tool call and completes in **one** iteration having written nothing. The text
+  parser is strict by design (precision over recall — prose must not false-trip it), so there is
+  no safe parser change; the gap is the model not following the protocol. A bounded text-mode
+  nudge ("you wrote code but emitted no `<tool_call>` — emit one to actually create the file")
+  is a possible future improvement, but needs its own validation. See `diag_task.py` output.
 
 ## Constraints
 

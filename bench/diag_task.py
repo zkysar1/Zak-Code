@@ -36,7 +36,7 @@ def main(task_dir: str) -> int:
         f"STOP_REASON={result.stop_reason} degraded={result.degraded} "
         f"iters={result.iterations} routed={result.routed_category}"
     )
-    print("--- transcript (tool_use / tool_result) ---")
+    print("--- transcript (assistant text / tool_use / tool_result) ---")
     for msg in agent.session.messages:
         for block in msg.blocks:
             kind = getattr(block, "type", "")
@@ -46,6 +46,12 @@ def main(task_dir: str) -> int:
             elif kind == "tool_result":
                 tail = (block.output or "").strip().replace("\n", " ")[-110:]
                 print(f"    -> is_error={block.is_error}  {tail}")
+            elif kind == "text" and msg.role == "assistant":
+                # Surface the model's prose too — a text-mode model that "answers" with no tool
+                # call (and no work) shows up here, which is the 04/llama-text stall shape.
+                txt = (block.text or "").strip().replace("\n", " ")
+                if txt:
+                    print(f"  TEXT: {txt[:240]}")
     shutil.rmtree(ws, ignore_errors=True)
     return 0
 
