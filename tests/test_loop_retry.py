@@ -94,6 +94,55 @@ class FlakyStreamProvider(FlakyProvider):
         yield StreamDone(finish_reason="stop")
 
 
+class TempRecordingProvider(FlakyProvider):
+    """Records the per-call ``temperature`` kwarg (``None`` when not overridden) for both
+    the buffered (``acomplete``) and streaming (``astream``) paths, so a test can assert
+    the rejection-retry resample. ``failures`` scripts ``acomplete``; ``fail_stream``
+    scripts ``astream`` — each pops in order, then succeeds."""
+
+    def __init__(
+        self,
+        failures: list[Exception],
+        *,
+        fail_stream: list[Exception] | None = None,
+    ) -> None:
+        super().__init__(failures)
+        self.temps: list[float | None] = []
+        self.stream_temps: list[float | None] = []
+        self.stream_calls = 0
+        self._fail_stream = list(fail_stream or [])
+
+    async def acomplete(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        **kw: Any,
+    ) -> LLMResult:
+        self.calls += 1
+        self.temps.append(temperature)
+        if self._failures:
+            raise self._failures.pop(0)
+        return self._result
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        **kw: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        self.stream_calls += 1
+        self.stream_temps.append(temperature)
+        if self._fail_stream:
+            raise self._fail_stream.pop(0)
+        yield StreamDone(finish_reason="stop")
+
+
 def _make_loop(provider: Provider, **overrides: object) -> AgentLoop:
     settings = load_settings(workspace_root=Path.cwd(), **overrides)
     session = Session(cwd="/tmp/work", model="test/model")
@@ -424,3 +473,102 @@ def test_streaming_midstream_rejection_retry_does_not_double_count_usage(
     totals = loop.session.cumulative_usage()
     assert totals.total_tokens == 100
     assert totals.cost_usd == pytest.approx(0.02)
+
+
+# -- Fix A: resample temperature on a rejection retry to break temp-0 determinism --
+
+
+def test_rejection_retry_temperature_schedule() -> None:
+    """The resample schedule escalates from the floor and clamps at 1.0."""
+    from zakcode.agent.loop import AgentLoop
+
+    assert AgentLoop._rejection_retry_temperature(1) == 0.5
+    assert AgentLoop._rejection_retry_temperature(2) == pytest.approx(0.8)
+    assert AgentLoop._rejection_retry_temperature(3) == 1.0  # 1.1 clamped
+    assert AgentLoop._rejection_retry_temperature(9) == 1.0
+
+
+def test_buffered_rejection_retry_resamples_at_raised_temperature(
+    fast_sleep: list[float],
+) -> None:
+    """Fix A (buffered): a ModelOutputRejected retry re-issues at a raised temperature so a
+    deterministic (temp-0) re-emit of the malformed call is broken. The first attempt uses
+    the configured temperature (no override)."""
+    from zakcode.providers.base import ModelOutputRejected
+
+    provider = TempRecordingProvider([ModelOutputRejected("malformed (tool_use_failed)")])
+    loop = _make_loop(provider)
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 2
+    assert provider.temps == [None, 0.5]  # default temp, then resampled at the floor
+
+
+def test_buffered_rate_limit_retry_keeps_configured_temperature(
+    fast_sleep: list[float],
+) -> None:
+    """A plain 429 retry must NOT perturb temperature — waiting, not resampling, is the
+    remedy, and we want the identical request re-issued."""
+    provider = TempRecordingProvider([RateLimited("429")])
+    loop = _make_loop(provider)
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 2
+    assert provider.temps == [None, None]  # no override on either attempt
+
+
+def test_streaming_rejection_retry_resamples_at_raised_temperature(
+    fast_sleep: list[float],
+) -> None:
+    """Fix A (streaming twin): a pre-stream ModelOutputRejected retry re-issues astream at
+    the raised temperature."""
+    from zakcode.providers.base import ModelOutputRejected
+
+    provider = TempRecordingProvider(
+        [], fail_stream=[ModelOutputRejected("malformed (tool_use_failed)")]
+    )
+    loop = _make_loop(provider)
+    done = asyncio.run(_collect(loop, "hi"))[-1]
+    assert done.stop_reason == "completed"
+    assert provider.stream_calls == 2
+    assert provider.stream_temps == [None, 0.5]
+
+
+def test_buffered_consecutive_rejections_escalate_temperature(
+    fast_sleep: list[float],
+) -> None:
+    """Two consecutive rejections escalate the resample temperature (floor → floor+step)."""
+    from zakcode.providers.base import ModelOutputRejected
+
+    provider = TempRecordingProvider(
+        [
+            ModelOutputRejected("malformed 1 (tool_use_failed)"),
+            ModelOutputRejected("malformed 2 (tool_use_failed)"),
+        ]
+    )
+    loop = _make_loop(provider, provider_max_retries=3)
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 3
+    assert provider.temps == [None, 0.5, pytest.approx(0.8)]
+
+
+def test_buffered_rejection_then_rate_limit_resets_temperature(
+    fast_sleep: list[float],
+) -> None:
+    """Cross-bleed guard: a rejection raises temperature, but a SUBSEQUENT plain 429 retry
+    resets it — waiting, not resampling, is the 429's remedy, so it re-issues at the
+    configured temperature."""
+    from zakcode.providers.base import ModelOutputRejected
+
+    provider = TempRecordingProvider(
+        [
+            ModelOutputRejected("malformed (tool_use_failed)"),
+            RateLimited("429"),
+        ]
+    )
+    loop = _make_loop(provider, provider_max_retries=3)
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 3
+    assert provider.temps == [None, 0.5, None]
