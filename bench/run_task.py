@@ -27,11 +27,33 @@ import time
 from pathlib import Path
 
 
+def _ensure_interpreter_on_path() -> None:
+    """Put THIS runner's interpreter dir first on PATH for the agent's SUBPROCESS tools.
+
+    The agent verifies its work by shelling out (`python -m pytest ...`) via bash/powershell,
+    which resolve `python` from PATH. The isolated temp workspace has no project venv, so a bare
+    `python` hits the *system* interpreter — which typically lacks pytest. The model's correct
+    test-suite verification then fails with "No module named pytest" (and `pip install` is
+    hard-denied in autonomous mode), so the recipe gate stalls a turn whose code is actually
+    fine — while the held-out oracle, run with THIS interpreter (the repo venv, which HAS
+    pytest), passes. That mismatch is exactly the bench's `recipe_stalled`-but-oracle-passes
+    artifact. A real user runs zakcode inside an activated project venv, so the representative
+    fix is to expose the runner's own (pytest-capable) environment to the subprocess. Idempotent.
+    """
+    scripts_dir = str(Path(sys.executable).parent)
+    path = os.environ.get("PATH", "")
+    if scripts_dir not in path.split(os.pathsep):
+        os.environ["PATH"] = scripts_dir + os.pathsep + path
+
+
 def _build_agent(workspace: Path, spec: dict):
     """Mirror the CLI's canonical construction, adapted for headless reproducible runs."""
     from zakcode import Agent
     from zakcode.config import load_settings
 
+    # Make `python`/`pytest` resolve to this runner's (pytest-capable) interpreter for the
+    # agent's subprocess verification, mirroring an activated project venv (see the helper).
+    _ensure_interpreter_on_path()
     # load_settings() (cwd = repo root) loads the repo .env -> GROQ_API_KEY into os.environ,
     # which litellm reads directly for groq/ models. api_base stays None (commented out in .env).
     base = load_settings()
