@@ -1,0 +1,8 @@
+{
+  "id": "01-wordfreq",
+  "title": "Greenfield CLI: word-frequency counter with tests",
+  "max_iterations": 40,
+  "max_cost_usd": 0.5,
+  "verify_timeout_s": 120,
+  "prompt": "Create a Python command-line tool in this workspace. Requirements:\n\n1. Create a file named exactly `wordfreq.py` at the workspace root.\n2. It reads a text file whose path is given as the first positional argument and prints the most common words, one per line, in the exact format `word: count` (the word, then a colon, a space, then the count).\n3. Words are case-insensitive (lowercase them) and are sequences of alphanumeric characters (split on any non-alphanumeric character; ignore empty tokens).\n4. Sort by count descending; break ties alphabetically (ascending).\n5. Print the top 10 by default. Support a `--top N` flag to change how many are printed.\n6. Also create `test_wordfreq.py` with pytest tests covering: basic counting, the --top flag, case-insensitivity, and tie-breaking.\n7. Ensure `python -m pytest test_wordfreq.py` passes.\n\nWhen done, the command `python wordfreq.py <file> --top 3` must print exactly the top 3 words in the format above."
+}

@@ -1,0 +1,8 @@
+{
+  "id": "02-median-bug",
+  "title": "Bugfix in seeded repo: even-length median (short prompt -> exercises quick_code routing)",
+  "max_iterations": 30,
+  "max_cost_usd": 0.4,
+  "verify_timeout_s": 90,
+  "prompt": "Running `python -m pytest test_stats.py` shows failing tests caused by a bug in `stats.py`. Fix the bug in `stats.py` so all tests pass. Do not modify the test file."
+}
