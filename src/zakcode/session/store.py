@@ -41,6 +41,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
 
+from zakcode.artifacts import ArtifactRef
 from zakcode.messages import Message
 from zakcode.tasks import TaskNetwork
 from zakcode.usage import Usage
@@ -131,6 +132,10 @@ class Session(BaseModel):
     cwd: str
     model: str
     messages: list[Message] = Field(default_factory=list)
+    #: User-uploaded files associated with this session. Stored outside the message transcript
+    #: so binary intake does not pollute the model history; the web client includes the
+    #: workspace path in the user's next prompt when the operator wants the agent to inspect it.
+    uploaded_artifacts: list[ArtifactRef] = Field(default_factory=list)
     created_at: str = Field(default_factory=_now_iso)
     usages: list[Usage] = Field(default_factory=list)
     #: Operator permission grants persisted across restarts (audit P0-2d / D12 / Q5).

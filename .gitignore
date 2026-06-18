@@ -28,11 +28,13 @@ packages/*/uv.lock
 
 # Test / type / lint caches
 .pytest_cache/
+.test-tmp/
 .coverage
 .coverage.*
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+.uv-cache/
 .tox/
 .nox/
 

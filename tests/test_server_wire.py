@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from zakcode.agent.loop import TurnResult
+from zakcode.artifacts import ArtifactRef
 from zakcode.config import PermissionTier
 from zakcode.events import (
     AgentDone,
@@ -21,6 +22,8 @@ from zakcode.server.wire import (
     ChatResponse,
     SessionInfo,
     ToolInfo,
+    UploadRequest,
+    UploadResponse,
     WSActionRequired,
     client_message_from_dict,
     event_from_dict,
@@ -34,10 +37,25 @@ from zakcode.usage import Usage
 
 
 def test_every_event_round_trips_through_dict() -> None:
+    artifact = ArtifactRef(
+        id="a1",
+        path="out.txt",
+        filename="out.txt",
+        mime_type="text/plain",
+        size=2,
+        sha256="0" * 64,
+        kind="text",
+    )
     events = [
         AgentTextDelta(text="hi"),
         AgentToolCall(id="c1", name="bash", arguments={"command": "ls"}),
-        AgentToolResult(tool_use_id="c1", output="ok", is_error=False),
+        AgentToolResult(
+            tool_use_id="c1",
+            output="ok",
+            is_error=False,
+            data={"path": "out.txt"},
+            artifacts=[artifact],
+        ),
         AgentStatus(message="thinking"),
         AgentUsage(usage=Usage(total_tokens=5)),
         AgentDone(stop_reason="completed", iterations=2, usage=Usage(total_tokens=9)),
@@ -108,6 +126,32 @@ def test_chat_response_json_round_trip() -> None:
 
 
 # ── SessionInfo / ToolInfo ────────────────────────────────────────────────────
+
+
+def test_upload_request_response_round_trip() -> None:
+    req = UploadRequest(filename="report.docx", data="ZGF0YQ==")
+    assert req.filename == "report.docx"
+
+    artifact = ArtifactRef(
+        id="a1",
+        path="uploads/s/report.docx",
+        filename="report.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size=4,
+        sha256="0" * 64,
+        kind="document",
+        created_by_tool="upload",
+    )
+    resp = UploadResponse(
+        path=artifact.path,
+        bytes=4,
+        artifact=artifact,
+        suggested_tool="read_docx",
+        prompt="Please inspect it.",
+    )
+
+    restored = UploadResponse.model_validate_json(resp.model_dump_json())
+    assert restored == resp
 
 
 def test_session_info_from_session() -> None:

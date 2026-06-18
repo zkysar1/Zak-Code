@@ -45,6 +45,7 @@ from zakcode.providers.base import (
     StreamUsage,
     ToolCall,
 )
+from zakcode.providers.pricing import estimate_cost_usd
 from zakcode.providers.registry import get_capabilities
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
@@ -94,6 +95,34 @@ _LiteLLMRateLimitError = _resolve_exc_type("RateLimitError")
 
 def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
+
+
+#: litellm providers that carry their OWN base URL (resolved from the provider's env vars).
+#: A configured generic ZAKCODE_API_BASE (the local / OpenAI-compatible llama-server) must
+#: NEVER be forwarded to one of these — doing so reroutes a cloud call to the local endpoint,
+#: the 2026-06-17 ``groq/...->localhost`` failover bug. We ALLOWLIST the generic-OpenAI
+#: providers rather than denylist the named clouds, so a new cloud prefix can never silently
+#: inherit the local base.
+_GENERIC_OPENAI_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "openai_like", "hosted_vllm", "text-completion-openai"}
+)
+
+
+def _model_uses_generic_endpoint(model: str) -> bool:
+    """Whether a configured generic ``api_base`` should be forwarded for ``model``.
+
+    True for the OpenAI-compatible generic path — a bare model name, or an
+    ``openai`` / ``openai_like`` / ``hosted_vllm`` prefix (the local llama-server case the
+    base is configured for). False for any NAMED provider (``groq/``, ``anthropic/``,
+    ``ollama_chat/``, …) that litellm routes via its own base URL; forwarding the local base
+    to one of those reroutes the call to the local server — the 2026-06-17 bug where
+    ``groq/openai/gpt-oss-20b`` got the llama-server base, failed, and failed over to
+    ``openai/gpt-4o-mini``.
+    """
+    if not model or "/" not in model:
+        return True
+    prefix = model.split("/", 1)[0].strip().lower()
+    return prefix in _GENERIC_OPENAI_PROVIDERS
 
 
 #: The system-prompt stable/dynamic split marker (parity #2 prompt caching). It MUST equal
@@ -346,6 +375,15 @@ class LiteLLMProvider(Provider):
         hidden = _get(response, "_hidden_params")
         if isinstance(hidden, dict):
             cost = cls._coerce_cost(hidden.get("response_cost"))
+        if cost == 0.0:
+            # litellm has no price entry for Groq's open lineup (served via an
+            # OpenAI-compatible endpoint), so response_cost comes back 0 — /cost
+            # and the budget ceiling would silently under-report. Fall back to our
+            # published Groq rates (pricing.GROQ_RATES_PER_M). A genuine non-zero
+            # response_cost (Anthropic, OpenAI proper, …) always wins.
+            cost = estimate_cost_usd(
+                str(_get(response, "model") or ""), prompt, completion, cache_read
+            )
 
         return Usage(
             prompt_tokens=prompt,
@@ -512,7 +550,11 @@ class LiteLLMProvider(Provider):
         if tools:
             call_kwargs["tools"] = tools
             call_kwargs["tool_choice"] = "auto"
-        if self.api_base is not None:
+        # Forward the configured generic api_base ONLY for OpenAI-compatible models — never to
+        # a named cloud provider (groq/anthropic/…), which carries its own base URL. (2026-06-17:
+        # an unscoped api_base rerouted every groq/ call to the local llama-server, breaking it
+        # and forcing a failover to the openai/gpt-4o-mini fallback.)
+        if self.api_base is not None and _model_uses_generic_endpoint(self.model):
             call_kwargs["api_base"] = self.api_base
             # Only forward api_key ALONGSIDE a custom endpoint — the local/generic-server
             # case the placeholder key exists for. For a bare cloud model (no api_base),

@@ -17,6 +17,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from zakcode.artifacts import ArtifactRef
+
 Role = Literal["system", "user", "assistant", "tool"]
 
 
@@ -52,6 +54,7 @@ class ToolResultBlock(BaseModel):
     output: str = ""
     is_error: bool = False
     data: dict[str, Any] | None = None
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
 
 
 class ThinkingBlock(BaseModel):

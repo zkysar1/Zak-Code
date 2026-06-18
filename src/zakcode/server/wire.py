@@ -23,6 +23,7 @@ from typing import Annotated, Any, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from zakcode.agent.loop import TurnResult
+from zakcode.artifacts import ArtifactRef
 from zakcode.events import AgentEvent
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.permissions import PermissionRequest
@@ -177,6 +178,27 @@ class CompleteResponse(BaseModel):
     repaired: bool = False
 
 
+class UploadRequest(BaseModel):
+    """Body of ``POST /sessions/{id}/uploads``.
+
+    ``data`` accepts raw base64 or a ``data:*/*;base64,...`` URL so browser clients can use
+    ``FileReader.readAsDataURL`` without a multipart parser dependency.
+    """
+
+    filename: str
+    data: str
+
+
+class UploadResponse(BaseModel):
+    """Result of uploading one file into the workspace."""
+
+    path: str
+    bytes: int
+    artifact: ArtifactRef
+    suggested_tool: str = ""
+    prompt: str = ""
+
+
 class SessionInfo(BaseModel):
     """Summary of a stored session (``GET /sessions`` / ``GET /sessions/{id}``)."""
 
@@ -294,6 +316,8 @@ __all__ = [
     "CompleteMessage",
     "CompleteRequest",
     "CompleteResponse",
+    "UploadRequest",
+    "UploadResponse",
     "SessionInfo",
     "ToolInfo",
     "WSUserInput",

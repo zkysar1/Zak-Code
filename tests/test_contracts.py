@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from zakcode.artifacts import ArtifactRef
 from zakcode.config import PermissionTier
 from zakcode.messages import (
     Message,
@@ -113,8 +114,18 @@ def test_toolspec_to_openai_shape() -> None:
 
 
 def test_tool_result_helpers() -> None:
-    ok = ToolResult.ok("yay", data={"n": 1})
+    artifact = ArtifactRef(
+        id="a1",
+        path="out.txt",
+        filename="out.txt",
+        mime_type="text/plain",
+        size=3,
+        sha256="0" * 64,
+        kind="text",
+    )
+    ok = ToolResult.ok("yay", data={"n": 1}, artifacts=[artifact])
     assert not ok.is_error and ok.data == {"n": 1}
+    assert ok.artifacts == [artifact]
     err = ToolResult.error("boom")
     assert err.is_error and err.output == "boom"
 
