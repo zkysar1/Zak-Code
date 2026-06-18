@@ -101,7 +101,9 @@ def test_first_viable_external_when_local_down(monkeypatch) -> None:
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
     probe = FakeProbe({"api/tags": _DOWN, "api.groq.com": _OK})
     resolved = _resolver(probe).resolve(require_tools=True)
-    assert resolved.model == "groq/openai/gpt-oss-120b"  # tools-reliable groq default
+    # gpt-oss-120b and llama-3.3-70b are both tools_unreliable, so the first tools-viable
+    # groq candidate is qwen3-32b.
+    assert resolved.model == "groq/qwen/qwen3-32b"
     assert resolved.source == "groq"
 
 
@@ -151,11 +153,15 @@ def test_rejected_key_is_named(monkeypatch) -> None:
 # ── tools-unreliable is capability metadata (D21 ruling) ─────────────────────
 
 
-def test_llama33_on_groq_is_marked_tools_unreliable() -> None:
+def test_groq_open_tool_models_marked_tools_unreliable() -> None:
     caps = get_capabilities("groq/llama-3.3-70b-versatile")
     assert caps.supports_tools is True  # nominal support stays true
     assert caps.tools_unreliable is True  # ...but the resolver must skip it
-    assert get_capabilities("groq/openai/gpt-oss-120b").tools_unreliable is False
+    # gpt-oss-120b is ALSO tools_unreliable (item 2): a reasoning model that emits malformed
+    # native tool calls Groq rejects, and returns empty content in text mode — broken both ways.
+    oss = get_capabilities("groq/openai/gpt-oss-120b")
+    assert oss.supports_tools is True
+    assert oss.tools_unreliable is True
     assert Capabilities().tools_unreliable is False  # unknown models default reliable
 
 
@@ -261,13 +267,18 @@ def test_fallback_model_is_the_explicit_failover_override(monkeypatch, tmp_path:
 
 def test_auto_failover_reresolves_excluding_failed(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
-    probe = FakeProbe({"api/tags": _DOWN, "api.groq.com": _OK})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    probe = FakeProbe({"api/tags": _DOWN, "api.groq.com": _OK, "api.openai.com": _OK})
     _patch_probe(monkeypatch, probe)
     agent = zakcode.Agent(default_model="auto", workspace_root=tmp_path)
-    assert agent._active_model == "groq/openai/gpt-oss-120b"
+    # The only tools-viable groq candidate is qwen3-32b (gpt-oss-120b + llama-3.3 are
+    # tools_unreliable), so auto resolves there first.
+    assert agent._active_model == "groq/qwen/qwen3-32b"
     switched = agent._model_failover(RequestFailed("boom"))
     assert switched is not None
-    assert agent._active_model == "groq/qwen/qwen3-32b"  # failed model excluded
+    # Excluding the failed qwen3-32b empties groq's tools-viable set, so failover crosses
+    # provider to the first openai candidate.
+    assert agent._active_model == "openai/gpt-4o-mini"
 
 
 def test_explicit_model_without_fallback_never_fails_over(monkeypatch, tmp_path: Path) -> None:

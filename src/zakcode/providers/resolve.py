@@ -9,9 +9,10 @@ re-probed on failure (the runtime failover path probes fresh).
 
 Tool reliability is capability metadata, not a hardcoded sort (D21): when the
 session has tools registered the resolver skips models whose
-:class:`~zakcode.providers.base.Capabilities` say ``tools_unreliable`` — which is
-what lands ``groq/openai/gpt-oss-120b`` ahead of ``groq/llama-3.3-70b-versatile``,
-and keeps doing the right thing as models are added.
+:class:`~zakcode.providers.base.Capabilities` say ``tools_unreliable`` — both
+``groq/openai/gpt-oss-120b`` and ``groq/llama-3.3-70b-versatile`` are flagged (their native
+tool calls hit Groq's ``tool_use_failed``), so ``groq/qwen/qwen3-32b`` is the groq tools pick,
+and the rule keeps doing the right thing as models are added.
 
 The resolver is a pluggable seam: anything matching :class:`ModelResolver` —
 ``resolve(task, require_tools=...) -> ResolvedModel | None`` — can replace the v1
