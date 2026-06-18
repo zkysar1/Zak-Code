@@ -22,6 +22,7 @@ provider or caller can reuse it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from typing import TYPE_CHECKING, Any
@@ -210,10 +211,23 @@ async def complete_structured(
     usage = Usage()
     attempts = 0
     last_text = ""
+    # A model whose NATIVE tool-calling is unreliable cannot be trusted with a json_schema
+    # response_format either: litellm implements json_schema on such backends (e.g. Groq's open
+    # models) via FUNCTION CALLING, so the request flakily fails with a malformed tool call
+    # (tool_use_failed) — the same unreliability the model is flagged for. Since the output is
+    # validated LOCALLY against ``schema`` regardless, fall back to plain json_object mode (native
+    # JSON, no tools) for those models — portable and trap-free. Keyed on the capability flag, not
+    # a vendor name, so it stays vendor-agnostic and tracks the registry's reliability metadata.
+    json_object_only = False
+    if schema is not None:
+        with contextlib.suppress(Exception):  # capabilities() is best-effort; never block the call
+            json_object_only = bool(provider.capabilities().tools_unreliable)
     while True:
         call_kwargs: dict[str, Any] = {}
         if schema is not None:
-            call_kwargs["response_format"] = make_response_format(schema)
+            call_kwargs["response_format"] = make_response_format(
+                None if json_object_only else schema
+            )
             call_kwargs["temperature"] = 0.0  # deterministic on the schema path
         result = await provider.acomplete(convo, system=system, **call_kwargs)
         usage = usage + result.usage
