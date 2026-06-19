@@ -31,6 +31,7 @@ import run_task  # noqa: E402 — sibling bench script; reuse its interpreter-PA
 
 SMALL_MODEL = os.environ.get("ZBENCH_SMALL_MODEL", "groq/qwen/qwen3-32b")
 THRESHOLD = float(os.environ.get("ZBENCH_QUALITY_THRESHOLD", "0.8"))
+RUNS = int(os.environ.get("ZBENCH_RUNS", "3"))  # runs per condition — one sample is too noisy
 
 
 def _build_agent(workspace: Path, spec: dict, *, quality_gate: bool):
@@ -111,23 +112,39 @@ def _run(task_dir: Path, spec: dict, *, quality_gate: bool) -> dict:
     }
 
 
+def _summarize(runs: list[dict]) -> dict:
+    """Aggregate N runs of one condition into a pass-RATE + means (one run is too noisy — a single
+    provider_error or unlucky sample says nothing)."""
+    n = len(runs)
+    passed = sum(1 for r in runs if r["passed"])
+    return {
+        "runs": n,
+        "passed": passed,
+        "pass_rate": round(passed / n, 3) if n else 0.0,
+        "mean_cost_usd": round(sum(r["cost_usd"] for r in runs) / n, 6) if n else 0.0,
+        "mean_time_s": round(sum(r["elapsed_s"] for r in runs) / n, 1) if n else 0.0,
+        # Stop reasons surface noise (e.g. provider_error) so a flukey run is visible, not hidden.
+        "stop_reasons": [r["crashed"] or r["stop_reason"] for r in runs],
+    }
+
+
 def run_experiment(task_dir: Path) -> dict:
     spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
-    off = _run(task_dir, spec, quality_gate=False)
-    on = _run(task_dir, spec, quality_gate=True)
+    off = _summarize([_run(task_dir, spec, quality_gate=False) for _ in range(RUNS)])
+    on = _summarize([_run(task_dir, spec, quality_gate=True) for _ in range(RUNS)])
     return {
         "task": spec["id"],
         "model": SMALL_MODEL,
         "threshold": THRESHOLD,
+        "runs_per_condition": RUNS,
         "gate_off": off,
         "gate_on": on,
         "result": {
-            "off_passed": off["passed"],
-            "on_passed": on["passed"],
-            "gate_helped": on["passed"] and not off["passed"],  # flipping it on rescued the task
-            "gate_hurt": off["passed"] and not on["passed"],  # a regression (should be rare)
-            "extra_cost_usd": round(on["cost_usd"] - off["cost_usd"], 6),  # the tokens it cost
-            "extra_time_s": round(on["elapsed_s"] - off["elapsed_s"], 1),
+            "off_pass_rate": off["pass_rate"],
+            "on_pass_rate": on["pass_rate"],
+            "pass_rate_delta": round(on["pass_rate"] - off["pass_rate"], 3),  # headline (+ = win)
+            "mean_extra_cost_usd": round(on["mean_cost_usd"] - off["mean_cost_usd"], 6),
+            "mean_extra_time_s": round(on["mean_time_s"] - off["mean_time_s"], 1),
         },
     }
 
@@ -140,9 +157,9 @@ def main(argv: list[str]) -> int:
     print(json.dumps(report, indent=2))
     r = report["result"]
     print(
-        f"\n[{report['task']}] gate OFF passed={r['off_passed']} -> ON passed={r['on_passed']} "
-        f"(helped={r['gate_helped']}, hurt={r['gate_hurt']}, +${r['extra_cost_usd']:.4f}, "
-        f"+{r['extra_time_s']}s) on {SMALL_MODEL}",
+        f"\n[{report['task']}] {RUNS}x: gate OFF pass-rate={r['off_pass_rate']} -> ON "
+        f"{r['on_pass_rate']} (delta={r['pass_rate_delta']:+}, +${r['mean_extra_cost_usd']:.4f}/run, "
+        f"+{r['mean_extra_time_s']}s/run) on {SMALL_MODEL}",
         file=sys.stderr,
     )
     return 0
