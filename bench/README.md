@@ -101,19 +101,20 @@ gearing the loop toward it** — if best-of-N doesn't match the big run for the 
 
 The quality engine ships **off by default** — so the real question is *when an operator should flip
 it on*. `run_quality.py` (+ `poe quality <task>`) answers it with data: for one task it runs the
-agent **twice on a small model** — gate OFF (today's baseline) vs gate ON (seam A, the quality gate)
-— grades both with the held-out `verify.py`, and reports the delta (pass / $ / wall-clock).
+agent **`ZBENCH_RUNS` times per condition on a small model** — gate OFF (today's baseline) vs gate ON
+(seam A) — grades each with the held-out `verify.py`, and reports the **pass-rate** delta plus mean
+$/time. (Per-condition runs because one sample is too noisy — a single `provider_error` says nothing.)
 
 ```bash
 uv run poe quality bench/tasks/04-todo-cli
-ZBENCH_SMALL_MODEL=groq/qwen/qwen3-32b ZBENCH_QUALITY_THRESHOLD=0.85 \
+ZBENCH_RUNS=5 ZBENCH_SMALL_MODEL=groq/qwen/qwen3-32b ZBENCH_QUALITY_THRESHOLD=0.85 \
   ./.venv/Scripts/python.exe bench/run_quality.py bench/tasks/05-ledger
 ```
 
-Read the `result` block: `gate_helped` (flipping it on rescued a task the baseline failed),
-`gate_hurt` (a regression — should be rare), and `extra_cost_usd` / `extra_time_s` (what it cost).
-Run it across the suite and the pattern **is the small-model preset** — enable the engine for the
-model tiers / task types where `gate_helped` outweighs the extra spend.
+Read the `result` block: `pass_rate_delta` (ON minus OFF — positive = the gate wins) and
+`mean_extra_cost_usd` / `mean_extra_time_s` (the cost per run); each condition's `stop_reasons` list
+surfaces noise (e.g. a `provider_error`). Run it across the suite and the pattern **is the small-model
+preset** — enable the engine where the pass-rate delta beats the spend.
 
 ## In CI
 
