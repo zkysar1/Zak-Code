@@ -84,6 +84,7 @@ from zakcode.agent.lessons import LessonWriter
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
 from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
+from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
@@ -378,6 +379,10 @@ class TurnResult(BaseModel):
     #: Under zakpick, whether a struggle signal escalated the main turn to ``deep_code`` (the
     #: soft latch fired). False means the classifier's initial pick stood the whole turn.
     routed_escalated: bool = False
+    #: The structured per-turn decision trace (observability): the ordered story of how the
+    #: loop routed and every gate/recovery intervention it fired, ending with the stop. Empty on
+    #: a clean, uneventful turn. See :mod:`zakcode.agent.trace`.
+    trace: TurnTrace = Field(default_factory=TurnTrace)
 
 
 class AgentLoop:
@@ -496,11 +501,42 @@ class AgentLoop:
             self.max_iterations = self.settings.max_iterations or DEFAULT_MAX_ITERATIONS
         # Bounded RateLimited retry budget (audit P0-4); 0 disables retrying.
         self.provider_max_retries = self.settings.provider_max_retries
+        # Per-turn decision trace (observability): the loop records how it routed and every
+        # gate/recovery intervention it fired into this, replaced fresh at the start of each turn.
+        # Attached to the turn's TurnResult/AgentDone and — when settings.trace_dir is set —
+        # dumped to a JSONL file per turn. Tracing is best-effort and must never raise into a turn.
+        self._trace: TurnTrace = TurnTrace()
+        self._turn_count = 0
         # Network-egress sandbox (opt-in): a lazily-started localhost allowlisting proxy that
         # subprocess tools route through. Kept per running loop (see _egress_env).
         self._egress_proxy: EgressProxy | None = None
 
     # ── internals ────────────────────────────────────────────────────────────
+
+    def _note(self, kind: str, detail: str = "", /, **data: Any) -> None:
+        """Record one decision event on the current turn's trace (best-effort).
+
+        ``kind``/``detail`` are positional-only so a structured payload field may itself be named
+        ``kind`` (a gate tag on an ``"intervention"`` event); see :meth:`TurnTrace.note`.
+        """
+        self._trace.note(kind, detail, **data)
+
+    def _dump_trace(self) -> None:
+        """Write the current turn's trace to ``<trace_dir>/turn_<n>.jsonl`` when configured.
+
+        Best-effort observability: a missing directory is created, and any filesystem error is
+        swallowed so tracing can never raise into (or abort) the turn it is recording.
+        """
+        if not self.settings.trace_dir:
+            return
+        try:
+            trace_dir = Path(self.settings.trace_dir)
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            (trace_dir / f"turn_{self._turn_count}.jsonl").write_text(
+                self._trace.to_jsonl(), encoding="utf-8"
+            )
+        except OSError:
+            pass
 
     def _persist(self) -> None:
         if self.store is not None:
@@ -1247,14 +1283,19 @@ class AgentLoop:
         NARROW step) is forwarded so a withheld tool is rejected at the single execution seam.
         """
         if len(calls) > 1 and all(self._is_read_only_safe(c) for c in calls):
-            return list(
+            blocks = list(
                 await asyncio.gather(
                     *(self._execute_tool_call(c, ctx, restrict_to=restrict_to) for c in calls)
                 )
             )
-        blocks: list[ToolResultBlock] = []
-        for call in calls:
-            blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
+        else:
+            blocks = []
+            for call in calls:
+                blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
+        # Trace each call compactly (name + ok) so the decision trace shows the tool sequence
+        # interleaved with routing/gate events; the full args+output live in the session transcript.
+        for call, block in zip(calls, blocks, strict=True):
+            self._note("tool", call.name, ok=not block.is_error)
         return blocks
 
     @staticmethod
@@ -1313,6 +1354,9 @@ class AgentLoop:
         is re-raised (never reported as a normal stop) after the session is left
         in a consistent, persisted state.
         """
+        # Reset the per-turn decision trace before any work (this turn's events only).
+        self._trace = TurnTrace()
+        self._turn_count += 1
         try:
             return await self._run_turn(user_text)
         except asyncio.CancelledError:
@@ -1480,6 +1524,7 @@ class AgentLoop:
                 if category != main_category:
                     self.provider = self.main_provider_for(category)
                     main_category = category
+                    self._note("route", category, category=category)
 
             result: LLMResult | None = None
             while result is None:
@@ -1578,6 +1623,9 @@ class AgentLoop:
                 self.budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
                 if self.budget.over_budget():
                     stop_reason = "budget_exhausted"
+                    self._note(
+                        "intervention", "cost/token budget exhausted", kind="budget_exhausted"
+                    )
                     logger.info(
                         "turn stopped: budget exhausted (cost=$%.4f, tokens=%d)",
                         self.budget.cost_spent,
@@ -1634,6 +1682,11 @@ class AgentLoop:
                 if cursor.needs_verification():
                     if not cursor.can_nudge():
                         stop_reason = "recipe_stalled"
+                        self._note(
+                            "intervention",
+                            "wrote a file but could not verify it runs",
+                            kind="recipe_stalled",
+                        )
                         break
                     # Prefer a harness-issued run (only when it would auto-allow without a
                     # prompt); else nudge the model. Either way consumes one attempt, so an
@@ -1655,6 +1708,11 @@ class AgentLoop:
                 if verify.needs_verification():
                     if not verify.can_attempt():
                         stop_reason = "verification_failed"
+                        self._note(
+                            "intervention",
+                            "project checks did not pass after changes",
+                            kind="verification_failed",
+                        )
                         break
                     signal_latched = True  # struggling to verify → latch the user's deep coder
                     if await self._try_project_verify(verify, ctx) is None:
@@ -1695,6 +1753,11 @@ class AgentLoop:
                     and completion_reviews < self.completion_review_attempts
                 ):
                     completion_reviews += 1
+                    self._note(
+                        "intervention",
+                        "reviewing the work against the request",
+                        kind="completion_review",
+                    )
                     self.session.add_message(Message.user(_control_rail(_COMPLETION_REVIEW_NUDGE)))
                     if not result.text:
                         self._refund_iteration()  # an empty completion did no work before review
@@ -1777,6 +1840,7 @@ class AgentLoop:
                     stuck.reset()
                     continue
                 stop_reason = "doom_loop"
+                self._note("intervention", "repeated identical tool calls", kind="doom_loop")
                 # Same pairing contract as the veto epilogue above: the repeated
                 # batch never executes, so answer its tool_use blocks before the
                 # turn ends. (post-merge review of #20, finding 1 — pre-existing gap)
@@ -1799,6 +1863,7 @@ class AgentLoop:
                 and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
             ):
                 plan_first_nudges += 1
+                self._note("intervention", "plan the task before editing", kind="plan_first")
                 self.session.add_message(
                     _unexecuted_tool_results(
                         result.tool_calls,
@@ -1869,13 +1934,16 @@ class AgentLoop:
                     stuck.reset()
                     continue
                 stop_reason = "stuck"
+                self._note("intervention", "stuck — repeated steps made no progress", kind="stuck")
                 break
             if action is StuckAction.NUDGE:
+                self._note("intervention", "no progress — nudging a rethink", kind="stuck")
                 self.session.add_message(
                     Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
                 )
                 self._persist()
             elif action is StuckAction.NARROW:
+                self._note("intervention", "limiting to read-only tools", kind="stuck")
                 self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                 restrict_readonly_next = True
                 self._persist()
@@ -1896,6 +1964,14 @@ class AgentLoop:
         zakpick_on = self.main_provider_for is not None
         routed_escalated = zakpick_on and signal_latched
         routed_category = "deep_code" if routed_escalated else main_category
+        self._note(
+            "stop",
+            stop_reason,
+            reason=stop_reason,
+            iterations=iterations,
+            escalated=routed_escalated,
+        )
+        self._dump_trace()
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
@@ -1906,6 +1982,7 @@ class AgentLoop:
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
+            trace=self._trace,
         )
 
     def run_turn(self, user_text: str) -> TurnResult:
@@ -1946,6 +2023,9 @@ class AgentLoop:
         re-raised after a best-effort persist (matching :meth:`arun_turn`), so a
         cancelled stream never reports a normal stop.
         """
+        # Reset the per-turn decision trace before any work (streaming twin of arun_turn).
+        self._trace = TurnTrace()
+        self._turn_count += 1
         await self._fire_session_start_once()
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
@@ -2057,6 +2137,7 @@ class AgentLoop:
                     if category != main_category:
                         self.provider = self.main_provider_for(category)
                         main_category = category
+                        self._note("route", category, category=category)
 
                 provider_failure: str | None = None
                 retry_attempts = 0
@@ -2249,6 +2330,9 @@ class AgentLoop:
                 # Non-vetoable, like the buffered path.
                 if self.budget is not None and self.budget.over_budget():
                     stop_reason = "budget_exhausted"
+                    self._note(
+                        "intervention", "cost/token budget exhausted", kind="budget_exhausted"
+                    )
                     logger.info(
                         "turn stopped: budget exhausted (cost=$%.4f, tokens=%d)",
                         self.budget.cost_spent,
@@ -2297,6 +2381,11 @@ class AgentLoop:
                     if cursor.needs_verification():
                         if not cursor.can_nudge():
                             stop_reason = "recipe_stalled"
+                            self._note(
+                                "intervention",
+                                "wrote a file but could not verify it runs",
+                                kind="recipe_stalled",
+                            )
                             yield AgentStatus(
                                 message="stopping: wrote a file but could not verify it runs"
                             )
@@ -2332,6 +2421,11 @@ class AgentLoop:
                     if verify.needs_verification():
                         if not verify.can_attempt():
                             stop_reason = "verification_failed"
+                            self._note(
+                                "intervention",
+                                "project checks did not pass after changes",
+                                kind="verification_failed",
+                            )
                             yield AgentStatus(
                                 message="stopping: project checks did not pass after changes"
                             )
@@ -2383,6 +2477,11 @@ class AgentLoop:
                         and completion_reviews < self.completion_review_attempts
                     ):
                         completion_reviews += 1
+                        self._note(
+                            "intervention",
+                            "reviewing the work against the request",
+                            kind="completion_review",
+                        )
                         self.session.add_message(
                             Message.user(_control_rail(_COMPLETION_REVIEW_NUDGE))
                         )
@@ -2461,6 +2560,7 @@ class AgentLoop:
                         yield AgentStatus(message="turn_end hook vetoed stop; continuing")
                         continue
                     stop_reason = "doom_loop"
+                    self._note("intervention", "repeated identical tool calls", kind="doom_loop")
                     # Pairing fix, identical to the buffered twin (non-veto break).
                     self.session.add_message(
                         _unexecuted_tool_results(
@@ -2481,6 +2581,7 @@ class AgentLoop:
                     and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
                 ):
                     plan_first_nudges += 1
+                    self._note("intervention", "plan the task before editing", kind="plan_first")
                     self.session.add_message(
                         _unexecuted_tool_results(
                             tool_calls,
@@ -2558,15 +2659,20 @@ class AgentLoop:
                         yield AgentStatus(message="turn_end hook vetoed stop; continuing")
                         continue
                     stop_reason = "stuck"
+                    self._note(
+                        "intervention", "stuck — repeated steps made no progress", kind="stuck"
+                    )
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break
                 if action is StuckAction.NUDGE:
+                    self._note("intervention", "no progress — nudging a rethink", kind="stuck")
                     self.session.add_message(
                         Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
                     )
                     self._persist()
                     yield AgentStatus(message="recovering: no progress — nudging a rethink")
                 elif action is StuckAction.NARROW:
+                    self._note("intervention", "limiting to read-only tools", kind="stuck")
                     self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                     restrict_readonly_next = True
                     self._persist()
@@ -2596,6 +2702,14 @@ class AgentLoop:
         zakpick_on = self.main_provider_for is not None
         routed_escalated = zakpick_on and signal_latched
         routed_category = "deep_code" if routed_escalated else main_category
+        self._note(
+            "stop",
+            stop_reason,
+            reason=stop_reason,
+            iterations=iterations,
+            escalated=routed_escalated,
+        )
+        self._dump_trace()
         yield AgentDone(
             stop_reason=stop_reason,
             iterations=iterations,
@@ -2604,6 +2718,7 @@ class AgentLoop:
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
+            trace=self._trace,
         )
 
     @staticmethod
