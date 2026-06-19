@@ -148,6 +148,10 @@ cov = "pytest -q --cov=zakcode --cov-report=term-missing"
 # Agent-quality benchmark (real models — NOT part of `check`/CI gate; see .github/workflows/bench.yml
 # for the scheduled, key-gated run). Pass task-id prefixes to narrow: `uv run poe bench 01 03`.
 bench = { cmd = "python bench/run_suite.py", help = "Run the agent-quality benchmark suite (real models)." }
+# The small-model bet experiment: N-small fan-out + judge-select vs one big call, on one task
+# (real models). `uv run poe bestof bench/tasks/04-todo-cli`. Tunable via ZBENCH_SMALL_MODEL /
+# ZBENCH_BIG_MODEL / ZBENCH_JUDGE_MODEL / ZBENCH_N / ZBENCH_SMALL_TEMP.
+bestof = { cmd = "python bench/run_bestof.py", help = "Best-of-N(small) vs 1-big on a task (real models)." }
 
 [tool.coverage.run]
 source = ["src/zakcode"]
