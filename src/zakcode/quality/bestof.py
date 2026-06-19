@@ -28,13 +28,15 @@ async def best_of_n(
     criteria: str,
     generate: Callable[[], Awaitable[tuple[str, Usage]]],
     n: int = 3,
+    votes: int = 1,
 ) -> tuple[str, int, Usage]:
     """Generate ``n`` candidates concurrently via ``generate`` and return the best by a pairwise
     tournament against ``criteria``.
 
     ``generate`` is an async thunk returning ``(candidate_text, usage)``; it is called ``n`` times
     concurrently. Returns ``(best_text, best_index, total_usage)`` — ``best_index`` is into the
-    surviving candidates (in generation order), useful for tracing which attempt won.
+    surviving candidates (in generation order), useful for tracing which attempt won. ``votes`` is
+    the pairwise panel size per comparison (forwarded to the tournament; ``>1`` = a majority vote).
 
     Bounds + safety: ``n`` is clamped to ≥ 1 (``n=1`` generates once and returns it, no judging). A
     ``generate`` call that RAISES drops just that candidate (best-of-N tolerates a flaky attempt);
@@ -65,7 +67,9 @@ async def best_of_n(
     if len(candidates) == 1:
         return candidates[0], 0, usage
 
-    index, judge_usage = await best_of(judge_provider, criteria=criteria, candidates=candidates)
+    index, judge_usage = await best_of(
+        judge_provider, criteria=criteria, candidates=candidates, votes=votes
+    )
     return candidates[index], index, usage + judge_usage
 
 
