@@ -16,11 +16,40 @@ import asyncio
 import os
 import subprocess
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from zakcode._subprocess import CommandTimeout, new_group_kwargs, terminate_process_tree
 
 __all__ = ["CommandTimeout", "run_capturing"]
+
+
+def _project_venv_bin(cwd: str) -> str | None:
+    """The bin/Scripts dir of a project virtualenv to put FIRST on the child's PATH, or ``None``.
+
+    Prefers an ACTIVE environment (``VIRTUAL_ENV``); else a ``.venv`` or ``venv`` directory at the
+    workspace root. A directory counts only when it holds a real interpreter, so a stray empty
+    ``.venv`` folder is ignored. This is what makes the ``python`` / ``pytest`` / ``pip`` an agent
+    shells out to resolve to the PROJECT's environment (with its installed deps) instead of a bare
+    system interpreter — the "No module named pytest" → false ``recipe_stalled`` failure class.
+    Mirrors what activating the venv would do, without requiring the user to activate it.
+    """
+    bin_name = "Scripts" if os.name == "nt" else "bin"
+    py_names = ("python.exe", "python3.exe") if os.name == "nt" else ("python", "python3")
+    candidates: list[Path] = []
+    active = os.environ.get("VIRTUAL_ENV")
+    if active:
+        candidates.append(Path(active))
+    root = Path(cwd)
+    candidates += [root / ".venv", root / "venv"]
+    for venv in candidates:
+        bin_dir = venv / bin_name
+        try:
+            if bin_dir.is_dir() and any((bin_dir / name).exists() for name in py_names):
+                return str(bin_dir)
+        except OSError:  # a weird/permission-denied path is simply "no venv here", not fatal
+            continue
+    return None
 
 
 async def run_capturing(
@@ -53,6 +82,12 @@ async def run_capturing(
     child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(extra_env or {})}
     for name in drop_env or ():
         child_env.pop(name, None)
+    # Prefer the project's virtualenv interpreter for the child (see _project_venv_bin): an agent
+    # that runs `python -m pytest` / `pip` / ... should hit the WORKSPACE's installed deps, not a
+    # bare system python. Put the venv's bin dir FIRST on PATH, mirroring an activated venv.
+    venv_bin = _project_venv_bin(cwd)
+    if venv_bin:
+        child_env["PATH"] = venv_bin + os.pathsep + child_env.get("PATH", "")
     spawn_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "stdout": subprocess.PIPE,
