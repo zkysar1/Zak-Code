@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 from zakcode.providers.base import Capabilities, LLMResult, Provider
-from zakcode.quality import best_of, binary_judge, pairwise_judge, vote_binary
+from zakcode.quality import best_of, binary_judge, pairwise_judge, vote_binary, vote_pairwise
 from zakcode.usage import Usage
 
 
@@ -104,6 +104,22 @@ async def test_vote_binary_majority_approves() -> None:
     assert v.approved is True  # 2 of 3 approve
 
 
+# ── vote_pairwise (N-judge majority winner) ──────────────────────────────────
+
+
+async def test_vote_pairwise_majority_winner() -> None:
+    prov = _Provider([_p("a", "clearer"), _p("a"), _p("b")])  # 2 a, 1 b → majority a
+    v, u = await vote_pairwise(prov, criteria="c", a="A", b="B", n=3)
+    assert v.winner == "a" and v.reason == "clearer"  # reason from a winning-side judge
+    assert prov.calls == 3 and u.total_tokens == 6  # 3 judges x 2 tokens — spend summed
+
+
+async def test_vote_pairwise_ties_on_even_split() -> None:
+    prov = _Provider([_p("a"), _p("b"), _p("tie")])  # 1 a, 1 b, 1 abstain → no majority → tie
+    v, _ = await vote_pairwise(prov, criteria="c", a="A", b="B", n=3)
+    assert v.winner == "tie"
+
+
 # ── best_of (pairwise round-robin) ───────────────────────────────────────────
 
 
@@ -127,3 +143,10 @@ async def test_best_of_single_candidate_makes_no_calls() -> None:
     prov = _Provider(_p("a"))
     best, u = await best_of(prov, criteria="c", candidates=["only"])
     assert best == 0 and prov.calls == 0 and u.total_tokens == 0
+
+
+async def test_best_of_votes_polls_a_panel_per_pair() -> None:
+    # 2 candidates → 1 pair; votes=3 → that pair gets a 3-voter panel → 3 calls. All "b" → B.
+    prov = _Provider(_p("b"))
+    best, _ = await best_of(prov, criteria="c", candidates=["A", "B"], votes=3)
+    assert best == 1 and prov.calls == 3

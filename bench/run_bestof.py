@@ -46,6 +46,7 @@ BIG_MODEL = os.environ.get("ZBENCH_BIG_MODEL", "openai/gpt-4o-mini")
 JUDGE_MODEL = os.environ.get("ZBENCH_JUDGE_MODEL", SMALL_MODEL)
 N = int(os.environ.get("ZBENCH_N", "3"))
 SMALL_TEMP = float(os.environ.get("ZBENCH_SMALL_TEMP", "0.7"))
+VOTES = int(os.environ.get("ZBENCH_VOTES", "1"))  # pairwise panel size per judge comparison
 
 #: Source extensions serialized as a "solution" for the judge to read (it can't run the code).
 _SRC_EXTS = {".py", ".js", ".ts", ".sh", ".rb", ".go", ".rs", ".java", ".txt", ".md", ".json", ".toml"}
@@ -175,14 +176,16 @@ def run_experiment(task_dir: Path) -> dict:
 
     texts = [a["solution"] for a in small]
     judge_only_index, judge_usage = asyncio.run(
-        best_of(judge_provider, criteria=spec["prompt"], candidates=texts)
+        best_of(judge_provider, criteria=spec["prompt"], candidates=texts, votes=VOTES)
     )
 
     async def _oracle(i: int) -> bool:
         return small[i]["passed"]
 
     hybrid_index, hybrid_usage = asyncio.run(
-        select_best(judge_provider, criteria=spec["prompt"], candidates=texts, oracle=_oracle)
+        select_best(
+            judge_provider, criteria=spec["prompt"], candidates=texts, oracle=_oracle, votes=VOTES
+        )
     )
 
     any_small_passed = any(a["passed"] for a in small)
@@ -204,6 +207,7 @@ def run_experiment(task_dir: Path) -> dict:
             "judge_model": JUDGE_MODEL,
             "n": N,
             "small_temp": SMALL_TEMP,
+            "votes": VOTES,
         },
         "small_attempts": small,
         "big": big,

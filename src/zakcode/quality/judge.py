@@ -187,11 +187,49 @@ async def vote_binary(
     return BinaryVerdict(approved=approved, issues=issues), usage
 
 
+async def vote_pairwise(
+    provider: Provider,
+    *,
+    criteria: str,
+    a: str,
+    b: str,
+    n: int = 3,
+    temperature: float = 0.7,
+) -> tuple[PairwiseVerdict, Usage]:
+    """``n`` INDEPENDENT pairwise judges (sampled at ``temperature`` for diversity); the MAJORITY
+    winner. A judge that abstains (``"tie"``) votes for neither side; ``a``/``b`` tie when their
+    vote counts are equal. The self-consistency lever for SELECTION — a panel is more robust than
+    one pairwise judge (which, on 04-todo-cli, picked the failing candidate). ``n`` clamps to ≥ 1
+    (``n=1`` is one judge). Returns ``(verdict, total_usage)``.
+    """
+    n = max(1, n)
+    results = await asyncio.gather(
+        *(
+            pairwise_judge(provider, criteria=criteria, a=a, b=b, temperature=temperature)
+            for _ in range(n)
+        )
+    )
+    verdicts = [v for v, _ in results]
+    usage = sum((u for _, u in results), Usage())
+    a_votes = sum(1 for v in verdicts if v.winner == "a")
+    b_votes = sum(1 for v in verdicts if v.winner == "b")
+    winner: Literal["a", "b", "tie"]
+    if a_votes > b_votes:
+        winner = "a"
+    elif b_votes > a_votes:
+        winner = "b"
+    else:
+        winner = "tie"
+    reason = next((v.reason for v in verdicts if v.winner == winner and v.reason), "")
+    return PairwiseVerdict(winner=winner, reason=reason), usage
+
+
 async def best_of(
     provider: Provider,
     *,
     criteria: str,
     candidates: list[str],
+    votes: int = 1,
     temperature: float = 0.0,
 ) -> tuple[int, Usage]:
     """The INDEX of the best candidate by a pairwise ROUND-ROBIN against ``criteria``.
@@ -199,23 +237,26 @@ async def best_of(
     Every unordered pair is judged once; a win scores 1, a tie scores 0.5 to both; the candidate
     with the most wins is chosen, ties broken toward the EARLIEST index (stable). Pairwise, not
     absolute scoring, per the research. With ≤ 1 candidate, returns ``0`` and makes no calls.
-    Returns ``(winning_index, total_usage)``.
+
+    ``votes`` (default 1) is the pairwise PANEL size per comparison: ``votes=1`` is a single
+    pairwise judge (the original); ``votes>1`` polls ``votes`` independent judges per pair and takes
+    the majority (:func:`vote_pairwise`) — sharper selection at ``votes``× the judge calls. Returns
+    ``(winning_index, total_usage)``.
     """
     if len(candidates) <= 1:
         return 0, Usage()
     pairs = [(i, j) for i in range(len(candidates)) for j in range(i + 1, len(candidates))]
-    results = await asyncio.gather(
-        *(
-            pairwise_judge(
-                provider,
-                criteria=criteria,
-                a=candidates[i],
-                b=candidates[j],
-                temperature=temperature,
+
+    async def _judge(i: int, j: int) -> tuple[PairwiseVerdict, Usage]:
+        if votes > 1:
+            return await vote_pairwise(
+                provider, criteria=criteria, a=candidates[i], b=candidates[j], n=votes
             )
-            for i, j in pairs
+        return await pairwise_judge(
+            provider, criteria=criteria, a=candidates[i], b=candidates[j], temperature=temperature
         )
-    )
+
+    results = await asyncio.gather(*(_judge(i, j) for i, j in pairs))
     wins = [0.0] * len(candidates)
     usage = Usage()
     for (i, j), (verdict, u) in zip(pairs, results, strict=True):
@@ -238,4 +279,5 @@ __all__ = [
     "binary_judge",
     "pairwise_judge",
     "vote_binary",
+    "vote_pairwise",
 ]

@@ -19,6 +19,7 @@ from zakcode.quality.judge import (
     binary_judge,
     pairwise_judge,
     vote_binary,
+    vote_pairwise,
 )
 from zakcode.quality.select import select_best
 
@@ -31,4 +32,5 @@ __all__ = [
     "pairwise_judge",
     "select_best",
     "vote_binary",
+    "vote_pairwise",
 ]
