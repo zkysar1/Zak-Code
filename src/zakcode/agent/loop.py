@@ -125,7 +125,7 @@ from zakcode.providers.base import (
 )
 from zakcode.providers.routing import classify_main_turn
 from zakcode.providers.text_tools import defang_untrusted
-from zakcode.quality import binary_judge
+from zakcode.quality import binary_judge, score_rubric, weak_dimensions
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -379,6 +379,27 @@ def _critic_nudge(issues: str) -> str:
         "ACTUALLY on disk (open the files), finish anything that is genuinely missing or "
         "half-done, then conclude. If an item is already fully satisfied, you may simply confirm "
         "it and finish."
+    )
+
+
+#: Seam A (quality gate) round cap — a finishing turn is re-scored at most this many times before it
+#: ships regardless, bounding the refine-at-turn-level loop alongside the budget. See _quality_gate.
+_QUALITY_GATE_MAX_ROUNDS = 2
+
+#: Default rubric for the quality gate when ``settings.quality_gate_dimensions`` is unset.
+_DEFAULT_CODE_RUBRIC = {
+    "correctness": "Does the work correctly and completely satisfy the request?",
+    "completeness": "Is anything from the request missing, stubbed, or left half-done?",
+    "soundness": "Is the code clear and sound — free of obvious bugs or bad practice?",
+}
+
+
+def _quality_nudge(weak: str) -> str:
+    """The control message injected when the quality gate scores a finishing turn below the bar."""
+    return (
+        f"A quality reviewer scored the work below the bar.\n{weak}\nAddress these (verify against "
+        "what is ACTUALLY on disk), then conclude; if it already meets what the request needs, "
+        "confirm and finish."
     )
 
 
@@ -1375,6 +1396,34 @@ class AgentLoop:
                 self.budget.add_usage(usage.cost_usd, usage.total_tokens)
         return verdict.approved, verdict.issues
 
+    def _judge_provider(self) -> Provider:
+        """The provider for quality-engine calls (seam A) — today the loop's own (fresh context,
+        like the critic). Routing ``model_roles['judge']`` to a small model is the next seam."""
+        return self.provider
+
+    async def _quality_gate(self, request: str, claimed_result: str) -> tuple[bool, str]:
+        """Seam A: score a finishing turn's result on a rubric; ship, or return a refine brief.
+
+        Runs ALONGSIDE the binary completion critic — two independent checks ('did it satisfy?' vs
+        'is it GOOD enough?'). Oracle-first by placement: it only runs after the verifier and the
+        critic have passed, so the only thing it can act on is a passing-but-weak result. Scores via
+        the rubric scorer on a fresh context (:meth:`_judge_provider`). FAIL-OPEN: if the scorer
+        cannot judge, SHIP — it must never trap a finished turn. Returns ``(ship, weak)`` where
+        ``weak`` is the weak-dimension brief when not shipping. Spend accounted on session + budget.
+        """
+        threshold = self.settings.quality_gate_threshold
+        dimensions = self.settings.quality_gate_dimensions or _DEFAULT_CODE_RUBRIC
+        card, usage = await score_rubric(
+            self._judge_provider(), artifact=claimed_result or "", dimensions=dimensions
+        )
+        with contextlib.suppress(Exception):  # accounting must never break the gate
+            self.session.add_usage(usage, model=self._judge_provider().model_id())
+            if self.budget is not None:
+                self.budget.add_usage(usage.cost_usd, usage.total_tokens)
+        if not card.scores or card.overall >= threshold:  # empty => fail-OPEN (couldn't judge)
+            return True, ""
+        return False, weak_dimensions(card, threshold)
+
     async def _fire_lifecycle(
         self, event: HookEvent, data: dict[str, object] | None = None
     ) -> None:
@@ -1513,6 +1562,7 @@ class AgentLoop:
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
+        quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -1825,6 +1875,27 @@ class AgentLoop:
                         stuck.reset()
                         continue
                     # Approved: fall through to the normal completion path (no re-entry).
+                # Quality gate (seam A — opt-in via settings.quality_gate): after the verifier and
+                # binary critic pass, SCORE the result; if it falls short, send the agent back with
+                # the weak dimensions. Runs ALONGSIDE the critic (two checks); bounded + fail-safe;
+                # off (default) => byte-identical.
+                if (
+                    self.settings.quality_gate
+                    and cursor.wrote_runnable
+                    and main_category != "quick_code"
+                    and quality_rounds < _QUALITY_GATE_MAX_ROUNDS
+                    and (self.budget is None or not self.budget.over_budget())
+                ):
+                    quality_rounds += 1
+                    self._note("intervention", "scoring for quality", kind="quality_gate")
+                    ship, weak = await self._quality_gate(user_text, result.text or "")
+                    if not ship:
+                        self.session.add_message(Message.user(_control_rail(_quality_nudge(weak))))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
@@ -2149,6 +2220,7 @@ class AgentLoop:
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
+        quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -2581,6 +2653,29 @@ class AgentLoop:
                             yield AgentStatus(message="reviewing the work against the request")
                             continue
                         # Approved: fall through to the normal completion path (no re-entry).
+                    # Quality gate (seam A — see the buffered path): scores the result alongside the
+                    # critic; a weak result re-enters with the refine brief. Bounded + fail-safe;
+                    # off (default) => byte-identical.
+                    if (
+                        self.settings.quality_gate
+                        and cursor.wrote_runnable
+                        and main_category != "quick_code"
+                        and quality_rounds < _QUALITY_GATE_MAX_ROUNDS
+                        and (self.budget is None or not self.budget.over_budget())
+                    ):
+                        quality_rounds += 1
+                        self._note("intervention", "scoring for quality", kind="quality_gate")
+                        ship, weak = await self._quality_gate(user_text, assistant_text or "")
+                        if not ship:
+                            self.session.add_message(
+                                Message.user(_control_rail(_quality_nudge(weak)))
+                            )
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            yield AgentStatus(message="scoring for quality")
+                            continue
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
                     prompt = await self._fire_turn_end(
