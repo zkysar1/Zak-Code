@@ -12,6 +12,7 @@ judge-RANK (the measured fix: oracle for "works", judge for "good").
 Increment 3a: :func:`vote_pairwise` — N-judge majority for sharper selection.
 Increment 3b: :mod:`~zakcode.quality.score` (:func:`score_rubric`, absolute weighted score) +
 :mod:`~zakcode.quality.pennywise` (:func:`pennywise`, the score-and-ship gate).
+Increment 4: :mod:`~zakcode.quality.refine` — :func:`refine`, the generate→score→revise loop.
 """
 
 from zakcode.quality.bestof import best_of_n
@@ -25,12 +26,14 @@ from zakcode.quality.judge import (
     vote_pairwise,
 )
 from zakcode.quality.pennywise import ShipDecision, pennywise
+from zakcode.quality.refine import RefineResult, refine, weak_dimensions
 from zakcode.quality.score import ScoreCard, aggregate_scores, score_rubric
 from zakcode.quality.select import select_best
 
 __all__ = [
     "BinaryVerdict",
     "PairwiseVerdict",
+    "RefineResult",
     "ScoreCard",
     "ShipDecision",
     "aggregate_scores",
@@ -39,8 +42,10 @@ __all__ = [
     "binary_judge",
     "pairwise_judge",
     "pennywise",
+    "refine",
     "score_rubric",
     "select_best",
     "vote_binary",
     "vote_pairwise",
+    "weak_dimensions",
 ]
