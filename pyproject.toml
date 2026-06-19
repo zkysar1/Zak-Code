@@ -145,6 +145,9 @@ test = "pytest -q"
 check = ["lint", "format-check", "types", "test"]
 # Coverage (audit P2-1; acceptance 13): terminal report locally; CI uploads XML.
 cov = "pytest -q --cov=zakcode --cov-report=term-missing"
+# Agent-quality benchmark (real models — NOT part of `check`/CI gate; see .github/workflows/bench.yml
+# for the scheduled, key-gated run). Pass task-id prefixes to narrow: `uv run poe bench 01 03`.
+bench = { cmd = "python bench/run_suite.py", help = "Run the agent-quality benchmark suite (real models)." }
 
 [tool.coverage.run]
 source = ["src/zakcode"]
