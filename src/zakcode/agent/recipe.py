@@ -356,6 +356,17 @@ class RecipeCursor:
             return True
         return bool(self._targets) and self._targets <= self._verified
 
+    @property
+    def written_paths(self) -> list[str]:
+        """Absolute paths of the runnable scripts written this turn, in write order (deduped).
+
+        The quality gate (seam A) reads these to score the ACTUAL work, not just the claimed text.
+        """
+        seen: dict[str, None] = {}
+        for path in self._abs_targets:
+            seen.setdefault(path, None)
+        return list(seen)
+
     def observe(self, calls: list[ToolCall], results: list[ToolResultBlock]) -> None:
         """Update state from one iteration's *successful* tool calls."""
         if not self.enabled:
