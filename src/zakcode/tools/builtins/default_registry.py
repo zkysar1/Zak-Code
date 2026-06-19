@@ -13,6 +13,7 @@ from zakcode.tools.builtins.grep import GrepTool
 from zakcode.tools.builtins.images import CreateChartImageTool, InspectImageTool, SaveImageTool
 from zakcode.tools.builtins.list_dir import ListDirTool
 from zakcode.tools.builtins.office import CreateDocxTool, CreateXlsxTool, ReadDocxTool, ReadXlsxTool
+from zakcode.tools.builtins.pdf import CreatePdfTool, ReadPdfTool
 from zakcode.tools.builtins.powershell import PowerShellTool
 from zakcode.tools.builtins.read_file import ReadFileTool
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
@@ -51,6 +52,8 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(ReadXlsxTool(), aliases=["read_excel"])
     registry.register(CreateDocxTool(), aliases=["docx", "word"])
     registry.register(CreateXlsxTool(), aliases=["xlsx", "excel"])
+    registry.register(ReadPdfTool(), aliases=["readpdf"])
+    registry.register(CreatePdfTool(), aliases=["pdf", "makepdf"])
     registry.register(InspectImageTool(), aliases=["image_info"])
     registry.register(SaveImageTool(), aliases=["image"])
     registry.register(CreateChartImageTool(), aliases=["chart"])
