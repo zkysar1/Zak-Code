@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from zakcode.messages import Message
 from zakcode.providers.base import Provider
 from zakcode.providers.structured import coerce_structured, make_response_format
+from zakcode.quality.hooks import apply_judge_hook
 from zakcode.usage import Usage
 
 
@@ -105,6 +106,7 @@ async def binary_judge(
     mode, validated locally. FAIL-OPEN: any error (provider failure, unparseable output) returns
     ``approved=True`` — a judge must never trap its caller.
     """
+    criteria = apply_judge_hook(criteria)
     payload = (
         f"<criteria>\n{_clip(criteria)}\n</criteria>\n\n<artifact>\n{_clip(artifact)}\n</artifact>"
     )
@@ -138,6 +140,7 @@ async def pairwise_judge(
     Pairwise comparison (more reliable than absolute scoring). FAIL-SAFE: any error returns
     ``"tie"`` (no opinion), so a flaky judge never derails a selection.
     """
+    criteria = apply_judge_hook(criteria)
     payload = (
         f"<criteria>\n{_clip(criteria)}\n</criteria>\n\n"
         f"<candidate_a>\n{_clip(a)}\n</candidate_a>\n\n"
