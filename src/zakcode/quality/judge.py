@@ -15,8 +15,9 @@ primitives a quality loop composes:
 By design these are **LLM judges** (the project's call: a judge assesses QUALITY — completeness,
 design, requirement coverage — which a deterministic oracle cannot). An oracle's result (tests
 passed, lints clean) can later be folded in as additional ``criteria`` context, but the verdict is
-the model's. All are vendor-agnostic, **fail-safe** (a judge error abstains — it never crashes the
-caller), and use **json_object** mode so they sidestep litellm's Groq ``json_schema``→tool-calling
+the model's. All are vendor-agnostic, **fail-safe** (an error abstains, never crashes the
+caller — binary → APPROVE, pairwise → TIE), and use **json_object** mode so they sidestep
+litellm's Groq ``json_schema``→tool-calling
 trap (the verdict is validated locally). Each returns its :class:`~zakcode.usage.Usage` so the
 caller accounts the spend on its own session / shared budget.
 """
@@ -240,8 +241,10 @@ async def best_of(
 
     ``votes`` (default 1) is the pairwise PANEL size per comparison: ``votes=1`` is a single
     pairwise judge (the original); ``votes>1`` polls ``votes`` independent judges per pair and takes
-    the majority (:func:`vote_pairwise`) — sharper selection at ``votes``× the judge calls. Returns
-    ``(winning_index, total_usage)``.
+    the majority (:func:`vote_pairwise`) — sharper selection at ``votes``× the judge calls.
+    ``temperature`` applies to single-judge mode (``votes=1``); a panel (``votes>1``) samples at
+    :func:`vote_pairwise`'s own diversity temperature, as identical votes would defeat the panel.
+    Returns ``(winning_index, total_usage)``.
     """
     if len(candidates) <= 1:
         return 0, Usage()

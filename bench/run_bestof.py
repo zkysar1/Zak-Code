@@ -169,9 +169,8 @@ def run_experiment(task_dir: Path) -> dict:
     # HYBRID (select_best) first FILTERS to the attempts that actually pass (the oracle -- here the
     # per-attempt verify grade already computed, so it is free), then judge-RANKS the survivors.
     # Oracle for "works", judge for "good".
-    judge_provider = _build_agent_for(
-        Path(tempfile.mkdtemp(prefix="zbof-judge-")), spec, JUDGE_MODEL, 0.0
-    ).provider
+    judge_ws = Path(tempfile.mkdtemp(prefix="zbof-judge-"))
+    judge_provider = _build_agent_for(judge_ws, spec, JUDGE_MODEL, 0.0).provider
     from zakcode.quality import best_of, select_best
 
     texts = [a["solution"] for a in small]
@@ -195,6 +194,7 @@ def run_experiment(task_dir: Path) -> dict:
     hybrid_judge_cost = round(hybrid_usage.cost_usd, 6)
     bestof_cost = round(small_cost + hybrid_judge_cost, 6)  # product path = the hybrid selector
 
+    shutil.rmtree(judge_ws, ignore_errors=True)  # the judge agent's throwaway workspace
     for a in (*small, big):  # tidy temp workspaces; the report has the data
         shutil.rmtree(a.pop("_ws"), ignore_errors=True)
         a.pop("solution")  # drop the (large) serialized source from the report
