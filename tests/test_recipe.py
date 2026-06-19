@@ -404,26 +404,64 @@ def test_recipe_gate_completes_when_model_runs_pytest(tmp_path: Path) -> None:
 # ── completion-review gate: a code-changing turn re-verifies before finishing ──
 
 
-_REVIEW_PHRASE = "re-read the user's original request"
+_REVIEW_PHRASE = "An independent reviewer flagged"  # the independent-critic send-back nudge
 
 
-def test_completion_review_sends_a_code_turn_back_once(tmp_path: Path) -> None:
-    # With completion_review_attempts=1, a turn that wrote a runnable file is sent back ONCE to
-    # self-verify before it may finish — the mechanism that catches "declared done with work
-    # silently dropped". The model ran its file (recipe satisfied), then the review fires.
+def test_completion_review_critic_disapproval_sends_back_once(tmp_path: Path) -> None:
+    # With completion_review_attempts=1, a code-changing turn is reviewed by the INDEPENDENT
+    # critic; when it WITHHOLDS approval the turn is sent back ONCE, carrying the critic's specific
+    # flagged gaps (bounded so it converges). The critic shares the scripted provider here (no
+    # zakpick), so its verdict is the scripted result right after the completion attempt.
     run_cmd = resolve_run_command("prog.py")
     if run_cmd is None:
         pytest.skip("no python interpreter available")
     write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
     run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
     done = LLMResult(text="All done!")
-    provider = _ScriptedProvider([write, run, done, done])
+    verdict = LLMResult(text='{"approved": false, "issues": "the --count flag was not added"}')
+    provider = _ScriptedProvider([write, run, done, verdict, done])
+    loop = _loop(provider, tmp_path, completion_review_attempts=1)
+    result = asyncio.run(loop.arun_turn("make prog.py with a --count flag"))
+    assert result.stop_reason == "completed"
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert transcript.count(_REVIEW_PHRASE) == 1  # the critic sent it back exactly once (bounded)
+    assert "--count flag was not added" in transcript  # carrying the critic's SPECIFIC issue
+
+
+def test_completion_review_critic_approval_finishes_immediately(tmp_path: Path) -> None:
+    # When the critic APPROVES, the turn finishes immediately — an already-correct turn pays one
+    # cheap side-call, not a wasted self-review re-entry.
+    run_cmd = resolve_run_command("prog.py")
+    if run_cmd is None:
+        pytest.skip("no python interpreter available")
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
+    done = LLMResult(text="All done!")
+    verdict = LLMResult(text='{"approved": true, "issues": ""}')
+    provider = _ScriptedProvider([write, run, done, verdict])
     loop = _loop(provider, tmp_path, completion_review_attempts=1)
     result = asyncio.run(loop.arun_turn("make prog.py"))
     assert result.stop_reason == "completed"
-    assert provider.calls == 4  # write, run, done(->review), done -> complete
     transcript = "\n".join(m.text or "" for m in loop.session.messages)
-    assert transcript.count(_REVIEW_PHRASE) == 1  # sent back exactly once (bounded)
+    assert _REVIEW_PHRASE not in transcript  # approved → no send-back nudge
+
+
+def test_completion_review_critic_fails_open(tmp_path: Path) -> None:
+    # A critic that cannot return a valid verdict (here: prose, not JSON) FAILS OPEN — it must
+    # never trap a turn that is genuinely finished.
+    run_cmd = resolve_run_command("prog.py")
+    if run_cmd is None:
+        pytest.skip("no python interpreter available")
+    write = LLMResult(tool_calls=[_c("w1", "write_file", path="prog.py", content="print('hi')\n")])
+    run = LLMResult(tool_calls=[_c("r1", "bash", command=run_cmd)])
+    done = LLMResult(text="All done!")
+    junk = LLMResult(text="looks good to me, ship it!")  # not a JSON verdict
+    provider = _ScriptedProvider([write, run, done, junk])
+    loop = _loop(provider, tmp_path, completion_review_attempts=1)
+    result = asyncio.run(loop.arun_turn("make prog.py"))
+    assert result.stop_reason == "completed"  # fail-open → finished, not trapped
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert _REVIEW_PHRASE not in transcript
 
 
 def test_completion_review_off_by_default(tmp_path: Path) -> None:
