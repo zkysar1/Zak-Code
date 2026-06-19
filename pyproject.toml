@@ -156,6 +156,9 @@ bestof = { cmd = "python bench/run_bestof.py", help = "Best-of-N(small) vs 1-big
 # model -> the pass/$/time delta ("when does flipping it on win?"). `uv run poe quality
 # bench/tasks/04-todo-cli`. Tunable via ZBENCH_SMALL_MODEL / ZBENCH_QUALITY_THRESHOLD.
 quality = { cmd = "python bench/run_quality.py", help = "Quality gate OFF vs ON on a task (real models)." }
+# The best-of-N generalization test across the suite: best-of-N(small) vs 1-big on every task -> the
+# aggregate (generation ceiling, hybrid pass, 1-big pass, cost). `uv run poe bestof-suite [01 03]`.
+bestof-suite = { cmd = "python bench/run_bestof_suite.py", help = "Best-of-N vs 1-big across the suite." }
 
 [tool.coverage.run]
 source = ["src/zakcode"]
