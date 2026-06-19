@@ -120,6 +120,19 @@ _CAPABILITIES: dict[str, Capabilities] = {
         context_window=131_072,
         max_output=32_766,
     ),
+    "groq/openai/gpt-oss-20b": Capabilities(
+        supports_tools=True,
+        # The smaller gpt-oss sibling, same REASONING-model failure mode as the 120b above: its
+        # native tool calls come back malformed and Groq rejects them with `tool_use_failed`
+        # (live-observed this session — a real multi-tool turn died with provider_error). So the
+        # auto-resolver skips it when tools are in play, and zakpick keeps it ONLY on no-tool
+        # categories (summaries). The tool-using quick_code tier moved off it to qwen3-32b.
+        tools_unreliable=True,
+        supports_vision=False,
+        supports_caching=False,
+        context_window=131_072,
+        max_output=32_768,
+    ),
     "groq/qwen/qwen3-32b": Capabilities(
         supports_tools=True,
         supports_vision=False,

@@ -40,7 +40,10 @@ Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) before making structural cha
   (uv fetches the right Python and installs everything). Run tools via `uv run …`.
 - **Lint/format:** `ruff` (`uv run ruff check . && uv run ruff format .`).
 - **Types:** `mypy` (`uv run mypy`). Prefer typed, `pydantic`-modeled boundaries.
-- **Tests:** `pytest` (`uv run pytest`). New behavior ships with tests.
+- **Tests:** `pytest` (`uv run pytest`). New behavior ships with tests. Prefer **deterministic,
+  offline** behavior tests (scripted providers + the `evals/` probe suite, no API) — see
+  [`docs/TESTING.md`](docs/TESTING.md) for the two-tier (fast control-flow vs real-model quality)
+  strategy.
 - **Style:** match surrounding code; small reviewable changes; clear names over comments.
 
 ## Quick verification (run before declaring work done)

@@ -29,9 +29,11 @@ Stop conditions
   hard outer bound and takes precedence over the doom-loop guard when the two
   would fire on the same (final) iteration.
 * ``"doom_loop"`` — the model requested the *same* tool with *identical*
-  arguments :data:`DOOM_LOOP_THRESHOLD` times in a row, so the loop stops early
-  rather than burning the whole iteration budget on a no-progress cycle. Fires
-  only while iteration budget remains to be saved.
+  arguments :data:`DOOM_LOOP_THRESHOLD` times in a row. The loop first tries a
+  bounded recovery (:data:`_MAX_DOOM_RECOVERIES` targeted nudges to verify the
+  real state and change tack — a confidently-wrong model often breaks out) and
+  stops with this reason only if the repeat persists, far cheaper than burning
+  the whole iteration budget. Fires only while iteration budget remains to save.
 * ``"stuck"`` — broader, multi-signal no-progress detection
   (:class:`~zakcode.agent.stuck.StuckTracker`): when several stuck signals (an
   all-failing batch, a repeatedly-failing call, near-repeats with no progress)
@@ -84,6 +86,7 @@ from zakcode.agent.lessons import LessonWriter
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
 from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
+from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
@@ -121,6 +124,7 @@ from zakcode.providers.base import (
     ToolCall,
 )
 from zakcode.providers.routing import classify_main_turn
+from zakcode.providers.structured import coerce_structured, make_response_format
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import (
@@ -157,6 +161,20 @@ DEFAULT_MAX_ITERATIONS = 50
 #: repeating the exact same call is making no progress, so we stop early rather
 #: than spend the whole iteration budget on it.
 DOOM_LOOP_THRESHOLD = 3
+
+#: How many times per turn the loop tries to UNSTICK an exact-repeat doom loop with a targeted
+#: recovery nudge before giving up. A capable-but-confidently-wrong model (e.g. re-writing valid
+#: code it insists is broken) often breaks out when told the repeat is not working and to verify
+#: the real state first; bounded so a genuinely stuck turn still terminates as ``doom_loop``.
+_MAX_DOOM_RECOVERIES = 1
+
+#: The recovery nudge injected at the first doom-loop hit (see :data:`_MAX_DOOM_RECOVERIES`).
+_DOOM_RECOVERY_NUDGE = (
+    "You have just repeated the EXACT same action several times and nothing changed — repeating "
+    "it will not work. Stop and reconsider. If you believe a file or the workspace is in a wrong "
+    "state, READ it now to check its ACTUAL current contents (you may be acting on a stale or "
+    "mistaken assumption). Then take a DIFFERENT approach — a different command, tool, or edit."
+)
 
 #: RateLimited retry backoff (audit P0-4): when the provider gave no ``retry_after``,
 #: wait ``_RETRY_BASE_DELAY * 2**(attempt-1)`` seconds; either source is capped at
@@ -340,20 +358,62 @@ _DEGRADED_STOP_REASONS = {
 #: same way again).
 _VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck"})
 
-#: The completion-review nudge (the bounded self-review gate). Injected when a code-changing turn
-#: tries to finish, to make the model verify it actually did what was asked before stopping —
-#: generic, never task-specific. Catches the failure where a model declares done while a
-#: requirement was silently dropped (e.g. an abandoned/failed edit) or its tests only pass
-#: trivially. Bounded by ``completion_review_attempts`` so it converges instead of looping.
-_COMPLETION_REVIEW_NUDGE = (
-    "Before you finish: re-read the user's original request and verify you have FULLY and "
-    "CORRECTLY satisfied EVERY requirement — by checking what is ACTUALLY on disk (open the "
-    "files), not what you intended to do. If any earlier tool call failed (for example a rejected "
-    "edit) and was never completed, finish it now. Make sure your tests genuinely PROVE the "
-    "behavior with real inputs and error cases, not merely pass trivially. If anything is missing, "
-    "wrong, or shallow, fix it now and re-run your checks; only stop once the work is truly "
-    "complete and correct."
+#: The independent completion critic (the bounded completion-review gate). When a code-changing
+#: turn tries to finish, a SEPARATE, fresh-context reviewer (``AgentLoop._completion_critic``)
+#: judges whether the claimed result plausibly addresses EVERY part of the request; only if it
+#: flags an unmet requirement is the turn sent back. Replaces the old in-context self-review (the
+#: same model + same context rubber-stamped its own work). The reviewer sees ONLY the request and
+#: the claimed result (no tools, no file access), so it cannot be talked out of a gap by the
+#: transcript that produced it. Bounded by ``completion_review_attempts`` so it converges.
+#:
+#: Schema kept deliberately tiny — a single boolean verdict + a free-text issues string —
+#: validated locally against ``_CRITIC_SCHEMA`` after a json_OBJECT-mode call (NOT json_schema:
+#: see ``_completion_critic`` for the Groq json_schema->tools rationale, same as the difficulty
+#: classifier).
+_CRITIC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "approved": {"type": "boolean"},
+        "issues": {"type": "string"},
+    },
+    "required": ["approved"],
+    "additionalProperties": False,
+}
+
+#: System prompt for the independent completion critic. It is shown ONLY the user request and the
+#: agent's claimed result — no tools, no transcript, no file access — and judges plausibility of
+#: completeness, not style.
+_CRITIC_SYSTEM = (
+    "You are an INDEPENDENT completion reviewer. You are shown ONLY the user's original request "
+    "and the agent's claimed result. You have no tools, no file access, and you cannot see the "
+    "work itself — judge solely from these two texts whether the claimed work plausibly addresses "
+    "EVERY part of the request. Your job is to catch requirements that were silently dropped or "
+    "left half-finished — a request with multiple parts where the result only speaks to some, an "
+    "asked-for behavior the result never mentions delivering, a 'done' with no evidence it covers "
+    "what was asked. Do NOT nitpick style, naming, or phrasing, and do NOT demand more than the "
+    "request asked for. If the claimed result plausibly covers the whole request, APPROVE it. "
+    'Reply with ONLY a JSON object: {"approved": <true|false>, "issues": "<specific unmet '
+    'requirements if not approved; else empty>"}. No prose, no markdown fence.'
 )
+
+#: How much of each side of the critic call to keep — enough for the reviewer to judge coverage,
+#: bounded so the side-call stays cheap regardless of how large the turn grew.
+_CRITIC_INPUT_LIMIT = 4000
+
+
+def _critic_nudge(issues: str) -> str:
+    """The control message injected when the independent critic withholds approval.
+
+    Carries the critic's flagged gaps back to the agent and tells it to VERIFY each against what is
+    actually on disk (the critic could not), finish anything genuinely missing, then conclude.
+    """
+    return (
+        "An independent reviewer flagged these possibly-unmet requirements: "
+        f"{issues}\nThe reviewer could not see your files — verify each item against what is "
+        "ACTUALLY on disk (open the files), finish anything that is genuinely missing or "
+        "half-done, then conclude. If an item is already fully satisfied, you may simply confirm "
+        "it and finish."
+    )
 
 
 class TurnResult(BaseModel):
@@ -378,6 +438,10 @@ class TurnResult(BaseModel):
     #: Under zakpick, whether a struggle signal escalated the main turn to ``deep_code`` (the
     #: soft latch fired). False means the classifier's initial pick stood the whole turn.
     routed_escalated: bool = False
+    #: The structured per-turn decision trace (observability): the ordered story of how the
+    #: loop routed and every gate/recovery intervention it fired, ending with the stop. Empty on
+    #: a clean, uneventful turn. See :mod:`zakcode.agent.trace`.
+    trace: TurnTrace = Field(default_factory=TurnTrace)
 
 
 class AgentLoop:
@@ -440,9 +504,10 @@ class AgentLoop:
         # continuation prompt, at most this many times per turn. 0 (default) disables
         # the gate entirely — no hook fires, behavior is byte-identical to pre-T2.
         self.turn_end_veto_budget = turn_end_veto_budget
-        # Completion-review gate (bounded): when a code-changing turn tries to finish, send the
-        # agent back this many times to verify it satisfied the request before completing. 0
-        # (default) disables it — byte-identical behavior. See _COMPLETION_REVIEW_NUDGE.
+        # Completion-review gate (bounded): when a code-changing turn tries to finish, an
+        # INDEPENDENT fresh-context critic (_completion_critic) judges whether the claimed result
+        # covers the whole request; only a flagged gap sends the agent back, at most this many
+        # times. 0 (default) disables it — byte-identical behavior. See _completion_critic.
         self.completion_review_attempts = completion_review_attempts
         # Optional separate provider for compaction summaries (per-role model routing): a mind
         # can route the cheap "summarizer" role to a cheaper/local model than the generator.
@@ -496,11 +561,42 @@ class AgentLoop:
             self.max_iterations = self.settings.max_iterations or DEFAULT_MAX_ITERATIONS
         # Bounded RateLimited retry budget (audit P0-4); 0 disables retrying.
         self.provider_max_retries = self.settings.provider_max_retries
+        # Per-turn decision trace (observability): the loop records how it routed and every
+        # gate/recovery intervention it fired into this, replaced fresh at the start of each turn.
+        # Attached to the turn's TurnResult/AgentDone and — when settings.trace_dir is set —
+        # dumped to a JSONL file per turn. Tracing is best-effort and must never raise into a turn.
+        self._trace: TurnTrace = TurnTrace()
+        self._turn_count = 0
         # Network-egress sandbox (opt-in): a lazily-started localhost allowlisting proxy that
         # subprocess tools route through. Kept per running loop (see _egress_env).
         self._egress_proxy: EgressProxy | None = None
 
     # ── internals ────────────────────────────────────────────────────────────
+
+    def _note(self, kind: str, detail: str = "", /, **data: Any) -> None:
+        """Record one decision event on the current turn's trace (best-effort).
+
+        ``kind``/``detail`` are positional-only so a structured payload field may itself be named
+        ``kind`` (a gate tag on an ``"intervention"`` event); see :meth:`TurnTrace.note`.
+        """
+        self._trace.note(kind, detail, **data)
+
+    def _dump_trace(self) -> None:
+        """Write the current turn's trace to ``<trace_dir>/turn_<n>.jsonl`` when configured.
+
+        Best-effort observability: a missing directory is created, and any filesystem error is
+        swallowed so tracing can never raise into (or abort) the turn it is recording.
+        """
+        if not self.settings.trace_dir:
+            return
+        try:
+            trace_dir = Path(self.settings.trace_dir)
+            trace_dir.mkdir(parents=True, exist_ok=True)
+            (trace_dir / f"turn_{self._turn_count}.jsonl").write_text(
+                self._trace.to_jsonl(), encoding="utf-8"
+            )
+        except OSError:
+            pass
 
     def _persist(self) -> None:
         if self.store is not None:
@@ -1247,14 +1343,19 @@ class AgentLoop:
         NARROW step) is forwarded so a withheld tool is rejected at the single execution seam.
         """
         if len(calls) > 1 and all(self._is_read_only_safe(c) for c in calls):
-            return list(
+            blocks = list(
                 await asyncio.gather(
                     *(self._execute_tool_call(c, ctx, restrict_to=restrict_to) for c in calls)
                 )
             )
-        blocks: list[ToolResultBlock] = []
-        for call in calls:
-            blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
+        else:
+            blocks = []
+            for call in calls:
+                blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
+        # Trace each call compactly (name + ok) so the decision trace shows the tool sequence
+        # interleaved with routing/gate events; the full args+output live in the session transcript.
+        for call, block in zip(calls, blocks, strict=True):
+            self._note("tool", call.name, ok=not block.is_error)
         return blocks
 
     @staticmethod
@@ -1281,6 +1382,58 @@ class AgentLoop:
         """Return one iteration to the shared budget (no-op without a shared budget)."""
         if self.budget is not None:
             self.budget.refund(1)
+
+    async def _completion_critic(self, request: str, claimed_result: str) -> tuple[bool, str]:
+        """Independent fresh-context review of a finishing turn (the completion-review gate).
+
+        A SEPARATE reviewer — a FRESH message list (NOT the loop's accumulated session), so it never
+        sees the transcript that just declared "done" — is shown only the user's ``request`` and the
+        agent's ``claimed_result``, and asked whether it plausibly covers every part of the
+        request. This is the antidote to in-context self-review, where the same model in the same
+        context that just declared "done" rubber-stamps itself: an independent reviewer with no
+        view of the transcript cannot be talked out of a gap by the work that produced it. Returns
+        ``(approved, issues)`` — ``issues`` names the unmet requirements when not approved, else "".
+
+        FAIL-OPEN: the critic is an enhancement, never a trap. ANY failure — provider error, output
+        that never validated, anything — returns ``(True, "")`` so a flaky side-call can never block
+        a turn that is genuinely done. Like every other model call its spend is accounted on the
+        session + shared budget (visible in /cost, bounded by the turn-tree budget), and both inputs
+        are truncated so the side-call stays cheap no matter how large the turn grew.
+        """
+        try:
+            # The loop's own provider, but on a FRESH context — the independence here is the clean
+            # slate (no transcript to be talked out of a gap by), not a different model. NOTE:
+            # routing the critic to a dedicated SMALL model (the full small-model fan-out, and an
+            # N-critic vote) needs a side-effect-free provider seam — main_provider_for mutates
+            # _active_model (its contract: call ONLY on a real category change), so reusing it
+            # would mis-tag the turn's model. That dedicated critic-model seam is the next step.
+            provider = self.provider
+            payload = (
+                "<user_request>\n"
+                f"{request[:_CRITIC_INPUT_LIMIT]}\n"
+                "</user_request>\n\n"
+                "<agent_claimed_result>\n"
+                f"{claimed_result[:_CRITIC_INPUT_LIMIT]}\n"
+                "</agent_claimed_result>"
+            )
+            # json_OBJECT mode (native JSON), NOT json_schema: litellm implements a json_schema
+            # response_format on Groq via FUNCTION CALLING, and Groq's open models flakily emit a
+            # malformed tool call the provider rejects (tool_use_failed). Plain JSON mode sidesteps
+            # the tool path; the tiny verdict object is validated locally against _CRITIC_SCHEMA.
+            result = await provider.acomplete(
+                [Message.user(payload)],
+                system=_CRITIC_SYSTEM,
+                response_format=make_response_format(None),
+                temperature=0.0,
+            )
+            with contextlib.suppress(Exception):  # accounting must never break the gate
+                self.session.add_usage(result.usage, model=provider.model_id())
+                if self.budget is not None:
+                    self.budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
+            data = coerce_structured(result.text, schema=_CRITIC_SCHEMA)
+            return bool(data.get("approved", True)), str(data.get("issues", ""))
+        except Exception:  # noqa: BLE001 — fail OPEN: a critic failure must never trap the turn
+            return True, ""
 
     async def _fire_lifecycle(
         self, event: HookEvent, data: dict[str, object] | None = None
@@ -1313,6 +1466,9 @@ class AgentLoop:
         is re-raised (never reported as a normal stop) after the session is left
         in a consistent, persisted state.
         """
+        # Reset the per-turn decision trace before any work (this turn's events only).
+        self._trace = TurnTrace()
+        self._turn_count += 1
         try:
             return await self._run_turn(user_text)
         except asyncio.CancelledError:
@@ -1402,6 +1558,7 @@ class AgentLoop:
         # batch and how many times in a row we have now seen it.
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
+        doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
 
         ctx = ToolContext(
             workspace_root=self.workspace_root,
@@ -1480,6 +1637,7 @@ class AgentLoop:
                 if category != main_category:
                     self.provider = self.main_provider_for(category)
                     main_category = category
+                    self._note("route", category, category=category)
 
             result: LLMResult | None = None
             while result is None:
@@ -1578,6 +1736,9 @@ class AgentLoop:
                 self.budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
                 if self.budget.over_budget():
                     stop_reason = "budget_exhausted"
+                    self._note(
+                        "intervention", "cost/token budget exhausted", kind="budget_exhausted"
+                    )
                     logger.info(
                         "turn stopped: budget exhausted (cost=$%.4f, tokens=%d)",
                         self.budget.cost_spent,
@@ -1634,6 +1795,11 @@ class AgentLoop:
                 if cursor.needs_verification():
                     if not cursor.can_nudge():
                         stop_reason = "recipe_stalled"
+                        self._note(
+                            "intervention",
+                            "wrote a file but could not verify it runs",
+                            kind="recipe_stalled",
+                        )
                         break
                     # Prefer a harness-issued run (only when it would auto-allow without a
                     # prompt); else nudge the model. Either way consumes one attempt, so an
@@ -1655,6 +1821,11 @@ class AgentLoop:
                 if verify.needs_verification():
                     if not verify.can_attempt():
                         stop_reason = "verification_failed"
+                        self._note(
+                            "intervention",
+                            "project checks did not pass after changes",
+                            kind="verification_failed",
+                        )
                         break
                     signal_latched = True  # struggling to verify → latch the user's deep coder
                     if await self._try_project_verify(verify, ctx) is None:
@@ -1681,13 +1852,16 @@ class AgentLoop:
                         stuck.reset()
                         continue
                     turn_degraded = True  # finishing with open plan steps after the nudge cap
-                # Completion-review gate (bounded): a turn that CHANGED code may not finish until
-                # the agent re-verifies it satisfied the request — send it back to check every
-                # requirement against what is ACTUALLY on disk and finish any abandoned/failed op,
-                # which catches "declared done while a requirement was silently dropped". Scoped to
-                # COMPLEX (non-quick_code) turns: it would over-work a simple one-line fix (a quick
-                # bugfix ran to max_iterations with it on), and the payoff is on hard tasks.
-                # Bounded by ``completion_review_attempts`` so it converges; off unless that is set.
+                # Completion-review gate (bounded): a turn that CHANGED code is reviewed by an
+                # INDEPENDENT, fresh-context critic before it may finish — the critic sees only the
+                # request and the claimed result and flags requirements that were silently dropped
+                # or left half-done. Only a flagged gap sends the agent back (to verify each item
+                # against what is ACTUALLY on disk and finish anything missing); a clean verdict
+                # finishes immediately, so an already-correct turn pays one cheap side-call, not a
+                # wasted self-review iteration. Scoped to COMPLEX (non-quick_code) turns — it would
+                # over-work a one-line fix, and the payoff is on hard tasks. Fail-OPEN (see
+                # _completion_critic) so a flaky critic can never trap a turn. Bounded by
+                # ``completion_review_attempts`` so it converges; off unless that is set.
                 if (
                     self.completion_review_attempts > 0
                     and cursor.wrote_runnable
@@ -1695,14 +1869,22 @@ class AgentLoop:
                     and completion_reviews < self.completion_review_attempts
                 ):
                     completion_reviews += 1
-                    self.session.add_message(Message.user(_control_rail(_COMPLETION_REVIEW_NUDGE)))
-                    if not result.text:
-                        self._refund_iteration()  # an empty completion did no work before review
-                    self._persist()
-                    last_signature = None
-                    repeat_count = 0
-                    stuck.reset()
-                    continue
+                    self._note(
+                        "intervention",
+                        "reviewing the work against the request",
+                        kind="completion_review",
+                    )
+                    approved, issues = await self._completion_critic(user_text, result.text or "")
+                    if not approved:
+                        self.session.add_message(Message.user(_control_rail(_critic_nudge(issues))))
+                        if not result.text:
+                            self._refund_iteration()  # an empty completion did no work pre-review
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    # Approved: fall through to the normal completion path (no re-entry).
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
@@ -1740,6 +1922,27 @@ class AgentLoop:
                 last_signature = signature
             if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
                 signal_latched = True  # zakpick: a doom loop latches the harder category
+                if doom_recoveries < _MAX_DOOM_RECOVERIES:
+                    # Confidently-wrong recovery: before giving up, try ONCE to unstick the model —
+                    # it may be re-emitting the SAME batch under a false belief (e.g. insisting a
+                    # valid file is broken). Pair the unexecuted batch, nudge it to verify the real
+                    # state and change tack, then re-enter; if it STILL repeats, the give-up fires.
+                    doom_recoveries += 1
+                    turn_degraded = True
+                    self._note("intervention", "recovering from a doom loop", kind="doom_recovery")
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            result.tool_calls,
+                            "Not executed: you repeated this exact action with no change.",
+                            "doom_recovery",
+                        )
+                    )
+                    self.session.add_message(Message.user(_control_rail(_DOOM_RECOVERY_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 prompt = await self._fire_turn_end(
                     "doom_loop",
                     iterations=iterations,
@@ -1777,6 +1980,7 @@ class AgentLoop:
                     stuck.reset()
                     continue
                 stop_reason = "doom_loop"
+                self._note("intervention", "repeated identical tool calls", kind="doom_loop")
                 # Same pairing contract as the veto epilogue above: the repeated
                 # batch never executes, so answer its tool_use blocks before the
                 # turn ends. (post-merge review of #20, finding 1 — pre-existing gap)
@@ -1799,6 +2003,7 @@ class AgentLoop:
                 and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
             ):
                 plan_first_nudges += 1
+                self._note("intervention", "plan the task before editing", kind="plan_first")
                 self.session.add_message(
                     _unexecuted_tool_results(
                         result.tool_calls,
@@ -1869,13 +2074,16 @@ class AgentLoop:
                     stuck.reset()
                     continue
                 stop_reason = "stuck"
+                self._note("intervention", "stuck — repeated steps made no progress", kind="stuck")
                 break
             if action is StuckAction.NUDGE:
+                self._note("intervention", "no progress — nudging a rethink", kind="stuck")
                 self.session.add_message(
                     Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
                 )
                 self._persist()
             elif action is StuckAction.NARROW:
+                self._note("intervention", "limiting to read-only tools", kind="stuck")
                 self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                 restrict_readonly_next = True
                 self._persist()
@@ -1896,6 +2104,14 @@ class AgentLoop:
         zakpick_on = self.main_provider_for is not None
         routed_escalated = zakpick_on and signal_latched
         routed_category = "deep_code" if routed_escalated else main_category
+        self._note(
+            "stop",
+            stop_reason,
+            reason=stop_reason,
+            iterations=iterations,
+            escalated=routed_escalated,
+        )
+        self._dump_trace()
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
@@ -1906,6 +2122,7 @@ class AgentLoop:
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
+            trace=self._trace,
         )
 
     def run_turn(self, user_text: str) -> TurnResult:
@@ -1946,6 +2163,9 @@ class AgentLoop:
         re-raised after a best-effort persist (matching :meth:`arun_turn`), so a
         cancelled stream never reports a normal stop.
         """
+        # Reset the per-turn decision trace before any work (streaming twin of arun_turn).
+        self._trace = TurnTrace()
+        self._turn_count += 1
         await self._fire_session_start_once()
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
@@ -1973,6 +2193,7 @@ class AgentLoop:
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
+        doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
         last_plan_render: str | None = None  # last plan emitted, so a task_update fires on change
 
         ctx = ToolContext(
@@ -2057,6 +2278,7 @@ class AgentLoop:
                     if category != main_category:
                         self.provider = self.main_provider_for(category)
                         main_category = category
+                        self._note("route", category, category=category)
 
                 provider_failure: str | None = None
                 retry_attempts = 0
@@ -2249,6 +2471,9 @@ class AgentLoop:
                 # Non-vetoable, like the buffered path.
                 if self.budget is not None and self.budget.over_budget():
                     stop_reason = "budget_exhausted"
+                    self._note(
+                        "intervention", "cost/token budget exhausted", kind="budget_exhausted"
+                    )
                     logger.info(
                         "turn stopped: budget exhausted (cost=$%.4f, tokens=%d)",
                         self.budget.cost_spent,
@@ -2297,6 +2522,11 @@ class AgentLoop:
                     if cursor.needs_verification():
                         if not cursor.can_nudge():
                             stop_reason = "recipe_stalled"
+                            self._note(
+                                "intervention",
+                                "wrote a file but could not verify it runs",
+                                kind="recipe_stalled",
+                            )
                             yield AgentStatus(
                                 message="stopping: wrote a file but could not verify it runs"
                             )
@@ -2332,6 +2562,11 @@ class AgentLoop:
                     if verify.needs_verification():
                         if not verify.can_attempt():
                             stop_reason = "verification_failed"
+                            self._note(
+                                "intervention",
+                                "project checks did not pass after changes",
+                                kind="verification_failed",
+                            )
                             yield AgentStatus(
                                 message="stopping: project checks did not pass after changes"
                             )
@@ -2375,7 +2610,9 @@ class AgentLoop:
                             yield AgentStatus(message="plan has open steps; continuing")
                             continue
                         turn_degraded = True
-                    # Completion-review gate (streaming twin): see the buffered path.
+                    # Completion-review gate (streaming twin): see the buffered path. An
+                    # independent fresh-context critic reviews the finishing turn; only a flagged
+                    # gap re-enters (and only then is a "reviewing" status worth surfacing).
                     if (
                         self.completion_review_attempts > 0
                         and cursor.wrote_runnable
@@ -2383,17 +2620,27 @@ class AgentLoop:
                         and completion_reviews < self.completion_review_attempts
                     ):
                         completion_reviews += 1
-                        self.session.add_message(
-                            Message.user(_control_rail(_COMPLETION_REVIEW_NUDGE))
+                        self._note(
+                            "intervention",
+                            "reviewing the work against the request",
+                            kind="completion_review",
                         )
-                        if not assistant_text:
-                            self._refund_iteration()
-                        self._persist()
-                        last_signature = None
-                        repeat_count = 0
-                        stuck.reset()
-                        yield AgentStatus(message="reviewing the work against the request")
-                        continue
+                        approved, issues = await self._completion_critic(
+                            user_text, assistant_text or ""
+                        )
+                        if not approved:
+                            self.session.add_message(
+                                Message.user(_control_rail(_critic_nudge(issues)))
+                            )
+                            if not assistant_text:
+                                self._refund_iteration()
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            yield AgentStatus(message="reviewing the work against the request")
+                            continue
+                        # Approved: fall through to the normal completion path (no re-entry).
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
                     prompt = await self._fire_turn_end(
@@ -2424,6 +2671,28 @@ class AgentLoop:
                     last_signature = signature
                 if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
                     signal_latched = True  # zakpick: a doom loop latches the harder category
+                    if doom_recoveries < _MAX_DOOM_RECOVERIES:
+                        # Confidently-wrong recovery (streaming twin of the buffered path): try
+                        # ONCE to unstick a model re-emitting the SAME batch under a false belief.
+                        doom_recoveries += 1
+                        turn_degraded = True
+                        self._note(
+                            "intervention", "recovering from a doom loop", kind="doom_recovery"
+                        )
+                        self.session.add_message(
+                            _unexecuted_tool_results(
+                                tool_calls,
+                                "Not executed: you repeated this exact action with no change.",
+                                "doom_recovery",
+                            )
+                        )
+                        self.session.add_message(Message.user(_control_rail(_DOOM_RECOVERY_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="recovering: repeated identical calls")
+                        continue
                     prompt = await self._fire_turn_end(
                         "doom_loop",
                         iterations=iterations,
@@ -2461,6 +2730,7 @@ class AgentLoop:
                         yield AgentStatus(message="turn_end hook vetoed stop; continuing")
                         continue
                     stop_reason = "doom_loop"
+                    self._note("intervention", "repeated identical tool calls", kind="doom_loop")
                     # Pairing fix, identical to the buffered twin (non-veto break).
                     self.session.add_message(
                         _unexecuted_tool_results(
@@ -2481,6 +2751,7 @@ class AgentLoop:
                     and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
                 ):
                     plan_first_nudges += 1
+                    self._note("intervention", "plan the task before editing", kind="plan_first")
                     self.session.add_message(
                         _unexecuted_tool_results(
                             tool_calls,
@@ -2558,15 +2829,20 @@ class AgentLoop:
                         yield AgentStatus(message="turn_end hook vetoed stop; continuing")
                         continue
                     stop_reason = "stuck"
+                    self._note(
+                        "intervention", "stuck — repeated steps made no progress", kind="stuck"
+                    )
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break
                 if action is StuckAction.NUDGE:
+                    self._note("intervention", "no progress — nudging a rethink", kind="stuck")
                     self.session.add_message(
                         Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
                     )
                     self._persist()
                     yield AgentStatus(message="recovering: no progress — nudging a rethink")
                 elif action is StuckAction.NARROW:
+                    self._note("intervention", "limiting to read-only tools", kind="stuck")
                     self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                     restrict_readonly_next = True
                     self._persist()
@@ -2596,6 +2872,14 @@ class AgentLoop:
         zakpick_on = self.main_provider_for is not None
         routed_escalated = zakpick_on and signal_latched
         routed_category = "deep_code" if routed_escalated else main_category
+        self._note(
+            "stop",
+            stop_reason,
+            reason=stop_reason,
+            iterations=iterations,
+            escalated=routed_escalated,
+        )
+        self._dump_trace()
         yield AgentDone(
             stop_reason=stop_reason,
             iterations=iterations,
@@ -2604,6 +2888,7 @@ class AgentLoop:
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
+            trace=self._trace,
         )
 
     @staticmethod

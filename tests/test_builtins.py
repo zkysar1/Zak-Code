@@ -145,6 +145,56 @@ async def test_bash_nonzero_exit_is_error(ctx: ToolContext) -> None:
     assert res.data["exit_code"] == 3
 
 
+def _fake_venv(root: Path) -> Path:
+    """Create a fake project venv under ``root`` and return its bin/Scripts dir."""
+    import os
+
+    bin_name = "Scripts" if os.name == "nt" else "bin"
+    py = "python.exe" if os.name == "nt" else "python"
+    bindir = root / ".venv" / bin_name
+    bindir.mkdir(parents=True)
+    (bindir / py).write_text("")  # a fake interpreter so the dir counts as a venv
+    return bindir
+
+
+def test_project_venv_bin_detects_workspace_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zakcode.tools.builtins._proc import _project_venv_bin
+
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # else the test runner's own venv wins
+    bindir = _fake_venv(tmp_path)
+    assert _project_venv_bin(str(tmp_path)) == str(bindir)
+
+
+def test_project_venv_bin_none_without_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zakcode.tools.builtins._proc import _project_venv_bin
+
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    assert _project_venv_bin(str(tmp_path)) is None
+    (tmp_path / ".venv").mkdir()  # an empty .venv (no interpreter) does not count
+    assert _project_venv_bin(str(tmp_path)) is None
+
+
+async def test_subprocess_prepends_project_venv_to_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End-to-end: the child's PATH starts with the workspace venv's bin dir, so `python`/`pytest`
+    # resolve to the project's interpreter (the "No module named pytest" false-failure fix).
+    import os
+
+    from zakcode.tools.builtins._proc import run_capturing
+
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # use the workspace .venv, not the runner's
+    bindir = _fake_venv(tmp_path)
+    cmd = "echo %PATH%" if os.name == "nt" else 'echo "$PATH"'
+    out, code = await run_capturing(shell_command=cmd, cwd=str(tmp_path), timeout=15)
+    assert code == 0
+    assert str(bindir) in out
+
+
 async def test_path_escape_is_error(ctx: ToolContext) -> None:
     read = ReadFileTool()
     res = await read.execute({"path": "../outside.txt"}, ctx)
@@ -172,6 +222,8 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "read_xlsx",
         "create_docx",
         "create_xlsx",
+        "read_pdf",
+        "create_pdf",
         "inspect_image",
         "save_image",
         "create_chart_image",
@@ -201,6 +253,9 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
     assert reg.get("docx") is reg.get("create_docx")
     assert reg.get("excel") is reg.get("create_xlsx")
     assert reg.get("xlsx") is reg.get("create_xlsx")
+    assert reg.get("readpdf") is reg.get("read_pdf")
+    assert reg.get("pdf") is reg.get("create_pdf")
+    assert reg.get("makepdf") is reg.get("create_pdf")
     assert reg.get("image_info") is reg.get("inspect_image")
     assert reg.get("image") is reg.get("save_image")
     assert reg.get("chart") is reg.get("create_chart_image")

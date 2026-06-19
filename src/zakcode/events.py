@@ -23,6 +23,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from zakcode.agent.trace import TurnTrace
 from zakcode.artifacts import ArtifactRef
 from zakcode.usage import Usage
 
@@ -107,6 +108,10 @@ class AgentDone(BaseModel):
     #: it. A client uses these for the "your deep coder wasn't needed" advisory.
     routed_category: str | None = None
     routed_escalated: bool = False
+    #: The structured per-turn decision trace (observability), mirroring ``TurnResult.trace``: how
+    #: the loop routed and every gate/recovery intervention it fired, ending with the stop. Empty on
+    #: a clean turn. See :mod:`zakcode.agent.trace`.
+    trace: TurnTrace = Field(default_factory=TurnTrace)
 
 
 AgentEvent = Annotated[

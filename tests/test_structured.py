@@ -231,3 +231,25 @@ async def test_complete_structured_accumulates_usage() -> None:
     p = _FakeProvider(['{"a": 1}', '{"a": "x"}'])  # two calls, 1 token each
     res = await complete_structured(p, [Message.user("hi")], schema=_OBJ_SCHEMA)
     assert res.usage.total_tokens == 2
+
+
+async def test_complete_structured_unreliable_model_uses_json_object() -> None:
+    # A tools-unreliable model (Groq open models) must get plain json_OBJECT mode, NOT a
+    # json_schema response_format — litellm implements json_schema via function-calling on such
+    # backends, which flakily fails (tool_use_failed). Validity is still enforced locally.
+    pytest.importorskip("jsonschema")
+
+    class _UnreliableProvider(_FakeProvider):
+        def capabilities(self) -> Capabilities:
+            return Capabilities(tools_unreliable=True)
+
+    p = _UnreliableProvider(['{"a": "x"}'])
+    res = await complete_structured(p, [Message.user("hi")], schema=_OBJ_SCHEMA)
+    assert res.valid is True and res.data == {"a": "x"}
+    assert p.calls[0]["response_format"] == {"type": "json_object"}  # no tools path
+    assert p.calls[0]["temperature"] == 0.0  # still deterministic, still validated locally
+
+    # A schema-violating output still fails validation + repairs, even via json_object mode.
+    p2 = _UnreliableProvider(['{"a": 1}'])
+    res2 = await complete_structured(p2, [Message.user("hi")], schema=_OBJ_SCHEMA)
+    assert res2.valid is False and len(p2.calls) == 2  # one repair, then gives up cleanly

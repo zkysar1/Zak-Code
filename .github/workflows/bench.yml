@@ -1,0 +1,108 @@
+name: agent-bench
+
+# A scheduled, key-gated AGENT-QUALITY benchmark. It MEASURES the agent against REAL models
+# (pass-rate, $/task, tokens, convergence) and records the numbers as a job summary + an artifact;
+# it never gates a PR (quality is tracked, not enforced — a noisy model regression must not block
+# merges). Normal CI (ci.yml) is untouched. It runs ONLY on the canonical repo (forks never get
+# the secrets) and ONLY when provider API keys are configured, so an unconfigured repo no-ops.
+#
+# NOTE: a real-model run costs money. The schedule is nightly per the project owner's request — to
+# spend less, change the cron to weekly ("0 7 * * 1") or simply remove the OPENAI_API_KEY /
+# GROQ_API_KEY repo secrets (the gate step then skips every run). Trigger ad-hoc any time via the
+# "Run workflow" button (workflow_dispatch), optionally narrowing the task set or overriding the
+# model — run it twice with different models to compare (e.g. N-small fan-out vs one big model).
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # nightly ~07:00 UTC
+  workflow_dispatch:
+    inputs:
+      filters:
+        description: "Task-id prefixes to run (space-separated); blank = all tasks"
+        required: false
+        default: ""
+      jobs:
+        description: "Concurrency (Groq rate limits keep this low)"
+        required: false
+        default: "3"
+      model:
+        description: "Override ZAKCODE_DEFAULT_MODEL (blank = repo default); run twice to compare"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# Never run two benches at once (they hit shared rate-limited providers); don't cancel an
+# in-flight paid run when a new one is queued.
+concurrency:
+  group: agent-bench
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: agent quality bench
+    runs-on: ubuntu-latest
+    if: github.repository == 'zkysar1/Zak-Code' # forks have no secrets; skip entirely
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync (dev + server extras)
+        run: uv sync --extra dev --extra server
+
+      - name: Gate on provider keys
+        id: keys
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ] && [ -z "$GROQ_API_KEY" ]; then
+            echo "::notice::No provider API keys (OPENAI_API_KEY / GROQ_API_KEY) configured — skipping the agent bench."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run the suite
+        if: steps.keys.outputs.run == 'true'
+        # Dispatch inputs flow through env: (NOT inlined into the script) — the standard guard
+        # against shell-injection via a workflow_dispatch input. $BENCH_FILTERS is intentionally
+        # unquoted so a space-separated prefix list word-splits into separate positional args.
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ZAKCODE_DEFAULT_MODEL: ${{ github.event.inputs.model }}
+          BENCH_FILTERS: ${{ github.event.inputs.filters }}
+          BENCH_JOBS: ${{ github.event.inputs.jobs || '3' }}
+        run: |
+          uv run --no-sync python bench/run_suite.py $BENCH_FILTERS \
+            --jobs "${BENCH_JOBS:-3}" | tee bench-output.txt
+
+      - name: Publish summary
+        if: steps.keys.outputs.run == 'true'
+        run: |
+          {
+            echo '## Agent quality bench'
+            echo
+            echo "model: \`${ZAKCODE_DEFAULT_MODEL:-<repo default>}\`  ·  run: ${GITHUB_RUN_ID}"
+            echo
+            echo '```'
+            tail -n 40 bench-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          ZAKCODE_DEFAULT_MODEL: ${{ github.event.inputs.model }}
+
+      - name: Upload results JSON
+        if: steps.keys.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.run_id }}
+          path: bench/results/*.json
+          if-no-files-found: warn

@@ -210,6 +210,11 @@ class Settings(BaseSettings):
         ge=0,
         description="Self-review rounds before a code-changing turn may finish; 0 disables.",
     )
+    trace_dir: str | None = Field(
+        default=None,
+        description="If set, write a structured per-turn JSONL decision trace to this directory "
+        "(observability); unset disables. Env: ZAKCODE_TRACE_DIR.",
+    )
     permission_mode: str = Field(
         default="ask",
         description="One of: ask | acceptEdits | allow | autonomous | deny.",

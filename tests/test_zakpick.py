@@ -67,8 +67,8 @@ def test_default_category_models_cover_every_category() -> None:
 def test_defaults_are_groq_and_graduated() -> None:
     s = Settings(default_model="zakpick", workspace_root=".")
     assert r.model_for_category("classify", s) == "groq/llama-3.1-8b-instant"  # cheapest
-    assert r.model_for_category("summarize", s) == "groq/openai/gpt-oss-20b"
-    assert r.model_for_category("quick_code", s) == "groq/openai/gpt-oss-20b"
+    assert r.model_for_category("summarize", s) == "groq/openai/gpt-oss-20b"  # no-tool prose
+    assert r.model_for_category("quick_code", s) == "groq/qwen/qwen3-32b"  # tools-reliable Groq
     assert r.model_for_category("plan", s) == "groq/qwen/qwen3-32b"
     # deep_code/delegate moved to a first-party model whose native tool-calling is reliable
     # (Groq's open models emit tool calls its strict parser rejects — see routing.py rationale).
@@ -77,10 +77,16 @@ def test_defaults_are_groq_and_graduated() -> None:
 
 
 def test_default_avoids_tools_unreliable_model() -> None:
-    # llama-3.3-70b-versatile is flagged tools_unreliable — it must not be a tool-using default.
+    # A TOOL-USING routed category must never default to a tools_unreliable model (its tool calls
+    # would flake — gpt-oss-20b/120b, llama-3.3-70b). summarize/classify do NO tool calls, so the
+    # flag is moot for them and they may stay on the cheap (flagged) model.
+    from zakcode.providers.registry import get_capabilities
+
     s = Settings(default_model="zakpick", workspace_root=".")
-    routed = {r.model_for_category(c, s) for c in r.ROUTED_CATEGORIES}
-    assert all("llama-3.3-70b" not in m for m in routed)
+    assert get_capabilities("groq/openai/gpt-oss-20b").tools_unreliable is True  # the cheap tier
+    for category in ("quick_code", "deep_code", "delegate", "plan"):
+        model = r.model_for_category(category, s)
+        assert get_capabilities(model).tools_unreliable is False, (category, model)
 
 
 def test_deep_tier_uses_reliable_first_party_native_tool_calling() -> None:
@@ -102,7 +108,7 @@ def test_user_override_wins_and_flips_source() -> None:
         zakpick_models={"deep_code": {"model": "qwen3:32b", "source": "local"}},
     )
     assert r.model_for_category("deep_code", s) == "ollama_chat/qwen3:32b"  # overridden → local
-    assert r.model_for_category("quick_code", s) == "groq/openai/gpt-oss-20b"  # still default
+    assert r.model_for_category("quick_code", s) == "groq/qwen/qwen3-32b"  # still default
 
 
 # ── classifier (the one automatic decision) ──────────────────────────────────────
@@ -254,7 +260,7 @@ def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
 def test_agent_main_provider_updates_active_model(tmp_path: Path) -> None:
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
     agent._main_provider_for("quick_code")
-    assert agent._active_model == "groq/openai/gpt-oss-20b"  # easy turn → quick coder
+    assert agent._active_model == "groq/qwen/qwen3-32b"  # easy turn → reliable quick coder
     agent._main_provider_for("deep_code")
     assert agent._active_model == "openai/gpt-4o-mini"  # hard turn → reliable deep coder
 
@@ -697,7 +703,9 @@ async def test_loop_doom_signal_latches_escalation(tmp_path: Path) -> None:
         max_iterations=10,
     )
     result = await loop.arun_turn("hi")
-    assert result.stop_reason == "doom_loop"
+    # The doom signal latches escalation to the deep coder; the built-in recovery then re-enters on
+    # that deep model, which completes -- escalation + recovery rescue the turn instead of dooming.
+    assert result.stop_reason == "completed"
     assert result.routed_escalated is True
     assert result.routed_category == "deep_code"
 

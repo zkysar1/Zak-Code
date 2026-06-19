@@ -100,8 +100,8 @@ def _o(model: str) -> ZakpickModel:
 #:     ``ZAKCODE_TOOL_CALLING_MODE=text`` (focused tasks) instead.
 DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
     "classify": _g("llama-3.1-8b-instant"),  # cheapest/fastest — JSON gates
-    "summarize": _g("openai/gpt-oss-20b"),  # cheap, fast, decent prose; no tools
-    "quick_code": _g("openai/gpt-oss-20b"),  # cheap, tools-OK on easy turns
+    "summarize": _g("openai/gpt-oss-20b"),  # cheap, fast prose; NO tools, so the flag is moot
+    "quick_code": _g("qwen/qwen3-32b"),  # tools-RELIABLE Groq model (gpt-oss-20b's tools flake)
     "plan": _g("qwen/qwen3-32b"),  # strong reasoning for decomposition (read-only)
     "deep_code": _o("gpt-4o-mini"),  # tools-RELIABLE native + cached — hard turns
     "delegate": _o("gpt-4o-mini"),  # tools-reliable native — general execution
