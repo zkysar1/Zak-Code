@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from zakcode.agent.loop import (
+    _MAX_DOOM_RECOVERIES,
     DEFAULT_MAX_ITERATIONS,
     DOOM_LOOP_THRESHOLD,
     AgentLoop,
@@ -28,6 +29,10 @@ from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, ToolSpec
 from zakcode.usage import Usage
+
+#: Iterations a forever-repeating model burns before doom_loop: THRESHOLD repeats, ONE recovery
+#: attempt, then THRESHOLD more (the recovery re-enters once before the guard gives up).
+_DOOM_ITERS = DOOM_LOOP_THRESHOLD * (1 + _MAX_DOOM_RECOVERIES)
 
 # ── scripted providers ───────────────────────────────────────────────────────
 
@@ -283,12 +288,13 @@ def test_default_max_iterations_constant() -> None:
 
 @pytest.mark.asyncio
 async def test_doom_loop_stops_before_budget(tmp_path: Path) -> None:
-    # Identical call every iteration; a large budget would otherwise burn forever.
+    # Identical call every iteration; a large budget would otherwise burn forever. The guard tries
+    # ONE recovery first, so it fires after THRESHOLD repeats + the recovery + THRESHOLD more.
     provider = LoopingProvider(arguments={"text": "same"})
     loop = _make_loop(provider, tmp_path, max_iterations=100)
     result = await loop.arun_turn("repeat")
     assert result.stop_reason == "doom_loop"
-    assert result.iterations == DOOM_LOOP_THRESHOLD
+    assert result.iterations == _DOOM_ITERS
     # We stopped BEFORE the iteration budget (and far below it).
     assert result.iterations < 100
 
@@ -301,23 +307,32 @@ async def test_doom_loop_identity_ignores_call_id(tmp_path: Path) -> None:
     loop = _make_loop(provider, tmp_path, max_iterations=50)
     result = await loop.arun_turn("repeat")
     assert result.stop_reason == "doom_loop"
-    assert result.iterations == DOOM_LOOP_THRESHOLD
+    assert result.iterations == _DOOM_ITERS
 
 
 @pytest.mark.asyncio
 async def test_doom_loop_arg_order_insensitive(tmp_path: Path) -> None:
     # Same call but arguments built with different key orders -> still a repeat.
+    # _DOOM_ITERS identical calls (alternating key order) so the guard fires even after its one
+    # recovery attempt -> arg-order-insensitive identity holds across the recovery too.
     calls = [
-        LLMResult(tool_calls=[ToolCall(id="a", name="echo", arguments={"x": 1, "y": 2})]),
-        LLMResult(tool_calls=[ToolCall(id="b", name="echo", arguments={"y": 2, "x": 1})]),
-        LLMResult(tool_calls=[ToolCall(id="c", name="echo", arguments={"x": 1, "y": 2})]),
-        LLMResult(text="should not get here"),
+        LLMResult(
+            tool_calls=[
+                ToolCall(
+                    id=f"c{i}",
+                    name="echo",
+                    arguments={"x": 1, "y": 2} if i % 2 else {"y": 2, "x": 1},
+                )
+            ]
+        )
+        for i in range(_DOOM_ITERS)
     ]
+    calls.append(LLMResult(text="should not get here"))
     provider = ScriptedProvider(calls)
     loop = _make_loop(provider, tmp_path, max_iterations=50)
     result = await loop.arun_turn("repeat")
     assert result.stop_reason == "doom_loop"
-    assert result.iterations == DOOM_LOOP_THRESHOLD
+    assert result.iterations == _DOOM_ITERS
 
 
 @pytest.mark.asyncio
@@ -349,6 +364,28 @@ async def test_doom_loop_different_args_not_triggered(tmp_path: Path) -> None:
     loop = _make_loop(provider, tmp_path, max_iterations=50)
     result = await loop.arun_turn("vary args")
     assert result.stop_reason == "completed"
+
+
+@pytest.mark.asyncio
+async def test_doom_recovery_nudge_lets_model_recover(tmp_path: Path) -> None:
+    # Three identical calls trip the doom guard; instead of giving up, the loop injects ONE
+    # recovery nudge and re-enters -> the model breaks the loop on the next reply and completes.
+    # Without the recovery this would stop at doom_loop on the 3rd repeat and never reach the 4th.
+    calls = [
+        LLMResult(tool_calls=[ToolCall(id="a", name="echo", arguments={"text": "same"})]),
+        LLMResult(tool_calls=[ToolCall(id="b", name="echo", arguments={"text": "same"})]),
+        LLMResult(tool_calls=[ToolCall(id="c", name="echo", arguments={"text": "same"})]),
+        LLMResult(text="different approach -> done"),
+    ]
+    provider = ScriptedProvider(calls)
+    loop = _make_loop(provider, tmp_path, max_iterations=50)
+    result = await loop.arun_turn("repeat")
+    assert result.stop_reason == "completed"  # the recovery rescued the turn
+    assert result.iterations == 4
+
+
+def test_doom_recovery_cap_constant() -> None:
+    assert _MAX_DOOM_RECOVERIES == 1
 
 
 def test_doom_loop_threshold_constant() -> None:

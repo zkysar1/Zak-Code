@@ -29,9 +29,11 @@ Stop conditions
   hard outer bound and takes precedence over the doom-loop guard when the two
   would fire on the same (final) iteration.
 * ``"doom_loop"`` — the model requested the *same* tool with *identical*
-  arguments :data:`DOOM_LOOP_THRESHOLD` times in a row, so the loop stops early
-  rather than burning the whole iteration budget on a no-progress cycle. Fires
-  only while iteration budget remains to be saved.
+  arguments :data:`DOOM_LOOP_THRESHOLD` times in a row. The loop first tries a
+  bounded recovery (:data:`_MAX_DOOM_RECOVERIES` targeted nudges to verify the
+  real state and change tack — a confidently-wrong model often breaks out) and
+  stops with this reason only if the repeat persists, far cheaper than burning
+  the whole iteration budget. Fires only while iteration budget remains to save.
 * ``"stuck"`` — broader, multi-signal no-progress detection
   (:class:`~zakcode.agent.stuck.StuckTracker`): when several stuck signals (an
   all-failing batch, a repeatedly-failing call, near-repeats with no progress)
@@ -158,6 +160,20 @@ DEFAULT_MAX_ITERATIONS = 50
 #: repeating the exact same call is making no progress, so we stop early rather
 #: than spend the whole iteration budget on it.
 DOOM_LOOP_THRESHOLD = 3
+
+#: How many times per turn the loop tries to UNSTICK an exact-repeat doom loop with a targeted
+#: recovery nudge before giving up. A capable-but-confidently-wrong model (e.g. re-writing valid
+#: code it insists is broken) often breaks out when told the repeat is not working and to verify
+#: the real state first; bounded so a genuinely stuck turn still terminates as ``doom_loop``.
+_MAX_DOOM_RECOVERIES = 1
+
+#: The recovery nudge injected at the first doom-loop hit (see :data:`_MAX_DOOM_RECOVERIES`).
+_DOOM_RECOVERY_NUDGE = (
+    "You have just repeated the EXACT same action several times and nothing changed — repeating "
+    "it will not work. Stop and reconsider. If you believe a file or the workspace is in a wrong "
+    "state, READ it now to check its ACTUAL current contents (you may be acting on a stale or "
+    "mistaken assumption). Then take a DIFFERENT approach — a different command, tool, or edit."
+)
 
 #: RateLimited retry backoff (audit P0-4): when the provider gave no ``retry_after``,
 #: wait ``_RETRY_BASE_DELAY * 2**(attempt-1)`` seconds; either source is capped at
@@ -1446,6 +1462,7 @@ class AgentLoop:
         # batch and how many times in a row we have now seen it.
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
+        doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
 
         ctx = ToolContext(
             workspace_root=self.workspace_root,
@@ -1803,6 +1820,27 @@ class AgentLoop:
                 last_signature = signature
             if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
                 signal_latched = True  # zakpick: a doom loop latches the harder category
+                if doom_recoveries < _MAX_DOOM_RECOVERIES:
+                    # Confidently-wrong recovery: before giving up, try ONCE to unstick the model —
+                    # it may be re-emitting the SAME batch under a false belief (e.g. insisting a
+                    # valid file is broken). Pair the unexecuted batch, nudge it to verify the real
+                    # state and change tack, then re-enter; if it STILL repeats, the give-up fires.
+                    doom_recoveries += 1
+                    turn_degraded = True
+                    self._note("intervention", "recovering from a doom loop", kind="doom_recovery")
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            result.tool_calls,
+                            "Not executed: you repeated this exact action with no change.",
+                            "doom_recovery",
+                        )
+                    )
+                    self.session.add_message(Message.user(_control_rail(_DOOM_RECOVERY_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 prompt = await self._fire_turn_end(
                     "doom_loop",
                     iterations=iterations,
@@ -2053,6 +2091,7 @@ class AgentLoop:
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
+        doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
         last_plan_render: str | None = None  # last plan emitted, so a task_update fires on change
 
         ctx = ToolContext(
@@ -2523,6 +2562,28 @@ class AgentLoop:
                     last_signature = signature
                 if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
                     signal_latched = True  # zakpick: a doom loop latches the harder category
+                    if doom_recoveries < _MAX_DOOM_RECOVERIES:
+                        # Confidently-wrong recovery (streaming twin of the buffered path): try
+                        # ONCE to unstick a model re-emitting the SAME batch under a false belief.
+                        doom_recoveries += 1
+                        turn_degraded = True
+                        self._note(
+                            "intervention", "recovering from a doom loop", kind="doom_recovery"
+                        )
+                        self.session.add_message(
+                            _unexecuted_tool_results(
+                                tool_calls,
+                                "Not executed: you repeated this exact action with no change.",
+                                "doom_recovery",
+                            )
+                        )
+                        self.session.add_message(Message.user(_control_rail(_DOOM_RECOVERY_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="recovering: repeated identical calls")
+                        continue
                     prompt = await self._fire_turn_end(
                         "doom_loop",
                         iterations=iterations,

@@ -14,7 +14,7 @@ runner = CliRunner()
 def test_eval_command_all_pass() -> None:
     result = runner.invoke(app, ["eval"])
     assert result.exit_code == 0, result.stdout
-    assert "8/8 passed" in result.stdout
+    assert "9/9 passed" in result.stdout
     assert "OK:" in result.stdout
     # all probe names appear in the table
     for name in (
@@ -22,6 +22,7 @@ def test_eval_command_all_pass() -> None:
         "safety-rejection",
         "plan-mode-readonly",
         "doom-loop-halt",
+        "doom-loop-recovery",
         "partial-failure-recovery",
         "stuck-recovery",
         "long-horizon-compaction",
