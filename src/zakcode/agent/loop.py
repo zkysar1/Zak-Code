@@ -403,6 +403,35 @@ def _quality_nudge(weak: str) -> str:
     )
 
 
+def _gather_work(
+    claim: str,
+    paths: list[str],
+    *,
+    max_claim: int = 800,
+    max_file: int = 1500,
+    max_total: int = 3500,
+) -> str:
+    """The artifact the quality gate scores: the claimed result PLUS the source the turn wrote.
+
+    Scoring the actual code (not just its summary) is what makes the rubric meaningful. Files
+    are read fresh (final on-disk state), each capped, the whole bounded — a quality SAMPLE, not an
+    exhaustive dump (the scorer clips again, so this stays a focused signal).
+    """
+    parts = [f"<claimed_result>\n{claim[:max_claim]}\n</claimed_result>"]
+    total = len(parts[0])
+    for path in paths:
+        try:
+            content = Path(path).read_text(encoding="utf-8", errors="replace")[:max_file]
+        except OSError:
+            continue
+        chunk = f'\n<file name="{Path(path).name}">\n{content}\n</file>'
+        if total + len(chunk) > max_total:
+            break
+        parts.append(chunk)
+        total += len(chunk)
+    return "".join(parts)
+
+
 class TurnResult(BaseModel):
     """Outcome of a single :meth:`AgentLoop.arun_turn` call."""
 
@@ -1401,20 +1430,24 @@ class AgentLoop:
         like the critic). Routing ``model_roles['judge']`` to a small model is the next seam."""
         return self.provider
 
-    async def _quality_gate(self, request: str, claimed_result: str) -> tuple[bool, str]:
-        """Seam A: score a finishing turn's result on a rubric; ship, or return a refine brief.
+    async def _quality_gate(
+        self, request: str, claimed_result: str, written_paths: list[str]
+    ) -> tuple[bool, str]:
+        """Seam A: score a finishing turn's work on a rubric; ship, or return a refine brief.
 
         Runs ALONGSIDE the binary completion critic — two independent checks ('did it satisfy?' vs
         'is it GOOD enough?'). Oracle-first by placement: it only runs after the verifier and the
-        critic have passed, so the only thing it can act on is a passing-but-weak result. Scores via
-        the rubric scorer on a fresh context (:meth:`_judge_provider`). FAIL-OPEN: if the scorer
-        cannot judge, SHIP — it must never trap a finished turn. Returns ``(ship, weak)`` where
-        ``weak`` is the weak-dimension brief when not shipping. Spend accounted on session + budget.
+        critic have passed, so the only thing it can act on is a passing-but-weak result. It scores
+        the claimed result PLUS the code the turn wrote (``written_paths``) — judging the real work,
+        not just the summary. FAIL-OPEN: if the scorer cannot judge, SHIP — it must never trap a
+        finished turn. Returns ``(ship, weak)``; ``weak`` is the brief when not shipping. Spend
+        accounted on the session + shared budget.
         """
         threshold = self.settings.quality_gate_threshold
         dimensions = self.settings.quality_gate_dimensions or _DEFAULT_CODE_RUBRIC
+        artifact = _gather_work(claimed_result or "", written_paths)
         card, usage = await score_rubric(
-            self._judge_provider(), artifact=claimed_result or "", dimensions=dimensions
+            self._judge_provider(), artifact=artifact, dimensions=dimensions
         )
         with contextlib.suppress(Exception):  # accounting must never break the gate
             self.session.add_usage(usage, model=self._judge_provider().model_id())
@@ -1888,7 +1921,9 @@ class AgentLoop:
                 ):
                     quality_rounds += 1
                     self._note("intervention", "scoring for quality", kind="quality_gate")
-                    ship, weak = await self._quality_gate(user_text, result.text or "")
+                    ship, weak = await self._quality_gate(
+                        user_text, result.text or "", cursor.written_paths
+                    )
                     if not ship:
                         self.session.add_message(Message.user(_control_rail(_quality_nudge(weak))))
                         self._persist()
@@ -2665,7 +2700,9 @@ class AgentLoop:
                     ):
                         quality_rounds += 1
                         self._note("intervention", "scoring for quality", kind="quality_gate")
-                        ship, weak = await self._quality_gate(user_text, assistant_text or "")
+                        ship, weak = await self._quality_gate(
+                            user_text, assistant_text or "", cursor.written_paths
+                        )
                         if not ship:
                             self.session.add_message(
                                 Message.user(_control_rail(_quality_nudge(weak)))
