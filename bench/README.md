@@ -73,6 +73,30 @@ ZBENCH_DEEP_MODEL=llama-3.3-70b-versatile ZBENCH_DEEP_SOURCE=groq \
 #   together_ai, groq, local/ollama, ...}
 ```
 
+## The small-model bet: best-of-N vs 1-big (`run_bestof.py`)
+
+The quality engine's central wager is that **N cheap small-model tries + a judge to pick beat one
+big call**. `run_bestof.py` makes that *falsifiable* on a real task: it runs **N small-model
+attempts** (diverse via temperature) and **one big-model attempt**, then uses the quality engine's
+pairwise tournament (`zakcode.quality.judge.best_of`) to **judge-select** the best small attempt by
+reading its source (judges, not oracles). The held-out `verify.py` then grades everything, so the
+report separates the **generation ceiling** (did *any* small attempt pass?), the **best-of-N
+result** (did the *judge-selected* one pass?), and **judge quality** (did it pick a winner when one
+existed) — and compares pass / $ / wall-clock against the single big run.
+
+```bash
+# default: best-of-3 small (qwen3-32b) + judge (qwen3-32b) vs 1 big (gpt-4o-mini)
+uv run poe bestof bench/tasks/04-todo-cli
+# tune the comparison
+ZBENCH_SMALL_MODEL=groq/qwen/qwen3-32b ZBENCH_BIG_MODEL=openai/gpt-4o \
+  ZBENCH_JUDGE_MODEL=groq/qwen/qwen3-32b ZBENCH_N=5 ZBENCH_SMALL_TEMP=0.8 \
+  ./.venv/Scripts/python.exe bench/run_bestof.py bench/tasks/05-ledger
+```
+
+Read the `result` block: `selected_passed` is the product outcome; `bestof_won_where_big_lost` /
+`bestof_lost_where_big_won` and `bestof_cheaper_than_big` are the headline. **Measure before
+gearing the loop toward it** — if best-of-N doesn't match the big run for the money, the bet is off.
+
 ## In CI
 
 The PR gate (`ci.yml`) never runs the bench — quality is **measured, not enforced** (a noisy model
