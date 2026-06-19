@@ -17,6 +17,7 @@ import random
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine
 from datetime import date
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -1149,6 +1150,13 @@ def chat(
             "primary workspace root."
         ),
     ),
+    trace: bool = typer.Option(
+        False,
+        "--trace",
+        help="Write a structured per-turn decision trace (JSONL, one file per turn) to "
+        ".zakcode/traces/ in the workspace: routing, gate firings, tool calls, and why each turn "
+        "ended. For a custom location, set ZAKCODE_TRACE_DIR instead.",
+    ),
 ) -> None:
     """Start an interactive agent session.
 
@@ -1167,6 +1175,10 @@ def chat(
         overrides["default_model"] = model
     if workspace:
         overrides["workspace_root"] = workspace
+    if trace:
+        trace_dir = (Path(workspace).resolve() if workspace else Path.cwd()) / ".zakcode" / "traces"
+        overrides["trace_dir"] = str(trace_dir)
+        console.print(f"[dim]decision trace -> {trace_dir}[/dim]")
 
     # A console prompter lets the in-core permission gate escalate to the operator,
     # so 'ask' mode is usable interactively (rather than failing closed). The gate
