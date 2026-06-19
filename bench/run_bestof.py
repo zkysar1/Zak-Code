@@ -163,21 +163,34 @@ def run_experiment(task_dir: Path) -> dict:
     small = [_run_attempt(task_dir, spec, SMALL_MODEL, SMALL_TEMP, f"small{i}") for i in range(N)]
     big = _run_attempt(task_dir, spec, BIG_MODEL, 0.0, "big")
 
-    # Judge-SELECT the best small attempt by reading its source (judges, not oracles).
+    # Two selectors, to show the measured fix. JUDGE-ONLY (the LLM reads each candidate's source and
+    # ranks pairwise) is what FAILED on 04 -- it can pick a failing attempt over a passing one. The
+    # HYBRID (select_best) first FILTERS to the attempts that actually pass (the oracle -- here the
+    # per-attempt verify grade already computed, so it is free), then judge-RANKS the survivors.
+    # Oracle for "works", judge for "good".
     judge_provider = _build_agent_for(
         Path(tempfile.mkdtemp(prefix="zbof-judge-")), spec, JUDGE_MODEL, 0.0
     ).provider
-    from zakcode.quality import best_of
+    from zakcode.quality import best_of, select_best
 
-    selected_index, judge_usage = asyncio.run(
-        best_of(judge_provider, criteria=spec["prompt"], candidates=[a["solution"] for a in small])
+    texts = [a["solution"] for a in small]
+    judge_only_index, judge_usage = asyncio.run(
+        best_of(judge_provider, criteria=spec["prompt"], candidates=texts)
+    )
+
+    async def _oracle(i: int) -> bool:
+        return small[i]["passed"]
+
+    hybrid_index, hybrid_usage = asyncio.run(
+        select_best(judge_provider, criteria=spec["prompt"], candidates=texts, oracle=_oracle)
     )
 
     any_small_passed = any(a["passed"] for a in small)
-    selected_passed = small[selected_index]["passed"]
+    judge_only_passed = small[judge_only_index]["passed"]
+    hybrid_passed = small[hybrid_index]["passed"]
     small_cost = sum(a["cost_usd"] for a in small)
-    judge_cost = round(judge_usage.cost_usd, 6)
-    bestof_cost = round(small_cost + judge_cost, 6)
+    hybrid_judge_cost = round(hybrid_usage.cost_usd, 6)
+    bestof_cost = round(small_cost + hybrid_judge_cost, 6)  # product path = the hybrid selector
 
     for a in (*small, big):  # tidy temp workspaces; the report has the data
         shutil.rmtree(a.pop("_ws"), ignore_errors=True)
@@ -196,19 +209,24 @@ def run_experiment(task_dir: Path) -> dict:
         "big": big,
         "result": {
             "any_small_passed": any_small_passed,  # the fan-out's generation ceiling
-            "selected_index": selected_index,
-            "selected_passed": selected_passed,  # the real best-of-N product outcome
-            "judge_optimal": (selected_passed if any_small_passed else None),  # picked a winner?
+            # judge-ONLY selection (reads source) — the gap measured on 04
+            "judge_only_index": judge_only_index,
+            "judge_only_passed": judge_only_passed,
+            "judge_only_optimal": (judge_only_passed if any_small_passed else None),
+            # HYBRID selection (oracle filters "works", judge ranks "good") — the fix
+            "hybrid_index": hybrid_index,
+            "hybrid_passed": hybrid_passed,
+            "oracle_rescued_a_win": hybrid_passed and not judge_only_passed,
             "big_passed": big["passed"],
             "bestof_cost_usd": bestof_cost,
-            "bestof_judge_cost_usd": judge_cost,
+            "bestof_judge_cost_usd": hybrid_judge_cost,
             "bestof_time_sequential_s": round(sum(a["elapsed_s"] for a in small), 1),
             "bestof_time_parallel_est_s": round(max(a["elapsed_s"] for a in small), 1),
             "big_cost_usd": big["cost_usd"],
             "big_time_s": big["elapsed_s"],
-            # The headline: did best-of-N match/beat big, and was it cheaper?
-            "bestof_won_where_big_lost": selected_passed and not big["passed"],
-            "bestof_lost_where_big_won": big["passed"] and not selected_passed,
+            # The headline: the HYBRID best-of-N (the product path) vs big.
+            "bestof_won_where_big_lost": hybrid_passed and not big["passed"],
+            "bestof_lost_where_big_won": big["passed"] and not hybrid_passed,
             "bestof_cheaper_than_big": bestof_cost < big["cost_usd"],
         },
     }
@@ -222,9 +240,10 @@ def main(argv: list[str]) -> int:
     print(json.dumps(report, indent=2))
     r = report["result"]
     print(
-        f"\n[{report['task']}] best-of-{N}({SMALL_MODEL}) selected_passed={r['selected_passed']} "
-        f"(ceiling any_passed={r['any_small_passed']}) ${r['bestof_cost_usd']:.4f}  vs  "
-        f"big({BIG_MODEL}) passed={r['big_passed']} ${r['big_cost_usd']:.4f}",
+        f"\n[{report['task']}] best-of-{N}({SMALL_MODEL}) hybrid_passed={r['hybrid_passed']} "
+        f"(judge-only={r['judge_only_passed']}, ceiling={r['any_small_passed']}) "
+        f"${r['bestof_cost_usd']:.4f}  vs  big({BIG_MODEL}) passed={r['big_passed']} "
+        f"${r['big_cost_usd']:.4f}",
         file=sys.stderr,
     )
     return 0

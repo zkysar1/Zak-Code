@@ -7,6 +7,8 @@ Increment 1: :mod:`~zakcode.quality.judge` — LLM-as-judge primitives (binary v
 majority vote, pairwise comparison, pairwise tournament selection).
 Increment 2: :mod:`~zakcode.quality.bestof` — :func:`best_of_n`, fan out N attempts at a generation
 and judge-select the best.
+Selection quality: :mod:`~zakcode.quality.select` — :func:`select_best`, oracle-FILTER then
+judge-RANK (the measured fix: oracle for "works", judge for "good").
 """
 
 from zakcode.quality.bestof import best_of_n
@@ -18,6 +20,7 @@ from zakcode.quality.judge import (
     pairwise_judge,
     vote_binary,
 )
+from zakcode.quality.select import select_best
 
 __all__ = [
     "BinaryVerdict",
@@ -26,5 +29,6 @@ __all__ = [
     "best_of_n",
     "binary_judge",
     "pairwise_judge",
+    "select_best",
     "vote_binary",
 ]
