@@ -37,7 +37,7 @@ here — adding a Settings field without documenting it fails CI.
 | `zakpick_models` | `ZAKCODE_ZAKPICK_MODELS` | `{}` | Per-category model assignments for `default_model=zakpick` (inert otherwise). JSON object; keys `quick_code` / `deep_code` / `summarize` / `plan` / `delegate` / `classify`; each value `{model, source}` where `source` defaults to `groq` (use `local` for Ollama, or any litellm prefix like `openai`/`anthropic`). Unset categories use built-in Groq defaults (so it works out of the box; the defaults also tell you which open-source model to download to run a category locally). Zak Code never substitutes a model you didn't assign and owns no local/cloud tradeoff — a slow local model is slow; a failing cloud model uses `fallback_model` like any other. The cheap **quick_code** vs capable **deep_code** split for the main turn is chosen automatically per turn (short/easy → quick; long/hard or on a struggle signal → deep). Example: `ZAKCODE_ZAKPICK_MODELS={"deep_code":{"model":"qwen3:32b","source":"local"},"plan":{"model":"gpt-4o","source":"openai"}}`. |
 | `fallback_model` | `ZAKCODE_FALLBACK_MODEL` | unset | Model to switch to (once per turn) when the primary call fails with a non-rate-limit error. With `default_model=auto` it is the explicit override of the auto chain — tried before auto re-resolution. |
 | `auto_model_preference` | `ZAKCODE_AUTO_MODEL_PREFERENCE` | `groq, openai, anthropic` | External provider order the `auto` resolver tries after local (comma/space/JSON list). |
-| `model_roles` | `ZAKCODE_MODEL_ROLES` | `{}` | Per-role overrides (JSON; keys `planner` / `subagent` / `summarizer`) so cheap roles can use a cheap model. |
+| `model_roles` | `ZAKCODE_MODEL_ROLES` | `{}` | Per-role overrides (JSON; keys `planner` / `subagent` / `summarizer` / `judge`) so cheap roles can use a cheap model. |
 | `temperature` | `ZAKCODE_TEMPERATURE` | `0.0` | Sampling temperature, 0.0–2.0. |
 | `tool_calling_mode` | `ZAKCODE_TOOL_CALLING_MODE` | `auto` | `auto` \| `native` \| `text` — how tools reach the model; `auto` self-resolves per provider. |
 | `ollama_base_url` | `ZAKCODE_OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint. |
@@ -66,6 +66,19 @@ here — adding a Settings field without documenting it fails CI.
 | `tool_exposure_allow` | `ZAKCODE_TOOL_EXPOSURE_ALLOW` | `[]` | Per-task tool filter (Step 4). If non-empty, ONLY tools whose canonical name matches one of these globs are exposed to the model (and invocable). Empty = no allow restriction. Comma/space-separated or JSON. |
 | `tool_exposure_deny` | `ZAKCODE_TOOL_EXPOSURE_DENY` | `[]` | Tool-name globs NEVER exposed to the model (wins over the allow list), e.g. `bash,powershell,mcp__*`. Narrows attack surface (a tool the model can't see can't be hijacked by injected content); exposure-only, never loosens the permission gate. See [SELF-REMEDIATION.md](SELF-REMEDIATION.md) Step 4. |
 | `workspace_root` | `ZAKCODE_WORKSPACE_ROOT` | current dir | Root directory the agent operates within. |
+
+## Quality engine
+
+The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (increment 6). **All OFF by default** — the default path is byte-identical; each seam is bounded, fail-safe, and its spend capped by `quality_budget_fraction` (the cost spine). Quality calls route to `model_roles['judge']`.
+
+| Field | Env var | Default | Meaning |
+| --- | --- | --- | --- |
+| `quality_gate` | `ZAKCODE_QUALITY_GATE` | `false` | Seam A: after the verifier passes, score the turn result on a rubric and refine if it falls short — runs ALONGSIDE the binary completion critic (two independent quality checks). Off = today's behavior. |
+| `quality_gate_threshold` | `ZAKCODE_QUALITY_GATE_THRESHOLD` | `0.8` | Seam A ship threshold (overall rubric score, 0–1). |
+| `quality_gate_dimensions` | `ZAKCODE_QUALITY_GATE_DIMENSIONS` | _(unset)_ | Seam A rubric (JSON, dimension → what to assess); unset uses a built-in code rubric. |
+| `best_of_plans` | `ZAKCODE_BEST_OF_PLANS` | `1` | Seam C: generate N candidate decompositions for a hard goal and judge-select the best (`1` = off). |
+| `best_of_attempts` | `ZAKCODE_BEST_OF_ATTEMPTS` | `1` | Seam B: fan out N attempts at a stalled step and select the best by the verifier (`1` = off). |
+| `quality_budget_fraction` | `ZAKCODE_QUALITY_BUDGET_FRACTION` | `0.5` | Cost spine: cap quality-engine spend at this fraction of the turn budget (0–1). |
 
 ## Web tools & egress
 
