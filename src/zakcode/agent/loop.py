@@ -124,8 +124,8 @@ from zakcode.providers.base import (
     ToolCall,
 )
 from zakcode.providers.routing import classify_main_turn
-from zakcode.providers.structured import coerce_structured, make_response_format
 from zakcode.providers.text_tools import defang_untrusted
+from zakcode.quality import binary_judge
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -359,46 +359,12 @@ _DEGRADED_STOP_REASONS = {
 _VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck"})
 
 #: The independent completion critic (the bounded completion-review gate). When a code-changing
-#: turn tries to finish, a SEPARATE, fresh-context reviewer (``AgentLoop._completion_critic``)
-#: judges whether the claimed result plausibly addresses EVERY part of the request; only if it
-#: flags an unmet requirement is the turn sent back. Replaces the old in-context self-review (the
-#: same model + same context rubber-stamped its own work). The reviewer sees ONLY the request and
-#: the claimed result (no tools, no file access), so it cannot be talked out of a gap by the
-#: transcript that produced it. Bounded by ``completion_review_attempts`` so it converges.
-#:
-#: Schema kept deliberately tiny — a single boolean verdict + a free-text issues string —
-#: validated locally against ``_CRITIC_SCHEMA`` after a json_OBJECT-mode call (NOT json_schema:
-#: see ``_completion_critic`` for the Groq json_schema->tools rationale, same as the difficulty
-#: classifier).
-_CRITIC_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "approved": {"type": "boolean"},
-        "issues": {"type": "string"},
-    },
-    "required": ["approved"],
-    "additionalProperties": False,
-}
-
-#: System prompt for the independent completion critic. It is shown ONLY the user request and the
-#: agent's claimed result — no tools, no transcript, no file access — and judges plausibility of
-#: completeness, not style.
-_CRITIC_SYSTEM = (
-    "You are an INDEPENDENT completion reviewer. You are shown ONLY the user's original request "
-    "and the agent's claimed result. You have no tools, no file access, and you cannot see the "
-    "work itself — judge solely from these two texts whether the claimed work plausibly addresses "
-    "EVERY part of the request. Your job is to catch requirements that were silently dropped or "
-    "left half-finished — a request with multiple parts where the result only speaks to some, an "
-    "asked-for behavior the result never mentions delivering, a 'done' with no evidence it covers "
-    "what was asked. Do NOT nitpick style, naming, or phrasing, and do NOT demand more than the "
-    "request asked for. If the claimed result plausibly covers the whole request, APPROVE it. "
-    'Reply with ONLY a JSON object: {"approved": <true|false>, "issues": "<specific unmet '
-    'requirements if not approved; else empty>"}. No prose, no markdown fence.'
-)
-
-#: How much of each side of the critic call to keep — enough for the reviewer to judge coverage,
-#: bounded so the side-call stays cheap regardless of how large the turn grew.
-_CRITIC_INPUT_LIMIT = 4000
+#: turn tries to finish, ``AgentLoop._completion_critic`` runs a SEPARATE, fresh-context judge
+#: (:func:`zakcode.quality.judge.binary_judge`) over the request + the claimed result; it sees no
+#: transcript, so it cannot be talked out of a gap by the work that produced it. Only a flagged
+#: unmet requirement sends the turn back. Bounded by ``completion_review_attempts``. (The verdict
+#: schema, judge prompt, and json_object trap-avoidance now live in the quality engine — this is
+#: the first consumer of the judge substrate; an N-judge vote + a dedicated small model are next.)
 
 
 def _critic_nudge(issues: str) -> str:
@@ -1394,46 +1360,20 @@ class AgentLoop:
         view of the transcript cannot be talked out of a gap by the work that produced it. Returns
         ``(approved, issues)`` — ``issues`` names the unmet requirements when not approved, else "".
 
-        FAIL-OPEN: the critic is an enhancement, never a trap. ANY failure — provider error, output
-        that never validated, anything — returns ``(True, "")`` so a flaky side-call can never block
-        a turn that is genuinely done. Like every other model call its spend is accounted on the
-        session + shared budget (visible in /cost, bounded by the turn-tree budget), and both inputs
-        are truncated so the side-call stays cheap no matter how large the turn grew.
+        The judge is FAIL-OPEN (any error → approved), so a flaky side-call never traps a finished
+        turn, and runs in json_object mode (Groq json_schema->tools-safe). Its spend is accounted on
+        the session + shared budget here. The provider is the loop's own — the independence is the
+        FRESH CONTEXT, not a different model; routing to a dedicated small model and fanning out to
+        an N-judge vote (the full small-model fan-out) is the next increment of the quality engine.
         """
-        try:
-            # The loop's own provider, but on a FRESH context — the independence here is the clean
-            # slate (no transcript to be talked out of a gap by), not a different model. NOTE:
-            # routing the critic to a dedicated SMALL model (the full small-model fan-out, and an
-            # N-critic vote) needs a side-effect-free provider seam — main_provider_for mutates
-            # _active_model (its contract: call ONLY on a real category change), so reusing it
-            # would mis-tag the turn's model. That dedicated critic-model seam is the next step.
-            provider = self.provider
-            payload = (
-                "<user_request>\n"
-                f"{request[:_CRITIC_INPUT_LIMIT]}\n"
-                "</user_request>\n\n"
-                "<agent_claimed_result>\n"
-                f"{claimed_result[:_CRITIC_INPUT_LIMIT]}\n"
-                "</agent_claimed_result>"
-            )
-            # json_OBJECT mode (native JSON), NOT json_schema: litellm implements a json_schema
-            # response_format on Groq via FUNCTION CALLING, and Groq's open models flakily emit a
-            # malformed tool call the provider rejects (tool_use_failed). Plain JSON mode sidesteps
-            # the tool path; the tiny verdict object is validated locally against _CRITIC_SCHEMA.
-            result = await provider.acomplete(
-                [Message.user(payload)],
-                system=_CRITIC_SYSTEM,
-                response_format=make_response_format(None),
-                temperature=0.0,
-            )
-            with contextlib.suppress(Exception):  # accounting must never break the gate
-                self.session.add_usage(result.usage, model=provider.model_id())
-                if self.budget is not None:
-                    self.budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
-            data = coerce_structured(result.text, schema=_CRITIC_SCHEMA)
-            return bool(data.get("approved", True)), str(data.get("issues", ""))
-        except Exception:  # noqa: BLE001 — fail OPEN: a critic failure must never trap the turn
-            return True, ""
+        verdict, usage = await binary_judge(
+            self.provider, criteria=request, artifact=claimed_result or ""
+        )
+        with contextlib.suppress(Exception):  # accounting must never break the gate
+            self.session.add_usage(usage, model=self.provider.model_id())
+            if self.budget is not None:
+                self.budget.add_usage(usage.cost_usd, usage.total_tokens)
+        return verdict.approved, verdict.issues
 
     async def _fire_lifecycle(
         self, event: HookEvent, data: dict[str, object] | None = None
