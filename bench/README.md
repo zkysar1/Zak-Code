@@ -97,6 +97,24 @@ Read the `result` block: `selected_passed` is the product outcome; `bestof_won_w
 `bestof_lost_where_big_won` and `bestof_cheaper_than_big` are the headline. **Measure before
 gearing the loop toward it** — if best-of-N doesn't match the big run for the money, the bet is off.
 
+## The activation evidence: quality gate OFF vs ON (`run_quality.py`)
+
+The quality engine ships **off by default** — so the real question is *when an operator should flip
+it on*. `run_quality.py` (+ `poe quality <task>`) answers it with data: for one task it runs the
+agent **twice on a small model** — gate OFF (today's baseline) vs gate ON (seam A, the quality gate)
+— grades both with the held-out `verify.py`, and reports the delta (pass / $ / wall-clock).
+
+```bash
+uv run poe quality bench/tasks/04-todo-cli
+ZBENCH_SMALL_MODEL=groq/qwen/qwen3-32b ZBENCH_QUALITY_THRESHOLD=0.85 \
+  ./.venv/Scripts/python.exe bench/run_quality.py bench/tasks/05-ledger
+```
+
+Read the `result` block: `gate_helped` (flipping it on rescued a task the baseline failed),
+`gate_hurt` (a regression — should be rare), and `extra_cost_usd` / `extra_time_s` (what it cost).
+Run it across the suite and the pattern **is the small-model preset** — enable the engine for the
+model tiers / task types where `gate_helped` outweighs the extra spend.
+
 ## In CI
 
 The PR gate (`ci.yml`) never runs the bench — quality is **measured, not enforced** (a noisy model
