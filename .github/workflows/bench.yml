@@ -71,13 +71,18 @@ jobs:
 
       - name: Run the suite
         if: steps.keys.outputs.run == 'true'
+        # Dispatch inputs flow through env: (NOT inlined into the script) — the standard guard
+        # against shell-injection via a workflow_dispatch input. $BENCH_FILTERS is intentionally
+        # unquoted so a space-separated prefix list word-splits into separate positional args.
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ZAKCODE_DEFAULT_MODEL: ${{ github.event.inputs.model }}
+          BENCH_FILTERS: ${{ github.event.inputs.filters }}
+          BENCH_JOBS: ${{ github.event.inputs.jobs || '3' }}
         run: |
-          uv run --no-sync python bench/run_suite.py ${{ github.event.inputs.filters }} \
-            --jobs "${{ github.event.inputs.jobs || '3' }}" | tee bench-output.txt
+          uv run --no-sync python bench/run_suite.py $BENCH_FILTERS \
+            --jobs "${BENCH_JOBS:-3}" | tee bench-output.txt
 
       - name: Publish summary
         if: steps.keys.outputs.run == 'true'
