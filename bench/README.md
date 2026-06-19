@@ -6,7 +6,8 @@ workspace, then grades it with a **held-out oracle** (`verify.py`). Used to comp
 
 This harness is **excluded from the package gate** (`ruff` via `extend-exclude`, `pytest`
 via `testpaths = ["tests"]`, `mypy` via `packages = ["zakcode"]`) — it is experiment code,
-not shipped library code. Run it manually; it is not part of CI.
+not shipped library code. The PR gate never runs it; run it manually (`uv run poe bench`) or via
+the scheduled, key-gated `agent-bench` CI workflow (see [In CI](#in-ci)).
 
 ## Layout
 
@@ -71,6 +72,24 @@ ZBENCH_DEEP_MODEL=llama-3.3-70b-versatile ZBENCH_DEEP_SOURCE=groq \
 # any other supplier: ZBENCH_DEEP_SOURCE ∈ {openai, gemini, deepseek, fireworks_ai,
 #   together_ai, groq, local/ollama, ...}
 ```
+
+## In CI
+
+The PR gate (`ci.yml`) never runs the bench — quality is **measured, not enforced** (a noisy model
+regression must not block a merge). A separate scheduled workflow,
+`.github/workflows/bench.yml` (`agent-bench`), runs the whole suite against real models:
+
+- **Nightly**, and on demand via *Run workflow* (optional task filter, concurrency, and a `model`
+  override).
+- **Key-gated**: it runs only on the canonical repo and only when `OPENAI_API_KEY` / `GROQ_API_KEY`
+  are configured as repo secrets — otherwise it no-ops, so it costs nothing until you opt in.
+- Publishes the pass-rate / $-per-task / per-model summary to the run's **job summary** and uploads
+  `results/*.json` as a build artifact.
+
+To compare configurations — e.g. **N-small fan-out vs one big model** (the small-model bet) — dispatch
+the workflow twice with different `model` overrides (or run `poe bench` locally with different
+`ZBENCH_*` / `ZAKCODE_*` env) and diff the two `results/*.json`. A committed time-series dashboard
+across runs is a natural follow-up.
 
 `ZAKCODE_TOOL_CALLING_MODE` ∈ `auto` | `native` | `text` controls the protocol.
 
