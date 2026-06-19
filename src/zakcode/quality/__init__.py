@@ -1,4 +1,4 @@
-"""The quality engine: small-model fan-out for quality (judges, scoring, refinement, decomposition).
+"""The quality engine: small-model fan-out for quality (judges, selection, scoring, ship gate).
 
 The bet: a fixed small-model ceiling is beaten by STRUCTURE — decompose → fan out → judge/score →
 iterate — not by a bigger model. This package holds those primitives; the agent loop composes them.

@@ -27,7 +27,8 @@ def aggregate_scores(scores: dict[str, float], weights: dict[str, float] | None 
 
     Each score clamps to [0,1]; a weight ``w`` tempers that dimension's penalty (``1-s``): ``w=1``
     full weight, ``w=0`` ignores the dimension (``s→1``), ``w>1`` amplifies the penalty. A dimension
-    that ends at 0 VETOES the result (→ 0). The compensation factor (``1 - 1/n``, stronger with more
+    whose WEIGHTED score reaches 0 VETOES (→ 0) — a full-weight zero vetoes; ``w<1`` softens even a
+    zero. The compensation factor (``1 - 1/n``, stronger with more
     dimensions) counters the bias that multiplying many sub-1 scores collapses toward 0, so a
     dimension a candidate handles well doesn't punish it. Empty → 0.
     """
