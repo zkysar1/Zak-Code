@@ -387,6 +387,13 @@ class Agent:
         # a bad skill/rule file is recorded, never fatal.
         self.skill_registry: SkillRegistry | None = None
         self.skill_errors: dict[str, str] = {}
+        #: Model-driven skill invocations (the use_skill tool) — per-turn (reset each top-level
+        #: turn; the bound for ``skill_invocation_budget``) and session-cumulative (for /skills).
+        #: Shared across the whole turn-tree: a sub-agent's use_skill goes through this Agent's
+        #: resolver, so the counters cover the parent + its sub-agents. Always initialized so the
+        #: per-turn reset is safe even when skills are disabled.
+        self._skill_invocations_this_turn = 0
+        self._skill_invocations_total = 0
         skill_resolver: SkillResolver | None = None
         skills_catalog = ""
         if enable_skills:
@@ -518,6 +525,14 @@ class Agent:
                 allow=list(self.settings.tool_exposure_allow),
                 deny=list(self.settings.tool_exposure_deny),
             )
+            # Give the general-purpose delegate the same skill-invocation surface as the parent:
+            # use_skill on the child registry + the resolver below. (Plan Mode's subset omits it,
+            # so a read-only planner still cannot chain skills.) Gated on enable_skills via the
+            # registry's presence, so a skills-off session adds nothing to the child surface.
+            if self.skill_registry is not None:
+                from zakcode.tools.builtins.use_skill import UseSkillTool
+
+                child_registry.register(UseSkillTool())
             runner = SubAgentRunner(
                 provider=self.provider,
                 registry=child_registry,
@@ -532,6 +547,9 @@ class Agent:
                 # zakpick: a definition that names a CATEGORY but no model routes by task. Only
                 # wired under zakpick (None otherwise), so the default delegation path is unchanged.
                 provider_for_task=(self._provider_pair_for_task if self._zakpick else None),
+                # The parent's skill resolver — so a delegated general-purpose agent can invoke
+                # (and chain) the same skills, drawing from the shared per-turn skill budget.
+                skill_resolver=skill_resolver,
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
             # subset omits write tools, so Plan Mode is schema-enforced). Apply optional
@@ -895,11 +913,27 @@ class Agent:
         associate ``(query -> skill)``, and fires the observe-only
         :attr:`~zakcode.hooks.HookEvent.ON_SKILL_SELECTED` hook with ``source``. Never raises: a
         missing skill yields ``found=False``; an unreadable one yields ``error`` set.
+
+        Budget: a model-driven (``source="tool"``) invocation draws from the per-turn skill
+        budget (:attr:`Settings.skill_invocation_budget`); over the cap it returns a
+        ``denied_reason`` (no body, no signal) to stop a runaway/cyclic chain. A human
+        ``/<name>`` (``source="command"``) is operator-controlled and never throttled.
         """
         registry = getattr(self, "skill_registry", None)
         skill = registry.get(name) if registry is not None else None
         if skill is None:
             return SkillLoad(found=False, name=name)
+        if source == "tool":
+            budget = self.settings.skill_invocation_budget
+            if budget > 0 and self._skill_invocations_this_turn >= budget:
+                return SkillLoad(
+                    found=True,
+                    name=skill.name,
+                    denied_reason=(
+                        f"skill invocation budget exhausted ({budget} this turn); "
+                        "finish with the skills already loaded"
+                    ),
+                )
         query = self._recent_user_text()
         try:
             body = skill.body()  # L1 read lazily; the file may have changed/vanished
@@ -907,6 +941,15 @@ class Agent:
             return SkillLoad(found=True, name=skill.name, error=str(exc))
         from zakcode.providers.text_tools import defang_untrusted
 
+        if source == "tool":  # count only model-driven loads that actually inject a body
+            self._skill_invocations_this_turn += 1
+            self._skill_invocations_total += 1
+            logger.info(
+                "skill %r invoked via use_skill (%d this turn, %d this session)",
+                skill.name,
+                self._skill_invocations_this_turn,
+                self._skill_invocations_total,
+            )
         # Defang protocol/template sentinels so a file-authored body can't forge a frame in
         # text mode; the body is preserved verbatim otherwise (defang never deletes content).
         await self._emit_skill_selected(skill.name, query, source=source)
@@ -928,6 +971,12 @@ class Agent:
             return SkillInvocation(invoked=True, name=load.name, error=load.error)
         self.session.add_message(Message.user(f"[skill: {load.name}]\n{load.body}"))
         return SkillInvocation(invoked=True, name=load.name)
+
+    @property
+    def skill_invocations_this_session(self) -> int:
+        """How many times the model has invoked a skill via ``use_skill`` this session (across
+        the whole turn-tree). Surfaced by ``/skills`` so skill usage's cost is visible."""
+        return self._skill_invocations_total
 
     def _recent_user_text(self) -> str:
         """The most recent user message text (the query that motivated a skill), or ''."""
@@ -961,6 +1010,7 @@ class Agent:
         Seam B: when the turn STALLS and ``best_of_attempts > 1`` with a ``verify_command`` set, fan
         out best-of-N isolated retries and adopt (diff-apply) the first that verifies.
         """
+        self._skill_invocations_this_turn = 0  # new top-level turn: refill the skills budget
         result = await self.loop.arun_turn(user_text)
         if (
             self.settings.best_of_attempts > 1
@@ -992,6 +1042,7 @@ class Agent:
         it), so callers can ``async for event in agent.astream_turn(text)``. This
         is the incremental counterpart to :meth:`run_turn` / :meth:`arun_turn`.
         """
+        self._skill_invocations_this_turn = 0  # new top-level turn: refill the skills budget
         return self.loop.astream_turn(user_text)
 
     async def connect_mcp(self) -> DiscoveryReport | None:

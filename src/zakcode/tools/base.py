@@ -170,6 +170,10 @@ class SkillLoad(BaseModel):
     name: str = ""
     body: str | None = None
     error: str | None = None
+    #: Set when a found skill is REFUSED by policy rather than failing to load — today the per-turn
+    #: skill-invocation budget (a runaway-chain guard). Distinct from ``error`` (a file that could
+    #: not be read) so the tool can report "budget exhausted" rather than "unreadable".
+    denied_reason: str | None = None
 
 
 @runtime_checkable

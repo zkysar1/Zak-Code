@@ -382,6 +382,19 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   `relay-start → relay-middle → relay-finish` in one turn, every call `source=tool`, all three
   execution markers landed, `completed` for ~$0.003.
 - **Consequences:** skills are now a model-driven, composable capability surface, and the
-  `source` field lets a learning mind weight model- vs. operator-driven selections. **Deferred:**
-  exposing `use_skill` to sub-agents (their `ToolContext` carries no resolver, so it degrades to a
-  clean "not enabled" error); rolling per-invocation cost into a skills budget.
+  `source` field lets a learning mind weight model- vs. operator-driven selections.
+- **Follow-ups (shipped 2026-06-20):**
+  - **Sub-agents can invoke + chain skills.** The parent's resolver is threaded into the
+    `SubAgentRunner` → each child `AgentLoop`, and `use_skill` is registered on the child registry.
+    The general-purpose delegate (full toolset) gets it; the read-only **planner** does not (its
+    tool subset omits `use_skill`). A child resolves against the same registry and draws from the
+    same per-turn budget. (Query attribution to the *child* prompt is still deferred — a sub-agent
+    invocation records the parent's originating turn, which is the delegation tree's true trigger.)
+  - **Per-turn skill-invocation budget** (`skill_invocation_budget`, `0` = unlimited): each
+    model-driven (`source="tool"`) `use_skill` draws one unit, shared across the whole turn-tree and
+    reset per top-level turn; over the cap the tool returns a `denied_reason` (no body, no signal),
+    bounding a runaway/cyclic chain (A→B→A) more tightly than `max_iterations`. A human `/<name>` is
+    never throttled. The running count is logged and surfaced in `/skills`.
+  - **Validated live:** branching routing (`bench/run_skill_branch.py`) — one skill reads input and
+    calls a different next-skill per case (urgent vs. routine), correct both ways; and the budget
+    capping the relay at N invocations while the model finishes gracefully past the denial.

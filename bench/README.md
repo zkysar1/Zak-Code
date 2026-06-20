@@ -22,7 +22,9 @@ bench/
   run_quality.py         # quality gate OFF vs ON on a task (the activation evidence)
   run_seam_b.py          # seam B live: best-of-N retry rescuing a STALLED turn
   run_skill_chain.py     # skills live: a model invoking 3 skills that daisy-chain (use_skill)
+  run_skill_branch.py    # skills live: one skill ROUTES to one of two next-skills (conditional)
   skill_chain/skills/    # the 3 relay skills (relay-start -> relay-middle -> relay-finish)
+  skill_chain/branch/    # the triage-start + handle-urgent/handle-normal branch skills
   tasks/
     01-wordfreq/         # task.json + held-out verify.py
     02-median-bug/       # + workspace/ seed files (bugfix task)
@@ -163,6 +165,23 @@ You watch it two ways: the `ON_SKILL_SELECTED` signal prints once per `use_skill
 each skill appends a marked line to `RELAY.md` so the workspace proves every body actually RAN. `PASS` =
 all three fired in order **and** all three markers landed. First live run: chain complete, 3/3 markers,
 every invocation `source=tool`, `completed` in ~10 s for ~$0.003.
+
+## Skills branching live (`run_skill_branch.py`)
+
+Where the relay is a FIXED chain, this proves **conditional routing**: `triage-start` reads `INPUT.txt`
+and calls `use_skill('handle-urgent')` OR `use_skill('handle-normal')` depending on the content — the
+model deciding mid-chain, not following a script. The harness runs both an urgent and a routine input
+and checks each time that the RIGHT branch fired and the WRONG one did not.
+
+```bash
+./.venv/Scripts/python.exe bench/run_skill_branch.py
+```
+
+First live run: both scenarios `PASS` — urgent → `handle-urgent` only, routine → `handle-normal` only,
+each writing the matching `RESULT.md` marker. (Skills are also invokable from **sub-agents** now: a
+delegated general-purpose agent resolves and chains the same skills; the read-only planner cannot. And
+`ZAKCODE_SKILL_INVOCATION_BUDGET=N` caps model-driven invocations per turn — run the relay with `=2` to
+watch the third hand-off denied while the agent still finishes gracefully.)
 
 ## In CI
 

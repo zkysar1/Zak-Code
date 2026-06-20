@@ -186,6 +186,14 @@ class Settings(BaseSettings):
     max_iterations: int = Field(
         default=50, ge=1, description="Hard cap on agent-loop iterations per turn."
     )
+    # Per-turn ceiling on MODEL-driven skill invocations (the use_skill tool), shared across a
+    # turn and its whole sub-agent tree (one counter, reset per top-level turn). Bounds a runaway
+    # or cyclic skill chain (A -> B -> A) more tightly than max_iterations. A human /<name>
+    # invocation is operator-controlled and never throttled. 0 (default) = unlimited, so behavior
+    # is unchanged.
+    skill_invocation_budget: int = Field(
+        default=0, ge=0, description="Max model-driven use_skill invocations per turn (0 = off)."
+    )
     # Optional cost/token ceilings (parity #4), bounding CUMULATIVE spend across a turn and
     # its whole sub-agent delegation tree (one shared budget). A completed call's actuals are
     # folded in post-completion; once a ceiling is crossed the turn stops with

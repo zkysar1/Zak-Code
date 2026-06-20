@@ -1198,3 +1198,17 @@ cost-accounting test instead of a fallback table.
   relay skills): `gpt-4o-mini` invoked `relay-start → relay-middle → relay-finish` in one turn, every
   call `source=tool`, all 3 execution markers landed, `completed` in ~10 s for ~$0.003. **`uv run poe
   check` green: 2059 passed, ruff + mypy clean.**
+- **2026-06-20 (dev, Skills follow-ups — sub-agents + budget + branching):** built the three
+  ADR-0012 follow-ups. (1) **Sub-agents** can invoke/chain skills: threaded the parent's resolver
+  through `SubAgentRunner` → each child `AgentLoop` and registered `use_skill` on the child registry;
+  the general-purpose delegate gets it, the read-only planner's subset omits it (a deterministic
+  scripted-provider test proves a child reaches the resolver). (2) **Per-turn skill-invocation
+  budget** (`skill_invocation_budget`, 0=unlimited): only model-driven (`source="tool"`) `use_skill`
+  draws a unit; shared across the turn-tree, reset in `arun_turn` + `astream_turn`; over the cap the
+  tool returns a `denied_reason` — bounding a runaway/cyclic chain. A human `/<name>` is never
+  throttled; the count is logged + shown in `/skills`. (3) **Branching demo**
+  (`bench/run_skill_branch.py` + `triage-start`/`handle-urgent`/`handle-normal`): one skill reads
+  input and routes to a different next-skill per case. Validated live: branching routes urgent vs.
+  routine correctly **both ways**; the budget caps the relay at 2 invocations (3rd hand-off denied,
+  agent finishes gracefully); default chain unchanged (regression PASS). +10 tests. **`uv run poe
+  check` green: 2069 passed, ruff + mypy clean.**
