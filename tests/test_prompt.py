@@ -180,6 +180,7 @@ def test_discover_memory_walks_ancestor_chain_root_to_cwd(tmp_path: Path) -> Non
     parent = tmp_path
     child = tmp_path / "sub"
     child.mkdir()
+    (parent / ".git").mkdir()  # parent is the project (VCS) root, so the chain includes it
     (parent / "ZAK.md").write_text("PARENT_RULES", encoding="utf-8")
     (child / "ZAK.md").write_text("CHILD_RULES", encoding="utf-8")
 
@@ -188,7 +189,7 @@ def test_discover_memory_walks_ancestor_chain_root_to_cwd(tmp_path: Path) -> Non
 
     assert "PARENT_RULES" in contents
     assert "CHILD_RULES" in contents
-    # Outermost (ancestor) first, deepest (cwd) last.
+    # Outermost (project root) first, deepest (cwd) last.
     assert contents.index("PARENT_RULES") < contents.index("CHILD_RULES")
 
 
@@ -196,6 +197,7 @@ def test_discover_memory_dedupes_identical_content(tmp_path: Path) -> None:
     parent = tmp_path
     child = tmp_path / "sub"
     child.mkdir()
+    (parent / ".git").mkdir()  # project root → both dirs in the chain
     same = "IDENTICAL_MEMORY_BODY"
     (parent / "ZAK.md").write_text(same, encoding="utf-8")
     (child / "ZAK.md").write_text(same, encoding="utf-8")
@@ -214,18 +216,45 @@ def test_discover_memory_caps_per_file(tmp_path: Path) -> None:
 
 
 def test_discover_memory_caps_total(tmp_path: Path) -> None:
-    # Build a deep chain of distinct large files exceeding the total budget.
+    # Build a deep chain of distinct file-cap-sized files far exceeding the total budget.
+    (tmp_path / ".git").mkdir()  # project root at the top so the whole chain is in-project
     current = tmp_path
     for i in range(10):
-        (current / "ZAK.md").write_text(
-            f"block{i}-" + "y" * MAX_MEMORY_FILE_CHARS, encoding="utf-8"
-        )
+        body = f"block{i}-" + "y" * MAX_MEMORY_FILE_CHARS
+        (current / "ZAK.md").write_text(body, encoding="utf-8")
         current = current / "d"
         current.mkdir()
 
     discovered = discover_memory(current.parent)
     total = sum(len(c) for _, c in discovered)
-    assert total <= MAX_MEMORY_TOTAL_CHARS
+    # The cap must actually ENGAGE: exactly floor(total/file) files survive (the rest dropped),
+    # filling the budget to the brim — not a vacuous "<= cap" that also passes for 0 or 1 file.
+    expected_files = MAX_MEMORY_TOTAL_CHARS // MAX_MEMORY_FILE_CHARS
+    assert len(discovered) == expected_files  # 4 of the 10, the rest excluded
+    assert total == MAX_MEMORY_TOTAL_CHARS  # filled exactly to the cap
+
+
+def test_discover_memory_total_cap_truncates_the_straddling_file(tmp_path: Path) -> None:
+    # Exercise the partial-slice branch: a file that straddles the total cap is truncated to the
+    # remaining budget (not dropped whole, not added whole). Distinct fill chars avoid dedup and
+    # give exact, prefix-free lengths.
+    (tmp_path / ".git").mkdir()
+    fills = ["a", "b", "c", "d", "e"]
+    sizes = [MAX_MEMORY_FILE_CHARS, MAX_MEMORY_FILE_CHARS, MAX_MEMORY_FILE_CHARS, 3424, 9000]
+    current = tmp_path
+    dirs = []
+    for _ in sizes:
+        dirs.append(current)
+        current = current / "d"
+        current.mkdir()
+    for d, fill, size in zip(dirs, fills, sizes, strict=True):
+        (d / "ZAK.md").write_text(fill * size, encoding="utf-8")
+
+    discovered = discover_memory(dirs[-1])  # workspace = the deepest dir; chain = all five
+    total = sum(len(c) for _, c in discovered)
+    assert total == MAX_MEMORY_TOTAL_CHARS  # filled exactly to the brim …
+    # 3*8192 + 3424 = 28000 consumed; the straddling 5th file is sliced to the remaining 4768.
+    assert len(discovered[-1][1]) == MAX_MEMORY_TOTAL_CHARS - (3 * MAX_MEMORY_FILE_CHARS + 3424)
 
 
 def test_discover_memory_skips_empty_and_missing(tmp_path: Path) -> None:
@@ -282,13 +311,17 @@ def test_readme_is_loaded_at_workspace_root(tmp_path: Path) -> None:
 
 
 def test_readme_is_not_pulled_from_an_ancestor(tmp_path: Path) -> None:
-    # A README is a project-ROOT doc — an ancestor's README must NOT leak into a child workspace.
+    # A README is a project-ROOT doc — even when an ancestor IS in the (project) chain and its
+    # GUIDE is read, its README must not leak into a deeper workspace.
+    (tmp_path / ".git").mkdir()  # tmp_path is the project root → it's in the chain for `child`
+    (tmp_path / "AGENTS.md").write_text("ANCESTOR_GUIDE", encoding="utf-8")
     (tmp_path / "README.md").write_text("ANCESTOR_README", encoding="utf-8")
     child = tmp_path / "project"
     child.mkdir()
     (child / "AGENTS.md").write_text("child guide", encoding="utf-8")
     bodies = [c for _, c in discover_memory(child)]
-    assert all("ANCESTOR_README" not in b for b in bodies)
+    assert any("ANCESTOR_GUIDE" in b for b in bodies)  # the ancestor IS scanned for guides …
+    assert all("ANCESTOR_README" not in b for b in bodies)  # … but NOT for its README
 
 
 def test_readme_excluded_when_disabled(tmp_path: Path) -> None:
@@ -307,3 +340,50 @@ def test_readme_is_ordered_after_the_guides(tmp_path: Path) -> None:
 
 def test_context_include_readme_defaults_on(tmp_path: Path) -> None:
     assert load_settings(workspace_root=tmp_path).context_include_readme is True
+
+
+# ── project-boundary scoping + robustness (review fixes) ─────────────────────────
+
+
+def test_discover_stops_at_the_project_root(tmp_path: Path) -> None:
+    # A guide ABOVE the project (VCS) root must NOT be folded into the trusted tier — the threat
+    # is a planted/stray ~/CLAUDE.md or a shared-machine parent-dir guide.
+    (tmp_path / "CLAUDE.md").write_text("OUTSIDE_THE_REPO", encoding="utf-8")  # above the repo
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()  # the project boundary
+    (repo / "CLAUDE.md").write_text("INSIDE_THE_REPO", encoding="utf-8")
+    bodies = [c for _, c in discover_memory(repo)]
+    assert any("INSIDE_THE_REPO" in b for b in bodies)
+    assert all("OUTSIDE_THE_REPO" not in b for b in bodies)  # the ascent stopped at .git
+
+
+def test_discover_outside_a_repo_scans_only_the_workspace_root(tmp_path: Path) -> None:
+    # No VCS boundary anywhere → never ascend into out-of-workspace dirs; scan only the root.
+    (tmp_path / "AGENTS.md").write_text("PARENT_GUIDE", encoding="utf-8")
+    child = tmp_path / "work"
+    child.mkdir()
+    (child / "AGENTS.md").write_text("WORKSPACE_GUIDE", encoding="utf-8")
+    bodies = [c for _, c in discover_memory(child)]
+    assert any("WORKSPACE_GUIDE" in b for b in bodies)
+    assert all("PARENT_GUIDE" not in b for b in bodies)
+
+
+def test_discover_survives_a_non_utf8_file(tmp_path: Path) -> None:
+    # A non-UTF-8 guide/README must be skipped, NOT crash the whole prompt build (UnicodeDecodeError
+    # is a ValueError, not an OSError). A valid sibling still loads.
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff\xfe\x00bad utf-16 bytes")  # invalid UTF-8
+    (tmp_path / "CLAUDE.md").write_text("VALID_GUIDE_MARK", encoding="utf-8")
+    discovered = discover_memory(tmp_path)  # must not raise
+    bodies = [c for _, c in discovered]
+    assert any("VALID_GUIDE_MARK" in b for b in bodies)  # the readable sibling survives
+    assert all("bad utf-16" not in b for b in bodies)  # the bad file was skipped
+
+
+def test_build_prompt_survives_a_non_utf8_context_file(tmp_path: Path) -> None:
+    # End-to-end: the full prompt build must not raise on a non-UTF-8 context file.
+    (tmp_path / "README.md").write_bytes(b"\xff\xfe garbage")
+    (tmp_path / "AGENTS.md").write_text("GUIDE_OK_42", encoding="utf-8")
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder().build(settings)  # no crash
+    assert "GUIDE_OK_42" in prompt

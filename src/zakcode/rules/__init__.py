@@ -4,8 +4,14 @@ A *rule* is a Markdown file of standing guidance ("always use tabs", "this repo'
 HTTP layer lives in ``api/``", a team convention). Unlike a **skill** (M7) — which
 is model-*invokable* and whose body loads lazily on demand — a rule is **always
 applied**: its text is rendered into the *stable, cacheable* tier of the system
-prompt every turn. This is the Claude-Code ``CLAUDE.md`` / Cursor-rules model, and
-it is the static-guidance seam a self-learning framework (see ``docs/INTEGRATIONS``)
+prompt every turn. This is the Cursor-rules model (flat ``.zakcode/rules`` /
+``.claude/rules`` ``*.md`` files).
+
+**Not to be confused with a root ``CLAUDE.md`` / ``AGENTS.md``:** those are *agent
+guides*, discovered by :func:`zakcode.agent.prompt.discover_memory` and folded into
+the *dynamic* context tier (not here, not the cached tier). Rules are the always-on
+``rules/`` directory; the guides are the project's root-level instruction files.
+This is the static-guidance seam a self-learning framework (see ``docs/INTEGRATIONS``)
 drops durable conventions into.
 
 Discovery mirrors skills, with one shape difference: rules are **flat ``*.md``

@@ -87,12 +87,18 @@ class TaskTool(Tool):
         for i, task in enumerate(tasks):
             if not isinstance(task, dict) or "prompt" not in task:
                 return ToolResult.error(f"task[{i}] must be an object containing a 'prompt'")
+            prompt = task["prompt"]
+            # A blank prompt is a degenerate delegation (the child has no task) AND would leave the
+            # child's caller_query empty, mis-attributing any skill it uses to the PARENT's turn —
+            # so reject it here rather than letting an empty subtask through.
+            if not isinstance(prompt, str) or not prompt.strip():
+                return ToolResult.error(f"task[{i}]: 'prompt' must be a non-empty string")
             type_name = task.get("subagent_type") or default_type
             if available and type_name not in available:
                 return ToolResult.error(
                     f"task[{i}]: unknown subagent_type {type_name!r}; available: {available}"
                 )
-            prepared.append((type_name, str(task["prompt"])))
+            prepared.append((type_name, prompt))
 
         # Run every subtask concurrently. return_exceptions=True so one child's
         # failure (e.g. the budget's child cap) is reported, not propagated as a

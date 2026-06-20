@@ -16,7 +16,7 @@ from typing import Any
 
 from zakcode import Agent
 from zakcode.agent.budget import IterationBudget
-from zakcode.agent.subagent import GENERAL_PURPOSE, SubAgentRunner
+from zakcode.agent.subagent import GENERAL_PURPOSE, SubAgentResult, SubAgentRunner
 from zakcode.config import Settings
 from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.messages import Message
@@ -30,6 +30,7 @@ from zakcode.providers.base import (
     ToolCall,
 )
 from zakcode.tools.base import SkillLoad, ToolContext, ToolRegistry
+from zakcode.tools.builtins.task import TaskTool
 from zakcode.tools.builtins.use_skill import UseSkillTool
 from zakcode.usage import Usage
 
@@ -242,6 +243,91 @@ class _ToolThenTextProvider(Provider):
 
     def model_id(self) -> str:
         return "scripted/test"
+
+
+class _SequenceProvider(Provider):
+    """Emits a SEQUENCE of tool calls (one per completion), then final text — for testing chains."""
+
+    def __init__(self, calls: list[tuple[str, dict[str, Any]]], text: str = "done") -> None:
+        self._calls = calls
+        self._text = text
+        self._i = 0
+
+    async def acomplete(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> LLMResult:
+        if self._i < len(self._calls):
+            name, cargs = self._calls[self._i]
+            self._i += 1
+            return LLMResult(
+                tool_calls=[ToolCall(id=f"t{self._i}", name=name, arguments=cargs)],
+                usage=Usage(total_tokens=1),
+            )
+        return LLMResult(text=self._text, usage=Usage(total_tokens=1))
+
+    async def astream(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        result = await self.acomplete(messages, tools=tools, system=system)
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        yield StreamDone()
+
+    def count_tokens(self, messages: list, *, system: str | None = None) -> int:
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
+
+    def model_id(self) -> str:
+        return "scripted/test"
+
+
+class _FakeSpawner:
+    """A minimal SubAgentSpawner that records what it was asked to spawn."""
+
+    def __init__(self) -> None:
+        self.spawned: list[tuple[str, str]] = []
+
+    async def spawn(self, *, type_name: str, prompt: str) -> SubAgentResult:
+        self.spawned.append((type_name, prompt))
+        return SubAgentResult(name=type_name, summary="ok")
+
+    def available_types(self) -> list[str]:
+        return ["general-purpose"]
+
+    def default_type(self) -> str:
+        return "general-purpose"
+
+
+async def test_skills_chain_across_invocations_in_one_turn(tmp_path: Path) -> None:
+    # The headline behavior: a skill leads to ANOTHER use_skill in the SAME turn. Pinned OFFLINE
+    # here (not only the paid live bench) per the repo's deterministic-test discipline.
+    resolver = _RecordingResolver()
+    registry = ToolRegistry()
+    registry.register(UseSkillTool())
+    chain = [("use_skill", {"name": "step-a"}), ("use_skill", {"name": "step-b"})]
+    runner = SubAgentRunner(
+        provider=_SequenceProvider(chain),
+        registry=registry,
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        budget=IterationBudget(10),
+        workspace_root=tmp_path,
+        skill_resolver=resolver,
+    )
+    result = await runner.run(GENERAL_PURPOSE, "run the chain")
+    assert resolver.loaded == ["step-a", "step-b"]  # both fired, in order, within ONE turn
+    assert result.summary == "done"
+
+
+async def test_task_tool_rejects_a_blank_delegated_prompt(tmp_path: Path) -> None:
+    # Closes the attribution edge at the source: a blank child prompt would leave caller_query
+    # empty and mis-attribute the child's skill use to the parent — so the task tool rejects it.
+    spawner = _FakeSpawner()
+    ctx = ToolContext(workspace_root=tmp_path, spawner=spawner)  # type: ignore[arg-type]
+    res = await TaskTool().execute({"tasks": [{"prompt": "   "}]}, ctx)
+    assert res.is_error and "non-empty" in res.output
+    assert spawner.spawned == []  # never delegated the blank subtask
 
 
 async def test_subagent_can_invoke_a_skill_through_the_wired_resolver(tmp_path: Path) -> None:
