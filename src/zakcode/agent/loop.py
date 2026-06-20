@@ -130,6 +130,7 @@ from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import (
     ConcurrencyClass,
     Sampler,
+    SkillResolver,
     SubAgentSpawner,
     ToolContext,
     ToolRegistry,
@@ -487,6 +488,7 @@ class AgentLoop:
         main_provider_for: MainProviderFor | None = None,
         difficulty_classifier: DifficultyClassifier | None = None,
         sampler: Sampler | None = None,
+        skill_resolver: SkillResolver | None = None,
         turn_end_veto_budget: int = 0,
         completion_review_attempts: int = 0,
     ) -> None:
@@ -496,6 +498,11 @@ class AgentLoop:
         # such a tool return a clean "unavailable" error. The Agent wires it to its strongest
         # model and accounts the spend.
         self._sampler = sampler
+        # Skills seam (M7): the resolver the use_skill tool calls to load a skill's instructions
+        # by name. Threaded into every ToolContext; ``None`` (skills disabled, or a sub-agent)
+        # makes use_skill return a clean "not enabled" error. The Agent wires it to the session's
+        # skill registry and fires ON_SKILL_SELECTED (source="tool") on each load.
+        self._skill_resolver = skill_resolver
         # Runtime model failover seam (PKG-AUTO): on a NON-rate-limit provider failure
         # the loop asks this callback for a replacement ``(provider, description)`` —
         # once per turn, and on the streaming path only before any event reached the
@@ -1592,6 +1599,7 @@ class AgentLoop:
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
+            skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
@@ -2252,6 +2260,7 @@ class AgentLoop:
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
+            skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)

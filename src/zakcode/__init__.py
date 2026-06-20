@@ -34,6 +34,7 @@ from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedModel
 from zakcode.session.store import Session, SessionStore
+from zakcode.tools.base import SkillLoad, SkillResolver
 from zakcode.tools.builtins.default_registry import default_registry
 
 __version__: str = _pkg_version("zakcode")
@@ -175,6 +176,27 @@ class SkillInvocation:
     invoked: bool
     name: str = ""
     error: str | None = None
+
+
+class _SkillToolResolver:
+    """Adapts the Agent's skill registry + selection signal into the
+    :class:`~zakcode.tools.base.SkillResolver` the ``use_skill`` tool calls.
+
+    Holds the ``Agent`` by reference so :meth:`names`/:meth:`load` always see the live registry,
+    and routes :meth:`load` through the SAME core the CLI ``/<name>`` path uses
+    (:meth:`Agent._load_skill_body`) — so a model-driven invocation reads/defangs the body and
+    fires ``ON_SKILL_SELECTED`` identically, only with ``source="tool"``.
+    """
+
+    def __init__(self, agent: Agent) -> None:
+        self._agent = agent
+
+    def names(self) -> list[str]:
+        registry = self._agent.skill_registry
+        return registry.names() if registry is not None else []
+
+    async def load(self, name: str) -> SkillLoad:
+        return await self._agent._load_skill_body(name, source="tool")
 
 
 #: Turn stop-reasons that count as a STALL — the agent didn't cleanly finish. Seam B's best-of-N
@@ -365,10 +387,12 @@ class Agent:
         # a bad skill/rule file is recorded, never fatal.
         self.skill_registry: SkillRegistry | None = None
         self.skill_errors: dict[str, str] = {}
+        skill_resolver: SkillResolver | None = None
         skills_catalog = ""
         if enable_skills:
             from zakcode.skills import discover_skills, project_skills_dir
             from zakcode.tools.builtins.save_skill import SaveSkillTool
+            from zakcode.tools.builtins.use_skill import UseSkillTool
 
             self.skill_registry, self.skill_errors = discover_skills(
                 self.settings.workspace_root, extra_skill_dirs=extra_skill_dirs
@@ -378,6 +402,12 @@ class Agent:
             # new skill is discovered next session). save_skill validates the name so
             # the write can never escape that directory.
             self.registry.register(SaveSkillTool(project_skills_dir(self.settings.workspace_root)))
+            # Model-facing skill INVOCATION: the use_skill tool loads a skill's instructions by
+            # name (and lets skills chain). It reads the resolver off the ToolContext, which the
+            # loop is handed below; only registered when skills are on, so the default tool
+            # surface is unchanged. (Gated identically to the catalog so the two stay consistent.)
+            self.registry.register(UseSkillTool())
+            skill_resolver = _SkillToolResolver(self)
 
         # Rules: always-on guidance (bundled + user + project, incl. .claude/rules for
         # Claude-Code/Claude-Mind compatibility) rendered into the cacheable tier.
@@ -658,6 +688,10 @@ class Agent:
             # deep_think's model access: sample the strongest configured model (zakpick deep_code,
             # else default_model). Always wired for a real Agent; the tool no-ops on a bare loop.
             sampler=self._deep_think_sample,
+            # use_skill's loader: resolve a skill name -> instructions and fire the selection
+            # signal. None unless enable_skills, so the use_skill tool (also only registered then)
+            # has its seam exactly when skills are on.
+            skill_resolver=skill_resolver,
             # TURN_END veto seam (T2/T3/T4): 0 (the default) disables the gate.
             turn_end_veto_budget=self.settings.turn_end_veto_budget,
             # Completion-review gate: 0 (the default) disables it; when >0, a code-changing turn
@@ -851,34 +885,49 @@ class Agent:
                 self._shared_budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
         return result.text
 
-    async def invoke_skill(self, name: str) -> SkillInvocation:
-        """Load a discovered skill's body into the session and emit the selection signal.
+    async def _load_skill_body(self, name: str, *, source: str) -> SkillLoad:
+        """Resolve a skill, read+defang its L1 body, and fire the selection signal — the CORE
+        shared by both invocation paths (the CLI ``/<name>`` and the model's ``use_skill`` tool).
 
-        The single CORE entry point for "use this skill", so every client (the CLI ``/<skill>``
-        path today; a future server route or a model-facing tool) injects the body identically
-        AND fires the observe-only :attr:`~zakcode.hooks.HookEvent.ON_SKILL_SELECTED` lifecycle
-        hook. That hook is the seam a learning "mind" records ``(query -> skill)`` from to learn
-        habitual skill preferences — the substrate emits the signal; choosing/learning is the
-        mind's job. Never raises: a missing/unreadable skill file is a UX result, not a crash.
+        Does NOT mutate the session: it returns the body so each path delivers it the right way
+        — the CLI folds it into a user message, the tool returns it as the tool result. Captures
+        the triggering query (the user's last NL turn) BEFORE doing anything so a learner can
+        associate ``(query -> skill)``, and fires the observe-only
+        :attr:`~zakcode.hooks.HookEvent.ON_SKILL_SELECTED` hook with ``source``. Never raises: a
+        missing skill yields ``found=False``; an unreadable one yields ``error`` set.
         """
         registry = getattr(self, "skill_registry", None)
         skill = registry.get(name) if registry is not None else None
         if skill is None:
-            return SkillInvocation(invoked=False)
-        # Capture the triggering context (the user's last natural-language turn) BEFORE the
-        # skill body is injected, so a learner can associate the query with the chosen skill.
+            return SkillLoad(found=False, name=name)
         query = self._recent_user_text()
         try:
             body = skill.body()  # L1 read lazily; the file may have changed/vanished
         except Exception as exc:  # noqa: BLE001 — a bad skill file is a UX error, not a crash
-            return SkillInvocation(invoked=True, name=skill.name, error=str(exc))
+            return SkillLoad(found=True, name=skill.name, error=str(exc))
         from zakcode.providers.text_tools import defang_untrusted
 
-        # File-authored body folded into a TRUSTED user message; defang protocol/template
-        # sentinels so a skill file can't forge a frame in text mode.
-        self.session.add_message(Message.user(f"[skill: {skill.name}]\n{defang_untrusted(body)}"))
-        await self._emit_skill_selected(skill.name, query)
-        return SkillInvocation(invoked=True, name=skill.name)
+        # Defang protocol/template sentinels so a file-authored body can't forge a frame in
+        # text mode; the body is preserved verbatim otherwise (defang never deletes content).
+        await self._emit_skill_selected(skill.name, query, source=source)
+        return SkillLoad(found=True, name=skill.name, body=defang_untrusted(body))
+
+    async def invoke_skill(self, name: str) -> SkillInvocation:
+        """Load a discovered skill's body into the session and emit the selection signal.
+
+        The CLI ``/<skill>`` entry point: it folds the body into a TRUSTED user message so the
+        next turn applies the skill. Shares :meth:`_load_skill_body` with the model-facing
+        ``use_skill`` tool (which instead returns the body as its tool result), so both paths
+        read, defang, and fire ``ON_SKILL_SELECTED`` identically. Never raises: a
+        missing/unreadable skill file is a UX result, not a crash.
+        """
+        load = await self._load_skill_body(name, source="command")
+        if not load.found:
+            return SkillInvocation(invoked=False)
+        if load.error or load.body is None:
+            return SkillInvocation(invoked=True, name=load.name, error=load.error)
+        self.session.add_message(Message.user(f"[skill: {load.name}]\n{load.body}"))
+        return SkillInvocation(invoked=True, name=load.name)
 
     def _recent_user_text(self) -> str:
         """The most recent user message text (the query that motivated a skill), or ''."""
@@ -887,15 +936,22 @@ class Agent:
                 return message.text
         return ""
 
-    async def _emit_skill_selected(self, skill_name: str, query: str) -> None:
-        """Fire the observe-only ON_SKILL_SELECTED lifecycle hook (cheap + failure-isolated)."""
+    async def _emit_skill_selected(
+        self, skill_name: str, query: str, *, source: str = "command"
+    ) -> None:
+        """Fire the observe-only ON_SKILL_SELECTED lifecycle hook (cheap + failure-isolated).
+
+        ``source`` records HOW the skill was chosen (``"command"`` = the human ``/<name>`` path,
+        ``"tool"`` = the model's ``use_skill`` call) so a learning mind can weight model-driven
+        vs operator-driven selections.
+        """
         with contextlib.suppress(Exception):
             await self.hook_manager.fire(
                 LifecyclePayload(
                     event=HookEvent.ON_SKILL_SELECTED,
                     session_id=self.session.id,
                     cwd=str(self.settings.workspace_root),
-                    data={"skill": skill_name, "query": query, "source": "command"},
+                    data={"skill": skill_name, "query": query, "source": source},
                 )
             )
 

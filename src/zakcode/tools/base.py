@@ -156,6 +156,42 @@ class Sampler(Protocol):
     ) -> str: ...
 
 
+class SkillLoad(BaseModel):
+    """Outcome of resolving a skill for the model-facing ``use_skill`` tool.
+
+    ``found`` is True iff ``name`` matched a discovered skill (so the tool reports "unknown
+    skill" rather than crashing); ``body`` is the loaded, defanged L1 instructions on success;
+    ``error`` is set iff a matched skill's file could not be read (vanished/unreadable since
+    discovery). The body is carried back as the tool RESULT — never injected as a session
+    message — so model-driven invocation can't corrupt mid-turn message ordering.
+    """
+
+    found: bool = False
+    name: str = ""
+    body: str | None = None
+    error: str | None = None
+
+
+@runtime_checkable
+class SkillResolver(Protocol):
+    """Resolves a skill name to its body for the ``use_skill`` tool and fires the
+    skill-selected signal (M7).
+
+    The wirer (the ``Agent``) binds it to the session's skill registry; :meth:`load` reads the
+    L1 body lazily, defangs it, and emits ``ON_SKILL_SELECTED`` (``source="tool"``) so a learning
+    mind records model-driven ``(query -> skill)`` choices just like the CLI ``/<name>`` path.
+    ``None`` on :class:`ToolContext` when skills are disabled (or for a sub-agent), so the tool
+    degrades to a clean "skills not enabled" error rather than crashing. ``runtime_checkable`` so
+    pydantic can validate the field structurally.
+    """
+
+    def names(self) -> list[str]:
+        """Discovered skill names (for the tool's 'unknown skill — available: …' message)."""
+        ...
+
+    async def load(self, name: str) -> SkillLoad: ...
+
+
 class ToolContext(BaseModel):
     """Ambient state handed to a tool at execution time.
 
@@ -195,6 +231,11 @@ class ToolContext(BaseModel):
     #: ``Agent`` wires it to its strongest model and accounts the spend; ``None`` for a
     #: bare/test loop, so a model-using tool returns a clean error rather than crashing.
     sampler: Sampler | None = None
+    #: A :class:`SkillResolver` the ``use_skill`` tool calls to load a skill's instructions by
+    #: name (M7 model-facing invocation). The ``Agent`` wires it to the session's skill registry
+    #: when ``enable_skills``; ``None`` otherwise (and for sub-agents), so the tool returns a
+    #: clean "skills not enabled" error rather than crashing.
+    skill_resolver: SkillResolver | None = None
 
     @property
     def all_workspace_roots(self) -> list[Path]:
@@ -468,6 +509,8 @@ __all__ = [
     "ToolContext",
     "SubAgentSpawner",
     "Sampler",
+    "SkillLoad",
+    "SkillResolver",
     "ToolResult",
     "Tool",
     "ToolRegistry",
