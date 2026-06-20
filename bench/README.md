@@ -17,6 +17,10 @@ bench/
   run_suite.py           # run several tasks in parallel, print a summary table
   diag_task.py           # run ONE task and dump the tool-call transcript (why a gate fired)
   probe_tool_use_failed.py  # diagnostic: inspect a provider's raw text vs tool_calls
+  run_bestof.py          # best-of-N(small) + judge-select vs 1-big on a task
+  run_bestof_suite.py    # best-of-N vs 1-big across the whole suite (generalization)
+  run_quality.py         # quality gate OFF vs ON on a task (the activation evidence)
+  run_seam_b.py          # seam B live: best-of-N retry rescuing a STALLED turn
   tasks/
     01-wordfreq/         # task.json + held-out verify.py
     02-median-bug/       # + workspace/ seed files (bugfix task)
@@ -115,6 +119,31 @@ Read the `result` block: `pass_rate_delta` (ON minus OFF — positive = the gate
 `mean_extra_cost_usd` / `mean_extra_time_s` (the cost per run); each condition's `stop_reasons` list
 surfaces noise (e.g. a `provider_error`). Run it across the suite and the pattern **is the small-model
 preset** — enable the engine where the pass-rate delta beats the spend.
+
+## Generalization: best-of-N across the suite (`run_bestof_suite.py`)
+
+`run_bestof_suite.py` (`poe bestof-suite [01 03]`) runs the `run_bestof` experiment on every task and
+aggregates the **generation ceiling** (did any small attempt pass?), the **best-of-N** pass, the
+**1-big** pass, and cost — i.e. whether the bet *generalizes*. Measured 2026-06: best-of-N(small) was
+**4/5 vs 1-big 3/5**, the edge concentrated on the hard-but-solvable task — best-of-N pays off where
+the task is hard, not on easy tasks (a tie) or too-hard ones (both fail).
+
+## Seam B live: best-of-N rescues a stalled turn (`run_seam_b.py`)
+
+The product form of the bet. When a turn STALLS, the `Agent` fans out `best_of_attempts` fresh
+attempts in isolated source copies, verifies each against `verify_command`, and adopts the first that
+passes by **DIFF** (never a blind overwrite). `run_seam_b.py` runs one task baseline
+(`best_of_attempts=1`) vs seam B on (N), with the task's held-out `verify.py` as the verifier, and the
+`[seam B]` log surfaces the retry firing.
+
+```bash
+ZBENCH_ATTEMPTS=3 ./.venv/Scripts/python.exe bench/run_seam_b.py bench/tasks/04-todo-cli
+```
+
+Read the `result` block: `seam_b_rescued` is the headline (seam B passed where the baseline failed). A
+clean rescue needs a genuinely-failing baseline — the `recipe_stalled`-but-oracle-passes quirk (above)
+can make 04's baseline pass even when the turn stalled, so the demo also confirms the *safe* path:
+seam B fires, finds a verified attempt, and adopts it by diff (e.g. "3 changed, 0 deleted").
 
 ## In CI
 
