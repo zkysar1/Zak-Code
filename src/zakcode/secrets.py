@@ -1,17 +1,17 @@
-"""Secret redaction at persistence boundaries.
+"""Secret redaction at exposure boundaries.
 
-``docs/GUARDRAILS.md`` §6 requires that credentials stay out of the model context
-and out of long-lived state files. Cross-session memory is exactly such a state
-file *and* it re-injects its contents into the prompt on recall, so anything stored
-there must be scrubbed first. :func:`redact_secrets` is the small, dependency-free
-guard applied at those boundaries (the ``remember`` write path and the recall
-render path). It is intentionally conservative — it targets credential *shapes*
-(API keys, AWS/GitHub/Slack tokens, PEM private keys, ``key = value`` secret
-assignments), not arbitrary prose — so ordinary notes pass through untouched.
+``docs/GUARDRAILS.md`` §6 requires that credentials stay out of the model context,
+out of logs, and out of long-lived state. :func:`redact_secrets` is the small,
+dependency-free guard applied where untrusted-or-derived text crosses such a
+boundary — e.g. a provider error message before it reaches the user/logs
+(:mod:`zakcode.providers.litellm_provider`), or any host-supplied context a hook
+folds into the prompt. It is intentionally conservative — it targets credential
+*shapes* (API keys, AWS/GitHub/Slack tokens, PEM private keys, ``key = value``
+secret assignments), not arbitrary prose — so ordinary text passes through untouched.
 
-This is a defense-in-depth heuristic, not a vault: it reduces the chance a secret
-is accidentally persisted/echoed, but the primary rule remains "never put a secret
-in memory in the first place."
+This is a defense-in-depth heuristic, not a vault: it reduces the chance a secret is
+accidentally echoed or persisted, but the primary rule remains "never put a secret
+into durable state in the first place."
 """
 
 from __future__ import annotations
