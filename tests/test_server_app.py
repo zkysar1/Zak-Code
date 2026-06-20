@@ -150,8 +150,9 @@ def test_default_factory_model_override_preserves_posture(tmp_path: Path) -> Non
 
 
 def test_default_factory_loads_a_mind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # serve runs a full MIND: the default factory builds agents with operator identity +
-    # always-on rules + cross-session memory, sharing ONE memory provider across requests.
+    # serve runs a full MIND: the default factory builds agents with the operator identity and
+    # always-on rules. (Cross-session memory is claude-mind's job, not the harness's — the factory
+    # wires none; see docs/PERSISTENCE-BOUNDARY.md.)
     from zakcode.server.app import _default_agent_factory
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")  # ignore the real user home
@@ -171,8 +172,8 @@ def test_default_factory_loads_a_mind(tmp_path: Path, monkeypatch: pytest.Monkey
     prompt = a1.loop._build_system()
     assert "You are Vinheim, the guide." in prompt  # identity (self.md)
     assert "Always be kind." in prompt  # always-on rule
-    assert a1.memory is not None  # cross-session memory enabled
-    assert a1.memory is a2.memory  # ONE shared provider across requests (not one DB-open each)
+    # The factory is reusable across requests: a second agent loads the same mind.
+    assert "You are Vinheim, the guide." in a2.loop._build_system()
 
 
 def test_tools_lists_builtins(client: TestClient) -> None:
