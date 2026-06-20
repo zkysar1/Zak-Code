@@ -69,16 +69,14 @@ here — adding a Settings field without documenting it fails CI.
 
 ## Quality engine
 
-The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (increment 6). **All OFF by default** — the default path is byte-identical; each seam is bounded, fail-safe, and its spend capped by `quality_budget_fraction` (the cost spine). Quality calls route to `model_roles['judge']`.
+The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (increment 6). **All OFF by default** — the default path is byte-identical; each seam is bounded (by `best_of_attempts` and the per-turn budget) and fail-safe. Quality calls route to `model_roles['judge']`.
 
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
 | `quality_gate` | `ZAKCODE_QUALITY_GATE` | `false` | Seam A: after the verifier passes, score the turn result on a rubric and refine if it falls short — runs ALONGSIDE the binary completion critic (two independent quality checks). Off = today's behavior. |
 | `quality_gate_threshold` | `ZAKCODE_QUALITY_GATE_THRESHOLD` | `0.8` | Seam A ship threshold (overall rubric score, 0–1). |
 | `quality_gate_dimensions` | `ZAKCODE_QUALITY_GATE_DIMENSIONS` | _(unset)_ | Seam A rubric (JSON, dimension → what to assess); unset uses a built-in code rubric. |
-| `best_of_plans` | `ZAKCODE_BEST_OF_PLANS` | `1` | Seam C: generate N candidate decompositions for a hard goal and judge-select the best (`1` = off). |
 | `best_of_attempts` | `ZAKCODE_BEST_OF_ATTEMPTS` | `1` | Seam B: fan out N attempts at a stalled step and select the best by the verifier (`1` = off). |
-| `quality_budget_fraction` | `ZAKCODE_QUALITY_BUDGET_FRACTION` | `0.5` | Cost spine: cap quality-engine spend at this fraction of the turn budget (0–1). |
 
 ## Web tools & egress
 

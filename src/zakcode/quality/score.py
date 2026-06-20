@@ -14,6 +14,8 @@ an artifact whose quality can't be verified should keep iterating, not ship unch
 
 from __future__ import annotations
 
+import math
+
 from pydantic import BaseModel, Field
 
 from zakcode.messages import Message
@@ -38,9 +40,9 @@ def aggregate_scores(scores: dict[str, float], weights: dict[str, float] | None 
     mod = 1.0 - 1.0 / len(scores)  # compensation factor: stronger with more dimensions
     product = 1.0
     for name, raw in scores.items():
-        s = max(0.0, min(1.0, raw))
+        s = max(0.0, min(1.0, raw)) if math.isfinite(raw) else 0.0  # NaN/Inf → 0 (veto, not 1.0)
         w = weights.get(name, 1.0)
-        s = max(0.0, 1.0 - w * (1.0 - s))  # weight tempers the penalty (1 - s)
+        s = max(0.0, min(1.0, 1.0 - w * (1.0 - s)))  # weight tempers the penalty; stay in [0,1]
         product *= s + (1.0 - s) * mod * s  # multiply, + IAUS make-up to compensate
     return product
 
@@ -79,11 +81,17 @@ def _clip(text: str) -> str:
 
 
 def _coerce_unit(value: object) -> float:
-    """A model-provided score → a clamped [0,1] float; unparseable → 0.0."""
+    """A model-provided score → a clamped [0,1] float; unparseable or non-finite → 0.0.
+
+    NaN/Infinity matter: ``json.loads`` accepts those tokens and the schema passes them as numbers,
+    and ``min(1.0, nan)`` is ``1.0`` — so without this guard a model could turn an unscoreable
+    dimension into a PERFECT score, defeating the zero-veto. Non-finite abstains LOW (0.0).
+    """
     try:
-        return max(0.0, min(1.0, float(value)))  # type: ignore[arg-type]
+        x = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
+    return max(0.0, min(1.0, x)) if math.isfinite(x) else 0.0
 
 
 async def score_rubric(

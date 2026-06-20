@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.agent.best_of_attempts import (
+    _unchanged_since_snapshot,
     apply_diff,
     changed_paths,
     copy_source,
@@ -69,6 +70,17 @@ def test_apply_diff_only_touches_the_diff(tmp_path: Path) -> None:
     assert (ws / "edit.py").read_text(encoding="utf-8") == "new"  # applied
     assert (ws / "added.py").read_text(encoding="utf-8") == "hi"  # added
     assert not (ws / "gone.py").exists()  # deleted
+
+
+def test_unchanged_since_snapshot_detects_concurrent_edit(tmp_path: Path) -> None:
+    snap, ws = tmp_path / "snap", tmp_path / "ws"
+    snap.mkdir()
+    ws.mkdir()
+    (snap / "a.py").write_text("orig", encoding="utf-8")
+    (ws / "a.py").write_text("orig", encoding="utf-8")
+    assert _unchanged_since_snapshot([Path("a.py")], ws, snap) is True  # workspace == snapshot
+    (ws / "a.py").write_text("user edited", encoding="utf-8")  # concurrent edit during the retry
+    assert _unchanged_since_snapshot([Path("a.py")], ws, snap) is False  # diverged → guard trips
 
 
 class _Settings:
