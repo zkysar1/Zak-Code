@@ -15,8 +15,11 @@ Increment 3b: :mod:`~zakcode.quality.score` (:func:`score_rubric`, absolute weig
 Increment 4: :mod:`~zakcode.quality.refine` — :func:`refine`, the generate→score→revise loop.
 Increment 5: :mod:`~zakcode.quality.plan` (judged decomposition) + :mod:`~zakcode.quality.hooks`
 (:func:`set_judge_hook`, the nudge seam).
+Seam B core: :mod:`~zakcode.quality.attempts` — :func:`best_attempt`, run N tries, keep the first
+that verifies (the orchestration the Agent's stall-retry stands on).
 """
 
+from zakcode.quality.attempts import best_attempt
 from zakcode.quality.bestof import best_of_n
 from zakcode.quality.hooks import JudgeHook, apply_judge_hook, get_judge_hook, set_judge_hook
 from zakcode.quality.judge import (
@@ -44,6 +47,7 @@ __all__ = [
     "ShipDecision",
     "aggregate_scores",
     "apply_judge_hook",
+    "best_attempt",
     "best_of",
     "best_of_n",
     "binary_judge",
