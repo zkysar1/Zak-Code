@@ -587,9 +587,9 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 >    message → prompt-cache safe. In-process + shell hooks.
 > 3. **Rules** (`rules/`) — always-on `.md` guidance (`.zakcode/rules` + `.claude/rules`)
 >    in the cacheable tier; sub-agents inherit them; bounded render.
-> 4. **Cross-session memory** (`memory/`) — `MemoryProvider` ABC + SQLite/FTS5 default
->    (relocatable), `remember`/`recall` tools, per-turn recall hook; secrets redacted at
->    the store boundary (`secrets.py`).
+> 4. **Cross-session memory** — shipped in M11, then **REMOVED** (see
+>    [`PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)): memory is claude-mind's, attached via the
+>    generic recall (`PreLLMCall`) / lifecycle / tool seams; the harness ships no store.
 > 5. **Skill authoring** (`skills.save_skill` + `save_skill` tool, `.claude/skills`
 >    discovery) — runtime, path-traversal-safe skill creation.
 > 6. **Tier-2 items** — shared-budget refunds, real read-only tool concurrency

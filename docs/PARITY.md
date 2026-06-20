@@ -13,8 +13,8 @@ tracked as Zak Code is built out.
 > **Status note (2026-06-02): M0–M11 have shipped** — the core loop, streaming, permissions,
 > HTTP server, sub-agents, MCP, plugins, skills, compaction, evals, the web client, and the
 > **M11 learning substrate** (text tool-calling fallback for local models, a cache-safe
-> `PreLLMCall` context-injection seam, session-lifecycle hooks, always-on rules, cross-session
-> memory, runtime skill authoring, an operator deny-rule grammar, and read-safe parallel tool
+> `PreLLMCall` context-injection seam, session-lifecycle hooks, always-on rules, runtime skill
+> authoring, an operator deny-rule grammar, and read-safe parallel tool
 > execution). [`ROADMAP.md`](ROADMAP.md) is the **canonical build record**.
 >
 > This parity matrix lags it on purpose: per-row status is flipped **only for rows that map to
@@ -265,7 +265,7 @@ of each subsystem Zak Code plans to build vs. defer.
 | Skills registry + bundled | `loadSkillsDir`, bundled skills, MCP skill-builders; `/skills` surface | yes | Done | P1 | M7 | SKILL.md frontmatter + 3-level disclosure (L0 catalog in prompt, L1 body lazy, L2 files); `/skills` + `/<name>` invocation. **M11** added runtime authoring (`save_skill`, path-traversal-safe) + `.claude/skills` discovery; the autonomous *curator* (deciding when to forge) is left to an integrating framework — see [`INTEGRATIONS.md`](INTEGRATIONS.md). |
 | Keybindings | Default + user bindings, parser/matcher/resolver, schema, validation | yes | Planned | P1 | M2 | |
 | Output styles | Load output styles from a directory | yes | Planned | P1 | M2 | |
-| SessionMemory | Persistent session memory + prompts; cross-session recall | yes | **Done** | P1 | M11 | ✅ `MemoryProvider` ABC + local SQLite/**FTS5** store (relocatable; default `<workspace>/.zakcode/memory.db`); `remember`/`recall` tools + a `PreLLMCall` recall hook injecting relevant memories per turn; secrets redacted at write + recall. |
+| SessionMemory | Persistent session memory + prompts; cross-session recall | yes | Boundary | P1 | — | Cross-session **memory is claude-mind's job, not the harness's** (see [`PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)). The harness records the transcript (`SessionStore`, powering `/resume`) and exposes generic seams — a `PreLLMCall` context hook (recall), lifecycle hooks (encode), the tool registry — that a Mind attaches its own store to. It ships no memory store, recall, or `remember`/`recall` tools. |
 | Prompt suggestion | PromptSuggestion (+ speculation) service | yes | Planned | P1 | M2 | |
 | Plugins | Loader + marketplace + `services/plugins` (install/enable/disable/update/trust); contribute hooks/tools/commands/MCP | yes | Done | P2 | M6 | Shipped (M6): `register(ctx)` entrypoint, dir + entry-point discovery, trust+enable gating (import deferred until trusted), narrow `PluginContext` contributing tools/hooks/commands, `/plugins`. Deferred: marketplace/install, subprocess tool contract (JSON via stdin+env), `/reload-plugins`. |
 | Migrations | Settings/model migrations (auto-update, permission, model renames, repl-bridge → remote-control) | yes | Planned | P2 | M3 | |
@@ -314,7 +314,7 @@ summaries (M8), read-safe parallel tool execution (M11), structured tool I/O + o
 event loop + atomic session writes (M0), MCP-into-the-loop (M5), and the safer permission
 defaults (M2). M11 also adds, **beyond** the Claude Code reference surface, a text
 tool-calling fallback (local models), a cache-safe `PreLLMCall` hook, session-lifecycle
-hooks, always-on rules, cross-session memory + FTS5 recall, runtime skill authoring, and an
+hooks, always-on rules, runtime skill authoring, and an
 operator deny-rule grammar — the substrate a self-learning framework folds into
 ([`INTEGRATIONS.md`](INTEGRATIONS.md)). Prompt `cache_control` and the remote/transport/SDK
 surface remain the main open items.

@@ -503,29 +503,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    # ── Cross-session memory (opt-in via Agent(enable_memory=True)) ──────────
-    memory_db_path: str | None = Field(
-        default=None,
-        description=(
-            "Path to the cross-session memory SQLite DB. When unset, the Agent "
-            "defaults it to <workspace>/.zakcode/memory.db (per-project memory)."
-        ),
-    )
-    memory_recall_limit: int = Field(
-        default=5, ge=0, description="How many memories the recall hook injects per turn."
-    )
-    memory_recall_min_overlap: int = Field(
-        default=1,
-        ge=0,
-        description=(
-            "Relevance floor for auto-recall: a memory is injected only if it shares at "
-            "least this many distinctive (non-stopword) words with the user's turn — so a "
-            "memory that merely matched a common word like 'the' is dropped. 0 disables "
-            "the floor (inject every search match). Corpus-size-independent (unlike a raw "
-            "bm25 score, which collapses to ~0 in a small store)."
-        ),
-    )
-
     # ── Web tools (web_search / web_fetch) ───────────────────────────────────
     # Which vendor-agnostic search backend `web_search` uses. ``ddgs`` (the default) is free and
     # needs no key; ``tavily`` reads TAVILY_API_KEY from the env (like other provider keys — never

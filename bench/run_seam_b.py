@@ -52,7 +52,6 @@ def _build_agent(workspace: Path, spec: dict, *, best_of_attempts: int, verify_c
     return Agent(
         settings=settings,
         enable_compaction=True,
-        enable_memory=False,
         enable_rules=False,
         enable_skills=False,
         enable_subagents=False,

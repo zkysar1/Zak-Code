@@ -91,14 +91,15 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 | `egress_proxy` | `ZAKCODE_EGRESS_PROXY` | `false` | Route bash/powershell egress through a localhost domain-allowlisting proxy. |
 | `egress_allowed_domains` | `ZAKCODE_EGRESS_ALLOWED_DOMAINS` | `[]` | Domains the egress proxy permits; empty + proxy on = deny all subprocess egress. |
 
-## Cross-session memory
+## Settings hooks
 
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
 | `settings_hooks` | `ZAKCODE_SETTINGS_HOOKS` | `false` | Load shell hooks from `<workspace>/.claude/settings.json` + `.zakcode/settings.json` (event names mapped; `Stop` → `TurnEnd`; dangerous commands hard-denied in autonomous mode; provider keys scrubbed from hook env). Off by default so workspaces configured for other hook runtimes don't half-fire here. |
-| `memory_db_path` | `ZAKCODE_MEMORY_DB_PATH` | `<workspace>/.zakcode/memory.db` | SQLite store for opt-in cross-session memory. |
-| `memory_recall_limit` | `ZAKCODE_MEMORY_RECALL_LIMIT` | `5` | Memories the recall hook injects per turn. |
-| `memory_recall_min_overlap` | `ZAKCODE_MEMORY_RECALL_MIN_OVERLAP` | `1` | Distinctive-word overlap floor for auto-recall; `0` disables the floor. |
+
+> Cross-session **memory** is not a harness concern — it is claude-mind's. A Mind attaches its own
+> recall/store through the generic hook/tool seams (see [`docs/PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)
+> and [`docs/INTEGRATIONS.md`](INTEGRATIONS.md)); the harness ships no memory config.
 
 ## HTTP server (`zakcode serve`)
 

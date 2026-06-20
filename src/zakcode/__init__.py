@@ -45,7 +45,6 @@ if TYPE_CHECKING:
     # imports happen inside ``__init__`` only when the feature is enabled.
     from zakcode.mcp.config import McpServerConfig
     from zakcode.mcp.manager import DiscoveryReport, ExtensionManager
-    from zakcode.memory import MemoryProvider
     from zakcode.plugins import PluginLoadReport
     from zakcode.rules import RuleRegistry
     from zakcode.skills import SkillRegistry
@@ -245,8 +244,6 @@ class Agent:
         enable_rules: bool = False,
         enable_identity: bool = True,
         identity: str | None = None,
-        enable_memory: bool = False,
-        memory_provider: MemoryProvider | None = None,
         enable_compaction: bool = False,
         enable_settings_hooks: bool | None = None,
         agent_identity_dir: str | Path | None = None,
@@ -432,7 +429,8 @@ class Agent:
         # Operator identity (self.md), loaded ONCE here so it is cache-stable for the session.
         # An explicit ``identity`` arg wins; else discover it from the workspace when enabled
         # (the default). It is operator-authored = TRUSTED, so it is injected UN-fenced (unlike
-        # memory recall); never wire a request-supplied identity through this path.
+        # untrusted tool output or host-injected context); never wire a request-supplied identity
+        # through this path.
         self.identity: str | None = None
         self.identity_error: str | None = None
         if identity is not None:
@@ -622,36 +620,11 @@ class Agent:
                 settings=self.settings,
             )
 
-        # Cross-session memory, opt-in. Wire a MemoryProvider (default: a local
-        # SQLite/FTS5 store), register the remember/recall tools, and — unless recall
-        # is disabled — add a PRE_LLM_CALL hook that injects relevant memories each
-        # turn (fenced as untrusted by the loop). Substrate only: WHAT to remember is
-        # the model's / an integrating framework's choice, not the store's.
-        self.memory: MemoryProvider | None = None
-        if enable_memory:
-            from zakcode.memory import MemoryRecallHook
-            from zakcode.memory.sqlite_store import SqliteMemoryProvider
-            from zakcode.tools.builtins.memory import RecallTool, RememberTool
-
-            # Default the store to <workspace>/.zakcode/memory.db — per-project memory
-            # (no cross-project bleed; isolated under a tmp workspace in tests). An
-            # explicit memory_db_path (or ZAKCODE_MEMORY_DB_PATH) overrides it.
-            db_path = self.settings.memory_db_path or str(
-                Path(self.settings.workspace_root) / ".zakcode" / "memory.db"
-            )
-            self.memory = memory_provider or SqliteMemoryProvider(db_path)
-            self.registry.register(RememberTool(self.memory, source=self.session.id))
-            self.registry.register(
-                RecallTool(self.memory, default_limit=self.settings.memory_recall_limit)
-            )
-            if self.settings.memory_recall_limit > 0:
-                self.hook_manager.register_context(
-                    MemoryRecallHook(
-                        self.memory,
-                        limit=self.settings.memory_recall_limit,
-                        min_overlap=self.settings.memory_recall_min_overlap,
-                    )
-                )
+        # Cross-session MEMORY is NOT a harness concern (see docs/PERSISTENCE-BOUNDARY.md): the
+        # substrate records the transcript (SessionStore, for /resume) and exposes generic seams —
+        # register_context (PRE_LLM_CALL injection), register_lifecycle, register_turn_end, and the
+        # tool registry — that claude-mind (or any framework) attaches its own recall/remember to.
+        # The harness ships no store, no recall, no remember/recall tools.
 
         # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
         # before a turn once it exceeds the provider's context-window threshold.
@@ -683,9 +656,6 @@ class Agent:
             budget=shared_budget,
             spawner=spawner,
             compactor=self.compactor,
-            # Same store the recall hook + remember/recall tools use, so harness-authored
-            # recovery lessons (research R1) are recalled next session. None when memory is off.
-            memory_provider=self.memory,
             summarizer_provider=summarizer_provider,
             # Runtime model failover (PKG-AUTO): once per turn, on a non-rate-limit
             # provider failure, the loop may swap to a new provider we build here.
@@ -1079,10 +1049,10 @@ class Agent:
     async def aclose(self) -> None:
         """End the session: fire ``SESSION_END`` then release resources.
 
-        Fires the ``SESSION_END`` lifecycle hook (a host's encode/serialize step),
-        closes the memory store, and closes any MCP connections. Best-effort and
-        idempotent — a second call is a no-op (so the encode step never double-runs),
-        and every step is isolated so a failing one never blocks the rest.
+        Fires the ``SESSION_END`` lifecycle hook (a host's encode/serialize step) and
+        closes any MCP connections. Best-effort and idempotent — a second call is a no-op
+        (so the encode step never double-runs), and every step is isolated so a failing one
+        never blocks the rest.
         """
         import contextlib
 
@@ -1105,9 +1075,6 @@ class Agent:
                         },
                     )
                 )
-        if self.memory is not None:
-            with contextlib.suppress(Exception):
-                self.memory.close()
         with contextlib.suppress(Exception):
             await self.loop.aclose()  # tear down the egress-proxy listener (no-op when off)
         await self.aclose_mcp()

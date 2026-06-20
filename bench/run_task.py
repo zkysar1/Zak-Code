@@ -86,7 +86,6 @@ def _build_agent(workspace: Path, spec: dict):
     agent = Agent(
         settings=settings,
         enable_compaction=True,   # needed so long tasks survive the context window
-        enable_memory=False,      # OFF: cross-session memory would make cost non-reproducible
         enable_rules=False,       # OFF: no rule injection in the bare temp workspace
         enable_skills=False,      # OFF: no skill dirs
         enable_subagents=False,   # OFF: keep the baseline single-agent (enable later for a "full" run)
