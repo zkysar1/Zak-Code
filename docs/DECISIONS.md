@@ -388,8 +388,10 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     `SubAgentRunner` → each child `AgentLoop`, and `use_skill` is registered on the child registry.
     The general-purpose delegate (full toolset) gets it; the read-only **planner** does not (its
     tool subset omits `use_skill`). A child resolves against the same registry and draws from the
-    same per-turn budget. (Query attribution to the *child* prompt is still deferred — a sub-agent
-    invocation records the parent's originating turn, which is the delegation tree's true trigger.)
+    same per-turn budget. Attribution is correct per caller: the `use_skill` tool reads a
+    `caller_query` off the `ToolContext` (each loop stamps its own turn's prompt), so a sub-agent's
+    `ON_SKILL_SELECTED` records the *child's* task, not the parent's originating turn — while the
+    shared registry/budget still come from the parent's resolver.
   - **Per-turn skill-invocation budget** (`skill_invocation_budget`, `0` = unlimited): each
     model-driven (`source="tool"`) `use_skill` draws one unit, shared across the whole turn-tree and
     reset per top-level turn; over the cap the tool returns a `denied_reason` (no body, no signal),

@@ -65,7 +65,9 @@ class UseSkillTool(Tool):
         if not isinstance(name, str) or not name.strip():
             return ToolResult.error("'name' is required and must be a non-empty string.")
         name = name.strip()
-        load = await resolver.load(name)
+        # Pass the invoking turn's prompt so the selection signal is attributed to THIS caller
+        # (a sub-agent's task, not the parent's originating turn).
+        load = await resolver.load(name, query=ctx.caller_query)
         if not load.found:
             available = ", ".join(resolver.names()) or "(none discovered)"
             return ToolResult.error(

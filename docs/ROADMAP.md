@@ -410,8 +410,9 @@ Both paths share one `_load_skill_body` core and fire `ON_SKILL_SELECTED` (`sour
 `tests/test_skills.py`, `tests/test_skills_facade.py`, `tests/test_use_skill.py`; live demos
 `bench/run_skill_chain.py` (chaining) + `bench/run_skill_branch.py` (conditional routing). Sub-agents
 can invoke/chain skills too (the general-purpose delegate), and `skill_invocation_budget` caps
-model-driven invocations per turn. Deferred: an autonomous skill-authoring curator; attributing a
-sub-agent's skill query to the child prompt (today it records the parent's originating turn).
+model-driven invocations per turn; a sub-agent's `ON_SKILL_SELECTED` is attributed to the child's
+own prompt (via `caller_query` on the `ToolContext`), not the parent's turn. Deferred: an autonomous
+skill-authoring curator.
 
 **Goal:** Progressive-disclosure, markdown-defined skills (manually authored first).
 

@@ -1212,3 +1212,12 @@ cost-accounting test instead of a fallback table.
   routine correctly **both ways**; the budget caps the relay at 2 invocations (3rd hand-off denied,
   agent finishes gracefully); default chain unchanged (regression PASS). +10 tests. **`uv run poe
   check` green: 2069 passed, ruff + mypy clean.**
+- **2026-06-20 (dev, Skills — sub-agent query attribution):** closed the one item deferred from the
+  follow-ups. A sub-agent invoking `use_skill` was firing `ON_SKILL_SELECTED` with the PARENT's
+  originating turn as the query (the shared resolver reads the parent's session). Fixed by threading
+  a `caller_query` field on the `ToolContext` — each loop stamps its own turn's prompt at build time
+  (`caller_query=user_text`, both twins) — through `use_skill` → `SkillResolver.load(name, *, query)`
+  → `_load_skill_body` (falls back to the session's recent user text when empty, so the CLI/main path
+  is unchanged). The shared registry + budget still come from the parent's resolver. A decisive test
+  spawns a child with a distinct prompt and asserts the signal records the *child's* task, not the
+  parent's. **`uv run poe check` green: 2070 passed, ruff + mypy clean.**
