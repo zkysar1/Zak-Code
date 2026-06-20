@@ -14,6 +14,7 @@ attempts` and is gated OFF by default.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.quality import best_attempt
+
+logger = logging.getLogger(__name__)
 
 #: Directories/files never copied into an isolated attempt (vcs, deps, caches, build output): they
 #: bloat the copy and are never "the work". Source-only isolation keeps the copy small and the size
@@ -134,7 +137,11 @@ async def run_best_of_attempts(agent: Any, user_text: str, original: Any) -> Any
     attempts: list[Path] = []
     try:
         if not copy_source(workspace, snapshot):
-            return original  # workspace too big to isolate safely — skip the retry
+            logger.info("seam B: workspace too large to isolate by copy; skipping the retry")
+            return original
+        logger.info(
+            "seam B: stalled turn -> running up to %d isolated attempts (verifier: %s)", n, command
+        )
 
         async def run(i: int) -> tuple[Path, Any]:
             attempt = Path(tempfile.mkdtemp(prefix=f"zb-att{i}-"))
@@ -157,10 +164,16 @@ async def run_best_of_attempts(agent: Any, user_text: str, original: Any) -> Any
 
         winner = await best_attempt(n, run=run, verify=verify)
         if winner is None:
+            logger.info("seam B: no attempt verified; keeping the original (no harm)")
             return original
         attempt, result = winner
         changed, deleted = changed_paths(attempt, snapshot)
         apply_diff(changed, deleted, attempt, workspace)
+        logger.info(
+            "seam B: adopted a verified attempt — applied %d changed, %d deleted (diff only)",
+            len(changed),
+            len(deleted),
+        )
         return result  # the verified attempt's (completed) result
     finally:
         shutil.rmtree(snapshot, ignore_errors=True)
