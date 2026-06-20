@@ -336,11 +336,6 @@ class RecipeCursor:
         # what stops a create-with-tests turn that runs `pytest` green from falsely stalling as
         # recipe_stalled. Reset by a fresh runnable write (the new code is unverified again).
         self._suite_verified = False
-        # Recovery tracking (research R1): per-target, the command whose run of a created file
-        # FAILED — so a later SUCCESS that runs the SAME target is recorded as a recovery, and a
-        # never-failed file's first-try success is never misattributed as one. (review2 #3)
-        self._failed_by_target: dict[str, str] = {}
-        self._recovered_command: str | None = None
 
     @property
     def verified(self) -> bool:
@@ -377,15 +372,7 @@ class RecipeCursor:
             if result is None:
                 continue
             if result.is_error:
-                # Record a FAILED run PER executed target so a later success of the SAME file is
-                # a recovery (research R1). Does NOT affect verification — a failed run still
-                # verifies nothing, so the gate behaves exactly as before.
-                if call.name in _RUN_TOOLS and self.wrote_runnable:
-                    command = call.arguments.get("command")
-                    if isinstance(command, str):
-                        for base in _executed_targets(command, self._targets):
-                            self._failed_by_target[base] = command
-                continue
+                continue  # a failed run verifies nothing
             if call.name in _WRITE_TOOLS:
                 path = _runnable_path(call, result)
                 if path is not None:
@@ -409,14 +396,6 @@ class RecipeCursor:
                 output_ok = self.acceptance is None or self.acceptance in (result.output or "")
                 if executed and output_ok:
                     self._verified |= executed
-                    # A recovery: this success ran a target whose EARLIER run failed. Bind it
-                    # per-target so a never-failed file's first-try success is not misattributed,
-                    # and clear the recovered targets' failure record. (review2 #3)
-                    recovered = executed & set(self._failed_by_target)
-                    if recovered:
-                        self._recovered_command = command
-                        for base in recovered:
-                            self._failed_by_target.pop(base, None)
                 # A green run of a recognized test runner (this is the success path — is_error
                 # is False here) verifies the written modules through their tests even though
                 # their filenames are imported, not named as run tokens. It satisfies the gate
@@ -425,12 +404,6 @@ class RecipeCursor:
                 # requires a direct run that prints it).
                 if self.acceptance is None and _runs_test_suite(command):
                     self._suite_verified = True
-
-    @property
-    def recovered_command(self) -> str | None:
-        """A run command that SUCCEEDED after an earlier run of a created file FAILED this turn
-        (else ``None``) — the corrective step a recipe-recovery lesson records (research R1)."""
-        return self._recovered_command
 
     def needs_verification(self) -> bool:
         """True when the turn should not end yet: a runnable file written, not yet verified.
