@@ -1,4 +1,4 @@
-"""Tests for the ordered system-prompt builder and ZAK.md memory discovery."""
+"""Tests for the ordered system-prompt builder and project-context discovery."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 
 from zakcode.agent import DYNAMIC_BOUNDARY, SystemPromptBuilder
 from zakcode.agent.prompt import (
-    MAX_MEMORY_FILE_CHARS,
-    MAX_MEMORY_TOTAL_CHARS,
-    discover_memory,
+    MAX_CONTEXT_FILE_CHARS,
+    MAX_CONTEXT_TOTAL_CHARS,
+    discover_context,
 )
 from zakcode.config import PermissionTier, load_settings
 from zakcode.tools import default_registry
@@ -54,7 +54,7 @@ def test_stable_precedes_boundary_and_context_follows(tmp_path: Path) -> None:
     assert "untrusted" in stable.lower()
     assert "exfiltrate" in stable.lower()
 
-    # Environment (and any memory) live below the boundary.
+    # Environment (and any context files) live below the boundary.
     assert "Environment:" in context
     assert str(tmp_path) in context
     assert "openai/gpt-4o" in context
@@ -163,7 +163,7 @@ def test_extra_context_lands_in_dynamic_section(tmp_path: Path) -> None:
     assert "PROJECT_FACT_XYZ" in prompt[boundary_at:]
 
 
-# ── memory discovery ───────────────────────────────────────────────────────────
+# ── context-file discovery ─────────────────────────────────────────────────────
 
 
 def test_zak_md_is_discovered_and_appears_in_prompt(tmp_path: Path) -> None:
@@ -173,10 +173,10 @@ def test_zak_md_is_discovered_and_appears_in_prompt(tmp_path: Path) -> None:
 
     assert "MEMORY_MARKER_42" in prompt
     boundary_at = prompt.index(DYNAMIC_BOUNDARY)
-    assert "MEMORY_MARKER_42" in prompt[boundary_at:]  # memory is dynamic context
+    assert "MEMORY_MARKER_42" in prompt[boundary_at:]  # context files are in the dynamic tier
 
 
-def test_discover_memory_walks_ancestor_chain_root_to_cwd(tmp_path: Path) -> None:
+def test_discover_context_walks_ancestor_chain_root_to_cwd(tmp_path: Path) -> None:
     parent = tmp_path
     child = tmp_path / "sub"
     child.mkdir()
@@ -184,7 +184,7 @@ def test_discover_memory_walks_ancestor_chain_root_to_cwd(tmp_path: Path) -> Non
     (parent / "ZAK.md").write_text("PARENT_RULES", encoding="utf-8")
     (child / "ZAK.md").write_text("CHILD_RULES", encoding="utf-8")
 
-    discovered = discover_memory(child)
+    discovered = discover_context(child)
     contents = [c for _, c in discovered]
 
     assert "PARENT_RULES" in contents
@@ -193,7 +193,7 @@ def test_discover_memory_walks_ancestor_chain_root_to_cwd(tmp_path: Path) -> Non
     assert contents.index("PARENT_RULES") < contents.index("CHILD_RULES")
 
 
-def test_discover_memory_dedupes_identical_content(tmp_path: Path) -> None:
+def test_discover_context_dedupes_identical_content(tmp_path: Path) -> None:
     parent = tmp_path
     child = tmp_path / "sub"
     child.mkdir()
@@ -202,45 +202,45 @@ def test_discover_memory_dedupes_identical_content(tmp_path: Path) -> None:
     (parent / "ZAK.md").write_text(same, encoding="utf-8")
     (child / "ZAK.md").write_text(same, encoding="utf-8")
 
-    discovered = discover_memory(child)
+    discovered = discover_context(child)
     bodies = [c for _, c in discovered]
     assert bodies.count(same) == 1  # kept once, at its shallowest occurrence
     assert discovered[0][0] == parent / "ZAK.md"
 
 
-def test_discover_memory_caps_per_file(tmp_path: Path) -> None:
-    (tmp_path / "ZAK.md").write_text("x" * (MAX_MEMORY_FILE_CHARS * 2), encoding="utf-8")
-    discovered = discover_memory(tmp_path)
+def test_discover_context_caps_per_file(tmp_path: Path) -> None:
+    (tmp_path / "ZAK.md").write_text("x" * (MAX_CONTEXT_FILE_CHARS * 2), encoding="utf-8")
+    discovered = discover_context(tmp_path)
     assert len(discovered) == 1
-    assert len(discovered[0][1]) == MAX_MEMORY_FILE_CHARS
+    assert len(discovered[0][1]) == MAX_CONTEXT_FILE_CHARS
 
 
-def test_discover_memory_caps_total(tmp_path: Path) -> None:
+def test_discover_context_caps_total(tmp_path: Path) -> None:
     # Build a deep chain of distinct file-cap-sized files far exceeding the total budget.
     (tmp_path / ".git").mkdir()  # project root at the top so the whole chain is in-project
     current = tmp_path
     for i in range(10):
-        body = f"block{i}-" + "y" * MAX_MEMORY_FILE_CHARS
+        body = f"block{i}-" + "y" * MAX_CONTEXT_FILE_CHARS
         (current / "ZAK.md").write_text(body, encoding="utf-8")
         current = current / "d"
         current.mkdir()
 
-    discovered = discover_memory(current.parent)
+    discovered = discover_context(current.parent)
     total = sum(len(c) for _, c in discovered)
     # The cap must actually ENGAGE: exactly floor(total/file) files survive (the rest dropped),
     # filling the budget to the brim — not a vacuous "<= cap" that also passes for 0 or 1 file.
-    expected_files = MAX_MEMORY_TOTAL_CHARS // MAX_MEMORY_FILE_CHARS
+    expected_files = MAX_CONTEXT_TOTAL_CHARS // MAX_CONTEXT_FILE_CHARS
     assert len(discovered) == expected_files  # 4 of the 10, the rest excluded
-    assert total == MAX_MEMORY_TOTAL_CHARS  # filled exactly to the cap
+    assert total == MAX_CONTEXT_TOTAL_CHARS  # filled exactly to the cap
 
 
-def test_discover_memory_total_cap_truncates_the_straddling_file(tmp_path: Path) -> None:
+def test_discover_context_total_cap_truncates_the_straddling_file(tmp_path: Path) -> None:
     # Exercise the partial-slice branch: a file that straddles the total cap is truncated to the
     # remaining budget (not dropped whole, not added whole). Distinct fill chars avoid dedup and
     # give exact, prefix-free lengths.
     (tmp_path / ".git").mkdir()
     fills = ["a", "b", "c", "d", "e"]
-    sizes = [MAX_MEMORY_FILE_CHARS, MAX_MEMORY_FILE_CHARS, MAX_MEMORY_FILE_CHARS, 3424, 9000]
+    sizes = [MAX_CONTEXT_FILE_CHARS, MAX_CONTEXT_FILE_CHARS, MAX_CONTEXT_FILE_CHARS, 3424, 9000]
     current = tmp_path
     dirs = []
     for _ in sizes:
@@ -250,20 +250,20 @@ def test_discover_memory_total_cap_truncates_the_straddling_file(tmp_path: Path)
     for d, fill, size in zip(dirs, fills, sizes, strict=True):
         (d / "ZAK.md").write_text(fill * size, encoding="utf-8")
 
-    discovered = discover_memory(dirs[-1])  # workspace = the deepest dir; chain = all five
+    discovered = discover_context(dirs[-1])  # workspace = the deepest dir; chain = all five
     total = sum(len(c) for _, c in discovered)
-    assert total == MAX_MEMORY_TOTAL_CHARS  # filled exactly to the brim …
+    assert total == MAX_CONTEXT_TOTAL_CHARS  # filled exactly to the brim …
     # 3*8192 + 3424 = 28000 consumed; the straddling 5th file is sliced to the remaining 4768.
-    assert len(discovered[-1][1]) == MAX_MEMORY_TOTAL_CHARS - (3 * MAX_MEMORY_FILE_CHARS + 3424)
+    assert len(discovered[-1][1]) == MAX_CONTEXT_TOTAL_CHARS - (3 * MAX_CONTEXT_FILE_CHARS + 3424)
 
 
-def test_discover_memory_skips_empty_and_missing(tmp_path: Path) -> None:
+def test_discover_context_skips_empty_and_missing(tmp_path: Path) -> None:
     (tmp_path / "ZAK.md").write_text("   \n  ", encoding="utf-8")  # whitespace only
-    assert discover_memory(tmp_path) == []
+    assert discover_context(tmp_path) == []
 
     empty_dir = tmp_path / "nothing"
     empty_dir.mkdir()
-    assert discover_memory(empty_dir) == []
+    assert discover_context(empty_dir) == []
 
 
 # ── AGENTS.md / CLAUDE.md agent guides (Codex/Claude-Code compatibility) ──────────
@@ -278,7 +278,7 @@ def test_agents_md_is_discovered_and_in_prompt(tmp_path: Path) -> None:
 
 def test_claude_md_is_discovered(tmp_path: Path) -> None:
     (tmp_path / "CLAUDE.md").write_text("CLAUDE_MARKER_9", encoding="utf-8")
-    bodies = [c for _, c in discover_memory(tmp_path)]
+    bodies = [c for _, c in discover_context(tmp_path)]
     assert any("CLAUDE_MARKER_9" in b for b in bodies)
 
 
@@ -287,7 +287,7 @@ def test_both_agents_and_claude_are_loaded(tmp_path: Path) -> None:
     # "pick one" rule that chose AGENTS.md first would not silently drop the real guide.
     (tmp_path / "AGENTS.md").write_text("See CLAUDE.md. POINTER_MARK", encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text("the real guide CANONICAL_MARK", encoding="utf-8")
-    bodies = [c for _, c in discover_memory(tmp_path)]
+    bodies = [c for _, c in discover_context(tmp_path)]
     assert any("POINTER_MARK" in b for b in bodies)
     assert any("CANONICAL_MARK" in b for b in bodies)
 
@@ -297,7 +297,7 @@ def test_identical_guides_are_deduped(tmp_path: Path) -> None:
     same = "ONE_SHARED_GUIDE_BODY"
     (tmp_path / "AGENTS.md").write_text(same, encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text(same, encoding="utf-8")
-    bodies = [c for _, c in discover_memory(tmp_path)]
+    bodies = [c for _, c in discover_context(tmp_path)]
     assert bodies.count(same) == 1
 
 
@@ -306,7 +306,7 @@ def test_identical_guides_are_deduped(tmp_path: Path) -> None:
 
 def test_readme_is_loaded_at_workspace_root(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# Project\nREADME_MARKER_3", encoding="utf-8")
-    paths = [p.name for p, _ in discover_memory(tmp_path)]
+    paths = [p.name for p, _ in discover_context(tmp_path)]
     assert "README.md" in paths
 
 
@@ -319,14 +319,14 @@ def test_readme_is_not_pulled_from_an_ancestor(tmp_path: Path) -> None:
     child = tmp_path / "project"
     child.mkdir()
     (child / "AGENTS.md").write_text("child guide", encoding="utf-8")
-    bodies = [c for _, c in discover_memory(child)]
+    bodies = [c for _, c in discover_context(child)]
     assert any("ANCESTOR_GUIDE" in b for b in bodies)  # the ancestor IS scanned for guides …
     assert all("ANCESTOR_README" not in b for b in bodies)  # … but NOT for its README
 
 
 def test_readme_excluded_when_disabled(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("README_OFF_MARKER", encoding="utf-8")
-    paths = [p.name for p, _ in discover_memory(tmp_path, include_readme=False)]
+    paths = [p.name for p, _ in discover_context(tmp_path, include_readme=False)]
     assert "README.md" not in paths
 
 
@@ -334,7 +334,7 @@ def test_readme_is_ordered_after_the_guides(tmp_path: Path) -> None:
     # Guides come first so a large README can never crowd them out of the total budget.
     (tmp_path / "AGENTS.md").write_text("GUIDE_BODY", encoding="utf-8")
     (tmp_path / "README.md").write_text("README_BODY", encoding="utf-8")
-    names = [p.name for p, _ in discover_memory(tmp_path)]
+    names = [p.name for p, _ in discover_context(tmp_path)]
     assert names.index("AGENTS.md") < names.index("README.md")
 
 
@@ -353,7 +353,7 @@ def test_discover_stops_at_the_project_root(tmp_path: Path) -> None:
     repo.mkdir()
     (repo / ".git").mkdir()  # the project boundary
     (repo / "CLAUDE.md").write_text("INSIDE_THE_REPO", encoding="utf-8")
-    bodies = [c for _, c in discover_memory(repo)]
+    bodies = [c for _, c in discover_context(repo)]
     assert any("INSIDE_THE_REPO" in b for b in bodies)
     assert all("OUTSIDE_THE_REPO" not in b for b in bodies)  # the ascent stopped at .git
 
@@ -364,7 +364,7 @@ def test_discover_outside_a_repo_scans_only_the_workspace_root(tmp_path: Path) -
     child = tmp_path / "work"
     child.mkdir()
     (child / "AGENTS.md").write_text("WORKSPACE_GUIDE", encoding="utf-8")
-    bodies = [c for _, c in discover_memory(child)]
+    bodies = [c for _, c in discover_context(child)]
     assert any("WORKSPACE_GUIDE" in b for b in bodies)
     assert all("PARENT_GUIDE" not in b for b in bodies)
 
@@ -374,7 +374,7 @@ def test_discover_survives_a_non_utf8_file(tmp_path: Path) -> None:
     # is a ValueError, not an OSError). A valid sibling still loads.
     (tmp_path / "AGENTS.md").write_bytes(b"\xff\xfe\x00bad utf-16 bytes")  # invalid UTF-8
     (tmp_path / "CLAUDE.md").write_text("VALID_GUIDE_MARK", encoding="utf-8")
-    discovered = discover_memory(tmp_path)  # must not raise
+    discovered = discover_context(tmp_path)  # must not raise
     bodies = [c for _, c in discovered]
     assert any("VALID_GUIDE_MARK" in b for b in bodies)  # the readable sibling survives
     assert all("bad utf-16" not in b for b in bodies)  # the bad file was skipped
