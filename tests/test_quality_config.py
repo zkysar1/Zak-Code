@@ -16,10 +16,9 @@ from zakcode.config import Settings
 def test_quality_flags_default_off() -> None:
     s = Settings()
     assert s.quality_gate is False
-    assert s.best_of_plans == 1 and s.best_of_attempts == 1  # 1 = off
+    assert s.best_of_attempts == 1  # 1 = off
     assert s.quality_gate_threshold == 0.8
     assert s.quality_gate_dimensions is None
-    assert 0.0 <= s.quality_budget_fraction <= 1.0
 
 
 def test_judge_role_is_accepted() -> None:
@@ -36,4 +35,4 @@ def test_quality_constraints_enforced() -> None:
     with pytest.raises(ValidationError):
         Settings(quality_gate_threshold=1.5)  # > 1.0
     with pytest.raises(ValidationError):
-        Settings(best_of_plans=0)  # < 1
+        Settings(best_of_attempts=0)  # < 1

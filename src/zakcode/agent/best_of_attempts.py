@@ -109,6 +109,19 @@ def apply_diff(changed: list[Path], deleted: list[Path], attempt: Path, workspac
         (workspace / rel).unlink(missing_ok=True)
 
 
+def _unchanged_since_snapshot(paths: list[Path], workspace: Path, snapshot: Path) -> bool:
+    """True iff every ``paths`` entry matches between ``workspace`` and ``snapshot`` — i.e. the live
+    workspace was NOT edited (by the user or another process) since the snapshot was taken. Guards
+    adoption against a TOCTOU clobber of a concurrent edit."""
+    for rel in paths:
+        live, snap = workspace / rel, snapshot / rel
+        if live.exists() != snap.exists():
+            return False
+        if live.exists() and live.read_bytes() != snap.read_bytes():
+            return False
+    return True
+
+
 def _verify(command: str, cwd: Path, *, timeout: int = 120) -> bool:
     """Run the verifier ``command`` in ``cwd``; ``True`` iff it exits 0. Never raises."""
     try:
@@ -123,8 +136,13 @@ def _verify(command: str, cwd: Path, *, timeout: int = 120) -> bool:
 async def run_best_of_attempts(agent: Any, user_text: str, original: Any) -> Any:
     """Seam B: on a stalled turn, run up to ``best_of_attempts`` isolated attempts and adopt (diff-
     apply) the first that VERIFIES; else return ``original``. Off unless ``best_of_attempts > 1``
-    AND ``verify_command`` is set. Isolated siblings are built via ``type(agent)`` and run headless;
-    only the winner's DIFF is applied back. Temp copies are always cleaned up.
+    AND ``verify_command`` is set. Isolated siblings reuse the parent's provider and run headless;
+    only the winner's DIFF is applied back, and only if the live workspace hasn't changed since the
+    snapshot (no TOCTOU clobber). Temp copies are always cleaned up.
+
+    Caveats: isolation is best-effort — file tools are workspace-confined, but a sibling's shell
+    tool (autonomous mode) could write an absolute path outside the temp copy. Retry spend is
+    bounded by ``best_of_attempts`` but not yet rolled into the parent session's cost report.
     """
     settings = agent.settings
     n = settings.best_of_attempts
@@ -154,7 +172,8 @@ async def run_best_of_attempts(agent: Any, user_text: str, original: Any) -> Any
                         "best_of_attempts": 1,  # no recursion
                         "permission_mode": "autonomous",  # headless attempt; isolated copy
                     }
-                )
+                ),
+                provider=agent.provider,  # reuse the parent's provider (hermetic eval; no rebuild)
             )
             result = await sibling.arun_turn(user_text)
             return attempt, result
@@ -168,6 +187,11 @@ async def run_best_of_attempts(agent: Any, user_text: str, original: Any) -> Any
             return original
         attempt, result = winner
         changed, deleted = changed_paths(attempt, snapshot)
+        if not _unchanged_since_snapshot(changed + deleted, workspace, snapshot):
+            # TOCTOU: the live workspace diverged from the snapshot during the retry (a concurrent
+            # edit). Abort rather than clobber it — the original (stalled) state stands.
+            logger.info("seam B: workspace changed during the retry; skipping adoption")
+            return original
         apply_diff(changed, deleted, attempt, workspace)
         logger.info(
             "seam B: adopted a verified attempt — applied %d changed, %d deleted (diff only)",

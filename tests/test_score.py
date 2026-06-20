@@ -65,6 +65,17 @@ def test_aggregate_clamps_out_of_range() -> None:
     assert aggregate_scores({"a": -1.0, "b": 1.0}) == 0.0  # clamped low → veto
 
 
+def test_aggregate_non_finite_vetoes_not_inflates() -> None:
+    # NaN/Infinity from a model must abstain LOW (0 → veto), NOT become 1.0 (min(1.0, nan) is 1.0).
+    assert aggregate_scores({"a": float("nan"), "b": 1.0}) == 0.0
+    assert aggregate_scores({"a": float("inf"), "b": 1.0}) == 0.0
+
+
+def test_aggregate_negative_weight_stays_in_unit() -> None:
+    # A hostile negative weight must not push a dimension (or the aggregate) above 1.0.
+    assert aggregate_scores({"a": 0.0}, weights={"a": -1.0}) <= 1.0
+
+
 def test_aggregate_weight_zero_ignores_a_dimension() -> None:
     # b would veto (0.0), but weight 0 removes it → a alone (1.0).
     assert aggregate_scores({"a": 1.0, "b": 0.0}, weights={"b": 0.0}) == 1.0
@@ -92,3 +103,10 @@ async def test_score_rubric_missing_dimension_scores_zero() -> None:
 async def test_score_rubric_fails_low_on_non_json() -> None:
     card, u = await score_rubric(_Provider("not json at all"), artifact="x", dimensions={"a": "a"})
     assert card.overall == 0.0 and u.total_tokens == 0  # abstain LOW, no spend reported
+
+
+async def test_score_rubric_non_finite_score_vetoes() -> None:
+    # json.loads accepts the NaN token; the scorer must coerce it to 0 (veto), not a perfect 1.0.
+    prov = _Provider('{"scores": {"correct": NaN, "complete": 1.0}}')
+    card, _ = await score_rubric(prov, artifact="x", dimensions={"correct": "c", "complete": "c"})
+    assert card.overall == 0.0  # NaN must not inflate the dimension into a passing score

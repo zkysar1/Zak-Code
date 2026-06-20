@@ -93,8 +93,8 @@ class Settings(BaseSettings):
         description="Per-role model overrides (keys: planner | subagent | summarizer | judge).",
     )
     # ── Quality engine (increment 6) — wire the small-model fan-out engine into the loop. All OFF
-    # by default, so the default path is byte-identical; each seam is bounded, fail-safe, and its
-    # spend capped by ``quality_budget_fraction`` (the cost spine); calls use model_roles['judge'].
+    # by default, so the default path is byte-identical; each seam is bounded (best_of_attempts and
+    # the per-turn budget), fail-safe, and uses model_roles['judge'] for judging.
     quality_gate: bool = Field(
         default=False,
         description="Seam A: after the verifier passes, score the result and refine if it falls "
@@ -107,19 +107,10 @@ class Settings(BaseSettings):
         default=None,
         description="Seam A rubric (dim -> what to assess); None = a built-in code rubric.",
     )
-    best_of_plans: int = Field(
-        default=1, ge=1, description="Seam C: N candidate decompositions to judge-select (1 = off)."
-    )
     best_of_attempts: int = Field(
         default=1,
         ge=1,
         description="Seam B: N attempts at a stalled step to select among (1 = off).",
-    )
-    quality_budget_fraction: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Cost spine: cap quality-engine spend at this fraction of the turn budget.",
     )
     # Per-CATEGORY model assignments for ``default_model="zakpick"`` (inert otherwise) — the
     # zakpick interface. Each value is a {model, source} pair (source defaults to "groq"); the
