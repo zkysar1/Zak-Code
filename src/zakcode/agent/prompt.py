@@ -9,19 +9,20 @@ The system prompt is assembled in two tiers separated by :data:`DYNAMIC_BOUNDARY
   safety policy. This text never changes within a conversation, so a provider can cache it
   and we never invalidate that cache by reordering or mutating it.
 * **CONTEXT** (dynamic suffix) — per-session facts: the environment (OS, workspace root,
-  model) and discovered ``ZAK.md`` memory. This sits *after* the boundary so it can vary
-  without touching the cached prefix.
+  model) and discovered project-context files — the agent guides ``AGENTS.md`` / ``CLAUDE.md`` /
+  ``ZAK.md`` along the ancestor chain, plus the workspace ``README.md``. This sits *after* the
+  boundary so it can vary without touching the cached prefix.
 
 Design rules carried over from ``docs/ARCHITECTURE.md`` and the reference study notes:
 
 * Raw config / settings JSON is **never** rendered into the prompt — only a few curated,
   non-secret environment facts. (See ``docs/ROADMAP.md``: "raw config in the system prompt"
   is an explicit mistake to avoid; secrets must not leak into model context.)
-* Memory discovery walks the ancestor chain **root → workspace_root**, de-duplicates by
-  content hash, and enforces a per-file char cap plus a total cap so memory can never blow
-  the context window.
+* Context discovery walks the ancestor chain **root → workspace_root**, de-duplicates by
+  content hash, and enforces a per-file char cap plus a total cap so it can never blow the
+  context window.
 
-This module is a pure string builder: no I/O beyond reading ``ZAK.md`` files for memory
+This module is a pure string builder: no I/O beyond reading the project-context files for
 discovery, and no provider/vendor imports.
 """
 
@@ -38,10 +39,23 @@ from zakcode.tools.base import ToolSpec
 #: A provider's cache breakpoint is positioned here; nothing above it may change mid-session.
 DYNAMIC_BOUNDARY = "--- DYNAMIC_BOUNDARY ---"
 
-#: Name of the per-directory memory file discovered along the ancestor chain.
+#: Per-directory agent-guide filenames discovered along the ancestor chain, in load order.
+#: ``AGENTS.md`` is the cross-tool standard (Codex / Cursor / Aider / …) and the RECOMMENDED name
+#: for a vendor-agnostic tool; ``CLAUDE.md`` is recognized for Claude-Code compatibility; ``ZAK.md``
+#: is the native name. ALL present in a directory are loaded (deduplicated by content), so a repo
+#: that keeps several — e.g. an ``AGENTS.md`` that points at a canonical ``CLAUDE.md`` — never loses
+#: content to a "pick one" rule.
+AGENT_GUIDE_FILENAMES = ("AGENTS.md", "CLAUDE.md", "ZAK.md")
+
+#: The native single name, kept for backward compatibility (it is one of AGENT_GUIDE_FILENAMES).
 MEMORY_FILENAME = "ZAK.md"
 
-#: Largest slice of any single ``ZAK.md`` folded into the prompt (~8 KB).
+#: The human-facing project doc, folded into context (after the agent guides) when
+#: ``Settings.context_include_readme`` is on. Read ONLY at the workspace root — a README is a
+#: project-root file, so (unlike the guides) the ancestor chain is not searched for it.
+README_FILENAME = "README.md"
+
+#: Largest slice of any single context file folded into the prompt (~8 KB).
 MAX_MEMORY_FILE_CHARS = 8_192
 
 #: Largest combined size of all discovered memory after de-duplication (~32 KB).
@@ -224,7 +238,9 @@ class SystemPromptBuilder:
     def _build_context(self, settings: Settings, extra_context: str | None) -> str:
         sections = [self._environment_section(settings)]
 
-        memory = self._render_memory(discover_memory(settings.workspace_root))
+        memory = self._render_memory(
+            discover_memory(settings.workspace_root, include_readme=settings.context_include_readme)
+        )
         if memory:
             sections.append(memory)
 
@@ -259,21 +275,29 @@ class SystemPromptBuilder:
         if not discovered:
             return ""
         blocks = [f"## {path}\n{content}" for path, content in discovered]
-        return "Project memory (from ZAK.md files):\n\n" + "\n\n".join(blocks)
+        return (
+            "Project context (AGENTS.md / CLAUDE.md / ZAK.md guides and the workspace README, "
+            "outermost first; treat as project guidance):\n\n" + "\n\n".join(blocks)
+        )
 
 
-def discover_memory(workspace_root: Path) -> list[tuple[Path, str]]:
-    """Collect ``ZAK.md`` memory files along the ancestor chain (filesystem root → cwd).
+def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> list[tuple[Path, str]]:
+    """Collect project-context files along the ancestor chain (filesystem root → workspace root).
 
-    Each directory from the filesystem root down to ``workspace_root`` is checked for a
-    ``ZAK.md`` file. Files are returned outermost-first (root → cwd) so more specific
-    (deeper) memory appears later and can refine broader memory. Behavior:
+    Each directory from the filesystem root down to ``workspace_root`` is checked for the
+    agent-guide files :data:`AGENT_GUIDE_FILENAMES` (``AGENTS.md`` / ``CLAUDE.md`` / ``ZAK.md``);
+    ALL present in a directory are loaded, so a repo that keeps both an ``AGENTS.md`` and a
+    ``CLAUDE.md`` never loses content. The workspace root's :data:`README_FILENAME` is folded in
+    last (the project doc) when ``include_readme`` is set — a README is a project-ROOT file, so the
+    ancestor chain is NOT searched for it. Files are returned outermost-first (root → cwd) so a
+    deeper, more specific guide appears later and can refine a broader one. Behavior:
 
-    * **Content-hash de-duplication** — identical content shared across nested scopes is
-      kept only once (at its shallowest occurrence).
+    * **Content-hash de-duplication** — identical content (e.g. an ``AGENTS.md`` that merely copies
+      ``CLAUDE.md``) is kept only once, at its first occurrence.
     * **Per-file cap** — each file is truncated to :data:`MAX_MEMORY_FILE_CHARS`.
-    * **Total cap** — once the combined size reaches :data:`MAX_MEMORY_TOTAL_CHARS`, no
-      further files are added.
+    * **Total cap** — once the combined size reaches :data:`MAX_MEMORY_TOTAL_CHARS`, no further
+      files are added; because the guides are scanned before the README, a large README can never
+      crowd them out.
 
     Unreadable files are skipped silently. Returns ``(path, content)`` pairs.
     """
@@ -290,46 +314,52 @@ def discover_memory(workspace_root: Path) -> list[tuple[Path, str]]:
     seen_hashes: set[str] = set()
     total = 0
 
-    for directory in chain:
-        path = directory / MEMORY_FILENAME
+    def _consider(path: Path) -> bool:
+        """Read, dedup, cap, and append ``path``; return ``False`` once the total cap is hit."""
+        nonlocal total
         try:
             if not path.is_file():
-                continue
+                return True
             raw = path.read_text(encoding="utf-8")
         except OSError:
-            continue
-
+            return True
         content = raw.strip()
         if not content:
-            continue
-
+            return True
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         if digest in seen_hashes:
-            continue
+            return True
         seen_hashes.add(digest)
-
         if len(content) > MAX_MEMORY_FILE_CHARS:
             content = content[:MAX_MEMORY_FILE_CHARS]
-
         if total + len(content) > MAX_MEMORY_TOTAL_CHARS:
             remaining = MAX_MEMORY_TOTAL_CHARS - total
             if remaining <= 0:
-                break
+                return False
             content = content[:remaining]
-
         discovered.append((path, content))
         total += len(content)
-        if total >= MAX_MEMORY_TOTAL_CHARS:
-            break
+        return total < MAX_MEMORY_TOTAL_CHARS
+
+    for directory in chain:
+        names = list(AGENT_GUIDE_FILENAMES)
+        # The README is a project-ROOT doc: load it only at the workspace root, after its guides.
+        if include_readme and directory == root:
+            names.append(README_FILENAME)
+        for filename in names:
+            if not _consider(directory / filename):
+                return discovered
 
     return discovered
 
 
 __all__ = [
+    "AGENT_GUIDE_FILENAMES",
     "DYNAMIC_BOUNDARY",
     "MAX_MEMORY_FILE_CHARS",
     "MAX_MEMORY_TOTAL_CHARS",
     "MEMORY_FILENAME",
+    "README_FILENAME",
     "SystemPromptBuilder",
     "discover_memory",
 ]

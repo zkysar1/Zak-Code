@@ -235,3 +235,75 @@ def test_discover_memory_skips_empty_and_missing(tmp_path: Path) -> None:
     empty_dir = tmp_path / "nothing"
     empty_dir.mkdir()
     assert discover_memory(empty_dir) == []
+
+
+# ── AGENTS.md / CLAUDE.md agent guides (Codex/Claude-Code compatibility) ──────────
+
+
+def test_agents_md_is_discovered_and_in_prompt(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("Project rule: AGENTS_MARKER_7", encoding="utf-8")
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder().build(settings)
+    assert "AGENTS_MARKER_7" in prompt
+
+
+def test_claude_md_is_discovered(tmp_path: Path) -> None:
+    (tmp_path / "CLAUDE.md").write_text("CLAUDE_MARKER_9", encoding="utf-8")
+    bodies = [c for _, c in discover_memory(tmp_path)]
+    assert any("CLAUDE_MARKER_9" in b for b in bodies)
+
+
+def test_both_agents_and_claude_are_loaded(tmp_path: Path) -> None:
+    # This repo's exact shape: an AGENTS.md pointer + a canonical CLAUDE.md. BOTH must load, so a
+    # "pick one" rule that chose AGENTS.md first would not silently drop the real guide.
+    (tmp_path / "AGENTS.md").write_text("See CLAUDE.md. POINTER_MARK", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("the real guide CANONICAL_MARK", encoding="utf-8")
+    bodies = [c for _, c in discover_memory(tmp_path)]
+    assert any("POINTER_MARK" in b for b in bodies)
+    assert any("CANONICAL_MARK" in b for b in bodies)
+
+
+def test_identical_guides_are_deduped(tmp_path: Path) -> None:
+    # A repo that copies the same text into AGENTS.md and CLAUDE.md should not double the context.
+    same = "ONE_SHARED_GUIDE_BODY"
+    (tmp_path / "AGENTS.md").write_text(same, encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text(same, encoding="utf-8")
+    bodies = [c for _, c in discover_memory(tmp_path)]
+    assert bodies.count(same) == 1
+
+
+# ── README in context (workspace-root only, toggleable) ──────────────────────────
+
+
+def test_readme_is_loaded_at_workspace_root(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Project\nREADME_MARKER_3", encoding="utf-8")
+    paths = [p.name for p, _ in discover_memory(tmp_path)]
+    assert "README.md" in paths
+
+
+def test_readme_is_not_pulled_from_an_ancestor(tmp_path: Path) -> None:
+    # A README is a project-ROOT doc — an ancestor's README must NOT leak into a child workspace.
+    (tmp_path / "README.md").write_text("ANCESTOR_README", encoding="utf-8")
+    child = tmp_path / "project"
+    child.mkdir()
+    (child / "AGENTS.md").write_text("child guide", encoding="utf-8")
+    bodies = [c for _, c in discover_memory(child)]
+    assert all("ANCESTOR_README" not in b for b in bodies)
+
+
+def test_readme_excluded_when_disabled(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("README_OFF_MARKER", encoding="utf-8")
+    paths = [p.name for p, _ in discover_memory(tmp_path, include_readme=False)]
+    assert "README.md" not in paths
+
+
+def test_readme_is_ordered_after_the_guides(tmp_path: Path) -> None:
+    # Guides come first so a large README can never crowd them out of the total budget.
+    (tmp_path / "AGENTS.md").write_text("GUIDE_BODY", encoding="utf-8")
+    (tmp_path / "README.md").write_text("README_BODY", encoding="utf-8")
+    names = [p.name for p, _ in discover_memory(tmp_path)]
+    assert names.index("AGENTS.md") < names.index("README.md")
+
+
+def test_context_include_readme_defaults_on(tmp_path: Path) -> None:
+    assert load_settings(workspace_root=tmp_path).context_include_readme is True

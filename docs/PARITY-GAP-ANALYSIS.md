@@ -347,8 +347,9 @@ The verifier dropped these as already-present or already-best-in-class:
   gated by both tier and `ConcurrencyClass`).
 - **Context/memory:** preemptive auto-compaction at a real-token threshold; genuinely
   idempotent compaction (folds a prior summary instead of stacking — cleaner than
-  goose/claw-code on re-compaction); stable/dynamic system-prompt split; just-in-time ZAK.md
-  ancestor-chain discovery with caps + content-hash dedup; cross-session SQLite+FTS5 memory
+  goose/claw-code on re-compaction); stable/dynamic system-prompt split; just-in-time
+  agent-guide discovery (`AGENTS.md` / `CLAUDE.md` / `ZAK.md` ancestor-chain + workspace README)
+  with caps + content-hash dedup; cross-session SQLite+FTS5 memory
   with an automatic recall hook that fences recalled text as untrusted and scrubs secrets;
   per-role summarizer routing.
 - **Extensibility:** clean-room no-SDK MCP stdio client with qualified tool naming into one
