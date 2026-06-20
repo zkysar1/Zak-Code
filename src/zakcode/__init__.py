@@ -13,6 +13,7 @@ Nothing here triggers network activity at import time — only an actual
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Sequence
@@ -174,6 +175,13 @@ class SkillInvocation:
     invoked: bool
     name: str = ""
     error: str | None = None
+
+
+#: Turn stop-reasons that count as a STALL — the agent didn't cleanly finish. Seam B's best-of-N
+#: retry fires only on these (never on ``completed`` / ``budget_exhausted``).
+_STALL_STOPS = frozenset(
+    {"doom_loop", "stuck", "recipe_stalled", "verification_failed", "max_iterations"}
+)
 
 
 class Agent:
@@ -892,12 +900,34 @@ class Agent:
             )
 
     async def arun_turn(self, user_text: str) -> TurnResult:
-        """Run one user turn asynchronously."""
-        return await self.loop.arun_turn(user_text)
+        """Run one user turn asynchronously.
+
+        Seam B: when the turn STALLS and ``best_of_attempts > 1`` with a ``verify_command`` set, fan
+        out best-of-N isolated retries and adopt (diff-apply) the first that verifies.
+        """
+        result = await self.loop.arun_turn(user_text)
+        if (
+            self.settings.best_of_attempts > 1
+            and self.settings.verify_command
+            and result.stop_reason in _STALL_STOPS
+        ):
+            from zakcode.agent.best_of_attempts import run_best_of_attempts
+
+            result = await run_best_of_attempts(self, user_text, result)
+        return result
 
     def run_turn(self, user_text: str) -> TurnResult:
-        """Run one user turn synchronously (wraps :meth:`arun_turn`)."""
-        return self.loop.run_turn(user_text)
+        """Run one user turn synchronously (wraps :meth:`arun_turn`, so seam B applies).
+
+        Refuses to run if an event loop is already active; await ``arun_turn`` from async code.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.arun_turn(user_text))
+        raise RuntimeError(
+            "run_turn() cannot be called from a running event loop; await arun_turn() instead."
+        )
 
     def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
         """Stream one user turn as a sequence of :class:`~zakcode.events.AgentEvent`.
