@@ -9,13 +9,28 @@ NEVER mutates the session (the body rides back as the tool result, not a mid-tur
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 from zakcode import Agent
+from zakcode.agent.budget import IterationBudget
+from zakcode.agent.subagent import GENERAL_PURPOSE, SubAgentRunner
 from zakcode.config import Settings
 from zakcode.hooks import HookEvent, LifecyclePayload
-from zakcode.tools.base import SkillLoad, ToolContext
+from zakcode.providers.base import (
+    Capabilities,
+    LLMResult,
+    Provider,
+    ProviderStreamEvent,
+    StreamDone,
+    StreamTextDelta,
+    ToolCall,
+)
+from zakcode.tools.base import SkillLoad, ToolContext, ToolRegistry
 from zakcode.tools.builtins.use_skill import UseSkillTool
+from zakcode.usage import Usage
 
 
 class _FakeResolver:
@@ -168,3 +183,183 @@ async def test_resolver_names_reflects_registry(tmp_path: Path) -> None:
     agent = _agent(tmp_path, enable_skills=True)
     names = agent.loop._skill_resolver.names()
     assert "greeter" in names  # used to build the 'available skills' error message
+
+
+# ── sub-agent exposure (a delegated agent can invoke + chain skills) ──────────────
+
+
+class _RecordingResolver:
+    """A structural SkillResolver that records loads — proves the child reached the resolver."""
+
+    def __init__(self, body: str = "GREET WARMLY") -> None:
+        self.loaded: list[str] = []
+        self._body = body
+
+    def names(self) -> list[str]:
+        return ["greeter"]
+
+    async def load(self, name: str) -> SkillLoad:
+        self.loaded.append(name)
+        return SkillLoad(found=True, name=name, body=self._body)
+
+
+class _ToolThenTextProvider(Provider):
+    """Calls one tool (with given args) on the first completion, then returns text."""
+
+    def __init__(self, tool: str, args: dict[str, Any], text: str = "done") -> None:
+        self._tool = tool
+        self._args = args
+        self._text = text
+        self._calls = 0
+
+    async def acomplete(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> LLMResult:
+        self._calls += 1
+        if self._calls == 1:
+            return LLMResult(
+                tool_calls=[ToolCall(id="t1", name=self._tool, arguments=self._args)],
+                usage=Usage(total_tokens=1),
+            )
+        return LLMResult(text=self._text, usage=Usage(total_tokens=1))
+
+    async def astream(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        result = await self.acomplete(messages, tools=tools, system=system)
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        yield StreamDone()
+
+    def count_tokens(self, messages: list, *, system: str | None = None) -> int:
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
+
+    def model_id(self) -> str:
+        return "scripted/test"
+
+
+async def test_subagent_can_invoke_a_skill_through_the_wired_resolver(tmp_path: Path) -> None:
+    # End-to-end: a delegated child whose registry has use_skill and whose loop got the parent's
+    # resolver actually invokes a skill. (GENERAL_PURPOSE inherits the full child registry.)
+    resolver = _RecordingResolver()
+    registry = ToolRegistry()
+    registry.register(UseSkillTool())
+    runner = SubAgentRunner(
+        provider=_ToolThenTextProvider("use_skill", {"name": "greeter"}),
+        registry=registry,
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        budget=IterationBudget(10),
+        workspace_root=tmp_path,
+        skill_resolver=resolver,
+    )
+    result = await runner.run(GENERAL_PURPOSE, "use the greeter skill")
+    assert resolver.loaded == ["greeter"]  # the child reached the resolver → use_skill worked
+    assert result.summary == "done"
+
+
+def test_agent_wires_skill_resolver_into_subagents(tmp_path: Path) -> None:
+    agent = _agent(tmp_path, enable_skills=True, enable_subagents=True)
+    runner = agent.loop.spawner._runner  # the SubAgentRunner behind the task tool
+    assert runner._skill_resolver is not None
+    # The general-purpose delegate (full toolset) gets use_skill; the read-only planner does not.
+    defs = agent.loop.spawner._defs
+    assert "use_skill" in runner.child_registry(defs["general-purpose"]).names()
+    assert "use_skill" not in runner.child_registry(defs["plan"]).names()
+
+
+def test_subagents_have_no_skill_seam_when_skills_off(tmp_path: Path) -> None:
+    agent = _agent(tmp_path, enable_skills=False, enable_subagents=True)
+    runner = agent.loop.spawner._runner
+    assert runner._skill_resolver is None  # nothing to resolve …
+    assert "use_skill" not in runner.registry.names()  # … and the tool isn't on the child surface
+
+
+# ── per-turn skill-invocation budget ─────────────────────────────────────────────
+
+
+async def test_budget_denies_after_the_cap(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "greeter")
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", workspace_root=tmp_path, skill_invocation_budget=2
+        ),
+        enable_skills=True,
+    )
+    r1 = await agent._load_skill_body("greeter", source="tool")
+    r2 = await agent._load_skill_body("greeter", source="tool")
+    r3 = await agent._load_skill_body("greeter", source="tool")  # over the cap
+    assert r1.body and r2.body and r1.denied_reason is None
+    assert r3.body is None and r3.denied_reason is not None and "budget" in r3.denied_reason
+    assert agent._skill_invocations_this_turn == 2  # the denied one did not count
+
+
+async def test_budget_zero_is_unlimited(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "greeter")
+    agent = _agent(tmp_path, enable_skills=True)  # skill_invocation_budget defaults 0 = off
+    last = None
+    for _ in range(5):
+        last = await agent._load_skill_body("greeter", source="tool")
+    assert last is not None and last.body is not None and last.denied_reason is None
+    assert agent._skill_invocations_this_turn == 5
+
+
+async def test_command_source_is_never_throttled(tmp_path: Path) -> None:
+    # The human /<name> path is operator-controlled: the budget (a model-chain guard) skips it.
+    _write_skill(tmp_path, "greeter")
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", workspace_root=tmp_path, skill_invocation_budget=1
+        ),
+        enable_skills=True,
+    )
+    for _ in range(3):
+        load = await agent._load_skill_body("greeter", source="command")
+        assert load.body is not None and load.denied_reason is None
+    assert agent._skill_invocations_this_turn == 0  # command loads don't draw from the budget
+
+
+async def test_use_skill_tool_surfaces_a_budget_denial(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "greeter")
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", workspace_root=tmp_path, skill_invocation_budget=1
+        ),
+        enable_skills=True,
+    )
+    tool = agent.registry.get("use_skill")
+    assert tool is not None
+    ctx = ToolContext(workspace_root=tmp_path, skill_resolver=agent.loop._skill_resolver)
+    ok = await tool.execute({"name": "greeter"}, ctx)
+    denied = await tool.execute({"name": "greeter"}, ctx)
+    assert ok.is_error is False
+    assert denied.is_error is True and "budget" in denied.output.lower()
+
+
+async def test_budget_resets_on_a_new_turn(tmp_path: Path) -> None:
+    agent = _agent(tmp_path, enable_skills=True)
+    agent._skill_invocations_this_turn = 3  # left over from a prior turn
+    captured: list[int] = []
+
+    async def _stub(_text: str) -> Any:
+        captured.append(agent._skill_invocations_this_turn)
+        return SimpleNamespace(stop_reason="completed")
+
+    agent.loop.arun_turn = _stub  # type: ignore[assignment]
+    await agent.arun_turn("go")
+    assert captured == [0]  # the counter was refilled BEFORE the loop ran
+
+
+def test_streaming_turn_also_resets_the_budget(tmp_path: Path) -> None:
+    agent = _agent(tmp_path, enable_skills=True)
+    agent._skill_invocations_this_turn = 7
+    agent.loop.astream_turn = lambda _text: iter(())  # type: ignore[assignment]
+    agent.astream_turn("go")
+    assert agent._skill_invocations_this_turn == 0
+
+
+def test_skill_invocations_count_is_exposed(tmp_path: Path) -> None:
+    agent = _agent(tmp_path, enable_skills=True)
+    assert agent.skill_invocations_this_session == 0  # the /skills accounting surface

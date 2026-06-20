@@ -36,7 +36,7 @@ from zakcode.hooks import HookManager
 from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import Provider
 from zakcode.session.store import Session
-from zakcode.tools.base import ToolRegistry
+from zakcode.tools.base import SkillResolver, ToolRegistry
 from zakcode.usage import Usage
 
 
@@ -146,6 +146,7 @@ class SubAgentRunner:
         rules: str | None = None,
         provider_for: Callable[[str | None], Provider] | None = None,
         provider_for_task: Callable[[str], tuple[Provider, str]] | None = None,
+        skill_resolver: SkillResolver | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -168,6 +169,11 @@ class SubAgentRunner:
         # The parent's rendered always-on rules, threaded into every child's prompt so
         # delegated work runs under the same standing guidance as the parent.
         self.rules = rules
+        # The parent's skill resolver, so a child's use_skill tool (when its definition exposes it
+        # — the general-purpose delegate does; the read-only planner does not) resolves against the
+        # same discovered skills and draws from the same per-turn skill budget. ``None`` (skills
+        # off) leaves a child's use_skill returning a clean "not enabled" error.
+        self._skill_resolver = skill_resolver
 
     def child_registry(self, definition: SubAgentDefinition) -> ToolRegistry:
         """The tool registry a child of ``definition`` will see (full, or a subset)."""
@@ -240,6 +246,7 @@ class SubAgentRunner:
             budget=self.budget,
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent
+            skill_resolver=self._skill_resolver,  # child use_skill resolves the parent's skills
             # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
             # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )

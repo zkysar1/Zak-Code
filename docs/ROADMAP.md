@@ -407,9 +407,11 @@ next-turn user message, and the *model* calls the `use_skill` tool (body returne
 not a session message; this fulfils the planned "`skill` tool" exit criterion, so skills **chain**).
 Both paths share one `_load_skill_body` core and fire `ON_SKILL_SELECTED` (`source` = `command` |
 `tool`); `/skills` lists them; `save_skill` persists model-authored skills. Tests:
-`tests/test_skills.py`, `tests/test_skills_facade.py`, `tests/test_use_skill.py`; live chaining demo
-`bench/run_skill_chain.py`. Deferred: an autonomous skill-authoring curator; exposing `use_skill` to
-sub-agents.
+`tests/test_skills.py`, `tests/test_skills_facade.py`, `tests/test_use_skill.py`; live demos
+`bench/run_skill_chain.py` (chaining) + `bench/run_skill_branch.py` (conditional routing). Sub-agents
+can invoke/chain skills too (the general-purpose delegate), and `skill_invocation_budget` caps
+model-driven invocations per turn. Deferred: an autonomous skill-authoring curator; attributing a
+sub-agent's skill query to the child prompt (today it records the parent's originating turn).
 
 **Goal:** Progressive-disclosure, markdown-defined skills (manually authored first).
 

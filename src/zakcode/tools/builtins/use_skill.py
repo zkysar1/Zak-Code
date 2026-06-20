@@ -72,6 +72,13 @@ class UseSkillTool(Tool):
                 f"no skill named {name!r}.",
                 fix=f"Use one of the available skills: {available}.",
             )
+        if load.denied_reason:
+            # Policy refusal (e.g. the per-turn skill-invocation budget) — distinct from a load
+            # failure: the skill exists and is readable, but invoking it now is not allowed.
+            return ToolResult.error(
+                load.denied_reason,
+                fix="Finish the work with the skills already loaded; do not invoke more.",
+            )
         if load.error or load.body is None:
             return ToolResult.error(
                 f"skill {name!r} could not be loaded: {load.error or 'unreadable'}."
