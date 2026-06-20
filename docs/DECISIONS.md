@@ -321,3 +321,36 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   measured task set — it is a 2–3× cost, opposite the cost-down motivation, so it stays opt-in and
   late); a `deep_think` zakpick category so the user can assign a *distinct* model to deliberation
   (build when someone wants deliberation on a different model than `deep_code`).
+
+## ADR-0011 — The quality engine: small-model fan-out for quality (off-by-default seams)
+
+- **Status:** Accepted (shipped, 2026-06).
+- **Context:** zakpick routes per task and `deep_think` deliberates on one hard question, but neither
+  raises the floor on the SMALL models the cost-down axis leans on. The bet (measured, not assumed):
+  a fixed small-model ceiling is beaten by STRUCTURE — decompose → fan out → judge/score → iterate —
+  not by a bigger model, so ~10 cheap calls + selection can beat one big call.
+- **Decision:** Build a vendor-agnostic library of quality primitives (`src/zakcode/quality/`) —
+  LLM-as-judge (binary / pairwise / N-judge vote), best-of-N generation, **oracle-first** selection
+  ("oracle for *works*, judge for *good*"; external sound verification beats LLM self-critique), IAUS
+  rubric scoring + a ship/iterate cost-gate, a bounded refine loop, and a `best_attempt` core. Wire it
+  into the live agent through two seams, both **OFF by default** so the default path is byte-identical:
+  **seam A** (a quality gate in `agent/loop.py` — scores the written diff after the completion critic)
+  and **seam B** (best-of-N retry in the `Agent` — on a STALLED turn, fan out N isolated attempts and
+  adopt the first that verifies, by DIFF, never a blind overwrite).
+- **Why this shape:**
+  - **Oracle-first, judge-second.** The measured failure mode was selection, not generation: a single
+    judge mis-ranks. Filter by a deterministic oracle (the verifier), then judge-rank the survivors —
+    and pairwise beats absolute scoring (RankPrompt).
+  - **Off by default, proven byte-identical.** Every seam guards on its flag first, so the default
+    path costs nothing and the suite stays green unchanged. Measure-before-integrate: each seam
+    shipped with a bench (`run_quality`, `run_bestof`) before being trusted.
+  - **Safe adoption.** Seam B copies only source (size-capped), verifies in isolation, and adopts by
+    diff with a TOCTOU guard — never a blind overwrite of the user's workspace.
+- **Measured:** the quality gate is a NICHE tool (neutral on a task whose failures are stalls, not
+  weak completions); **best-of-N is the win** (4/5 vs 1-big 3/5 across the suite, the edge on hard
+  tasks), so seam B deploys it where it pays. Validated live: seam B fired on a real stall, ran 3
+  isolated attempts, and adopted a verified one by diff.
+- **Consequences:** an opt-in quality layer that composes with zakpick (cheap models) and `deep_think`
+  (deliberation). **Deferred:** best-of-N *plans* (seam C — low value; the HTN in `tasks.py` already
+  decomposes); a wired cost-fraction cap (today bounded by `best_of_attempts` + the per-turn budget);
+  rolling seam B's retry spend into the parent session's cost report.

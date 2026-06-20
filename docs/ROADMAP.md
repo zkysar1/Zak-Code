@@ -675,6 +675,16 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 > multi-provider Fusion panel + judge (*trigger:* single-model best-of-N proves insufficient on a
 > measured task set — it is a 2–3× cost, so opt-in and late); a `deep_think` zakpick category
 > (*trigger:* someone wants deliberation on a different model than `deep_code`).
+>
+> **Quality engine — small-model fan-out for quality (ADR-0011, shipped 2026-06).** The complement
+> to zakpick (cheap models) and `deep_think` (deliberation): a vendor-agnostic library of quality
+> primitives (`src/zakcode/quality/` — judge, best-of-N, oracle-first selection, rubric scoring + the
+> ship-gate, refine, decomposition, `best_attempt`) wired into the live agent through two OFF-by-
+> default seams — **seam A** (a loop quality gate that scores the written diff) and **seam B**
+> (best-of-N retry on a STALLED turn: fan out N isolated attempts, adopt the first that verifies by
+> diff). The bet (measured): ~10 small calls + selection beat one big call — best-of-N generalized
+> **4/5 vs 1-big 3/5** across the suite, the edge on hard tasks, so seam B deploys it where it pays.
+> *Deferred:* best-of-N *plans* (seam C — the HTN already decomposes); a wired cost-fraction cap.
 
 ---
 

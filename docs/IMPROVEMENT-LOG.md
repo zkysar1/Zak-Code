@@ -1170,3 +1170,18 @@ cost-accounting test instead of a fallback table.
   `deep_think.py` imports no litellm). Deferred seams (ADR-0010): the multi-provider panel; a
   `deep_think` zakpick category. New `tests/test_deep_think.py` (10 tests incl. a full-turn
   integration). **`uv run poe check` green: 1943 passed, 6 skipped, ruff + mypy clean.**
+- **2026-06-18 (dev, Quality engine — small-model fan-out for quality):** a vendor-agnostic library
+  of quality primitives (`src/zakcode/quality/`: judge, best-of-N, oracle-first selection, IAUS rubric
+  scoring + the Pennywise ship-gate, refine, judged decomposition, the judge hook, `best_attempt`)
+  wired into the live agent through two OFF-by-default seams (rationale in **ADR-0011**): **seam A** —
+  a quality gate in `agent/loop.py` (both twins; scores the written diff after the completion critic);
+  **seam B** — best-of-N retry in the `Agent` (on a STALLED turn, fan out N isolated source copies via
+  `agent/best_of_attempts.py`, verify each, adopt the first that passes by DIFF — never a blind
+  overwrite, with a TOCTOU guard). Off by default so the default path is byte-identical. Measured: the
+  gate is NEUTRAL on a stall-mode task, but best-of-N GENERALIZES — **4/5 vs 1-big 3/5** across the
+  suite (`poe bestof-suite`), the edge on hard tasks — so seam B deploys best-of-N where it pays.
+  Validated live (`bench/run_seam_b.py`): seam B fired on a `recipe_stalled` turn, ran 3 attempts, and
+  adopted a verified one (3 changed / 0 deleted, diff only). A fresh-eyes review (3 reviewers) then
+  hardened it: a NaN/Infinity score-veto bug fixed, dead `quality_budget_fraction` / `best_of_plans`
+  config removed, seam B's sibling reuses the parent provider + the TOCTOU guard added. **`uv run poe
+  check` green: 2047 passed, ruff + mypy clean.**

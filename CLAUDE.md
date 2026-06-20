@@ -10,7 +10,8 @@ implementation in the spirit of Claude Code / Hermes / goose. The architecture i
 layers:
 
 1. **`src/zakcode/` core engine** — an importable Python library: the agent loop, tool
-   registry, sessions, context management, providers, and extension surfaces. No UI here.
+   registry, sessions, context management, providers, the small-model **quality engine**
+   (`quality/`), and extension surfaces. No UI here.
 2. **`src/zakcode/server/`** — a FastAPI app exposing the core over HTTP/SSE/WebSocket.
 3. **`src/zakcode/cli/`** — the terminal client (typer + rich). The first of many clients.
 
@@ -65,6 +66,7 @@ uv run pytest
 | Need to… | Look in |
 | --- | --- |
 | Change how the agent loops / calls the model | `src/zakcode/agent/` |
+| Add/change a small-model quality primitive (judge, best-of-N, score, gate) | `src/zakcode/quality/` |
 | Add or change a tool | `src/zakcode/tools/` (+ `tools/builtins/`) |
 | Add a model provider behavior | `src/zakcode/providers/` |
 | Change config / settings | `src/zakcode/config.py` |

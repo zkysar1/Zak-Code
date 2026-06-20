@@ -6,14 +6,15 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-alpha-green.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-801%20passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-2047%20passing-brightgreen.svg">
 </p>
 
 ---
 
 > **Status: alpha — feature-complete against the roadmap (M0–M10) plus a
-> learning-substrate layer, validated live on OpenAI _and_ local models.** The core
-> engine, CLI, and HTTP API server are built and tested (801 passing tests; `ruff` +
+> learning-substrate layer and an opt-in small-model quality engine, validated live on
+> OpenAI _and_ local models.** The core
+> engine, CLI, and HTTP API server are built and tested (2,047 passing tests; `ruff` +
 > `mypy` clean). It's a young project — expect rough edges — but it really runs: it
 > reads/writes files, runs commands, searches code, and drives multi-step tasks to
 > completion against a real model.
@@ -154,6 +155,13 @@ no agent logic.
   iteration cap, shared budget, a **doom-loop guard** that halts identical repeated calls,
   and a broader **multi-signal stuck detector** that first tries to recover — nudge, then
   narrow to read-only tools — before stopping as `stuck`). Buffered and streaming paths.
+- **Quality engine (opt-in, off by default)** — small-model *fan-out for quality*:
+  LLM-as-judge (binary / pairwise / N-judge vote), best-of-N generation, oracle-grounded
+  selection, rubric scoring + a ship/iterate cost-gate, and a bounded refine loop. Two
+  off-by-default seams wire it into the agent — a **quality gate** (scores the written diff)
+  and **best-of-N retry** (on a *stalled* turn, fan out N isolated attempts and adopt the
+  first that verifies — by diff, never overwriting). The bet: ~10 cheap calls + selection
+  beat one big call. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (`quality/`).
 - **Tools** — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`,
   and **`powershell`** (Windows-first; uses `pwsh`/`powershell.exe`) — all scoped to the
   workspace, with path-escape protection — plus **`web_search`** and **`web_fetch`**: a
@@ -290,8 +298,7 @@ hooks, and real-token compaction — and in a few areas (auto-compaction wired i
 loop, a built-in eval harness) goes a bit further than the studied reference. See
 [`docs/PARITY.md`](docs/PARITY.md) for the full matrix.
 
-**Honest gaps vs. Claude Code (deferred, not hidden):** no `WebFetch`/`WebSearch` tools
-and no git-checkpoint/`/undo`. Cross-session memory and runtime skill authoring now
+**Honest gaps vs. Claude Code (deferred, not hidden):** no git-checkpoint/`/undo`. Cross-session memory and runtime skill authoring now
 exist as a **substrate**, but Zak Code ships no autonomous learning *policy* of its own —
 that is meant to be supplied by an external self-learning framework folded in through the
 documented seams ([`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)); the autonomous
@@ -320,6 +327,7 @@ Zak-Code/
 ├─ src/zakcode/         # the core engine (importable library) + CLI + server
 │  ├─ providers/        # vendor-agnostic LLM layer (litellm)
 │  ├─ agent/            # the agent loop, prompt assembly, context compaction
+│  ├─ quality/          # small-model quality engine (judge, best-of-N, score, gate)
 │  ├─ tools/            # tool registry + built-in tools
 │  ├─ session/          # conversation state & persistence
 │  ├─ permissions.py    # the deny-first permission gate (+ deny-rule grammar)
@@ -330,7 +338,7 @@ Zak-Code/
 │  ├─ server/           # FastAPI app + bundled web client (optional extra)
 │  └─ cli/              # the terminal client
 ├─ docs/                # living project documentation
-└─ tests/               # 805-test suite (incl. gated live-provider smoke tests)
+└─ tests/               # 2,053-test suite (incl. gated live-provider smoke tests)
 ```
 
 ## Acknowledgements & clean-room note
