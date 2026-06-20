@@ -184,9 +184,10 @@ class SkillResolver(Protocol):
     The wirer (the ``Agent``) binds it to the session's skill registry; :meth:`load` reads the
     L1 body lazily, defangs it, and emits ``ON_SKILL_SELECTED`` (``source="tool"``) so a learning
     mind records model-driven ``(query -> skill)`` choices just like the CLI ``/<name>`` path.
-    ``None`` on :class:`ToolContext` when skills are disabled (or for a sub-agent), so the tool
-    degrades to a clean "skills not enabled" error rather than crashing. ``runtime_checkable`` so
-    pydantic can validate the field structurally.
+    A sub-agent shares the PARENT's resolver (one registry + one per-turn budget), passing its own
+    ``query`` so attribution stays per-caller. ``None`` on :class:`ToolContext` only when skills are
+    disabled, so the tool degrades to a clean "skills not enabled" error rather than crashing.
+    ``runtime_checkable`` so pydantic can validate the field structurally.
     """
 
     def names(self) -> list[str]:
@@ -196,7 +197,9 @@ class SkillResolver(Protocol):
     async def load(self, name: str, *, query: str = "") -> SkillLoad:
         """Load ``name``; ``query`` is the invoking turn's prompt, recorded as the
         ``ON_SKILL_SELECTED`` trigger (so a sub-agent attributes the skill to ITS task, not the
-        parent's). Empty → the resolver falls back to its own session's recent user text."""
+        parent's). A falsy ``query`` falls back to the resolver's bound (parent) agent session's
+        recent user text — correct for the main agent; callers that need per-caller attribution
+        (sub-agents) must pass a non-empty ``query`` (the loop stamps ``caller_query`` for this)."""
         ...
 
 

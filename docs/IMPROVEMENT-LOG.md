@@ -1233,3 +1233,22 @@ cost-accounting test instead of a fallback table.
   per the user's call). Validated live on this repo: `discover_memory(.)` returns AGENTS.md (670) +
   CLAUDE.md (4014) + README.md (8192, capped). +9 tests; docs (ARCHITECTURE/CONFIG/PARITY). **`uv run
   poe check` green: 2079 passed, ruff + mypy clean.**
+- **2026-06-20 (dev, Fresh-eyes review fixes — context + skills):** ran 3 independent adversarial
+  reviewers over the four skills/context PRs; all confirmed the invariants (off-by-default, both
+  twins, no session mutation, budget exact-N, attribution) but surfaced real issues, fixed here:
+  (1) **HIGH — non-UTF-8 crash:** `discover_memory`/`identity.py` read `utf-8` under `except OSError`,
+  which misses `UnicodeDecodeError` (a `ValueError`) → a stray UTF-16 `CLAUDE.md`/`README` crashed
+  every prompt build; broadened to `(OSError, UnicodeError)` (skip/degrade per the docstring).
+  (2) **Security — out-of-project injection:** the guide walk ascended to the filesystem root, folding
+  a stray `~/CLAUDE.md` or shared-box parent guide into the trusted, un-defanged tier (bypassing the
+  file-tool sandbox); now **bounded at the project (VCS) root** (`_project_chain`), workspace-root-only
+  outside a repo. (3) **Attribution edge:** the `task` tool accepted a blank child prompt → empty
+  `caller_query` → the child's skill use mis-attributed to the parent; now rejected at the source.
+  (4) **Test hardening:** the total-cap test could pass vacuously (now asserts exactly-N survive +
+  brim-fill); added the partial-truncation branch, a deterministic skill-**chaining** test (was
+  live-bench-only, against the repo's offline-test discipline), non-UTF-8 regression, and
+  project-boundary tests. Plus doc honesty: corrected the `SkillResolver` fallback docstring and the
+  rules-vs-`CLAUDE.md` confusion (rules = `.../rules/*.md` cached tier; root `CLAUDE.md` = a guide in
+  the dynamic tier). **Deferred (noted):** rename `discover_memory`→`discover_context` (homonym with
+  the cross-session `MemoryProvider`) — pure churn on the public re-export surface. **`uv run poe
+  check` green: 2086 passed, ruff + mypy clean.**

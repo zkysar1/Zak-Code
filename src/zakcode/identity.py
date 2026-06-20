@@ -75,7 +75,9 @@ def load_identity(
             continue
         try:
             raw = path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
+            # UnicodeError (non-UTF-8 self.md) is a ValueError, not an OSError — catch it too so a
+            # mis-encoded identity file surfaces as a clean load error, not a crash.
             return None, f"could not read {path}: {exc}"
         _meta, body = _split_frontmatter(raw)
         body = body.strip()

@@ -18,9 +18,9 @@ Design rules carried over from ``docs/ARCHITECTURE.md`` and the reference study 
 * Raw config / settings JSON is **never** rendered into the prompt — only a few curated,
   non-secret environment facts. (See ``docs/ROADMAP.md``: "raw config in the system prompt"
   is an explicit mistake to avoid; secrets must not leak into model context.)
-* Context discovery walks the ancestor chain **root → workspace_root**, de-duplicates by
-  content hash, and enforces a per-file char cap plus a total cap so it can never blow the
-  context window.
+* Context discovery walks **workspace_root → the project (VCS) root** (never above it, so an
+  out-of-workspace guide is not trusted), de-duplicates by content hash, and enforces a per-file
+  char cap plus a total cap so it can never blow the context window.
 
 This module is a pure string builder: no I/O beyond reading the project-context files for
 discovery, and no provider/vendor imports.
@@ -54,6 +54,12 @@ MEMORY_FILENAME = "ZAK.md"
 #: ``Settings.context_include_readme`` is on. Read ONLY at the workspace root — a README is a
 #: project-root file, so (unlike the guides) the ancestor chain is not searched for it.
 README_FILENAME = "README.md"
+
+#: Markers that identify a project (VCS) root. The context-file ascent stops here, INCLUSIVE: a
+#: guide ABOVE the project — ``~/CLAUDE.md``, a shared-box ``/home/.../AGENTS.md`` the operator
+#: never authored — must not be folded into the trusted prompt tier (it would bypass the workspace
+#: sandbox the file tools enforce). No project root found ⇒ only the workspace root is scanned.
+_VCS_MARKERS = (".git", ".hg", ".svn")
 
 #: Largest slice of any single context file folded into the prompt (~8 KB).
 MAX_MEMORY_FILE_CHARS = 8_192
@@ -281,16 +287,36 @@ class SystemPromptBuilder:
         )
 
 
-def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> list[tuple[Path, str]]:
-    """Collect project-context files along the ancestor chain (filesystem root → workspace root).
+def _project_chain(root: Path) -> list[Path]:
+    """Directories to scan for context files, OUTERMOST first: ``root`` and its ancestors up to
+    the project (VCS) root, inclusive. Never ascends PAST the project into out-of-workspace dirs.
+    A ``root`` not inside a repo yields just ``[root]`` — an unrelated ancestor guide is never read.
+    """
+    chain = [root]
+    current = root
+    while not any((current / marker).exists() for marker in _VCS_MARKERS):
+        parent = current.parent
+        if parent == current:  # reached the filesystem root without finding a project boundary
+            return [root]  # not in a repo → scan only the workspace root, never out-of-project dirs
+        chain.append(parent)
+        current = parent
+    chain.reverse()  # outermost (project root) first, workspace root last
+    return chain
 
-    Each directory from the filesystem root down to ``workspace_root`` is checked for the
-    agent-guide files :data:`AGENT_GUIDE_FILENAMES` (``AGENTS.md`` / ``CLAUDE.md`` / ``ZAK.md``);
-    ALL present in a directory are loaded, so a repo that keeps both an ``AGENTS.md`` and a
-    ``CLAUDE.md`` never loses content. The workspace root's :data:`README_FILENAME` is folded in
-    last (the project doc) when ``include_readme`` is set — a README is a project-ROOT file, so the
-    ancestor chain is NOT searched for it. Files are returned outermost-first (root → cwd) so a
-    deeper, more specific guide appears later and can refine a broader one. Behavior:
+
+def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> list[tuple[Path, str]]:
+    """Collect project-context files from the workspace root up to the project (VCS) root.
+
+    Each directory from ``workspace_root`` up to (and including) the **project root** — the nearest
+    ancestor-or-self with a VCS marker (:data:`_VCS_MARKERS`) — is checked for the agent-guide files
+    :data:`AGENT_GUIDE_FILENAMES` (``AGENTS.md`` / ``CLAUDE.md`` / ``ZAK.md``); ALL present in a dir
+    are loaded, so a repo keeping both an ``AGENTS.md`` and a ``CLAUDE.md`` never loses content. The
+    walk **stops at the project root** — a guide ABOVE it (``~/CLAUDE.md``, a shared-box
+    ``/home/.../AGENTS.md``) is never folded into the trusted tier; a workspace not in a repo scans
+    only its own root. The workspace root's :data:`README_FILENAME` is folded in last (the project
+    doc) when ``include_readme`` is set — a README is a project-ROOT file, so even within the chain
+    only the root's is read. Files are returned outermost-first (project root → cwd) so a deeper,
+    more specific guide appears later and can refine a broader one. Behavior:
 
     * **Content-hash de-duplication** — identical content (e.g. an ``AGENTS.md`` that merely copies
       ``CLAUDE.md``) is kept only once, at its first occurrence.
@@ -299,16 +325,14 @@ def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> lis
       files are added; because the guides are scanned before the README, a large README can never
       crowd them out.
 
-    Unreadable files are skipped silently. Returns ``(path, content)`` pairs.
+    Unreadable (incl. non-UTF-8) files are skipped silently. Returns ``(path, content)`` pairs.
     """
     try:
         root = Path(workspace_root).resolve()
     except OSError:
         return []
 
-    # Ancestor chain from the filesystem root down to (and including) the workspace root.
-    chain = [root, *root.parents]
-    chain.reverse()  # outermost (filesystem root) first
+    chain = _project_chain(root)  # workspace root .. project (VCS) root, outermost first
 
     discovered: list[tuple[Path, str]] = []
     seen_hashes: set[str] = set()
@@ -321,7 +345,9 @@ def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> lis
             if not path.is_file():
                 return True
             raw = path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeError):
+            # UnicodeError (a ValueError, NOT an OSError) is raised by a non-UTF-8 file — catch it
+            # here so a stray UTF-16/Latin-1 CLAUDE.md/README never crashes the whole prompt build.
             return True
         content = raw.strip()
         if not content:
