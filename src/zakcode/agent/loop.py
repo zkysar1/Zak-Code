@@ -1600,6 +1600,7 @@ class AgentLoop:
             task_network=self.session.task_network,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
+            caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
@@ -2261,6 +2262,7 @@ class AgentLoop:
             task_network=self.session.task_network,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
+            caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)

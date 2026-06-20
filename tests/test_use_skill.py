@@ -19,6 +19,7 @@ from zakcode.agent.budget import IterationBudget
 from zakcode.agent.subagent import GENERAL_PURPOSE, SubAgentRunner
 from zakcode.config import Settings
 from zakcode.hooks import HookEvent, LifecyclePayload
+from zakcode.messages import Message
 from zakcode.providers.base import (
     Capabilities,
     LLMResult,
@@ -44,7 +45,7 @@ class _FakeResolver:
     def names(self) -> list[str]:
         return list(self._names)
 
-    async def load(self, name: str) -> SkillLoad:
+    async def load(self, name: str, *, query: str = "") -> SkillLoad:
         self.loaded.append(name)
         return self._skills.get(name, SkillLoad(found=False, name=name))
 
@@ -193,13 +194,15 @@ class _RecordingResolver:
 
     def __init__(self, body: str = "GREET WARMLY") -> None:
         self.loaded: list[str] = []
+        self.queries: list[str] = []
         self._body = body
 
     def names(self) -> list[str]:
         return ["greeter"]
 
-    async def load(self, name: str) -> SkillLoad:
+    async def load(self, name: str, *, query: str = "") -> SkillLoad:
         self.loaded.append(name)
+        self.queries.append(query)
         return SkillLoad(found=True, name=name, body=self._body)
 
 
@@ -257,7 +260,36 @@ async def test_subagent_can_invoke_a_skill_through_the_wired_resolver(tmp_path: 
     )
     result = await runner.run(GENERAL_PURPOSE, "use the greeter skill")
     assert resolver.loaded == ["greeter"]  # the child reached the resolver → use_skill worked
+    assert resolver.queries == ["use the greeter skill"]  # the CHILD's prompt flowed through
     assert result.summary == "done"
+
+
+async def test_subagent_attributes_the_signal_to_the_child_prompt(tmp_path: Path) -> None:
+    # The fix: a sub-agent's ON_SKILL_SELECTED query is the CHILD's task, not the parent's
+    # originating turn — even though the child shares the parent's (registry-bound) resolver.
+    _write_skill(tmp_path, "greeter")
+    parent = _agent(tmp_path, enable_skills=True)
+    parent.session.add_message(Message.user("PARENT ORIGINATING TURN"))  # the old (wrong) query
+    fired: list[LifecyclePayload] = []
+    parent.hook_manager.register_lifecycle(HookEvent.ON_SKILL_SELECTED, _capture(fired))
+
+    registry = ToolRegistry()
+    registry.register(UseSkillTool())
+    runner = SubAgentRunner(
+        provider=_ToolThenTextProvider("use_skill", {"name": "greeter"}),
+        registry=registry,
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        budget=IterationBudget(10),
+        workspace_root=tmp_path,
+        hook_manager=parent.hook_manager,
+        skill_resolver=parent.loop._skill_resolver,  # the PARENT's real resolver
+    )
+    await runner.run(GENERAL_PURPOSE, "CHILD DELEGATED TASK")
+
+    assert len(fired) == 1
+    assert fired[0].data["query"] == "CHILD DELEGATED TASK"  # the child's prompt …
+    assert fired[0].data["query"] != "PARENT ORIGINATING TURN"  # … not the parent's turn
+    assert fired[0].data["source"] == "tool"
 
 
 def test_agent_wires_skill_resolver_into_subagents(tmp_path: Path) -> None:

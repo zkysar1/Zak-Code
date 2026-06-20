@@ -193,7 +193,11 @@ class SkillResolver(Protocol):
         """Discovered skill names (for the tool's 'unknown skill — available: …' message)."""
         ...
 
-    async def load(self, name: str) -> SkillLoad: ...
+    async def load(self, name: str, *, query: str = "") -> SkillLoad:
+        """Load ``name``; ``query`` is the invoking turn's prompt, recorded as the
+        ``ON_SKILL_SELECTED`` trigger (so a sub-agent attributes the skill to ITS task, not the
+        parent's). Empty → the resolver falls back to its own session's recent user text."""
+        ...
 
 
 class ToolContext(BaseModel):
@@ -237,9 +241,15 @@ class ToolContext(BaseModel):
     sampler: Sampler | None = None
     #: A :class:`SkillResolver` the ``use_skill`` tool calls to load a skill's instructions by
     #: name (M7 model-facing invocation). The ``Agent`` wires it to the session's skill registry
-    #: when ``enable_skills``; ``None`` otherwise (and for sub-agents), so the tool returns a
-    #: clean "skills not enabled" error rather than crashing.
+    #: when ``enable_skills``; ``None`` otherwise, so the tool returns a clean "skills not enabled"
+    #: error rather than crashing. (A sub-agent gets the PARENT's resolver — shared registry +
+    #: budget — but its own ``caller_query`` below, so attribution stays correct.)
     skill_resolver: SkillResolver | None = None
+    #: The user text that triggered THIS loop's turn — passed to ``use_skill`` so the
+    #: ``ON_SKILL_SELECTED`` signal records the *invoking* turn's prompt (the sub-agent's task, not
+    #: the parent's originating turn). Each loop stamps its own; empty for a loop that builds a
+    #: bare context, in which case the resolver falls back to its session's recent user text.
+    caller_query: str = ""
 
     @property
     def all_workspace_roots(self) -> list[Path]:

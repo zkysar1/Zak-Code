@@ -195,8 +195,10 @@ class _SkillToolResolver:
         registry = self._agent.skill_registry
         return registry.names() if registry is not None else []
 
-    async def load(self, name: str) -> SkillLoad:
-        return await self._agent._load_skill_body(name, source="tool")
+    async def load(self, name: str, *, query: str = "") -> SkillLoad:
+        # ``query`` is the INVOKING turn's prompt (a sub-agent's task, not the parent's), so the
+        # signal is attributed to the actual caller even though the resolver is the parent's.
+        return await self._agent._load_skill_body(name, source="tool", query=query)
 
 
 #: Turn stop-reasons that count as a STALL — the agent didn't cleanly finish. Seam B's best-of-N
@@ -903,16 +905,20 @@ class Agent:
                 self._shared_budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
         return result.text
 
-    async def _load_skill_body(self, name: str, *, source: str) -> SkillLoad:
+    async def _load_skill_body(
+        self, name: str, *, source: str, query: str | None = None
+    ) -> SkillLoad:
         """Resolve a skill, read+defang its L1 body, and fire the selection signal — the CORE
         shared by both invocation paths (the CLI ``/<name>`` and the model's ``use_skill`` tool).
 
         Does NOT mutate the session: it returns the body so each path delivers it the right way
-        — the CLI folds it into a user message, the tool returns it as the tool result. Captures
-        the triggering query (the user's last NL turn) BEFORE doing anything so a learner can
-        associate ``(query -> skill)``, and fires the observe-only
-        :attr:`~zakcode.hooks.HookEvent.ON_SKILL_SELECTED` hook with ``source``. Never raises: a
-        missing skill yields ``found=False``; an unreadable one yields ``error`` set.
+        — the CLI folds it into a user message, the tool returns it as the tool result. ``query``
+        is the triggering turn's prompt the ``ON_SKILL_SELECTED`` hook records so a learner can
+        associate ``(query -> skill)``; the ``use_skill`` tool passes the INVOKING turn's prompt
+        (so a sub-agent attributes the skill to ITS task, not the parent's), and a falsy ``query``
+        (the CLI path, or a bare context) falls back to this session's recent user text. Fires the
+        observe-only :attr:`~zakcode.hooks.HookEvent.ON_SKILL_SELECTED` hook with ``source``. Never
+        raises: a missing skill yields ``found=False``; an unreadable one yields ``error`` set.
 
         Budget: a model-driven (``source="tool"``) invocation draws from the per-turn skill
         budget (:attr:`Settings.skill_invocation_budget`); over the cap it returns a
@@ -934,7 +940,9 @@ class Agent:
                         "finish with the skills already loaded"
                     ),
                 )
-        query = self._recent_user_text()
+        # The invoking turn's prompt (the tool passes it; a sub-agent's differs from the parent's);
+        # fall back to this session's recent user text for the CLI path or a bare/empty caller.
+        query = query or self._recent_user_text()
         try:
             body = skill.body()  # L1 read lazily; the file may have changed/vanished
         except Exception as exc:  # noqa: BLE001 — a bad skill file is a UX error, not a crash
