@@ -8,7 +8,7 @@ prompt every turn. This is the Cursor-rules model (flat ``.zakcode/rules`` /
 ``.claude/rules`` ``*.md`` files).
 
 **Not to be confused with a root ``CLAUDE.md`` / ``AGENTS.md``:** those are *agent
-guides*, discovered by :func:`zakcode.agent.prompt.discover_memory` and folded into
+guides*, discovered by :func:`zakcode.agent.prompt.discover_context` and folded into
 the *dynamic* context tier (not here, not the cached tier). Rules are the always-on
 ``rules/`` directory; the guides are the project's root-level instruction files.
 This is the static-guidance seam a self-learning framework (see ``docs/INTEGRATIONS``)

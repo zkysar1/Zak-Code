@@ -1252,3 +1252,14 @@ cost-accounting test instead of a fallback table.
   the dynamic tier). **Deferred (noted):** rename `discover_memory`→`discover_context` (homonym with
   the cross-session `MemoryProvider`) — pure churn on the public re-export surface. **`uv run poe
   check` green: 2086 passed, ruff + mypy clean.**
+- **2026-06-20 (dev, Rename — discover_memory → discover_context):** did the deferred disambiguation
+  as its own PR. The prompt-builder's project-context discovery shared the word "memory" with the
+  SEPARATE cross-session `MemoryProvider` / `enable_memory` subsystem. Renamed in `agent/prompt.py`
+  (+ the `agent` re-export and `test_prompt.py`): `discover_memory`→`discover_context`,
+  `MAX_MEMORY_FILE_CHARS`→`MAX_CONTEXT_FILE_CHARS`, `MAX_MEMORY_TOTAL_CHARS`→`MAX_CONTEXT_TOTAL_CHARS`,
+  `_render_memory`→`_render_context`, and the `test_discover_memory_*` test names. **Dropped**
+  `MEMORY_FILENAME` (the last "memory" public name) — it was dead, redundant with
+  `AGENT_GUIDE_FILENAMES` (which carries the native `ZAK.md`). The cross-session memory subsystem is
+  untouched (it really is memory). Also fixed `docs/ARCHITECTURE.md`'s stale prompt.py "Key types"
+  (`PromptSection`/`MemoryFile` never existed). Pure rename, no behavior change. **`uv run poe check`
+  green: 2086 passed, ruff + mypy clean.**

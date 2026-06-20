@@ -47,9 +47,6 @@ DYNAMIC_BOUNDARY = "--- DYNAMIC_BOUNDARY ---"
 #: content to a "pick one" rule.
 AGENT_GUIDE_FILENAMES = ("AGENTS.md", "CLAUDE.md", "ZAK.md")
 
-#: The native single name, kept for backward compatibility (it is one of AGENT_GUIDE_FILENAMES).
-MEMORY_FILENAME = "ZAK.md"
-
 #: The human-facing project doc, folded into context (after the agent guides) when
 #: ``Settings.context_include_readme`` is on. Read ONLY at the workspace root — a README is a
 #: project-root file, so (unlike the guides) the ancestor chain is not searched for it.
@@ -62,10 +59,10 @@ README_FILENAME = "README.md"
 _VCS_MARKERS = (".git", ".hg", ".svn")
 
 #: Largest slice of any single context file folded into the prompt (~8 KB).
-MAX_MEMORY_FILE_CHARS = 8_192
+MAX_CONTEXT_FILE_CHARS = 8_192
 
-#: Largest combined size of all discovered memory after de-duplication (~32 KB).
-MAX_MEMORY_TOTAL_CHARS = 32_768
+#: Largest combined size of all discovered context files after de-duplication (~32 KB).
+MAX_CONTEXT_TOTAL_CHARS = 32_768
 
 # ── stable prefix content ──────────────────────────────────────────────────────
 
@@ -122,7 +119,7 @@ _SAFETY = (
 
 
 class SystemPromptBuilder:
-    """Assembles the ordered system prompt from settings, tools, and discovered memory.
+    """Assembles the ordered system prompt from settings, tools, and discovered context files.
 
     ``extra_instructions`` (optional) is specialization text appended to the stable
     (cacheable) tier — used by sub-agents to scope their behavior (e.g. a planner
@@ -244,11 +241,13 @@ class SystemPromptBuilder:
     def _build_context(self, settings: Settings, extra_context: str | None) -> str:
         sections = [self._environment_section(settings)]
 
-        memory = self._render_memory(
-            discover_memory(settings.workspace_root, include_readme=settings.context_include_readme)
+        context_files = self._render_context(
+            discover_context(
+                settings.workspace_root, include_readme=settings.context_include_readme
+            )
         )
-        if memory:
-            sections.append(memory)
+        if context_files:
+            sections.append(context_files)
 
         if extra_context and extra_context.strip():
             sections.append("Additional context:\n" + extra_context.strip())
@@ -277,7 +276,7 @@ class SystemPromptBuilder:
         )
 
     @staticmethod
-    def _render_memory(discovered: list[tuple[Path, str]]) -> str:
+    def _render_context(discovered: list[tuple[Path, str]]) -> str:
         if not discovered:
             return ""
         blocks = [f"## {path}\n{content}" for path, content in discovered]
@@ -304,7 +303,9 @@ def _project_chain(root: Path) -> list[Path]:
     return chain
 
 
-def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> list[tuple[Path, str]]:
+def discover_context(
+    workspace_root: Path, *, include_readme: bool = True
+) -> list[tuple[Path, str]]:
     """Collect project-context files from the workspace root up to the project (VCS) root.
 
     Each directory from ``workspace_root`` up to (and including) the **project root** — the nearest
@@ -320,8 +321,8 @@ def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> lis
 
     * **Content-hash de-duplication** — identical content (e.g. an ``AGENTS.md`` that merely copies
       ``CLAUDE.md``) is kept only once, at its first occurrence.
-    * **Per-file cap** — each file is truncated to :data:`MAX_MEMORY_FILE_CHARS`.
-    * **Total cap** — once the combined size reaches :data:`MAX_MEMORY_TOTAL_CHARS`, no further
+    * **Per-file cap** — each file is truncated to :data:`MAX_CONTEXT_FILE_CHARS`.
+    * **Total cap** — once the combined size reaches :data:`MAX_CONTEXT_TOTAL_CHARS`, no further
       files are added; because the guides are scanned before the README, a large README can never
       crowd them out.
 
@@ -356,16 +357,16 @@ def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> lis
         if digest in seen_hashes:
             return True
         seen_hashes.add(digest)
-        if len(content) > MAX_MEMORY_FILE_CHARS:
-            content = content[:MAX_MEMORY_FILE_CHARS]
-        if total + len(content) > MAX_MEMORY_TOTAL_CHARS:
-            remaining = MAX_MEMORY_TOTAL_CHARS - total
+        if len(content) > MAX_CONTEXT_FILE_CHARS:
+            content = content[:MAX_CONTEXT_FILE_CHARS]
+        if total + len(content) > MAX_CONTEXT_TOTAL_CHARS:
+            remaining = MAX_CONTEXT_TOTAL_CHARS - total
             if remaining <= 0:
                 return False
             content = content[:remaining]
         discovered.append((path, content))
         total += len(content)
-        return total < MAX_MEMORY_TOTAL_CHARS
+        return total < MAX_CONTEXT_TOTAL_CHARS
 
     for directory in chain:
         names = list(AGENT_GUIDE_FILENAMES)
@@ -382,10 +383,9 @@ def discover_memory(workspace_root: Path, *, include_readme: bool = True) -> lis
 __all__ = [
     "AGENT_GUIDE_FILENAMES",
     "DYNAMIC_BOUNDARY",
-    "MAX_MEMORY_FILE_CHARS",
-    "MAX_MEMORY_TOTAL_CHARS",
-    "MEMORY_FILENAME",
+    "MAX_CONTEXT_FILE_CHARS",
+    "MAX_CONTEXT_TOTAL_CHARS",
     "README_FILENAME",
     "SystemPromptBuilder",
-    "discover_memory",
+    "discover_context",
 ]
