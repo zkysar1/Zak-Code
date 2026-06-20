@@ -194,6 +194,13 @@ class Settings(BaseSettings):
     skill_invocation_budget: int = Field(
         default=0, ge=0, description="Max model-driven use_skill invocations per turn (0 = off)."
     )
+    # Fold the workspace README.md into the agent's project-context block (alongside the discovered
+    # AGENTS.md / CLAUDE.md / ZAK.md guides). The guides are always loaded; this toggles ONLY the
+    # README, which is human-facing and can be large — content/total caps still bound it. Default
+    # on (the README is usually the best available project overview).
+    context_include_readme: bool = Field(
+        default=True, description="Fold the workspace README.md into the agent's project context."
+    )
     # Optional cost/token ceilings (parity #4), bounding CUMULATIVE spend across a turn and
     # its whole sub-agent delegation tree (one shared budget). A completed call's actuals are
     # folded in post-completion; once a ceiling is crossed the turn stops with

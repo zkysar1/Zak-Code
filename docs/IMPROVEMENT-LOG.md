@@ -1221,3 +1221,15 @@ cost-accounting test instead of a fallback table.
   is unchanged). The shared registry + budget still come from the parent's resolver. A decisive test
   spawns a child with a distinct prompt and asserts the signal records the *child's* task, not the
   parent's. **`uv run poe check` green: 2070 passed, ruff + mypy clean.**
+- **2026-06-20 (dev, Context — AGENTS.md / CLAUDE.md / README discovery):** Zak Code already had the
+  Claude-Code/Codex agent-guide mechanism (`discover_memory` in `agent/prompt.py`: ancestor-chain
+  walk, content-hash dedup, per-file + total caps) but only recognized the native `ZAK.md`. Broadened
+  it to scan `AGENT_GUIDE_FILENAMES = ("AGENTS.md", "CLAUDE.md", "ZAK.md")` per directory — loading
+  ALL present (deduped), so this repo's `AGENTS.md`-pointer + canonical `CLAUDE.md` both load and a
+  "pick one" rule never hides the real guide. `AGENTS.md` is the recommended cross-tool standard (fits
+  the vendor-agnostic ethos); `CLAUDE.md` is Claude-Code compatibility. Also fold the workspace
+  `README.md` into context (root only — a project doc, not ancestor-walked; ordered after the guides
+  so a big README can't crowd them out), gated by new `Settings.context_include_readme` (default on,
+  per the user's call). Validated live on this repo: `discover_memory(.)` returns AGENTS.md (670) +
+  CLAUDE.md (4014) + README.md (8192, capped). +9 tests; docs (ARCHITECTURE/CONFIG/PARITY). **`uv run
+  poe check` green: 2079 passed, ruff + mypy clean.**
