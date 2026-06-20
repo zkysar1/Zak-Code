@@ -35,7 +35,6 @@ def build_agent():
     return Agent(
         settings=settings,
         enable_compaction=False,
-        enable_memory=False,
         enable_rules=False,
         enable_skills=False,
         enable_subagents=False,

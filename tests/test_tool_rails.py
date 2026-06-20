@@ -12,7 +12,6 @@ from pathlib import Path
 
 from zakcode.agent.loop import AgentLoop, _append_rail, _denial_remedy
 from zakcode.config import PermissionTier
-from zakcode.memory.sqlite_store import SqliteMemoryProvider
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
@@ -25,7 +24,6 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.tools.builtins.edit import EditFileTool
-from zakcode.tools.builtins.memory import RememberTool
 from zakcode.tools.builtins.read_file import ReadFileTool
 from zakcode.usage import Usage
 
@@ -177,17 +175,6 @@ async def test_denial_names_the_remedy(tmp_path: Path) -> None:
 
 
 # ── builtin rails ────────────────────────────────────────────────────────────────
-
-
-async def test_remember_returns_terminate_hint(tmp_path: Path) -> None:
-    # The flagship rail: a 3B often keeps looping after a successful write; the hint names
-    # "end the turn" so it terminates cleanly (motivated by the Job-1 seed-latency finding).
-    mem = SqliteMemoryProvider(str(tmp_path / "m.db"))
-    res = await RememberTool(mem).execute(
-        {"text": "my favorite color is blue"}, ToolContext(workspace_root=tmp_path)
-    )
-    assert res.is_error is False
-    assert res.hint and "end the turn" in res.hint.lower()
 
 
 async def test_read_file_not_found_has_fix(tmp_path: Path) -> None:

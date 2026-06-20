@@ -61,7 +61,6 @@ def _build_agent(workspace: Path):
         enable_skills=True,  # the feature under test
         extra_skill_dirs=[str(SKILLS_DIR)],  # the three relay skills live here
         enable_compaction=True,
-        enable_memory=False,
         enable_rules=False,
         enable_subagents=False,
         enable_mcp=False,

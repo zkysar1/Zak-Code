@@ -58,7 +58,6 @@ def _build_agent(workspace: Path):
         enable_skills=True,
         extra_skill_dirs=[str(SKILLS_DIR)],
         enable_compaction=True,
-        enable_memory=False,
         enable_rules=False,
         enable_subagents=False,
         enable_mcp=False,

@@ -1074,7 +1074,6 @@ def _build_chat_agent(
     prompter: ConsolePermissionPrompter,
     overrides: dict[str, Any],
     *,
-    enable_memory: bool = True,
     enable_rules: bool = True,
     extra_skill_dirs: list[str] | None = None,
     extra_workspace_roots: list[str] | None = None,
@@ -1082,10 +1081,9 @@ def _build_chat_agent(
     """Build the in-process chat Agent with every interactive feature enabled.
 
     One builder for both the initial session and ``/clear`` so they never drift.
-    ``enable_memory`` / ``enable_rules`` mirror the ``--no-memory`` / ``--no-rules``
-    chat flags (on by default). Trusted plugins come from ``ZAKCODE_TRUSTED_PLUGINS``
-    (comma-separated names); a discovered plugin runs only if it is named there (else
-    it is listed by ``/plugins`` as skipped/untrusted).
+    ``enable_rules`` mirrors the ``--no-rules`` chat flag (on by default). Trusted plugins
+    come from ``ZAKCODE_TRUSTED_PLUGINS`` (comma-separated names); a discovered plugin runs
+    only if it is named there (else it is listed by ``/plugins`` as skipped/untrusted).
     """
     from zakcode import Agent
 
@@ -1102,7 +1100,6 @@ def _build_chat_agent(
         extra_skill_dirs=extra_skill_dirs,
         extra_workspace_roots=extra_workspace_roots,
         enable_rules=enable_rules,
-        enable_memory=enable_memory,
         enable_compaction=True,
         **overrides,
     )
@@ -1125,11 +1122,6 @@ def chat(
         "--server",
         help="Drive a remote zakcode server (e.g. http://127.0.0.1:8000) instead of "
         "running the engine in-process. Proves the client/server boundary.",
-    ),
-    no_memory: bool = typer.Option(
-        False,
-        "--no-memory",
-        help="Disable cross-session memory (remember/recall tools + relevant-memory injection).",
     ),
     no_rules: bool = typer.Option(
         False, "--no-rules", help="Disable always-on rules (.zakcode/rules, .claude/rules)."
@@ -1193,7 +1185,6 @@ def chat(
         agent = _build_chat_agent(
             prompter,
             overrides,
-            enable_memory=not no_memory,
             enable_rules=not no_rules,
             extra_skill_dirs=extra_skill_dirs,
             extra_workspace_roots=extra_roots,
@@ -1269,7 +1260,6 @@ def chat(
                 agent = _build_chat_agent(
                     prompter,
                     overrides,
-                    enable_memory=not no_memory,
                     enable_rules=not no_rules,
                     extra_skill_dirs=extra_skill_dirs,
                     extra_workspace_roots=extra_roots,
@@ -1477,7 +1467,7 @@ def serve(
         None,
         "--workspace",
         "-w",
-        help="Workspace root the served mind loads identity/rules/memory/skills from.",
+        help="Workspace root the served mind loads identity/rules/skills from.",
     ),
     insecure: bool = typer.Option(
         False,

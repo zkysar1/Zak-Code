@@ -1263,3 +1263,19 @@ cost-accounting test instead of a fallback table.
   untouched (it really is memory). Also fixed `docs/ARCHITECTURE.md`'s stale prompt.py "Key types"
   (`PromptSection`/`MemoryFile` never existed). Pure rename, no behavior change. **`uv run poe check`
   green: 2086 passed, ruff + mypy clean.**
+- **2026-06-20 (dev, REMOVE the cross-session memory subsystem):** the user drew the boundary
+  (`docs/PERSISTENCE-BOUNDARY.md`): the harness records the transcript (`SessionStore`, `/resume`) and
+  exposes generic seams; it does NOT remember/recall/learn — "memory" is claude-mind's, and claude-mind
+  has its own framework, so the harness should host no memory infrastructure (not even inert). Plan-mode
+  approved (3 Explore agents mapped the full surface), then executed as one atomic PR. **Deleted**
+  `src/zakcode/memory/` (`MemoryProvider`, `SqliteMemoryProvider`, `MemoryRecallHook`),
+  `tools/builtins/memory.py` (`remember`/`recall`), `agent/lessons.py` (`LessonWriter`). **Removed** the
+  `enable_memory` flag, `memory_provider` injection, the three `memory_*` config fields, the
+  `--no-memory` CLI flag, and the server's shared store. **Kept unchanged:** `SessionStore` and every
+  generic seam (`register_context` / `register_lifecycle` / `register_turn_end`, the tool registry, DI)
+  — how a Mind attaches its own memory. Tests: deleted `test_memory.py` + `test_lessons.py`, pruned the
+  memory tests from 4 mixed files, added `test_substrate_no_memory.py` (bare harness ships no
+  remember/recall + no memory attr; the recall/lifecycle seams survive). Docs: `PERSISTENCE-BOUNDARY`
+  (→ removed), `INTEGRATIONS` §5 (→ bring-your-own), CONFIG/ARCHITECTURE/PARITY/ROADMAP/README/.env.
+  **Deferred:** an `ON_TURN_RECOVERED` lifecycle seam if a Mind later wants recovery lessons. **`uv run
+  poe check` green: 2042 passed, ruff + mypy clean.**

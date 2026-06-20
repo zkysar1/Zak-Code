@@ -291,13 +291,13 @@ in a stale-stream/read-timeout watchdog (a hung stream surfaces as `RequestFaile
 mid-stream failure after deltas streamed, persist the partial as the assistant message and
 end degraded instead of discarding it.
 **27. Memory & retrieval depth: embedding RAG, transcript search, selective elision** · L ·
-*context* — an embedding-backed memory provider option (fall back to FTS5); a
+*claude-mind* — an embedding-backed recall store (a Mind's, fall back to FTS5); a
 `session_search` builtin over indexed transcripts (no LLM in the path); a visibility/elision
 concept marking large stale tool results collapsed before full compaction.
 **28. Orchestration polish: configurable delegation depth, dynamic tool schemas, plugin
 provider registries, live-session orchestration** · L · *extensibility* — make nesting depth
 a bounded setting (default 1); add a `dynamic_schema_overrides()` hook so `task`/`tool_search`
-advertise live budgets; generalize MemoryProvider/SearchBackend into a plugin
+advertise live budgets; generalize the `SearchBackend` into a plugin
 `register_provider` registry; defer the XL live-session orchestrator until a supervisor
 use-case appears.
 
@@ -349,8 +349,8 @@ The verifier dropped these as already-present or already-best-in-class:
   idempotent compaction (folds a prior summary instead of stacking — cleaner than
   goose/claw-code on re-compaction); stable/dynamic system-prompt split; just-in-time
   agent-guide discovery (`AGENTS.md` / `CLAUDE.md` / `ZAK.md` ancestor-chain + workspace README)
-  with caps + content-hash dedup; cross-session SQLite+FTS5 memory
-  with an automatic recall hook that fences recalled text as untrusted and scrubs secrets;
+  with caps + content-hash dedup; a generic `PreLLMCall` recall seam a Mind injects
+  fenced-untrusted context through (the harness ships no memory of its own);
   per-role summarizer routing.
 - **Extensibility:** clean-room no-SDK MCP stdio client with qualified tool naming into one
   registry; a broad lifecycle-hook set with shell + in-process handlers and allow/block/warn

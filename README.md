@@ -6,7 +6,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-alpha-green.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-2086%20passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-2042%20passing-brightgreen.svg">
 </p>
 
 ---
@@ -14,7 +14,7 @@
 > **Status: alpha — feature-complete against the roadmap (M0–M10) plus a
 > learning-substrate layer and an opt-in small-model quality engine, validated live on
 > OpenAI _and_ local models.** The core
-> engine, CLI, and HTTP API server are built and tested (2,086 passing tests; `ruff` +
+> engine, CLI, and HTTP API server are built and tested (2,042 passing tests; `ruff` +
 > `mypy` clean). It's a young project — expect rough edges — but it really runs: it
 > reads/writes files, runs commands, searches code, and drives multi-step tasks to
 > completion against a real model.
@@ -182,9 +182,10 @@ no agent logic.
   (order-preserving), guarded so only side-effect-free, prompt-free tools qualify.
 - **Rules** — always-on `.md` guidance (`.zakcode/rules` + `.claude/rules`) in the
   cacheable prompt tier; sub-agents inherit them.
-- **Cross-session memory** — a `MemoryProvider` (local SQLite/FTS5 default, relocatable)
-  with `remember`/`recall` tools and per-turn recall injection; secrets redacted at the
-  store boundary.
+- **Bring-your-own memory** — cross-session memory is claude-mind's job, not the harness's
+  (see [`docs/PERSISTENCE-BOUNDARY.md`](docs/PERSISTENCE-BOUNDARY.md)). The harness records the
+  transcript (`/resume`) and exposes generic recall/lifecycle/tool seams a Mind attaches its own
+  store to; it ships no memory store or `remember`/`recall` tools.
 - **Learning substrate** — runtime skill authoring (`save_skill`) + the seams a
   self-learning framework folds into; see [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
 - **HTTP server** — FastAPI: REST, SSE, WebSocket; one `AgentEvent` stream across all clients.
@@ -300,8 +301,7 @@ hooks, and real-token compaction — and in a few areas (auto-compaction wired i
 loop, a built-in eval harness) goes a bit further than the studied reference. See
 [`docs/PARITY.md`](docs/PARITY.md) for the full matrix.
 
-**Honest gaps vs. Claude Code (deferred, not hidden):** no git-checkpoint/`/undo`. Cross-session memory and runtime skill authoring now
-exist as a **substrate**, but Zak Code ships no autonomous learning *policy* of its own —
+**Honest gaps vs. Claude Code (deferred, not hidden):** no git-checkpoint/`/undo`; cross-session **memory** is deliberately NOT in the harness — it is claude-mind's (see [`docs/PERSISTENCE-BOUNDARY.md`](docs/PERSISTENCE-BOUNDARY.md)). Runtime skill authoring exists as a **substrate**, but Zak Code ships no autonomous learning *policy* of its own —
 that is meant to be supplied by an external self-learning framework folded in through the
 documented seams ([`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)); the autonomous
 "never-terminate" loop is explicitly out of scope. Remaining gaps are tracked in
@@ -334,13 +334,13 @@ Zak-Code/
 │  ├─ session/          # conversation state & persistence
 │  ├─ permissions.py    # the deny-first permission gate (+ deny-rule grammar)
 │  ├─ secrets.py        # secret redaction at persistence boundaries
-│  ├─ commands/ hooks/ plugins/ skills/ rules/ memory/   # extension surfaces
+│  ├─ commands/ hooks/ plugins/ skills/ rules/          # extension surfaces
 │  ├─ mcp/              # clean-room Model Context Protocol client
 │  ├─ evals/            # behavioral eval harness + probes
 │  ├─ server/           # FastAPI app + bundled web client (optional extra)
 │  └─ cli/              # the terminal client
 ├─ docs/                # living project documentation
-└─ tests/               # 2,095-test suite (incl. gated live-provider smoke tests)
+└─ tests/               # 2,051-test suite (incl. gated live-provider smoke tests)
 ```
 
 ## Acknowledgements & clean-room note

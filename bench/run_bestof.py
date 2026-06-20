@@ -77,7 +77,6 @@ def _build_agent_for(workspace: Path, spec: dict, model: str, temperature: float
     return Agent(
         settings=settings,
         enable_compaction=True,
-        enable_memory=False,
         enable_rules=False,
         enable_skills=False,
         enable_subagents=False,

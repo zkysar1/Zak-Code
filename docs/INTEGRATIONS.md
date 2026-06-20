@@ -90,17 +90,20 @@ budget so a large rules dir can never blow the context window. Sub-agents inheri
 parent's rules. (For *on-demand* rules a framework loads selectively, keep them as
 files its skills read via the file tools rather than relying on always-on injection.)
 
-### 5. Memory (`MemoryProvider`)
+### 5. Memory — bring your own (the harness ships none)
 
-`zakcode.memory.MemoryProvider` is the storage + retrieval contract (`add` / `search`
-/ `recent` / `update` / `delete` / `count`); `update` lets a learner policy edit a fact's
-text/kind/tags in place (surgical edits, not duplicate appends). The default
-`SqliteMemoryProvider` is a local
-SQLite/FTS5 store whose path is configurable (`ZAKCODE_MEMORY_DB_PATH`) so a framework
-can relocate or per-agent it. Recalled text is **secret-redacted** at both the write
-(`remember`) and recall boundaries (`docs/GUARDRAILS.md` §6). Inject your own store
-via `Agent(memory_provider=...)`; the recall hook surfaces relevant memories each
-turn through seam #2.
+Cross-session **memory is claude-mind's job, not the harness's** (see
+[`docs/PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)). The harness records the transcript
+(`SessionStore`, powering `/resume`) and exposes the **generic seams** a framework attaches its own
+recall/store to — it ships no store, no recall, and no `remember`/`recall` tools. To add memory:
+
+- **Recall** — register a `PreLLMCall` *context hook* (seam #2) that returns the text to fold into
+  the turn (your store's relevant hits). The loop fences it as untrusted, prompt-cache safe.
+- **Encode / prime** — use the `SessionStart` / `SessionEnd` / `PreCompact` lifecycle hooks (seam #3)
+  to load and consolidate your store at session boundaries.
+- **Model-facing store/fetch** — register your own `remember` / `recall` *tools* on the tool registry.
+- **Secrets** — redact at your write/recall boundaries with `zakcode.secrets.redact_secrets`
+  (`docs/GUARDRAILS.md` §6); the loop also defangs injected context.
 
 ### 6. Permissions & deny rules
 
@@ -130,7 +133,7 @@ Mistral can rely on tools working regardless of the model's native capability.
 | runtime guardrail that can block a tool | `PreToolUse` hook (exit 2) |
 | skills (read + author) | `.claude/skills` loader + `save_skill` |
 | rules / conventions | `.claude/rules` loader |
-| durable cross-session store | `MemoryProvider` (relocatable) |
+| durable cross-session store | bring your own (harness ships none); wire it behind the recall/encode hooks |
 | path-scoped / command denies | `denied_commands` grammar + `PreToolUse` veto |
 | run on self-hosted models | `tool_calling_mode` text fallback |
 
