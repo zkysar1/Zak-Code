@@ -1185,3 +1185,16 @@ cost-accounting test instead of a fallback table.
   hardened it: a NaN/Infinity score-veto bug fixed, dead `quality_budget_fraction` / `best_of_plans`
   config removed, seam B's sibling reuses the parent provider + the TOCTOU guard added. **`uv run poe
   check` green: 2047 passed, ruff + mypy clean.**
+- **2026-06-20 (dev, Skills — model-facing invocation + chaining):** closed the M7 gap where the
+  catalog told the model to "invoke a skill by name" but **no tool let it** (only the human `/<name>`
+  path could). Added the **`use_skill`** tool (`tools/builtins/use_skill.py`): loads a skill body by
+  name and returns it as the **tool result** (never a mid-turn session message), fires
+  `ON_SKILL_SELECTED` with `source="tool"`, `READ_ONLY`/`NEVER_PARALLEL`. Wired a
+  `SkillResolver`/`SkillLoad` seam onto the `ToolContext` (both loop twins), mirroring
+  `sampler`/`spawner`; refactored a shared `_load_skill_body` core so the CLI `/<name>` and the tool
+  read/defang/observe identically (only delivery + `source` differ). Registered only when
+  `enable_skills`, so the default tool surface is byte-identical. Because invocation is now a tool
+  call, skills **chain**. Rationale in **ADR-0012**. Validated live (`bench/run_skill_chain.py` + 3
+  relay skills): `gpt-4o-mini` invoked `relay-start → relay-middle → relay-finish` in one turn, every
+  call `source=tool`, all 3 execution markers landed, `completed` in ~10 s for ~$0.003. **`uv run poe
+  check` green: 2059 passed, ruff + mypy clean.**

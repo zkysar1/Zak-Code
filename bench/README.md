@@ -21,6 +21,8 @@ bench/
   run_bestof_suite.py    # best-of-N vs 1-big across the whole suite (generalization)
   run_quality.py         # quality gate OFF vs ON on a task (the activation evidence)
   run_seam_b.py          # seam B live: best-of-N retry rescuing a STALLED turn
+  run_skill_chain.py     # skills live: a model invoking 3 skills that daisy-chain (use_skill)
+  skill_chain/skills/    # the 3 relay skills (relay-start -> relay-middle -> relay-finish)
   tasks/
     01-wordfreq/         # task.json + held-out verify.py
     02-median-bug/       # + workspace/ seed files (bugfix task)
@@ -144,6 +146,23 @@ Read the `result` block: `seam_b_rescued` is the headline (seam B passed where t
 clean rescue needs a genuinely-failing baseline — the `recipe_stalled`-but-oracle-passes quirk (above)
 can make 04's baseline pass even when the turn stalled, so the demo also confirms the *safe* path:
 seam B fires, finds a verified attempt, and adopts it by diff (e.g. "3 changed, 0 deleted").
+
+## Skills chaining live (`run_skill_chain.py`)
+
+The skills system lets the **model** invoke a skill by name via the `use_skill` tool (not just a human
+typing `/<name>`) — so skills can **chain**. `run_skill_chain.py` proves it: a kickoff prompt makes the
+model call `use_skill('relay-start')`; that skill's body writes a relay log and then calls
+`use_skill('relay-middle')`, which hands off to `use_skill('relay-finish')`. Three skills, one turn,
+each handing off to the next — driven by the skill bodies (in `skill_chain/skills/`), not the harness.
+
+```bash
+./.venv/Scripts/python.exe bench/run_skill_chain.py   # ZSKILL_MODEL=openai/gpt-4o-mini by default
+```
+
+You watch it two ways: the `ON_SKILL_SELECTED` signal prints once per `use_skill` (live, in order), and
+each skill appends a marked line to `RELAY.md` so the workspace proves every body actually RAN. `PASS` =
+all three fired in order **and** all three markers landed. First live run: chain complete, 3/3 markers,
+every invocation `source=tool`, `completed` in ~10 s for ~$0.003.
 
 ## In CI
 

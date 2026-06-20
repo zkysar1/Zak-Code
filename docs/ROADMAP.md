@@ -402,9 +402,14 @@ folded into the cacheable system-prompt tier, L1 (body) read lazily only on invo
 stays False until used), L2 (sibling files) reachable from the skill directory. `discover_skills`
 merges bundled → user (`~/.config/zakcode/skills`) → project (`.zakcode/skills`), project overriding;
 a malformed `SKILL.md` is recorded and skipped, never raised. `Agent(enable_skills=True)` wires the
-registry; the CLI adds `/skills` (list) and bare `/<skill-name>` (invoke → injects the body as a
-cache-safe next-turn user message). Tests: `tests/test_skills.py`, `tests/test_skills_facade.py`.
-Deferred: an autonomous skill-authoring curator.
+registry; invocation is **two-way** — the CLI's bare `/<skill-name>` injects the body as a cache-safe
+next-turn user message, and the *model* calls the `use_skill` tool (body returned as the tool result,
+not a session message; this fulfils the planned "`skill` tool" exit criterion, so skills **chain**).
+Both paths share one `_load_skill_body` core and fire `ON_SKILL_SELECTED` (`source` = `command` |
+`tool`); `/skills` lists them; `save_skill` persists model-authored skills. Tests:
+`tests/test_skills.py`, `tests/test_skills_facade.py`, `tests/test_use_skill.py`; live chaining demo
+`bench/run_skill_chain.py`. Deferred: an autonomous skill-authoring curator; exposing `use_skill` to
+sub-agents.
 
 **Goal:** Progressive-disclosure, markdown-defined skills (manually authored first).
 

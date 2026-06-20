@@ -180,7 +180,9 @@ class SkillRegistry:
         if not self._skills:
             return ""
         lines = [
-            "Available skills (invoke a skill by name to load its full instructions):",
+            "Available skills — to use one, call the `use_skill` tool with its name; that loads "
+            "its full instructions, which you then follow (a skill's steps may tell you to use "
+            "another skill, which chains):",
         ]
         for name, desc in self.catalog():
             lines.append(f"- {name}: {desc}" if desc else f"- {name}")

@@ -354,3 +354,34 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   (deliberation). **Deferred:** best-of-N *plans* (seam C — low value; the HTN in `tasks.py` already
   decomposes); a wired cost-fraction cap (today bounded by `best_of_attempts` + the per-turn budget);
   rolling seam B's retry spend into the parent session's cost report.
+
+## ADR-0012 — Model-facing skill invocation (`use_skill`) + skill chaining
+
+- **Status:** Accepted (shipped, 2026-06).
+- **Context:** Skills (M7) shipped L0 discovery, L1 lazy bodies, the `ON_SKILL_SELECTED` learning
+  signal, `save_skill`, and the human `/<name>` path — but the catalog told the model to "invoke a
+  skill by name" with **no tool to do so**. Only a human could invoke a skill; the model couldn't,
+  and skills could not chain. `Agent.invoke_skill`'s own docstring named the gap ("a future
+  model-facing tool").
+- **Decision:** Add the model-facing **`use_skill`** tool. It loads a skill's body by name and returns
+  it as the **tool result** (not a session message), fires `ON_SKILL_SELECTED` with `source="tool"`,
+  and is `READ_ONLY` / `NEVER_PARALLEL`. It reads a `SkillResolver`/`SkillLoad` seam off the
+  `ToolContext` (mirroring `sampler`/`spawner`); both invocation paths share one `_load_skill_body`
+  core. Registered **only when `enable_skills`**, so the default tool surface is byte-identical.
+- **Why this shape:**
+  - **Result, not session surgery.** Returning the body as the tool result (vs. injecting a user
+    message mid-turn) is the natural context-injection point and can't reorder the
+    assistant/tool-result exchange the loop is mid-assembly on.
+  - **Chaining falls out for free.** Because invocation is a tool call, a skill body whose step says
+    "now use the X skill" is carried out by the model calling `use_skill` again — no new machinery.
+  - **One core, two paths.** CLI `/<name>` and the tool both run `_load_skill_body` (resolve → lazy
+    read → defang → fire signal); only delivery and `source` differ, so behavior stays consistent.
+  - **Read-only + off by default.** The tool only reads a file and fires an observe-only hook; any
+    writes its instructions call for go through the ordinary file tools' own permission gates.
+- **Validated:** a live 3-skill relay (`bench/run_skill_chain.py`) — `gpt-4o-mini` invoked
+  `relay-start → relay-middle → relay-finish` in one turn, every call `source=tool`, all three
+  execution markers landed, `completed` for ~$0.003.
+- **Consequences:** skills are now a model-driven, composable capability surface, and the
+  `source` field lets a learning mind weight model- vs. operator-driven selections. **Deferred:**
+  exposing `use_skill` to sub-agents (their `ToolContext` carries no resolver, so it degrades to a
+  clean "not enabled" error); rolling per-invocation cost into a skills budget.
