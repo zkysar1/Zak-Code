@@ -1103,6 +1103,7 @@ class AgentLoop:
                 tool_name=call.name,
                 arguments=arguments,
                 cwd=cwd,
+                session_id=self.session.id,  # Claude-Code hooks key off it (agent/env injection)
             )
         )
         if pre.blocked:
@@ -1170,6 +1171,7 @@ class AgentLoop:
                 tool_name=call.name,
                 arguments=arguments,
                 cwd=cwd,
+                session_id=self.session.id,  # Claude-Code hooks key off it
                 output=tool_res.output,
                 is_error=tool_res.is_error,
             )

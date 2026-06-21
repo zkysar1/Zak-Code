@@ -31,12 +31,16 @@ _TESTS = (
 def _calc_agent(workspace: Path) -> tuple[Agent, Path, Path]:
     calc = workspace / "calc.py"
     tcalc = workspace / "test_calc.py"
+    # Forward-slash paths so the run command works under Git Bash on Windows (= Claude Code's Bash)
+    # as well as POSIX sh — backslashes are escape chars in bash. (Computed outside the f-string:
+    # Python 3.11 forbids backslashes in f-string expressions.)
+    py = sys.executable.replace("\\", "/")
     # The scripted "plan": write calc.py, write the tests, run them via bash, finish.
     provider = ScriptedProvider(
         [
             call_tool("write_file", {"path": str(calc), "content": _CALC}, id="w1"),
             call_tool("write_file", {"path": str(tcalc), "content": _TESTS}, id="w2"),
-            call_tool("bash", {"command": f'{sys.executable} "{tcalc}"'}, id="b1"),
+            call_tool("bash", {"command": f'"{py}" "{tcalc.as_posix()}"'}, id="b1"),
             reply("DONE — calc.py and test_calc.py created and tests pass."),
         ]
     )

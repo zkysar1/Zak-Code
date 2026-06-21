@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -138,7 +137,7 @@ async def test_bash_echo_output_and_exit(ctx: ToolContext) -> None:
 
 
 async def test_bash_nonzero_exit_is_error(ctx: ToolContext) -> None:
-    cmd = "exit 3" if sys.platform != "win32" else "cmd /c exit 3"
+    cmd = "exit 3"  # works in bash (Git Bash on Windows) and the cmd.exe fallback alike
     res = await BashTool().execute({"command": cmd}, ctx)
     assert res.is_error
     assert res.data is not None
@@ -185,14 +184,19 @@ async def test_subprocess_prepends_project_venv_to_path(
     # resolve to the project's interpreter (the "No module named pytest" false-failure fix).
     import os
 
+    from zakcode._subprocess import find_bash
     from zakcode.tools.builtins._proc import run_capturing
 
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)  # use the workspace .venv, not the runner's
-    bindir = _fake_venv(tmp_path)
-    cmd = "echo %PATH%" if os.name == "nt" else 'echo "$PATH"'
+    _fake_venv(tmp_path)
+    # The bash tool now runs real Git Bash on Windows (cmd.exe only on the no-bash fallback), so
+    # use bash syntax there too. Format-agnostic check: the workspace venv lives under the unique
+    # tmp dir, so that dir name appears in the child's PATH whether shown as C:\... or /c/...
+    use_bash = os.name != "nt" or find_bash() is not None
+    cmd = 'echo "$PATH"' if use_bash else "echo %PATH%"
     out, code = await run_capturing(shell_command=cmd, cwd=str(tmp_path), timeout=15)
     assert code == 0
-    assert str(bindir) in out
+    assert tmp_path.name in out
 
 
 async def test_path_escape_is_error(ctx: ToolContext) -> None:

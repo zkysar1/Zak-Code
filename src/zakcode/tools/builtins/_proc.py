@@ -15,11 +15,17 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from zakcode._subprocess import CommandTimeout, new_group_kwargs, terminate_process_tree
+from zakcode._subprocess import (
+    CommandTimeout,
+    find_bash,
+    new_group_kwargs,
+    terminate_process_tree,
+)
 
 __all__ = ["CommandTimeout", "run_capturing"]
 
@@ -97,7 +103,16 @@ async def run_capturing(
         **new_group_kwargs(),
     }
     if shell_command is not None:
-        proc = await asyncio.create_subprocess_shell(shell_command, **spawn_kwargs)
+        # On Windows, create_subprocess_shell runs the command through cmd.exe — but the "bash"
+        # tool must actually run bash (bash-isms, and Claude-Code-style frameworks like
+        # claude-mind whose scripts assume Git Bash). Route through real Git Bash when present;
+        # fall back to the platform shell (cmd.exe) only if no bash is found. On POSIX the
+        # platform shell is already a POSIX sh, so this redirect is Windows-only.
+        bash = find_bash() if sys.platform == "win32" else None
+        if bash is not None:
+            proc = await asyncio.create_subprocess_exec(bash, "-c", shell_command, **spawn_kwargs)
+        else:
+            proc = await asyncio.create_subprocess_shell(shell_command, **spawn_kwargs)
     else:
         assert argv is not None
         proc = await asyncio.create_subprocess_exec(*argv, **spawn_kwargs)
