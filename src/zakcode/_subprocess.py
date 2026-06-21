@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -21,6 +22,50 @@ from typing import Any
 
 class CommandTimeout(Exception):
     """Raised when a child exceeds its timeout — its process tree is killed first."""
+
+
+def find_bash() -> str | None:
+    """Absolute path to a real Bash interpreter, or ``None`` if none is found.
+
+    On Windows this deliberately AVOIDS the WindowsApps app-execution-alias stub (the WSL
+    ``bash.exe`` launcher): a bare ``create_subprocess_exec("bash")`` is hijacked by that stub
+    even when Git Bash is first on PATH (``CreateProcess`` consults app-exec aliases, unlike
+    ``shutil.which``), so a caller must spawn the ABSOLUTE path this returns. Prefers Git for
+    Windows. On POSIX it is just ``shutil.which("bash")``.
+    """
+    if sys.platform != "win32":
+        return shutil.which("bash")
+    bases = [
+        os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+        os.environ.get("PROGRAMW6432", r"C:\Program Files"),
+        os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"),
+    ]
+    for base in bases:
+        cand = os.path.join(base, "Git", "usr", "bin", "bash.exe") if base else ""
+        if cand and os.path.isfile(cand):
+            return cand
+    found = shutil.which("bash")
+    if found and "windowsapps" not in found.lower():  # skip the WSL app-exec stub
+        return found
+    return None
+
+
+def resolve_executable(name: str) -> str:
+    """Resolve a bare command name to a real absolute path, dodging the Windows app-exec stubs.
+
+    Returns ``name`` unchanged when it is already a path, or can't be confidently resolved (let
+    the OS try). The motivating case: a shell-hook ``argv[0]`` of ``bash`` on Windows resolving
+    to the WSL stub instead of the Git Bash actually on PATH.
+    """
+    if os.path.isabs(name) or os.sep in name or (os.altsep and os.altsep in name):
+        return name  # already a path
+    if sys.platform == "win32" and os.path.splitext(os.path.basename(name))[0].lower() == "bash":
+        return find_bash() or name
+    found = shutil.which(name)
+    if found and "windowsapps" not in found.lower():
+        return found
+    return name
 
 
 def new_group_kwargs() -> dict[str, Any]:

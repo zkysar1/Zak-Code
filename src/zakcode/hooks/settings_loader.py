@@ -27,6 +27,7 @@ import shlex
 import sys
 from pathlib import Path
 
+from zakcode._subprocess import resolve_executable
 from zakcode.hooks import DEFAULT_HOOK_TIMEOUT, HookEvent, HookSpec
 
 logger = logging.getLogger("zakcode.hooks.settings_loader")
@@ -49,10 +50,15 @@ _SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion"}
 
 
 def _split_command(cmd: str) -> list[str]:
-    """Split a shell command string into an argv array (platform-aware)."""
-    if sys.platform == "win32":
-        return shlex.split(cmd, posix=False)
-    return shlex.split(cmd)
+    """Split a shell command string into an argv array (platform-aware).
+
+    ``argv[0]`` is resolved to a real executable path so a hook's ``bash core/scripts/...``
+    spawns the actual Git Bash, not the Windows WSL app-exec stub (see ``resolve_executable``).
+    """
+    argv = shlex.split(cmd, posix=False) if sys.platform == "win32" else shlex.split(cmd)
+    if argv:
+        argv[0] = resolve_executable(argv[0])
+    return argv
 
 
 def _is_dangerous(command_str: str) -> str | None:

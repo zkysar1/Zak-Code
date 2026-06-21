@@ -54,7 +54,10 @@ def test_load_settings_stop_maps_to_turn_end(tmp_path: Path) -> None:
     specs, errors = load_settings_hooks(tmp_path)
     assert len(specs) == 1
     assert specs[0].event is HookEvent.TURN_END
-    assert specs[0].command == ["bash", "core/scripts/stop-hook.sh"]
+    # argv[0] is resolved to a real executable path (dodges the Windows WSL stub).
+    from zakcode._subprocess import resolve_executable
+
+    assert specs[0].command == [resolve_executable("bash"), "core/scripts/stop-hook.sh"]
     assert specs[0].timeout == 60.0
     # TE-R1: workspace-sourced hooks carry drop_env.
     assert len(specs[0].drop_env) >= 0  # At minimum the list exists.

@@ -383,7 +383,7 @@ async def test_grep_result_cap(ctx, tmp_path, monkeypatch):
 # bash
 # --------------------------------------------------------------------------- #
 async def test_bash_nonzero_exit_is_error_with_code(ctx):
-    cmd = "exit 3" if sys.platform != "win32" else "cmd /c exit 3"
+    cmd = "exit 3"  # works in bash (Git Bash on Windows) and the cmd.exe fallback alike
     res = await BashTool().execute({"command": cmd}, ctx)
     assert res.is_error
     assert res.data["exit_code"] == 3
@@ -450,6 +450,9 @@ def test_windows_shell_fix_remedies_quoting_and_not_found(monkeypatch):
     import zakcode.tools.builtins.bash as bash_mod
 
     monkeypatch.setattr(bash_mod.os, "name", "nt")
+    # The cmd-quoting hints only apply on the cmd.exe FALLBACK (no Git Bash). With real Git Bash
+    # the tool runs bash, so the hints are suppressed (see the sibling test).
+    monkeypatch.setattr(bash_mod, "find_bash", lambda: None)
     # A single-quote in the command line is itself a strong signal.
     quoted = bash_mod._windows_shell_fix("py -c 'import sys; print(sys)'", "[exit code: 1]")
     assert quoted is not None and "powershell" in quoted.lower()
@@ -463,6 +466,16 @@ def test_windows_shell_fix_remedies_quoting_and_not_found(monkeypatch):
         "ls -la", "'ls' is not recognized as an internal or external command"
     )
     assert not_found is not None and "powershell" in not_found.lower()
+
+
+def test_windows_shell_fix_silent_when_git_bash_present(monkeypatch):
+    # When real Git Bash is available the bash tool runs bash (not cmd.exe), so the cmd-quoting
+    # hints don't apply — even on a strong signal.
+    import zakcode.tools.builtins.bash as bash_mod
+
+    monkeypatch.setattr(bash_mod.os, "name", "nt")
+    monkeypatch.setattr(bash_mod, "find_bash", lambda: r"C:\Program Files\Git\usr\bin\bash.exe")
+    assert bash_mod._windows_shell_fix("py -c 'x'", "is not recognized") is None
 
 
 def test_windows_shell_fix_quiet_on_ordinary_and_off_windows(monkeypatch):

@@ -22,6 +22,7 @@ import asyncio
 import fnmatch
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
@@ -109,11 +110,18 @@ class HookResult(BaseModel):
 
 
 class HookPayload(BaseModel):
-    """The JSON document handed to a hook (on stdin for shell hooks)."""
+    """The JSON document handed to a tool-gate hook (on stdin for shell hooks).
+
+    Shell hooks are serialized with ``by_alias=True`` so the wire shape matches the **Claude
+    Code hook contract** — ``tool_input`` (not ``arguments``) and a top-level ``session_id`` —
+    which frameworks like claude-mind read (e.g. ``tool_input.command``, ``session_id`` to
+    resolve the agent and inject env). The in-process attribute stays ``arguments``.
+    """
 
     event: HookEvent
     tool_name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments: dict[str, Any] = Field(default_factory=dict, serialization_alias="tool_input")
+    session_id: str = ""
     cwd: str = ""
     # PostToolUse only: the result the tool produced.
     output: str | None = None
@@ -404,14 +412,12 @@ class HookManager:
         """
         if not spec.command:
             return TurnEndResult()
-        stdin_bytes = payload.model_dump_json().encode("utf-8")
+        stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
 
         # Build a scrubbed child env (provider-key hygiene). The per-spec list is the
         # PRIMARY scrub (populated at settings ingestion — TE-R1: hygiene applies to
         # all workspace hooks, like every sibling shell runner); the caller-supplied
         # ``drop_env`` is layered on top, so neither path depends on the other.
-        import os
-
         child_env = {**os.environ}
         for name in [*spec.drop_env, *(drop_env or [])]:
             child_env.pop(name, None)
@@ -422,6 +428,7 @@ class HookManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=_valid_cwd(payload.cwd),  # run at the workspace root (see _valid_cwd)
                 env=child_env,
                 **new_group_kwargs(),
             )
@@ -542,7 +549,7 @@ class HookManager:
         """
         if not spec.command:
             return None
-        stdin_bytes = payload.model_dump_json().encode("utf-8")
+        stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
         child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -550,6 +557,7 @@ class HookManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=_valid_cwd(payload.cwd),  # run at the workspace root (see _valid_cwd)
                 env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
@@ -604,7 +612,7 @@ class HookManager:
         """Run one lifecycle shell hook for its side effects; output is advisory."""
         if not spec.command:
             return
-        stdin_bytes = payload.model_dump_json().encode("utf-8")
+        stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
         child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -612,6 +620,7 @@ class HookManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=_valid_cwd(payload.cwd),  # run at the workspace root (see _valid_cwd)
                 env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
@@ -653,7 +662,7 @@ class HookManager:
         """
         if not spec.command:
             return None
-        stdin_bytes = payload.model_dump_json().encode("utf-8")
+        stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
         child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -661,6 +670,7 @@ class HookManager:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=_valid_cwd(payload.cwd),  # run at the workspace root (see _valid_cwd)
                 env=child_env,
                 **new_group_kwargs(),  # own process group so the whole tree is killable
             )
@@ -686,8 +696,16 @@ class HookManager:
             return HookResult(decision=HookDecision.WARN, messages=[f"hook error: {exc}"])
 
         code = proc.returncode
-        message, mutated_args = self._parse_stdout(stdout)
+        message, mutated_args, deny = self._parse_stdout(stdout)
 
+        # Claude Code blocks via {"hookSpecificOutput": {"permissionDecision": "deny"}} on
+        # exit 0 (not exit 2). Honor it as a BLOCK regardless of exit code.
+        if deny:
+            return HookResult(
+                decision=HookDecision.BLOCK,
+                messages=_msgs(message) or ["blocked by hook"],
+                mutated_arguments=mutated_args,
+            )
         if code == 0:
             return HookResult(
                 decision=HookDecision.ALLOW, messages=_msgs(message), mutated_arguments=mutated_args
@@ -705,23 +723,55 @@ class HookManager:
         )
 
     @staticmethod
-    def _parse_stdout(stdout: bytes) -> tuple[str, dict[str, Any] | None]:
-        """Best-effort parse of a hook's stdout for a message + mutated arguments."""
+    def _parse_stdout(stdout: bytes) -> tuple[str, dict[str, Any] | None, bool]:
+        """Best-effort parse of a hook's stdout: ``(message, mutated_arguments, deny)``.
+
+        Understands two stdout shapes:
+
+        - **Zak-native:** ``{"message": str, "arguments": {...}}``.
+        - **Claude Code** (what claude-mind and other Claude-Code hooks emit):
+          ``{"hookSpecificOutput": {"updatedInput": {...}, "permissionDecision":
+          "allow"|"deny"|"ask", "permissionDecisionReason": str}}``. ``updatedInput`` rewrites
+          the tool arguments (e.g. claude-mind's ``bash-agent-inject`` prepending
+          ``export PATH=...; export MIND_SID=...`` to a Bash command); ``permissionDecision ==
+          "deny"`` blocks the call — Claude Code blocks via this JSON on **exit 0**, not exit 2 —
+          so it is surfaced for the caller to honor.
+        """
         text = (stdout or b"").decode("utf-8", errors="replace").strip()
         if not text:
-            return ("", None)
+            return ("", None, False)
         try:
             doc = json.loads(text)
         except (json.JSONDecodeError, ValueError):
             # Plain text on stdout is just a message.
-            return (text, None)
+            return (text, None, False)
         if not isinstance(doc, dict):
-            return (text, None)
+            return (text, None, False)
         message = doc.get("message", "")
         message = message if isinstance(message, str) else ""
         args = doc.get("arguments")
         mutated = args if isinstance(args, dict) else None
-        return (message, mutated)
+        deny = False
+        hso = doc.get("hookSpecificOutput")
+        if isinstance(hso, dict):
+            updated = hso.get("updatedInput")
+            if isinstance(updated, dict):
+                mutated = updated
+            deny = hso.get("permissionDecision") == "deny"
+            reason = hso.get("permissionDecisionReason")
+            if not message and isinstance(reason, str):
+                message = reason
+        return (message, mutated, deny)
+
+
+def _valid_cwd(cwd: str) -> str | None:
+    """The directory a hook should run in: the workspace root when it exists, else inherit.
+
+    Hooks run AT the workspace root so a Claude-Code hook's relative command (e.g.
+    claude-mind's ``bash core/scripts/...``) resolves. Guarded with ``isdir`` so a payload
+    carrying a bogus/relative cwd never breaks hook spawn — it just inherits the parent cwd.
+    """
+    return cwd if cwd and os.path.isdir(cwd) else None
 
 
 def _msgs(message: str) -> list[str]:
