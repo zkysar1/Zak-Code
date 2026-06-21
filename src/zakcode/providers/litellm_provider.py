@@ -192,6 +192,7 @@ class LiteLLMProvider(Provider):
         api_key: str | None = None,
         num_retries: int | None = None,
         ollama_base_url: str | None = None,
+        request_timeout: float = 600.0,
     ) -> None:
         resolved_model = model
         resolved_temperature = temperature
@@ -222,6 +223,10 @@ class LiteLLMProvider(Provider):
         self.api_key: str | None = resolved_api_key
         self.num_retries: int = num_retries if num_retries is not None else 0
         self.ollama_base_url: str | None = resolved_ollama_base
+        # Per-call wall-clock ceiling: a hung/stuck model call can never block the loop forever.
+        # litellm raises Timeout past this, which _map_error turns into a recoverable provider error
+        # (the loop's own retry handles it; litellm's num_retries stays 0).
+        self.request_timeout: float = request_timeout
 
         # litellm reads OLLAMA_API_BASE from the environment for ollama_chat/*.
         if _is_ollama_model(self.model) and self.ollama_base_url:
@@ -546,6 +551,7 @@ class LiteLLMProvider(Provider):
             "drop_params": True,
             "num_retries": self.num_retries,
             "stream": False,
+            "timeout": self.request_timeout,
         }
         if tools:
             call_kwargs["tools"] = tools

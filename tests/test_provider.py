@@ -214,6 +214,16 @@ def test_build_kwargs_response_format_present_and_absent() -> None:
     assert p._build_kwargs(wire, None, response_format=rf)["response_format"] == rf
 
 
+def test_build_kwargs_sets_request_timeout() -> None:
+    # A per-call timeout is ALWAYS on the wire so a hung model call can't block the loop forever;
+    # the default is a generous safety-net ceiling, and it is overridable per provider.
+    p = _provider()
+    wire = [{"role": "user", "content": "x"}]
+    assert p._build_kwargs(wire, None)["timeout"] == 600.0
+    p2 = LiteLLMProvider(model="openai/gpt-4o", request_timeout=42.0)
+    assert p2._build_kwargs(wire, None)["timeout"] == 42.0
+
+
 async def test_acomplete_parses_tool_calls_dict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
