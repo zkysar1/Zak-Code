@@ -242,12 +242,15 @@ class SubAgentRunner:
             prompt_builder=self.prompt_builder_for(definition),
             settings=self.settings,
             permission_policy=child_policy,
-            hook_manager=self.hook_manager,
-            # A sub-agent is a sub-task within the parent's already-started session, not a new
-            # session: do NOT re-fire SessionStart. Re-running the workspace's session-start hooks
-            # per sub-agent is wasted work and makes concurrent delegations contend on shared
-            # resources (e.g. a Mind's boot daemon/locks) -- see AgentLoop.__init__.
-            fire_session_start=False,
+            # Claude Code runs a sub-agent with ONLY its own (frontmatter) hooks -- it does NOT
+            # inherit the parent's project hooks. So give the child its OWN empty hook set
+            # (hook_manager=None -> a fresh empty HookManager), NOT the parent's. The parent's
+            # per-tool gates (e.g. a Mind's eight PreToolUse[Write] hooks) and its SessionStart boot
+            # then do NOT fire per sub-agent -- avoiding wasted work + delegation contention on
+            # shared resources (daemon/locks). The loop's built-in write-grounding + verify gates
+            # (below) and the child permission policy still apply, so the child stays safe.
+            hook_manager=None,
+            fire_session_start=False,  # redundant with the empty hook set; kept for explicitness
             budget=self.budget,
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent

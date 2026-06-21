@@ -6,7 +6,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-alpha-green.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-2060%20passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-2061%20passing-brightgreen.svg">
 </p>
 
 ---
@@ -14,7 +14,7 @@
 > **Status: alpha — feature-complete against the roadmap (M0–M10) plus a
 > learning-substrate layer and an opt-in small-model quality engine, validated live on
 > OpenAI _and_ local models.** The core
-> engine, CLI, and HTTP API server are built and tested (2,060 passing tests; `ruff` +
+> engine, CLI, and HTTP API server are built and tested (2,061 passing tests; `ruff` +
 > `mypy` clean). It's a young project — expect rough edges — but it really runs: it
 > reads/writes files, runs commands, searches code, and drives multi-step tasks to
 > completion against a real model.
@@ -340,7 +340,7 @@ Zak-Code/
 │  ├─ server/           # FastAPI app + bundled web client (optional extra)
 │  └─ cli/              # the terminal client
 ├─ docs/                # living project documentation
-└─ tests/               # 2,069-test suite (incl. gated live-provider smoke tests)
+└─ tests/               # 2,070-test suite (incl. gated live-provider smoke tests)
 ```
 
 ## Acknowledgements & clean-room note

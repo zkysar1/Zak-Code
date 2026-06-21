@@ -408,3 +408,40 @@ async def test_subagent_does_not_refire_session_start(tmp_path: Path) -> None:
     result = await runner.run(GENERAL_PURPOSE, "do it")
     assert result.stop_reason == "completed"  # the sub-agent actually ran a turn ...
     assert fired == []  # ... but did NOT fire SESSION_START (the parent's session already started)
+
+
+async def test_subagent_gets_its_own_empty_hooks_not_the_parents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CC-faithful: a sub-agent runs ONLY its own (frontmatter) hooks -- it does NOT inherit the
+    # parent's project hooks. The runner builds the child loop with hook_manager=None (-> a fresh
+    # empty HookManager), NOT the parent's, so the parent's per-tool gates (e.g. a Mind's
+    # PreToolUse[Write] hooks) + SessionStart boot do not fire per sub-agent.
+    import zakcode.agent.subagent as sub
+    from zakcode.hooks import HookManager
+
+    captured: dict = {}
+
+    class _FakeLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def aclose(self) -> None:
+            pass
+
+        async def arun_turn(self, prompt: str) -> TurnResult:
+            return TurnResult(stop_reason="completed")
+
+    monkeypatch.setattr(sub, "AgentLoop", _FakeLoop)
+    parent_hooks = HookManager()
+    runner = SubAgentRunner(
+        provider=_OneShotProvider("x"),
+        registry=_registry(_RecordingTool("read_file")),
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        budget=IterationBudget(10),
+        workspace_root=tmp_path,
+        hook_manager=parent_hooks,
+    )
+    await runner.run(GENERAL_PURPOSE, "do it")
+    assert captured["hook_manager"] is None  # the child gets its OWN empty hook set ...
+    assert captured["hook_manager"] is not parent_hooks  # ... NOT the parent's
