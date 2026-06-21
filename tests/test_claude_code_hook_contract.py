@@ -201,3 +201,52 @@ def test_matcher_fires_on_claude_code_tool_names() -> None:
     # The tool's own (Zak Code) name still matches, and "*" still matches everything.
     assert _spec("use_skill").matches("use_skill")
     assert _spec("*").matches("anything")
+
+
+# ── (7) Claude Code's $CLAUDE_PROJECT_DIR (the project root) ──────────────────────
+
+
+def test_hook_command_expands_claude_project_dir(tmp_path: Path) -> None:
+    # A Claude-Code hook command referencing $CLAUDE_PROJECT_DIR is substituted with the workspace
+    # root (forward-slash) at load — we run hook argv without a shell, so nothing else expands it.
+    from zakcode.hooks.settings_loader import load_settings_hooks
+
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command", "command": "bash $CLAUDE_PROJECT_DIR/core/x.sh"}
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    specs, _errors = load_settings_hooks(tmp_path)
+    assert specs
+    expanded = specs[0].command[-1]
+    assert "$CLAUDE_PROJECT_DIR" not in expanded
+    assert expanded == f"{tmp_path.as_posix()}/core/x.sh"
+
+
+async def test_shell_hook_env_has_claude_project_dir(tmp_path: Path) -> None:
+    # The hook reports $CLAUDE_PROJECT_DIR from its environment; assert it is the workspace root.
+    body = (
+        "import sys, json, os; sys.stdin.read()\n"
+        "print(json.dumps({'hookSpecificOutput': {'permissionDecision': 'deny',\n"
+        "    'permissionDecisionReason': os.environ.get('CLAUDE_PROJECT_DIR', '<unset>')}}))\n"
+    )
+    mgr = HookManager(
+        [HookSpec(event=HookEvent.PRE_TOOL_USE, command=_script(tmp_path, "env.py", body))]
+    )
+    res = await mgr.run(_payload(tmp_path))
+    assert res.blocked
+    assert res.message == tmp_path.as_posix()
