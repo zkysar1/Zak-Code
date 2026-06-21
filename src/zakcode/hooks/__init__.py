@@ -40,12 +40,21 @@ DEFAULT_HOOK_TIMEOUT = 10.0
 
 def _scrubbed_env(drop: list[str]) -> dict[str, str]:
     """Return a copy of ``os.environ`` with *drop* names removed."""
-    import os
-
     child_env = dict(os.environ)
     for name in drop:
         child_env.pop(name, None)
     return child_env
+
+
+def _hook_env(drop: list[str], cwd: str) -> dict[str, str]:
+    """Child env for a shell hook: ``os.environ`` minus *drop*, plus ``CLAUDE_PROJECT_DIR`` set to
+    the workspace root (forward-slash form for Git Bash). That is Claude Code's hook env var —
+    Claude-Code hooks read it and reference scripts through it; Claude Code sets it, so we do too.
+    """
+    env = _scrubbed_env(drop)
+    if cwd:
+        env["CLAUDE_PROJECT_DIR"] = cwd.replace("\\", "/")
+    return env
 
 
 class HookEvent(StrEnum):
@@ -442,9 +451,7 @@ class HookManager:
         # PRIMARY scrub (populated at settings ingestion — TE-R1: hygiene applies to
         # all workspace hooks, like every sibling shell runner); the caller-supplied
         # ``drop_env`` is layered on top, so neither path depends on the other.
-        child_env = {**os.environ}
-        for name in [*spec.drop_env, *(drop_env or [])]:
-            child_env.pop(name, None)
+        child_env = _hook_env([*spec.drop_env, *(drop_env or [])], payload.cwd)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -574,7 +581,7 @@ class HookManager:
         if not spec.command:
             return None
         stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
-        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
+        child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,
@@ -637,7 +644,7 @@ class HookManager:
         if not spec.command:
             return
         stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
-        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
+        child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,
@@ -687,7 +694,7 @@ class HookManager:
         if not spec.command:
             return None
         stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
-        child_env = _scrubbed_env(spec.drop_env) if spec.drop_env else None
+        child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *spec.command,

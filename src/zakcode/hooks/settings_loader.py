@@ -95,6 +95,10 @@ def load_settings_hooks(
     from zakcode.secrets import provider_key_env_names
 
     scrub_names = provider_key_env_names()
+    # Claude Code's $CLAUDE_PROJECT_DIR (the project root); Claude-Code hooks reference scripts
+    # through it (e.g. `bash $CLAUDE_PROJECT_DIR/core/scripts/x.sh`). We run hook argv WITHOUT a
+    # shell, so substitute it here ourselves — forward-slash form so Git Bash resolves the path.
+    project_dir = workspace_root.as_posix()
 
     candidates = [
         workspace_root / ".claude" / "settings.json",
@@ -166,6 +170,9 @@ def load_settings_hooks(
                             )
                             # Fall through to register with warning.
 
+                    command_str = command_str.replace("${CLAUDE_PROJECT_DIR}", project_dir).replace(
+                        "$CLAUDE_PROJECT_DIR", project_dir
+                    )
                     try:
                         argv = _split_command(command_str)
                     except ValueError as exc:
