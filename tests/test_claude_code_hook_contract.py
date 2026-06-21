@@ -178,3 +178,26 @@ async def test_run_capturing_executes_shell_command(tmp_path: Path) -> None:
     )
     assert code == 0
     assert "claude_code_contract" in out
+
+
+# ── (6) a Claude-Code matcher fires on the equivalent Zak Code tool ──────────────
+
+
+def _spec(matcher: str) -> HookSpec:
+    return HookSpec(event=HookEvent.PRE_TOOL_USE, command=["x"], matcher=matcher)
+
+
+def test_matcher_fires_on_claude_code_tool_names() -> None:
+    # A matcher written for Claude Code fires on the corresponding Zak Code tool call, so a
+    # framework's PreToolUse gates (e.g. claude-mind's skill-dedup gate) apply unchanged.
+    assert _spec("Skill").matches("use_skill")
+    assert _spec("Read").matches("read_file")
+    assert _spec("Bash").matches("bash")  # case-correct cross-platform (fnmatch is POSIX-sensitive)
+    assert _spec("Edit").matches("edit_file")
+    assert _spec("MultiEdit").matches("edit_file")
+    # Specificity preserved: a Claude-Code matcher does NOT fire on an unrelated tool.
+    assert not _spec("Skill").matches("read_file")
+    assert not _spec("Bash").matches("read_file")
+    # The tool's own (Zak Code) name still matches, and "*" still matches everything.
+    assert _spec("use_skill").matches("use_skill")
+    assert _spec("*").matches("anything")

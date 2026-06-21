@@ -183,6 +183,27 @@ class TurnEndResult(BaseModel):
     continuation_prompt: str = ""
 
 
+#: Claude-Code tool names → the Zak Code tools they map to. A hook ``matcher`` written for Claude
+#: Code (``"Skill"``, ``"Read"``, ``"Bash"``) thus fires on the equivalent Zak Code tool
+#: (``use_skill``, ``read_file``, ``bash``) — so a Claude-Code framework's ``PreToolUse`` gates
+#: (e.g. claude-mind's skill-dedup gate) apply to the model's calls unchanged. Also corrects case
+#: (``Bash`` vs ``bash``; ``fnmatch`` is case-sensitive on POSIX). Only clear counterparts mapped.
+_CLAUDE_CODE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
+    "use_skill": ("Skill",),
+    "read_file": ("Read",),
+    "write_file": ("Write",),
+    "edit_file": ("Edit", "MultiEdit"),
+    "bash": ("Bash",),
+    "glob": ("Glob",),
+    "grep": ("Grep",),
+    "list_dir": ("LS",),
+    "web_search": ("WebSearch",),
+    "web_fetch": ("WebFetch",),
+    "task": ("Task",),
+    "update_plan": ("TodoWrite",),
+}
+
+
 class HookSpec(BaseModel):
     """A configured shell hook: when to fire, what to run, and how long to wait."""
 
@@ -196,7 +217,10 @@ class HookSpec(BaseModel):
     drop_env: list[str] = Field(default_factory=list)
 
     def matches(self, tool_name: str) -> bool:
-        return fnmatch.fnmatch(tool_name, self.matcher)
+        # Match the tool's own name OR its Claude-Code equivalent(s), so a matcher written for
+        # Claude Code (e.g. "Skill") fires on the corresponding Zak Code tool ("use_skill").
+        names = (tool_name, *_CLAUDE_CODE_TOOL_NAMES.get(tool_name, ()))
+        return any(fnmatch.fnmatch(name, self.matcher) for name in names)
 
 
 #: An in-process hook: ``(payload) -> HookResult | None`` (None == allow/no-op).
