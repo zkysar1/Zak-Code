@@ -243,6 +243,11 @@ class SubAgentRunner:
             settings=self.settings,
             permission_policy=child_policy,
             hook_manager=self.hook_manager,
+            # A sub-agent is a sub-task within the parent's already-started session, not a new
+            # session: do NOT re-fire SessionStart. Re-running the workspace's session-start hooks
+            # per sub-agent is wasted work and makes concurrent delegations contend on shared
+            # resources (e.g. a Mind's boot daemon/locks) -- see AgentLoop.__init__.
+            fire_session_start=False,
             budget=self.budget,
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent

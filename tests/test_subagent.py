@@ -385,3 +385,26 @@ async def test_child_inherits_extra_workspace_roots(tmp_path: Path, monkeypatch)
     )
     await runner.run(GENERAL_PURPOSE, "do it")
     assert captured["extra_workspace_roots"] == extra
+
+
+async def test_subagent_does_not_refire_session_start(tmp_path: Path) -> None:
+    # A sub-agent is a sub-task within the parent's already-started session: it must NOT re-run the
+    # workspace's SessionStart hooks. On a Mind those are a heavy boot, so re-firing them per
+    # sub-agent -- and, worse, concurrently across a parallel delegation -- makes the boots contend
+    # and can make parallel delegation SLOWER than sequential. Regression guard for that.
+    from zakcode.hooks import HookEvent, HookManager
+
+    fired: list[str] = []
+    mgr = HookManager()
+    mgr.register_lifecycle(HookEvent.SESSION_START, lambda p: fired.append(p.session_id))
+    runner = SubAgentRunner(
+        provider=_OneShotProvider("done"),
+        registry=_registry(_RecordingTool("read_file")),
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        budget=IterationBudget(10),
+        workspace_root=tmp_path,
+        hook_manager=mgr,
+    )
+    result = await runner.run(GENERAL_PURPOSE, "do it")
+    assert result.stop_reason == "completed"  # the sub-agent actually ran a turn ...
+    assert fired == []  # ... but did NOT fire SESSION_START (the parent's session already started)

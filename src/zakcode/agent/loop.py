@@ -488,6 +488,7 @@ class AgentLoop:
         skill_resolver: SkillResolver | None = None,
         turn_end_veto_budget: int = 0,
         completion_review_attempts: int = 0,
+        fire_session_start: bool = True,
     ) -> None:
         self.provider = provider
         # Deliberation seam: a Sampler for tools that make their own model calls (deep_think's
@@ -569,8 +570,14 @@ class AgentLoop:
         # empty (no-op) manager so the hook calls are always safe to make.
         self.permission_policy = permission_policy
         self.hook_manager = hook_manager or HookManager()
-        # Fired once, lazily, on the first turn of this loop's lifetime (a session).
-        self._session_started = False
+        # Fired once, lazily, on the first turn of this loop's lifetime (a session). A delegated
+        # sub-agent passes ``fire_session_start=False``: it is a sub-task WITHIN the parent's
+        # already-started session, not a new session, so it must NOT re-run the workspace's
+        # SessionStart hooks (e.g. a Mind's boot orchestrator). Re-running them per sub-agent is
+        # wasted work and, under concurrent delegation, makes the boots contend on shared resources
+        # (daemon/locks) -- which can make "parallel" delegation slower than sequential. Skipping it
+        # also matches Claude Code, where a sub-agent (Task) does not re-fire SessionStart.
+        self._session_started = not fire_session_start
         if max_iterations is not None:
             self.max_iterations = max_iterations
         else:
