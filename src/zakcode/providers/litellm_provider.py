@@ -380,15 +380,20 @@ class LiteLLMProvider(Provider):
         hidden = _get(response, "_hidden_params")
         if isinstance(hidden, dict):
             cost = cls._coerce_cost(hidden.get("response_cost"))
+        model = str(_get(response, "model") or "")
         if cost == 0.0:
             # litellm has no price entry for Groq's open lineup (served via an
             # OpenAI-compatible endpoint), so response_cost comes back 0 — /cost
             # and the budget ceiling would silently under-report. Fall back to our
             # published Groq rates (pricing.GROQ_RATES_PER_M). A genuine non-zero
             # response_cost (Anthropic, OpenAI proper, …) always wins.
-            cost = estimate_cost_usd(
-                str(_get(response, "model") or ""), prompt, completion, cache_read
-            )
+            cost = estimate_cost_usd(model, prompt, completion, cache_read)
+        if cost == 0.0 and (prompt or completion):
+            # Streaming chunks carry NO response_cost: litellm nulls it on the chunk and computes
+            # the cost later in an async callback the consumer never sees. For a non-Groq cloud
+            # model the Groq fallback is also 0, so /cost and the budget ceiling would under-report
+            # to $0 on the streaming path. Recompute from litellm's own price map by model + tokens.
+            cost = cls._litellm_token_cost(model, prompt, completion)
 
         return Usage(
             prompt_tokens=prompt,
@@ -398,6 +403,24 @@ class LiteLLMProvider(Provider):
             cache_read_tokens=cache_read,
             cache_creation_tokens=cache_creation,
         )
+
+    @staticmethod
+    def _litellm_token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+        """Cost from litellm's own price map by token counts — the streaming-path fallback when a
+        chunk carried no response_cost. Best-effort: any failure (unknown model) returns 0.0."""
+        if not model:
+            return 0.0
+        try:
+            import litellm
+
+            prompt_cost, completion_cost = litellm.cost_per_token(
+                model=model,
+                prompt_tokens=max(0, prompt_tokens),
+                completion_tokens=max(0, completion_tokens),
+            )
+            return float(prompt_cost) + float(completion_cost)
+        except Exception:  # noqa: BLE001 — cost estimation is best-effort, never breaks a turn
+            return 0.0
 
     @classmethod
     def _normalize(cls, response: Any) -> LLMResult:
@@ -522,6 +545,19 @@ class LiteLLMProvider(Provider):
                 "the model produced a malformed tool call and the provider "
                 "rejected it (tool_use_failed)"
             )
+        if cls._is_a(
+            exc,
+            None,
+            "Timeout",
+            "APITimeoutError",
+            "APIConnectionError",
+            "ServiceUnavailableError",
+            "InternalServerError",
+        ):
+            # Transient infrastructure errors (network timeout, dropped connection, 503/500): the
+            # remedy is a bounded backoff-retry, not a dead turn. Surfaced as RateLimited so the
+            # loop's existing retry path handles it (no retry_after -> default backoff).
+            return RateLimited(message, retry_after=retry_after)
         return RequestFailed(message)
 
     # ------------------------------------------------------------------

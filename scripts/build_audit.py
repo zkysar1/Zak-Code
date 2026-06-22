@@ -1052,6 +1052,10 @@ RESULTS: dict[str, tuple[str, str, str]] = {
 }
 
 
+# Phase 3: ids whose error has been fixed (Status -> Fixed). Grows per fix batch.
+FIXED: set[str] = {"PROV-12", "PROV-08", "PROV-10", "PROV-03"}
+
+
 def main() -> None:
     out = pathlib.Path(__file__).resolve().parents[1] / "docs" / "FEATURE_AUDIT.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1060,6 +1064,8 @@ def main() -> None:
         w.writerow(HEADER)
         for fid, area, feat, story, behavior in ROWS:
             status, result, notes = RESULTS.get(fid, ("Tested", "PASS", ""))
+            if fid in FIXED:
+                status, result = "Fixed", "FIXED"
             w.writerow((fid, area, feat, story, behavior, status, result, notes))
     print(f"wrote {len(ROWS)} rows to {out}")
 

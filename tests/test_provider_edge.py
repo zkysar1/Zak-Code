@@ -463,9 +463,11 @@ def test_extract_cost_real_litellm_cost_beats_fallback() -> None:
 
 
 def test_extract_cost_unknown_model_stays_zero() -> None:
-    # A model with no fallback rate (and no litellm cost) stays $0 — never guessed.
+    # A model with NO price anywhere (Groq fallback misses AND litellm's price map misses) stays
+    # $0 — never guessed. (A *known* cloud model with a missing response_cost IS recovered via
+    # litellm.cost_per_token; see test_provider.py::test_extract_usage_recovers_cloud_cost_*.)
     usage = LiteLLMProvider._extract_usage(
-        _FakeResponse([], _FakeUsage(1000, 100, 1100), model="openai/gpt-4o")
+        _FakeResponse([], _FakeUsage(1000, 100, 1100), model="madeup-vendor/no-such-model-xyz")
     )
     assert usage.cost_usd == 0.0
 
