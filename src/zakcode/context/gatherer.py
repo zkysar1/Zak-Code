@@ -23,6 +23,7 @@ discipline as the quality-engine judge).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
@@ -130,7 +131,9 @@ class ContextGatherer:
         self.last_message_count = payload.message_count
         self.last_task = payload.user_text
         self.last_offer = []
-        candidates = self._collect(payload)
+        # Collectors do blocking file I/O; run them off the event loop so the gather (which fires
+        # before every model call) can't stall the loop or concurrent sessions.
+        candidates = await asyncio.to_thread(self._collect, payload)
         if not candidates:
             return None
         try:

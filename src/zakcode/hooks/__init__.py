@@ -269,6 +269,9 @@ class HookManager:
         self.lifecycle_hooks: dict[HookEvent, list[LifecycleHook]] = {}
         # TURN_END in-process hooks: veto-capable, first veto wins and stops the chain.
         self.turn_end_hooks: list[InProcessTurnEndHook] = []
+        # Observe-only TURN_END hooks: side effects (e.g. signal logging) that run on EVERY turn
+        # end, any stop reason, independent of the veto budget. They cannot veto (return ignored).
+        self.turn_end_observers: list[InProcessTurnEndHook] = []
 
     def register(self, event: HookEvent, hook: InProcessHook) -> None:
         """Add an in-process hook (used by the plugin surface later)."""
@@ -291,6 +294,15 @@ class HookManager:
     def register_turn_end(self, hook: InProcessTurnEndHook) -> None:
         """Add an in-process ``TURN_END`` hook (veto-capable)."""
         self.turn_end_hooks.append(hook)
+
+    def register_turn_end_observer(self, hook: InProcessTurnEndHook) -> None:
+        """Add an OBSERVE-ONLY ``TURN_END`` hook. It runs on every turn end — any stop reason,
+        regardless of the veto budget — for its side effects; its return value is ignored."""
+        self.turn_end_observers.append(hook)
+
+    def has_turn_end_observers(self) -> bool:
+        """Whether any observe-only TURN_END hook is registered (cheap pre-check)."""
+        return bool(self.turn_end_observers)
 
     def has_lifecycle_hooks(self, event: HookEvent) -> bool:
         """Whether any hook would fire for ``event`` (cheap pre-check)."""
@@ -410,6 +422,12 @@ class HookManager:
             if result.vetoed:
                 return result
         return TurnEndResult()
+
+    async def run_turn_end_observers(self, payload: TurnEndPayload) -> None:
+        """Run every observe-only TURN_END hook for its side effects (return ignored, errors
+        fail-open). Unlike :meth:`run_turn_end`, this is NOT gated by the veto budget."""
+        for hook in self.turn_end_observers:
+            await self._run_turn_end_in_process(hook, payload)
 
     @staticmethod
     async def _run_turn_end_in_process(

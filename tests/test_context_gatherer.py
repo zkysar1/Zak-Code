@@ -27,8 +27,10 @@ from zakcode.context.gatherer import (
     _fit_budget,
     heuristic_classifier,
 )
+from zakcode.evals.harness import ScriptedProvider, reply
 from zakcode.hooks import HookManager, LLMContextPayload, TurnEndPayload
 from zakcode.messages import Message, ToolUseBlock
+from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider
 from zakcode.session.store import Session
 from zakcode.usage import Usage
@@ -292,14 +294,15 @@ def test_signal_logger_skips_when_no_offer(tmp_path) -> None:
     assert not log.exists()
 
 
-def test_agent_signal_log_registers_turn_end(tmp_path) -> None:
+def test_agent_signal_log_registers_observer(tmp_path) -> None:
     settings = Settings(
         default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
     )
     log = str(tmp_path / "sig.jsonl")
     on = Agent(settings=settings, enable_context_gathering=True, context_signal_log=log)
     off = Agent(settings=settings, enable_context_gathering=True)
-    assert len(on.hook_manager.turn_end_hooks) == len(off.hook_manager.turn_end_hooks) + 1
+    # Registered as an OBSERVE-ONLY turn-end hook so it fires regardless of the veto budget.
+    assert len(on.hook_manager.turn_end_observers) == len(off.hook_manager.turn_end_observers) + 1
 
 
 # --- trained classifier (step 4) -------------------------------------------
@@ -365,3 +368,24 @@ def test_agent_bad_weights_falls_back(tmp_path) -> None:
         context_classifier_weights=str(tmp_path / "nope.json"),
     )
     assert len(agent.hook_manager.context_hooks) == 1
+
+
+async def test_signal_log_written_through_real_turn(tmp_path) -> None:
+    # The gap that hid the dead-by-default bug: drive a REAL turn and assert the signal logger
+    # fires with the DEFAULT turn_end_veto_budget (0). It must run as an observe-only hook.
+    (tmp_path / "target.py").write_text("x = 1\n", encoding="utf-8")
+    log = tmp_path / "sig.jsonl"
+    agent = Agent(
+        provider=ScriptedProvider([reply("looked at it")]),
+        permission_policy=PermissionPolicy("allow"),
+        default_model="scripted/e2e",
+        workspace_root=str(tmp_path),
+        enable_context_gathering=True,
+        context_signal_log=str(log),
+    )
+    result = await agent.arun_turn("please look at target.py")
+    assert result.stop_reason == "completed", result.stop_reason
+    assert log.is_file(), "signal log not written — the observe-only turn-end hook never fired"
+    rec = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert rec["n_offered"] >= 1
+    assert any(o["ref"] == "target.py" for o in rec["offered"])
