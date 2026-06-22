@@ -219,7 +219,9 @@ class Agent:
     configured MCP servers; their tools register on ``await connect_mcp()``.
     Pass ``enable_context_gathering=True`` for a deterministic within-session
     context gatherer that injects relevant workspace context every turn (off by
-    default; see :mod:`zakcode.context`).
+    default; see :mod:`zakcode.context`). Set ``context_classifier="model"`` to
+    rank that context with one cheap model call per turn (fail-soft to the
+    heuristic).
     """
 
     def __init__(
@@ -249,6 +251,7 @@ class Agent:
         identity: str | None = None,
         enable_compaction: bool = False,
         enable_context_gathering: bool = False,
+        context_classifier: str = "heuristic",
         enable_settings_hooks: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
@@ -638,7 +641,15 @@ class Agent:
         if enable_context_gathering:
             from zakcode.context import default_gatherer
 
-            self.hook_manager.register_context(default_gatherer())
+            if context_classifier == "model":
+                from zakcode.context import SmallModelClassifier
+
+                # The cheap relevance call rides the context seam; SmallModelClassifier exposes
+                # on_usage for callers that want to account the (small) spend.
+                gatherer = default_gatherer(SmallModelClassifier(self.provider))
+            else:
+                gatherer = default_gatherer()
+            self.hook_manager.register_context(gatherer)
 
         # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
         # before a turn once it exceeds the provider's context-window threshold.

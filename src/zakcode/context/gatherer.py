@@ -23,10 +23,11 @@ discipline as the quality-engine judge).
 
 from __future__ import annotations
 
+import inspect
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from zakcode.hooks import LLMContextPayload
 
@@ -55,7 +56,9 @@ class RelevanceClassifier(Protocol):
     heuristic (step 1), a small-model classifier (step 2), a fine-tuned model
     (step 4) -- and the gatherer only ever sees this Protocol."""
 
-    def __call__(self, task: str, candidates: Sequence[Candidate]) -> list[Candidate]: ...
+    def __call__(
+        self, task: str, candidates: Sequence[Candidate]
+    ) -> list[Candidate] | Awaitable[list[Candidate]]: ...
 
 
 def heuristic_classifier(task: str, candidates: Sequence[Candidate]) -> list[Candidate]:
@@ -119,12 +122,16 @@ class ContextGatherer:
                 )
         return out
 
-    def __call__(self, payload: LLMContextPayload) -> str | None:
+    async def __call__(self, payload: LLMContextPayload) -> str | None:
         candidates = self._collect(payload)
         if not candidates:
             return None
         try:
-            ranked = self._classify(payload.user_text, candidates)
+            maybe = self._classify(payload.user_text, candidates)
+            if inspect.isawaitable(maybe):
+                ranked = await cast("Awaitable[list[Candidate]]", maybe)
+            else:
+                ranked = cast("list[Candidate]", maybe)
         except Exception:  # noqa: BLE001 - a bad classifier degrades to the cheap order, never a broken turn
             logger.debug("relevance classifier failed; falling back to heuristic", exc_info=True)
             ranked = heuristic_classifier(payload.user_text, candidates)

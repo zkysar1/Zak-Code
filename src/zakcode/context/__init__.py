@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from .classify import SmallModelClassifier, score_relevance
 from .collectors import mentioned_files_collector, recent_files_collector
 from .gatherer import (
     Candidate,
@@ -27,10 +28,12 @@ __all__ = [
     "Collector",
     "ContextGatherer",
     "RelevanceClassifier",
+    "SmallModelClassifier",
     "default_gatherer",
     "heuristic_classifier",
     "mentioned_files_collector",
     "recent_files_collector",
+    "score_relevance",
 ]
 
 
