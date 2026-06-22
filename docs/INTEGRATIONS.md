@@ -35,6 +35,10 @@ while the *behavior* comes from whatever plugs in. The full plan and boundary ru
 | **statusLine** | The `statusLine` command from settings, fed session JSON per turn and rendered (cosmetic, fail-safe). | `ZAKCODE_STATUS_LINE` / `Agent(enable_status_line=True)` |
 | **output-styles** | A named output style (`.claude/output-styles/<name>.md`, selected via `outputStyle`) injected into the system prompt to shape generation. | `ZAKCODE_OUTPUT_STYLE` / `Agent(enable_output_style=True)` |
 
+**Settings location.** Hooks additionally read `<workspace>/.zakcode/settings.json` (Zak Code's own
+settings location); permissions, statusLine, and output-styles read the `.claude/` files only
+(`settings.json` + `settings.local.json`), so a Claude-Code plug-in's `.claude/` config is what they honor.
+
 **The guardian.** Each contract area has a generic conformance test that *never names a plug-in*, in
 `tests/test_cc_conformance.py` (`pytest -m cc_conformance`); `tests/test_cc_ecosystem.py` is the
 ecosystem proof — a complete, framework-agnostic Claude-Code plug-in (slash-triggered skill +
