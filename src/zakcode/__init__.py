@@ -175,6 +175,10 @@ class SkillInvocation:
     invoked: bool
     name: str = ""
     error: str | None = None
+    #: Set when a discovered skill exists but this invocation path is refused — e.g. a
+    #: ``user-invocable: false`` skill typed as a human ``/<name>`` command (it runs internally,
+    #: reached only by another skill chaining to it). Distinct from ``error`` (a load failure).
+    denied_reason: str | None = None
 
 
 class _SkillToolResolver:
@@ -1002,6 +1006,21 @@ class Agent:
         skill = registry.resolve(name) if registry is not None else None
         if skill is None:
             return SkillLoad(found=False, name=name)
+        # Honor Claude Code's ``user-invocable: false``: such a skill is internal — reached by
+        # another skill chaining to it (or the model's use_skill), never by a human typing
+        # ``/<name>``. Refuse only the human COMMAND path; the model's tool path may still chain.
+        not_user_invocable = (
+            str(skill.frontmatter.extras.get("user_invocable", "")).strip().lower() == "false"
+        )
+        if source == "command" and not_user_invocable:
+            return SkillLoad(
+                found=True,
+                name=skill.name,
+                denied_reason=(
+                    f"{skill.name} is not user-invocable — it runs internally "
+                    "(another skill invokes it), so it can't be started by typing it."
+                ),
+            )
         if source == "tool":
             budget = self.settings.skill_invocation_budget
             if budget > 0 and self._skill_invocations_this_turn >= budget:
@@ -1054,6 +1073,10 @@ class Agent:
         load = await self._load_skill_body(name, source="command", args=args)
         if not load.found:
             return SkillInvocation(invoked=False)
+        if load.denied_reason:
+            # Discovered but refused (e.g. user-invocable: false typed as /<name>): handled, but
+            # not loaded — surfaced to the operator with the session left untouched.
+            return SkillInvocation(invoked=True, name=load.name, denied_reason=load.denied_reason)
         if load.error or load.body is None:
             return SkillInvocation(invoked=True, name=load.name, error=load.error)
         self.session.add_message(Message.user(f"[skill: {load.name}]\n{load.body}"))

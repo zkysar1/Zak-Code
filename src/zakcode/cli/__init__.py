@@ -652,6 +652,10 @@ def _invoke_skill(console: Console, agent: Agent, name: str, args: str = "") -> 
         # The file may have changed/vanished since discovery; report, don't crash the REPL.
         notice_error(console, "could not load skill", f"{result.name}: {result.error}")
         return True
+    if result.denied_reason:
+        # A policy refusal (e.g. user-invocable: false), not a failure — a friendly notice.
+        notice_info(console, result.denied_reason)
+        return True
     console.print(
         margin(
             Text.assemble(

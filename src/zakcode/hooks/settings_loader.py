@@ -2,9 +2,10 @@
 
 Discovery order:
 1. ``<workspace>/.claude/settings.json``
-2. ``<workspace>/.zakcode/settings.json``
+2. ``<workspace>/.claude/settings.local.json`` (Claude Code's per-machine local overrides)
+3. ``<workspace>/.zakcode/settings.json``
 
-Both are read; hooks from both are merged into a single list.
+All are read; hooks from each are merged into a single list.
 
 Event-name mapping: Claude Code's ``"Stop"`` event IS the ``TURN_END`` seam.
 Unknown or unimplemented events (``StopFailure``, ``UserPromptExpansion``) are
@@ -103,6 +104,9 @@ def load_settings_hooks(
 
     candidates = [
         workspace_root / ".claude" / "settings.json",
+        # Per-machine local overrides (Claude Code's settings.local.json), read AFTER the shared
+        # settings.json so its hooks add to the project's (non-hook config would override later).
+        workspace_root / ".claude" / "settings.local.json",
         workspace_root / ".zakcode" / "settings.json",
     ]
     for settings_path in candidates:

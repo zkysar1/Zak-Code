@@ -162,6 +162,22 @@ def test_settings_json_unimplemented_event_is_skipped_not_crashed(tmp_path: Path
     assert "StopFailure" in errors
 
 
+def test_settings_local_json_hooks_are_also_loaded(tmp_path: Path) -> None:
+    # Claude Code splits config across settings.json (shared) and settings.local.json (per-machine);
+    # a faithful host reads both, and hooks from each contribute.
+    _settings_json(
+        tmp_path, {"PreToolUse": [{"hooks": [{"type": "command", "command": "bash a.sh"}]}]}
+    )
+    _write(
+        tmp_path / ".claude" / "settings.local.json",
+        json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "bash b.sh"}]}]}}),
+    )
+    specs, _errors = load_settings_hooks(tmp_path)
+    events = {s.event for s in specs}
+    assert HookEvent.PRE_TOOL_USE in events  # from settings.json
+    assert HookEvent.TURN_END in events  # from settings.local.json
+
+
 # ===========================================================================
 # Commands — Claude Code slash arguments (`/skill args`, use_skill args=…)
 # ===========================================================================
@@ -176,10 +192,11 @@ def _scripted_agent(workspace: Path) -> Agent:
     )
 
 
-def _write_claude_skill(workspace: Path, name: str, body: str) -> None:
+def _write_claude_skill(workspace: Path, name: str, body: str, *, frontmatter: str = "") -> None:
+    extra = f"{frontmatter}\n" if frontmatter else ""
     _write(
         workspace / ".claude" / "skills" / name / "SKILL.md",
-        f"---\nname: {name}\ndescription: {name} skill.\n---\n{body}\n",
+        f"---\nname: {name}\ndescription: {name} skill.\n{extra}---\n{body}\n",
     )
 
 
@@ -205,3 +222,21 @@ async def test_use_skill_tool_passes_arguments_to_the_body(tmp_path: Path) -> No
     res = await tool.execute({"name": "looper", "args": "loop"}, ctx)
     assert res.is_error is False
     assert "[arguments: loop]" in res.output
+
+
+async def test_user_invocable_false_blocks_human_path_not_model_chaining(tmp_path: Path) -> None:
+    # Claude Code's `user-invocable: false` marks an internal skill: reachable by another skill
+    # chaining to it (the model's use_skill), but NOT by a human typing /<name>. Honor both sides.
+    _write_claude_skill(tmp_path, "boot", "Boot body.", frontmatter="user-invocable: false")
+    agent = _scripted_agent(tmp_path)
+    before = len(agent.session.messages)
+    # Human `/boot` is refused, and the session is left untouched (nothing injected).
+    refused = await agent.invoke_skill("boot")
+    assert refused.denied_reason is not None and "user-invocable" in refused.denied_reason
+    assert len(agent.session.messages) == before
+    # The model may still reach it via use_skill (internal chaining is allowed).
+    tool = agent.registry.get("use_skill")
+    assert tool is not None
+    ctx = ToolContext(workspace_root=tmp_path, skill_resolver=agent.loop._skill_resolver)
+    res = await tool.execute({"name": "boot"}, ctx)
+    assert res.is_error is False and "boot body" in res.output.lower()
