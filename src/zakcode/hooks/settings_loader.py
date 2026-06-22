@@ -62,13 +62,14 @@ def _split_command(cmd: str) -> list[str]:
 
 
 def _is_dangerous(command_str: str) -> str | None:
-    """Return the reason if *command_str* matches a DANGEROUS_PATTERN, else None."""
-    from zakcode.permissions import DANGEROUS_PATTERNS
+    """Return the reason *command_str* is catastrophic, else None.
 
-    for pattern, reason in DANGEROUS_PATTERNS:
-        if pattern.search(command_str):
-            return reason
-    return None
+    Delegates to the permission gate's shared scan (the DANGEROUS_PATTERNS regexes + the recursive
+    root/home ``rm`` tokeniser) so the hook loader and the gate never drift.
+    """
+    from zakcode.permissions import scan_command_danger
+
+    return scan_command_danger(command_str)
 
 
 def load_settings_hooks(

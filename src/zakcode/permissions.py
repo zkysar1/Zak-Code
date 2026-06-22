@@ -137,26 +137,56 @@ _MODE_LOOSENESS: dict[PermissionMode, int] = {
 }
 
 
-#: Catastrophic shell-command patterns. A match forces at least a confirmation
-#: prompt (or a hard deny in ``deny`` mode), regardless of the tier/mode verdict.
+# Recursive root/home ``rm`` detection (catastrophic-command blocklist). A match forces at least a
+# confirmation prompt (a hard deny in ``deny``/``autonomous`` mode), regardless of the tier verdict.
+# In CODE (not DANGEROUS_PATTERNS) to stay ReDoS-proof -- see _is_dangerous_recursive_rm.
+def _names_root_or_home(arg: str) -> bool:
+    """True if an ``rm`` target names an absolute (``/``…), home (``~``), or ``$HOME`` path."""
+    a = arg.lstrip("'\"")
+    return a.startswith(("/", "~")) or a.startswith("$HOME") or a.startswith("${HOME}")
+
+
+def _is_dangerous_recursive_rm(command: str) -> bool:
+    """True iff ``command`` runs ``rm`` RECURSIVELY against a root/home path.
+
+    Detected by TOKENISATION (not a regex) so it can't ReDoS on a long ``rm -r -r …`` run and is
+    not fooled by a glued ``-rf/etc`` form or by flags after the path. A recursive delete of a
+    RELATIVE subdir (``rm -rf ./build``) is NOT flagged. Each shell segment (split on ``; & | ( )``)
+    is examined on its own, so ``rm -rf build && echo /etc`` is not mis-flagged. A recursive flag is
+    required: a short flag bundle containing r/R (-r/-rf/-fr/-Rf, in any position) or --recursive.
+    """
+    for segment in re.split(r"[;&|()]+", command):
+        tokens = segment.split()
+        rm_at = next((k for k, t in enumerate(tokens) if t.rsplit("/", 1)[-1] == "rm"), None)
+        if rm_at is None:
+            continue
+        recursive = dangerous = False
+        for arg in tokens[rm_at + 1 :]:
+            if arg.startswith("--"):
+                if arg.split("=", 1)[0] in ("--recursive", "--recurse"):
+                    recursive = True
+            elif arg.startswith("-"):
+                run = re.match(r"-[a-zA-Z]*", arg)  # leading short-flag bundle (linear, no ReDoS)
+                end = run.end() if run else 1
+                flags, glued = arg[1:end], arg[end:]
+                if any(c in "rR" for c in flags):
+                    recursive = True
+                if glued and _names_root_or_home(glued):  # glued path, e.g. -rf/etc, -rf~
+                    dangerous = True
+            elif _names_root_or_home(arg):
+                dangerous = True
+        if recursive and dangerous:
+            return True
+    return False
+
+
 #: Patterns are intentionally conservative (aimed at clear footguns) so they rarely
 #: false-positive on benign commands; the tier/mode gate is the primary control.
 DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (
-        # Only RECURSIVE removal of a root/home path is the footgun (``rm -rf /``, ``rm -r ~``).
-        # Plain ``rm -f <file>`` (no recursion) is benign and must NOT escalate -- a recursive
-        # flag is required: a short flag containing r/R (-r/-R/-rf/-fr/-Rf, possibly after other
-        # flags) OR --recursive. The dangerous path may sit at ANY argument position (``rm -rf tmp
-        # /etc`` is still caught, not just ``rm -rf /etc``), and must START with / (absolute), ~, or
-        # $HOME/${HOME} -- so a recursive delete of a RELATIVE subdir (``./build``, ``dist/``)
-        # is NOT escalated. Optional leading quote on the path. (Disjoint \S+/\s+ groups => linear,
-        # no catastrophic backtracking.)
-        re.compile(
-            r"\brm\s+(?:-\S+\s+)*(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\s+"
-            r"(?:\S+\s+)*['\"]?(/|~|\$\{?HOME)"
-        ),
-        "recursive remove of a root or home path",
-    ),
+    # Recursive root/home ``rm`` is NOT a regex here -- see :func:`_is_dangerous_recursive_rm`, a
+    # tokeniser checked alongside this list in ``_dangerous_reason``. (A single regex for "rm,
+    # recursively, any flag form, path at any position" needs two overlapping token-eaters -> O(n^2)
+    # ReDoS on a long ``rm -r -r … `` run, and still misses glued ``-rf/etc``. Code is ReDoS-proof.)
     (re.compile(r"(^|\s)sudo(\s|$)"), "privilege escalation (sudo)"),
     (re.compile(r"\bmkfs\b|\bformat\s+[A-Za-z]:", re.IGNORECASE), "filesystem format"),
     (re.compile(r":\s*\(\s*\)\s*\{.*\}\s*;\s*:"), "shell fork bomb"),
@@ -214,6 +244,22 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "download-and-execute (web request piped to Invoke-Expression)",
     ),
 ]
+
+
+def scan_command_danger(command: str) -> str | None:
+    """The catastrophic-blocklist reason ``command`` matches, or None.
+
+    The shared scan over the built-in :data:`DANGEROUS_PATTERNS` regexes PLUS the recursive
+    root/home ``rm`` tokeniser (:func:`_is_dangerous_recursive_rm`). Used by the settings-hook
+    loader; :class:`PermissionPolicy` runs the same scan over its operator-extended instance list.
+    """
+    for pattern, reason in DANGEROUS_PATTERNS:
+        if pattern.search(command):
+            return reason
+    if _is_dangerous_recursive_rm(command):
+        return "recursive remove of a root or home path"
+    return None
+
 
 #: Argument keys whose string values are scanned against DANGEROUS_PATTERNS.
 _SHELL_ARG_KEYS = ("command", "cmd", "script")
@@ -474,6 +520,10 @@ class PermissionPolicy:
                 for pattern, description in self.dangerous_patterns:
                     if pattern.search(value):
                         return description
+                # Recursive root/home rm is a tokeniser check (ReDoS-proof), always on -- a built-in
+                # footgun is never removable via a custom dangerous_patterns list.
+                if _is_dangerous_recursive_rm(value):
+                    return "recursive remove of a root or home path"
         return None
 
     def dangerous_reason(self, arguments: dict) -> str | None:
@@ -793,5 +843,6 @@ __all__ = [
     "PermissionPrompter",
     "PermissionPolicy",
     "DANGEROUS_PATTERNS",
+    "scan_command_danger",
     "compile_deny_patterns",
 ]
