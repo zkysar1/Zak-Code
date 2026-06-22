@@ -56,6 +56,39 @@ def test_no_rules_flag_disables_rules(tmp_path: Path) -> None:
     assert agent.rule_registry is None
 
 
+def test_session_flag_resumes_a_saved_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CLI-08: `-s <id>` resumes a persisted session (it was a dead flag -- store never wired).
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from zakcode.messages import Message
+    from zakcode.session.store import Session, SessionStore
+
+    saved = Session(id="resume-me", cwd=str(tmp_path), model="scripted/test")
+    saved.add_message(Message.user("remember this line"))
+    SessionStore().save(saved)
+
+    agent = _build_chat_agent(
+        ConsolePermissionPrompter(Console()), _overrides(tmp_path), session_id="resume-me"
+    )
+    assert agent.session.id == "resume-me"  # the named session, not a fresh one
+    assert len(agent.session.messages) >= 1  # its transcript came back
+    assert agent.store is not None  # and turns now persist
+
+
+def test_session_flag_unknown_id_raises_session_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CLI-08: a bad `-s` id raises SessionError (chat() turns it into a clean message, not a crash).
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from zakcode.session.store import SessionError
+
+    with pytest.raises(SessionError):
+        _build_chat_agent(
+            ConsolePermissionPrompter(Console()), _overrides(tmp_path), session_id="no-such-session"
+        )
+
+
 def test_untrusted_plugin_not_runnable_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
