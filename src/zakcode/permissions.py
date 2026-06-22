@@ -143,14 +143,18 @@ _MODE_LOOSENESS: dict[PermissionMode, int] = {
 #: false-positive on benign commands; the tier/mode gate is the primary control.
 DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
-        # Only RECURSIVE removal of a root/home path is the footgun (``rm -rf /``,
-        # ``rm -r ~``). Plain ``rm -f <file>`` (force, no recursion) is benign and must
-        # NOT escalate — the flag group requires an ``r``, so ``-r``/``-rf``/``-fr`` match
-        # but ``-f`` alone does not.
-        # The target path must START with / (absolute), ~ or $HOME (home) -- so a recursive
-        # delete of a RELATIVE subdir (``rm -rf ./build``, ``rm -rf dist/``) is NOT escalated,
-        # while ``rm -rf /``, ``rm -rf /etc``, ``rm -rf ~`` still are. Optional leading quote.
-        re.compile(r"\brm\s+-[a-z]*r[a-z]*\s+(?:-\S+\s+)*['\"]?(/|~|\$HOME)"),
+        # Only RECURSIVE removal of a root/home path is the footgun (``rm -rf /``, ``rm -r ~``).
+        # Plain ``rm -f <file>`` (no recursion) is benign and must NOT escalate -- a recursive
+        # flag is required: a short flag containing r/R (-r/-R/-rf/-fr/-Rf, possibly after other
+        # flags) OR --recursive. The dangerous path may sit at ANY argument position (``rm -rf tmp
+        # /etc`` is still caught, not just ``rm -rf /etc``), and must START with / (absolute), ~, or
+        # $HOME/${HOME} -- so a recursive delete of a RELATIVE subdir (``./build``, ``dist/``)
+        # is NOT escalated. Optional leading quote on the path. (Disjoint \S+/\s+ groups => linear,
+        # no catastrophic backtracking.)
+        re.compile(
+            r"\brm\s+(?:-\S+\s+)*(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\s+"
+            r"(?:\S+\s+)*['\"]?(/|~|\$\{?HOME)"
+        ),
         "recursive remove of a root or home path",
     ),
     (re.compile(r"(^|\s)sudo(\s|$)"), "privilege escalation (sudo)"),
