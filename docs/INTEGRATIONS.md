@@ -72,7 +72,8 @@ deterministic gatherer (`zakcode.context`) on this seam: it injects relevant
 one cheap model call per turn, fail-soft to the heuristic; a fine-tuned model drops in behind the
 same Protocol later). It is *within-session* context assembly,
 distinct from the cross-session memory below; off by default, so the clean substrate ships no
-gatherer.
+gatherer. `context_signal_log=<path>` appends each turn's offered-vs-used relevance signal as JSONL
+— the training data for a learned ranker.
 
 ### 3. Skills (`.claude/skills/<name>/SKILL.md`)
 

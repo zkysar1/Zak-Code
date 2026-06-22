@@ -22,12 +22,15 @@ from .gatherer import (
     RelevanceClassifier,
     heuristic_classifier,
 )
+from .signal import SignalLogger, SignalRecord
 
 __all__ = [
     "Candidate",
     "Collector",
     "ContextGatherer",
     "RelevanceClassifier",
+    "SignalLogger",
+    "SignalRecord",
     "SmallModelClassifier",
     "default_gatherer",
     "heuristic_classifier",
