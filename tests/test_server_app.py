@@ -221,6 +221,18 @@ def test_session_crud(client: TestClient) -> None:
     assert client.delete(f"/sessions/{sid}").status_code == 404
 
 
+def test_list_sessions_skips_a_corrupt_file(client: TestClient, tmp_path: Path) -> None:
+    # SRV-04: a corrupt session file must not crash GET /sessions -- it's skipped; readable sessions
+    # still list. (The store dir is tmp_path/sessions, per the `client` fixture.)
+    good = client.post("/sessions").json()["id"]
+    (tmp_path / "sessions" / "corrupt.json").write_text("{ not valid json", encoding="utf-8")
+    listed = client.get("/sessions")
+    assert listed.status_code == 200
+    ids = {s["id"] for s in listed.json()}
+    assert good in ids  # the valid session lists
+    assert "corrupt" not in ids  # the unreadable file was skipped, not crashed on
+
+
 def test_session_artifacts_list_and_download(tmp_path: Path) -> None:
     settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
@@ -263,7 +275,7 @@ def test_session_upload_saves_file_and_records_downloadable_artifact(tmp_path: P
 
     assert uploaded.status_code == 201
     body = uploaded.json()
-    assert body["path"].startswith(f"uploads/{session_id[:8]}/")
+    assert body["path"].startswith(f"uploads/{session_id}/")
     assert body["path"].endswith("notes.txt")
     assert body["bytes"] == len(b"hello upload")
     assert body["artifact"]["kind"] == "text"

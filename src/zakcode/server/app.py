@@ -201,7 +201,8 @@ def _safe_upload_filename(filename: str) -> str:
 def _unique_upload_path(workspace_root: Path, session: Session, filename: str) -> Path:
     """Allocate a non-clobbering upload path under ``uploads/<session>/``."""
     root = workspace_root.resolve()
-    upload_dir = (root / "uploads" / session.id[:8]).resolve()
+    # The FULL session id (not an 8-char prefix) so two sessions never share an upload dir.
+    upload_dir = (root / "uploads" / session.id).resolve()
     try:
         upload_dir.relative_to(root)
     except ValueError as exc:  # pragma: no cover - defensive; path is internally derived

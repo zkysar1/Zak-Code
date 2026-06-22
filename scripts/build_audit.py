@@ -1037,17 +1037,17 @@ RESULTS: dict[str, tuple[str, str, str]] = {
     "CTX-01": (
         "Tested",
         "PASS",
-        "note (med/ux, judgment call): the context-gathering subsystem has no CLI/env surface -- Python Agent kwargs only. Intended API-only, or a gap?",
+        "note (med/ux, RESOLVED): intended API-only -- the context-gatherer is an opt-in framework seam (Agent kwarg), not a user-facing CLI feature. By design, not a gap.",
     ),
     "SRV-04": (
         "Tested",
         "PASS",
-        "note (low): no test asserts the corrupt-session-skip listing behavior (code is correct).",
+        "note (low, FIXED): added a test for the corrupt-session-skip listing behavior (code was already correct).",
     ),
     "SRV-09": (
         "Tested",
         "PASS",
-        "note (low): upload dir keyed by session.id[:8]; an 8-hex prefix collision shares a dir (hygiene, not a leak).",
+        "note (low, FIXED): upload dir now keyed by the FULL session.id (was [:8] -- an 8-hex prefix collision shared a dir).",
     ),
 }
 
