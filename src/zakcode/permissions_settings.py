@@ -19,14 +19,16 @@ CC gesture                        Zak Code seam
                                   → ``extra_dangerous_patterns``
 ``deny Read|Edit|Write|          a protected-path **regex string** → ``compile_protected_paths``
 MultiEdit(path-glob)``            → ``extra_protected_paths``
-``deny ToolName`` / ``           a ``tool_mode_overrides`` entry pinning that tool to ``deny``
+``deny ToolName`` / ``           ``extra_denied_tools`` — an unconditional, tier-independent deny
 ToolName(*)``
 ``allow ToolName(...)``           a ``tool_mode_overrides`` entry pinning that tool to ``allow``
 ``ask  ...``                      the default posture (prompt) — recorded as skipped, no-op
 ================================  ==============================================================
 
-THE SECURITY INVARIANT (the whole point). Translation may only ever TIGHTEN. An ingested
-``allow`` is mapped to a per-tool ``allow`` *mode*, which still runs — before any allow
+THE SECURITY INVARIANT (the whole point). The never-waivable safety FLOOR is preserved regardless of
+what is ingested. A whole-tool ``deny`` denies that tool UNCONDITIONALLY (``extra_denied_tools``,
+tier-independent — even a read-only tool). A whole-tool ``allow`` is a per-tool ``allow`` *mode*:
+it can loosen a benign call for that tool, but it still runs — before any allow
 decision — the never-waivable catastrophic-command floor and the protected-path floor: a
 catastrophic command (``rm -rf /``) escalates to a confirmation prompt (a hard DENY in an
 ``autonomous`` session, and a fail-closed DENY when no prompter is present), and a write to a
@@ -92,13 +94,20 @@ class IngestedPermissions:
     denied_command_regexes: list[str] = field(default_factory=list)
     #: Regex strings for ``extra_protected_paths`` (via ``compile_protected_paths``).
     protected_path_regexes: list[str] = field(default_factory=list)
-    #: ``tool_mode_overrides`` entries: a deny gesture → ``"deny"``; an allow gesture → ``"allow"``.
+    #: ``tool_mode_overrides`` entries — ALLOW gestures only (a whole-tool DENY goes to
+    #: ``denied_tools`` so it binds unconditionally, regardless of the tool's tier).
     tool_mode_overrides: dict[str, str] = field(default_factory=dict)
+    #: Whole-tool DENY gestures → ``PermissionPolicy(extra_denied_tools=...)``: a tier-independent
+    #: unconditional deny (a mode override could not bind a read-only tool like ``web_fetch``).
+    denied_tools: set[str] = field(default_factory=set)
 
     def is_empty(self) -> bool:
         """True when nothing mappable was found (so the Agent can skip wiring entirely)."""
         return not (
-            self.denied_command_regexes or self.protected_path_regexes or self.tool_mode_overrides
+            self.denied_command_regexes
+            or self.protected_path_regexes
+            or self.tool_mode_overrides
+            or self.denied_tools
         )
 
 
@@ -257,12 +266,21 @@ def _translate_gestures(
             errors[key] = f"no Zak Code tool maps to CC tool {tool!r}; gesture skipped"
             continue
 
-        # Whole-tool gesture (bare ``ToolName``, ``ToolName()``, ``*``, ``**``) → a per-tool mode
-        # override. deny → pin the tool to 'deny'; allow → pin it to 'allow' (the catastrophic /
-        # protected-path floor still runs first — see the module docstring).
+        # Whole-tool gesture (bare ``ToolName``, ``ToolName()``, ``*``, ``**``). A DENY denies the
+        # tool UNCONDITIONALLY (``denied_tools`` → the policy's tier-independent deny; a mode
+        # override can't bind a read-only tool). An ALLOW pins the tool to 'allow' mode (the
+        # catastrophic / protected-path floor still runs first). A deny beats an allow.
         if _is_whole_tool_pattern(pattern):
-            mode = "deny" if decision == "deny" else "allow"
-            _set_tool_mode(zak_tool, mode, out, errors, key)
+            if decision == "deny":
+                out.denied_tools.add(zak_tool)
+                out.tool_mode_overrides.pop(zak_tool, None)  # a deny supersedes any prior allow
+            elif zak_tool in out.denied_tools:
+                errors[key] = (
+                    f"allow for tool {zak_tool!r} ignored: a deny for the same tool already "
+                    "applies (deny wins — tighten-only)"
+                )
+            else:
+                out.tool_mode_overrides[zak_tool] = "allow"
             continue
 
         assert pattern is not None  # _is_whole_tool_pattern handled None/empty above
@@ -292,29 +310,6 @@ def _translate_gestures(
                 f"deny {raw!r}: tool {tool!r} has no per-pattern deny seam "
                 "(only Bash commands and file paths are pattern-mappable); skipped"
             )
-
-
-def _set_tool_mode(
-    zak_tool: str,
-    mode: str,
-    out: IngestedPermissions,
-    errors: dict[str, str],
-    key: str,
-) -> None:
-    """Set a per-tool mode override, refusing to let an ``allow`` overwrite an existing ``deny``.
-
-    Within one ingestion a ``deny`` on a tool must win over an ``allow`` on the same tool — that is
-    the tighten-only contract at the gesture level (a deny is the stricter intent). So a ``deny``
-    always overwrites; an ``allow`` is ignored if a ``deny`` for that tool is already recorded.
-    """
-    existing = out.tool_mode_overrides.get(zak_tool)
-    if existing == "deny" and mode == "allow":
-        errors[key] = (
-            f"allow for tool {zak_tool!r} ignored: a deny for the same tool already applies "
-            "(deny wins — tighten-only)"
-        )
-        return
-    out.tool_mode_overrides[zak_tool] = mode
 
 
 def load_settings_permissions(

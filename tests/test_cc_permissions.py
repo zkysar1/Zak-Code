@@ -177,13 +177,16 @@ def test_allow_bash_star_in_autonomous_is_hard_deny(tmp_path: Path) -> None:
 
 
 def test_deny_bare_tool_denies_the_whole_tool(tmp_path: Path) -> None:
-    # A bare ``deny: ["Bash"]`` (or ``Bash(*)``) pins bash to 'deny' mode: every bash call is
-    # blocked outright, even under an otherwise-permissive 'allow' session.
+    # A bare ``deny: ["Bash"]`` denies bash UNCONDITIONALLY (via extra_denied_tools, not a mode
+    # override): every bash call is blocked outright, even under a permissive 'allow' session.
+    # (See test_extra_denied_tools_binds_a_read_only_tool — not a mode override.)
     _write_permissions(tmp_path, {"deny": ["Bash"]})
+    ingested, _ = load_settings_permissions(tmp_path)
+    assert "bash" in ingested.denied_tools
     agent = _agent(tmp_path, mode="allow")
     decision, reason = agent.permission_policy.decide(_spec(agent, "bash"), {"command": "ls"})
     assert decision is PermissionDecision.DENY
-    assert "deny" in reason.lower()
+    assert "denied" in reason.lower()
 
 
 # ── unmappable gestures are recorded, never crashed or mis-mapped ───────────────
@@ -265,10 +268,12 @@ def test_settings_local_json_permissions_are_also_ingested(tmp_path: Path) -> No
 
 
 def test_deny_beats_allow_for_same_tool(tmp_path: Path) -> None:
-    # If the same file both denies and allows a tool as a whole, deny wins (the stricter intent).
+    # If the same file both denies and allows a tool as a whole, deny wins (the stricter intent):
+    # bash lands in denied_tools (unconditional) and the allow is dropped, not applied as a mode.
     _write_permissions(tmp_path, {"deny": ["Bash"], "allow": ["Bash(*)"]})
     ingested, errors = load_settings_permissions(tmp_path)
-    assert ingested.tool_mode_overrides.get("bash") == "deny"
+    assert "bash" in ingested.denied_tools
+    assert "bash" not in ingested.tool_mode_overrides
     assert any("deny wins" in v.lower() for v in errors.values())
 
 
@@ -302,3 +307,33 @@ class _BashSpecStub:
         from zakcode.config import PermissionTier
 
         return PermissionTier.DANGER_FULL_ACCESS
+
+
+class _WebFetchSpecStub:
+    """A READ_ONLY tool stub — the tier a deny MODE override silently fails to bind."""
+
+    name = "web_fetch"
+
+    @property
+    def required_permission(self):  # noqa: ANN202 - tiny stub
+        from zakcode.config import PermissionTier
+
+        return PermissionTier.READ_ONLY
+
+
+def test_extra_denied_tools_binds_a_read_only_tool() -> None:
+    # THE BLOCKER REGRESSION (policy level): a whole-tool deny must bind even a READ_ONLY tool. A
+    # deny MODE override cannot (deny's ceiling is READ_ONLY, which a read-only tool satisfies); the
+    # tier-independent extra_denied_tools does.
+    policy = PermissionPolicy(PermissionMode.ALLOW, extra_denied_tools={"web_fetch"})
+    decision, reason = policy.decide(_WebFetchSpecStub(), {"url": "http://x"})
+    assert decision is PermissionDecision.DENY and "denied" in reason.lower()
+
+
+def test_ingested_bare_deny_binds_a_read_only_tool(tmp_path: Path) -> None:
+    # End-to-end: an ingested ``deny: ["WebFetch"]`` (a READ_ONLY CC tool) denies it through
+    # the wired Agent policy — the read-only path the original mode-override silently missed.
+    _write_permissions(tmp_path, {"deny": ["WebFetch"]})
+    agent = _agent(tmp_path, mode="allow")
+    decision, reason = agent.permission_policy.decide(_WebFetchSpecStub(), {"url": "http://x"})
+    assert decision is PermissionDecision.DENY and "denied" in reason.lower()

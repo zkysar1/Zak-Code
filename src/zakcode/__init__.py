@@ -375,6 +375,7 @@ class Agent:
         denied_command_regexes = list(self.settings.denied_commands)
         protected_path_regexes = list(self.settings.protected_paths)
         ingested_tool_modes: dict[str, str] = {}
+        ingested_denied_tools: set[str] = set()
         if permission_policy is None and (
             enable_settings_permissions
             if enable_settings_permissions is not None
@@ -390,6 +391,9 @@ class Agent:
             denied_command_regexes.extend(_ingested.denied_command_regexes)
             protected_path_regexes.extend(_ingested.protected_path_regexes)
             ingested_tool_modes = dict(_ingested.tool_mode_overrides)
+            # Whole-tool deny gestures → a tier-independent unconditional deny (binds read-only
+            # tools too, which a mode override cannot). The operator cannot loosen these.
+            ingested_denied_tools = set(_ingested.denied_tools)
         # Operator tool_trust_overrides overlay the ingested ones (operator is the trusted local
         # authority); the merged map feeds tool_mode_overrides below.
         merged_tool_modes = {**ingested_tool_modes, **dict(self.settings.tool_trust_overrides)}
@@ -407,6 +411,8 @@ class Agent:
             # any ingested CC path-deny gestures, appended to the built-in .git/.env/venv/config
             # floor.
             extra_protected_paths=compile_protected_paths(protected_path_regexes),
+            # Ingested whole-tool CC deny gestures — denied unconditionally, regardless of tier.
+            extra_denied_tools=ingested_denied_tools,
         )
         # Rehydrate operator grants persisted with the session (audit P0-2d / D12 / Q5).
         # Honored only when the active mode is at least as loose as the grant-time mode;
