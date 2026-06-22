@@ -504,6 +504,27 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Workspace settings.json permission-rule ingestion (Phase 3; opt-in) ──
+    # Read Claude Code's ``permissions.{allow,deny,ask}`` Tool(pattern) gestures from
+    # <workspace>/.claude/settings.json + settings.local.json and TRANSLATE them into this
+    # engine's deny-first PermissionPolicy (a deny Bash-glob → a command deny pattern; a deny
+    # Read/Edit/Write path-glob → a protected path; a bare-tool deny/allow → a per-tool mode
+    # override). Tighten-only: the always-on catastrophic + protected-path floor runs BEFORE any
+    # ingested allow, so a CC ``allow: ["Bash(*)"]`` can never auto-run ``rm -rf /`` or write
+    # ``.env``. Off by default (like settings_hooks) so a workspace carrying ANOTHER runtime's
+    # permission config doesn't silently reshape this engine's posture. See
+    # zakcode.permissions_settings.
+    settings_permissions: bool = Field(
+        default=False,
+        description=(
+            "Translate Claude Code permissions.{allow,deny,ask} rules from "
+            "<workspace>/.claude/settings.json + settings.local.json into the deny-first "
+            "PermissionPolicy (ZAKCODE_SETTINGS_PERMISSIONS=true). Off by default. Tighten-only: "
+            "the always-on safety floor runs before any ingested allow. Hosts can force the "
+            "behavior per-Agent via Agent(enable_settings_permissions=True/False)."
+        ),
+    )
+
     # ── Web tools (web_search / web_fetch) ───────────────────────────────────
     # Which vendor-agnostic search backend `web_search` uses. ``ddgs`` (the default) is free and
     # needs no key; ``tavily`` reads TAVILY_API_KEY from the env (like other provider keys — never

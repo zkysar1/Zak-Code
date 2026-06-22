@@ -11,10 +11,12 @@ only be written by referencing a specific plug-in, the host has leaked plug-in b
 core and the design is wrong. See docs/CLAUDE-CODE-HOST-ROADMAP.md and docs/CLAUDE-MIND-COMPAT.md.
 
 Contract areas (each roadmap row lands its test here):
-  - Skills   (done)    — .claude/skills/<name>/SKILL.md discovery + tolerant frontmatter
-  - Hooks    (done)    — settings.json ingestion, Stop->TurnEnd mapping, $CLAUDE_PROJECT_DIR
-  - Commands (Phase 1) — triggers-based dispatch, args, user-invocable
-  - Settings (Phase 1) — settings.json + settings.local.json layering
+  - Skills      (done)    — .claude/skills/<name>/SKILL.md discovery + tolerant frontmatter
+  - Hooks       (done)    — settings.json ingestion, Stop->TurnEnd mapping, $CLAUDE_PROJECT_DIR
+  - Commands    (Phase 1) — triggers-based dispatch, args, user-invocable
+  - Settings    (Phase 1) — settings.json + settings.local.json layering
+  - Permissions (Phase 3) — permissions.{allow,deny} Tool(glob) gestures → the deny-first policy,
+                            tighten-only (the safety floor outranks any ingested allow)
 """
 
 from __future__ import annotations
@@ -354,3 +356,61 @@ async def test_turn_end_materializes_a_readable_cc_transcript(tmp_path: Path) ->
         for block in e["message"]["content"]
         if isinstance(block, dict)
     )
+
+
+# ===========================================================================
+# Permissions — the Claude Code `permissions.{allow,deny}` Tool(glob) contract
+# ===========================================================================
+
+
+def test_settings_permissions_deny_path_glob_is_translated_to_a_protected_path(
+    tmp_path: Path,
+) -> None:
+    # A faithful host reads CC's permissions.deny path gestures and protects those paths. Here a
+    # generic ``Write(*/state/*)`` deny must yield a protected-path rule (a write there can never
+    # silently auto-allow). Translation only — enforcement is the policy's existing floor.
+    from zakcode.permissions_settings import load_settings_permissions
+
+    _write(
+        tmp_path / ".claude" / "settings.json",
+        json.dumps({"permissions": {"deny": ["Write(*/state/*)", "Bash(git push --force*)"]}}),
+    )
+    ingested, errors = load_settings_permissions(tmp_path)
+    assert ingested.protected_path_regexes  # the Write path-glob
+    assert ingested.denied_command_regexes  # the Bash command-glob
+    assert not errors  # both gestures mapped cleanly
+
+
+async def test_settings_permissions_ingestion_is_tighten_only(tmp_path: Path) -> None:
+    # THE host promise for permissions: ingesting a framework's config can only ever TIGHTEN. Even
+    # with the most permissive gesture (``allow: ["Bash(*)"]``) ingested, the never-waivable
+    # catastrophic floor still denies ``rm -rf /``. (Generic — no plug-in named.)
+    _write(
+        tmp_path / ".claude" / "settings.json",
+        json.dumps({"permissions": {"allow": ["Bash(*)"]}}),
+    )
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", workspace_root=tmp_path, permission_mode="ask"
+        ),
+        enable_settings_permissions=True,
+    )
+    bash = agent.registry.get("bash")
+    assert bash is not None
+    allowed, _reason = await agent.permission_policy.authorize(bash.spec, {"command": "rm -rf /"})
+    assert allowed is False  # the floor outranks the ingested allow
+
+
+def test_settings_permissions_off_by_default(tmp_path: Path) -> None:
+    # A workspace may carry ANOTHER runtime's permission config; without the opt-in flag a faithful
+    # host must NOT reshape its posture from it. A bare ``deny: ["Bash"]`` is inert when off.
+    _write(
+        tmp_path / ".claude" / "settings.json",
+        json.dumps({"permissions": {"deny": ["Bash"]}}),
+    )
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+        ),
+    )
+    assert "bash" not in agent.permission_policy.tool_mode_overrides

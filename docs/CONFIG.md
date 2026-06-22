@@ -91,11 +91,12 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 | `egress_proxy` | `ZAKCODE_EGRESS_PROXY` | `false` | Route bash/powershell egress through a localhost domain-allowlisting proxy. |
 | `egress_allowed_domains` | `ZAKCODE_EGRESS_ALLOWED_DOMAINS` | `[]` | Domains the egress proxy permits; empty + proxy on = deny all subprocess egress. |
 
-## Settings hooks
+## Settings ingestion (Claude Code `.claude/settings.json`)
 
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
 | `settings_hooks` | `ZAKCODE_SETTINGS_HOOKS` | `false` | Load shell hooks from `<workspace>/.claude/settings.json` + `.zakcode/settings.json` (event names mapped; `Stop` → `TurnEnd`; dangerous commands hard-denied in autonomous mode; provider keys scrubbed from hook env). Off by default so workspaces configured for other hook runtimes don't half-fire here. |
+| `settings_permissions` | `ZAKCODE_SETTINGS_PERMISSIONS` | `false` | Translate Claude Code's `permissions.{allow,deny,ask}` `Tool(pattern)` gestures from `<workspace>/.claude/settings.json` + `settings.local.json` into the deny-first permission policy (a `deny Bash(glob)` → a command-deny pattern; a `deny Read/Edit/Write(path-glob)` → a protected path; a bare-tool `deny`/`allow` → a per-tool mode override). **Tighten-only:** the always-on catastrophic + protected-path floor runs *before* any ingested `allow`, so a CC `allow: ["Bash(*)"]` can never auto-run `rm -rf /` or write `.env`. Unmappable gestures (e.g. `AskUserQuestion(*)`, per-pattern `allow`) are logged and skipped, never mis-mapped. Off by default so a workspace carrying another runtime's permission config doesn't silently reshape the posture. Per-Agent override: `Agent(enable_settings_permissions=…)`. |
 
 > Cross-session **memory** is not a harness concern — it is claude-mind's. A Mind attaches its own
 > recall/store through the generic hook/tool seams (see [`docs/PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)

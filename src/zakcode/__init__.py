@@ -264,6 +264,7 @@ class Agent:
         context_classifier_weights: str | None = None,
         context_signal_judge: bool = False,
         enable_settings_hooks: bool | None = None,
+        enable_settings_permissions: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
     ) -> None:
@@ -360,18 +361,49 @@ class Agent:
             if self.settings.dependency_gate
             else None
         )
+        # Claude Code permissions.{allow,deny,ask} ingestion (Phase 3; opt-in). When enabled (and no
+        # explicit permission_policy was injected — an injected policy is the caller's full
+        # authority), translate the workspace's CC permission gestures into the SAME tighten-only
+        # seams the operator settings use, and UNION them: ingested deny command/path patterns are
+        # appended to the operator's (the floor only grows), and ingested per-tool modes are laid
+        # down FIRST so the operator's tool_trust_overrides (higher-authority local config) win
+        # on any conflict. The always-on catastrophic + protected-path floor runs before any allow,
+        # so this can never loosen the policy. None defers to Settings.settings_permissions.
+        denied_command_regexes = list(self.settings.denied_commands)
+        protected_path_regexes = list(self.settings.protected_paths)
+        ingested_tool_modes: dict[str, str] = {}
+        if permission_policy is None and (
+            enable_settings_permissions
+            if enable_settings_permissions is not None
+            else self.settings.settings_permissions
+        ):
+            from zakcode.permissions_settings import load_settings_permissions
+
+            _ingested, _perm_errs = load_settings_permissions(workspace_root)
+            for _key, _err in _perm_errs.items():
+                logger.warning("settings.json permission %s: %s", _key, _err)
+            # Union, tighten-only: ingested deny patterns extend the operator's; ingested per-tool
+            # modes go under the operator's (operator wins a conflict).
+            denied_command_regexes.extend(_ingested.denied_command_regexes)
+            protected_path_regexes.extend(_ingested.protected_path_regexes)
+            ingested_tool_modes = dict(_ingested.tool_mode_overrides)
+        # Operator tool_trust_overrides overlay the ingested ones (operator is the trusted local
+        # authority); the merged map feeds tool_mode_overrides below.
+        merged_tool_modes = {**ingested_tool_modes, **dict(self.settings.tool_trust_overrides)}
         self.permission_policy = permission_policy or PermissionPolicy(
             self.settings.permission_mode,
             prompter=prompter,
-            extra_dangerous_patterns=compile_deny_patterns(self.settings.denied_commands),
+            extra_dangerous_patterns=compile_deny_patterns(denied_command_regexes),
             # Opt-in egress gate: confirm every web_fetch before it reaches the network.
             confirm_tools={"web_fetch"} if self.settings.web_fetch_confirm else None,
-            # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load.
-            tool_mode_overrides=dict(self.settings.tool_trust_overrides),
+            # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load — merged
+            # with any ingested CC bare-tool deny/allow gestures (operator wins a conflict).
+            tool_mode_overrides=merged_tool_modes,
             declared_packages=declared_packages,
-            # Protected-path floor extras (self-remediation Step 2): operator-added patterns
-            # appended to the built-in .git/.env/venv/config floor.
-            extra_protected_paths=compile_protected_paths(self.settings.protected_paths),
+            # Protected-path floor extras (self-remediation Step 2): operator-added patterns plus
+            # any ingested CC path-deny gestures, appended to the built-in .git/.env/venv/config
+            # floor.
+            extra_protected_paths=compile_protected_paths(protected_path_regexes),
         )
         # Rehydrate operator grants persisted with the session (audit P0-2d / D12 / Q5).
         # Honored only when the active mode is at least as loose as the grant-time mode;
