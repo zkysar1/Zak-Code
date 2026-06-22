@@ -97,6 +97,18 @@ def test_unknown_tool_is_fail_closed() -> None:
         "rm -rf ~/stuff",
         "rm -fr /",  # flag order doesn't matter: -fr is still recursive
         "rm -r /etc",  # recursive without -f is still the footgun
+        # PERM-03 hardening (Phase 4): a dangerous path at a LATER arg position, capital -R, long
+        # --recursive, and separated flags must all still escalate.
+        "rm -rf tmp /etc",  # positional arg BEFORE the absolute path (the regression)
+        "rm -rf a.txt /home/user",
+        "rm -rf ./keep /usr",  # relative kept, then an absolute wipe
+        "rm -rf -- foo /etc",  # -- end-of-options, then positional, then path
+        "rm -Rf /",  # capital -R
+        "rm -fR /",
+        "rm --recursive --force /",  # long flags
+        "rm --recursive /",
+        "rm -f -r /",  # the recursive flag is the SECOND flag
+        "rm -rf ${HOME}",  # braced home var
         "sudo rm file",
         "mkfs.ext4 /dev/sda1",
         ":(){ :|:& };:",
@@ -143,6 +155,9 @@ def test_dangerous_command_hard_denied_in_deny_mode() -> None:
         "rm -rf src/__pycache__",
         "rm -rf node_modules",
         "rm -f config.py",
+        "rm -rf foo bar",  # two relative targets, no absolute/home -> still benign
+        "rm -rf build/ dist/",
+        "rm -rf src/a src/b",
     ],
 )
 def test_relative_recursive_rm_not_flagged(command: str) -> None:
