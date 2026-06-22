@@ -1047,7 +1047,7 @@ async def _server_turn_stream(
     """
     from zakcode.server.client import ServerClient
 
-    client = ServerClient(base_url)
+    client = ServerClient(base_url, auth_token=os.environ.get("ZAKCODE_AUTH_TOKEN"))
     try:
         async for event in client.astream_turn(message, session_id):
             yield event
@@ -1061,7 +1061,7 @@ def _create_remote_session(base_url: str) -> str:
     async def _go() -> str:
         from zakcode.server.client import ServerClient
 
-        client = ServerClient(base_url)
+        client = ServerClient(base_url, auth_token=os.environ.get("ZAKCODE_AUTH_TOKEN"))
         try:
             return await client.create_session()
         finally:

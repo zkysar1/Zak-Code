@@ -34,16 +34,22 @@ class ServerClient:
         base_url: str = DEFAULT_BASE_URL,
         *,
         http_client: httpx.AsyncClient | None = None,
+        auth_token: str | None = None,
     ) -> None:
         self._base_url = base_url
         self._client = http_client
         # We only own (and therefore close) a client we created ourselves; an
         # injected one is the caller's to manage.
         self._owns_client = http_client is None
+        # When the server has ZAKCODE_AUTH_TOKEN set, every request needs a bearer token; without
+        # this the remote-driver path 401s against an authenticated server (only the client we
+        # create carries it -- an injected client's auth is the caller's to manage).
+        self._auth_token = auth_token
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(base_url=self._base_url, timeout=None)
+            headers = {"Authorization": f"Bearer {self._auth_token}"} if self._auth_token else None
+            self._client = httpx.AsyncClient(base_url=self._base_url, timeout=None, headers=headers)
         return self._client
 
     async def health(self) -> dict[str, Any]:
