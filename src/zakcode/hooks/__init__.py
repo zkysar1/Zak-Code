@@ -354,16 +354,17 @@ class HookManager:
         messages: list[str] = []
         arguments = dict(payload.arguments)
         mutated = False
+        extras: list[str] = []  # PostToolUse additionalContext, aggregated across hooks
 
         # In-process hooks first (cheap, trusted), then configured shell hooks.
         for hook in self.in_process.get(payload.event, []):
             current = payload.model_copy(update={"arguments": arguments})
             one = await self._run_in_process(hook, current)
             decision, messages, arguments, mutated = self._fold(
-                one, payload.event, decision, messages, arguments, mutated
+                one, payload.event, decision, messages, arguments, mutated, extras
             )
             if decision is HookDecision.BLOCK:
-                return self._result(decision, messages, arguments, mutated)
+                return self._result(decision, messages, arguments, mutated, extras)
 
         for spec in self.shell_hooks:
             if spec.event is not payload.event or not spec.matches(payload.tool_name):
@@ -371,12 +372,12 @@ class HookManager:
             current = payload.model_copy(update={"arguments": arguments})
             one = await self._run_shell(spec, current)
             decision, messages, arguments, mutated = self._fold(
-                one, payload.event, decision, messages, arguments, mutated
+                one, payload.event, decision, messages, arguments, mutated, extras
             )
             if decision is HookDecision.BLOCK:
-                return self._result(decision, messages, arguments, mutated)
+                return self._result(decision, messages, arguments, mutated, extras)
 
-        return self._result(decision, messages, arguments, mutated)
+        return self._result(decision, messages, arguments, mutated, extras)
 
     async def gather_context(self, payload: LLMContextPayload) -> list[str]:
         """Run every ``PRE_LLM_CALL`` context hook and collect the text to inject.
@@ -550,11 +551,17 @@ class HookManager:
         messages: list[str],
         arguments: dict[str, Any],
         mutated: bool,
+        extras: list[str],
     ) -> tuple[HookDecision, list[str], dict[str, Any], bool]:
         if one is None:
             return (decision, messages, arguments, mutated)
         if one.message:
             messages.append(one.message)
+        # PostToolUse additionalContext (hook-injected context) accumulates alongside messages so
+        # HookManager.run carries it out — the loop reads result.additional_context (not just the
+        # single-hook _parse_stdout) and appends it to the tool output.
+        if one.additional_context:
+            extras.append(one.additional_context)
         # Only PreToolUse can actually block (the tool hasn't run yet). A BLOCK from
         # any other event (e.g. PostToolUse) can't undo the call, so it is surfaced
         # as a warning instead of being silently dropped. A WARN is also a warning.
@@ -581,11 +588,13 @@ class HookManager:
         messages: list[str],
         arguments: dict[str, Any],
         mutated: bool,
+        extras: list[str],
     ) -> HookResult:
         return HookResult(
             decision=decision,
             messages=messages,
             mutated_arguments=arguments if mutated else None,
+            additional_context="\n".join(extras),
         )
 
     # ── context runners (PRE_LLM_CALL; each fully error-isolated) ──────────────

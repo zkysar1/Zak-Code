@@ -46,11 +46,13 @@ _EVENT_MAP: dict[str, HookEvent] = {
     "Stop": HookEvent.TURN_END,
 }
 
-#: Real Claude Code events deliberately DEFERRED — recognised and skipped with a warning (not
-#: silently dropped). Both are non-load-bearing degradations: StopFailure fires on a provider-error
-#: turn end (a NON-vetoable terminal; we don't thread new firing through the critical finalize path
-#: for a crash-recovery nicety yet), and UserPromptExpansion (slash-command expansion) would only
-#: duplicate the existing ON_SKILL_SELECTED signal. Tracked in docs/CLAUDE-CODE-HOST-ROADMAP.md.
+#: Real Claude Code events deferred FOR SCOPE — recognised and skipped with a warning (not silently
+#: dropped), so a configured hook degrades loudly rather than vanishing. A robustness tail, not
+#: loop-blockers — but NOT no-ops for a framework that uses them: StopFailure (fired on a
+#: provider-error turn end, a non-vetoable terminal that would need new firing threaded through the
+#: critical finalize path) lets a framework leave a crash breadcrumb for the next session, and
+#: UserPromptExpansion captures human-typed slash invocations (distinct from the model-path
+#: ON_SKILL_SELECTED signal). Deferred until those firing points are designed; see the roadmap.
 _SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion"}
 
 

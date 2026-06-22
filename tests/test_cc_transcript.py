@@ -178,3 +178,23 @@ def test_empty_blocks_only_still_renders_valid_lines() -> None:
     assert len(lines) == 1
     assert lines[0]["type"] == "assistant"
     assert lines[0]["message"]["content"] == []
+
+
+def test_timestamp_is_recent_so_windowed_readers_keep_the_line() -> None:
+    # A consumer that drops events older than a window (now - N hours) would silently filter out a
+    # fixed-epoch timestamp. A freshly-rendered line must carry a recent, parseable timestamp.
+    from datetime import UTC, datetime, timedelta
+
+    transcript = render_claude_code_transcript([Message.user("hi")])
+    line = _lines(transcript)[0]
+    ts = datetime.fromisoformat(line["timestamp"].replace("Z", "+00:00"))
+    assert ts > datetime.now(UTC) - timedelta(hours=1)
+
+
+def test_explicit_timestamp_is_used_verbatim() -> None:
+    # A caller that owns the clock (tests, deterministic renders) can pin the timestamp.
+    from datetime import UTC, datetime
+
+    fixed = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
+    transcript = render_claude_code_transcript([Message.user("hi")], timestamp=fixed)
+    assert _lines(transcript)[0]["timestamp"] == "2030-01-02T03:04:05Z"

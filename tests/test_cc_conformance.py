@@ -207,6 +207,24 @@ def test_posttooluse_additional_context_is_parsed() -> None:
     assert additional == "extra info"
 
 
+async def test_posttooluse_additional_context_reaches_aggregated_result(tmp_path: Path) -> None:
+    # The REAL path: a PostToolUse shell hook returning additionalContext must survive
+    # HookManager.run aggregation (not just the static _parse_stdout), so the loop can inject it.
+    import sys
+
+    from zakcode.hooks import HookManager, HookPayload, HookSpec
+
+    script = tmp_path / "ctx_hook.py"
+    script.write_text(
+        'import json; print(json.dumps({"hookSpecificOutput": {"additionalContext": "INJECTED"}}))'
+    )
+    mgr = HookManager(
+        [HookSpec(event=HookEvent.POST_TOOL_USE, command=[sys.executable, str(script)])]
+    )
+    result = await mgr.run(HookPayload(event=HookEvent.POST_TOOL_USE, tool_name="bash"))
+    assert result.additional_context == "INJECTED"
+
+
 # ===========================================================================
 # Commands — Claude Code slash arguments (`/skill args`, use_skill args=…)
 # ===========================================================================

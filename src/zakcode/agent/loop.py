@@ -71,8 +71,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
-import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -1475,18 +1475,33 @@ class AgentLoop:
     def _cc_transcript_path(self) -> str:
         """Materialize a Claude-Code-shaped ``.jsonl`` projection of the session transcript and
         return its path, for hooks that read ``transcript_path``. Best-effort: returns ``""`` on any
-        error so a hook fire is never broken. The SessionStore stays the source of truth — this is a
-        read-only edge projection (:mod:`zakcode.hooks.transcript`), written to a deterministic
-        per-session temp file so a hook re-reading it across fires sees the grown transcript.
+        error (or an unsafe session id) so a hook fire is never broken. The SessionStore stays the
+        source of truth — this is a read-only edge projection (:mod:`zakcode.hooks.transcript`).
+
+        Written under a per-USER ``~/.zakcode/transcripts`` directory (0700) as a 0600 file, NOT a
+        world-readable predictable temp path — the transcript carries the full conversation (maybe
+        secrets). The session id is validated as a safe filename component first (the same trust
+        boundary the SessionStore enforces). Re-rendered on each fire that needs it (O(messages) per
+        fire): accepted, because the projection must reflect the LIVE history — compaction rewrites
+        it, so an append-only cache would go stale — and the cost is small next to a model call.
         """
         from zakcode.hooks.transcript import render_claude_code_transcript
+        from zakcode.session.store import _is_safe_session_id
 
+        sid = self.session.id
+        if not _is_safe_session_id(sid):
+            return ""  # defense-in-depth: never build a filesystem path from an unvalidated id
         try:
             text = render_claude_code_transcript(
-                self.session.messages, session_id=self.session.id, cwd=self.session.cwd
+                self.session.messages, session_id=sid, cwd=self.session.cwd
             )
-            path = Path(tempfile.gettempdir()) / f"zakcode-cc-transcript-{self.session.id}.jsonl"
+            directory = Path.home() / ".zakcode" / "transcripts"
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"{sid}.jsonl"
             path.write_text(text, encoding="utf-8")
+            with contextlib.suppress(OSError):  # POSIX perms; harmless where unsupported
+                os.chmod(directory, 0o700)
+                os.chmod(path, 0o600)
             return str(path)
         except Exception:  # noqa: BLE001 — a transcript projection must never break a hook fire
             logger.warning("could not materialize CC transcript", exc_info=True)
@@ -1526,7 +1541,9 @@ class AgentLoop:
         self._session_started = True
         # source mirrors Claude Code's SessionStart `source`: a session already carrying prior
         # history at first-turn time was resumed; an empty one is a fresh startup. (Fires before the
-        # turn's new user message is added, so messages == prior history.)
+        # turn's new user message is added, so messages == prior history.) CC's third value
+        # "compact" (a post-compaction restart) is folded into "resume" — we do not re-fire
+        # SessionStart after compaction.
         source = "resume" if self.session.messages else "startup"
         await self._fire_lifecycle(HookEvent.SESSION_START, source=source)
 

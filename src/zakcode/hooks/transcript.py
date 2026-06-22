@@ -35,7 +35,7 @@ The mapping from Zak Code blocks:
 * :class:`~zakcode.messages.ThinkingBlock` and any ``system`` message → skipped: the
   transcript readers neither expect nor read them.
 
-The function is **pure** (no file I/O — the caller owns the write) and **defensive**: an
+The function does **no file I/O** (the caller owns the write) and is **defensive**: an
 odd, empty, or unexpected block is rendered as best it can be and never raises, because a
 projection feeding a fail-open hook must never be the thing that breaks the turn.
 """
@@ -55,10 +55,10 @@ from zakcode.messages import (
     ToolUseBlock,
 )
 
-#: Fixed timestamp stamped on every projected line. Readers that filter by a time window
-#: parse this field (``datetime.fromisoformat`` after trimming a trailing ``Z``); a single
-#: deterministic value keeps the projection pure (no wall-clock) while staying parseable.
-_PROJECTION_TS = datetime(1970, 1, 1, tzinfo=UTC).isoformat().replace("+00:00", "Z")
+
+def _iso_z(ts: datetime) -> str:
+    """ISO-8601 with a trailing ``Z`` — the timestamp form CC transcript readers parse."""
+    return ts.isoformat().replace("+00:00", "Z")
 
 
 def _content_blocks(message: Message) -> list[dict[str, Any]]:
@@ -102,7 +102,9 @@ def _content_blocks(message: Message) -> list[dict[str, Any]]:
     return out
 
 
-def _line_for(message: Message, *, session_id: str, cwd: str) -> dict[str, Any] | None:
+def _line_for(
+    message: Message, *, session_id: str, cwd: str, timestamp: str
+) -> dict[str, Any] | None:
     """Build the full transcript line for one message, or ``None`` to skip it.
 
     ``assistant`` and ``user``/``tool`` roles map to CC ``"assistant"`` / ``"user"`` lines;
@@ -130,7 +132,7 @@ def _line_for(message: Message, *, session_id: str, cwd: str) -> dict[str, Any] 
     return {
         "type": line_type,
         "message": {"role": msg_role, "content": content},
-        "timestamp": _PROJECTION_TS,
+        "timestamp": timestamp,
         "sessionId": session_id,
         "uuid": "",
         "parentUuid": None,
@@ -143,6 +145,7 @@ def render_claude_code_transcript(
     *,
     session_id: str = "",
     cwd: str = "",
+    timestamp: datetime | None = None,
 ) -> str:
     """Render *messages* as Claude Code ``.jsonl`` transcript text.
 
@@ -150,16 +153,20 @@ def render_claude_code_transcript(
     last line, matching how line-oriented readers ``for line in f`` / ``f.readlines()``
     consume the file). Returns ``""`` for no renderable messages.
 
-    Pure and defensive: never reads or writes a file, and never raises on an odd/empty
+    Defensive: never reads or writes a file, and never raises on an odd/empty
     message or block — a malformed turn is rendered as best it can be (worst case, an
     assistant line with empty ``content``) so a fail-open hook reading the projection is
     never broken by it. ``system`` messages and thinking blocks are intentionally omitted
     because the transcript consumers do not read them.
     """
+    # Every line carries the same timestamp: an explicit one (deterministic — for a caller that
+    # owns the clock, e.g. tests) or the current UTC time, so a reader that filters by a recent
+    # window (an audit dropping events older than N hours) keeps the freshly-projected lines.
+    ts = _iso_z(timestamp if timestamp is not None else datetime.now(UTC))
     lines: list[str] = []
     for message in messages:
         try:
-            line = _line_for(message, session_id=session_id, cwd=cwd)
+            line = _line_for(message, session_id=session_id, cwd=cwd, timestamp=ts)
         except Exception:  # noqa: BLE001 — a projection must never break its caller.
             continue
         if line is None:
