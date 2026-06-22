@@ -49,6 +49,13 @@ The tool-gate pair (`PreToolUse` / `PostToolUse`) is also available and can **ve
 or **rewrite** a tool call (exit code `2` = block; stdout JSON may rewrite
 arguments) — the seam for runtime guardrails.
 
+**Turn-end continuation (`Stop`).** A `Stop` hook (Claude Code's name; it maps to the
+`TURN_END` seam) fires when a turn would otherwise end. Returning
+`{"decision": "block", "reason": "…"}` (or exit `2`) **vetoes the stop and re-enters the
+loop** with `reason` as the next instruction — the mechanism a perpetual / autonomous
+framework uses to keep itself running. Bounded by `turn_end_veto_budget` so it can never
+loop forever.
+
 ### 2. Per-turn context injection (`PreLLMCall`)
 
 A **context hook** contributes background text before each model call. The loop
@@ -145,6 +152,7 @@ Mistral can rely on tools working regardless of the model's native capability.
 | serialize before compaction | `PreCompact` lifecycle hook |
 | learn which skill to use for a task | `OnSkillSelected` lifecycle hook (record) + `PreLLMCall` (bias) |
 | runtime guardrail that can block a tool | `PreToolUse` hook (exit 2) |
+| keep an autonomous agent running (perpetual loop) | `Stop` hook → `TURN_END` veto + continuation |
 | skills (read + author) | `.claude/skills` loader + `save_skill` |
 | rules / conventions | `.claude/rules` loader |
 | durable cross-session store | bring your own (harness ships none); wire it behind the recall/encode hooks |
@@ -153,21 +161,24 @@ Mistral can rely on tools working regardless of the model's native capability.
 
 ---
 
-## Deliberately deferred
+## Now supported (previously deferred)
 
-These were scoped out (the map of Claude-Mind flagged them as the
-autonomous-perpetual-loop pieces that don't fit a coding agent whose mission is
-shipping code). The safe initial fold-in is **reader/assistant mode + the encode
-pass**, not the self-directed loop.
+Two pieces the original fold-in scoped out are now built — together they are the spine of
+running an autonomous framework on Zak Code:
 
-- **Stop-hook continuation / "never terminate".** Zak Code's `SessionEnd` is
-  observe-only; it cannot veto turn-end and inject a `LOOP_CONTINUE` to keep an
-  autonomous agent running. Adding a blocking, continuation-capable Stop hook is a
-  future item, gated on proving it on this runtime (and on Windows).
-- **Full `settings.json` ingestion.** Hooks are wired in code / via `HookSpec`;
-  parsing a Claude-Code `settings.json` hook block verbatim is not yet implemented.
-- **The `mind_api` daemon.** Zak Code does not spawn or manage a framework's
-  background HTTP daemon; the framework owns its own process lifecycle.
+- **Turn-end continuation ("never terminate").** A `Stop` hook can veto turn-end and inject a
+  continuation (seam #1) — bounded by `turn_end_veto_budget`. This is the perpetual-loop engine.
+- **`settings.json` hook ingestion.** A Claude-Code `settings.json` hook block is parsed verbatim
+  (`zakcode.hooks.settings_loader`): event names mapped (`Stop` → `TURN_END`, `PreToolUse`, …),
+  `$CLAUDE_PROJECT_DIR` substituted, every command security-scanned, gated behind
+  `ZAKCODE_SETTINGS_HOOKS`. Read from `.claude/settings.json` and `.zakcode/settings.json`.
+
+## Still the framework's job (the host won't do these — by design)
+
+- **The `mind_api` (or any) background daemon.** Zak Code does not spawn or manage a framework's
+  background services; the framework owns its own process lifecycle (e.g. start it from a
+  `SessionStart` hook). The host stays generic — the boundary, and the broader plan to make Zak
+  Code a faithful Claude-Code host, are in [`docs/CLAUDE-CODE-HOST-ROADMAP.md`](CLAUDE-CODE-HOST-ROADMAP.md).
 
 ---
 
