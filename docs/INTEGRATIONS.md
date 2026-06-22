@@ -73,7 +73,9 @@ one cheap model call per turn, fail-soft to the heuristic; a fine-tuned model dr
 same Protocol later). It is *within-session* context assembly,
 distinct from the cross-session memory below; off by default, so the clean substrate ships no
 gatherer. `context_signal_log=<path>` appends each turn's offered-vs-used relevance signal as JSONL
-— the training data for a learned ranker.
+— the training data for a learned ranker. Train one with `train_relevance(<log>)` and point
+`context_classifier_weights` at it to rank with your own model (fail-soft to the heuristic) — the
+whole loop, dependency-free.
 
 ### 3. Skills (`.claude/skills/<name>/SKILL.md`)
 

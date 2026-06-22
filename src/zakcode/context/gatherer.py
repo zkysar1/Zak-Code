@@ -57,7 +57,7 @@ class RelevanceClassifier(Protocol):
     (step 4) -- and the gatherer only ever sees this Protocol."""
 
     def __call__(
-        self, task: str, candidates: Sequence[Candidate]
+        self, task: str, candidates: Sequence[Candidate], /
     ) -> list[Candidate] | Awaitable[list[Candidate]]: ...
 
 

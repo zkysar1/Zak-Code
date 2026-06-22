@@ -11,12 +11,15 @@ from typing import Any
 from zakcode import Agent
 from zakcode.config import Settings
 from zakcode.context import (
+    RelevanceModel,
     SignalLogger,
     SmallModelClassifier,
+    TrainedClassifier,
     default_gatherer,
     mentioned_files_collector,
     recent_files_collector,
     score_relevance,
+    train_relevance,
 )
 from zakcode.context.gatherer import (
     Candidate,
@@ -297,3 +300,68 @@ def test_agent_signal_log_registers_turn_end(tmp_path) -> None:
     on = Agent(settings=settings, enable_context_gathering=True, context_signal_log=log)
     off = Agent(settings=settings, enable_context_gathering=True)
     assert len(on.hook_manager.turn_end_hooks) == len(off.hook_manager.turn_end_hooks) + 1
+
+
+# --- trained classifier (step 4) -------------------------------------------
+def _signal_log(tmp_path, records: list[dict]) -> str:
+    p = tmp_path / "sig.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+    return str(p)
+
+
+def test_train_relevance_learns_overlap(tmp_path) -> None:
+    # 'used' perfectly correlates with task<->ref name overlap; cheap_score is non-discriminative.
+    records = [
+        {
+            "task": "fix the alpha module",
+            "offered": [
+                {"ref": "alpha.py", "score": 0.5, "source": "file", "used": True},
+                {"ref": "zzz.py", "score": 0.5, "source": "file", "used": False},
+            ],
+        }
+    ] * 20
+    model = train_relevance(_signal_log(tmp_path, records), epochs=300)
+    assert model.n_examples == 40
+    # For a task overlapping 'alpha', the learned ranker puts alpha.py above zzz.py.
+    ranked = TrainedClassifier(model)("alpha", [_cand("zzz.py", 0.5), _cand("alpha.py", 0.5)])
+    assert [c.ref for c in ranked] == ["alpha.py", "zzz.py"]
+
+
+def test_trained_default_ranks_by_prior() -> None:
+    ranked = TrainedClassifier(RelevanceModel())("t", [_cand("a", 0.2), _cand("b", 0.9)])
+    assert [c.ref for c in ranked] == ["b", "a"]
+
+
+def test_train_relevance_empty_log_is_default(tmp_path) -> None:
+    model = train_relevance(str(tmp_path / "missing.jsonl"))
+    assert model.n_examples == 0
+
+
+def test_relevance_model_save_load(tmp_path) -> None:
+    RelevanceModel(weights=[0.1, 0.2, 0.3], n_examples=7).save(tmp_path / "w.json")
+    assert RelevanceModel.load(tmp_path / "w.json").weights == [0.1, 0.2, 0.3]
+
+
+def test_agent_classifier_weights_wires_trained(tmp_path) -> None:
+    settings = Settings(
+        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+    )
+    weights = tmp_path / "w.json"
+    RelevanceModel(weights=[0.0, 1.0, 0.5]).save(weights)
+    agent = Agent(
+        settings=settings, enable_context_gathering=True, context_classifier_weights=str(weights)
+    )
+    assert len(agent.hook_manager.context_hooks) == 1
+
+
+def test_agent_bad_weights_falls_back(tmp_path) -> None:
+    settings = Settings(
+        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+    )
+    # A missing weights file must not crash construction -- fail-soft to the heuristic gatherer.
+    agent = Agent(
+        settings=settings,
+        enable_context_gathering=True,
+        context_classifier_weights=str(tmp_path / "nope.json"),
+    )
+    assert len(agent.hook_manager.context_hooks) == 1

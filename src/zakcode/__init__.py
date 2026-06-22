@@ -222,7 +222,9 @@ class Agent:
     default; see :mod:`zakcode.context`). Set ``context_classifier="model"`` to
     rank that context with one cheap model call per turn (fail-soft to the
     heuristic), and ``context_signal_log=<path>`` to append each turn's
-    offered-vs-used relevance signal as JSONL (training data for a learned ranker).
+    offered-vs-used relevance signal as JSONL. Point ``context_classifier_weights``
+    at a model trained from that log (``zakcode.context.train_relevance``) to rank
+    with it (fail-soft to the heuristic).
     """
 
     def __init__(
@@ -254,6 +256,7 @@ class Agent:
         enable_context_gathering: bool = False,
         context_classifier: str = "heuristic",
         context_signal_log: str | None = None,
+        context_classifier_weights: str | None = None,
         enable_settings_hooks: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
@@ -643,7 +646,16 @@ class Agent:
         if enable_context_gathering:
             from zakcode.context import default_gatherer
 
-            if context_classifier == "model":
+            if context_classifier_weights:
+                from zakcode.context import RelevanceModel, TrainedClassifier
+
+                try:
+                    gatherer = default_gatherer(
+                        TrainedClassifier(RelevanceModel.load(context_classifier_weights))
+                    )
+                except Exception:  # noqa: BLE001 - a missing/bad weights file falls back to heuristic
+                    gatherer = default_gatherer()
+            elif context_classifier == "model":
                 from zakcode.context import SmallModelClassifier
 
                 # The cheap relevance call rides the context seam; SmallModelClassifier exposes
