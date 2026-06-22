@@ -161,6 +161,10 @@ class GrepTool(Tool):
         them) and skip ignored files; ``soft=False`` keeps only the ``.git`` hard floor.
         """
         if root.is_file():
+            # A single-file path still honors the glob filter (it was ignored before; the
+            # directory walk below already applies it to multi-file scans).
+            if glob_filter and not fnmatch.fnmatch(root.name, glob_filter):
+                return []
             return [root]
 
         collected: list[Path] = []
