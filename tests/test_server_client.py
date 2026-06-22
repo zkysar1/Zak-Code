@@ -36,6 +36,17 @@ SCRIPT: list[AgentEvent] = [
 ]
 
 
+async def test_auth_token_sets_bearer_header() -> None:
+    # SRV-17: chat --server against a token-protected server must send Authorization: Bearer
+    # (the remote-driver path 401'd before -- ServerClient had no auth surface).
+    client = ServerClient("http://srv.example", auth_token="s3cret")
+    assert client._http().headers.get("authorization") == "Bearer s3cret"
+    await client.aclose()
+    plain = ServerClient("http://srv.example")
+    assert plain._http().headers.get("authorization") is None
+    await plain.aclose()
+
+
 class _ScriptedAgent:
     def __init__(self, session: Session) -> None:
         self.session = session

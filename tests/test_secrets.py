@@ -17,6 +17,15 @@ def test_strip_url_credentials_masks_userinfo() -> None:
     assert strip_url_credentials(None) is None
 
 
+def test_redacts_url_userinfo_in_freeform_text() -> None:
+    # SRV-07: a provider error echoing a credentialed api_base must not leak the password.
+    # redact_secrets is the chokepoint litellm_provider._map_error scrubs through.
+    out, n = redact_secrets("RequestFailed: could not reach https://svc:Hunter2Pass@gw.example/v1")
+    assert n >= 1
+    assert "Hunter2Pass" not in out
+    assert "://***@gw.example/v1" in out
+
+
 def test_redacts_openai_style_key() -> None:
     out, n = redact_secrets("here it is sk-ABCDEFGHIJKLMNOP1234567890 ok")
     assert n == 1

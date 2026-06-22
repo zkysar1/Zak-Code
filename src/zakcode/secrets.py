@@ -45,6 +45,10 @@ _ASSIGN_RE = re.compile(
     r"(['\"]?)([A-Za-z0-9._\-/+]{8,})\3"
 )
 
+# URL userinfo: ``scheme://user:password@host`` — mask the credentials, keep scheme + host. So a
+# provider error echoing a credentialed api_base (e.g. a gateway URL) can't leak the password.
+_URL_CRED_RE = re.compile(r"://[^/\s:@]+:[^/\s@]+@")
+
 
 def redact_secrets(text: str) -> tuple[str, int]:
     """Return ``(scrubbed_text, num_redactions)``.
@@ -72,7 +76,13 @@ def redact_secrets(text: str) -> tuple[str, int]:
         count += 1
         return f"{m.group(1)}{m.group(2)}{_REDACTED}"
 
+    def _mark_url(_m: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        return "://***@"
+
     text = _PEM_RE.sub(_mark_pem, text)
+    text = _URL_CRED_RE.sub(_mark_url, text)
     text = _TOKEN_RE.sub(_mark, text)
     text = _ASSIGN_RE.sub(_mark_assign, text)
     return text, count
