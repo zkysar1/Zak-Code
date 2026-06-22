@@ -26,6 +26,30 @@ def test_redacts_url_userinfo_in_freeform_text() -> None:
     assert "://***@gw.example/v1" in out
 
 
+def test_redacts_url_userinfo_with_only_a_token() -> None:
+    # SRV-07 hardening (Phase 4): a USER-ONLY credential (no password) -- e.g. an API key carried as
+    # the userinfo username -- must be masked, not leaked verbatim.
+    out, n = redact_secrets("connect https://s3cr3t-token@gateway.example.com/v1 failed")
+    assert n >= 1
+    assert "s3cr3t-token" not in out
+    assert "://***@gateway.example.com/v1" in out
+
+
+def test_redacts_url_userinfo_with_at_in_password() -> None:
+    # SRV-07 hardening (Phase 4): a password containing '@' must be FULLY masked (to the last @).
+    out, n = redact_secrets("redis://default:p@ss@w0rd@cache.internal:6379 timed out")
+    assert n >= 1
+    assert "p@ss@w0rd" not in out and "ss@w0rd" not in out  # no password fragment survives
+    assert "://***@cache.internal:6379" in out
+
+
+def test_does_not_redact_url_without_userinfo() -> None:
+    # SRV-07: a plain URL (no userinfo @) and a path '@' are NOT redacted (no false positive).
+    out, n = redact_secrets("GET https://api.example.com/v1/users?at=@here returned 500")
+    assert n == 0
+    assert "https://api.example.com/v1/users" in out
+
+
 def test_redacts_openai_style_key() -> None:
     out, n = redact_secrets("here it is sk-ABCDEFGHIJKLMNOP1234567890 ok")
     assert n == 1

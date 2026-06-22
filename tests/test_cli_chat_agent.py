@@ -89,6 +89,33 @@ def test_session_flag_unknown_id_raises_session_error(
         )
 
 
+def test_resumed_session_cwd_realigns_to_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CLI-08/Phase 4: a session resumed in a DIFFERENT workspace has its cwd realigned to the active
+    # workspace, so TURN_END/Stop hooks don't run in the session's stale recorded directory.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from zakcode.messages import Message
+    from zakcode.session.store import Session, SessionStore
+
+    old_dir = tmp_path / "old_project"
+    new_dir = tmp_path / "new_project"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    saved = Session(id="movers", cwd=str(old_dir), model="scripted/test")
+    saved.add_message(Message.user("from the old dir"))
+    SessionStore().save(saved)
+
+    agent = _build_chat_agent(
+        ConsolePermissionPrompter(Console()),
+        {"default_model": "scripted/test", "workspace_root": str(new_dir)},
+        session_id="movers",
+    )
+    assert agent.session.id == "movers"  # the session was resumed
+    assert agent.session.cwd != str(old_dir)  # realigned away from the stale dir
+    assert Path(agent.session.cwd).resolve() == new_dir.resolve()  # to the active workspace
+
+
 def test_untrusted_plugin_not_runnable_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
