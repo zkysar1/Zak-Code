@@ -38,6 +38,8 @@ def test_spec_is_danger_tier_and_never_parallel() -> None:
     spec = PowerShellTool.spec
     assert spec.name == "powershell"
     assert spec.required_permission is PermissionTier.DANGER_FULL_ACCESS
+    # TOOL-05: the timeout cap was a hard 60s; raised so a long run can finish (default stays 60).
+    assert spec.parameters["properties"]["timeout"]["maximum"] == 600
     assert spec.concurrency is ConcurrencyClass.NEVER_PARALLEL
     assert "command" in spec.parameters["properties"]
 

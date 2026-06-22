@@ -28,9 +28,10 @@ from zakcode.tools.base import (
 )
 from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 
-# Default and hard-cap timeouts, in seconds (kept in step with the bash tool).
+# Default and hard-cap timeouts, in seconds (kept in step with the bash tool): short default,
+# generous cap so a long build/test run can finish with an explicit ``timeout``.
 _DEFAULT_TIMEOUT = 60
-_MAX_TIMEOUT = 60
+_MAX_TIMEOUT = 600
 # Maximum number of characters of combined output to return.
 _MAX_OUTPUT = 64 * 1024
 
@@ -53,7 +54,7 @@ class PowerShellTool(Tool):
             "Run a PowerShell command with the workspace as the working directory "
             "(uses pwsh / powershell.exe — prefer this over 'bash' on Windows for "
             "cmdlets and PowerShell syntax). stdout and stderr are combined. Times out "
-            "after 60 seconds. Returns a non-zero exit code as an error."
+            "after 60s by default (max 600s). Returns a non-zero exit code as an error."
         ),
         parameters={
             "type": "object",
@@ -64,7 +65,7 @@ class PowerShellTool(Tool):
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (capped at 60).",
+                    "description": "Timeout in seconds (default 60, max 600).",
                     "minimum": 1,
                     "maximum": _MAX_TIMEOUT,
                 },

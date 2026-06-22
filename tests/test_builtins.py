@@ -127,6 +127,21 @@ async def test_grep_glob_filter(ctx: ToolContext) -> None:
     assert "a.py" in res.data["matches"][0]
 
 
+async def test_grep_glob_filter_applies_to_single_file_path(ctx: ToolContext) -> None:
+    # TOOL-08: a single-file path must honor the glob filter (it used to be ignored).
+    (ctx.workspace_root / "a.py").write_text("found\n")
+    res = await GrepTool().execute({"pattern": "found", "glob": "*.txt", "path": "a.py"}, ctx)
+    assert not res.is_error
+    assert res.data is not None
+    assert res.data["count"] == 0  # a.py does not match *.txt -> skipped
+
+
+def test_bash_timeout_cap_raised_above_60() -> None:
+    # TOOL-04: the bash timeout was a hard 60s cap (a >60s build always timed out). Default stays
+    # 60, but the cap is now generous so an explicit longer timeout is honored.
+    assert BashTool.spec.parameters["properties"]["timeout"]["maximum"] == 600
+
+
 async def test_bash_echo_output_and_exit(ctx: ToolContext) -> None:
     res = await BashTool().execute({"command": "echo hello"}, ctx)
     assert not res.is_error

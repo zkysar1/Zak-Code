@@ -15,9 +15,11 @@ from zakcode.tools.base import (
 )
 from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 
-# Default and hard-cap timeouts, in seconds.
+# Default and hard-cap timeouts, in seconds. The default stays short (most commands are quick),
+# but the cap is generous so a real build/test suite (often >60s) can finish with an explicit
+# ``timeout`` instead of always failing -- the prior 60s hard cap surfaced as a false stall.
 _DEFAULT_TIMEOUT = 60
-_MAX_TIMEOUT = 60
+_MAX_TIMEOUT = 600
 # Maximum number of characters of combined output to return.
 _MAX_OUTPUT = 64 * 1024
 
@@ -55,7 +57,7 @@ class BashTool(Tool):
         name="bash",
         description=(
             "Run a shell command with the workspace as the working directory. "
-            "stdout and stderr are combined. Times out after 60 seconds. Returns a "
+            "stdout and stderr are combined. Default 60s timeout (max 600). Returns a "
             "non-zero exit code as an error."
         ),
         parameters={
@@ -67,7 +69,7 @@ class BashTool(Tool):
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (capped at 60).",
+                    "description": "Timeout in seconds (default 60, max 600).",
                     "minimum": 1,
                     "maximum": _MAX_TIMEOUT,
                 },

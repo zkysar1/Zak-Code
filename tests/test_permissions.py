@@ -135,6 +135,24 @@ def test_dangerous_command_hard_denied_in_deny_mode() -> None:
     assert "dangerous" in reason.lower()
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf ./build",
+        "rm -rf dist/",
+        "rm -rf src/__pycache__",
+        "rm -rf node_modules",
+        "rm -f config.py",
+    ],
+)
+def test_relative_recursive_rm_not_flagged(command: str) -> None:
+    # PERM-03: a recursive delete of a RELATIVE path is benign and must NOT escalate -- the regex
+    # used to match ANY "/" in the args, over-blocking ./build, dist/, src/x.
+    policy = PermissionPolicy(PermissionMode.ALLOW)
+    decision, _ = policy.decide(BASH, {"command": command})
+    assert decision is PermissionDecision.ALLOW
+
+
 def test_benign_command_not_flagged() -> None:
     policy = PermissionPolicy(PermissionMode.ALLOW)
     decision, _ = policy.decide(BASH, {"command": "git status"})

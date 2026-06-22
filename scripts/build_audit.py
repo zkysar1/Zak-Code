@@ -1053,7 +1053,18 @@ RESULTS: dict[str, tuple[str, str, str]] = {
 
 
 # Phase 3: ids whose error has been fixed (Status -> Fixed). Grows per fix batch.
-FIXED: set[str] = {"PROV-12", "PROV-08", "PROV-10", "PROV-03", "SRV-07", "SRV-17"}
+FIXED: set[str] = {
+    "PROV-12",
+    "PROV-08",
+    "PROV-10",
+    "PROV-03",
+    "SRV-07",
+    "SRV-17",
+    "PERM-03",
+    "TOOL-04",
+    "TOOL-05",
+    "TOOL-08",
+}
 
 
 def main() -> None:

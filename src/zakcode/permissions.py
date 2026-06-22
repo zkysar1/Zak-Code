@@ -147,7 +147,10 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         # ``rm -r ~``). Plain ``rm -f <file>`` (force, no recursion) is benign and must
         # NOT escalate — the flag group requires an ``r``, so ``-r``/``-rf``/``-fr`` match
         # but ``-f`` alone does not.
-        re.compile(r"\brm\s+-[a-z]*r[a-z]*\s+.*(/|~|\$HOME)"),
+        # The target path must START with / (absolute), ~ or $HOME (home) -- so a recursive
+        # delete of a RELATIVE subdir (``rm -rf ./build``, ``rm -rf dist/``) is NOT escalated,
+        # while ``rm -rf /``, ``rm -rf /etc``, ``rm -rf ~`` still are. Optional leading quote.
+        re.compile(r"\brm\s+-[a-z]*r[a-z]*\s+(?:-\S+\s+)*['\"]?(/|~|\$HOME)"),
         "recursive remove of a root or home path",
     ),
     (re.compile(r"(^|\s)sudo(\s|$)"), "privilege escalation (sudo)"),
