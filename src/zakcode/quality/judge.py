@@ -238,9 +238,11 @@ async def best_of(
 ) -> tuple[int, Usage]:
     """The INDEX of the best candidate by a pairwise ROUND-ROBIN against ``criteria``.
 
-    Every unordered pair is judged once; a win scores 1, a tie scores 0.5 to both; the candidate
-    with the most wins is chosen, ties broken toward the EARLIEST index (stable). Pairwise, not
-    absolute scoring, per the research. With ≤ 1 candidate, returns ``0`` and makes no calls.
+    Every unordered pair is judged in BOTH orderings (a/b swapped) to cancel the judge's POSITION
+    BIAS: a candidate wins the pair (score 1) only if it wins CONSISTENTLY both ways; a disagreement
+    (the bias showing) scores a tie (0.5 each), as does a judged tie. Most wins is chosen, ties
+    broken toward the EARLIEST index (stable). Pairwise, not absolute scoring, per the research.
+    This costs 2x the judge calls per pair. With ≤ 1 candidate, returns ``0`` and makes no calls.
 
     ``votes`` (default 1) is the pairwise PANEL size per comparison: ``votes=1`` is a single
     pairwise judge (the original); ``votes>1`` polls ``votes`` independent judges per pair and takes
@@ -253,23 +255,40 @@ async def best_of(
         return 0, Usage()
     pairs = [(i, j) for i in range(len(candidates)) for j in range(i + 1, len(candidates))]
 
-    async def _judge(i: int, j: int) -> tuple[PairwiseVerdict, Usage]:
+    async def _judge_one(a_idx: int, b_idx: int) -> tuple[PairwiseVerdict, Usage]:
         if votes > 1:
             return await vote_pairwise(
-                provider, criteria=criteria, a=candidates[i], b=candidates[j], n=votes
+                provider, criteria=criteria, a=candidates[a_idx], b=candidates[b_idx], n=votes
             )
         return await pairwise_judge(
-            provider, criteria=criteria, a=candidates[i], b=candidates[j], temperature=temperature
+            provider,
+            criteria=criteria,
+            a=candidates[a_idx],
+            b=candidates[b_idx],
+            temperature=temperature,
         )
+
+    async def _judge(i: int, j: int) -> tuple[str, Usage]:
+        # Judge BOTH orderings (i as A, then j as A) and count a win only when they AGREE -- this
+        # cancels the well-known LLM-judge POSITION BIAS (favouring whichever sits in the "a" slot).
+        # Costs 2x the judge calls per pair; a disagreement (the bias showing) scores a tie.
+        (v1, u1), (v2, u2) = await asyncio.gather(_judge_one(i, j), _judge_one(j, i))
+        usage = u1 + u2
+        # v1: a=i, b=j. v2: a=j, b=i. i wins iff v1 picks a AND v2 picks b; j wins iff the reverse.
+        if v1.winner == "a" and v2.winner == "b":
+            return "i", usage
+        if v1.winner == "b" and v2.winner == "a":
+            return "j", usage
+        return "tie", usage
 
     results = await asyncio.gather(*(_judge(i, j) for i, j in pairs))
     wins = [0.0] * len(candidates)
     usage = Usage()
-    for (i, j), (verdict, u) in zip(pairs, results, strict=True):
+    for (i, j), (outcome, u) in zip(pairs, results, strict=True):
         usage = usage + u
-        if verdict.winner == "a":
+        if outcome == "i":
             wins[i] += 1.0
-        elif verdict.winner == "b":
+        elif outcome == "j":
             wins[j] += 1.0
         else:
             wins[i] += 0.5

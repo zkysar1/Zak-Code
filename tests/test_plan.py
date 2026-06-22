@@ -35,6 +35,35 @@ class _Provider(Provider):
         return "judge/test"
 
 
+class _RankedJudge(Provider):
+    """A CONTENT-AWARE pairwise judge: prefers whichever candidate ranks EARLIER in ``order``.
+    Parses candidate_a / candidate_b from the prompt, so it stays CONSISTENT under best_of's
+    a/b swap (the position-bias debias) -- a fixed-verdict mock would tie every pair."""
+
+    def __init__(self, order: list[str]) -> None:
+        self._rank = {name: i for i, name in enumerate(order)}
+        self.calls = 0
+
+    async def acomplete(  # noqa: ANN001
+        self, messages, *, system=None, tools=None, response_format=None, **kwargs: Any
+    ) -> LLMResult:
+        self.calls += 1
+        payload = messages[-1].blocks[0].text
+        a = payload.split("<candidate_a>\n", 1)[1].split("\n</candidate_a>", 1)[0]
+        b = payload.split("<candidate_b>\n", 1)[1].split("\n</candidate_b>", 1)[0]
+        winner = "a" if self._rank[a] < self._rank[b] else "b"
+        return LLMResult(text=json.dumps({"winner": winner}), usage=Usage(total_tokens=2))
+
+    def count_tokens(self, messages, *, system=None) -> int:  # noqa: ANN001
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
+
+    def model_id(self) -> str:
+        return "judge/ranked"
+
+
 async def test_score_plan_scores_on_the_decomposition_rubric() -> None:
     prov = _Provider(json.dumps({"scores": {dim: 1.0 for dim in PLAN_RUBRIC}}))
     card, u = await score_plan(prov, goal="build X", plan="1. a\n2. b")
@@ -43,8 +72,8 @@ async def test_score_plan_scores_on_the_decomposition_rubric() -> None:
 
 
 async def test_judge_plan_picks_best_via_pairwise() -> None:
-    # The judge always says "b" → the later candidate wins every pair → the last one overall.
-    prov = _Provider(json.dumps({"winner": "b"}))
+    # A content-aware judge ranks p2 best → it wins every pair (consistently both ways) → index 2.
+    prov = _RankedJudge(order=["p2", "p0", "p1"])
     best, _ = await judge_plan(prov, goal="g", candidates=["p0", "p1", "p2"])
     assert best == 2
 
