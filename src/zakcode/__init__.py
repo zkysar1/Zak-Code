@@ -222,9 +222,10 @@ class Agent:
     default; see :mod:`zakcode.context`). Set ``context_classifier="model"`` to
     rank that context with one cheap model call per turn (fail-soft to the
     heuristic), and ``context_signal_log=<path>`` to append each turn's
-    offered-vs-used relevance signal as JSONL. Point ``context_classifier_weights``
-    at a model trained from that log (``zakcode.context.train_relevance``) to rank
-    with it (fail-soft to the heuristic).
+    offered-vs-used relevance signal as JSONL (``context_signal_judge=True`` labels
+    "used" with a cheap-model judge that also catches in-context use). Point
+    ``context_classifier_weights`` at a model trained from that log
+    (``zakcode.context.train_relevance``) to rank with it (fail-soft to the heuristic).
     """
 
     def __init__(
@@ -257,6 +258,7 @@ class Agent:
         context_classifier: str = "heuristic",
         context_signal_log: str | None = None,
         context_classifier_weights: str | None = None,
+        context_signal_judge: bool = False,
         enable_settings_hooks: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
@@ -646,6 +648,16 @@ class Agent:
         if enable_context_gathering:
             from zakcode.context import default_gatherer
 
+            def _cheap_ctx_provider() -> Provider:
+                # A cheap model for the every-turn context calls (the relevance classifier and the
+                # used-judge): an explicit role wins, else zakpick's "classify" category, else the
+                # generator's own provider.
+                if "context_classifier" in self.settings.model_roles:
+                    return self._provider_for(self.settings.model_roles["context_classifier"])
+                if self._zakpick:
+                    return self._resolve_task_provider("classify")[0]
+                return self.provider
+
             if context_classifier_weights:
                 from zakcode.context import RelevanceModel, TrainedClassifier
 
@@ -658,16 +670,7 @@ class Agent:
             elif context_classifier == "model":
                 from zakcode.context import SmallModelClassifier
 
-                # Route the every-turn relevance call to a CHEAP model (mirrors the summarizer
-                # routing below), and account its spend on the session so it shows in /cost.
-                if "context_classifier" in self.settings.model_roles:
-                    clf_provider = self._provider_for(
-                        self.settings.model_roles["context_classifier"]
-                    )
-                elif self._zakpick:
-                    clf_provider = self._resolve_task_provider("classify")[0]
-                else:
-                    clf_provider = self.provider
+                clf_provider = _cheap_ctx_provider()
                 gatherer = default_gatherer(
                     SmallModelClassifier(
                         clf_provider,
@@ -680,9 +683,25 @@ class Agent:
             if context_signal_log:
                 from zakcode.context import SignalLogger
 
-                self.hook_manager.register_turn_end_observer(
-                    SignalLogger(gatherer, self.session, context_signal_log).on_turn_end
-                )
+                # The `used` label defaults to the cheap reference proxy; context_signal_judge
+                # upgrades it to a cheap-model judge that also catches IN-CONTEXT use (the gatherer
+                # injects file content, so the model can consume it without naming the file -> the
+                # proxy false-negatives).
+                if context_signal_judge:
+                    from zakcode.context import ModelUsedDetector
+
+                    jp = _cheap_ctx_provider()
+                    signal = SignalLogger(
+                        gatherer,
+                        self.session,
+                        context_signal_log,
+                        used_detector=ModelUsedDetector(
+                            jp, on_usage=lambda u: self.session.add_usage(u, model=jp.model_id())
+                        ),
+                    )
+                else:
+                    signal = SignalLogger(gatherer, self.session, context_signal_log)
+                self.hook_manager.register_turn_end_observer(signal.on_turn_end)
 
         # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
         # before a turn once it exceeds the provider's context-window threshold.

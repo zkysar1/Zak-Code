@@ -24,21 +24,26 @@ from .gatherer import (
 )
 from .signal import SignalLogger, SignalRecord
 from .train import RelevanceModel, TrainedClassifier, train_relevance
+from .used import ModelUsedDetector, UsedDetector, judge_used, reference_used
 
 __all__ = [
     "Candidate",
     "Collector",
     "ContextGatherer",
+    "ModelUsedDetector",
     "RelevanceClassifier",
     "RelevanceModel",
     "SignalLogger",
     "SignalRecord",
     "SmallModelClassifier",
     "TrainedClassifier",
+    "UsedDetector",
     "default_gatherer",
     "heuristic_classifier",
+    "judge_used",
     "mentioned_files_collector",
     "recent_files_collector",
+    "reference_used",
     "score_relevance",
     "train_relevance",
 ]
