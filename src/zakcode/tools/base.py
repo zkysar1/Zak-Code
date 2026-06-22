@@ -194,7 +194,7 @@ class SkillResolver(Protocol):
         """Discovered skill names (for the tool's 'unknown skill — available: …' message)."""
         ...
 
-    async def load(self, name: str, *, query: str = "") -> SkillLoad:
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         """Load ``name``; ``query`` is the invoking turn's prompt, recorded as the
         ``ON_SKILL_SELECTED`` trigger (so a sub-agent attributes the skill to ITS task, not the
         parent's). A falsy ``query`` falls back to the resolver's bound (parent) agent session's

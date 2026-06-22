@@ -22,6 +22,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from zakcode import Agent
+from zakcode.config import Settings
 from zakcode.hooks import HookEvent
 from zakcode.hooks.settings_loader import load_settings_hooks
 from zakcode.skills import (
@@ -30,6 +32,7 @@ from zakcode.skills import (
     discover_skill_dir,
     parse_frontmatter,
 )
+from zakcode.tools.base import ToolContext
 
 
 def _write(path: Path, text: str) -> Path:
@@ -157,3 +160,48 @@ def test_settings_json_unimplemented_event_is_skipped_not_crashed(tmp_path: Path
     specs, errors = load_settings_hooks(tmp_path)
     assert specs == []
     assert "StopFailure" in errors
+
+
+# ===========================================================================
+# Commands — Claude Code slash arguments (`/skill args`, use_skill args=…)
+# ===========================================================================
+
+
+def _scripted_agent(workspace: Path) -> Agent:
+    # A real Agent on the offline scripted provider: exercises the actual skill-loading path with
+    # no network and no model call. enable_skills wires the resolver + the use_skill tool.
+    return Agent(
+        settings=Settings(default_model="scripted/test", workspace_root=workspace),
+        enable_skills=True,
+    )
+
+
+def _write_claude_skill(workspace: Path, name: str, body: str) -> None:
+    _write(
+        workspace / ".claude" / "skills" / name / "SKILL.md",
+        f"---\nname: {name}\ndescription: {name} skill.\n---\n{body}\n",
+    )
+
+
+async def test_slash_command_invocation_surfaces_arguments(tmp_path: Path) -> None:
+    # `/skill the args` (Claude Code): the trailing text reaches the skill as arguments, surfaced
+    # ahead of the body so a skill can branch on a sub-command. The human CLI invoke_skill path.
+    _write_claude_skill(tmp_path, "looper", "Loop body.")
+    agent = _scripted_agent(tmp_path)
+    result = await agent.invoke_skill("looper", "loop")
+    assert result.invoked
+    injected = agent.session.messages[-1].text
+    assert "[arguments: loop]" in injected and "loop body" in injected.lower()
+
+
+async def test_use_skill_tool_passes_arguments_to_the_body(tmp_path: Path) -> None:
+    # The model-facing counterpart: use_skill accepts `args` and forwards them, so chaining like
+    # use_skill(name, args='loop') carries the sub-command through to the body it returns.
+    _write_claude_skill(tmp_path, "looper", "Loop body.")
+    agent = _scripted_agent(tmp_path)
+    tool = agent.registry.get("use_skill")
+    assert tool is not None
+    ctx = ToolContext(workspace_root=tmp_path, skill_resolver=agent.loop._skill_resolver)
+    res = await tool.execute({"name": "looper", "args": "loop"}, ctx)
+    assert res.is_error is False
+    assert "[arguments: loop]" in res.output

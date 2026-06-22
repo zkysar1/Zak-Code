@@ -46,6 +46,13 @@ class UseSkillTool(Tool):
                     "type": "string",
                     "description": "The skill name to load, exactly as it appears in the catalog.",
                 },
+                "args": {
+                    "type": "string",
+                    "description": (
+                        "Optional arguments for the skill (e.g. a sub-command like 'loop'). "
+                        "Surfaced to you alongside the skill's instructions."
+                    ),
+                },
             },
             "required": ["name"],
         },
@@ -65,9 +72,12 @@ class UseSkillTool(Tool):
         if not isinstance(name, str) or not name.strip():
             return ToolResult.error("'name' is required and must be a non-empty string.")
         name = name.strip()
+        skill_args = args.get("args", "")
+        if not isinstance(skill_args, str):
+            skill_args = ""
         # Pass the invoking turn's prompt so the selection signal is attributed to THIS caller
         # (a sub-agent's task, not the parent's originating turn).
-        load = await resolver.load(name, query=ctx.caller_query)
+        load = await resolver.load(name, query=ctx.caller_query, args=skill_args)
         if not load.found:
             available = ", ".join(resolver.names()) or "(none discovered)"
             return ToolResult.error(

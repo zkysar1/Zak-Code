@@ -194,10 +194,10 @@ class _SkillToolResolver:
         registry = self._agent.skill_registry
         return registry.names() if registry is not None else []
 
-    async def load(self, name: str, *, query: str = "") -> SkillLoad:
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         # ``query`` is the INVOKING turn's prompt (a sub-agent's task, not the parent's), so the
         # signal is attributed to the actual caller even though the resolver is the parent's.
-        return await self._agent._load_skill_body(name, source="tool", query=query)
+        return await self._agent._load_skill_body(name, source="tool", query=query, args=args)
 
 
 #: Turn stop-reasons that count as a STALL — the agent didn't cleanly finish. Seam B's best-of-N
@@ -977,7 +977,7 @@ class Agent:
         return result.text
 
     async def _load_skill_body(
-        self, name: str, *, source: str, query: str | None = None
+        self, name: str, *, source: str, query: str | None = None, args: str = ""
     ) -> SkillLoad:
         """Resolve a skill, read+defang its L1 body, and fire the selection signal — the CORE
         shared by both invocation paths (the CLI ``/<name>`` and the model's ``use_skill`` tool).
@@ -1034,9 +1034,15 @@ class Agent:
         # Defang protocol/template sentinels so a file-authored body can't forge a frame in
         # text mode; the body is preserved verbatim otherwise (defang never deletes content).
         await self._emit_skill_selected(skill.name, query, source=source)
-        return SkillLoad(found=True, name=skill.name, body=defang_untrusted(body))
+        rendered = defang_untrusted(body)
+        if args:
+            # Claude-Code slash arguments (`/skill the args`, or use_skill args=…): surfaced to the
+            # model ahead of the body so a skill whose steps branch on an argument (a sub-command
+            # like `loop`) can see it. Defanged too — args may be model-supplied via use_skill.
+            rendered = f"[arguments: {defang_untrusted(args)}]\n\n{rendered}"
+        return SkillLoad(found=True, name=skill.name, body=rendered)
 
-    async def invoke_skill(self, name: str) -> SkillInvocation:
+    async def invoke_skill(self, name: str, args: str = "") -> SkillInvocation:
         """Load a discovered skill's body into the session and emit the selection signal.
 
         The CLI ``/<skill>`` entry point: it folds the body into a TRUSTED user message so the
@@ -1045,7 +1051,7 @@ class Agent:
         read, defang, and fire ``ON_SKILL_SELECTED`` identically. Never raises: a
         missing/unreadable skill file is a UX result, not a crash.
         """
-        load = await self._load_skill_body(name, source="command")
+        load = await self._load_skill_body(name, source="command", args=args)
         if not load.found:
             return SkillInvocation(invoked=False)
         if load.error or load.body is None:

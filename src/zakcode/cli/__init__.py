@@ -633,7 +633,7 @@ def _render_skills(console: Console, agent: Agent) -> None:
         console.print(line)
 
 
-def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
+def _invoke_skill(console: Console, agent: Agent, name: str, args: str = "") -> bool:
     """If ``name`` is a skill, load its body into the session and return True.
 
     Delegates to the CORE :meth:`Agent.invoke_skill` (which injects the body lazily and fires
@@ -645,7 +645,7 @@ def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
     invoke = getattr(agent, "invoke_skill", None)
     if invoke is None:
         return False
-    result = _run_async(invoke(name))
+    result = _run_async(invoke(name, args))
     if not result.invoked:
         return False  # not a skill — let the caller try other command paths
     if result.error:
@@ -1422,7 +1422,8 @@ def chat(
                 )
                 continue
             # A bare /<skill-name> invokes a discovered skill (loads its body).
-            if _invoke_skill(console, agent, command.lstrip("/")):
+            skill_args = stripped[len(command) :].strip()
+            if _invoke_skill(console, agent, command.lstrip("/"), args=skill_args):
                 continue
             # Fall through to plugin-registered commands before giving up. ``getattr``
             # because the live agent may be any AgentLike (a thin/remote one without a
