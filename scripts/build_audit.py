@@ -22,12 +22,12 @@ HEADER = [
     "Notes",
 ]
 
-ROWS: list[tuple[str, str, str, str, str, str, str, str]] = []
+ROWS: list[tuple[str, str, str, str, str]] = []
 
 
 def add(area: str, prefix: str, items: list[tuple[str, str, str]]) -> None:
     for i, (feat, story, behavior) in enumerate(items, 1):
-        ROWS.append((f"{prefix}-{i:02d}", area, feat, story, behavior, "Spec'd", "", ""))
+        ROWS.append((f"{prefix}-{i:02d}", area, feat, story, behavior))
 
 
 # ---------------------------------------------------------------- Agent loop & turn control
@@ -937,13 +937,130 @@ add(
 )
 
 
+# Phase 2 outcomes: id -> (status, test_result, notes). Unlisted ids default to ("Tested","PASS","").
+RESULTS: dict[str, tuple[str, str, str]] = {
+    # --- HIGH ---
+    "CLI-08": (
+        "Error (high)",
+        "FAIL",
+        "logistical: --session/-s resume is a dead no-op; the CLI never passes session_store, so no session persists to disk. Resume non-functional despite core + SessionStore being implemented.",
+    ),
+    "PROV-12": (
+        "Error (high)",
+        "FAIL",
+        "logistical: streaming reports $0 cost for all non-Groq cloud models (litellm nulls response_cost on chunks); breaks /cost and the max_cost_usd ceiling on the default streaming path.",
+    ),
+    # --- MED ---
+    "CLI-06": (
+        "Error (med)",
+        "FAIL",
+        "logistical: --model shown in the banner but ServerClient never sends it; the banner misreports the running model in --server mode.",
+    ),
+    "CLI-09": (
+        "Error (med)",
+        "FAIL",
+        "ux: --server silently ignores --workspace/--session/--no-rules/--skill-dir/--extra-root/--trace with no warning.",
+    ),
+    "PERM-03": (
+        "Error (med)",
+        "FAIL",
+        "ux: rm -rf <relative/path> over-blocked (regex matches any slash); hard-deny in autonomous, so an unattended agent cannot delete a relative subdir. Also: 15 patterns not 14.",
+    ),
+    "TOOL-04": (
+        "Error (med)",
+        "FAIL",
+        "ux: bash 60s timeout is a hard ceiling (schema max 60, no override); a >60s build/test always times out -> false recipe_stalled.",
+    ),
+    "TOOL-05": ("Error (med)", "FAIL", "ux: powershell 60s timeout hard ceiling, same as bash."),
+    "PROV-08": (
+        "Error (med)",
+        "FAIL",
+        "logistical: complete_structured json_object-only path never tells the model the schema (not response_format, not the prompt) -> blind first attempt, wasted repair round.",
+    ),
+    "PROV-10": (
+        "Error (med)",
+        "FAIL",
+        "logistical: Timeout/APIConnection/503/500 map to RequestFailed (non-retryable), so a transient error kills the turn instead of a bounded backoff-retry; plus a false code comment.",
+    ),
+    "QUAL-02": (
+        "Error (med)",
+        "FAIL",
+        "logistical: pairwise_judge/best_of never swap A/B -> position bias favours the lowest index; votes>1 does not fix it (correlated). Affects best_of/select/judge_plan.",
+    ),
+    "SRV-07": (
+        "Error (med)",
+        "FAIL",
+        "secret-leak: redact_secrets does not strip URL userinfo (user:password@host), so a credentialed api_base leaks the password in error bodies/logs and ChatResponse.error.",
+    ),
+    "SRV-17": (
+        "Error (med)",
+        "FAIL",
+        "logistical: ServerClient has no bearer-token path, so chat --server cannot talk to a server with ZAKCODE_AUTH_TOKEN set (every call 401s).",
+    ),
+    # --- LOW ---
+    "TOOL-08": (
+        "Error (low)",
+        "FAIL",
+        "logistical: grep glob filter ignored when path is a single file (_gather_files returns [root] before applying the filter).",
+    ),
+    "PROV-03": (
+        "Error (low)",
+        "FAIL",
+        "ux: spec wording -- auto->text fallback only applies to the Ollama prefix; Groq tools_unreliable models stay native (handled by routing instead).",
+    ),
+    "CTX-02": (
+        "Error (low)",
+        "FAIL",
+        "logistical: no cross-collector dedup; a file both mentioned and recent yields two Candidates with the same ref -> injected twice, double-charges the budget.",
+    ),
+    "CTX-05": (
+        "Error (low)",
+        "FAIL",
+        "ux: context_classifier is an unvalidated free string; a typo silently falls back to the heuristic with no warning.",
+    ),
+    "SEAM-08": (
+        "Error (low)",
+        "FAIL",
+        "logistical: skills catalog overloads the extra_instructions slot; an injected prompt_builder that sets it silently drops the catalog while use_skill still advertises skills.",
+    ),
+    "LOOP-37": (
+        "Error (low)",
+        "FAIL",
+        "ux: docstring says append-only JSONL but _dump_trace uses write_text (whole file); behavior correct (one file per turn), wording misleads.",
+    ),
+    "LOOP-13": (
+        "Error (low)",
+        "FAIL",
+        "logistical: a wholly tool-exposure-filtered batch (tool_not_exposed) is not in _batch_did_no_work refund set, unlike permission_denied/hook_blocked/step_restricted -> spends a budget unit.",
+    ),
+    # --- PASS with a note ---
+    "CTX-01": (
+        "Tested",
+        "PASS",
+        "note (med/ux, judgment call): the context-gathering subsystem has no CLI/env surface -- Python Agent kwargs only. Intended API-only, or a gap?",
+    ),
+    "SRV-04": (
+        "Tested",
+        "PASS",
+        "note (low): no test asserts the corrupt-session-skip listing behavior (code is correct).",
+    ),
+    "SRV-09": (
+        "Tested",
+        "PASS",
+        "note (low): upload dir keyed by session.id[:8]; an 8-hex prefix collision shares a dir (hygiene, not a leak).",
+    ),
+}
+
+
 def main() -> None:
     out = pathlib.Path(__file__).resolve().parents[1] / "docs" / "FEATURE_AUDIT.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(HEADER)
-        w.writerows(ROWS)
+        for fid, area, feat, story, behavior in ROWS:
+            status, result, notes = RESULTS.get(fid, ("Tested", "PASS", ""))
+            w.writerow((fid, area, feat, story, behavior, status, result, notes))
     print(f"wrote {len(ROWS)} rows to {out}")
 
 
