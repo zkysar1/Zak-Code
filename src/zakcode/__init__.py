@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from zakcode.plugins import PluginLoadReport
     from zakcode.rules import RuleRegistry
     from zakcode.skills import SkillRegistry
+    from zakcode.status_line import StatusLineSpec
 
 __all__ = [
     "Agent",
@@ -265,6 +266,7 @@ class Agent:
         context_signal_judge: bool = False,
         enable_settings_hooks: bool | None = None,
         enable_settings_permissions: bool | None = None,
+        enable_status_line: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
     ) -> None:
@@ -434,6 +436,25 @@ class Agent:
                     self.hook_manager.shell_hooks.extend(_specs)
                 else:
                     self.hook_manager = HookManager(shell_hooks=_specs)
+        # Claude Code statusLine support (cosmetic; opt-in). When on, load the configured
+        # statusLine command from settings.json now (one read at construction, danger-scanned
+        # + provider-key-scrubbed like a hook) and stash it for a client (the CLI) to render
+        # after each turn. None defers to Settings.status_line; an explicit True/False wins.
+        # The spec is None when nothing is configured or it was denied — a client just renders
+        # no line. This NEVER touches the loop: a status line is decoration a client repaints.
+        self.status_line_enabled: bool = (
+            enable_status_line if enable_status_line is not None else self.settings.status_line
+        )
+        self.status_line_spec: StatusLineSpec | None = None
+        if self.status_line_enabled:
+            from zakcode.status_line import load_status_line_spec
+
+            self.status_line_spec, _sl_err = load_status_line_spec(
+                self.settings.workspace_root,
+                permission_mode=str(self.settings.permission_mode),
+            )
+            if _sl_err:
+                logger.warning("statusLine: %s", _sl_err)
         # One-shot guard so aclose() (and its SESSION_END encode step) runs at most once.
         self._closed = False
         # Slash-command registry (M6) — plugins register commands here; clients

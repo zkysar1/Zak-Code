@@ -359,6 +359,26 @@ async def test_turn_end_materializes_a_readable_cc_transcript(tmp_path: Path) ->
 
 
 # ===========================================================================
+# Status line — the Claude Code `statusLine` command contract
+# ===========================================================================
+
+
+def test_status_line_command_is_read_from_settings_json(tmp_path: Path) -> None:
+    # A faithful host reads CC's `statusLine` object from .claude/settings.json and runs the
+    # command after a turn with a status JSON on stdin, rendering its first stdout line. Generic
+    # (no plug-in named): a configured `{type: command, command: ...}` yields a runnable spec.
+    from zakcode.status_line import load_status_line_spec
+
+    _write(
+        tmp_path / ".claude" / "settings.json",
+        json.dumps({"statusLine": {"type": "command", "command": "bash status.sh"}}),
+    )
+    spec, errors = load_status_line_spec(tmp_path)
+    assert spec is not None and "status.sh" in " ".join(spec.command)
+    assert not errors  # a clean type:command gesture maps without warning
+
+
+# ===========================================================================
 # Permissions — the Claude Code `permissions.{allow,deny}` Tool(glob) contract
 # ===========================================================================
 

@@ -504,6 +504,23 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Claude Code statusLine support (cosmetic; opt-in) ────────────────────
+    # Read the ``statusLine`` command from <workspace>/.claude/settings.json (+
+    # settings.local.json), run it after each turn with a status JSON on stdin (CC shape),
+    # and render its stdout's first line as a dim status line in the CLI. Off by default so
+    # a workspace carrying another runtime's statusLine doesn't silently spawn a subprocess
+    # here. PURELY COSMETIC and fully fail-safe: any error/timeout/non-zero exit just prints
+    # no line and NEVER affects the turn (the command runs in-process after the turn, env-
+    # scrubbed and danger-scanned like every settings.json shell command). Hosts can force
+    # the behavior per-Agent via Agent(enable_status_line=True/False). See zakcode.status_line.
+    status_line: bool = Field(
+        default=False,
+        description=(
+            "Render a Claude Code statusLine (from .claude/settings.json) after each turn "
+            "in the CLI (ZAKCODE_STATUS_LINE=true). Off by default; cosmetic and fail-safe."
+        ),
+    )
+
     # ── Workspace settings.json permission-rule ingestion (Phase 3; opt-in) ──
     # Read Claude Code's ``permissions.{allow,deny,ask}`` Tool(pattern) gestures from
     # <workspace>/.claude/settings.json + settings.local.json and TRANSLATE them into this
