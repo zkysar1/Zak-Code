@@ -1118,9 +1118,7 @@ def chat(
     provider: str = typer.Option(  # noqa: ARG001 — derived from the model; reserved for clarity
         None, "--provider", help="Hint the provider family (informational)."
     ),
-    session: str = typer.Option(
-        None, "--session", "-s", help="Resume a saved session by id."
-    ),
+    session: str = typer.Option(None, "--session", "-s", help="Resume a saved session by id."),
     workspace: str = typer.Option(
         None, "--workspace", "-w", help="Workspace root for tools and the session."
     ),
