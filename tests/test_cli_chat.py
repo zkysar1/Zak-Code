@@ -138,6 +138,36 @@ def test_chat_cost_reports_usage(monkeypatch) -> None:
     assert "total=8" in result.stdout
 
 
+def test_chat_headless_prompt_runs_once_and_exits_zero(monkeypatch) -> None:
+    # `-p TASK` runs a single turn (no REPL, no banner) and exits 0 when the turn completes.
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    result = runner.invoke(app, ["chat", "-p", "do the thing"])
+    assert result.exit_code == 0
+    assert CANNED_TEXT in result.stdout  # the turn actually ran
+    assert "session closed" not in result.stdout  # it never entered the REPL
+
+
+def test_chat_headless_prompt_nonzero_when_incomplete(monkeypatch) -> None:
+    # A turn that does NOT complete (hit the iteration cap) exits non-zero, so a script knows.
+    class CappedAgent(FakeAgent):
+        events = [
+            AgentTextDelta(text="ran out of road\n"),
+            AgentDone(stop_reason="max_iterations", iterations=50, usage=Usage(total_tokens=4)),
+        ]
+
+    monkeypatch.setattr(zakcode, "Agent", CappedAgent)
+    result = runner.invoke(app, ["chat", "-p", "do the thing"])
+    assert result.exit_code == 1
+
+
+def test_chat_headless_empty_prompt_is_rejected(monkeypatch) -> None:
+    # `-p "   "` is a usage error (exit 2), not a silent no-op.
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    result = runner.invoke(app, ["chat", "-p", "   "])
+    assert result.exit_code == 2
+    assert "empty" in result.stdout
+
+
 def test_chat_renders_tool_lines(monkeypatch) -> None:
     class ToolAgent(FakeAgent):
         events = [
