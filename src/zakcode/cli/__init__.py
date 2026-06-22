@@ -1112,9 +1112,38 @@ def _build_chat_agent(
     )
 
 
+def _run_one_shot(
+    loop: asyncio.AbstractEventLoop,
+    stream_factory: Callable[[], AsyncIterator[AgentEvent]],
+) -> int:
+    """Run ONE streamed turn and return a shell exit code: 0 if it completed cleanly, 1 otherwise
+    (max-iterations, budget, provider/server error, stuck, ...). The loop is torn down before
+    returning. Used by ``chat -p`` for non-interactive / scripted runs; a one-shot must yield a
+    code, never a traceback.
+    """
+    renderer = StreamRenderer(console=console)
+    try:
+        _run_streamed_turn(console, stream_factory, renderer)
+    except Exception as exc:  # noqa: BLE001 — a one-shot returns a code, never crashes a script
+        notice_error(console, "turn failed", str(exc))
+        return 1
+    finally:
+        _shutdown_session_loop(loop)
+    done = renderer.last_done
+    return 0 if done is not None and done.stop_reason == "completed" else 1
+
+
 @app.command()
 def chat(
     model: str = typer.Option(None, "--model", "-m", help="Override the model id."),
+    prompt: str = typer.Option(
+        None,
+        "--prompt",
+        "-p",
+        help="Run a SINGLE task non-interactively and exit (no REPL). Exit code is 0 if the task "
+        "completed, non-zero otherwise, so it composes in scripts. Unattended runs want "
+        "ZAKCODE_PERMISSION_MODE=allow (or autonomous) -- 'ask' fails closed with no terminal.",
+    ),
     provider: str = typer.Option(  # noqa: ARG001 — derived from the model; reserved for clarity
         None, "--provider", help="Hint the provider family (informational)."
     ),
@@ -1185,8 +1214,19 @@ def chat(
                 f"server mode ignores {', '.join(ignored)} "
                 "(these configure the in-process engine, not the remote server)",
             )
+        if prompt is not None:
+            notice_error(
+                console,
+                "--prompt is not supported with --server yet",
+                "run the task in-process (drop --server), or open an interactive --server session.",
+            )
+            raise typer.Exit(code=2)
         _run_server_chat(server, model)
         return
+
+    if prompt is not None and not prompt.strip():
+        notice_error(console, "--prompt was empty", 'pass a task, e.g. -p "fix the tests".')
+        raise typer.Exit(code=2)
 
     overrides: dict[str, Any] = {}
     if model:
@@ -1224,13 +1264,19 @@ def chat(
         # A bad/missing/corrupt --session id: name the id, don't dump a traceback.
         notice_error(console, f"could not resume session {session!r}", str(exc))
         raise typer.Exit(code=1) from exc
-    _print_banner(console, agent)
+    if prompt is None:
+        _print_banner(console, agent)
 
     # One event loop for the whole session (never one per turn) — see
     # _SESSION_LOOP / _shutdown_session_loop.
     global _SESSION_LOOP
     _SESSION_LOOP = loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    # Headless one-shot (`-p/--prompt`): run a single task, no REPL, and exit with a code that
+    # reflects the outcome (0 = completed cleanly, non-zero otherwise) so it composes in scripts.
+    if prompt is not None:
+        raise typer.Exit(code=_run_one_shot(loop, functools.partial(agent.astream_turn, prompt)))
 
     # zakpick advisory state for this session: [count of clean un-escalated deep_code turns,
     # 1 once the one-time nudge has fired]. See _maybe_zakpick_advisory.
