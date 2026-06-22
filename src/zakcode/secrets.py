@@ -45,9 +45,12 @@ _ASSIGN_RE = re.compile(
     r"(['\"]?)([A-Za-z0-9._\-/+]{8,})\3"
 )
 
-# URL userinfo: ``scheme://user:password@host`` — mask the credentials, keep scheme + host. So a
-# provider error echoing a credentialed api_base (e.g. a gateway URL) can't leak the password.
-_URL_CRED_RE = re.compile(r"://[^/\s:@]+:[^/\s@]+@")
+# URL userinfo: ``scheme://user[:password]@host`` — mask the WHOLE userinfo (a user-only token,
+# ``user:password``, or a password containing ``@``) up to the LAST @ before the host, keeping
+# scheme + host. So a provider error echoing a credentialed api_base (gateway URL) can't leak a
+# token. The greedy ``[^/\s]+`` stops at a path ``/`` or whitespace, so a non-credential ``@`` in a
+# path or free-form prose (no ``://``) is left untouched.
+_URL_CRED_RE = re.compile(r"://[^/\s]+@")
 
 
 def redact_secrets(text: str) -> tuple[str, int]:

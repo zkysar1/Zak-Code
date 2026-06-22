@@ -328,6 +328,17 @@ class Agent:
             cwd=str(self.settings.workspace_root),
             model=self.settings.default_model,
         )
+        # A RESUMED/injected session carries its OWN persisted cwd; realign it to THIS run's
+        # workspace so every cwd-sensitive surface (tools, rules, TURN_END/Stop hooks) agrees on one
+        # directory instead of splitting between the session's old dir and the active workspace.
+        if session is not None and self.session.cwd != str(self.settings.workspace_root):
+            logger.info(
+                "resumed session %r recorded cwd %s; realigning to active workspace %s",
+                self.session.id,
+                self.session.cwd,
+                self.settings.workspace_root,
+            )
+        self.session.cwd = str(self.settings.workspace_root)
         # Deny-first by construction: the facade always builds a permission policy
         # from settings.permission_mode (default 'ask'). An interactive client may
         # pass a ``prompter`` so escalations can be approved; with none, 'ask'

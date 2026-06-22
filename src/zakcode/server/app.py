@@ -84,7 +84,13 @@ from zakcode.server.wire import (
     event_to_dict,
     events_schema,
 )
-from zakcode.session.store import Session, SessionNotFound, SessionStore
+from zakcode.session.store import (
+    Session,
+    SessionCorruptError,
+    SessionNotFound,
+    SessionStore,
+    SessionVersionError,
+)
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
 
@@ -516,7 +522,12 @@ def create_app(
         for session_id in resolved_store.list():
             try:
                 infos.append(SessionInfo.from_session(resolved_store.load(session_id)))
-            except Exception:  # noqa: BLE001 — skip an unreadable/corrupt session file
+            except (SessionCorruptError, SessionVersionError):
+                continue  # a genuinely corrupt / too-new file: skip silently (expected)
+            except Exception:  # noqa: BLE001 — an UNEXPECTED read error (perms/IO): skip but log
+                logger.warning(
+                    "skipping unreadable session %r in listing", session_id, exc_info=True
+                )
                 continue
         return infos
 
