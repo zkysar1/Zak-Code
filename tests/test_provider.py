@@ -291,6 +291,28 @@ async def test_acomplete_missing_cost_defaults_zero(
     assert result.usage.cost_usd == 0.0
 
 
+def test_extract_usage_recovers_cloud_cost_when_response_cost_missing() -> None:
+    # PROV-12: a streaming chunk carries no response_cost; for a non-Groq cloud model the Groq
+    # fallback is also 0, so cost must be recomputed from litellm's price map -- else /cost and the
+    # max_cost_usd ceiling silently read $0 on the streaming path.
+    chunk = _Obj(
+        usage=_Obj(prompt_tokens=1000, completion_tokens=500, total_tokens=1500),
+        _hidden_params={"response_cost": None},
+        model="gpt-4o-mini",
+    )
+    usage = lp.LiteLLMProvider._extract_usage(chunk)
+    assert usage.cost_usd > 0.0
+
+
+def test_map_error_retries_transient_infra_errors() -> None:
+    # PROV-10: transient infra errors (timeout, dropped connection, 503/500) must map to a
+    # retryable error so the loop's backoff retry handles them instead of killing the turn.
+    for name in ("Timeout", "APIConnectionError", "ServiceUnavailableError", "InternalServerError"):
+        exc = type(name, (Exception,), {})("boom")
+        mapped = lp.LiteLLMProvider._map_error(exc)
+        assert isinstance(mapped, lp.RateLimited), f"{name} -> {type(mapped).__name__}"
+
+
 # ---------------------------------------------------------------------------
 # Error mapping
 # ---------------------------------------------------------------------------

@@ -222,6 +222,15 @@ async def complete_structured(
     if schema is not None:
         with contextlib.suppress(Exception):  # capabilities() is best-effort; never block the call
             json_object_only = bool(provider.capabilities().tools_unreliable)
+    # In json_object_only mode the schema is NOT sent as a response_format, so the model would
+    # otherwise be asked for "a JSON object" with no target shape -- a near-blind first attempt that
+    # wastes a repair round. Fold the schema into the system prompt so json_object has a target.
+    effective_system = system
+    if schema is not None and json_object_only:
+        hint = "Respond with ONLY a JSON object conforming to this JSON Schema:\n" + json.dumps(
+            schema
+        )
+        effective_system = f"{system}\n\n{hint}" if system else hint
     while True:
         call_kwargs: dict[str, Any] = {}
         if schema is not None:
@@ -229,7 +238,7 @@ async def complete_structured(
                 None if json_object_only else schema
             )
             call_kwargs["temperature"] = 0.0  # deterministic on the schema path
-        result = await provider.acomplete(convo, system=system, **call_kwargs)
+        result = await provider.acomplete(convo, system=effective_system, **call_kwargs)
         usage = usage + result.usage
         last_text = result.text
         if schema is None:
