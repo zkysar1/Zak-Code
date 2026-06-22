@@ -162,18 +162,25 @@ class SkillRegistry:
         return self._skills.get(name)
 
     def resolve(self, token: str) -> Skill | None:
-        """Resolve a slash token to a skill: by exact ``name`` first, else by any skill whose
-        ``triggers:`` frontmatter lists it — Claude Code's skill->slash mechanism, where a skill
-        ``looper`` with ``triggers: ["/start"]`` is reachable as ``/start``. A leading ``/`` is
-        optional on both sides; an exact name match always wins over a trigger match.
+        """Resolve a slash token to a skill: by ``name`` first, else by any skill whose
+        ``triggers:`` frontmatter lists it — Claude Code's skill->slash mechanism (a skill
+        ``looper`` with ``triggers: ["/start"]`` is reachable as ``/start``). A leading ``/`` is
+        optional on both sides; matching is CASE-INSENSITIVE (CC matches names/triggers
+        case-insensitively, and the CLI lower-cases a typed ``/Command``); a name match wins.
         """
         needle = token.lstrip("/")
-        direct = self._skills.get(token) or self._skills.get(needle)
+        direct = self._skills.get(needle) or self._skills.get(token)
         if direct is not None:
             return direct
+        lowered = needle.lower()
+        for skill in self._skills.values():  # name match wins over any trigger match
+            if skill.name.lower() == lowered:
+                return skill
         for skill in self._skills.values():
             triggers = skill.frontmatter.extras.get("triggers")
-            if isinstance(triggers, list) and any(needle == str(t).lstrip("/") for t in triggers):
+            if isinstance(triggers, list) and any(
+                lowered == str(t).lstrip("/").lower() for t in triggers
+            ):
                 return skill
         return None
 

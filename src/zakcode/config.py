@@ -494,8 +494,9 @@ class Settings(BaseSettings):
     settings_hooks: bool = Field(
         default=False,
         description=(
-            "Load shell hooks from <workspace>/.claude/settings.json and "
-            ".zakcode/settings.json (ZAKCODE_SETTINGS_HOOKS=true). Off by default: "
+            "Load shell hooks from <workspace>/.claude/settings.json, "
+            ".claude/settings.local.json, and .zakcode/settings.json "
+            "(ZAKCODE_SETTINGS_HOOKS=true). Off by default: "
             "workspaces configured for other hook runtimes (e.g. Claude Code) would "
             "otherwise have those hooks half-fire here with a different stdin schema. "
             "Hosts can force the behavior per-Agent via "

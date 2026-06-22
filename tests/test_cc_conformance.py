@@ -98,6 +98,22 @@ def test_skill_is_resolvable_by_trigger_not_just_name(tmp_path: Path) -> None:
     assert registry.resolve("missing") is None
 
 
+def test_skill_resolution_is_case_insensitive(tmp_path: Path) -> None:
+    # Claude Code matches names/triggers case-insensitively, and the CLI lower-cases a typed
+    # `/Command` — so `/start` must reach a `triggers: [/Start]` skill, `/BOOTER` a `name: Booter`.
+    _write(
+        tmp_path / ".claude" / "skills" / "booter" / "SKILL.md",
+        "---\nname: Booter\ndescription: d\ntriggers: [/Start]\n---\nbody",
+    )
+    skills, _errors = discover_skill_dir(tmp_path / ".claude" / "skills")
+    registry = SkillRegistry()
+    for skill in skills:
+        registry.add(skill)
+    for token in ("Booter", "booter", "BOOTER", "start", "/Start"):
+        resolved = registry.resolve(token)
+        assert resolved is not None and resolved.name == "Booter", token
+
+
 # ===========================================================================
 # Hooks — the Claude Code `settings.json` hook contract
 # ===========================================================================
@@ -222,6 +238,16 @@ async def test_use_skill_tool_passes_arguments_to_the_body(tmp_path: Path) -> No
     res = await tool.execute({"name": "looper", "args": "loop"}, ctx)
     assert res.is_error is False
     assert "[arguments: loop]" in res.output
+
+
+async def test_skill_without_arguments_has_no_frame(tmp_path: Path) -> None:
+    # No args (and whitespace-only args) must not emit a stray empty `[arguments: …]` frame.
+    _write_claude_skill(tmp_path, "plain", "Plain body.")
+    agent = _scripted_agent(tmp_path)
+    result = await agent.invoke_skill("plain", "   ")  # whitespace-only → treated as no args
+    assert result.invoked
+    injected = agent.session.messages[-1].text
+    assert "[arguments:" not in injected and "plain body" in injected.lower()
 
 
 async def test_user_invocable_false_blocks_human_path_not_model_chaining(tmp_path: Path) -> None:

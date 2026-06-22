@@ -1054,11 +1054,13 @@ class Agent:
         # text mode; the body is preserved verbatim otherwise (defang never deletes content).
         await self._emit_skill_selected(skill.name, query, source=source)
         rendered = defang_untrusted(body)
-        if args:
+        if args.strip():
             # Claude-Code slash arguments (`/skill the args`, or use_skill args=…): surfaced to the
             # model ahead of the body so a skill whose steps branch on an argument (a sub-command
-            # like `loop`) can see it. Defanged too — args may be model-supplied via use_skill.
-            rendered = f"[arguments: {defang_untrusted(args)}]\n\n{rendered}"
+            # like `loop`) can see it. A presentation frame the model reads — NOT a trust boundary:
+            # defang only neutralizes tool-call sentinels, not brackets, and body + args share the
+            # same untrusted tier the model already consumes.
+            rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
         return SkillLoad(found=True, name=skill.name, body=rendered)
 
     async def invoke_skill(self, name: str, args: str = "") -> SkillInvocation:
