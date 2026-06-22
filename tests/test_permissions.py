@@ -109,6 +109,12 @@ def test_unknown_tool_is_fail_closed() -> None:
         "rm --recursive /",
         "rm -f -r /",  # the recursive flag is the SECOND flag
         "rm -rf ${HOME}",  # braced home var
+        # Phase-4 ReDoS-rewrite: the tokeniser catches what the regex missed --
+        "rm -rf/etc",  # glued: no space between flags and path
+        "rm -rf~",  # glued tilde
+        "rm --recursive=true /",  # --recursive with a value
+        "rm --recurse /etc",  # abbreviated long flag
+        "rm /etc -rf",  # flags AFTER the path (valid getopt)
         "sudo rm file",
         "mkfs.ext4 /dev/sda1",
         ":(){ :|:& };:",
@@ -171,6 +177,28 @@ def test_relative_recursive_rm_not_flagged(command: str) -> None:
 def test_benign_command_not_flagged() -> None:
     policy = PermissionPolicy(PermissionMode.ALLOW)
     decision, _ = policy.decide(BASH, {"command": "git status"})
+    assert decision is PermissionDecision.ALLOW
+
+
+def test_rm_danger_check_is_not_redos_vulnerable() -> None:
+    # Phase-4: the rm-rf guard was a regex with O(n^2) backtracking on `rm -r -r ... <relative>`
+    # (a ~60 KB command froze authorization for ~68s). The tokeniser rewrite must stay linear.
+    import time
+
+    policy = PermissionPolicy(PermissionMode.ALLOW)
+    payload = "rm " + ("-r " * 20000) + "relative_dir"  # ~60 KB: recursive flags, NO root path
+    start = time.perf_counter()
+    decision, _ = policy.decide(BASH, {"command": payload})
+    elapsed = time.perf_counter() - start
+    assert decision is PermissionDecision.ALLOW  # no root/home target -> benign
+    assert elapsed < 1.0, f"rm danger check took {elapsed:.2f}s on a 60KB command (ReDoS?)"
+
+
+def test_dangerous_rm_does_not_overblock_relative_with_separators() -> None:
+    # A benign recursive delete of a relative dir followed by a command naming an absolute path must
+    # NOT escalate -- each shell segment is checked on its own (the `&&` is a boundary).
+    policy = PermissionPolicy(PermissionMode.ALLOW)
+    decision, _ = policy.decide(BASH, {"command": "rm -rf ./build && echo done > /tmp/log"})
     assert decision is PermissionDecision.ALLOW
 
 
