@@ -195,6 +195,18 @@ def test_settings_local_json_hooks_are_also_loaded(tmp_path: Path) -> None:
     assert HookEvent.TURN_END in events  # from settings.local.json
 
 
+def test_posttooluse_additional_context_is_parsed() -> None:
+    # Claude Code's PostToolUse hook returns hookSpecificOutput.additionalContext to inject context
+    # for the model after a tool runs; a faithful host parses it off the hook's stdout JSON.
+    from zakcode.hooks import HookManager
+
+    stdout = json.dumps(
+        {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "extra info"}}
+    ).encode()
+    _message, _mutated, _deny, additional = HookManager._parse_stdout(stdout)
+    assert additional == "extra info"
+
+
 # ===========================================================================
 # Commands — Claude Code slash arguments (`/skill args`, use_skill args=…)
 # ===========================================================================

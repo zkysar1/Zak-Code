@@ -1186,6 +1186,9 @@ class AgentLoop:
         output = tool_res.output
         if post.message:
             output = f"{output}\n[hook] {post.message}" if output else f"[hook] {post.message}"
+        if post.additional_context:
+            # PostToolUse additionalContext: extra context the hook injects for the model.
+            output = f"{output}\n{post.additional_context}" if output else post.additional_context
 
         # Surface the tool's next-step rail (Hint: on success / Fix: on error) into the
         # model-facing text, and mirror it into the structured data for non-model clients.

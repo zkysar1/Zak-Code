@@ -107,6 +107,9 @@ class HookResult(BaseModel):
     decision: HookDecision = HookDecision.ALLOW
     messages: list[str] = Field(default_factory=list)
     mutated_arguments: dict[str, Any] | None = None
+    #: Claude Code PostToolUse ``hookSpecificOutput.additionalContext`` — text a hook injects into
+    #: the conversation after the tool result. Carried on the ALLOW path; empty otherwise.
+    additional_context: str = ""
 
     @property
     def blocked(self) -> bool:
@@ -751,7 +754,7 @@ class HookManager:
             return HookResult(decision=HookDecision.WARN, messages=[f"hook error: {exc}"])
 
         code = proc.returncode
-        message, mutated_args, deny = self._parse_stdout(stdout)
+        message, mutated_args, deny, additional = self._parse_stdout(stdout)
 
         # Claude Code blocks via {"hookSpecificOutput": {"permissionDecision": "deny"}} on
         # exit 0 (not exit 2). Honor it as a BLOCK regardless of exit code.
@@ -763,7 +766,10 @@ class HookManager:
             )
         if code == 0:
             return HookResult(
-                decision=HookDecision.ALLOW, messages=_msgs(message), mutated_arguments=mutated_args
+                decision=HookDecision.ALLOW,
+                messages=_msgs(message),
+                mutated_arguments=mutated_args,
+                additional_context=additional,
             )
         if code == 2:
             return HookResult(
@@ -778,8 +784,8 @@ class HookManager:
         )
 
     @staticmethod
-    def _parse_stdout(stdout: bytes) -> tuple[str, dict[str, Any] | None, bool]:
-        """Best-effort parse of a hook's stdout: ``(message, mutated_arguments, deny)``.
+    def _parse_stdout(stdout: bytes) -> tuple[str, dict[str, Any] | None, bool, str]:
+        """Best-effort parse of a hook's stdout: ``(message, mutated_arguments, deny, extra)``.
 
         Understands two stdout shapes:
 
@@ -794,19 +800,20 @@ class HookManager:
         """
         text = (stdout or b"").decode("utf-8", errors="replace").strip()
         if not text:
-            return ("", None, False)
+            return ("", None, False, "")
         try:
             doc = json.loads(text)
         except (json.JSONDecodeError, ValueError):
             # Plain text on stdout is just a message.
-            return (text, None, False)
+            return (text, None, False, "")
         if not isinstance(doc, dict):
-            return (text, None, False)
+            return (text, None, False, "")
         message = doc.get("message", "")
         message = message if isinstance(message, str) else ""
         args = doc.get("arguments")
         mutated = args if isinstance(args, dict) else None
         deny = False
+        additional = ""
         hso = doc.get("hookSpecificOutput")
         if isinstance(hso, dict):
             updated = hso.get("updatedInput")
@@ -816,7 +823,11 @@ class HookManager:
             reason = hso.get("permissionDecisionReason")
             if not message and isinstance(reason, str):
                 message = reason
-        return (message, mutated, deny)
+            # PostToolUse may inject context for the model after the tool result.
+            extra = hso.get("additionalContext")
+            if isinstance(extra, str):
+                additional = extra
+        return (message, mutated, deny, additional)
 
 
 def _valid_cwd(cwd: str) -> str | None:
