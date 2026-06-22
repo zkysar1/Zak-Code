@@ -23,20 +23,24 @@ from .gatherer import (
     heuristic_classifier,
 )
 from .signal import SignalLogger, SignalRecord
+from .train import RelevanceModel, TrainedClassifier, train_relevance
 
 __all__ = [
     "Candidate",
     "Collector",
     "ContextGatherer",
     "RelevanceClassifier",
+    "RelevanceModel",
     "SignalLogger",
     "SignalRecord",
     "SmallModelClassifier",
+    "TrainedClassifier",
     "default_gatherer",
     "heuristic_classifier",
     "mentioned_files_collector",
     "recent_files_collector",
     "score_relevance",
+    "train_relevance",
 ]
 
 
