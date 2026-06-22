@@ -6,7 +6,7 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <img alt="Status" src="https://img.shields.io/badge/status-alpha-green.svg">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-2223%20passing-brightgreen.svg">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-2324%20passing-brightgreen.svg">
 </p>
 
 ---
@@ -14,7 +14,7 @@
 > **Status: alpha — feature-complete against the roadmap (M0–M10) plus a
 > learning-substrate layer and an opt-in small-model quality engine, validated live on
 > OpenAI _and_ local models.** The core
-> engine, CLI, and HTTP API server are built and tested (2,223 passing tests; `ruff` +
+> engine, CLI, and HTTP API server are built and tested (2,324 passing tests; `ruff` +
 > `mypy` clean). It's a young project — expect rough edges — but it really runs: it
 > reads/writes files, runs commands, searches code, and drives multi-step tasks to
 > completion against a real model.
@@ -198,6 +198,10 @@ no agent logic.
 - **Skills** — `SKILL.md` with progressive disclosure (cheap catalog → body on demand);
   invokable by a human (`/<name>`) **or by the model** (the `use_skill` tool), so skills **chain**
   (and branch). Available to sub-agents too; a per-turn `skill_invocation_budget` bounds runaway chains.
+- **Claude Code compatible host (opt-in)** — speaks the generic Claude Code extension contract so a
+  plug-in built for Claude Code (skills, `settings.json` hooks, `permissions.{allow,deny}`, statusLine,
+  output-styles) runs unmodified; every surface is off by default and guarded by a conformance suite.
+  See [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) and [`docs/CLAUDE-CODE-HOST-ROADMAP.md`](docs/CLAUDE-CODE-HOST-ROADMAP.md).
 - **Context compaction** — real-token-count threshold (not char heuristics); summarizes
   older turns, keeps recent ones, tool-pair-safe and idempotent. `/compact`.
 - **Evals** — a behavioral probe suite + `zakcode eval`, runnable as a CI gate.
@@ -340,7 +344,7 @@ Zak-Code/
 │  ├─ server/           # FastAPI app + bundled web client (optional extra)
 │  └─ cli/              # the terminal client
 ├─ docs/                # living project documentation
-└─ tests/               # 2,229-test suite (incl. gated live-provider smoke tests)
+└─ tests/               # 2,330-test suite (incl. gated live-provider smoke tests)
 ```
 
 ## Acknowledgements & clean-room note

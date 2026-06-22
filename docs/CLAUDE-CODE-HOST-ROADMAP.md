@@ -3,6 +3,12 @@
 *Companion to [`CLAUDE-MIND-COMPAT.md`](CLAUDE-MIND-COMPAT.md) (the gap map). This is the plan: the
 architecture, the rule that keeps it clean, the phases (with a live run early), and who builds what.*
 
+> **Status (2026-06-22): Phases 0–3 SHIPPED, and the ecosystem proof landed.** The CC-compat edge
+> exists, every contract area has a generic conformance test that never names a plug-in, and a
+> complete third-party-shaped plug-in runs end-to-end on one Agent. The remaining items are a
+> short, deliberately-deferred robustness/cosmetic tail — see **Deferred (documented, with
+> rationale)** below. Each phase row is annotated **✅ shipped** inline.
+
 ## North star
 
 Zak Code is a **generic, behavior-free host that speaks the Claude Code extension contract.** It has
@@ -62,7 +68,10 @@ just the first consumer that proves it.
 
 ---
 
-## Phase 0 — Name the layer + build the guardian (foundation)
+## Phase 0 — Name the layer + build the guardian (foundation) — ✅ DONE
+
+**Shipped:** the CC-compat layer is named and the conformance guardian
+(`tests/test_cc_conformance.py`) is live; the stale `INTEGRATIONS.md` "deferred" section was corrected.
 
 The strategic backbone. Without this, the abstraction rots into hacks within two PRs.
 
@@ -72,7 +81,10 @@ The strategic backbone. Without this, the abstraction rots into hacks within two
 | **Conformance suite** | A test suite that asserts each contract area independently of claude-mind ("a Stop hook returning `{decision:block}` re-enters the loop", "a skill with `triggers:[/x]` is invocable as `/x`"). **This is how we keep the abstraction honest forever** — no contract piece is "done" without a CC-generic test that never names the Mind. | dev | M |
 | **Fix stale docs** | `INTEGRATIONS.md` "deferred" section wrongly says Stop-continuation + settings ingestion aren't built — they are. Correct it; publish the CC-compat contract as the public integration surface. | dev | S |
 
-## Phase 1 — Minimum viable host → **LIVE "ALIENS" RUN** 🛸
+## Phase 1 — Minimum viable host → **LIVE "ALIENS" RUN** 🛸 — ✅ DONE
+
+**Shipped:** slash dispatch on `triggers:`, command/`use_skill` args, and `user-invocable`
+enforcement, plus `settings.local.json` layering — the minimum viable generic host surface.
 
 The proof-of-life. Almost entirely **dev-side surface work** (CLI + skills + settings reader), so it
 moves fast with no hard omni dependency. Each item is a generic capability.
@@ -91,7 +103,11 @@ moves fast with no hard omni dependency. Each item is a generic capability.
 goal, researches, and the loop re-enters itself. We watch it actually do research. **Proof the engine
 works on Zak Code.**
 
-## Phase 2 — Transcript & lifecycle fidelity (mostly omni seam-domain)
+## Phase 2 — Transcript & lifecycle fidelity (mostly omni seam-domain) — ✅ DONE
+
+**Shipped:** a Claude-Code-shaped `transcript_path` view, SessionStart `source`, PreCompact `trigger`
+at the payload top level, and PostToolUse `additionalContext` (StopFailure + UserPromptExpansion
+events deferred — see below).
 
 Make the host *record and signal* like Claude Code, so the Mind's full machinery (recovery, resume,
 consolidation) works — and so do other CC tools that read transcripts/lifecycle.
@@ -104,7 +120,11 @@ consolidation) works — and so do other CC tools that read transcripts/lifecycl
 | **PostToolUse `additionalContext`** | Honor it (a hook injecting post-tool context). ~5 lines. | omni | S |
 | **`StopFailure` + `UserPromptExpansion` events** | Fire these generic events in the loop (crash-recovery + prompt telemetry). | omni | M |
 
-## Phase 3 — Settings, permissions & presentation (the parity subsystems)
+## Phase 3 — Settings, permissions & presentation (the parity subsystems) — ✅ DONE
+
+**Shipped:** `permissions.{allow,deny}` ingestion into the deny-first policy (tighten-only; a bare
+whole-tool deny binds even read-only tools), a statusLine subsystem, and output-styles → system
+prompt — all off by default.
 
 The genuinely-new generic subsystems. All three are **already "Planned" in Zak Code's own roadmap**,
 so they serve broad Claude-Code parity, not just the Mind.
@@ -121,9 +141,27 @@ Prove the *bonus*, then freeze the contract.
 
 | Item | What | Owner | Effort |
 |---|---|---|---|
-| **Second-plug-in proof** | Take a **different** Claude-Code thing (a third-party skill or a second skill system) and show it runs on Zak Code unmodified. This is what turns "should work" into "proven." | dev | M |
-| **Conformance lock** | Every contract area has a passing CC-generic test; wire it into `poe check` so a future change can't silently break the abstraction. | dev | S |
-| **Public contract docs** | Document the CC-compat surface as the supported integration contract (versioned). | dev | S |
+| **Second-plug-in proof** ✅ shipped | A **complete, generic** Claude-Code plug-in (a slash-triggered skill + a `settings.json` Stop hook + permission denies + an output style + an always-on rule, naming no framework) runs end-to-end on one Agent: `tests/test_cc_ecosystem.py`. Turns "should work" into "proven." | dev | M |
+| **Conformance lock** ✅ shipped | Every contract area has a passing CC-generic test, grouped under the `cc_conformance` marker so the guardian is runnable on its own (`pytest -m cc_conformance`) and runs as part of the full `poe check` suite — a future change can't silently break the abstraction. | dev | S |
+| **Public contract docs** ✅ shipped | The supported CC-compat surface + opt-in flags are documented in [`docs/INTEGRATIONS.md`](INTEGRATIONS.md) ("Claude Code compatibility"). | dev | S |
+
+### Deferred (documented, with rationale)
+
+These were scoped out of the shipped work *on purpose*. They are a small robustness/cosmetic tail —
+none is a loop-blocker, and each is recognised-and-handled today (never silently dropped):
+
+- **`StopFailure` + `UserPromptExpansion` hook events** — real CC events, deferred for **scope**: a
+  non-loop-blocking robustness tail, and firing `StopFailure` would thread the critical
+  turn-finalize path. Both are recognised and skipped **with a warning** today, not silently dropped.
+- **statusLine: cap the command's stdout read** — the status command's output is bounded only by the
+  5s timeout today; add an explicit byte cap.
+- **statusLine: the status JSON's model id uses `default_model`** — cosmetic under zakpick/failover
+  (the rendered id can lag the model actually used for the turn).
+- **Protected-path deny reason wording** — the deny reason says "write to a protected path" even for
+  a denied *read*; cosmetic wording only.
+- **output-styles: an off-default-byte-identical test that ALSO has rules present** — the current
+  off-test uses a no-rules baseline; the with-rules case is safe by inspection, but deserves its own
+  regression test.
 
 ---
 

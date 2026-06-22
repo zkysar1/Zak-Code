@@ -24,6 +24,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from zakcode import Agent
 from zakcode.config import Settings
 from zakcode.hooks import HookEvent, LifecyclePayload
@@ -36,6 +38,8 @@ from zakcode.skills import (
     parse_frontmatter,
 )
 from zakcode.tools.base import ToolContext
+
+pytestmark = pytest.mark.cc_conformance
 
 
 def _write(path: Path, text: str) -> Path:

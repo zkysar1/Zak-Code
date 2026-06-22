@@ -12,9 +12,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from zakcode import Agent
 from zakcode.config import PermissionTier, Settings
 from zakcode.permissions import PermissionDecision
+
+pytestmark = pytest.mark.cc_conformance
 
 
 def _w(path: Path, text: str) -> None:

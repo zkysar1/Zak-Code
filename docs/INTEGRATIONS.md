@@ -16,6 +16,33 @@ so the two never fight over the same files, hooks, or learning loop.
 
 ---
 
+## Claude Code compatibility (what's supported)
+
+Zak Code is a **generic, behavior-free Claude-Code host**: anything built for Claude Code's extension
+surface (skills, `settings.json` hooks, permissions, statusLine, output-styles) runs on it unmodified,
+while the *behavior* comes from whatever plugs in. The full plan and boundary rule are in
+[`docs/CLAUDE-CODE-HOST-ROADMAP.md`](CLAUDE-CODE-HOST-ROADMAP.md); this is the supported surface.
+
+**Every compatibility surface is OFF by default.** Each is enabled per-`Agent` (e.g.
+`Agent(enable_settings_hooks=True)`) or via its env flag, so a workspace carrying *another* runtime's
+`.claude/` config never changes Zak Code's behavior unless you opt in.
+
+| Surface | What's supported | Turn it on with |
+| --- | --- | --- |
+| **Skills** | `.claude/skills/<name>/SKILL.md` discovery; slash dispatch by skill **name** OR a `triggers:` token (case-insensitive); **skill arguments** (`/skill foo --bar` and `use_skill(args=…)`) threaded into the body; `user-invocable: false` enforced (gates a human-typed `/x` while still allowing model→skill chaining via `use_skill`). | `Agent(enable_skills=True)` |
+| **Hooks** | A Claude-Code `settings.json` (**and `settings.local.json`**, local-over-project) hook block, parsed verbatim: `Stop` → `TURN_END` continuation, `PreToolUse` / `PostToolUse` (incl. `additionalContext`), `SessionStart` (with `source`), `PreCompact` (`trigger` at the stdin top level); `$CLAUDE_PROJECT_DIR` expansion; every command security-scanned; and a Claude-Code-shaped `transcript_path` projection handed to hooks. | `ZAKCODE_SETTINGS_HOOKS` / `Agent(enable_settings_hooks=True)` |
+| **Permissions** | `permissions.{allow,deny}` `Tool(pattern)` gestures translated into Zak Code's (stronger) deny-first policy — **deny-first, tighten-only**: the catastrophic floor is preserved (ingested allows can't loosen it), and a bare whole-tool deny binds **even read-only tools**. | `ZAKCODE_SETTINGS_PERMISSIONS` / `Agent(enable_settings_permissions=True)` |
+| **statusLine** | The `statusLine` command from settings, fed session JSON per turn and rendered (cosmetic, fail-safe). | `ZAKCODE_STATUS_LINE` / `Agent(enable_status_line=True)` |
+| **output-styles** | A named output style (`.claude/output-styles/<name>.md`, selected via `outputStyle`) injected into the system prompt to shape generation. | `ZAKCODE_OUTPUT_STYLE` / `Agent(enable_output_style=True)` |
+
+**The guardian.** Each contract area has a generic conformance test that *never names a plug-in*, in
+`tests/test_cc_conformance.py` (`pytest -m cc_conformance`); `tests/test_cc_ecosystem.py` is the
+ecosystem proof — a complete, framework-agnostic Claude-Code plug-in (slash-triggered skill +
+`settings.json` Stop hook + permission denies + output style + always-on rule) running end-to-end on
+one Agent. No contract piece is "done" without a test that proves it generically.
+
+---
+
 ## The seams
 
 ### 1. Lifecycle hooks (the automation backbone)
