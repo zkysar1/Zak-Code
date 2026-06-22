@@ -379,6 +379,39 @@ def test_status_line_command_is_read_from_settings_json(tmp_path: Path) -> None:
 
 
 # ===========================================================================
+# Output styles — the Claude Code `outputStyle` + `.claude/output-styles/<name>.md` contract
+# ===========================================================================
+
+
+def test_active_output_style_body_is_loaded_from_settings(tmp_path: Path) -> None:
+    # A faithful host reads CC's `outputStyle` name from .claude/settings.json and loads the
+    # body from .claude/output-styles/<name>.md as a block to fold into the system prompt.
+    # Generic (no plug-in named): a configured style yields a framed, injectable block.
+    from zakcode.output_styles import load_active_output_style
+
+    _write(tmp_path / ".claude" / "settings.json", json.dumps({"outputStyle": "terse"}))
+    _write(tmp_path / ".claude" / "output-styles" / "terse.md", "Answer tersely.")
+    block, reason = load_active_output_style(tmp_path)
+    assert block is not None and "Answer tersely." in block
+    assert reason is None  # a clean selection + body maps without a reason
+
+
+def test_output_style_is_off_by_default(tmp_path: Path) -> None:
+    # A workspace may carry ANOTHER runtime's output-style config; without the opt-in flag a
+    # faithful host must NOT reshape its prompt from it. The configured style is inert when off.
+    from zakcode.agent import DYNAMIC_BOUNDARY
+
+    _write(tmp_path / ".claude" / "settings.json", json.dumps({"outputStyle": "terse"}))
+    _write(tmp_path / ".claude" / "output-styles" / "terse.md", "OFF_DEFAULT_MARKER")
+    agent = Agent(
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+    )
+    prompt = agent.loop.prompt_builder.build(agent.settings)
+    assert "OFF_DEFAULT_MARKER" not in prompt
+    assert DYNAMIC_BOUNDARY in prompt  # a normal prompt, just without the style
+
+
+# ===========================================================================
 # Permissions — the Claude Code `permissions.{allow,deny}` Tool(glob) contract
 # ===========================================================================
 

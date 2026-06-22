@@ -542,6 +542,25 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Claude Code output-style support (opt-in) ────────────────────────────
+    # Read the active ``outputStyle`` name from <workspace>/.claude/settings.json (+
+    # settings.local.json), load its body from .claude/output-styles/<name>.md, and fold that
+    # body into the stable (cacheable) system-prompt tier — the SAME seam always-on rules use —
+    # so it shapes how the assistant writes. Off by default (like settings_hooks) so a workspace
+    # carrying another runtime's output-style config doesn't silently reshape this engine's voice;
+    # when off, the system prompt is byte-identical to today. Fully defensive: a missing/unknown
+    # style name or file injects nothing and never raises. Hosts can force the behavior per-Agent
+    # via Agent(enable_output_style=True/False). See zakcode.output_styles.
+    output_style: bool = Field(
+        default=False,
+        description=(
+            "Inject the active Claude Code output style (the outputStyle named in "
+            "<workspace>/.claude/settings.json + settings.local.json, body from "
+            ".claude/output-styles/<name>.md) into the stable system-prompt tier "
+            "(ZAKCODE_OUTPUT_STYLE=true). Off by default; a no-op when unconfigured."
+        ),
+    )
+
     # ── Web tools (web_search / web_fetch) ───────────────────────────────────
     # Which vendor-agnostic search backend `web_search` uses. ``ddgs`` (the default) is free and
     # needs no key; ``tavily`` reads TAVILY_API_KEY from the env (like other provider keys — never

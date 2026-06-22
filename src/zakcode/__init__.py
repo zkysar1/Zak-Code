@@ -267,6 +267,7 @@ class Agent:
         enable_settings_hooks: bool | None = None,
         enable_settings_permissions: bool | None = None,
         enable_status_line: bool | None = None,
+        enable_output_style: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
     ) -> None:
@@ -508,6 +509,29 @@ class Agent:
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
             rules_text = self.rule_registry.render()
 
+        # Claude Code output style (opt-in): the active outputStyle's body, folded into the
+        # SAME stable tier as rules so it shapes generation and stays cache-safe. Loaded here
+        # (before delegation) so sub-agents inherit the same style. None defers to
+        # Settings.output_style (ZAKCODE_OUTPUT_STYLE); an explicit True/False from the host
+        # wins. Fully defensive: a missing/unknown style is recorded, never fatal, and leaves
+        # output_style_text empty so the prompt is byte-identical to today.
+        self.output_style_error: str | None = None
+        output_style_text = ""
+        if enable_output_style if enable_output_style is not None else self.settings.output_style:
+            from zakcode.output_styles import load_active_output_style
+
+            _style_block, self.output_style_error = load_active_output_style(
+                self.settings.workspace_root
+            )
+            output_style_text = _style_block or ""
+            if self.output_style_error and _style_block is None:
+                # A configured-but-unloadable style (bad name/file) is a quiet footgun: the
+                # selected voice is silently absent. Log it; a clean "unconfigured" reason
+                # (the common no-op) is not worth a warning, so only log when something was
+                # actually attempted and failed (handled inside load_active_output_style for
+                # parse/read errors; this covers the host-facing surface).
+                logger.debug("output style not injected: %s", self.output_style_error)
+
         # Operator identity (self.md), loaded ONCE here so it is cache-stable for the session.
         # An explicit ``identity`` arg wins; else discover it from the workspace when enabled
         # (the default). It is operator-authored = TRUSTED, so it is injected UN-fenced (unlike
@@ -536,11 +560,14 @@ class Agent:
         # NOTE: the construction condition MUST include self.identity, or a workspace with
         # ONLY a self.md (no rules/skills) would leave prompt_builder=None and the loop's
         # default builder would ignore the loaded identity.
-        if prompt_builder is None and (skills_catalog or rules_text or self.identity):
+        if prompt_builder is None and (
+            skills_catalog or rules_text or output_style_text or self.identity
+        ):
             prompt_builder = SystemPromptBuilder(
                 identity=self.identity,
                 extra_instructions=skills_catalog or None,
                 rules=rules_text or None,
+                output_style=output_style_text or None,
             )
         elif prompt_builder is not None:
             if self.identity and not prompt_builder.identity:
@@ -555,6 +582,10 @@ class Agent:
                 )
             if rules_text and not prompt_builder.rules:
                 prompt_builder.rules = rules_text
+            # Fill an injected builder's empty output-style slot so enable_output_style is
+            # never a silent no-op (mirrors the rules slot above).
+            if output_style_text and not prompt_builder.output_style:
+                prompt_builder.output_style = output_style_text
 
         # Delegation (M4), opt-in. When enabled, the parent gets the ``task`` tool and
         # a shared :class:`IterationBudget`, and a :class:`SubAgentManager` is placed
