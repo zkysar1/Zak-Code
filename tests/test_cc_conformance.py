@@ -24,7 +24,12 @@ from pathlib import Path
 
 from zakcode.hooks import HookEvent
 from zakcode.hooks.settings_loader import load_settings_hooks
-from zakcode.skills import default_skill_dirs, discover_skill_dir, parse_frontmatter
+from zakcode.skills import (
+    SkillRegistry,
+    default_skill_dirs,
+    discover_skill_dir,
+    parse_frontmatter,
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -71,6 +76,23 @@ def test_skill_frontmatter_preserves_cognitive_keys() -> None:
     assert fm.extras["user_invocable"] == "false"  # key normalized -/_; value preserved verbatim
     assert fm.extras["triggers"] == ["/start", "/go"]  # bracketed value -> list
     assert fm.extras["minimum_mode"] == "autonomous"
+
+
+def test_skill_is_resolvable_by_trigger_not_just_name(tmp_path: Path) -> None:
+    # Claude Code maps a skill to a slash via its `triggers:` frontmatter: a skill named `looper`
+    # with `triggers: [/start]` must be reachable as `/start`, not only as `/looper`. Name wins.
+    _write(
+        tmp_path / ".claude" / "skills" / "looper" / "SKILL.md",
+        "---\nname: looper\ndescription: a looping skill\ntriggers: [/start, /go]\n---\nbody",
+    )
+    skills, _errors = discover_skill_dir(tmp_path / ".claude" / "skills")
+    registry = SkillRegistry()
+    for skill in skills:
+        registry.add(skill)
+    for token in ("looper", "start", "/go"):  # by name, by trigger, by trigger-with-slash
+        resolved = registry.resolve(token)
+        assert resolved is not None and resolved.name == "looper", token
+    assert registry.resolve("missing") is None
 
 
 # ===========================================================================

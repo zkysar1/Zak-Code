@@ -161,6 +161,22 @@ class SkillRegistry:
     def get(self, name: str) -> Skill | None:
         return self._skills.get(name)
 
+    def resolve(self, token: str) -> Skill | None:
+        """Resolve a slash token to a skill: by exact ``name`` first, else by any skill whose
+        ``triggers:`` frontmatter lists it — Claude Code's skill->slash mechanism, where a skill
+        ``looper`` with ``triggers: ["/start"]`` is reachable as ``/start``. A leading ``/`` is
+        optional on both sides; an exact name match always wins over a trigger match.
+        """
+        needle = token.lstrip("/")
+        direct = self._skills.get(token) or self._skills.get(needle)
+        if direct is not None:
+            return direct
+        for skill in self._skills.values():
+            triggers = skill.frontmatter.extras.get("triggers")
+            if isinstance(triggers, list) and any(needle == str(t).lstrip("/") for t in triggers):
+                return skill
+        return None
+
     def names(self) -> list[str]:
         return list(self._skills)
 

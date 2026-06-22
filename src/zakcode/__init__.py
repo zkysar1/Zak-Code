@@ -997,7 +997,9 @@ class Agent:
         ``/<name>`` (``source="command"``) is operator-controlled and never throttled.
         """
         registry = getattr(self, "skill_registry", None)
-        skill = registry.get(name) if registry is not None else None
+        # resolve() (not get()): match the skill's name OR its ``triggers:`` frontmatter, so a
+        # skill ``foo`` with ``triggers: ["/start"]`` is reachable as ``/start``. Name wins.
+        skill = registry.resolve(name) if registry is not None else None
         if skill is None:
             return SkillLoad(found=False, name=name)
         if source == "tool":
