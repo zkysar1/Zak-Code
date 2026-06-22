@@ -15,6 +15,7 @@ which just echoes the heuristic prior -- never raises.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections.abc import Sequence
@@ -23,6 +24,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .gatherer import Candidate
+
+logger = logging.getLogger(__name__)
 
 _FEATURE_NAMES = ["bias", "cheap_score", "name_overlap"]
 
@@ -47,7 +50,7 @@ def _sigmoid(z: float) -> float:
 
 
 def _dot(w: Sequence[float], x: Sequence[float]) -> float:
-    return sum(wi * xi for wi, xi in zip(w, x, strict=False))
+    return sum(wi * xi for wi, xi in zip(w, x, strict=True))
 
 
 class RelevanceModel(BaseModel):
@@ -116,7 +119,17 @@ class TrainedClassifier:
     """
 
     def __init__(self, model: RelevanceModel) -> None:
-        self._w = model.weights
+        # Guard against a feature-set change: a model trained against a different _FEATURE_NAMES
+        # would silently mis-score (and `_dot` is now strict). Fall back to the prior loudly.
+        if len(model.weights) == len(_FEATURE_NAMES):
+            self._w = model.weights
+        else:
+            logger.warning(
+                "trained model has %d weights but %d features; using the default prior",
+                len(model.weights),
+                len(_FEATURE_NAMES),
+            )
+            self._w = list(RelevanceModel().weights)
 
     def _score(self, task: str, c: Candidate) -> float:
         return _sigmoid(_dot(self._w, _features(task, c.ref, c.cheap_score)))

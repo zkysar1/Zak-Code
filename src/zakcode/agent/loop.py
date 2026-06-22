@@ -1525,15 +1525,17 @@ class AgentLoop:
 
         Returns the continuation prompt when a hook vetoes the stop and the per-turn
         budget allows re-entry; ``None`` (the overwhelmingly common case) lets the
-        turn end. Fail-open by construction: budget 0 / no hooks short-circuits
-        without building a payload, and a crashing hook run never blocks the stop.
+        turn end. Observe-only hooks (``register_turn_end_observer``) fire on EVERY turn end,
+        regardless of the budget. Fail-open: a crashing hook run never blocks the stop.
         """
-        if (
-            self.turn_end_veto_budget <= 0
-            or veto_count >= self.turn_end_veto_budget
-            or stop_reason not in _VETOABLE_STOP_REASONS
-            or not self.hook_manager.has_turn_end_hooks()
-        ):
+        observe = self.hook_manager.has_turn_end_observers()
+        vetoable = (
+            self.turn_end_veto_budget > 0
+            and veto_count < self.turn_end_veto_budget
+            and stop_reason in _VETOABLE_STOP_REASONS
+            and self.hook_manager.has_turn_end_hooks()
+        )
+        if not observe and not vetoable:
             return None
         payload = TurnEndPayload(
             session_id=self.session.id,
@@ -1544,6 +1546,15 @@ class AgentLoop:
             degraded=stuck_took_action or stop_reason in _DEGRADED_STOP_REASONS,
             last_assistant_message=_last_assistant_text(turn_assistant),
         )
+        # Observe-only hooks (e.g. signal logging) fire on EVERY turn end — any stop reason, any
+        # budget. Veto-capable hooks below run only at a vetoable break site with budget remaining.
+        if observe:
+            try:
+                await self.hook_manager.run_turn_end_observers(payload)
+            except Exception:  # noqa: BLE001 — an observer must never break the loop
+                logger.warning("TURN_END observer run failed", exc_info=True)
+        if not vetoable:
+            return None
         try:
             result = await self.hook_manager.run_turn_end(payload, drop_env=self._scrub_env_names())
         except Exception:  # fail-open: a broken hook must never block the stop

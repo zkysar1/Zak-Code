@@ -658,16 +658,29 @@ class Agent:
             elif context_classifier == "model":
                 from zakcode.context import SmallModelClassifier
 
-                # The cheap relevance call rides the context seam; SmallModelClassifier exposes
-                # on_usage for callers that want to account the (small) spend.
-                gatherer = default_gatherer(SmallModelClassifier(self.provider))
+                # Route the every-turn relevance call to a CHEAP model (mirrors the summarizer
+                # routing below), and account its spend on the session so it shows in /cost.
+                if "context_classifier" in self.settings.model_roles:
+                    clf_provider = self._provider_for(
+                        self.settings.model_roles["context_classifier"]
+                    )
+                elif self._zakpick:
+                    clf_provider = self._resolve_task_provider("classify")[0]
+                else:
+                    clf_provider = self.provider
+                gatherer = default_gatherer(
+                    SmallModelClassifier(
+                        clf_provider,
+                        on_usage=lambda u: self.session.add_usage(u, model=clf_provider.model_id()),
+                    )
+                )
             else:
                 gatherer = default_gatherer()
             self.hook_manager.register_context(gatherer)
             if context_signal_log:
                 from zakcode.context import SignalLogger
 
-                self.hook_manager.register_turn_end(
+                self.hook_manager.register_turn_end_observer(
                     SignalLogger(gatherer, self.session, context_signal_log).on_turn_end
                 )
 

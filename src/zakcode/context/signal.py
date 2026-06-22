@@ -60,10 +60,12 @@ def _tool_input_blob(messages: list[Message]) -> str:
 class SignalLogger:
     """Logs the (offered context -> used?) signal once per turn as append-only JSONL.
 
-    Register as a ``TURN_END`` hook. It reads the gatherer's last offer and the just-finished turn's
-    tool calls (from the session); ``used`` is true when an offered ref appears in a tool call's
-    arguments or the final assistant message (the model referenced or acted on it). Best-effort: a
-    logging failure is swallowed, never affecting the turn.
+    Register as an observe-only ``TURN_END`` hook (``register_turn_end_observer``) so it fires on
+    EVERY turn end. It reads the gatherer's last offer and the just-finished turn's tool calls (from
+    the session); ``used`` is true when an offered ref appears in a tool call's arguments or the
+    final assistant message. NOTE: this is a reference-based proxy -- it undercounts context the
+    model consumed purely in-context (already injected, never re-fetched), and on a multi-iteration
+    turn it reflects the final iteration's offer. Best-effort: a logging failure is swallowed.
     """
 
     def __init__(self, gatherer: ContextGatherer, session: Session, log_path: str | Path) -> None:
