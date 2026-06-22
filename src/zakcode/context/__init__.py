@@ -1,0 +1,58 @@
+"""Deterministic, every-turn context gathering for the agent loop.
+
+Register the gatherer once and it runs before every model call -- the model
+never decides *whether* to gather. Relevance ranking is isolated behind the
+``RelevanceClassifier`` seam, so it graduates from a heuristic (here) to a
+small-model classifier to a fine-tuned model with no caller change::
+
+    from zakcode.context import default_gatherer
+    agent.hook_manager.register_context(default_gatherer())
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+from .collectors import mentioned_files_collector, recent_files_collector
+from .gatherer import (
+    Candidate,
+    Collector,
+    ContextGatherer,
+    RelevanceClassifier,
+    heuristic_classifier,
+)
+
+__all__ = [
+    "Candidate",
+    "Collector",
+    "ContextGatherer",
+    "RelevanceClassifier",
+    "default_gatherer",
+    "heuristic_classifier",
+    "mentioned_files_collector",
+    "recent_files_collector",
+]
+
+
+def default_gatherer(
+    classifier: RelevanceClassifier = heuristic_classifier,
+    *,
+    collectors: Sequence[Collector] | None = None,
+    budget_chars: int = 8000,
+    top_k: int = 15,
+) -> ContextGatherer:
+    """A ready-to-register gatherer with sensible default collectors.
+
+    Zero models, sane defaults, budget-bounded -- the enable-and-forget path::
+
+        agent.hook_manager.register_context(default_gatherer())
+
+    Pass ``classifier`` to swap in a smarter ranker (step 2+); pass ``collectors``
+    to override the candidate sources.
+    """
+    cols: Sequence[Collector] = (
+        list(collectors)
+        if collectors is not None
+        else [mentioned_files_collector, recent_files_collector]
+    )
+    return ContextGatherer(cols, classifier, budget_chars=budget_chars, top_k=top_k)

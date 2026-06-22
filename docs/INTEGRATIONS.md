@@ -65,6 +65,14 @@ Shell context hooks get the `LLMContextPayload` (`user_text`, `cwd`, `iteration`
 stdin and return the text to inject on stdout (plain, or `{"context": "..."}`) — a
 direct home for a `retrieve.sh`-style retrieval script.
 
+**Built-in convenience (opt-in).** `Agent(enable_context_gathering=True)` registers a
+deterministic gatherer (`zakcode.context`) on this seam: it injects relevant
+*current-workspace* context **every turn** — deterministic collectors plus a swappable
+`RelevanceClassifier` (a zero-model heuristic by default; a small or fine-tuned model drops in
+behind the same Protocol with no caller change). It is *within-session* context assembly,
+distinct from the cross-session memory below; off by default, so the clean substrate ships no
+gatherer.
+
 ### 3. Skills (`.claude/skills/<name>/SKILL.md`)
 
 The skills loader discovers Agent-Skills-format `SKILL.md` files from, in increasing

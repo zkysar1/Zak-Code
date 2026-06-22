@@ -217,6 +217,9 @@ class Agent:
     Pass ``enable_subagents=True`` to expose the ``task`` delegation tool and a
     shared iteration budget (off by default). Pass ``enable_mcp=True`` to wire
     configured MCP servers; their tools register on ``await connect_mcp()``.
+    Pass ``enable_context_gathering=True`` for a deterministic within-session
+    context gatherer that injects relevant workspace context every turn (off by
+    default; see :mod:`zakcode.context`).
     """
 
     def __init__(
@@ -245,6 +248,7 @@ class Agent:
         enable_identity: bool = True,
         identity: str | None = None,
         enable_compaction: bool = False,
+        enable_context_gathering: bool = False,
         enable_settings_hooks: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
@@ -625,6 +629,16 @@ class Agent:
         # register_context (PRE_LLM_CALL injection), register_lifecycle, register_turn_end, and the
         # tool registry — that claude-mind (or any framework) attaches its own recall/remember to.
         # The harness ships no store, no recall, no remember/recall tools.
+
+        # An opt-in convenience ON that same generic seam: a deterministic, within-session
+        # context gatherer (current workspace/session only — NOT the cross-session memory the
+        # boundary removed). It runs every turn so context-gathering can't be silently skipped;
+        # relevance ranking is swappable behind context.RelevanceClassifier (a zero-model
+        # heuristic by default). Off by default — the clean substrate ships no gatherer.
+        if enable_context_gathering:
+            from zakcode.context import default_gatherer
+
+            self.hook_manager.register_context(default_gatherer())
 
         # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
         # before a turn once it exceeds the provider's context-window threshold.
