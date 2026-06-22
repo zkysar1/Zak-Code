@@ -66,7 +66,7 @@ class ServerClient:
         return str(resp.json()["id"])
 
     async def astream_turn(
-        self, message: str, session_id: str | None = None
+        self, message: str, session_id: str | None = None, model: str | None = None
     ) -> AsyncIterator[AgentEvent]:
         """Run one turn on the server, yielding each :data:`AgentEvent` as it arrives.
 
@@ -74,7 +74,7 @@ class ServerClient:
         every ``data:`` frame back into a typed ``AgentEvent`` via the shared wire
         contract — so a malformed frame raises rather than being silently rendered.
         """
-        payload = {"message": message, "session_id": session_id}
+        payload = {"message": message, "session_id": session_id, "model": model}
         async with self._http().stream("POST", "/chat/stream", json=payload) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():

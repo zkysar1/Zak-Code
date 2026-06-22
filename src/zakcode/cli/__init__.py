@@ -1037,7 +1037,7 @@ def _run_streamed_turn(
 
 
 async def _server_turn_stream(
-    base_url: str, message: str, session_id: str | None
+    base_url: str, message: str, session_id: str | None, model: str | None = None
 ) -> AsyncIterator[AgentEvent]:
     """Stream one turn from a remote server, creating + closing a client per turn.
 
@@ -1049,7 +1049,7 @@ async def _server_turn_stream(
 
     client = ServerClient(base_url, auth_token=os.environ.get("ZAKCODE_AUTH_TOKEN"))
     try:
-        async for event in client.astream_turn(message, session_id):
+        async for event in client.astream_turn(message, session_id, model):
             yield event
     finally:
         await client.aclose()
@@ -1077,6 +1077,7 @@ def _build_chat_agent(
     enable_rules: bool = True,
     extra_skill_dirs: list[str] | None = None,
     extra_workspace_roots: list[str] | None = None,
+    session_id: str | None = None,
 ) -> Agent:
     """Build the in-process chat Agent with every interactive feature enabled.
 
@@ -1086,12 +1087,18 @@ def _build_chat_agent(
     only if it is named there (else it is listed by ``/plugins`` as skipped/untrusted).
     """
     from zakcode import Agent
+    from zakcode.session.store import SessionStore
 
     trusted = [
         n.strip() for n in os.environ.get("ZAKCODE_TRUSTED_PLUGINS", "").split(",") if n.strip()
     ]
+    # The transcript store (~/.zakcode/sessions): persists every turn so -s can resume it later.
+    store = SessionStore()
+    session = store.load(session_id) if session_id else None
     return Agent(
         prompter=prompter,
+        session=session,
+        session_store=store,
         enable_subagents=True,
         enable_mcp=True,
         enable_plugins=True,
@@ -1111,7 +1118,7 @@ def chat(
     provider: str = typer.Option(  # noqa: ARG001 — derived from the model; reserved for clarity
         None, "--provider", help="Hint the provider family (informational)."
     ),
-    session: str = typer.Option(  # noqa: ARG001 — resume hook; sessions wired via the store later
+    session: str = typer.Option(
         None, "--session", "-s", help="Resume a saved session by id."
     ),
     workspace: str = typer.Option(
@@ -1162,6 +1169,24 @@ def chat(
     use the WebSocket channel for interactive approval.)
     """
     if server:
+        ignored = [
+            flag
+            for flag, val in (
+                ("--workspace", workspace),
+                ("--no-rules", no_rules),
+                ("--skill-dir", skill_dir),
+                ("--extra-root", extra_root),
+                ("--trace", trace),
+                ("--session/-s", session),
+            )
+            if val
+        ]
+        if ignored:
+            notice_warn(
+                console,
+                f"server mode ignores {', '.join(ignored)} "
+                "(these configure the in-process engine, not the remote server)",
+            )
         _run_server_chat(server, model)
         return
 
@@ -1181,6 +1206,8 @@ def chat(
     extra_skill_dirs = skill_dir if skill_dir else None
     extra_roots = extra_root if extra_root else None
     prompter = ConsolePermissionPrompter(console)
+    from zakcode.session.store import SessionError
+
     try:
         agent = _build_chat_agent(
             prompter,
@@ -1188,11 +1215,16 @@ def chat(
             enable_rules=not no_rules,
             extra_skill_dirs=extra_skill_dirs,
             extra_workspace_roots=extra_roots,
+            session_id=session,
         )
     except ProviderError as exc:
         # The loud startup failure for default_model='auto' with nothing viable:
         # the diagnosis (per-source reasons + key provenance) IS the message.
         notice_error(console, "no model available", str(exc))
+        raise typer.Exit(code=1) from exc
+    except SessionError as exc:
+        # A bad/missing/corrupt --session id: name the id, don't dump a traceback.
+        notice_error(console, f"could not resume session {session!r}", str(exc))
         raise typer.Exit(code=1) from exc
     _print_banner(console, agent)
 
@@ -1432,7 +1464,7 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         try:
             _run_streamed_turn(
                 console,
-                functools.partial(_server_turn_stream, base_url, stripped, session_id),
+                functools.partial(_server_turn_stream, base_url, stripped, session_id, model),
                 renderer,
             )
         except httpx.HTTPError as exc:
