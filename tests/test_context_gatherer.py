@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from typing import Any
 
 from zakcode import Agent
 from zakcode.config import Settings
 from zakcode.context import (
+    SignalLogger,
     SmallModelClassifier,
     default_gatherer,
     mentioned_files_collector,
@@ -23,8 +24,10 @@ from zakcode.context.gatherer import (
     _fit_budget,
     heuristic_classifier,
 )
-from zakcode.hooks import HookManager, LLMContextPayload
+from zakcode.hooks import HookManager, LLMContextPayload, TurnEndPayload
+from zakcode.messages import Message, ToolUseBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider
+from zakcode.session.store import Session
 from zakcode.usage import Usage
 
 
@@ -125,7 +128,9 @@ async def test_gatherer_falls_back_when_classifier_throws() -> None:
     def col(_p: LLMContextPayload) -> list[Candidate]:
         return [_cand("a", 0.2, "low"), _cand("b", 0.9, "high")]
 
-    def bad_classifier(_task: str, _cands: Sequence[Candidate]) -> list[Candidate]:
+    def bad_classifier(
+        _task: str, _cands: Sequence[Candidate]
+    ) -> list[Candidate] | Awaitable[list[Candidate]]:
         raise RuntimeError("classifier blew up")
 
     out = await ContextGatherer([col], classifier=bad_classifier)(_payload())
@@ -239,3 +244,56 @@ def test_agent_model_classifier_flag(tmp_path) -> None:
     )
     agent = Agent(settings=settings, enable_context_gathering=True, context_classifier="model")
     assert len(agent.hook_manager.context_hooks) == 1
+
+
+# --- signal logging (step 3) -----------------------------------------------
+def test_signal_logger_records_offered_and_used(tmp_path) -> None:
+    g = ContextGatherer([])
+    g.last_offer = [_cand("used.py", 0.8), _cand("ignored.py", 0.3)]
+    g.last_task = "fix the bug"
+    session = Session(
+        cwd=str(tmp_path),
+        model="test",
+        messages=[
+            Message(
+                role="assistant",
+                blocks=[ToolUseBlock(id="t1", name="read_file", input={"path": "used.py"})],
+            )
+        ],
+    )
+    log = tmp_path / "signal.jsonl"
+    SignalLogger(g, session, log).on_turn_end(TurnEndPayload(stop_reason="completed"))
+    rec = json.loads(log.read_text(encoding="utf-8").strip())
+    assert rec["n_offered"] == 2 and rec["n_used"] == 1
+    assert {o["ref"]: o["used"] for o in rec["offered"]} == {"used.py": True, "ignored.py": False}
+    assert rec["task"] == "fix the bug"
+
+
+def test_signal_logger_detects_use_in_assistant_text(tmp_path) -> None:
+    g = ContextGatherer([])
+    g.last_offer = [_cand("notes.md", 0.5)]
+    session = Session(cwd=str(tmp_path), model="test", messages=[])
+    log = tmp_path / "s.jsonl"
+    SignalLogger(g, session, log).on_turn_end(
+        TurnEndPayload(stop_reason="completed", last_assistant_message="see notes.md for details")
+    )
+    rec = json.loads(log.read_text(encoding="utf-8").strip())
+    assert rec["n_used"] == 1
+
+
+def test_signal_logger_skips_when_no_offer(tmp_path) -> None:
+    g = ContextGatherer([])  # last_offer defaults to []
+    session = Session(cwd=str(tmp_path), model="test", messages=[])
+    log = tmp_path / "none.jsonl"
+    SignalLogger(g, session, log).on_turn_end(TurnEndPayload(stop_reason="completed"))
+    assert not log.exists()
+
+
+def test_agent_signal_log_registers_turn_end(tmp_path) -> None:
+    settings = Settings(
+        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+    )
+    log = str(tmp_path / "sig.jsonl")
+    on = Agent(settings=settings, enable_context_gathering=True, context_signal_log=log)
+    off = Agent(settings=settings, enable_context_gathering=True)
+    assert len(on.hook_manager.turn_end_hooks) == len(off.hook_manager.turn_end_hooks) + 1

@@ -108,6 +108,10 @@ class ContextGatherer:
         self._classify = classifier
         self._budget_chars = budget_chars
         self._top_k = top_k
+        # Recorded each call so a TURN_END signal logger can see what was last offered (step 3).
+        self.last_offer: list[Candidate] = []
+        self.last_message_count: int = 0
+        self.last_task: str = ""
 
     def _collect(self, payload: LLMContextPayload) -> list[Candidate]:
         out: list[Candidate] = []
@@ -123,6 +127,9 @@ class ContextGatherer:
         return out
 
     async def __call__(self, payload: LLMContextPayload) -> str | None:
+        self.last_message_count = payload.message_count
+        self.last_task = payload.user_text
+        self.last_offer = []
         candidates = self._collect(payload)
         if not candidates:
             return None
@@ -136,6 +143,7 @@ class ContextGatherer:
             logger.debug("relevance classifier failed; falling back to heuristic", exc_info=True)
             ranked = heuristic_classifier(payload.user_text, candidates)
         picked = _fit_budget(ranked, budget_chars=self._budget_chars, top_k=self._top_k)
+        self.last_offer = picked
         if not picked:
             return None
         return _render(picked) or None

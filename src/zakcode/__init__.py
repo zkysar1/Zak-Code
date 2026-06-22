@@ -221,7 +221,8 @@ class Agent:
     context gatherer that injects relevant workspace context every turn (off by
     default; see :mod:`zakcode.context`). Set ``context_classifier="model"`` to
     rank that context with one cheap model call per turn (fail-soft to the
-    heuristic).
+    heuristic), and ``context_signal_log=<path>`` to append each turn's
+    offered-vs-used relevance signal as JSONL (training data for a learned ranker).
     """
 
     def __init__(
@@ -252,6 +253,7 @@ class Agent:
         enable_compaction: bool = False,
         enable_context_gathering: bool = False,
         context_classifier: str = "heuristic",
+        context_signal_log: str | None = None,
         enable_settings_hooks: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
@@ -650,6 +652,12 @@ class Agent:
             else:
                 gatherer = default_gatherer()
             self.hook_manager.register_context(gatherer)
+            if context_signal_log:
+                from zakcode.context import SignalLogger
+
+                self.hook_manager.register_turn_end(
+                    SignalLogger(gatherer, self.session, context_signal_log).on_turn_end
+                )
 
         # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
         # before a turn once it exceeds the provider's context-window threshold.
