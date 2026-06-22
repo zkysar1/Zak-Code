@@ -46,7 +46,11 @@ _EVENT_MAP: dict[str, HookEvent] = {
     "Stop": HookEvent.TURN_END,
 }
 
-#: Events recognised but not yet implemented — skipped with a warning.
+#: Real Claude Code events deliberately DEFERRED — recognised and skipped with a warning (not
+#: silently dropped). Both are non-load-bearing degradations: StopFailure fires on a provider-error
+#: turn end (a NON-vetoable terminal; we don't thread new firing through the critical finalize path
+#: for a crash-recovery nicety yet), and UserPromptExpansion (slash-command expansion) would only
+#: duplicate the existing ON_SKILL_SELECTED signal. Tracked in docs/CLAUDE-CODE-HOST-ROADMAP.md.
 _SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion"}
 
 

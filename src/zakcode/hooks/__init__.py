@@ -173,6 +173,9 @@ class LifecyclePayload(BaseModel):
     #: Claude Code's PreCompact ``trigger`` (``auto`` | ``manual``), at the top level (not nested in
     #: ``data``) to match the contract. Empty for other events.
     trigger: str = ""
+    #: Path to a Claude-Code-shaped ``.jsonl`` projection of the session transcript (CC hooks read
+    #: the full history via ``transcript_path``); empty when no transcript is materialized.
+    transcript_path: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -187,6 +190,9 @@ class TurnEndPayload(BaseModel):
     event: HookEvent = HookEvent.TURN_END
     session_id: str = ""
     cwd: str = ""
+    #: Path to a Claude-Code-shaped ``.jsonl`` projection of the session transcript (CC Stop hooks
+    #: read the full history via ``transcript_path``); empty when no transcript is materialized.
+    transcript_path: str = ""
     stop_reason: str = ""
     iterations: int = 0
     max_iterations: int = 0

@@ -312,3 +312,27 @@ async def test_sessionstart_source_distinguishes_fresh_from_resumed(tmp_path: Pa
     )
     await resumed.loop._fire_session_start_once()
     assert seen2 == ["resume"]
+
+
+# ===========================================================================
+# Transcript — Claude Code `.jsonl` view at `transcript_path`
+# ===========================================================================
+
+
+async def test_turn_end_materializes_a_readable_cc_transcript(tmp_path: Path) -> None:
+    # A faithful host exposes a Claude-Code-shaped transcript at `transcript_path` for hooks that
+    # read the full history (e.g. a Stop hook). The materialized file parses as CC `.jsonl`, with
+    # assistant text findable the way a CC Stop hook reads it (type=="assistant", message.content).
+    agent = _scripted_agent(tmp_path)
+    agent.session.add_message(Message.user("hello there"))
+    agent.session.add_message(Message.assistant_text("hi back"))
+    path = agent.loop._cc_transcript_path()
+    assert path and Path(path).exists()
+    events = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    assistant = [e for e in events if e.get("type") == "assistant"]
+    assert assistant and any(
+        block.get("text") == "hi back"
+        for e in assistant
+        for block in e["message"]["content"]
+        if isinstance(block, dict)
+    )

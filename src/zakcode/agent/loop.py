@@ -72,6 +72,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -1471,6 +1472,26 @@ class AgentLoop:
             return True, ""
         return False, weak_dimensions(card, threshold)
 
+    def _cc_transcript_path(self) -> str:
+        """Materialize a Claude-Code-shaped ``.jsonl`` projection of the session transcript and
+        return its path, for hooks that read ``transcript_path``. Best-effort: returns ``""`` on any
+        error so a hook fire is never broken. The SessionStore stays the source of truth — this is a
+        read-only edge projection (:mod:`zakcode.hooks.transcript`), written to a deterministic
+        per-session temp file so a hook re-reading it across fires sees the grown transcript.
+        """
+        from zakcode.hooks.transcript import render_claude_code_transcript
+
+        try:
+            text = render_claude_code_transcript(
+                self.session.messages, session_id=self.session.id, cwd=self.session.cwd
+            )
+            path = Path(tempfile.gettempdir()) / f"zakcode-cc-transcript-{self.session.id}.jsonl"
+            path.write_text(text, encoding="utf-8")
+            return str(path)
+        except Exception:  # noqa: BLE001 — a transcript projection must never break a hook fire
+            logger.warning("could not materialize CC transcript", exc_info=True)
+            return ""
+
     async def _fire_lifecycle(
         self,
         event: HookEvent,
@@ -1493,6 +1514,7 @@ class AgentLoop:
                 cwd=str(self.workspace_root),
                 source=source,
                 trigger=trigger,
+                transcript_path=self._cc_transcript_path(),
                 data=data or {},
             )
         )
@@ -1560,6 +1582,7 @@ class AgentLoop:
         payload = TurnEndPayload(
             session_id=self.session.id,
             cwd=self.session.cwd,
+            transcript_path=self._cc_transcript_path(),
             stop_reason=stop_reason,
             iterations=iterations,
             max_iterations=self.max_iterations,
