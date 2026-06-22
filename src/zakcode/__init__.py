@@ -477,8 +477,14 @@ class Agent:
         elif prompt_builder is not None:
             if self.identity and not prompt_builder.identity:
                 prompt_builder.identity = self.identity
-            if skills_catalog and not prompt_builder.extra_instructions:
-                prompt_builder.extra_instructions = skills_catalog
+            if skills_catalog:
+                # Append (don't conditionally set) so an injected prompt_builder with its own
+                # extra_instructions can't silently drop the skills catalog.
+                prompt_builder.extra_instructions = (
+                    f"{prompt_builder.extra_instructions}\n\n{skills_catalog}"
+                    if prompt_builder.extra_instructions
+                    else skills_catalog
+                )
             if rules_text and not prompt_builder.rules:
                 prompt_builder.rules = rules_text
 
@@ -647,6 +653,13 @@ class Agent:
         # heuristic by default). Off by default — the clean substrate ships no gatherer.
         if enable_context_gathering:
             from zakcode.context import default_gatherer
+
+            if context_classifier not in ("heuristic", "model"):
+                logger.warning(
+                    "context_classifier=%r is unrecognized (use 'heuristic' or 'model'); "
+                    "falling back to the heuristic ranker",
+                    context_classifier,
+                )
 
             def _cheap_ctx_provider() -> Provider:
                 # A cheap model for the every-turn context calls (the relevance classifier and the

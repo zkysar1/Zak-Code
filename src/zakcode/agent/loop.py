@@ -1385,7 +1385,8 @@ class AgentLoop:
 
     @staticmethod
     def _batch_did_no_work(blocks: list[ToolResultBlock]) -> bool:
-        """True iff every result was a permission denial, step restriction, or hook veto.
+        """True iff every result was a permission denial, step restriction, hook veto, or
+        exposure-filter rejection.
 
         Such an iteration ran no tool, so its shared-budget unit is refunded — the model
         still gets the feedback and may retry within the per-turn cap.
@@ -1399,6 +1400,7 @@ class AgentLoop:
                 b.data.get("permission_denied")
                 or b.data.get("hook_blocked")
                 or b.data.get("step_restricted")
+                or b.data.get("tool_not_exposed")
             )
             for b in blocks
         )
