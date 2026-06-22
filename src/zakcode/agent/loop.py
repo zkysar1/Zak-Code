@@ -702,12 +702,12 @@ class AgentLoop:
         await self._fire_lifecycle(
             HookEvent.PRE_COMPACT,
             {
-                "trigger": "auto",
                 "session_summary": {
                     "session_id": self.session.id,
                     "message_count": len(self.session.messages),
                 },
             },
+            trigger="auto",
         )
         try:
             result = await self.compactor.compact(
@@ -733,12 +733,12 @@ class AgentLoop:
         await self._fire_lifecycle(
             HookEvent.PRE_COMPACT,
             {
-                "trigger": "manual",
                 "session_summary": {
                     "session_id": self.session.id,
                     "message_count": len(self.session.messages),
                 },
             },
+            trigger="manual",
         )
         result = await self.compactor.compact(
             self.session.messages, summarize=self._summarize_for_compaction
@@ -1469,9 +1469,18 @@ class AgentLoop:
         return False, weak_dimensions(card, threshold)
 
     async def _fire_lifecycle(
-        self, event: HookEvent, data: dict[str, object] | None = None
+        self,
+        event: HookEvent,
+        data: dict[str, object] | None = None,
+        *,
+        source: str = "",
+        trigger: str = "",
     ) -> None:
-        """Fire a session-lifecycle hook (observe-only; cheap-checked, error-isolated)."""
+        """Fire a session-lifecycle hook (observe-only; cheap-checked, error-isolated).
+
+        ``source`` (SessionStart) and ``trigger`` (PreCompact) ride at the payload top level to
+        match Claude Code's contract; ``data`` holds any other event-specific extras.
+        """
         if not self.hook_manager.has_lifecycle_hooks(event):
             return
         await self.hook_manager.fire(
@@ -1479,6 +1488,8 @@ class AgentLoop:
                 event=event,
                 session_id=self.session.id,
                 cwd=str(self.workspace_root),
+                source=source,
+                trigger=trigger,
                 data=data or {},
             )
         )
@@ -1488,7 +1499,11 @@ class AgentLoop:
         if self._session_started:
             return
         self._session_started = True
-        await self._fire_lifecycle(HookEvent.SESSION_START)
+        # source mirrors Claude Code's SessionStart `source`: a session already carrying prior
+        # history at first-turn time was resumed; an empty one is a fresh startup. (Fires before the
+        # turn's new user message is added, so messages == prior history.)
+        source = "resume" if self.session.messages else "startup"
+        await self._fire_lifecycle(HookEvent.SESSION_START, source=source)
 
     # ── public API ───────────────────────────────────────────────────────────
 

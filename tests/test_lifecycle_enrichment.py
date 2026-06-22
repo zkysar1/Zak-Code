@@ -60,8 +60,9 @@ async def test_pre_compact_enriched_data(tmp_path: Path) -> None:
 
     assert len(captured) == 1
     payload = captured[0]
-    # compact_now() uses trigger="manual"; _maybe_compact() uses "auto".
-    assert payload.data.get("trigger") == "manual"
+    # compact_now() uses trigger="manual"; _maybe_compact() uses "auto". The trigger now rides at
+    # the payload TOP LEVEL (Claude Code's PreCompact shape), no longer nested in `data`.
+    assert payload.trigger == "manual"
     summary = payload.data.get("session_summary")
     assert summary is not None
     assert "session_id" in summary

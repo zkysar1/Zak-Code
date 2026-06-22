@@ -24,8 +24,9 @@ from pathlib import Path
 
 from zakcode import Agent
 from zakcode.config import Settings
-from zakcode.hooks import HookEvent
+from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.hooks.settings_loader import load_settings_hooks
+from zakcode.messages import Message
 from zakcode.skills import (
     SkillRegistry,
     default_skill_dirs,
@@ -266,3 +267,36 @@ async def test_user_invocable_false_blocks_human_path_not_model_chaining(tmp_pat
     ctx = ToolContext(workspace_root=tmp_path, skill_resolver=agent.loop._skill_resolver)
     res = await tool.execute({"name": "boot"}, ctx)
     assert res.is_error is False and "boot body" in res.output.lower()
+
+
+# ===========================================================================
+# Lifecycle — Claude Code SessionStart `source` + PreCompact `trigger`
+# ===========================================================================
+
+
+def test_lifecycle_payload_surfaces_source_and_trigger_at_top_level() -> None:
+    # Claude Code puts SessionStart `source` and PreCompact `trigger` at the stdin TOP LEVEL (not
+    # nested) — a faithful host's lifecycle payload must serialize them there for shell hooks.
+    start = LifecyclePayload(event=HookEvent.SESSION_START, source="resume").model_dump()
+    assert start["source"] == "resume"
+    compact = LifecyclePayload(event=HookEvent.PRE_COMPACT, trigger="auto").model_dump()
+    assert compact["trigger"] == "auto"
+
+
+async def test_sessionstart_source_distinguishes_fresh_from_resumed(tmp_path: Path) -> None:
+    # SessionStart fires `source="startup"` for a fresh session and `source="resume"` for one that
+    # already carries history — the signal a framework branches on (prime fresh vs reconcile).
+    fresh = _scripted_agent(tmp_path)
+    seen: list[str] = []
+    fresh.hook_manager.register_lifecycle(HookEvent.SESSION_START, lambda p: seen.append(p.source))
+    await fresh.loop._fire_session_start_once()
+    assert seen == ["startup"]
+
+    resumed = _scripted_agent(tmp_path)
+    resumed.session.add_message(Message.user("an earlier turn"))
+    seen2: list[str] = []
+    resumed.hook_manager.register_lifecycle(
+        HookEvent.SESSION_START, lambda p: seen2.append(p.source)
+    )
+    await resumed.loop._fire_session_start_once()
+    assert seen2 == ["resume"]

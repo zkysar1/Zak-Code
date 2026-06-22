@@ -164,6 +164,12 @@ class LifecyclePayload(BaseModel):
     event: HookEvent
     session_id: str = ""
     cwd: str = ""
+    #: Claude Code's SessionStart ``source`` (``startup`` | ``resume``) — a fresh start vs a resumed
+    #: session — so a framework can branch (prime fresh vs reconcile). Empty for other events.
+    source: str = ""
+    #: Claude Code's PreCompact ``trigger`` (``auto`` | ``manual``), at the top level (not nested in
+    #: ``data``) to match the contract. Empty for other events.
+    trigger: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
 
 
