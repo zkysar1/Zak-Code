@@ -13,6 +13,7 @@ logging failure is swallowed and never affects the turn.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from zakcode.messages import Message
 from zakcode.session.store import Session
 
 from .gatherer import ContextGatherer
+from .used import UsedDetector, reference_used
 
 logger = logging.getLogger(__name__)
 
@@ -62,31 +64,49 @@ class SignalLogger:
 
     Register as an observe-only ``TURN_END`` hook (``register_turn_end_observer``) so it fires on
     EVERY turn end. It reads the gatherer's last offer and the just-finished turn's tool calls (from
-    the session); ``used`` is true when an offered ref appears in a tool call's arguments or the
-    final assistant message. NOTE: this is a reference-based proxy -- it undercounts context the
-    model consumed purely in-context (already injected, never re-fetched), and on a multi-iteration
-    turn it reflects the final iteration's offer. Best-effort: a logging failure is swallowed.
+    the session); ``used`` is decided by a pluggable ``UsedDetector``: the default reference proxy
+    (an offered ref appears in a tool-call arg or the assistant text), or ``ModelUsedDetector`` -- a
+    cheap-model judge that ALSO catches IN-CONTEXT use (the model consuming injected content without
+    naming the file, which the proxy structurally misses). Caveat: on a multi-iteration turn it
+    reflects the final iteration's offer. Best-effort: a logging failure is swallowed.
     """
 
-    def __init__(self, gatherer: ContextGatherer, session: Session, log_path: str | Path) -> None:
+    def __init__(
+        self,
+        gatherer: ContextGatherer,
+        session: Session,
+        log_path: str | Path,
+        *,
+        used_detector: UsedDetector = reference_used,
+    ) -> None:
         self._gatherer = gatherer
         self._session = session
         self._path = Path(log_path)
+        self._used_detector = used_detector
 
-    def on_turn_end(self, payload: TurnEndPayload) -> None:
+    async def on_turn_end(self, payload: TurnEndPayload) -> None:
         offer = self._gatherer.last_offer
         if not offer:
             return
         try:
             turn_msgs = self._session.messages[self._gatherer.last_message_count :]
-            blob = _tool_input_blob(turn_msgs) + "\n" + payload.last_assistant_message
+            evidence = _tool_input_blob(turn_msgs) + "\n" + payload.last_assistant_message
+            task = self._gatherer.last_task
+            try:
+                maybe = self._used_detector(task, offer, evidence)
+                used_refs = await maybe if inspect.isawaitable(maybe) else maybe
+            except Exception:  # noqa: BLE001 - a detector failure falls back to the proxy
+                logger.debug("used-detector failed; using the reference proxy", exc_info=True)
+                used_refs = reference_used(task, offer, evidence)
             items = [
-                OfferedItem(ref=c.ref, score=c.cheap_score, source=c.source, used=c.ref in blob)
+                OfferedItem(
+                    ref=c.ref, score=c.cheap_score, source=c.source, used=c.ref in used_refs
+                )
                 for c in offer
             ]
             rec = SignalRecord(
                 stop_reason=payload.stop_reason,
-                task=self._gatherer.last_task[:500],
+                task=task[:500],
                 offered=items,
                 n_offered=len(items),
                 n_used=sum(1 for it in items if it.used),

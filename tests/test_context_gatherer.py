@@ -11,13 +11,16 @@ from typing import Any
 from zakcode import Agent
 from zakcode.config import Settings
 from zakcode.context import (
+    ModelUsedDetector,
     RelevanceModel,
     SignalLogger,
     SmallModelClassifier,
     TrainedClassifier,
     default_gatherer,
+    judge_used,
     mentioned_files_collector,
     recent_files_collector,
+    reference_used,
     score_relevance,
     train_relevance,
 )
@@ -252,7 +255,7 @@ def test_agent_model_classifier_flag(tmp_path) -> None:
 
 
 # --- signal logging (step 3) -----------------------------------------------
-def test_signal_logger_records_offered_and_used(tmp_path) -> None:
+async def test_signal_logger_records_offered_and_used(tmp_path) -> None:
     g = ContextGatherer([])
     g.last_offer = [_cand("used.py", 0.8), _cand("ignored.py", 0.3)]
     g.last_task = "fix the bug"
@@ -267,30 +270,30 @@ def test_signal_logger_records_offered_and_used(tmp_path) -> None:
         ],
     )
     log = tmp_path / "signal.jsonl"
-    SignalLogger(g, session, log).on_turn_end(TurnEndPayload(stop_reason="completed"))
+    await SignalLogger(g, session, log).on_turn_end(TurnEndPayload(stop_reason="completed"))
     rec = json.loads(log.read_text(encoding="utf-8").strip())
     assert rec["n_offered"] == 2 and rec["n_used"] == 1
     assert {o["ref"]: o["used"] for o in rec["offered"]} == {"used.py": True, "ignored.py": False}
     assert rec["task"] == "fix the bug"
 
 
-def test_signal_logger_detects_use_in_assistant_text(tmp_path) -> None:
+async def test_signal_logger_detects_use_in_assistant_text(tmp_path) -> None:
     g = ContextGatherer([])
     g.last_offer = [_cand("notes.md", 0.5)]
     session = Session(cwd=str(tmp_path), model="test", messages=[])
     log = tmp_path / "s.jsonl"
-    SignalLogger(g, session, log).on_turn_end(
+    await SignalLogger(g, session, log).on_turn_end(
         TurnEndPayload(stop_reason="completed", last_assistant_message="see notes.md for details")
     )
     rec = json.loads(log.read_text(encoding="utf-8").strip())
     assert rec["n_used"] == 1
 
 
-def test_signal_logger_skips_when_no_offer(tmp_path) -> None:
+async def test_signal_logger_skips_when_no_offer(tmp_path) -> None:
     g = ContextGatherer([])  # last_offer defaults to []
     session = Session(cwd=str(tmp_path), model="test", messages=[])
     log = tmp_path / "none.jsonl"
-    SignalLogger(g, session, log).on_turn_end(TurnEndPayload(stop_reason="completed"))
+    await SignalLogger(g, session, log).on_turn_end(TurnEndPayload(stop_reason="completed"))
     assert not log.exists()
 
 
@@ -389,3 +392,69 @@ async def test_signal_log_written_through_real_turn(tmp_path) -> None:
     rec = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
     assert rec["n_offered"] >= 1
     assert any(o["ref"] == "target.py" for o in rec["offered"])
+
+
+# --- used-signal judge: the in-context-use label-bias fix ------------------
+def test_reference_used_normalizes_paths() -> None:
+    # A Windows/absolute tool arg still matches the posix-relative offered ref.
+    used = reference_used(
+        "t", [_cand("src/app.py", 0.5), _cand("z.py", 0.5)], r"open C:\p\src\app.py"
+    )
+    assert used == {"src/app.py"}
+
+
+async def test_judge_used_parses_and_filters_hallucinations() -> None:
+    offered = [_cand("a.py", 0.5), _cand("b.py", 0.5)]
+    used, usage = await judge_used(_Provider('{"used": ["a.py", "ghost.py"]}'), "t", offered, "ev")
+    assert used == {"a.py"}  # ghost.py was not offered -> dropped
+    assert usage.total_tokens == 5
+
+
+async def test_judge_used_fail_soft() -> None:
+    used, usage = await judge_used(_BoomProvider("x"), "t", [_cand("a.py", 0.5)], "ev")
+    assert used == set()
+    assert usage.total_tokens == 0
+
+
+async def test_model_used_detector_catches_in_context_use() -> None:
+    # THE FIX: a.py is never referenced in the evidence, but the judge says the response drew on it.
+    offered = [_cand("a.py", 0.5), _cand("b.py", 0.5)]
+    used = await ModelUsedDetector(_Provider('{"used": ["a.py"]}'))("t", offered, "unrelated reply")
+    assert used == {"a.py"}
+
+
+async def test_model_used_detector_unions_reference_proxy() -> None:
+    # The judge returns nothing, but b.py is explicitly referenced -> the proxy still catches it.
+    offered = [_cand("a.py", 0.5), _cand("b.py", 0.5)]
+    used = await ModelUsedDetector(_Provider('{"used": []}'))("t", offered, "I edited b.py")
+    assert used == {"b.py"}
+
+
+async def test_signal_logger_judge_labels_in_context_use(tmp_path) -> None:
+    # End to end: a candidate consumed IN-CONTEXT (judge yes) but never referenced is used=True --
+    # exactly the label the reference proxy gets wrong.
+    g = ContextGatherer([])
+    g.last_offer = [_cand("helper.py", 0.5)]
+    g.last_task = "do the thing"
+    session = Session(cwd=str(tmp_path), model="test", messages=[])  # no tool call, no mention
+    log = tmp_path / "judge.jsonl"
+    detector = ModelUsedDetector(_Provider('{"used": ["helper.py"]}'))
+    await SignalLogger(g, session, log, used_detector=detector).on_turn_end(
+        TurnEndPayload(stop_reason="completed", last_assistant_message="all done")
+    )
+    rec = json.loads(log.read_text(encoding="utf-8").strip())
+    assert rec["n_used"] == 1
+    assert rec["offered"][0]["used"] is True
+
+
+def test_agent_signal_judge_wires_observer(tmp_path) -> None:
+    settings = Settings(
+        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+    )
+    agent = Agent(
+        settings=settings,
+        enable_context_gathering=True,
+        context_signal_log=str(tmp_path / "s.jsonl"),
+        context_signal_judge=True,
+    )
+    assert len(agent.hook_manager.turn_end_observers) == 1
