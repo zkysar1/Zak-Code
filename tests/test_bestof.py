@@ -39,6 +39,37 @@ class _Judge(Provider):
         return "judge/test"
 
 
+class _RankedJudge(Provider):
+    """A CONTENT-AWARE pairwise judge: prefers whichever candidate ranks EARLIER in ``order``.
+    Parses candidate_a / candidate_b from the prompt, so it stays CONSISTENT when best_of swaps
+    a/b (the position-bias debias) -- a fixed-verdict mock would tie every pair."""
+
+    def __init__(self, order: list[str]) -> None:
+        self._rank = {name: i for i, name in enumerate(order)}
+        self.calls = 0
+
+    async def acomplete(  # noqa: ANN001
+        self, messages, *, system=None, tools=None, response_format=None, **kwargs: Any
+    ) -> LLMResult:
+        self.calls += 1
+        payload = messages[-1].blocks[0].text
+        a = payload.split("<candidate_a>\n", 1)[1].split("\n</candidate_a>", 1)[0]
+        b = payload.split("<candidate_b>\n", 1)[1].split("\n</candidate_b>", 1)[0]
+        winner = "a" if self._rank[a] < self._rank[b] else "b"
+        return LLMResult(
+            text=json.dumps({"winner": winner}), usage=Usage(total_tokens=1, cost_usd=0.0005)
+        )
+
+    def count_tokens(self, messages, *, system=None) -> int:  # noqa: ANN001
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
+
+    def model_id(self) -> str:
+        return "judge/ranked"
+
+
 def _gen(candidates: list[str], *, fail_on: int | None = None):
     """A diverse generator thunk: returns ``candidates[i]`` (+ usage) on the i-th call; the call at
     index ``fail_on`` raises (a flaky attempt)."""
@@ -62,12 +93,13 @@ def _gen_always_fail():
 
 
 async def test_best_of_n_selects_the_winner() -> None:
-    # The judge always picks "b" (the later candidate), so C wins the round-robin (A=0, B=1, C=2).
-    judge = _Judge(winner="b")
+    # A content-aware judge ranks C best → C wins the round-robin (idx 2). The position-bias debias
+    # judges each pair BOTH ways, so 3 pairs → 6 judge calls.
+    judge = _RankedJudge(order=["C", "A", "B"])
     best, idx, usage = await best_of_n(judge, criteria="c", generate=_gen(["A", "B", "C"]), n=3)
     assert best == "C" and idx == 2
-    assert judge.calls == 3  # round-robin of 3 candidates = 3 pairwise comparisons
-    assert usage.total_tokens == 3 * 5 + 3 * 1  # 3 generations + 3 judge calls
+    assert judge.calls == 6  # 3 pairs x 2 orderings (debias)
+    assert usage.total_tokens == 3 * 5 + 6 * 1  # 3 generations + 6 judge calls
 
 
 async def test_best_of_n_n1_generates_once_without_judging() -> None:
@@ -79,14 +111,15 @@ async def test_best_of_n_n1_generates_once_without_judging() -> None:
 
 
 async def test_best_of_n_drops_a_failed_attempt() -> None:
-    # 3 attempts; the middle one raises → survivors [A, C] are judged. A flaky attempt is tolerated.
-    judge = _Judge(winner="a")
+    # 3 attempts; the middle one raises → survivors [A, C] are judged. A content-aware judge ranks A
+    # best → A (survivor 0). The debias judges the pair both ways → 2 judge calls.
+    judge = _RankedJudge(order=["A", "C", "B"])
     best, idx, usage = await best_of_n(
         judge, criteria="c", generate=_gen(["A", "B", "C"], fail_on=1), n=3
     )
-    assert best == "A" and idx == 0  # judge picks "a"; A is survivor 0
-    assert judge.calls == 1  # 2 survivors → 1 pairwise
-    assert usage.total_tokens == 2 * 5 + 1  # 2 successful generations + 1 judge
+    assert best == "A" and idx == 0  # A is survivor 0
+    assert judge.calls == 2  # 2 survivors → 1 pair x 2 orderings
+    assert usage.total_tokens == 2 * 5 + 2 * 1  # 2 successful generations + 2 judge calls
 
 
 async def test_best_of_n_all_attempts_fail_returns_empty() -> None:

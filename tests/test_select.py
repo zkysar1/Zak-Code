@@ -38,6 +38,35 @@ class _Judge(Provider):
         return "judge/test"
 
 
+class _RankedJudge(Provider):
+    """A CONTENT-AWARE pairwise judge: prefers whichever candidate ranks EARLIER in ``order``.
+    Parses candidate_a / candidate_b from the prompt, so it stays CONSISTENT under best_of's
+    a/b swap (the position-bias debias) -- a fixed-verdict mock would tie every pair."""
+
+    def __init__(self, order: list[str]) -> None:
+        self._rank = {name: i for i, name in enumerate(order)}
+        self.calls = 0
+
+    async def acomplete(  # noqa: ANN001
+        self, messages, *, system=None, tools=None, response_format=None, **kwargs: Any
+    ) -> LLMResult:
+        self.calls += 1
+        payload = messages[-1].blocks[0].text
+        a = payload.split("<candidate_a>\n", 1)[1].split("\n</candidate_a>", 1)[0]
+        b = payload.split("<candidate_b>\n", 1)[1].split("\n</candidate_b>", 1)[0]
+        winner = "a" if self._rank[a] < self._rank[b] else "b"
+        return LLMResult(text=json.dumps({"winner": winner}), usage=Usage(total_tokens=1))
+
+    def count_tokens(self, messages, *, system=None) -> int:  # noqa: ANN001
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
+
+    def model_id(self) -> str:
+        return "judge/ranked"
+
+
 def _oracle(passes: list[bool]):
     async def o(i: int) -> bool:
         return passes[i]
@@ -58,29 +87,29 @@ async def test_oracle_filters_to_single_passing_no_judging() -> None:
 
 
 async def test_oracle_filters_then_judge_ranks_survivors() -> None:
-    judge = _Judge(winner="a")  # among survivors, the earlier wins
-    # A and C pass; judge ranks [A, C] → "a" → A (original index 0).
+    judge = _RankedJudge(order=["A", "C", "B"])  # among survivors, A is best
+    # A and C pass; judge ranks [A, C] → A (index 0). The debias judges both ways → 2 calls.
     idx, _ = await select_best(
         judge, criteria="c", candidates=["A", "B", "C"], oracle=_oracle([True, False, True])
     )
     assert idx == 0
-    assert judge.calls == 1  # two survivors → one pairwise
+    assert judge.calls == 2  # two survivors → one pair x 2 orderings
 
 
 async def test_no_oracle_judge_ranks_all() -> None:
-    judge = _Judge(winner="b")  # later wins → last candidate
+    judge = _RankedJudge(order=["C", "A", "B"])  # C best → last candidate
     idx, _ = await select_best(judge, criteria="c", candidates=["A", "B", "C"])
     assert idx == 2
-    assert judge.calls == 3  # round-robin of 3
+    assert judge.calls == 6  # round-robin of 3 x 2 orderings
 
 
 async def test_none_pass_falls_back_to_judging_all() -> None:
-    judge = _Judge(winner="b")
+    judge = _RankedJudge(order=["C", "A", "B"])
     idx, _ = await select_best(
         judge, criteria="c", candidates=["A", "B", "C"], oracle=_oracle([False, False, False])
     )
     assert idx == 2  # nothing passed → judge ranks all → C
-    assert judge.calls == 3
+    assert judge.calls == 6
 
 
 async def test_oracle_failure_counts_as_not_passing() -> None:

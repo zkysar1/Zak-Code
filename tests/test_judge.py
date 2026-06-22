@@ -50,6 +50,36 @@ def _p(winner: str, reason: str = "") -> str:
     return json.dumps({"winner": winner, "reason": reason})
 
 
+class _RankedJudge(Provider):
+    """A CONTENT-AWARE pairwise judge for best_of's both-orderings debias: prefers whichever
+    candidate ranks EARLIER in ``order`` (earlier = better). It parses candidate_a / candidate_b
+    out of the prompt, so it returns a CONSISTENT verdict when best_of swaps a/b -- a fixed-verdict
+    mock would look position-biased and every pair would tie."""
+
+    def __init__(self, order: list[str]) -> None:
+        self._rank = {name: i for i, name in enumerate(order)}
+        self.calls = 0
+
+    async def acomplete(  # noqa: ANN001
+        self, messages, *, system=None, tools=None, response_format=None, **kwargs: Any
+    ) -> LLMResult:
+        self.calls += 1
+        payload = messages[-1].blocks[0].text
+        a = payload.split("<candidate_a>\n", 1)[1].split("\n</candidate_a>", 1)[0]
+        b = payload.split("<candidate_b>\n", 1)[1].split("\n</candidate_b>", 1)[0]
+        winner = "a" if self._rank[a] < self._rank[b] else "b"
+        return LLMResult(text=_p(winner), usage=Usage(total_tokens=2, cost_usd=0.001))
+
+    def count_tokens(self, messages, *, system=None) -> int:  # noqa: ANN001
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
+
+    def model_id(self) -> str:
+        return "judge/ranked"
+
+
 # ── binary_judge ─────────────────────────────────────────────────────────────
 
 
@@ -124,12 +154,12 @@ async def test_vote_pairwise_ties_on_even_split() -> None:
 
 
 async def test_best_of_round_robin_picks_winner() -> None:
-    # The judge always says "b" wins, so the LATER candidate in every pair wins → the last one
-    # overall. Pairs (0,1)(0,2)(1,2) → wins A=0, B=1, C=2.
-    prov = _Provider(_p("b"))
+    # A content-aware judge ranks C best → C wins every pair (consistently both ways) → index 2.
+    # The position-bias debias judges each pair in BOTH orderings, so 3 pairs → 6 calls.
+    prov = _RankedJudge(order=["C", "A", "B"])
     best, _ = await best_of(prov, criteria="c", candidates=["A", "B", "C"])
     assert best == 2
-    assert prov.calls == 3  # 3 unordered pairs
+    assert prov.calls == 6  # 3 unordered pairs x 2 orderings (debias)
 
 
 async def test_best_of_ties_break_to_earliest_index() -> None:
@@ -146,7 +176,8 @@ async def test_best_of_single_candidate_makes_no_calls() -> None:
 
 
 async def test_best_of_votes_polls_a_panel_per_pair() -> None:
-    # 2 candidates → 1 pair; votes=3 → that pair gets a 3-voter panel → 3 calls. All "b" → B.
-    prov = _Provider(_p("b"))
+    # 2 candidates → 1 pair; votes=3 → a 3-voter panel per ordering, and the debias judges the pair
+    # BOTH ways → 1 pair x 2 orderings x 3 votes = 6 calls. A content-aware judge ranks B best → B.
+    prov = _RankedJudge(order=["B", "A"])
     best, _ = await best_of(prov, criteria="c", candidates=["A", "B"], votes=3)
-    assert best == 1 and prov.calls == 3
+    assert best == 1 and prov.calls == 6

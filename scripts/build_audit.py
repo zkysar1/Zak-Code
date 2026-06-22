@@ -1072,6 +1072,7 @@ FIXED: set[str] = {
     "CLI-08",
     "CLI-06",
     "CLI-09",
+    "QUAL-02",
 }
 
 
