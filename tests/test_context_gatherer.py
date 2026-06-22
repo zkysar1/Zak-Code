@@ -89,6 +89,21 @@ def test_heuristic_classifier_sorts_by_score_desc() -> None:
     assert [c.ref for c in ranked] == ["b", "c", "a"]
 
 
+async def test_gatherer_dedups_candidates_by_ref() -> None:
+    # CTX-02: a file surfaced by two collectors (same ref) is injected once, not twice.
+    def col_a(_p):
+        return [_cand("dup.py", 1.0, "AAAA")]
+
+    def col_b(_p):
+        return [_cand("dup.py", 0.5, "AAAA"), _cand("other.py", 0.4, "BBBB")]
+
+    g = ContextGatherer([col_a, col_b])
+    text = await g(_payload("do it"))
+    assert text is not None
+    assert text.count("dup.py") == 1  # deduped (was injected twice before)
+    assert [c.ref for c in g.last_offer].count("dup.py") == 1
+
+
 def test_fit_budget_respects_top_k() -> None:
     cands = [_cand(str(i), 1.0, "x" * 10) for i in range(20)]
     assert len(_fit_budget(cands, budget_chars=10_000, top_k=5)) == 5

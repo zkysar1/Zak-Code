@@ -125,7 +125,13 @@ class ContextGatherer:
                     getattr(col, "__name__", col),
                     exc_info=True,
                 )
-        return out
+        # Dedup by ref: a file both mentioned AND recent yields two candidates with the same ref,
+        # which would inject its content twice and double-charge the budget. Keep the higher score.
+        best: dict[str, Candidate] = {}
+        for c in out:
+            if c.ref not in best or c.cheap_score > best[c.ref].cheap_score:
+                best[c.ref] = c
+        return list(best.values())
 
     async def __call__(self, payload: LLMContextPayload) -> str | None:
         self.last_message_count = payload.message_count

@@ -8,9 +8,10 @@ records what the *model* did). Attached to :class:`~zakcode.agent.loop.TurnResul
 is set — written to a JSONL file per turn, so debugging a turn never again requires hand-building
 a transcript dumper.
 
-Deliberately a flat, append-only event list keyed by a free-form ``kind`` so new decision types
-(notably a future best-of-N / critic-ensemble **fan-out**, where each small-model sub-call is one
-``"fanout"`` event) are observable without any schema change here.
+Deliberately a flat, append-only **in-memory** event list keyed by a free-form ``kind`` (a fresh
+JSONL file is written per turn, not appended) so new decision types -- notably a future best-of-N /
+critic-ensemble **fan-out** (each small-model sub-call one ``"fanout"`` event) -- stay observable
+without a schema change here.
 """
 
 from __future__ import annotations
