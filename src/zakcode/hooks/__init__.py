@@ -107,6 +107,9 @@ class HookResult(BaseModel):
     decision: HookDecision = HookDecision.ALLOW
     messages: list[str] = Field(default_factory=list)
     mutated_arguments: dict[str, Any] | None = None
+    #: Claude Code PostToolUse ``hookSpecificOutput.additionalContext`` — text a hook injects into
+    #: the conversation after the tool result. Carried on the ALLOW path; empty otherwise.
+    additional_context: str = ""
 
     @property
     def blocked(self) -> bool:
@@ -164,6 +167,15 @@ class LifecyclePayload(BaseModel):
     event: HookEvent
     session_id: str = ""
     cwd: str = ""
+    #: Claude Code's SessionStart ``source`` (``startup`` | ``resume``) — a fresh start vs a resumed
+    #: session — so a framework can branch (prime fresh vs reconcile). Empty for other events.
+    source: str = ""
+    #: Claude Code's PreCompact ``trigger`` (``auto`` | ``manual``), at the top level (not nested in
+    #: ``data``) to match the contract. Empty for other events.
+    trigger: str = ""
+    #: Path to a Claude-Code-shaped ``.jsonl`` projection of the session transcript (CC hooks read
+    #: the full history via ``transcript_path``); empty when no transcript is materialized.
+    transcript_path: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -178,6 +190,9 @@ class TurnEndPayload(BaseModel):
     event: HookEvent = HookEvent.TURN_END
     session_id: str = ""
     cwd: str = ""
+    #: Path to a Claude-Code-shaped ``.jsonl`` projection of the session transcript (CC Stop hooks
+    #: read the full history via ``transcript_path``); empty when no transcript is materialized.
+    transcript_path: str = ""
     stop_reason: str = ""
     iterations: int = 0
     max_iterations: int = 0
@@ -339,16 +354,17 @@ class HookManager:
         messages: list[str] = []
         arguments = dict(payload.arguments)
         mutated = False
+        extras: list[str] = []  # PostToolUse additionalContext, aggregated across hooks
 
         # In-process hooks first (cheap, trusted), then configured shell hooks.
         for hook in self.in_process.get(payload.event, []):
             current = payload.model_copy(update={"arguments": arguments})
             one = await self._run_in_process(hook, current)
             decision, messages, arguments, mutated = self._fold(
-                one, payload.event, decision, messages, arguments, mutated
+                one, payload.event, decision, messages, arguments, mutated, extras
             )
             if decision is HookDecision.BLOCK:
-                return self._result(decision, messages, arguments, mutated)
+                return self._result(decision, messages, arguments, mutated, extras)
 
         for spec in self.shell_hooks:
             if spec.event is not payload.event or not spec.matches(payload.tool_name):
@@ -356,12 +372,12 @@ class HookManager:
             current = payload.model_copy(update={"arguments": arguments})
             one = await self._run_shell(spec, current)
             decision, messages, arguments, mutated = self._fold(
-                one, payload.event, decision, messages, arguments, mutated
+                one, payload.event, decision, messages, arguments, mutated, extras
             )
             if decision is HookDecision.BLOCK:
-                return self._result(decision, messages, arguments, mutated)
+                return self._result(decision, messages, arguments, mutated, extras)
 
-        return self._result(decision, messages, arguments, mutated)
+        return self._result(decision, messages, arguments, mutated, extras)
 
     async def gather_context(self, payload: LLMContextPayload) -> list[str]:
         """Run every ``PRE_LLM_CALL`` context hook and collect the text to inject.
@@ -535,11 +551,17 @@ class HookManager:
         messages: list[str],
         arguments: dict[str, Any],
         mutated: bool,
+        extras: list[str],
     ) -> tuple[HookDecision, list[str], dict[str, Any], bool]:
         if one is None:
             return (decision, messages, arguments, mutated)
         if one.message:
             messages.append(one.message)
+        # PostToolUse additionalContext (hook-injected context) accumulates alongside messages so
+        # HookManager.run carries it out — the loop reads result.additional_context (not just the
+        # single-hook _parse_stdout) and appends it to the tool output.
+        if one.additional_context:
+            extras.append(one.additional_context)
         # Only PreToolUse can actually block (the tool hasn't run yet). A BLOCK from
         # any other event (e.g. PostToolUse) can't undo the call, so it is surfaced
         # as a warning instead of being silently dropped. A WARN is also a warning.
@@ -566,11 +588,13 @@ class HookManager:
         messages: list[str],
         arguments: dict[str, Any],
         mutated: bool,
+        extras: list[str],
     ) -> HookResult:
         return HookResult(
             decision=decision,
             messages=messages,
             mutated_arguments=arguments if mutated else None,
+            additional_context="\n".join(extras),
         )
 
     # ── context runners (PRE_LLM_CALL; each fully error-isolated) ──────────────
@@ -745,7 +769,7 @@ class HookManager:
             return HookResult(decision=HookDecision.WARN, messages=[f"hook error: {exc}"])
 
         code = proc.returncode
-        message, mutated_args, deny = self._parse_stdout(stdout)
+        message, mutated_args, deny, additional = self._parse_stdout(stdout)
 
         # Claude Code blocks via {"hookSpecificOutput": {"permissionDecision": "deny"}} on
         # exit 0 (not exit 2). Honor it as a BLOCK regardless of exit code.
@@ -757,7 +781,10 @@ class HookManager:
             )
         if code == 0:
             return HookResult(
-                decision=HookDecision.ALLOW, messages=_msgs(message), mutated_arguments=mutated_args
+                decision=HookDecision.ALLOW,
+                messages=_msgs(message),
+                mutated_arguments=mutated_args,
+                additional_context=additional,
             )
         if code == 2:
             return HookResult(
@@ -772,8 +799,8 @@ class HookManager:
         )
 
     @staticmethod
-    def _parse_stdout(stdout: bytes) -> tuple[str, dict[str, Any] | None, bool]:
-        """Best-effort parse of a hook's stdout: ``(message, mutated_arguments, deny)``.
+    def _parse_stdout(stdout: bytes) -> tuple[str, dict[str, Any] | None, bool, str]:
+        """Best-effort parse of a hook's stdout: ``(message, mutated_arguments, deny, extra)``.
 
         Understands two stdout shapes:
 
@@ -788,19 +815,20 @@ class HookManager:
         """
         text = (stdout or b"").decode("utf-8", errors="replace").strip()
         if not text:
-            return ("", None, False)
+            return ("", None, False, "")
         try:
             doc = json.loads(text)
         except (json.JSONDecodeError, ValueError):
             # Plain text on stdout is just a message.
-            return (text, None, False)
+            return (text, None, False, "")
         if not isinstance(doc, dict):
-            return (text, None, False)
+            return (text, None, False, "")
         message = doc.get("message", "")
         message = message if isinstance(message, str) else ""
         args = doc.get("arguments")
         mutated = args if isinstance(args, dict) else None
         deny = False
+        additional = ""
         hso = doc.get("hookSpecificOutput")
         if isinstance(hso, dict):
             updated = hso.get("updatedInput")
@@ -810,7 +838,11 @@ class HookManager:
             reason = hso.get("permissionDecisionReason")
             if not message and isinstance(reason, str):
                 message = reason
-        return (message, mutated, deny)
+            # PostToolUse may inject context for the model after the tool result.
+            extra = hso.get("additionalContext")
+            if isinstance(extra, str):
+                additional = extra
+        return (message, mutated, deny, additional)
 
 
 def _valid_cwd(cwd: str) -> str | None:

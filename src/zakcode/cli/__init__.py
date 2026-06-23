@@ -633,7 +633,7 @@ def _render_skills(console: Console, agent: Agent) -> None:
         console.print(line)
 
 
-def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
+def _invoke_skill(console: Console, agent: Agent, name: str, args: str = "") -> bool:
     """If ``name`` is a skill, load its body into the session and return True.
 
     Delegates to the CORE :meth:`Agent.invoke_skill` (which injects the body lazily and fires
@@ -645,12 +645,16 @@ def _invoke_skill(console: Console, agent: Agent, name: str) -> bool:
     invoke = getattr(agent, "invoke_skill", None)
     if invoke is None:
         return False
-    result = _run_async(invoke(name))
+    result = _run_async(invoke(name, args))
     if not result.invoked:
         return False  # not a skill — let the caller try other command paths
     if result.error:
         # The file may have changed/vanished since discovery; report, don't crash the REPL.
         notice_error(console, "could not load skill", f"{result.name}: {result.error}")
+        return True
+    if result.denied_reason:
+        # A policy refusal (e.g. user-invocable: false), not a failure — a friendly notice.
+        notice_info(console, result.denied_reason)
         return True
     console.print(
         margin(
@@ -998,6 +1002,42 @@ def _maybe_zakpick_advisory(console: Console, done: AgentDone | None, state: lis
             )
         )
     )
+
+
+def _maybe_render_status_line(console: Console, agent: Agent) -> None:
+    """Render the configured Claude Code statusLine as a dim line after a turn (cosmetic).
+
+    No-ops unless this Agent has a statusLine configured (``status_line_spec``) — which is
+    itself gated on the ``status_line`` opt-in. Builds the CC-shaped status JSON from the
+    session/usage/model/cwd snapshot, runs the command (env-scrubbed, short timeout), and
+    prints its first stdout line dimmed. FAIL-SAFE end to end: ``render_status_line`` swallows
+    every error and returns ``None``, and this wrapper guards the whole thing — a broken status
+    script prints nothing and NEVER disturbs the REPL or the turn that just finished.
+    """
+    spec = getattr(agent, "status_line_spec", None)
+    if spec is None:
+        return
+    try:
+        from zakcode.status_line import build_status_input, render_status_line
+
+        usage = agent.session.cumulative_usage()
+        status = build_status_input(
+            session_id=agent.session.id,
+            cwd=str(agent.settings.workspace_root),
+            model_id=agent.settings.default_model,
+            cost_usd=usage.cost_usd,
+            total_tokens=usage.total_tokens,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            version=__version__,
+        )
+        line = _run_async(render_status_line(spec, status))
+    except Exception:  # noqa: BLE001 — a cosmetic status line never disturbs the REPL
+        return
+    if line:
+        # Plain Text (never markup) so a status script's output can't inject rich markup
+        # or crash a cp1252 console; dimmed in the shared document margin.
+        console.print(margin(Text(line, style="notice.dim")))
 
 
 def _run_streamed_turn(
@@ -1422,7 +1462,8 @@ def chat(
                 )
                 continue
             # A bare /<skill-name> invokes a discovered skill (loads its body).
-            if _invoke_skill(console, agent, command.lstrip("/")):
+            skill_args = stripped[len(command) :].strip()
+            if _invoke_skill(console, agent, command.lstrip("/"), args=skill_args):
                 continue
             # Fall through to plugin-registered commands before giving up. ``getattr``
             # because the live agent may be any AgentLike (a thin/remote one without a
@@ -1452,6 +1493,9 @@ def chat(
             notice_error(console, "provider error", str(exc))
             continue
         _maybe_zakpick_advisory(console, renderer.last_done, zakpick_advisory)
+        # Cosmetic Claude Code statusLine (opt-in; no-op unless configured). After the turn,
+        # in-process only — it never gated or slowed the turn that just ran.
+        _maybe_render_status_line(console, agent)
 
     _shutdown_session_loop(loop)
 

@@ -494,12 +494,70 @@ class Settings(BaseSettings):
     settings_hooks: bool = Field(
         default=False,
         description=(
-            "Load shell hooks from <workspace>/.claude/settings.json and "
-            ".zakcode/settings.json (ZAKCODE_SETTINGS_HOOKS=true). Off by default: "
+            "Load shell hooks from <workspace>/.claude/settings.json, "
+            ".claude/settings.local.json, and .zakcode/settings.json "
+            "(ZAKCODE_SETTINGS_HOOKS=true). Off by default: "
             "workspaces configured for other hook runtimes (e.g. Claude Code) would "
             "otherwise have those hooks half-fire here with a different stdin schema. "
             "Hosts can force the behavior per-Agent via "
             "Agent(enable_settings_hooks=True/False)."
+        ),
+    )
+
+    # ── Claude Code statusLine support (cosmetic; opt-in) ────────────────────
+    # Read the ``statusLine`` command from <workspace>/.claude/settings.json (+
+    # settings.local.json), run it after each turn with a status JSON on stdin (CC shape),
+    # and render its stdout's first line as a dim status line in the CLI. Off by default so
+    # a workspace carrying another runtime's statusLine doesn't silently spawn a subprocess
+    # here. PURELY COSMETIC and fully fail-safe: any error/timeout/non-zero exit just prints
+    # no line and NEVER affects the turn (the command runs in-process after the turn, env-
+    # scrubbed and danger-scanned like every settings.json shell command). Hosts can force
+    # the behavior per-Agent via Agent(enable_status_line=True/False). See zakcode.status_line.
+    status_line: bool = Field(
+        default=False,
+        description=(
+            "Render a Claude Code statusLine (from .claude/settings.json) after each turn "
+            "in the CLI (ZAKCODE_STATUS_LINE=true). Off by default; cosmetic and fail-safe."
+        ),
+    )
+
+    # ── Workspace settings.json permission-rule ingestion (Phase 3; opt-in) ──
+    # Read Claude Code's ``permissions.{allow,deny,ask}`` Tool(pattern) gestures from
+    # <workspace>/.claude/settings.json + settings.local.json and TRANSLATE them into this
+    # engine's deny-first PermissionPolicy (a deny Bash-glob → a command deny pattern; a deny
+    # Read/Edit/Write path-glob → a protected path; a bare-tool deny/allow → a per-tool mode
+    # override). Tighten-only: the always-on catastrophic + protected-path floor runs BEFORE any
+    # ingested allow, so a CC ``allow: ["Bash(*)"]`` can never auto-run ``rm -rf /`` or write
+    # ``.env``. Off by default (like settings_hooks) so a workspace carrying ANOTHER runtime's
+    # permission config doesn't silently reshape this engine's posture. See
+    # zakcode.permissions_settings.
+    settings_permissions: bool = Field(
+        default=False,
+        description=(
+            "Translate Claude Code permissions.{allow,deny,ask} rules from "
+            "<workspace>/.claude/settings.json + settings.local.json into the deny-first "
+            "PermissionPolicy (ZAKCODE_SETTINGS_PERMISSIONS=true). Off by default. Tighten-only: "
+            "the always-on safety floor runs before any ingested allow. Hosts can force the "
+            "behavior per-Agent via Agent(enable_settings_permissions=True/False)."
+        ),
+    )
+
+    # ── Claude Code output-style support (opt-in) ────────────────────────────
+    # Read the active ``outputStyle`` name from <workspace>/.claude/settings.json (+
+    # settings.local.json), load its body from .claude/output-styles/<name>.md, and fold that
+    # body into the stable (cacheable) system-prompt tier — the SAME seam always-on rules use —
+    # so it shapes how the assistant writes. Off by default (like settings_hooks) so a workspace
+    # carrying another runtime's output-style config doesn't silently reshape this engine's voice;
+    # when off, the system prompt is byte-identical to today. Fully defensive: a missing/unknown
+    # style name or file injects nothing and never raises. Hosts can force the behavior per-Agent
+    # via Agent(enable_output_style=True/False). See zakcode.output_styles.
+    output_style: bool = Field(
+        default=False,
+        description=(
+            "Inject the active Claude Code output style (the outputStyle named in "
+            "<workspace>/.claude/settings.json + settings.local.json, body from "
+            ".claude/output-styles/<name>.md) into the stable system-prompt tier "
+            "(ZAKCODE_OUTPUT_STYLE=true). Off by default; a no-op when unconfigured."
         ),
     )
 

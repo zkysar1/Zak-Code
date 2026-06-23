@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from zakcode.plugins import PluginLoadReport
     from zakcode.rules import RuleRegistry
     from zakcode.skills import SkillRegistry
+    from zakcode.status_line import StatusLineSpec
 
 __all__ = [
     "Agent",
@@ -175,6 +176,10 @@ class SkillInvocation:
     invoked: bool
     name: str = ""
     error: str | None = None
+    #: Set when a discovered skill exists but this invocation path is refused — e.g. a
+    #: ``user-invocable: false`` skill typed as a human ``/<name>`` command (it runs internally,
+    #: reached only by another skill chaining to it). Distinct from ``error`` (a load failure).
+    denied_reason: str | None = None
 
 
 class _SkillToolResolver:
@@ -194,10 +199,10 @@ class _SkillToolResolver:
         registry = self._agent.skill_registry
         return registry.names() if registry is not None else []
 
-    async def load(self, name: str, *, query: str = "") -> SkillLoad:
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         # ``query`` is the INVOKING turn's prompt (a sub-agent's task, not the parent's), so the
         # signal is attributed to the actual caller even though the resolver is the parent's.
-        return await self._agent._load_skill_body(name, source="tool", query=query)
+        return await self._agent._load_skill_body(name, source="tool", query=query, args=args)
 
 
 #: Turn stop-reasons that count as a STALL — the agent didn't cleanly finish. Seam B's best-of-N
@@ -260,6 +265,9 @@ class Agent:
         context_classifier_weights: str | None = None,
         context_signal_judge: bool = False,
         enable_settings_hooks: bool | None = None,
+        enable_settings_permissions: bool | None = None,
+        enable_status_line: bool | None = None,
+        enable_output_style: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
     ) -> None:
@@ -356,18 +364,55 @@ class Agent:
             if self.settings.dependency_gate
             else None
         )
+        # Claude Code permissions.{allow,deny,ask} ingestion (Phase 3; opt-in). When enabled (and no
+        # explicit permission_policy was injected — an injected policy is the caller's full
+        # authority), translate the workspace's CC permission gestures into the SAME tighten-only
+        # seams the operator settings use, and UNION them: ingested deny command/path patterns are
+        # appended to the operator's (the floor only grows), and ingested per-tool modes are laid
+        # down FIRST so the operator's tool_trust_overrides (higher-authority local config) win
+        # on any conflict. The always-on catastrophic + protected-path floor runs before any allow,
+        # so this can never loosen the policy. None defers to Settings.settings_permissions.
+        denied_command_regexes = list(self.settings.denied_commands)
+        protected_path_regexes = list(self.settings.protected_paths)
+        ingested_tool_modes: dict[str, str] = {}
+        ingested_denied_tools: set[str] = set()
+        if permission_policy is None and (
+            enable_settings_permissions
+            if enable_settings_permissions is not None
+            else self.settings.settings_permissions
+        ):
+            from zakcode.permissions_settings import load_settings_permissions
+
+            _ingested, _perm_errs = load_settings_permissions(workspace_root)
+            for _key, _err in _perm_errs.items():
+                logger.warning("settings.json permission %s: %s", _key, _err)
+            # Union, tighten-only: ingested deny patterns extend the operator's; ingested per-tool
+            # modes go under the operator's (operator wins a conflict).
+            denied_command_regexes.extend(_ingested.denied_command_regexes)
+            protected_path_regexes.extend(_ingested.protected_path_regexes)
+            ingested_tool_modes = dict(_ingested.tool_mode_overrides)
+            # Whole-tool deny gestures → a tier-independent unconditional deny (binds read-only
+            # tools too, which a mode override cannot). The operator cannot loosen these.
+            ingested_denied_tools = set(_ingested.denied_tools)
+        # Operator tool_trust_overrides overlay the ingested ones (operator is the trusted local
+        # authority); the merged map feeds tool_mode_overrides below.
+        merged_tool_modes = {**ingested_tool_modes, **dict(self.settings.tool_trust_overrides)}
         self.permission_policy = permission_policy or PermissionPolicy(
             self.settings.permission_mode,
             prompter=prompter,
-            extra_dangerous_patterns=compile_deny_patterns(self.settings.denied_commands),
+            extra_dangerous_patterns=compile_deny_patterns(denied_command_regexes),
             # Opt-in egress gate: confirm every web_fetch before it reaches the network.
             confirm_tools={"web_fetch"} if self.settings.web_fetch_confirm else None,
-            # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load.
-            tool_mode_overrides=dict(self.settings.tool_trust_overrides),
+            # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load — merged
+            # with any ingested CC bare-tool deny/allow gestures (operator wins a conflict).
+            tool_mode_overrides=merged_tool_modes,
             declared_packages=declared_packages,
-            # Protected-path floor extras (self-remediation Step 2): operator-added patterns
-            # appended to the built-in .git/.env/venv/config floor.
-            extra_protected_paths=compile_protected_paths(self.settings.protected_paths),
+            # Protected-path floor extras (self-remediation Step 2): operator-added patterns plus
+            # any ingested CC path-deny gestures, appended to the built-in .git/.env/venv/config
+            # floor.
+            extra_protected_paths=compile_protected_paths(protected_path_regexes),
+            # Ingested whole-tool CC deny gestures — denied unconditionally, regardless of tier.
+            extra_denied_tools=ingested_denied_tools,
         )
         # Rehydrate operator grants persisted with the session (audit P0-2d / D12 / Q5).
         # Honored only when the active mode is at least as loose as the grant-time mode;
@@ -398,6 +443,25 @@ class Agent:
                     self.hook_manager.shell_hooks.extend(_specs)
                 else:
                     self.hook_manager = HookManager(shell_hooks=_specs)
+        # Claude Code statusLine support (cosmetic; opt-in). When on, load the configured
+        # statusLine command from settings.json now (one read at construction, danger-scanned
+        # + provider-key-scrubbed like a hook) and stash it for a client (the CLI) to render
+        # after each turn. None defers to Settings.status_line; an explicit True/False wins.
+        # The spec is None when nothing is configured or it was denied — a client just renders
+        # no line. This NEVER touches the loop: a status line is decoration a client repaints.
+        self.status_line_enabled: bool = (
+            enable_status_line if enable_status_line is not None else self.settings.status_line
+        )
+        self.status_line_spec: StatusLineSpec | None = None
+        if self.status_line_enabled:
+            from zakcode.status_line import load_status_line_spec
+
+            self.status_line_spec, _sl_err = load_status_line_spec(
+                self.settings.workspace_root,
+                permission_mode=str(self.settings.permission_mode),
+            )
+            if _sl_err:
+                logger.warning("statusLine: %s", _sl_err)
         # One-shot guard so aclose() (and its SESSION_END encode step) runs at most once.
         self._closed = False
         # Slash-command registry (M6) — plugins register commands here; clients
@@ -451,6 +515,29 @@ class Agent:
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
             rules_text = self.rule_registry.render()
 
+        # Claude Code output style (opt-in): the active outputStyle's body, folded into the
+        # SAME stable tier as rules so it shapes generation and stays cache-safe. Loaded here
+        # (before delegation) so sub-agents inherit the same style. None defers to
+        # Settings.output_style (ZAKCODE_OUTPUT_STYLE); an explicit True/False from the host
+        # wins. Fully defensive: a missing/unknown style is recorded, never fatal, and leaves
+        # output_style_text empty so the prompt is byte-identical to today.
+        self.output_style_error: str | None = None
+        output_style_text = ""
+        if enable_output_style if enable_output_style is not None else self.settings.output_style:
+            from zakcode.output_styles import load_active_output_style
+
+            _style_block, self.output_style_error = load_active_output_style(
+                self.settings.workspace_root
+            )
+            output_style_text = _style_block or ""
+            if self.output_style_error and _style_block is None:
+                # A configured-but-unloadable style (bad name/file) is a quiet footgun: the
+                # selected voice is silently absent. Log it; a clean "unconfigured" reason
+                # (the common no-op) is not worth a warning, so only log when something was
+                # actually attempted and failed (handled inside load_active_output_style for
+                # parse/read errors; this covers the host-facing surface).
+                logger.debug("output style not injected: %s", self.output_style_error)
+
         # Operator identity (self.md), loaded ONCE here so it is cache-stable for the session.
         # An explicit ``identity`` arg wins; else discover it from the workspace when enabled
         # (the default). It is operator-authored = TRUSTED, so it is injected UN-fenced (unlike
@@ -479,11 +566,14 @@ class Agent:
         # NOTE: the construction condition MUST include self.identity, or a workspace with
         # ONLY a self.md (no rules/skills) would leave prompt_builder=None and the loop's
         # default builder would ignore the loaded identity.
-        if prompt_builder is None and (skills_catalog or rules_text or self.identity):
+        if prompt_builder is None and (
+            skills_catalog or rules_text or output_style_text or self.identity
+        ):
             prompt_builder = SystemPromptBuilder(
                 identity=self.identity,
                 extra_instructions=skills_catalog or None,
                 rules=rules_text or None,
+                output_style=output_style_text or None,
             )
         elif prompt_builder is not None:
             if self.identity and not prompt_builder.identity:
@@ -498,6 +588,10 @@ class Agent:
                 )
             if rules_text and not prompt_builder.rules:
                 prompt_builder.rules = rules_text
+            # Fill an injected builder's empty output-style slot so enable_output_style is
+            # never a silent no-op (mirrors the rules slot above).
+            if output_style_text and not prompt_builder.output_style:
+                prompt_builder.output_style = output_style_text
 
         # Delegation (M4), opt-in. When enabled, the parent gets the ``task`` tool and
         # a shared :class:`IterationBudget`, and a :class:`SubAgentManager` is placed
@@ -977,7 +1071,7 @@ class Agent:
         return result.text
 
     async def _load_skill_body(
-        self, name: str, *, source: str, query: str | None = None
+        self, name: str, *, source: str, query: str | None = None, args: str = ""
     ) -> SkillLoad:
         """Resolve a skill, read+defang its L1 body, and fire the selection signal — the CORE
         shared by both invocation paths (the CLI ``/<name>`` and the model's ``use_skill`` tool).
@@ -997,9 +1091,26 @@ class Agent:
         ``/<name>`` (``source="command"``) is operator-controlled and never throttled.
         """
         registry = getattr(self, "skill_registry", None)
-        skill = registry.get(name) if registry is not None else None
+        # resolve() (not get()): match the skill's name OR its ``triggers:`` frontmatter, so a
+        # skill ``foo`` with ``triggers: ["/start"]`` is reachable as ``/start``. Name wins.
+        skill = registry.resolve(name) if registry is not None else None
         if skill is None:
             return SkillLoad(found=False, name=name)
+        # Honor Claude Code's ``user-invocable: false``: such a skill is internal — reached by
+        # another skill chaining to it (or the model's use_skill), never by a human typing
+        # ``/<name>``. Refuse only the human COMMAND path; the model's tool path may still chain.
+        not_user_invocable = (
+            str(skill.frontmatter.extras.get("user_invocable", "")).strip().lower() == "false"
+        )
+        if source == "command" and not_user_invocable:
+            return SkillLoad(
+                found=True,
+                name=skill.name,
+                denied_reason=(
+                    f"{skill.name} is not user-invocable — it runs internally "
+                    "(another skill invokes it), so it can't be started by typing it."
+                ),
+            )
         if source == "tool":
             budget = self.settings.skill_invocation_budget
             if budget > 0 and self._skill_invocations_this_turn >= budget:
@@ -1032,9 +1143,17 @@ class Agent:
         # Defang protocol/template sentinels so a file-authored body can't forge a frame in
         # text mode; the body is preserved verbatim otherwise (defang never deletes content).
         await self._emit_skill_selected(skill.name, query, source=source)
-        return SkillLoad(found=True, name=skill.name, body=defang_untrusted(body))
+        rendered = defang_untrusted(body)
+        if args.strip():
+            # Claude-Code slash arguments (`/skill the args`, or use_skill args=…): surfaced to the
+            # model ahead of the body so a skill whose steps branch on an argument (a sub-command
+            # like `loop`) can see it. A presentation frame the model reads — NOT a trust boundary:
+            # defang only neutralizes tool-call sentinels, not brackets, and body + args share the
+            # same untrusted tier the model already consumes.
+            rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
+        return SkillLoad(found=True, name=skill.name, body=rendered)
 
-    async def invoke_skill(self, name: str) -> SkillInvocation:
+    async def invoke_skill(self, name: str, args: str = "") -> SkillInvocation:
         """Load a discovered skill's body into the session and emit the selection signal.
 
         The CLI ``/<skill>`` entry point: it folds the body into a TRUSTED user message so the
@@ -1043,9 +1162,13 @@ class Agent:
         read, defang, and fire ``ON_SKILL_SELECTED`` identically. Never raises: a
         missing/unreadable skill file is a UX result, not a crash.
         """
-        load = await self._load_skill_body(name, source="command")
+        load = await self._load_skill_body(name, source="command", args=args)
         if not load.found:
             return SkillInvocation(invoked=False)
+        if load.denied_reason:
+            # Discovered but refused (e.g. user-invocable: false typed as /<name>): handled, but
+            # not loaded — surfaced to the operator with the session left untouched.
+            return SkillInvocation(invoked=True, name=load.name, denied_reason=load.denied_reason)
         if load.error or load.body is None:
             return SkillInvocation(invoked=True, name=load.name, error=load.error)
         self.session.add_message(Message.user(f"[skill: {load.name}]\n{load.body}"))

@@ -130,6 +130,11 @@ class SystemPromptBuilder:
     :mod:`zakcode.rules`) rendered into the same stable tier. Like
     ``extra_instructions`` it is constant per session, so it is cache-safe there.
 
+    ``output_style`` (optional) is the active Claude Code output style — a labelled block
+    shaping how the assistant writes its answers (see :mod:`zakcode.output_styles`). Like
+    ``rules`` it is operator-selected standing guidance, constant per session, so it sits in
+    the same cacheable tier just after the rules.
+
     ``identity`` (optional) is the operator-authored agent identity (``self.md``; see
     :mod:`zakcode.identity`). When set it REPLACES the default identity line as the first
     section of the stable tier — this is how a "mind" gives the runtime its persona.
@@ -141,10 +146,12 @@ class SystemPromptBuilder:
         identity: str | None = None,
         extra_instructions: str | None = None,
         rules: str | None = None,
+        output_style: str | None = None,
     ) -> None:
         self.identity = identity
         self.extra_instructions = extra_instructions
         self.rules = rules
+        self.output_style = output_style
 
     def build(
         self,
@@ -184,6 +191,11 @@ class SystemPromptBuilder:
         # tool summary and before any sub-agent specialization text.
         if self.rules and self.rules.strip():
             sections.append(self.rules.strip())
+        # The active output style is operator-selected standing guidance too; it sits beside
+        # the rules in the cacheable tier (constant per session) so it shapes generation and
+        # stays prompt-cache safe.
+        if self.output_style and self.output_style.strip():
+            sections.append(self.output_style.strip())
         if self.extra_instructions and self.extra_instructions.strip():
             sections.append(self.extra_instructions.strip())
         return "\n\n".join(sections)

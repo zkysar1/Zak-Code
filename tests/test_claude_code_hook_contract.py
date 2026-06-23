@@ -59,11 +59,11 @@ def test_valid_cwd(tmp_path: Path) -> None:
     assert _valid_cwd("") is None  # empty → inherit
 
 
-# ── (2) Claude Code stdout shape: _parse_stdout returns (message, mutated, deny) ──
+# ── (2) Claude Code stdout shape: _parse_stdout returns (message, mutated, deny, additional) ──
 
 
 def test_parse_stdout_native_arguments() -> None:
-    msg, mut, deny = HookManager._parse_stdout(
+    msg, mut, deny, _extra = HookManager._parse_stdout(
         json.dumps({"message": "m", "arguments": {"a": 1}}).encode()
     )
     assert msg == "m" and mut == {"a": 1} and deny is False
@@ -71,19 +71,26 @@ def test_parse_stdout_native_arguments() -> None:
 
 def test_parse_stdout_claude_updated_input() -> None:
     doc = {"hookSpecificOutput": {"updatedInput": {"command": "safe"}}}
-    _msg, mut, deny = HookManager._parse_stdout(json.dumps(doc).encode())
+    _msg, mut, deny, _extra = HookManager._parse_stdout(json.dumps(doc).encode())
     assert mut == {"command": "safe"} and deny is False
 
 
 def test_parse_stdout_claude_deny_blocks_on_exit_zero() -> None:
     doc = {"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "nope"}}
-    msg, _mut, deny = HookManager._parse_stdout(json.dumps(doc).encode())
+    msg, _mut, deny, _extra = HookManager._parse_stdout(json.dumps(doc).encode())
     assert deny is True and msg == "nope"
 
 
 def test_parse_stdout_plain_and_empty() -> None:
-    assert HookManager._parse_stdout(b"hi") == ("hi", None, False)
-    assert HookManager._parse_stdout(b"") == ("", None, False)
+    assert HookManager._parse_stdout(b"hi") == ("hi", None, False, "")
+    assert HookManager._parse_stdout(b"") == ("", None, False, "")
+
+
+def test_parse_stdout_posttooluse_additional_context() -> None:
+    # PostToolUse hooks inject context via hookSpecificOutput.additionalContext (4th tuple element).
+    doc = {"hookSpecificOutput": {"additionalContext": "more info"}}
+    _msg, _mut, _deny, additional = HookManager._parse_stdout(json.dumps(doc).encode())
+    assert additional == "more info"
 
 
 # ── (3) executable resolution (Windows WSL-stub avoidance; pure on POSIX) ─────────

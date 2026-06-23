@@ -71,6 +71,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -702,12 +703,12 @@ class AgentLoop:
         await self._fire_lifecycle(
             HookEvent.PRE_COMPACT,
             {
-                "trigger": "auto",
                 "session_summary": {
                     "session_id": self.session.id,
                     "message_count": len(self.session.messages),
                 },
             },
+            trigger="auto",
         )
         try:
             result = await self.compactor.compact(
@@ -733,12 +734,12 @@ class AgentLoop:
         await self._fire_lifecycle(
             HookEvent.PRE_COMPACT,
             {
-                "trigger": "manual",
                 "session_summary": {
                     "session_id": self.session.id,
                     "message_count": len(self.session.messages),
                 },
             },
+            trigger="manual",
         )
         result = await self.compactor.compact(
             self.session.messages, summarize=self._summarize_for_compaction
@@ -1186,6 +1187,9 @@ class AgentLoop:
         output = tool_res.output
         if post.message:
             output = f"{output}\n[hook] {post.message}" if output else f"[hook] {post.message}"
+        if post.additional_context:
+            # PostToolUse additionalContext: extra context the hook injects for the model.
+            output = f"{output}\n{post.additional_context}" if output else post.additional_context
 
         # Surface the tool's next-step rail (Hint: on success / Fix: on error) into the
         # model-facing text, and mirror it into the structured data for non-model clients.
@@ -1468,10 +1472,54 @@ class AgentLoop:
             return True, ""
         return False, weak_dimensions(card, threshold)
 
+    def _cc_transcript_path(self) -> str:
+        """Materialize a Claude-Code-shaped ``.jsonl`` projection of the session transcript and
+        return its path, for hooks that read ``transcript_path``. Best-effort: returns ``""`` on any
+        error (or an unsafe session id) so a hook fire is never broken. The SessionStore stays the
+        source of truth — this is a read-only edge projection (:mod:`zakcode.hooks.transcript`).
+
+        Written under a per-USER ``~/.zakcode/transcripts`` directory (0700) as a 0600 file, NOT a
+        world-readable predictable temp path — the transcript carries the full conversation (maybe
+        secrets). The session id is validated as a safe filename component first (the same trust
+        boundary the SessionStore enforces). Re-rendered on each fire that needs it (O(messages) per
+        fire): accepted, because the projection must reflect the LIVE history — compaction rewrites
+        it, so an append-only cache would go stale — and the cost is small next to a model call.
+        """
+        from zakcode.hooks.transcript import render_claude_code_transcript
+        from zakcode.session.store import _is_safe_session_id
+
+        sid = self.session.id
+        if not _is_safe_session_id(sid):
+            return ""  # defense-in-depth: never build a filesystem path from an unvalidated id
+        try:
+            text = render_claude_code_transcript(
+                self.session.messages, session_id=sid, cwd=self.session.cwd
+            )
+            directory = Path.home() / ".zakcode" / "transcripts"
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"{sid}.jsonl"
+            path.write_text(text, encoding="utf-8")
+            with contextlib.suppress(OSError):  # POSIX perms; harmless where unsupported
+                os.chmod(directory, 0o700)
+                os.chmod(path, 0o600)
+            return str(path)
+        except Exception:  # noqa: BLE001 — a transcript projection must never break a hook fire
+            logger.warning("could not materialize CC transcript", exc_info=True)
+            return ""
+
     async def _fire_lifecycle(
-        self, event: HookEvent, data: dict[str, object] | None = None
+        self,
+        event: HookEvent,
+        data: dict[str, object] | None = None,
+        *,
+        source: str = "",
+        trigger: str = "",
     ) -> None:
-        """Fire a session-lifecycle hook (observe-only; cheap-checked, error-isolated)."""
+        """Fire a session-lifecycle hook (observe-only; cheap-checked, error-isolated).
+
+        ``source`` (SessionStart) and ``trigger`` (PreCompact) ride at the payload top level to
+        match Claude Code's contract; ``data`` holds any other event-specific extras.
+        """
         if not self.hook_manager.has_lifecycle_hooks(event):
             return
         await self.hook_manager.fire(
@@ -1479,6 +1527,9 @@ class AgentLoop:
                 event=event,
                 session_id=self.session.id,
                 cwd=str(self.workspace_root),
+                source=source,
+                trigger=trigger,
+                transcript_path=self._cc_transcript_path(),
                 data=data or {},
             )
         )
@@ -1488,7 +1539,13 @@ class AgentLoop:
         if self._session_started:
             return
         self._session_started = True
-        await self._fire_lifecycle(HookEvent.SESSION_START)
+        # source mirrors Claude Code's SessionStart `source`: a session already carrying prior
+        # history at first-turn time was resumed; an empty one is a fresh startup. (Fires before the
+        # turn's new user message is added, so messages == prior history.) CC's third value
+        # "compact" (a post-compaction restart) is folded into "resume" — we do not re-fire
+        # SessionStart after compaction.
+        source = "resume" if self.session.messages else "startup"
+        await self._fire_lifecycle(HookEvent.SESSION_START, source=source)
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -1542,6 +1599,7 @@ class AgentLoop:
         payload = TurnEndPayload(
             session_id=self.session.id,
             cwd=self.session.cwd,
+            transcript_path=self._cc_transcript_path(),
             stop_reason=stop_reason,
             iterations=iterations,
             max_iterations=self.max_iterations,

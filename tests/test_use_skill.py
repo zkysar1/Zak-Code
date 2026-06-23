@@ -42,12 +42,14 @@ class _FakeResolver:
         self._skills = skills
         self._names = names if names is not None else list(skills)
         self.loaded: list[str] = []
+        self.loaded_args: list[str] = []
 
     def names(self) -> list[str]:
         return list(self._names)
 
-    async def load(self, name: str, *, query: str = "") -> SkillLoad:
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         self.loaded.append(name)
+        self.loaded_args.append(args)
         return self._skills.get(name, SkillLoad(found=False, name=name))
 
 
@@ -101,6 +103,18 @@ async def test_use_skill_strips_the_name(tmp_path: Path) -> None:
     resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body="x")})
     await UseSkillTool().execute({"name": "  alpha  "}, _ctx(tmp_path, resolver))
     assert resolver.loaded == ["alpha"]  # trimmed before lookup
+
+
+async def test_use_skill_forwards_args_to_resolver(tmp_path: Path) -> None:
+    resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body="x")})
+    await UseSkillTool().execute({"name": "alpha", "args": "loop"}, _ctx(tmp_path, resolver))
+    assert resolver.loaded_args == ["loop"]  # the args reach the resolver
+
+
+async def test_use_skill_without_args_forwards_empty(tmp_path: Path) -> None:
+    resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body="x")})
+    await UseSkillTool().execute({"name": "alpha"}, _ctx(tmp_path, resolver))
+    assert resolver.loaded_args == [""]  # default is empty string, not None
 
 
 # ── real wiring on the Agent ─────────────────────────────────────────────────────
@@ -201,7 +215,7 @@ class _RecordingResolver:
     def names(self) -> list[str]:
         return ["greeter"]
 
-    async def load(self, name: str, *, query: str = "") -> SkillLoad:
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         self.loaded.append(name)
         self.queries.append(query)
         return SkillLoad(found=True, name=name, body=self._body)

@@ -401,6 +401,7 @@ class PermissionPolicy:
         declared_packages: Callable[[], set[str]] | None = None,
         protected_path_patterns: list[tuple[re.Pattern[str], str]] | None = None,
         extra_protected_paths: list[tuple[re.Pattern[str], str]] | None = None,
+        extra_denied_tools: set[str] | frozenset[str] | None = None,
     ) -> None:
         self.mode = PermissionMode.parse(mode)
         self.prompter = prompter
@@ -438,6 +439,10 @@ class PermissionPolicy:
             PROTECTED_PATH_PATTERNS if protected_path_patterns is None else protected_path_patterns
         )
         self.protected_path_patterns = [*protected_base, *(extra_protected_paths or [])]
+        # Whole-tool denials (e.g. an ingested CC ``deny: ["WebFetch"]``): the named tool is denied
+        # UNCONDITIONALLY in decide(), regardless of its tier — unlike a ``deny`` mode override,
+        # which only lowers the tier ceiling and so cannot bind a read-only tool. Tighten-only.
+        self._denied_tools: frozenset[str] = frozenset(extra_denied_tools or ())
         # 'allow' grants are keyed by TOOL NAME — a grant covers the whole tool for the
         # session (the operator is not re-prompted for every new path/command). 'deny'
         # grants stay keyed by the exact (tool, args) so a block is narrow.
@@ -465,6 +470,7 @@ class PermissionPolicy:
             tool_mode_overrides=dict(self.tool_mode_overrides),
             declared_packages=self._declared_packages,
             protected_path_patterns=self.protected_path_patterns,
+            extra_denied_tools=self._denied_tools,
         )
 
     # ── public read accessors (so clients never touch the private sets) ────────
@@ -621,6 +627,11 @@ class PermissionPolicy:
         manifests/lockfile do not declare escalates to ASK (hard DENY in autonomous).
         """
         tool_name = spec.name if spec is not None else "<unknown>"
+        # A configuration-denied tool is denied UNCONDITIONALLY, regardless of tier — a whole-tool
+        # deny (e.g. an ingested ``deny: ["WebFetch"]``) must bind even a read-only tool, which a
+        # mere ``deny`` mode override cannot (that only lowers the tier ceiling). Tighten-only.
+        if tool_name in self._denied_tools:
+            return (PermissionDecision.DENY, f"'{tool_name}' is denied by configuration")
         mode = self.tool_mode_overrides.get(tool_name, self.mode)
         tier = self._required_tier(spec)
         ceiling = _MODE_CEILING[mode]

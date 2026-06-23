@@ -2,9 +2,10 @@
 
 Discovery order:
 1. ``<workspace>/.claude/settings.json``
-2. ``<workspace>/.zakcode/settings.json``
+2. ``<workspace>/.claude/settings.local.json`` (Claude Code's per-machine local overrides)
+3. ``<workspace>/.zakcode/settings.json``
 
-Both are read; hooks from both are merged into a single list.
+All are read; hooks from each are merged into a single list.
 
 Event-name mapping: Claude Code's ``"Stop"`` event IS the ``TURN_END`` seam.
 Unknown or unimplemented events (``StopFailure``, ``UserPromptExpansion``) are
@@ -45,7 +46,13 @@ _EVENT_MAP: dict[str, HookEvent] = {
     "Stop": HookEvent.TURN_END,
 }
 
-#: Events recognised but not yet implemented — skipped with a warning.
+#: Real Claude Code events deferred FOR SCOPE — recognised and skipped with a warning (not silently
+#: dropped), so a configured hook degrades loudly rather than vanishing. A robustness tail, not
+#: loop-blockers — but NOT no-ops for a framework that uses them: StopFailure (fired on a
+#: provider-error turn end, a non-vetoable terminal that would need new firing threaded through the
+#: critical finalize path) lets a framework leave a crash breadcrumb for the next session, and
+#: UserPromptExpansion captures human-typed slash invocations (distinct from the model-path
+#: ON_SKILL_SELECTED signal). Deferred until those firing points are designed; see the roadmap.
 _SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion"}
 
 
@@ -103,6 +110,9 @@ def load_settings_hooks(
 
     candidates = [
         workspace_root / ".claude" / "settings.json",
+        # Per-machine local overrides (Claude Code's settings.local.json), read AFTER the shared
+        # settings.json so its hooks add to the project's (non-hook config would override later).
+        workspace_root / ".claude" / "settings.local.json",
         workspace_root / ".zakcode" / "settings.json",
     ]
     for settings_path in candidates:

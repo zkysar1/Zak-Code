@@ -114,6 +114,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "auto"
+# Registered markers (so `--strict`-style runs and CI emit no "unknown marker" warning).
+markers = [
+  "cc_conformance: Claude Code compatibility conformance suite (the guardian)",
+]
 # Bare `pytest` (no uv editable install) resolves the src/ layout via pythonpath, so a
 # fresh clone with deps can run the suite without `pip install -e .` first.
 pythonpath = ["src"]
