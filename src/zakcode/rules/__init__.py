@@ -49,6 +49,9 @@ MAX_RULE_FILE_CHARS = 8_192
 #: Largest combined size of all rendered rules (~32 KB).
 MAX_RULES_TOTAL_CHARS = 32_768
 
+#: Per-rule summary cap in the compact :meth:`RuleRegistry.render_index` (lean) output.
+_INDEX_SUMMARY_CHARS = 140
+
 
 class RuleError(Exception):
     """Raised when a rule file cannot be read or is empty."""
@@ -152,6 +155,64 @@ class RuleRegistry:
         body = "\n\n".join(blocks)
         if dropped:
             body += f"\n\n[{dropped} further rule(s) omitted: rules budget reached]"
+        return f"{header}\n\n{body}"
+
+    def render_index(self) -> str:
+        """Render a COMPACT one-line-per-rule INDEX for the stable tier (``""`` if none).
+
+        The lean alternative to :meth:`render`. Where :meth:`render` folds every rule's
+        full body into the cached prefix on *every* turn — fine for a handful of rules, a
+        per-turn cost multiplier for a rules-heavy "mind" carrying dozens — this emits one
+        line per rule (``- name: summary [path]``) and tells the model to READ the full
+        rule file on demand (via its file-read tool) when a rule looks relevant to the
+        current step. This is exactly the on-demand model this module's docstring
+        recommends for a learning framework that keeps many rules.
+
+        The summary is the rule's frontmatter ``description`` when present, else the first
+        non-empty body line (with any leading Markdown heading marker stripped), capped at
+        :data:`_INDEX_SUMMARY_CHARS`. The on-disk ``path`` lets the model fetch the body
+        with its file-read tool (directly usable for workspace-local rules such as
+        ``.claude/rules/*.md`` — the dominant "mind" case). Bounded overall by
+        :data:`MAX_RULES_TOTAL_CHARS` for parity with :meth:`render` (the index is far
+        smaller, but the cap is enforced for safety); rules beyond the budget are dropped
+        with a recorded note. Returns ``""`` when there are no rules.
+        """
+        if not self._rules:
+            return ""
+        header = (
+            "Project rules (operator-authored standing guidance). Each rule is listed by "
+            "name with a one-line summary; READ the full rule file (path shown) with your "
+            "file-read tool when a rule looks relevant to the current step, then apply it:"
+        )
+        lines: list[str] = []
+        note_slack = 80
+        total = len(header) + 2  # header + the "\n\n" before the body
+        dropped = 0
+        for rule in self._rules.values():
+            summary = (rule.description or "").strip()
+            if not summary:
+                first = next(
+                    (ln.strip() for ln in rule.content.splitlines() if ln.strip()), ""
+                )
+                summary = first.lstrip("#").strip()  # drop a leading Markdown heading marker
+            if len(summary) > _INDEX_SUMMARY_CHARS:
+                summary = summary[: _INDEX_SUMMARY_CHARS - 3].rstrip() + "..."
+            line = (
+                f"- {rule.name}: {summary} [{rule.path}]"
+                if summary
+                else f"- {rule.name} [{rule.path}]"
+            )
+            sep = 1 if lines else 0  # the single "\n" join separator before this line
+            if total + sep + len(line) > MAX_RULES_TOTAL_CHARS - note_slack:
+                dropped += 1
+                continue
+            lines.append(line)
+            total += sep + len(line)
+        if not lines:
+            return ""
+        body = "\n".join(lines)
+        if dropped:
+            body += f"\n[{dropped} further rule(s) omitted: rules index budget reached]"
         return f"{header}\n\n{body}"
 
 
