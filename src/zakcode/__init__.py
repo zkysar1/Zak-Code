@@ -256,7 +256,7 @@ class Agent:
         extra_skill_dirs: Sequence[str | Path] | None = None,
         extra_workspace_roots: Sequence[str | Path] | None = None,
         enable_rules: bool = False,
-        lean_rules: bool = False,
+        lean_rules: bool | None = None,
         enable_identity: bool = True,
         identity: str | None = None,
         enable_compaction: bool = False,
@@ -510,23 +510,30 @@ class Agent:
         # ``lean_rules`` (Vinheim Lever A) swaps the full-body render for a compact
         # one-line-per-rule INDEX, so a rules-heavy "mind" stops paying every rule's full
         # body on every cached turn — the model reads a rule's body on demand instead.
-        # Default False keeps the always-on render byte-for-byte unchanged.
+        # An explicit True/False from the host wins; None (the default) defers to
+        # Settings.lean_rules (ZAKCODE_LEAN_RULES) — the SAME precedence as enable_output_style
+        # below, so a served MIND or dev loop flips the lever via config without a code change.
+        # The setting (and so the default) is False, keeping the always-on render byte-for-byte
+        # unchanged until the lever is turned on.
         self.rule_registry: RuleRegistry | None = None
         self.rule_errors: dict[str, str] = {}
         rules_text = ""
         if enable_rules:
             from zakcode.rules import discover_rules
 
+            use_lean_rules = lean_rules if lean_rules is not None else self.settings.lean_rules
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
             rules_text = (
-                self.rule_registry.render_index() if lean_rules else self.rule_registry.render()
+                self.rule_registry.render_index()
+                if use_lean_rules
+                else self.rule_registry.render()
             )
             # Lever A Chunk 2: in lean mode the index lists rule NAMES only, so give the model
             # an on-demand reader (read_rule) to fetch a rule's full body by name from the
             # in-memory registry — including bundled/user rules outside the file-tool sandbox.
             # Full-render mode already has every body in the prompt, so the tool is added ONLY
             # for lean mode; full mode stays byte-for-byte unchanged (no extra tool surface).
-            if lean_rules and self.rule_registry is not None and len(self.rule_registry) > 0:
+            if use_lean_rules and self.rule_registry is not None and len(self.rule_registry) > 0:
                 from zakcode.tools.builtins.read_rule import ReadRuleTool
 
                 self.registry.register(ReadRuleTool(self.rule_registry))

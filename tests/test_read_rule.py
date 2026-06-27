@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from zakcode import Agent
 from zakcode.evals.harness import ScriptedProvider, reply
 from zakcode.rules import Rule, RuleRegistry
@@ -104,4 +106,30 @@ def test_agent_full_rules_omits_read_rule_tool(tmp_path: Path) -> None:
 
 def test_agent_no_rules_omits_read_rule_tool(tmp_path: Path) -> None:
     agent = _agent(tmp_path)  # enable_rules defaults False
+    assert agent.registry.get("read_rule") is None
+
+
+# ── config wiring: Settings.lean_rules / ZAKCODE_LEAN_RULES (Chunk 3) ─────────────
+
+
+def test_agent_setting_lean_rules_registers_read_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Vinheim Lever A wiring: with NO explicit lean_rules kwarg, the Agent defers to
+    # Settings.lean_rules (ZAKCODE_LEAN_RULES) — so a served MIND or dev loop flips the lever
+    # via config alone (same precedence as enable_output_style). enable_rules stays on; lean
+    # only changes HOW the rules render, so read_rule must be wired in.
+    monkeypatch.setenv("ZAKCODE_LEAN_RULES", "true")
+    agent = _agent(tmp_path, enable_rules=True)  # note: no lean_rules= kwarg
+    assert agent.registry.get("read_rule") is not None
+
+
+def test_agent_explicit_lean_rules_false_overrides_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Precedence: an explicit lean_rules=False from the host WINS over ZAKCODE_LEAN_RULES=true
+    # (None defers to the setting, a real bool does not) — so a caller can force full-render
+    # even when the env enables lean. Mirrors enable_output_style's explicit-wins contract.
+    monkeypatch.setenv("ZAKCODE_LEAN_RULES", "true")
+    agent = _agent(tmp_path, enable_rules=True, lean_rules=False)
     assert agent.registry.get("read_rule") is None

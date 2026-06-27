@@ -561,6 +561,25 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Lean rules (Vinheim Lever A) ─────────────────────────────────────────
+    # Swap the always-on FULL-body rules render for a compact one-line-per-rule INDEX, so a
+    # rules-heavy "mind" stops paying every rule's full body on every cached turn — the model
+    # reads a rule's body on demand (the read_rule tool). Off by default so the cached prefix is
+    # byte-identical to today; flip via ZAKCODE_LEAN_RULES=true to lean a served MIND or the dev
+    # loop without a code change — the SAME precedence as output_style. Hosts can still force the
+    # behavior per-Agent via Agent(lean_rules=True/False) (an explicit value wins; None defers to
+    # this setting). See zakcode.rules.RuleRegistry.render_index and
+    # zakcode.tools.builtins.read_rule.
+    lean_rules: bool = Field(
+        default=False,
+        description=(
+            "Render always-on rules as a compact one-line-per-rule INDEX (plus the read_rule "
+            "on-demand body tool) instead of every rule's full body, shrinking the cached "
+            "system-prompt tier for a rules-heavy mind (ZAKCODE_LEAN_RULES=true). Off by "
+            "default; the cached prefix is byte-identical to today when off. Vinheim Lever A."
+        ),
+    )
+
     # ── Web tools (web_search / web_fetch) ───────────────────────────────────
     # Which vendor-agnostic search backend `web_search` uses. ``ddgs`` (the default) is free and
     # needs no key; ``tavily`` reads TAVILY_API_KEY from the env (like other provider keys — never
