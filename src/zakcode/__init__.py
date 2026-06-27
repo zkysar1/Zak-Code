@@ -521,6 +521,15 @@ class Agent:
             rules_text = (
                 self.rule_registry.render_index() if lean_rules else self.rule_registry.render()
             )
+            # Lever A Chunk 2: in lean mode the index lists rule NAMES only, so give the model
+            # an on-demand reader (read_rule) to fetch a rule's full body by name from the
+            # in-memory registry — including bundled/user rules outside the file-tool sandbox.
+            # Full-render mode already has every body in the prompt, so the tool is added ONLY
+            # for lean mode; full mode stays byte-for-byte unchanged (no extra tool surface).
+            if lean_rules and self.rule_registry is not None and len(self.rule_registry) > 0:
+                from zakcode.tools.builtins.read_rule import ReadRuleTool
+
+                self.registry.register(ReadRuleTool(self.rule_registry))
 
         # Claude Code output style (opt-in): the active outputStyle's body, folded into the
         # SAME stable tier as rules so it shapes generation and stays cache-safe. Loaded here
