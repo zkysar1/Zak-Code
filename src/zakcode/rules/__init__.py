@@ -191,9 +191,7 @@ class RuleRegistry:
         for rule in self._rules.values():
             summary = (rule.description or "").strip()
             if not summary:
-                first = next(
-                    (ln.strip() for ln in rule.content.splitlines() if ln.strip()), ""
-                )
+                first = next((ln.strip() for ln in rule.content.splitlines() if ln.strip()), "")
                 summary = first.lstrip("#").strip()  # drop a leading Markdown heading marker
             if len(summary) > _INDEX_SUMMARY_CHARS:
                 summary = summary[: _INDEX_SUMMARY_CHARS - 3].rstrip() + "..."
