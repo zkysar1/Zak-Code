@@ -131,7 +131,12 @@ def test_registry_catalog_and_get() -> None:
     reg.add(Skill(fm2, Path("b/SKILL.md")))
     assert reg.names() == ["a", "b"]
     assert reg.catalog() == [("a", "alpha"), ("b", "beta")]
-    assert "a: alpha" in reg.render_catalog()
+    cat = reg.render_catalog()
+    # Skills render as the exact `use_skill(...)` call, NOT a bare "name: desc" line
+    # (which small models mistake for a tool). See the render_catalog anti-confusion fix.
+    assert 'use_skill(name="a")' in cat
+    assert "alpha" in cat
+    assert "a: alpha" not in cat
     assert reg.get("a") is not None
     assert reg.get("missing") is None
 

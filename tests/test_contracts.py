@@ -163,6 +163,30 @@ async def test_registry_unknown_tool_is_error_not_exception() -> None:
     assert "unknown tool" in result.output
 
 
+async def test_registry_unknown_tool_that_is_a_skill_points_at_use_skill() -> None:
+    # A skill name emitted as a BARE tool call (the open-weights skill/tool confusion)
+    # must return the correct invocation path, not a dead-end "unknown tool" error.
+    class _StubResolver:
+        def names(self) -> list[str]:
+            return ["start", "reflect"]
+
+        async def load(self, name: str, *, query: str = "", args: str = "") -> object:
+            raise NotImplementedError  # pragma: no cover — not exercised by this path
+
+    ctx = ToolContext(workspace_root=Path.cwd(), skill_resolver=_StubResolver())
+    # exact, case-insensitive, and leading-slash variants all resolve to the skill hint
+    for called in ("start", "Start", "/start"):
+        result = await ToolRegistry().execute(called, {}, ctx)
+        assert result.is_error
+        assert "is a skill, not a tool" in result.output
+        assert 'use_skill(name="start")' in (result.fix or "")
+    # a genuinely-unknown name (not a skill) still yields the bare unknown-tool error
+    plain = await ToolRegistry().execute("definitely_not_a_thing", {}, ctx)
+    assert plain.is_error
+    assert "unknown tool" in plain.output
+    assert "is a skill" not in plain.output
+
+
 async def test_registry_wraps_handler_exceptions() -> None:
     reg = ToolRegistry()
     reg.register(_BoomTool())
