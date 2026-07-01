@@ -107,6 +107,124 @@ def test_render_caps_total(tmp_path: Path) -> None:
     assert "omitted" in rendered  # the budget note appears
 
 
+# ── render_index (lean: Vinheim Lever A) ─────────────────────────────────────
+
+
+def test_render_index_empty_is_blank(tmp_path: Path) -> None:
+    registry, _ = discover_rules(tmp_path)  # empty
+    assert registry.render_index() == ""
+
+
+def test_render_index_lists_names_and_frontmatter_summaries(tmp_path: Path) -> None:
+    _write(
+        tmp_path / ".zakcode" / "rules" / "http.md",
+        "---\nname: http-conventions\ndescription: where HTTP lives\n---\n" + ("BODY " * 200),
+    )
+    registry, _ = discover_rules(tmp_path)
+    index = registry.render_index()
+    assert "Project rules" in index
+    assert "- http-conventions: where HTTP lives" in index  # name + frontmatter description
+    assert "http.md" in index  # the on-disk path for on-demand reads
+
+
+def test_render_index_summary_falls_back_to_first_body_line(tmp_path: Path) -> None:
+    _write(tmp_path / ".zakcode" / "rules" / "style.md", "# Tabs over spaces\n\nLong body...")
+    registry, _ = discover_rules(tmp_path)
+    index = registry.render_index()
+    # No frontmatter description -> first non-empty body line, heading marker stripped.
+    assert "- style: Tabs over spaces" in index
+
+
+def test_render_index_omits_full_bodies(tmp_path: Path) -> None:
+    # The whole point: a long body is NOT folded into the index (only name + summary + path).
+    _write(
+        tmp_path / ".zakcode" / "rules" / "big.md",
+        "---\ndescription: short summary\n---\n" + ("UNIQUE_BODY_TOKEN " * 500),
+    )
+    registry, _ = discover_rules(tmp_path)
+    index = registry.render_index()
+    assert "UNIQUE_BODY_TOKEN" not in index  # body excluded from the lean index
+    assert "short summary" in index
+
+
+def test_render_index_is_far_smaller_than_full_render(tmp_path: Path) -> None:
+    # Many full-size rules: the index must be dramatically smaller than the full render.
+    for i in range(12):
+        _write(
+            tmp_path / ".zakcode" / "rules" / f"r{i}.md",
+            f"---\ndescription: rule {i} summary\n---\n" + ("z" * MAX_RULE_FILE_CHARS),
+        )
+    registry, _ = discover_rules(tmp_path)
+    full = registry.render()
+    index = registry.render_index()
+    assert index  # non-empty
+    assert len(index) < len(full) // 10  # at least a 10x reduction on the cached prefix
+
+
+def test_render_index_summary_is_capped(tmp_path: Path) -> None:
+    from zakcode.rules import _INDEX_SUMMARY_CHARS, Rule
+
+    reg = RuleRegistry()
+    reg.add(Rule("r", "body", Path("r.md"), description="d" * 500))
+    index = reg.render_index()
+    assert "..." in index  # the over-long summary is truncated
+    # The rendered summary token never exceeds the cap (137 chars + the "..." ellipsis).
+    assert "d" * _INDEX_SUMMARY_CHARS not in index
+
+
+def test_render_index_bounded_with_many_rules() -> None:
+    from zakcode.rules import Rule
+
+    reg = RuleRegistry()
+    for i in range(5000):
+        reg.add(Rule(f"r{i}", "x", Path(f"r{i}.md"), description="d" * 200))
+    index = reg.render_index()
+    assert len(index) <= MAX_RULES_TOTAL_CHARS  # genuinely bounded
+    assert "omitted" in index  # the budget note appears
+
+
+def test_agent_lean_rules_renders_index_not_bodies(tmp_path: Path) -> None:
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+
+    _write(
+        tmp_path / ".zakcode" / "rules" / "team.md",
+        "---\ndescription: TEAM_RULE_SUMMARY\n---\nALWAYS_RUN_TESTS_BODY_MARKER",
+    )
+    agent = Agent(
+        provider=ScriptedProvider(script=[reply("ok")]),
+        enable_rules=True,
+        lean_rules=True,
+        default_model="scripted/test",
+        workspace_root=str(tmp_path),
+    )
+    prompt = agent.loop.prompt_builder.build(agent.settings)
+    boundary_at = prompt.index(DYNAMIC_BOUNDARY)
+    stable = prompt[:boundary_at]
+    assert "TEAM_RULE_SUMMARY" in stable  # the compact index summary lands in the cached tier
+    assert "ALWAYS_RUN_TESTS_BODY_MARKER" not in prompt  # the full body is NOT injected
+
+
+def test_agent_lean_rules_off_is_unchanged_full_render(tmp_path: Path) -> None:
+    # Default (lean_rules=False): the full body still renders — byte-for-byte unchanged.
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+
+    _write(
+        tmp_path / ".zakcode" / "rules" / "team.md",
+        "---\ndescription: TEAM_RULE_SUMMARY\n---\nALWAYS_RUN_TESTS_BODY_MARKER",
+    )
+    agent = Agent(
+        provider=ScriptedProvider(script=[reply("ok")]),
+        enable_rules=True,
+        default_model="scripted/test",
+        workspace_root=str(tmp_path),
+    )
+    prompt = agent.loop.prompt_builder.build(agent.settings)
+    stable = prompt[: prompt.index(DYNAMIC_BOUNDARY)]
+    assert "ALWAYS_RUN_TESTS_BODY_MARKER" in stable  # full body present when lean is off
+
+
 # ── prompt-builder integration ───────────────────────────────────────────────
 
 

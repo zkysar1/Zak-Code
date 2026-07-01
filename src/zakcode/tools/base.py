@@ -39,6 +39,19 @@ from zakcode.tasks import TaskNetwork
 
 logger = logging.getLogger("zakcode.tools")
 
+
+def _match_skill_name(raw: str, skill_names: list[str]) -> str | None:
+    """Canonical skill name matching ``raw`` (case-insensitive, leading slash
+    stripped), or ``None``. Same normalization as the skill trigger-matcher
+    (``skills/__init__.py`` ``_by_trigger``), so ``Start``/``/start``/``start`` all match.
+    """
+    lowered = raw.strip().lstrip("/").lower()
+    for n in skill_names:
+        if n.lower() == lowered:
+            return n
+    return None
+
+
 if TYPE_CHECKING:
     # Only for the spawner's return annotation. Importing at runtime would be a
     # cycle (subagent.py imports this module); under `from __future__ import
@@ -486,6 +499,25 @@ class ToolRegistry:
         """
         tool = self.get(name)
         if tool is None:
+            # Skill-heavy deployments (Claude-Mind, etc.) list dozens of skills in the
+            # system prompt. Open-weights models frequently emit a skill NAME as a bare
+            # tool call instead of routing through `use_skill`. When the unknown name
+            # matches a discovered skill, return the correct invocation path instead of a
+            # dead-end error the model cannot recover from — mirrors the fix-hint the
+            # use_skill tool already returns for an unknown skill name.
+            try:
+                resolver = getattr(ctx, "skill_resolver", None)
+                if resolver is not None:
+                    match = _match_skill_name(name, resolver.names())
+                    if match is not None:
+                        return ToolResult.error(
+                            f"{name!r} is a skill, not a tool.",
+                            fix=f'Run it with use_skill(name="{match}").',
+                        )
+            except Exception:  # noqa: BLE001 — the skill hint is best-effort; a broken
+                # resolver must never turn a clean unknown-tool error into a crash
+                # (execute() must always return a value, never raise).
+                logger.debug("skill-name hint lookup failed for %r", name, exc_info=True)
             return ToolResult.error(f"unknown tool: {name!r}")
         try:
             return await tool.execute(args, ctx)

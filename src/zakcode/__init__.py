@@ -256,6 +256,7 @@ class Agent:
         extra_skill_dirs: Sequence[str | Path] | None = None,
         extra_workspace_roots: Sequence[str | Path] | None = None,
         enable_rules: bool = False,
+        lean_rules: bool = False,
         enable_identity: bool = True,
         identity: str | None = None,
         enable_compaction: bool = False,
@@ -506,6 +507,10 @@ class Agent:
 
         # Rules: always-on guidance (bundled + user + project, incl. .claude/rules for
         # Claude-Code/Claude-Mind compatibility) rendered into the cacheable tier.
+        # ``lean_rules`` (Vinheim Lever A) swaps the full-body render for a compact
+        # one-line-per-rule INDEX, so a rules-heavy "mind" stops paying every rule's full
+        # body on every cached turn — the model reads a rule's body on demand instead.
+        # Default False keeps the always-on render byte-for-byte unchanged.
         self.rule_registry: RuleRegistry | None = None
         self.rule_errors: dict[str, str] = {}
         rules_text = ""
@@ -513,7 +518,9 @@ class Agent:
             from zakcode.rules import discover_rules
 
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
-            rules_text = self.rule_registry.render()
+            rules_text = (
+                self.rule_registry.render_index() if lean_rules else self.rule_registry.render()
+            )
 
         # Claude Code output style (opt-in): the active outputStyle's body, folded into the
         # SAME stable tier as rules so it shapes generation and stays cache-safe. Loaded here
