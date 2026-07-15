@@ -16,9 +16,10 @@ into durable state in the first place."
 
 from __future__ import annotations
 
+import math
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 _REDACTED = "[REDACTED]"
 
@@ -29,9 +30,15 @@ _PEM_RE = re.compile(
 )
 
 # Standalone high-signal credential tokens (provider-prefixed, so low false-positive).
+# NOTE: ``gsk_`` (Groq) and ``vin_`` (Vinheim product keys) need their OWN alternatives —
+# they are NOT caught by the ``sk-`` pattern: ``\bsk-`` cannot match inside ``gsk_`` (the ``g``
+# leaves no word boundary before ``sk``, and the separator is ``_`` not ``-``). Added for the
+# public watch surface, but a base fix that benefits every ``redact_secrets`` caller.
 _TOKEN_RE = re.compile(
     r"\b("
     r"sk-[A-Za-z0-9_-]{16,}"  # OpenAI-style
+    r"|gsk_[A-Za-z0-9_-]{16,}"  # Groq keys
+    r"|vin_[A-Za-z0-9_-]{16,}"  # Vinheim product keys
     r"|AKIA[0-9A-Z]{16}"  # AWS access key id
     r"|gh[pousr]_[A-Za-z0-9]{20,}"  # GitHub tokens
     r"|xox[baprs]-[A-Za-z0-9-]{10,}"  # Slack tokens
@@ -91,6 +98,99 @@ def redact_secrets(text: str) -> tuple[str, int]:
     return text, count
 
 
+def _shannon_entropy(value: str) -> float:
+    """Shannon entropy in bits/char of ``value`` (0.0 for empty).
+
+    A heuristic signal for the high-entropy catch-all in
+    :func:`redact_secrets_extended`: random credential material scores high
+    (base64/hex secrets typically > 4.5), ordinary words and hex digests score low.
+    """
+    if not value:
+        return 0.0
+    counts: dict[str, int] = {}
+    for ch in value:
+        counts[ch] = counts.get(ch, 0) + 1
+    n = len(value)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+#: A base64/hex/token-shaped run — the candidate span for the high-entropy catch-all.
+_ENTROPY_CANDIDATE_RE = re.compile(r"[A-Za-z0-9+/=_-]{24,}")
+
+
+def redact_secrets_extended(
+    text: str,
+    *,
+    secret_values: Iterable[str] = (),
+    workspace_paths: Iterable[str] = (),
+    entropy_threshold: float = 4.5,
+    min_value_len: int = 8,
+) -> tuple[str, int]:
+    """Aggressive redaction for a PUBLIC (kid-facing) watch surface.
+
+    Layers four passes on top of :func:`redact_secrets` so credentials are stripped
+    regardless of format, and filesystem structure is hidden:
+
+    1. **Workspace-path stripping** — each path in ``workspace_paths`` (the workspace
+       root and its parents) → ``[path]``. Longest first so a child path is masked
+       before its parent prefix. Both ``/`` and ``\\`` separator forms are matched.
+    2. **Exact secret-value match** — each value in ``secret_values`` (the process's
+       ``*_KEY`` / ``*_TOKEN`` / ``*_SECRET`` env values, supplied by the caller) →
+       ``[REDACTED]``, catching credentials of ANY format. Values shorter than
+       ``min_value_len`` are skipped so ordinary short config values are not masked.
+    3. **Shape-based redaction** — :func:`redact_secrets` (PEM blocks, URL userinfo,
+       provider-prefixed tokens incl. ``gsk_`` / ``vin_``, ``key = value`` assignments).
+    4. **High-entropy catch-all** — any remaining 24+ char base64/hex/token run whose
+       Shannon entropy exceeds ``entropy_threshold`` → ``[redacted]``. Hex digests
+       (git SHAs, uuids: ≤ 16 symbols → entropy ≤ 4.0) fall UNDER the threshold and
+       survive, so session ids stay visible; random secrets do not.
+
+    Returns ``(scrubbed_text, num_redactions)``. Never raises; returns the input
+    unchanged with a count of 0 when nothing matches. Redaction happens at the SOURCE
+    (inside the server, before serialization) — a whitelist projection strips tool
+    arguments/output first, so this is defense-in-depth over already-narrowed fields.
+    """
+    if not text:
+        return text, 0
+    count = 0
+
+    # 1. workspace-path stripping (longest first; both separator forms).
+    path_variants: set[str] = set()
+    for path in workspace_paths:
+        if path:
+            path_variants.update({path, path.replace("\\", "/"), path.replace("/", "\\")})
+    for variant in sorted(path_variants, key=len, reverse=True):
+        occurrences = text.count(variant)
+        if occurrences:
+            count += occurrences
+            text = text.replace(variant, "[path]")
+
+    # 2. exact secret-value match (longest first; skip short/empty values).
+    for value in sorted(
+        {v for v in secret_values if v and len(v) >= min_value_len}, key=len, reverse=True
+    ):
+        occurrences = text.count(value)
+        if occurrences:
+            count += occurrences
+            text = text.replace(value, _REDACTED)
+
+    # 3. shape-based redaction (the base guard).
+    text, base_count = redact_secrets(text)
+    count += base_count
+
+    # 4. high-entropy catch-all.
+    def _mark_entropy(m: re.Match[str]) -> str:
+        nonlocal count
+        token = m.group(0)
+        if _shannon_entropy(token) > entropy_threshold:
+            count += 1
+            return "[redacted]"
+        return token
+
+    text = _ENTROPY_CANDIDATE_RE.sub(_mark_entropy, text)
+    return text, count
+
+
 def strip_url_credentials(url: str | None) -> str | None:
     """Mask any ``user:password@`` userinfo in a URL's authority.
 
@@ -113,7 +213,12 @@ def strip_url_credentials(url: str | None) -> str | None:
         return url
 
 
-__all__ = ["provider_key_env_names", "redact_secrets", "strip_url_credentials"]
+__all__ = [
+    "provider_key_env_names",
+    "redact_secrets",
+    "redact_secrets_extended",
+    "strip_url_credentials",
+]
 
 
 # ── subprocess env hygiene (RISKS: provider keys reach subprocesses) ──────────

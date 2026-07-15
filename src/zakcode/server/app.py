@@ -67,11 +67,13 @@ from zakcode.permissions import PermissionOutcome, PermissionPrompter, Permissio
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.structured import complete_structured, schema_error
 from zakcode.secrets import strip_url_credentials
+from zakcode.server.broadcast import SessionBroadcaster
 from zakcode.server.wire import (
     ChatRequest,
     ChatResponse,
     CompleteRequest,
     CompleteResponse,
+    NudgeRequest,
     SessionInfo,
     ToolInfo,
     UploadRequest,
@@ -90,6 +92,7 @@ from zakcode.session.store import (
     SessionNotFound,
     SessionStore,
     SessionVersionError,
+    _is_safe_session_id,
 )
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
@@ -269,6 +272,133 @@ def _upload_prompt(artifact: ArtifactRef, suggested_tool: str) -> str:
             "and summarize it."
         )
     return f"Please inspect the uploaded file {quoted_path} and tell me what you can do with it."
+
+
+#: Defense-in-depth length cap on a queued viewer nudge. The gateway is the real
+#: sanitization + rate-limit boundary; the server only caps and single-slot-queues.
+NUDGE_MAX_CHARS = 500
+
+
+def _read_current_session(workspace_root: Path) -> str:
+    """The active session id the driver recorded in ``<workspace>/.current-session`` (or "").
+
+    Read-only, never raises: a missing/unreadable file (the loop hasn't started a session yet)
+    yields an empty string. Treats the file's first line as the id, defensively.
+    """
+    try:
+        text = (workspace_root / ".current-session").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text.splitlines()[0].strip() if text else ""
+
+
+def _resolve_watch_session(session_id: str, workspace_root: Path) -> str:
+    """Resolve a /watch path id to a concrete session id.
+
+    The alias ``"current"`` maps to the active research session the driver recorded
+    in ``.current-session`` — the kid-facing watch URL uses it so the browser (and
+    the env-server proxy) never need the box-internal session id. Raises 404 when
+    ``"current"`` has no active session yet, or when the resolved id is not a safe
+    session id.
+    """
+    if session_id == "current":
+        resolved = _read_current_session(workspace_root)
+        if not resolved:
+            raise HTTPException(status_code=404, detail="no active session")
+        session_id = resolved
+    if not _is_safe_session_id(session_id):
+        raise HTTPException(status_code=404, detail=f"no session {session_id!r}")
+    return session_id
+
+
+def _count_findings(workspace_root: Path) -> int:
+    """Best-effort finding count for the world-view sidebar (never raises).
+
+    Prefers ``research/findings.jsonl`` (one finding per non-blank line); falls back to
+    level-2 headings in ``research/journal.md``; returns 0 when neither exists.
+    """
+    findings = workspace_root / "research" / "findings.jsonl"
+    try:
+        if findings.is_file():
+            lines = findings.read_text(encoding="utf-8").splitlines()
+            return sum(1 for line in lines if line.strip())
+    except OSError:
+        return 0
+    journal = workspace_root / "research" / "journal.md"
+    try:
+        if journal.is_file():
+            return sum(
+                1
+                for line in journal.read_text(encoding="utf-8").splitlines()
+                if line.startswith("## ")
+            )
+    except OSError:
+        return 0
+    return 0
+
+
+KNOWLEDGE_BUNDLE_FILE = ".knowledge-bundle.json"
+
+_KNOWLEDGE_SECTIONS = ("tree", "hypotheses", "guardrails", "lessons")
+
+
+def _empty_bundle() -> dict[str, Any]:
+    return {"counts": {}, "tree": [], "hypotheses": [], "guardrails": [], "lessons": []}
+
+
+def _read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
+    """The pre-projected knowledge bundle the Mind's periodic export wrote.
+
+    ``KnowledgeProjection`` runs in-process on the box in the MIND (where the stores
+    live) and writes an already-filtered + redacted bundle to
+    ``<workspace>/.knowledge-bundle.json`` (PEARL §10.3 — filter at the source). The
+    daemon serves that artifact read-only and holds NO projection logic, so it can
+    never see raw framework internals. Fail-open: a missing / unreadable / malformed /
+    non-dict file yields the empty bundle (the loop simply hasn't exported yet).
+    """
+    try:
+        raw = (workspace_root / KNOWLEDGE_BUNDLE_FILE).read_text(encoding="utf-8")
+    except OSError:
+        return _empty_bundle()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return _empty_bundle()
+    if not isinstance(data, dict):
+        return _empty_bundle()
+    # Coerce each expected section to a list so a corrupt field cannot 500 a browse.
+    out = _empty_bundle()
+    out["counts"] = data.get("counts") if isinstance(data.get("counts"), dict) else {}
+    for section in _KNOWLEDGE_SECTIONS:
+        val = data.get(section)
+        out[section] = val if isinstance(val, list) else []
+    return out
+
+
+async def _watch_event_stream(
+    broadcaster: SessionBroadcaster, session_id: str, since: int
+) -> AsyncIterator[dict[str, str]]:
+    """The /watch SSE body: replay buffered frames after ``since``, then stream live frames.
+
+    Subscribes BEFORE replaying history so a frame arriving in between is not lost — it lands in
+    the queue and is de-duplicated by seq in the live loop. Unsubscribes on close (the client
+    disconnecting cancels this generator, running the finally). Extracted to module scope so the
+    replay/cursor/live logic is unit-testable without an endless HTTP stream.
+    """
+    queue = broadcaster.subscribe(session_id)
+    try:
+        last_seq = since
+        for record in broadcaster.history(session_id, since):
+            last_seq = record["seq"]
+            yield {"id": str(record["seq"]), "data": json.dumps(record["frame"])}
+        while True:
+            record = await queue.get()
+            if record["seq"] <= last_seq:
+                continue  # already replayed from history
+            last_seq = record["seq"]
+            yield {"id": str(record["seq"]), "data": json.dumps(record["frame"])}
+    finally:
+        broadcaster.unsubscribe(session_id, queue)
 
 
 class AgentLike(Protocol):
@@ -452,6 +582,25 @@ def create_app(
     # so a WS turn cannot overlap another WS client's or a REST turn on one session.
     inflight: set[str] = set()
 
+    # Per-session fan-out for the read-only /watch surface. Turn events are projected to SAFE
+    # frames (tool args/output stripped, secrets redacted) before any watcher sees them. Secret
+    # VALUES (every *_KEY/_TOKEN/_SECRET env var) and the workspace path(s) are captured once so
+    # redact_secrets_extended can string-match them out of free-text fields.
+    _watch_secret_values = [
+        value
+        for name, value in os.environ.items()
+        if value and name.endswith(("_KEY", "_TOKEN", "_SECRET"))
+    ]
+    _ws_root = Path(resolved_settings.workspace_root)
+    _watch_workspace_paths = [str(_ws_root), str(_ws_root.parent), str(_ws_root.parent.parent)]
+    broadcaster = SessionBroadcaster(
+        secret_values=_watch_secret_values,
+        workspace_paths=_watch_workspace_paths,
+    )
+    # Stash the shared broadcaster on app.state (the canonical FastAPI spot for shared services;
+    # also the seam a test uses to assert /chat/stream tees projected frames onto the watch bus).
+    app.state.broadcaster = broadcaster
+
     # ── helpers ────────────────────────────────────────────────────────────────
 
     def _get_or_create_session(session_id: str | None, model: str | None) -> Session:
@@ -627,6 +776,7 @@ def create_app(
     def delete_session(session_id: str) -> None:
         if not resolved_store.delete(session_id):
             raise HTTPException(status_code=404, detail=f"no session {session_id!r}")
+        broadcaster.forget(session_id)
 
     # ── chat ───────────────────────────────────────────────────────────────────
 
@@ -672,6 +822,9 @@ def create_app(
         async def event_source() -> AsyncIterator[dict[str, str]]:
             try:
                 async for event in agent.astream_turn(request.message):
+                    # Tee to the watch bus (projected to SAFE frames for kid-facing watchers);
+                    # the localhost driver still receives the RAW event unchanged below.
+                    await broadcaster.publish(session.id, event)
                     yield {"data": json.dumps(event_to_dict(event))}
             finally:
                 # Persist whatever state the turn produced, even if the client disconnects
@@ -809,6 +962,7 @@ def create_app(
         async def run_turn(text: str) -> None:
             try:
                 async for event in agent.astream_turn(text):
+                    await broadcaster.publish(session.id, event)
                     await send(event_to_dict(event))
             except asyncio.CancelledError:
                 await send({"event": "status", "message": "interrupted"})
@@ -866,6 +1020,129 @@ def create_app(
             # The per-connection agent is done — release its egress-proxy listener (no-op unless
             # ZAKCODE_EGRESS_PROXY is on) so it isn't leaked for the life of the server loop.
             await _release_agent(agent)
+
+    # ── watch surface: read-only SSE observation of a session's turn ─────────────
+    # Layers 1-4 of the watch security model. Auth-gated by the same bearer middleware as
+    # everything else (the env-server proxy injects ZAKCODE_AUTH_TOKEN); kid-facing HMAC token
+    # validation lives at that proxy, not here. /watch never claims the inflight set and never
+    # builds an agent — it only observes the broadcaster's SAFE, already-projected frames.
+
+    @app.get("/watch/{session_id}")
+    async def watch_session(session_id: str, since: int = 0) -> EventSourceResponse:
+        """Stream a session's SAFE turn frames as SSE (read-only; no input channel).
+
+        Replays buffered frames after the ``?since=<seq>`` cursor, then live frames. Each SSE
+        ``id`` is the per-session monotonic seq the client passes back on reconnect. The stream
+        body is the module-level :func:`_watch_event_stream` (unit-tested independently).
+        """
+        session_id = _resolve_watch_session(
+            session_id, Path(resolved_settings.workspace_root)
+        )
+        return EventSourceResponse(
+            _watch_event_stream(broadcaster, session_id, since),
+            ping=15,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/workspace/summary")
+    def workspace_summary() -> dict[str, Any]:
+        """Read-only world view: the research journal head + finding count + active session."""
+        root = Path(resolved_settings.workspace_root)
+        journal = ""
+        journal_path = root / "research" / "journal.md"
+        try:
+            if journal_path.is_file():
+                journal = journal_path.read_text(encoding="utf-8", errors="replace")[:5000]
+        except OSError:
+            journal = ""
+        return {
+            "journal": journal,
+            "finding_count": _count_findings(root),
+            "session_id": _read_current_session(root),
+        }
+
+    @app.post("/nudge")
+    def nudge(request: NudgeRequest) -> dict[str, Any]:
+        """Queue a viewer suggestion for the driver to fold into the next turn's
+        preamble. The suggestion is written to ``<workspace>/.nudge`` (atomic
+        temp-write + replace), NEVER sent as a chat message. Refuses with 429 when a
+        ``.nudge`` is already pending (single-slot queue) so a burst cannot stack.
+        Bearer-gated by the server middleware; the gateway is the sanitization +
+        rate-limit trust boundary — here we only length-cap and queue.
+        """
+        text = (request.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        text = text[:NUDGE_MAX_CHARS]
+        root = Path(resolved_settings.workspace_root)
+        target = root / ".nudge"
+        if target.exists():
+            raise HTTPException(status_code=429, detail="a suggestion is already pending")
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f".nudge.{os.getpid()}.tmp")
+        tmp.write_text(text + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+        return {"queued": True}
+
+    # ── knowledge base (PEARL §10.4) — read-only browse over the pre-projected bundle ──
+
+    @app.get("/knowledge/tree")
+    def knowledge_tree() -> dict[str, Any]:
+        """The wiki map: node keys, titles, and parent/child edges (no bodies)."""
+        bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        index = [
+            {
+                "key": str(n.get("key") or ""),
+                "title": str(n.get("title") or ""),
+                "parent": str(n.get("parent") or ""),
+                "children": [str(c) for c in (n.get("children") or []) if c],
+            }
+            for n in bundle["tree"]
+            if isinstance(n, dict)
+        ]
+        return {"nodes": index, "count": len(index)}
+
+    @app.get("/knowledge/node/{key}")
+    def knowledge_node(key: str) -> dict[str, Any]:
+        """One projected node (title, summary/body, parent, child links). 404 if absent."""
+        bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        for n in bundle["tree"]:
+            if isinstance(n, dict) and str(n.get("key") or "") == key:
+                return {
+                    "key": key,
+                    "title": str(n.get("title") or ""),
+                    "summary": str(n.get("summary") or ""),
+                    "parent": str(n.get("parent") or ""),
+                    "children": [str(c) for c in (n.get("children") or []) if c],
+                }
+        raise HTTPException(status_code=404, detail=f"no node {key!r}")
+
+    @app.get("/knowledge/hypotheses")
+    def knowledge_hypotheses() -> dict[str, Any]:
+        """Projected hypotheses (statement, horizon, status, outcome)."""
+        bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        items = [h for h in bundle["hypotheses"] if isinstance(h, dict)]
+        return {"hypotheses": items, "count": len(items)}
+
+    @app.get("/knowledge/guardrails")
+    def knowledge_guardrails() -> dict[str, Any]:
+        """Projected domain guardrails (plain-language rules)."""
+        bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        items = [g for g in bundle["guardrails"] if isinstance(g, dict)]
+        return {"guardrails": items, "count": len(items)}
+
+    @app.get("/knowledge/export")
+    def knowledge_export() -> dict[str, Any]:
+        """The whole projected base as one downloadable bundle (PEARL §10.5)."""
+        return _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+
+    @app.get("/sidecar/health")
+    def sidecar_health() -> dict[str, Any]:
+        """Liveness + the active session id (from ``<workspace>/.current-session``)."""
+        return {
+            "status": "ok",
+            "active_session_id": _read_current_session(Path(resolved_settings.workspace_root)),
+        }
 
     # ── wire-schema contract + web client ────────────────────────────────────────
 

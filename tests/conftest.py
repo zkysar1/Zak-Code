@@ -52,6 +52,7 @@ class StubProvider(Provider):
 _SERVER_TEST_MODULES = [
     "test_server_app.py",
     "test_server_client.py",
+    "test_server_watch.py",
     "test_server_webclient.py",
     "test_server_ws.py",
 ]

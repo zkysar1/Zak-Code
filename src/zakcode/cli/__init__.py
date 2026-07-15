@@ -14,6 +14,7 @@ import functools
 import ipaddress
 import os
 import random
+import signal
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine
 from datetime import date
@@ -1640,6 +1641,89 @@ def serve(
         f"[bold]Zak Code[/bold] {__version__} — serving on http://{host}:{port}{where}{auth_note}"
     )
     uvicorn.run(fastapi_app, host=host, port=port)
+
+
+@app.command()
+def drive(
+    workspace: str = typer.Option(
+        ...,
+        "--workspace",
+        "-w",
+        help="Served-mind workspace root — where .current-session (the watch 'current' "
+        "alias source) is written. Must match the workspace 'serve' was pointed at.",
+    ),
+    base_url: str = typer.Option(
+        "http://127.0.0.1:8000",
+        "--base-url",
+        help="Base URL of the running zakcode serve daemon to drive.",
+    ),
+    boot_message: str = typer.Option(
+        "Continue.",
+        "--boot-message",
+        help="First message that opens the autonomous loop (e.g. the mind's boot cue).",
+    ),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Model override applied to every driven turn."
+    ),
+    max_turns: int | None = typer.Option(
+        None, "--max-turns", help="Stop after N turns (default: perpetual, until signalled)."
+    ),
+    nudge_file: str | None = typer.Option(
+        None,
+        "--nudge-file",
+        help="Viewer-suggestion file (relative to the workspace, e.g. .nudge) the driver "
+        "folds once into the next turn's preamble, then deletes. Off when unset.",
+    ),
+) -> None:
+    """Drive an autonomous, watchable mind against a running ``zakcode serve`` daemon.
+
+    The autonomous half of ``serve``: it creates a session, records it in
+    ``<workspace>/.current-session``, then keeps a turn always running so a ``/watch``
+    client sees a live stream. Each turn self-continues via the served mind's own
+    ``TURN_END``/Stop-hook veto; the driver only supervises liveness (backoff on a
+    daemon hiccup, recreate the session if the daemon was restarted) — it never decides
+    what the mind does. The bearer token, if any, is read from ``ZAKCODE_AUTH_TOKEN``,
+    the same source ``serve`` uses.
+    """
+    try:
+        from zakcode.server.client import ServerClient
+        from zakcode.server.driver import ServeDriver
+    except ImportError as exc:  # pragma: no cover - depends on optional extra
+        console.print(
+            "[red]The server extra is not installed.[/red] "
+            "Install it with: [bold]pip install 'zakcode[server]'[/bold]"
+        )
+        raise typer.Exit(code=1) from exc
+
+    auth_token = os.environ.get("ZAKCODE_AUTH_TOKEN") or None
+    client = ServerClient(base_url, auth_token=auth_token)
+    driver = ServeDriver(
+        client,
+        workspace,
+        boot_message=boot_message,
+        model=model,
+        max_turns=max_turns,
+        nudge_file=nudge_file,
+    )
+    console.print(
+        f"[bold]Zak Code[/bold] {__version__} — driving watched mind at {base_url} "
+        f"(workspace: {workspace})"
+    )
+
+    async def _runner() -> None:
+        loop = asyncio.get_running_loop()
+        # Graceful stop on SIGTERM/SIGINT (systemd sends SIGTERM). Not implemented on
+        # Windows event loops — harmless there; Ctrl+C still unwinds via KeyboardInterrupt.
+        with contextlib.suppress(NotImplementedError):
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, driver.request_stop)
+        try:
+            await driver.run()
+        finally:
+            await client.aclose()
+
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(_runner())
 
 
 def main() -> None:

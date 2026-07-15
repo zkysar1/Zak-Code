@@ -89,6 +89,14 @@ class ChatRequest(BaseModel):
     )
 
 
+class NudgeRequest(BaseModel):
+    """Body of ``POST /nudge`` — a viewer suggestion the driver folds into the next
+    turn's preamble (never a direct chat message). Sanitization + rate-limiting are
+    the caller's (gateway) responsibility; the server only length-caps and queues it."""
+
+    text: str
+
+
 class ChatResponse(BaseModel):
     """Buffered result of ``POST /chat`` (the non-streaming turn)."""
 
@@ -312,6 +320,7 @@ __all__ = [
     "event_to_dict",
     "event_from_dict",
     "ChatRequest",
+    "NudgeRequest",
     "ChatResponse",
     "CompleteMessage",
     "CompleteRequest",
