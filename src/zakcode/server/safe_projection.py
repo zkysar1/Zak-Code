@@ -172,7 +172,11 @@ def _expand_workspace_paths(workspace_root: str | None) -> list[str]:
     without over-redacting common prefixes like ``/opt``)."""
     if not workspace_root:
         return []
-    root = os.path.abspath(workspace_root)
+    # Match the path LITERALLY (no os.path.abspath): abspath("/ws") prepends a drive
+    # letter on Windows, so the stored path would not match the posix path the server
+    # emits in event text and the redaction would silently no-op cross-platform. Strip
+    # trailing separators; os.path.dirname handles both / and \ for the parent.
+    root = workspace_root.rstrip("/\\")
     parent = os.path.dirname(root)
     paths = [root]
     if len(parent) > 4 and parent != root:
