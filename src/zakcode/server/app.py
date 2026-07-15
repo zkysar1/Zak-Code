@@ -74,6 +74,7 @@ from zakcode.server.wire import (
     ChatResponse,
     CompleteRequest,
     CompleteResponse,
+    NudgeRequest,
     SessionInfo,
     ToolInfo,
     UploadRequest,
@@ -389,6 +390,49 @@ class WebSocketPermissionPrompter:
     async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
         await self._send(WSActionRequired.from_request(request).model_dump(mode="json"))
         return await self._await_approval()
+
+
+# ── PEARL knowledge base (§10.4) + viewer nudge (§Layer-4) ────────────────────
+#: Defense-in-depth length cap on a queued viewer nudge. The gateway is the real
+#: sanitization + rate-limit trust boundary; the server only caps and queues.
+NUDGE_MAX_CHARS = 500
+
+KNOWLEDGE_BUNDLE_FILE = ".knowledge-bundle.json"
+
+_KNOWLEDGE_SECTIONS = ("tree", "hypotheses", "guardrails", "lessons")
+
+
+def _empty_bundle() -> dict[str, Any]:
+    return {"counts": {}, "tree": [], "hypotheses": [], "guardrails": [], "lessons": []}
+
+
+def _read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
+    """The pre-projected knowledge bundle the Mind's periodic export wrote.
+
+    ``KnowledgeProjection`` runs in-process on the box in the MIND (where the stores
+    live) and writes an already-filtered + redacted bundle to
+    ``<workspace>/.knowledge-bundle.json`` (PEARL §10.3 — filter at the source). The
+    daemon serves that artifact read-only and holds NO projection logic, so it can
+    never see raw framework internals. Fail-open: a missing / unreadable / malformed /
+    non-dict file yields the empty bundle (the loop simply hasn't exported yet).
+    """
+    try:
+        raw = (workspace_root / KNOWLEDGE_BUNDLE_FILE).read_text(encoding="utf-8")
+    except OSError:
+        return _empty_bundle()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return _empty_bundle()
+    if not isinstance(data, dict):
+        return _empty_bundle()
+    # Coerce each expected section to a list so a corrupt field cannot 500 a browse.
+    out = _empty_bundle()
+    out["counts"] = data.get("counts") if isinstance(data.get("counts"), dict) else {}
+    for section in _KNOWLEDGE_SECTIONS:
+        val = data.get(section)
+        out[section] = val if isinstance(val, list) else []
+    return out
 
 
 def create_app(
@@ -996,6 +1040,86 @@ def create_app(
         (None before the first loop turn) so the gateway can discover which session to watch.
         """
         return {"status": "ok", "active_session_id": _current_session_id()}
+
+    # ── PEARL viewer nudge (§Layer-4) ─────────────────────────────────────────────
+    # Backs the env-server /sidecar/nudge proxy → gateway /nudge → Vinheim NudgeInput.
+    @app.post("/nudge")
+    def nudge(request: NudgeRequest) -> dict[str, Any]:
+        """Queue a viewer suggestion for the driver to fold into the next turn's
+        preamble. The suggestion is written to ``<workspace>/.nudge`` (atomic
+        temp-write + replace), NEVER sent as a chat message. Refuses with 429 when a
+        ``.nudge`` is already pending (single-slot queue) so a burst cannot stack.
+        Bearer-gated by the server middleware; the gateway is the sanitization +
+        rate-limit trust boundary — here we only length-cap and queue.
+        """
+        text = (request.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        text = text[:NUDGE_MAX_CHARS]
+        root = Path(resolved_settings.workspace_root)
+        target = root / ".nudge"
+        if target.exists():
+            raise HTTPException(status_code=429, detail="a suggestion is already pending")
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f".nudge.{os.getpid()}.tmp")
+        tmp.write_text(text + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+        return {"queued": True}
+
+    # ── PEARL knowledge base (§10.4) — read-only browse over the pre-projected bundle ──
+    # Backs the env-server /sidecar/knowledge/* proxy → gateway /knowledge/* → Vinheim
+    # KnowledgeExplorer. Every route reads the already-filtered + redacted bundle the
+    # Mind's KnowledgeProjection wrote (§10.3 — filter at the source); the daemon holds
+    # no projection logic and fails open to an empty base before the first export.
+    @app.get("/knowledge/tree")
+    def knowledge_tree() -> dict[str, Any]:
+        """The wiki map: node keys, titles, and parent/child edges (no bodies)."""
+        bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        index = [
+            {
+                "key": str(n.get("key") or ""),
+                "title": str(n.get("title") or ""),
+                "parent": str(n.get("parent") or ""),
+                "children": [str(c) for c in (n.get("children") or []) if c],
+            }
+            for n in bundle["tree"]
+            if isinstance(n, dict)
+        ]
+        return {"nodes": index, "count": len(index)}
+
+    @app.get("/knowledge/node/{key}")
+    def knowledge_node(key: str) -> dict[str, Any]:
+        """One projected node (title, summary/body, parent, child links). 404 if absent."""
+        bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        for n in bundle["tree"]:
+            if isinstance(n, dict) and str(n.get("key") or "") == key:
+                return {
+                    "key": key,
+                    "title": str(n.get("title") or ""),
+                    "summary": str(n.get("summary") or ""),
+                    "parent": str(n.get("parent") or ""),
+                    "children": [str(c) for c in (n.get("children") or []) if c],
+                }
+        raise HTTPException(status_code=404, detail=f"no node {key!r}")
+
+    @app.get("/knowledge/hypotheses")
+    def knowledge_hypotheses() -> dict[str, Any]:
+        """Projected hypotheses (statement, horizon, status, outcome)."""
+        bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        items = [h for h in bundle["hypotheses"] if isinstance(h, dict)]
+        return {"hypotheses": items, "count": len(items)}
+
+    @app.get("/knowledge/guardrails")
+    def knowledge_guardrails() -> dict[str, Any]:
+        """Projected domain guardrails (plain-language rules)."""
+        bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        items = [g for g in bundle["guardrails"] if isinstance(g, dict)]
+        return {"guardrails": items, "count": len(items)}
+
+    @app.get("/knowledge/export")
+    def knowledge_export() -> dict[str, Any]:
+        """The whole projected base as one downloadable bundle (PEARL §10.5)."""
+        return _read_knowledge_bundle(Path(resolved_settings.workspace_root))
 
     # ── wire-schema contract + web client ────────────────────────────────────────
 
