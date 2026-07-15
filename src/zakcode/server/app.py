@@ -67,6 +67,8 @@ from zakcode.permissions import PermissionOutcome, PermissionPrompter, Permissio
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.structured import complete_structured, schema_error
 from zakcode.secrets import strip_url_credentials
+from zakcode.server.event_bus import EventBusRegistry
+from zakcode.server.safe_projection import SafeEventProjection
 from zakcode.server.wire import (
     ChatRequest,
     ChatResponse,
@@ -452,6 +454,14 @@ def create_app(
     # so a WS turn cannot overlap another WS client's or a REST turn on one session.
     inflight: set[str] = set()
 
+    # Read-only watch fan-out (P0-3). Every turn tees its AgentEvents into the per-session
+    # bus; GET /watch tails that bus, projecting each event to a secret-redacted SafeEvent.
+    # The registry is bounded per session (ring buffer) so an abandoned watcher never grows
+    # memory. The projection loads secret VALUES + workspace paths once here (deterministic
+    # per event thereafter), so it is safe to share across sessions.
+    event_bus_registry = EventBusRegistry()
+    safe_projection = SafeEventProjection(workspace_root=str(resolved_settings.workspace_root))
+
     # ── helpers ────────────────────────────────────────────────────────────────
 
     def _get_or_create_session(session_id: str | None, model: str | None) -> Session:
@@ -672,6 +682,12 @@ def create_app(
         async def event_source() -> AsyncIterator[dict[str, str]]:
             try:
                 async for event in agent.astream_turn(request.message):
+                    # Tee into the watch bus (P0-3) BEFORE yielding to the turn-driver. suppress:
+                    # the read-only fan-out must NEVER break the turn stream. get_or_create
+                    # returns an OPEN bus (a closed one is replaced), so publish cannot raise in
+                    # practice — the guard is belt-and-suspenders against a concurrent discard.
+                    with contextlib.suppress(Exception):
+                        event_bus_registry.get_or_create(session.id).publish(event)
                     yield {"data": json.dumps(event_to_dict(event))}
             finally:
                 # Persist whatever state the turn produced, even if the client disconnects
@@ -809,6 +825,9 @@ def create_app(
         async def run_turn(text: str) -> None:
             try:
                 async for event in agent.astream_turn(text):
+                    # Tee into the watch bus (P0-3) — see chat_stream for the suppress rationale.
+                    with contextlib.suppress(Exception):
+                        event_bus_registry.get_or_create(session.id).publish(event)
                     await send(event_to_dict(event))
             except asyncio.CancelledError:
                 await send({"event": "status", "message": "interrupted"})
@@ -866,6 +885,34 @@ def create_app(
             # The per-connection agent is done — release its egress-proxy listener (no-op unless
             # ZAKCODE_EGRESS_PROXY is on) so it isn't leaked for the life of the server loop.
             await _release_agent(agent)
+
+    # ── read-only watch surface (P0-3) ──────────────────────────────────────────
+
+    @app.get("/watch/{session_id}")
+    async def watch(session_id: str, since: int | None = None) -> EventSourceResponse:
+        """Read-only SSE tail of a session's events, secret-redacted (P0-3, spec sec 4+7).
+
+        A late-joining, read-only observer (a parent watching a kid's agent, a dashboard)
+        streams the SAME AgentEvents the turn-driver sees, projected to allow-listed
+        SafeEvent frames. Bearer auth is enforced by the middleware (registered iff a token
+        is configured) exactly like every other HTTP route. NO agent/turn is created — this
+        only tails the fan-out bus. ``?since=<cursor>`` resumes after a known event (each
+        frame's SSE ``id`` is its cursor); omit it to replay the retained buffer then tail.
+        404 if the session does not exist.
+        """
+        _load_session_or_404(session_id)  # existence check; never creates an agent/turn
+        bus = event_bus_registry.get_or_create(session_id)
+
+        async def event_source() -> AsyncIterator[dict[str, str]]:
+            async for cursor, event in bus.subscribe(since=since):
+                safe = safe_projection.project(event)
+                if safe is None:
+                    continue  # dropped by the whitelist (usage/action_required/unknown type)
+                yield {"id": str(cursor), "data": json.dumps(safe.model_dump())}
+
+        # ping=15: a 15s keepalive comment so an idle watch (no turn running yet) holds the
+        # connection open through proxies without emitting spurious events.
+        return EventSourceResponse(event_source(), ping=15)
 
     # ── wire-schema contract + web client ────────────────────────────────────────
 
