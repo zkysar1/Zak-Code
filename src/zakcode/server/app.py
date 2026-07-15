@@ -914,6 +914,89 @@ def create_app(
         # connection open through proxies without emitting spurious events.
         return EventSourceResponse(event_source(), ping=15)
 
+    # ── sidecar read-only surface (P0-4 /workspace/summary, P0-5 /sidecar/health) ─
+    # These back the env-server SidecarProxyVerticle (spec P0-7): it proxies the public
+    # /sidecar/summary → /workspace/summary and /sidecar/health → this /sidecar/health.
+    # Both are auth-required: _AUTH_EXEMPT_PATHS is the EXACT string "/health", so
+    # "/sidecar/health" still carries the bearer token (it is NOT the liveness probe).
+    # Both READ artifacts a SEPARATE component writes (the agent loop / sidecar-driver:
+    # research/journal.md, research/findings*, .current-session) and MUST degrade
+    # gracefully when those are absent — this surface is safe to poll before the loop
+    # has written anything. Read-only: never spawns an agent or turn.
+    _workspace_root = resolved_settings.workspace_root
+
+    def _current_session_id() -> str | None:
+        """Active loop session id from the ``.current-session`` marker, or None if absent.
+
+        Written by the sidecar-driver (spec P0-8) each iteration; absent before the first
+        loop turn. Never raises — a missing/empty/unreadable marker reads as None.
+        """
+        try:
+            value = (
+                (_workspace_root / ".current-session")
+                .read_text(encoding="utf-8", errors="replace")
+                .strip()
+            )
+        except OSError:
+            return None
+        return value or None
+
+    def _count_findings() -> int:
+        """Count entries in the agent's research findings list (spec sec 10.2).
+
+        The v0 Tricks loop writes findings alongside ``research/journal.md``. Two shapes
+        are accepted so the count holds regardless of which the writer uses: a
+        ``research/findings/`` directory (one file per finding) or a flat
+        ``research/findings.md`` list (markdown bullets, falling back to non-blank lines).
+        Absent → 0. Never raises.
+        """
+        research = _workspace_root / "research"
+        try:
+            findings_dir = research / "findings"
+            if findings_dir.is_dir():
+                return sum(
+                    1 for p in findings_dir.iterdir() if p.is_file() and not p.name.startswith(".")
+                )
+            findings_file = research / "findings.md"
+            if findings_file.is_file():
+                lines = findings_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                bullets = [ln for ln in lines if ln.lstrip()[:2] in ("- ", "* ", "+ ")]
+                return len(bullets) if bullets else sum(1 for ln in lines if ln.strip())
+        except OSError:
+            return 0
+        return 0
+
+    @app.get("/workspace/summary")
+    def workspace_summary() -> dict[str, Any]:
+        """World-view summary for the gateway: research journal head + finding count (P0-4).
+
+        Returns the first 5000 chars of ``research/journal.md`` (empty string if absent),
+        the finding count, and the active loop session id. Every field degrades gracefully,
+        so the gateway may poll this before the agent loop has produced any research.
+        """
+        journal = ""
+        journal_path = _workspace_root / "research" / "journal.md"
+        try:
+            if journal_path.is_file():
+                journal = journal_path.read_text(encoding="utf-8", errors="replace")[:5000]
+        except OSError:
+            journal = ""
+        return {
+            "journal": journal,
+            "finding_count": _count_findings(),
+            "session_id": _current_session_id(),
+        }
+
+    @app.get("/sidecar/health")
+    def sidecar_health() -> dict[str, Any]:
+        """Sidecar health + active-session discovery for the gateway (P0-5).
+
+        DISTINCT from the unauthenticated ``/health`` liveness probe — this one is
+        auth-required and reports the active loop session id from ``.current-session``
+        (None before the first loop turn) so the gateway can discover which session to watch.
+        """
+        return {"status": "ok", "active_session_id": _current_session_id()}
+
     # ── wire-schema contract + web client ────────────────────────────────────────
 
     @app.get("/schema/events")
