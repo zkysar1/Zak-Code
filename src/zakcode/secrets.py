@@ -32,6 +32,8 @@ _PEM_RE = re.compile(
 _TOKEN_RE = re.compile(
     r"\b("
     r"sk-[A-Za-z0-9_-]{16,}"  # OpenAI-style
+    r"|gsk_[A-Za-z0-9_-]{16,}"  # Groq (prefix `gsk_`; the leading `g` breaks a bare `sk-` match)
+    r"|vin_[A-Za-z0-9_-]{16,}"  # Vinheim product keys
     r"|AKIA[0-9A-Z]{16}"  # AWS access key id
     r"|gh[pousr]_[A-Za-z0-9]{20,}"  # GitHub tokens
     r"|xox[baprs]-[A-Za-z0-9-]{10,}"  # Slack tokens
