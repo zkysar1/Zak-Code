@@ -45,8 +45,20 @@ def _seed_bundle(workspace: Path) -> None:
     bundle = {
         "counts": {"tree": 2, "hypotheses": 1, "guardrails": 1},
         "tree": [
-            {"key": "root", "title": "Root", "summary": "the top", "parent": "", "children": ["leaf"]},
-            {"key": "leaf", "title": "Leaf", "summary": "a child", "parent": "root", "children": []},
+            {
+                "key": "root",
+                "title": "Root",
+                "summary": "the top",
+                "parent": "",
+                "children": ["leaf"],
+            },
+            {
+                "key": "leaf",
+                "title": "Leaf",
+                "summary": "a child",
+                "parent": "root",
+                "children": [],
+            },
         ],
         "hypotheses": [{"statement": "H1", "horizon": "short", "status": "active"}],
         "guardrails": [{"rule": "always redact secrets"}],
@@ -117,7 +129,7 @@ def test_knowledge_export_returns_full_bundle(tmp_path: Path) -> None:
 
 
 def test_knowledge_fails_open_when_bundle_absent(tmp_path: Path) -> None:
-    """Before the Mind's first export the bundle file is absent — every route returns empty, never 500."""
+    """Before the first export the bundle is absent — every route returns empty, never 500."""
     client = _client(tmp_path)
     assert client.get("/knowledge/tree").json() == {"nodes": [], "count": 0}
     assert client.get("/knowledge/hypotheses").json() == {"hypotheses": [], "count": 0}
