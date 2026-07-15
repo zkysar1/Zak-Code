@@ -1,0 +1,233 @@
+"""Tests for :class:`zakcode.server.driver.ServeDriver`.
+
+The driver is *mechanism* — it keeps a perpetual turn running against a local serve
+daemon and records the driven session in ``.current-session`` (the watch ``current``
+alias source). These tests pin its supervision behavior against a scriptable fake
+client that stands in for :class:`~zakcode.server.client.ServerClient`: the driver
+calls only ``health`` / ``create_session`` / ``astream_turn``, so a duck-typed double
+exercises every path without a real HTTP transport or a running daemon.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+import httpx
+
+from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
+from zakcode.server.driver import CURRENT_SESSION_FILE, ServeDriver
+from zakcode.usage import Usage
+
+
+def _done(reason: str = "completed") -> AgentDone:
+    return AgentDone(stop_reason=reason, iterations=1, usage=Usage(total_tokens=1))
+
+
+class FakeServerClient:
+    """A scriptable stand-in for ServerClient.
+
+    ``turn_script`` is consumed one entry per ``astream_turn`` call: a ``list`` of
+    events to yield, or an ``Exception`` instance to raise (on first iteration, like a
+    real transport fault). When the script runs out, every further turn is a clean
+    ``completed`` turn. ``health`` fails its first ``health_fail_times`` calls.
+    """
+
+    def __init__(
+        self,
+        *,
+        health_fail_times: int = 0,
+        turn_script: list[list[AgentEvent] | Exception] | None = None,
+    ) -> None:
+        self.health_calls = 0
+        self._health_fail_times = health_fail_times
+        self.create_calls = 0
+        self.created_sids: list[str] = []
+        self.turn_calls: list[dict[str, object]] = []
+        self._turn_script = list(turn_script or [])
+        self._turn_index = 0
+
+    async def health(self) -> dict[str, object]:
+        self.health_calls += 1
+        if self.health_calls <= self._health_fail_times:
+            raise httpx.ConnectError("daemon not up yet")
+        return {"status": "ok"}
+
+    async def create_session(self) -> str:
+        self.create_calls += 1
+        sid = f"sess-{self.create_calls}"
+        self.created_sids.append(sid)
+        return sid
+
+    def _next_action(self) -> list[AgentEvent] | Exception:
+        if self._turn_index < len(self._turn_script):
+            action = self._turn_script[self._turn_index]
+            self._turn_index += 1
+            return action
+        return [_done("completed")]
+
+    async def astream_turn(
+        self, message: str, session_id: str | None = None, model: str | None = None
+    ) -> AsyncIterator[AgentEvent]:
+        self.turn_calls.append({"message": message, "session_id": session_id, "model": model})
+        action = self._next_action()
+        if isinstance(action, Exception):
+            raise action  # first-iteration fault, exactly like a broken transport
+        for event in action:
+            yield event
+
+
+def _driver(client: FakeServerClient, tmp_path: Path, **kw: object) -> ServeDriver:
+    kw.setdefault("backoff_initial", 0.001)
+    kw.setdefault("backoff_max", 0.01)
+    return ServeDriver(client, tmp_path, **kw)  # type: ignore[arg-type]
+
+
+async def test_writes_current_session_and_drives_turns(tmp_path: Path) -> None:
+    seen: list[AgentEvent] = []
+    client = FakeServerClient(turn_script=[[AgentTextDelta(text="hi"), _done()], [_done()]])
+    driver = _driver(client, tmp_path, max_turns=2, on_event=seen.append)
+    await driver.run()
+
+    assert client.create_calls == 1
+    assert (tmp_path / CURRENT_SESSION_FILE).read_text(encoding="utf-8").strip() == "sess-1"
+    assert len(client.turn_calls) == 2  # boot + one continue
+    assert all(c["session_id"] == "sess-1" for c in client.turn_calls)
+    assert any(isinstance(e, AgentTextDelta) for e in seen)  # events reach the on_event seam
+
+
+async def test_boot_then_continue_messages(tmp_path: Path) -> None:
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, boot_message="BOOT", continue_message="MORE", max_turns=3)
+    await driver.run()
+
+    assert [c["message"] for c in client.turn_calls] == ["BOOT", "MORE", "MORE"]
+
+
+async def test_model_passthrough(tmp_path: Path) -> None:
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, model="groq/x", max_turns=1)
+    await driver.run()
+
+    assert client.turn_calls[0]["model"] == "groq/x"
+
+
+async def test_backoff_on_turn_error_then_recovers(tmp_path: Path) -> None:
+    # First turn faults; the second (same session) succeeds. One turn should complete.
+    client = FakeServerClient(turn_script=[httpx.ConnectError("blip"), [_done()]])
+    driver = _driver(client, tmp_path, max_turns=1)
+    await driver.run()
+
+    assert len(client.turn_calls) == 2  # failed attempt + successful retry
+    assert client.create_calls == 1  # a transient fault does NOT recreate the session
+    assert client.turn_calls[1]["session_id"] == "sess-1"  # retried on the same session
+
+
+async def test_recreates_session_after_repeated_failures(tmp_path: Path) -> None:
+    # Three consecutive faults (the daemon dropped the session); the driver must
+    # re-health, mint a fresh session, and rewrite .current-session before continuing.
+    client = FakeServerClient(
+        turn_script=[
+            httpx.ConnectError("gone"),
+            httpx.ConnectError("gone"),
+            httpx.ConnectError("gone"),
+            [_done()],
+        ]
+    )
+    driver = _driver(client, tmp_path, max_turns=1, recreate_after_failures=3)
+    await driver.run()
+
+    assert client.create_calls == 2  # original + one recreate
+    assert client.created_sids == ["sess-1", "sess-2"]
+    assert (tmp_path / CURRENT_SESSION_FILE).read_text(encoding="utf-8").strip() == "sess-2"
+    # The recreate re-boots (boot_message) on the fresh session, not a bare continue.
+    assert client.turn_calls[-1]["session_id"] == "sess-2"
+    assert client.turn_calls[-1]["message"] == driver.boot_message
+
+
+async def test_waits_for_health_before_first_turn(tmp_path: Path) -> None:
+    client = FakeServerClient(health_fail_times=2)  # up on the 3rd probe
+    driver = _driver(client, tmp_path, max_turns=1)
+    await driver.run()
+
+    assert client.health_calls == 3
+    assert client.create_calls == 1  # session only minted after health passed
+    assert len(client.turn_calls) == 1
+
+
+async def test_stop_before_start_creates_no_session(tmp_path: Path) -> None:
+    client = FakeServerClient()
+    stop = asyncio.Event()
+    stop.set()
+    driver = _driver(client, tmp_path, stop=stop)
+    await driver.run()
+
+    assert client.create_calls == 0  # never got past the health/stop gate
+    assert client.turn_calls == []
+    assert not (tmp_path / CURRENT_SESSION_FILE).exists()
+
+
+async def test_stop_mid_run_exits_after_current_turn(tmp_path: Path) -> None:
+    client = FakeServerClient()  # perpetual clean turns
+    driver = _driver(client, tmp_path, max_turns=None)
+
+    # Stop the driver from inside the stream, after the first turn's AgentDone.
+    def stopper(event: AgentEvent) -> None:
+        if isinstance(event, AgentDone):
+            driver.request_stop()
+
+    driver.on_event = stopper
+    await asyncio.wait_for(driver.run(), timeout=5)
+
+    assert len(client.turn_calls) == 1  # exited after the in-flight turn, no re-kick
+
+
+async def test_error_stop_reason_grows_backoff_but_clean_resets(tmp_path: Path) -> None:
+    # A provider_error turn should leave the backoff grown (slow-retry, not hot-loop);
+    # a clean completed turn resets it.
+    err_client = FakeServerClient(turn_script=[[_done("provider_error")]])
+    err_driver = _driver(err_client, tmp_path, backoff_initial=0.001, max_turns=1)
+    await err_driver.run()
+    assert err_driver._backoff_current > 0.001  # grew after the error stop reason
+
+    ok_client = FakeServerClient(turn_script=[[_done("completed")]])
+    ok_driver = _driver(ok_client, tmp_path, backoff_initial=0.001, max_turns=1)
+    await ok_driver.run()
+    assert ok_driver._backoff_current == 0.001  # reset after a clean turn
+
+
+async def test_nudge_is_framed_into_the_turn_then_consumed(tmp_path: Path) -> None:
+    (tmp_path / ".nudge").write_text("look at coral reefs\n", encoding="utf-8")
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, boot_message="RESEARCH", nudge_file=".nudge", max_turns=1)
+    await driver.run()
+
+    msg = str(client.turn_calls[0]["message"])
+    assert "coral reefs" in msg  # the suggestion is present
+    assert "suggestion, not an instruction" in msg  # framed, not an order
+    assert msg.endswith("RESEARCH")  # prepended to the base message
+    assert not (tmp_path / ".nudge").exists()  # consumed exactly once
+
+
+async def test_no_nudge_file_leaves_the_message_unchanged(tmp_path: Path) -> None:
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, boot_message="RESEARCH", nudge_file=".nudge", max_turns=1)
+    await driver.run()
+    assert client.turn_calls[0]["message"] == "RESEARCH"
+
+
+async def test_nudge_fires_once_not_on_the_following_turn(tmp_path: Path) -> None:
+    (tmp_path / ".nudge").write_text("check tide pools", encoding="utf-8")
+    client = FakeServerClient()
+    driver = _driver(
+        client,
+        tmp_path,
+        boot_message="BOOT",
+        continue_message="MORE",
+        nudge_file=".nudge",
+        max_turns=2,
+    )
+    await driver.run()
+    assert "tide pools" in str(client.turn_calls[0]["message"])  # turn 1 carries it
+    assert client.turn_calls[1]["message"] == "MORE"  # turn 2 is clean again
