@@ -69,6 +69,7 @@ def _seed_bundle(workspace: Path) -> None:
 
 # ── /nudge ────────────────────────────────────────────────────────────────────
 
+
 def test_nudge_writes_single_slot_file(tmp_path: Path) -> None:
     resp = _client(tmp_path).post("/nudge", json={"text": "try looking at gravity"})
     assert resp.status_code == 200
@@ -95,6 +96,7 @@ def test_nudge_length_capped(tmp_path: Path) -> None:
 
 
 # ── /knowledge/* ────────────────────────────────────────────────────────────────
+
 
 def test_knowledge_tree_returns_map(tmp_path: Path) -> None:
     _seed_bundle(tmp_path)
