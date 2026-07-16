@@ -406,6 +406,44 @@ def _empty_bundle() -> dict[str, Any]:
     return {"counts": {}, "tree": [], "hypotheses": [], "guardrails": [], "lessons": []}
 
 
+def _read_raw_tree(workspace_root: Path) -> list[dict[str, Any]]:
+    """Fallback for lean research agents that write raw markdown notes to
+    ``<workspace>/knowledge/tree/*.md`` instead of running the Mind's
+    ``KnowledgeProjection``. Each ``<key>.md`` becomes a node: the first ``# ``
+    heading is the title, the file body (capped) is the summary. Flat — raw notes
+    carry no parent/child edges. Returns ``[]`` when the directory is absent, so a
+    full Mind (whose tree lives elsewhere and is surfaced via the projected bundle)
+    is never affected: there is simply nothing to read at this path.
+    """
+    tree_dir = workspace_root / "knowledge" / "tree"
+    try:
+        files = sorted(tree_dir.glob("*.md"))
+    except OSError:
+        return []
+    nodes: list[dict[str, Any]] = []
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        title = f.stem
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("# "):
+                title = stripped[2:].strip()
+                break
+        nodes.append(
+            {
+                "key": f.stem,
+                "title": title,
+                "summary": text[:8000],
+                "parent": "",
+                "children": [],
+            }
+        )
+    return nodes
+
+
 def _read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
     """The pre-projected knowledge bundle the Mind's periodic export wrote.
 
@@ -415,23 +453,26 @@ def _read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
     daemon serves that artifact read-only and holds NO projection logic, so it can
     never see raw framework internals. Fail-open: a missing / unreadable / malformed /
     non-dict file yields the empty bundle (the loop simply hasn't exported yet).
+
+    Lean-agent fallback: when no projected ``tree`` is present, surface the raw
+    ``knowledge/tree/*.md`` notes directly (see ``_read_raw_tree``). This makes the
+    wiki work for research agents that write raw markdown and never project, while
+    leaving a full Mind's redacted-bundle path unchanged — its ``tree`` is non-empty
+    whenever a bundle exists, and it keeps no raw notes under this path.
     """
-    try:
-        raw = (workspace_root / KNOWLEDGE_BUNDLE_FILE).read_text(encoding="utf-8")
-    except OSError:
-        return _empty_bundle()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return _empty_bundle()
-    if not isinstance(data, dict):
-        return _empty_bundle()
-    # Coerce each expected section to a list so a corrupt field cannot 500 a browse.
     out = _empty_bundle()
-    out["counts"] = data.get("counts") if isinstance(data.get("counts"), dict) else {}
-    for section in _KNOWLEDGE_SECTIONS:
-        val = data.get(section)
-        out[section] = val if isinstance(val, list) else []
+    try:
+        data: Any = json.loads((workspace_root / KNOWLEDGE_BUNDLE_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = None
+    if isinstance(data, dict):
+        # Coerce each expected section to a list so a corrupt field cannot 500 a browse.
+        out["counts"] = data.get("counts") if isinstance(data.get("counts"), dict) else {}
+        for section in _KNOWLEDGE_SECTIONS:
+            val = data.get(section)
+            out[section] = val if isinstance(val, list) else []
+    if not out["tree"]:
+        out["tree"] = _read_raw_tree(workspace_root)
     return out
 
 
@@ -1014,17 +1055,25 @@ def create_app(
     def workspace_summary() -> dict[str, Any]:
         """World-view summary for the gateway: research journal head + finding count (P0-4).
 
-        Returns the first 5000 chars of ``research/journal.md`` (empty string if absent),
+        Returns the first 5000 chars of the research journal (empty string if absent),
         the finding count, and the active loop session id. Every field degrades gracefully,
         so the gateway may poll this before the agent loop has produced any research.
+
+        Journal location differs by agent shape: the v0 Tricks loop writes
+        ``research/journal.md``; a lean research agent writes ``journal/journal.md``.
+        Read whichever exists (``research/`` takes precedence).
         """
         journal = ""
-        journal_path = _workspace_root / "research" / "journal.md"
-        try:
-            if journal_path.is_file():
-                journal = journal_path.read_text(encoding="utf-8", errors="replace")[:5000]
-        except OSError:
-            journal = ""
+        for journal_path in (
+            _workspace_root / "research" / "journal.md",
+            _workspace_root / "journal" / "journal.md",
+        ):
+            try:
+                if journal_path.is_file():
+                    journal = journal_path.read_text(encoding="utf-8", errors="replace")[:5000]
+                    break
+            except OSError:
+                journal = ""
         return {
             "journal": journal,
             "finding_count": _count_findings(),
