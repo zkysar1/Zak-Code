@@ -203,6 +203,31 @@ async def test_watch_unknown_session_is_404(live_url: str) -> None:
         assert (await ac.get("/watch/does-not-exist")).status_code == 404
 
 
+async def test_watch_current_alias_resolves_active_session(
+    live_url: str, tmp_path: Path
+) -> None:
+    """``/watch/current`` maps the ``.current-session`` marker to the live session id.
+
+    The PEARL watch UI streams ``/watch/current`` without knowing the concrete id; the box
+    resolves it to the session the sidecar-driver names in the marker. The marker is read
+    fresh per request, so writing it after the server starts is enough.
+    """
+    sid = await _run_turn(live_url)
+    (tmp_path / ".current-session").write_text(sid, encoding="utf-8")
+    # Same buffered frames as watching the concrete id — the alias is transparent.
+    frames = await _watch_frames(live_url, "/watch/current?since=0", count=4)
+    assert [f["event"] for f in frames] == ["text", "tool_summary", "tool_summary", "done"]
+    assert frames[0] == {"event": "text", "text": CANNED}
+
+
+async def test_watch_current_with_no_active_session_is_404(live_url: str) -> None:
+    """``/watch/current`` with no marker → 404 (nothing is active to watch yet)."""
+    async with httpx.AsyncClient(base_url=live_url, timeout=10.0) as ac:
+        resp = await ac.get("/watch/current")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "no active session to watch"
+
+
 async def test_watch_requires_bearer_when_auth_configured(tmp_path: Path) -> None:
     token = "watch-secret-token"
     with _LiveServer(_make_app(tmp_path, auth_token=token)) as base_url:
