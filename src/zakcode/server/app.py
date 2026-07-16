@@ -983,8 +983,20 @@ def create_app(
         is configured) exactly like every other HTTP route. NO agent/turn is created — this
         only tails the fan-out bus. ``?since=<cursor>`` resumes after a known event (each
         frame's SSE ``id`` is its cursor); omit it to replay the retained buffer then tail.
-        404 if the session does not exist.
+
+        The literal id ``current`` is a gateway-facing alias (the PEARL watch UI streams
+        ``/watch/current`` without knowing the concrete id) resolved here to the active
+        loop session named by the ``.current-session`` marker. 404 if the session does
+        not exist, or if ``current`` is requested with no active session.
         """
+        if session_id == "current":
+            # Resolve the alias BEFORE the existence check so the default watch URL works
+            # without the caller knowing the concrete session id. The marker is written by
+            # the sidecar-driver each iteration; absent only before the first loop turn.
+            resolved = _current_session_id()
+            if resolved is None:
+                raise HTTPException(status_code=404, detail="no active session to watch")
+            session_id = resolved
         _load_session_or_404(session_id)  # existence check; never creates an agent/turn
         bus = event_bus_registry.get_or_create(session_id)
 
