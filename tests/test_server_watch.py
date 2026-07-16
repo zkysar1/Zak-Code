@@ -203,9 +203,7 @@ async def test_watch_unknown_session_is_404(live_url: str) -> None:
         assert (await ac.get("/watch/does-not-exist")).status_code == 404
 
 
-async def test_watch_current_alias_resolves_active_session(
-    live_url: str, tmp_path: Path
-) -> None:
+async def test_watch_current_alias_resolves_active_session(live_url: str, tmp_path: Path) -> None:
     """``/watch/current`` maps the ``.current-session`` marker to the live session id.
 
     The PEARL watch UI streams ``/watch/current`` without knowing the concrete id; the box
