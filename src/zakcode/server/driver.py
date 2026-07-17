@@ -21,6 +21,12 @@ exponential backoff and, after a run of failures, recreates the session (the cas
 where the daemon was restarted and lost it). It NEVER restarts the daemon or any
 downstream service — process supervision (systemd) owns restart-on-death; provisioning
 is the operator's job.
+
+Resume, don't just continue: a turn that ends ``stop_reason="provider_error"`` was cut
+mid-work (the transcript keeps the completed prefix; the in-flight step did not
+finish). The next turn gets ``resume_message`` — an explicit "re-check and resume the
+interrupted work" cue carrying the redacted provider detail — instead of the generic
+``continue_message``, so the partial work is recovered rather than orphaned.
 """
 
 from __future__ import annotations
@@ -51,6 +57,22 @@ CURRENT_SESSION_FILE = ".current-session"
 #: promptly.
 _BACKOFF_STOP_REASONS = frozenset({"budget_exhausted", "provider_error"})
 
+#: Next-turn message after a ``provider_error`` stop. Unlike a healthy break, that turn
+#: was cut MID-WORK by an infrastructure fault: the loop persists state at message
+#: boundaries, so the transcript keeps everything up to the last completed step — but
+#: the step in flight when the provider failed did NOT finish, and the generic continue
+#: cue gives the mind no hint anything went wrong (it may assume the step completed, or
+#: drop the interrupted work entirely). This cue says so explicitly, so the recovered
+#: turn re-checks and RESUMES the interrupted work. ``{error}`` expands to the
+#: provider's (already secret-redacted) failure detail, or ``""`` when none was carried.
+_DEFAULT_RESUME_MESSAGE = (
+    "Your previous turn was interrupted partway by a provider error{error}. The "
+    "transcript ends at the last completed step; the step in flight when it failed "
+    "did NOT finish. Re-check the state of that work and resume it from where it "
+    "left off — do not assume the interrupted step completed, and do not redo work "
+    "that already finished."
+)
+
 #: Default framing for a viewer nudge folded into a turn's preamble. Generic (any
 #: watched autonomous agent could take viewer suggestions); ``{text}`` is the (already
 #: gateway-sanitized) suggestion. Framed as a suggestion, never an instruction — a
@@ -79,6 +101,7 @@ class ServeDriver:
         *,
         boot_message: str = "Continue.",
         continue_message: str = "Continue.",
+        resume_message: str = _DEFAULT_RESUME_MESSAGE,
         model: str | None = None,
         on_event: Callable[[AgentEvent], None] | None = None,
         backoff_initial: float = 1.0,
@@ -95,6 +118,7 @@ class ServeDriver:
         self.workspace_root = Path(workspace_root)
         self.boot_message = boot_message
         self.continue_message = continue_message
+        self.resume_message = resume_message
         self.model = model
         self.on_event = on_event
         self.backoff_initial = backoff_initial
@@ -164,6 +188,15 @@ class ServeDriver:
             self._reset_backoff()
             turn += 1
             message = self.continue_message
+            if done is not None and done.stop_reason == "provider_error":
+                # That turn died mid-work — cue a RESUME, not a generic continue, so
+                # the next turn picks the interrupted work back up instead of assuming
+                # it finished. ``budget_exhausted`` keeps the plain continue: a spend
+                # cap is a whole-turn wall, not a half-done step. The detail is already
+                # secret-redacted by the provider's error mapping; bounded for prompt
+                # hygiene.
+                detail = f" ({done.error[:200]})" if done.error else ""
+                message = self.resume_message.format(error=detail)
             if done is not None and done.stop_reason in _BACKOFF_STOP_REASONS:
                 await self._sleep_backoff()
             elif self.inter_turn_delay > 0:
