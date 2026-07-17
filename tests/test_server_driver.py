@@ -231,3 +231,52 @@ async def test_nudge_fires_once_not_on_the_following_turn(tmp_path: Path) -> Non
     await driver.run()
     assert "tide pools" in str(client.turn_calls[0]["message"])  # turn 1 carries it
     assert client.turn_calls[1]["message"] == "MORE"  # turn 2 is clean again
+
+
+async def test_provider_error_cues_resume_then_clean_turn_reverts(tmp_path: Path) -> None:
+    # Turn 1 dies mid-work (provider_error) -> turn 2 must carry the RESUME cue, not the
+    # generic continue; turn 2 completes cleanly -> turn 3 reverts to the plain continue.
+    client = FakeServerClient(turn_script=[[_done("provider_error")], [_done()], [_done()]])
+    driver = _driver(client, tmp_path, boot_message="BOOT", continue_message="MORE", max_turns=3)
+    await driver.run()
+
+    msgs = [str(c["message"]) for c in client.turn_calls]
+    assert msgs[0] == "BOOT"
+    assert "interrupted" in msgs[1] and "resume" in msgs[1]  # the resume cue fired
+    assert "did NOT finish" in msgs[1]  # says the in-flight step is unfinished
+    assert msgs[2] == "MORE"  # recovery is one-shot; a clean turn goes back to normal
+
+
+async def test_provider_error_detail_is_folded_into_the_resume_cue(tmp_path: Path) -> None:
+    err = AgentDone(
+        stop_reason="provider_error",
+        iterations=1,
+        usage=Usage(total_tokens=1),
+        error="tool_use_failed: malformed arguments",
+    )
+    client = FakeServerClient(turn_script=[[err]])
+    driver = _driver(client, tmp_path, max_turns=2)
+    await driver.run()
+
+    # The (redacted) provider detail reaches the mind, so it can see WHY (e.g. its own
+    # malformed tool call) and avoid repeating the same failure.
+    assert "tool_use_failed" in str(client.turn_calls[1]["message"])
+
+
+async def test_budget_exhausted_keeps_the_plain_continue(tmp_path: Path) -> None:
+    # budget_exhausted still backs off (BACKOFF_STOP_REASONS) but is a whole-turn wall,
+    # not a half-done step — the resume cue is scoped to provider_error only.
+    client = FakeServerClient(turn_script=[[_done("budget_exhausted")]])
+    driver = _driver(client, tmp_path, continue_message="MORE", max_turns=2)
+    await driver.run()
+
+    assert client.turn_calls[1]["message"] == "MORE"
+
+
+async def test_custom_resume_message_passthrough(tmp_path: Path) -> None:
+    client = FakeServerClient(turn_script=[[_done("provider_error")]])
+    driver = _driver(client, tmp_path, resume_message="RESUME NOW{error}", max_turns=2)
+    await driver.run()
+
+    # No error detail on the done frame -> the {error} seam collapses to nothing.
+    assert client.turn_calls[1]["message"] == "RESUME NOW"
