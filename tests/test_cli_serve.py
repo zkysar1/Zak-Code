@@ -158,9 +158,7 @@ def test_drive_continue_message_defaults_to_continue(
     assert captured.get("continue_message") == "Continue."
 
 
-def test_drive_continue_message_env_var(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_drive_continue_message_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
     _patch_driver(monkeypatch, captured)
     monkeypatch.setenv("ZAKCODE_CONTINUE_MESSAGE", "Record a rule via bin/note-guardrail.sh.")
