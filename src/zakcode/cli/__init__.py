@@ -1662,6 +1662,15 @@ def drive(
         "--boot-message",
         help="First message that opens the autonomous loop (e.g. the mind's boot cue).",
     ),
+    continue_message: str = typer.Option(
+        "Continue.",
+        "--continue-message",
+        envvar="ZAKCODE_CONTINUE_MESSAGE",
+        help="Message sent on every turn AFTER the first (the perpetual continuation cue). "
+        "Defaults to 'Continue.'. A weak mind that no-ops on a bare 'Continue.' needs a "
+        "concrete per-turn directive here — this is the one lever that shapes what each "
+        "driven turn actually does. Also settable via the ZAKCODE_CONTINUE_MESSAGE env var.",
+    ),
     resume_message: str | None = typer.Option(
         None,
         "--resume-message",
@@ -1680,6 +1689,15 @@ def drive(
         "--nudge-file",
         help="Viewer-suggestion file (relative to the workspace, e.g. .nudge) the driver "
         "folds once into the next turn's preamble, then deletes. Off when unset.",
+    ),
+    inter_turn_delay: float = typer.Option(
+        0.0,
+        "--inter-turn-delay",
+        envvar="ZAKCODE_INTER_TURN_DELAY",
+        help="Seconds to pause between turns to pace the agent under a provider rate limit. "
+        "0 = no pacing (fastest, but may hit the provider's tokens/requests-per-minute limit); "
+        "higher spreads token usage over time and reduces rate-limit stalls. A per-agent 'speed' "
+        "setting. Also settable via the ZAKCODE_INTER_TURN_DELAY environment variable.",
     ),
 ) -> None:
     """Drive an autonomous, watchable mind against a running ``zakcode serve`` daemon.
@@ -1708,9 +1726,11 @@ def drive(
         client,
         workspace,
         boot_message=boot_message,
+        continue_message=continue_message,
         model=model,
         max_turns=max_turns,
         nudge_file=nudge_file,
+        inter_turn_delay=max(0.0, inter_turn_delay),
     )
     if resume_message is not None:
         # Override the driver's built-in resume cue only when the flag was given — the

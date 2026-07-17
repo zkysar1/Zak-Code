@@ -201,6 +201,16 @@ class Settings(BaseSettings):
     context_include_readme: bool = Field(
         default=True, description="Fold the workspace README.md into the agent's project context."
     )
+    # Render the mind's behavioral RULES as a COMPACT INDEX (one line per rule: name + summary +
+    # path) instead of the full concatenated bodies — the "Vinheim Lever A" lean path. The index is
+    # ~8x smaller (~1.35k vs ~8.2k tokens for 30 rules) AND more complete (the full render drops
+    # rules past a size cap; the index lists every rule). The agent reads a rule's full text on
+    # demand via read_file when a summary is relevant. Default off (full render) for parity; set
+    # ZAKCODE_LEAN_RULES=true for token-constrained deployments (e.g. the Vinheim research runtime).
+    # Only takes effect when the agent is constructed with enable_rules=True.
+    lean_rules: bool = Field(
+        default=False, description="Render mind rules as a compact index instead of full bodies."
+    )
     # Optional cost/token ceilings (parity #4), bounding CUMULATIVE spend across a turn and
     # its whole sub-agent delegation tree (one shared budget). A completed call's actuals are
     # folded in post-completion; once a ceiling is crossed the turn stops with
