@@ -365,6 +365,7 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
             prompter=prompter,
             enable_skills=True,
             enable_rules=True,
+            lean_rules=agent_settings.lean_rules,
         )
 
     return factory
@@ -444,6 +445,93 @@ def _read_raw_tree(workspace_root: Path) -> list[dict[str, Any]]:
     return nodes
 
 
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Read a newline-delimited JSON file into a list of dicts, skipping blank /
+    malformed lines. Returns ``[]`` when the file is absent or unreadable. Never
+    raises — a corrupt store must not 500 a browse."""
+    out: list[dict[str, Any]] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+def _read_raw_hypotheses(workspace_root: Path) -> list[dict[str, Any]]:
+    """Fallback for agents that record hypotheses as raw JSONL at
+    ``<workspace>/knowledge/hypotheses.jsonl`` instead of running the Mind's
+    ``KnowledgeProjection``. Each line becomes a hypothesis card, mapping the
+    common Mind pipeline field names onto the viewer shape (statement / horizon /
+    status / outcome). Field lookups are defensive (multiple aliases) so a lean
+    agent and a full pipeline record both surface. Returns ``[]`` when the file
+    is absent, so a full Mind (which surfaces hypotheses via the projected
+    bundle) is never affected.
+
+    Reads two lean store names, BOTH under ``<workspace>/knowledge/`` — never the
+    framework ``world/`` tree outside the workspace:
+      * ``knowledge/hypotheses.jsonl`` — a lean agent's raw export, and
+      * ``knowledge/pipeline.jsonl`` — the REAL framework pipeline store, when a
+        sidecar Mind runs the mind_api daemon with ``AYOAI_WORLD`` pointed at
+        ``<workspace>/knowledge`` (the PEARL sidecar layout). The daemon names its
+        pipeline store ``pipeline.jsonl``, so reading only ``hypotheses.jsonl``
+        would miss every hypothesis a real ``pipeline-add.sh`` call produced.
+    Both live UNDER ``knowledge/`` and hold only the research agent's own domain
+    records (it never writes the framework ``system/`` subtree), so the redaction
+    guarantee is preserved: this fallback still never reads a framework ``world/``
+    path outside the workspace, and only fires when the projected bundle's section
+    is empty.
+    """
+    items: list[dict[str, Any]] = []
+    for name in ("hypotheses.jsonl", "pipeline.jsonl"):
+        for row in _read_jsonl(workspace_root / "knowledge" / name):
+            statement = (
+                row.get("statement")
+                or row.get("hypothesis")
+                or row.get("prediction")
+                or row.get("text")
+                or row.get("title")
+                or ""
+            )
+            if not str(statement).strip():
+                continue
+            items.append(
+                {
+                    "statement": str(statement),
+                    "horizon": str(row.get("horizon") or ""),
+                    "status": str(row.get("status") or row.get("stage") or ""),
+                    "outcome": str(row.get("outcome") or row.get("resolution") or ""),
+                }
+            )
+    return items
+
+
+def _read_raw_guardrails(workspace_root: Path) -> list[dict[str, Any]]:
+    """Fallback for agents that record guardrails as raw JSONL at
+    ``<workspace>/knowledge/guardrails.jsonl``. Each line becomes a guardrail card
+    (viewer shape is just ``rule``). Defensive field aliases; returns ``[]`` when
+    absent. Reads ONLY the lean export path, never the framework
+    ``world/guardrails.jsonl`` — same redaction-firewall guarantee as
+    ``_read_raw_hypotheses``.
+    """
+    items: list[dict[str, Any]] = []
+    for row in _read_jsonl(workspace_root / "knowledge" / "guardrails.jsonl"):
+        rule = row.get("rule") or row.get("text") or row.get("statement") or ""
+        if not str(rule).strip():
+            continue
+        items.append({"rule": str(rule)})
+    return items
+
+
 def _read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
     """The pre-projected knowledge bundle the Mind's periodic export wrote.
 
@@ -473,6 +561,10 @@ def _read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
             out[section] = val if isinstance(val, list) else []
     if not out["tree"]:
         out["tree"] = _read_raw_tree(workspace_root)
+    if not out["hypotheses"]:
+        out["hypotheses"] = _read_raw_hypotheses(workspace_root)
+    if not out["guardrails"]:
+        out["guardrails"] = _read_raw_guardrails(workspace_root)
     return out
 
 

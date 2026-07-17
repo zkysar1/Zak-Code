@@ -119,6 +119,64 @@ def test_knowledge_tree_still_empty_when_no_bundle_and_no_raw(tmp_path: Path) ->
     assert _client(tmp_path).get("/knowledge/tree").json() == {"nodes": [], "count": 0}
 
 
+# ── real framework store fallback (PEARL mind-api sidecar layout) ────────────────
+
+
+def _seed_jsonl(workspace: Path, name: str, records: list[dict[str, object]]) -> None:
+    kn = workspace / "knowledge"
+    kn.mkdir(parents=True, exist_ok=True)
+    (kn / name).write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+
+def test_hypotheses_fall_open_to_real_pipeline_store(tmp_path: Path) -> None:
+    # PEARL sidecar: the mind-api daemon (AYOAI_WORLD=<workspace>/knowledge) names
+    # its pipeline store ``pipeline.jsonl``, and the note-hypothesis.sh tool writes
+    # ``prediction`` + ``stage`` — the reader must surface it, not only the legacy
+    # lean ``hypotheses.jsonl`` name.
+    _seed_jsonl(
+        tmp_path,
+        "pipeline.jsonl",
+        [
+            {
+                "id": "2026-07-17_black-holes",
+                "title": "Does info escape a black hole?",
+                "prediction": "Does information that falls into a black hole ever come back out?",
+                "stage": "discovered",
+                "horizon": "short",
+                "category": "black-holes",
+            }
+        ],
+    )
+    body = _client(tmp_path).get("/knowledge/hypotheses").json()
+    assert body["count"] == 1
+    h = body["hypotheses"][0]
+    # prediction wins as the statement; stage maps onto status.
+    assert h["statement"].startswith("Does information that falls into a black hole")
+    assert h["status"] == "discovered"
+    assert h["horizon"] == "short"
+
+
+def test_guardrails_fall_open_to_real_store(tmp_path: Path) -> None:
+    # note-guardrail.sh writes {rule, category, trigger_condition, source} to
+    # <workspace>/knowledge/guardrails.jsonl via the real guardrails-add.sh daemon.
+    _seed_jsonl(
+        tmp_path,
+        "guardrails.jsonl",
+        [
+            {
+                "id": "guard-001",
+                "rule": "Never trust a single popular-science source for a physics claim.",
+                "category": "black-holes",
+                "trigger_condition": "when researching physics topics",
+                "source": "autonomous-research",
+            }
+        ],
+    )
+    body = _client(tmp_path).get("/knowledge/guardrails").json()
+    assert body["count"] == 1
+    assert body["guardrails"][0]["rule"].startswith("Never trust a single popular-science")
+
+
 # ── /workspace/summary journal fallback ─────────────────────────────────────────
 
 
