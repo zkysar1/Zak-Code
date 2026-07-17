@@ -1662,6 +1662,13 @@ def drive(
         "--boot-message",
         help="First message that opens the autonomous loop (e.g. the mind's boot cue).",
     ),
+    resume_message: str | None = typer.Option(
+        None,
+        "--resume-message",
+        help="Message for the turn after a provider_error stop (default: a built-in cue "
+        "to re-check and resume the interrupted work; '{error}' expands to the redacted "
+        "provider detail).",
+    ),
     model: str | None = typer.Option(
         None, "--model", "-m", help="Model override applied to every driven turn."
     ),
@@ -1715,6 +1722,10 @@ def drive(
         nudge_file=nudge_file,
         inter_turn_delay=max(0.0, inter_turn_delay),
     )
+    if resume_message is not None:
+        # Override the driver's built-in resume cue only when the flag was given — the
+        # default lives on ServeDriver (not importable at module scope: optional extra).
+        driver.resume_message = resume_message
     console.print(
         f"[bold]Zak Code[/bold] {__version__} — driving watched mind at {base_url} "
         f"(workspace: {workspace})"
