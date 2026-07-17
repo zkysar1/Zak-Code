@@ -1662,6 +1662,15 @@ def drive(
         "--boot-message",
         help="First message that opens the autonomous loop (e.g. the mind's boot cue).",
     ),
+    continue_message: str = typer.Option(
+        "Continue.",
+        "--continue-message",
+        envvar="ZAKCODE_CONTINUE_MESSAGE",
+        help="Message sent on every turn AFTER the first (the perpetual continuation cue). "
+        "Defaults to 'Continue.'. A weak mind that no-ops on a bare 'Continue.' needs a "
+        "concrete per-turn directive here — this is the one lever that shapes what each "
+        "driven turn actually does. Also settable via the ZAKCODE_CONTINUE_MESSAGE env var.",
+    ),
     resume_message: str | None = typer.Option(
         None,
         "--resume-message",
@@ -1717,6 +1726,7 @@ def drive(
         client,
         workspace,
         boot_message=boot_message,
+        continue_message=continue_message,
         model=model,
         max_turns=max_turns,
         nudge_file=nudge_file,
