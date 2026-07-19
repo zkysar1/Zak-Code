@@ -95,9 +95,7 @@ class SafeSessionRotated(BaseModel):
     reason: str = ""
 
 
-SafeEvent = (
-    SafeText | SafeStatus | SafeToolSummary | SafeTaskUpdate | SafeDone | SafeSessionRotated
-)
+SafeEvent = SafeText | SafeStatus | SafeToolSummary | SafeTaskUpdate | SafeDone | SafeSessionRotated
 
 
 # ── Extended secret redaction ────────────────────────────────────────────────
