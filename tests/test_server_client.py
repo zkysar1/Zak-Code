@@ -8,6 +8,7 @@ in-memory ASGI transport (no socket), and the server runs a scripted agent.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -148,5 +149,43 @@ async def test_server_client_raises_on_bad_status(tmp_path: Path) -> None:
         client = ServerClient(http_client=http)
         with pytest.raises(httpx.HTTPStatusError):
             await client.astream_turn("go", session_id="nonexistent").__anext__()
+    finally:
+        await http.aclose()
+
+
+async def test_publish_watch_marker_posts_expected_body() -> None:
+    # The client's contract: POST /watch/{sid}/marker with the session_rotated body. A
+    # MockTransport captures the wire form without needing a live bus (the driver's caller
+    # supplies the sid; the server no-ops when no watcher is present).
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["json"] = json.loads(request.content)
+        return httpx.Response(201, json={"published": True, "cursor": 3})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://testserver")
+    try:
+        await ServerClient(http_client=http).publish_watch_marker(
+            "sess-42", reason="daemon restarted"
+        )
+    finally:
+        await http.aclose()
+    assert seen["method"] == "POST"
+    assert str(seen["url"]).endswith("/watch/sess-42/marker")
+    assert seen["json"] == {"event": "session_rotated", "reason": "daemon restarted"}
+
+
+async def test_publish_watch_marker_raises_on_error_status() -> None:
+    # Like every other client call, a non-2xx raises — the driver decides whether to swallow it
+    # (a rotation marker must never break the serve loop, so the driver wraps this call).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"detail": "boom"})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://testserver")
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await ServerClient(http_client=http).publish_watch_marker("sess-42")
     finally:
         await http.aclose()

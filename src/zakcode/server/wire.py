@@ -97,6 +97,19 @@ class NudgeRequest(BaseModel):
     text: str
 
 
+class WatchMarkerRequest(BaseModel):
+    """Body of ``POST /watch/{session_id}/marker`` — a server-side meta-event published to a
+    session's watch bus so late-joining observers learn of lifecycle changes the ``AgentEvent``
+    stream does not carry (e.g. a driver session rotation). ``event`` is a closed allow-list
+    matching the ``SafeEvent`` discriminator, so the body is publishable straight to the bus and
+    projects through ``SafeEventProjection`` unchanged; ``reason`` is a short human-facing note
+    (secret-redacted at projection). Published by the sidecar-driver via
+    :meth:`~zakcode.server.client.ServerClient.publish_watch_marker`."""
+
+    event: Literal["session_rotated"] = "session_rotated"
+    reason: str = ""
+
+
 class ChatResponse(BaseModel):
     """Buffered result of ``POST /chat`` (the non-streaming turn)."""
 

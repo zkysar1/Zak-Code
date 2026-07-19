@@ -45,6 +45,7 @@ class FakeServerClient:
         self.create_calls = 0
         self.created_sids: list[str] = []
         self.turn_calls: list[dict[str, object]] = []
+        self.marker_calls: list[dict[str, object]] = []
         self._turn_script = list(turn_script or [])
         self._turn_index = 0
 
@@ -59,6 +60,9 @@ class FakeServerClient:
         sid = f"sess-{self.create_calls}"
         self.created_sids.append(sid)
         return sid
+
+    async def publish_watch_marker(self, session_id: str, *, reason: str = "") -> None:
+        self.marker_calls.append({"session_id": session_id, "reason": reason})
 
     def _next_action(self) -> list[AgentEvent] | Exception:
         if self._turn_index < len(self._turn_script):
@@ -144,6 +148,42 @@ async def test_recreates_session_after_repeated_failures(tmp_path: Path) -> None
     # The recreate re-boots (boot_message) on the fresh session, not a bare continue.
     assert client.turn_calls[-1]["session_id"] == "sess-2"
     assert client.turn_calls[-1]["message"] == driver.boot_message
+
+
+async def test_rotation_publishes_session_rotated_marker_to_old_session(tmp_path: Path) -> None:
+    # On rotation the driver notifies watch observers on the OLD session BEFORE minting a new
+    # one, so they reconnect to `current` cleanly instead of guessing at the stream close.
+    client = FakeServerClient(
+        turn_script=[
+            httpx.ConnectError("gone"),
+            httpx.ConnectError("gone"),
+            httpx.ConnectError("gone"),
+            [_done()],
+        ]
+    )
+    driver = _driver(client, tmp_path, max_turns=1, recreate_after_failures=3)
+    await driver.run()
+
+    assert len(client.marker_calls) == 1
+    assert client.marker_calls[0]["session_id"] == "sess-1"  # the OLD session, before the re-mint
+    assert "re-minted" in str(client.marker_calls[0]["reason"])
+
+
+async def test_rotation_marker_failure_does_not_break_the_serve_loop(tmp_path: Path) -> None:
+    # The marker publish is best-effort: a failure must never break the serve loop (the driver
+    # wraps it in contextlib.suppress), so rotation still completes.
+    client = FakeServerClient(
+        turn_script=[httpx.ConnectError("gone")] * 3 + [[_done()]],
+    )
+
+    async def _boom(session_id: str, *, reason: str = "") -> None:
+        raise httpx.ConnectError("marker publish failed")
+
+    client.publish_watch_marker = _boom  # type: ignore[method-assign]
+    driver = _driver(client, tmp_path, max_turns=1, recreate_after_failures=3)
+    await driver.run()  # must NOT raise
+
+    assert client.create_calls == 2  # rotation still happened despite the marker publish failing
 
 
 async def test_waits_for_health_before_first_turn(tmp_path: Path) -> None:

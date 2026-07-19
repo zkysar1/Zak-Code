@@ -236,3 +236,51 @@ async def test_watch_requires_bearer_when_auth_configured(tmp_path: Path) -> Non
         # With the token → streams the buffered frames.
         frames = await _watch_frames(base_url, f"/watch/{sid}?since=0", count=4, token=token)
         assert frames[0]["event"] == "text"
+
+
+# ── watch markers (POST /watch/{session_id}/marker → session_rotated meta-event) ──────
+
+
+async def test_watch_marker_publishes_session_rotated_to_observers(live_url: str) -> None:
+    """POST /watch/{sid}/marker publishes a session_rotated meta-event onto the session's bus;
+    a since=0 watcher then sees it as the allow-listed SafeSessionRotated frame. The turn buffers
+    5 raw events (the AgentUsage one is dropped at projection → 4 safe frames), so the marker is
+    the 5th safe frame."""
+    sid = await _run_turn(live_url)  # buffers the turn's events AND creates the bus
+    async with httpx.AsyncClient(base_url=live_url, timeout=10.0) as ac:
+        resp = await ac.post(
+            f"/watch/{sid}/marker",
+            json={"event": "session_rotated", "reason": "daemon restarted; session re-minted"},
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["published"] is True and body["cursor"] == 6  # 5 turn events + the marker
+
+    frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=5)
+    rotated = [f for f in frames if f.get("event") == "session_rotated"]
+    assert len(rotated) == 1
+    assert rotated[0]["reason"] == "daemon restarted; session re-minted"
+    assert frames[-1] == rotated[0]  # published last, so highest cursor
+
+
+async def test_watch_marker_for_session_with_no_bus_is_noop(live_url: str) -> None:
+    """A marker for a session that has no live watch bus (nobody ran a turn or watched) is a
+    no-op: it must never spawn a bus, so a bearer holder cannot grow buses for arbitrary ids."""
+    async with httpx.AsyncClient(base_url=live_url, timeout=10.0) as ac:
+        sid = (await ac.post("/sessions")).json()["id"]  # session exists, but no bus created yet
+        resp = await ac.post(
+            f"/watch/{sid}/marker", json={"event": "session_rotated", "reason": "x"}
+        )
+        assert resp.status_code == 201
+        assert resp.json() == {"published": False, "cursor": None}
+
+
+async def test_watch_marker_rejects_unknown_event_type(live_url: str) -> None:
+    """`event` is a closed Literal allow-list; an unknown marker type is a 422 (pydantic
+    validation), never published — the projection whitelist is not the only gate."""
+    sid = await _run_turn(live_url)
+    async with httpx.AsyncClient(base_url=live_url, timeout=10.0) as ac:
+        resp = await ac.post(
+            f"/watch/{sid}/marker", json={"event": "arbitrary_injected", "reason": "x"}
+        )
+        assert resp.status_code == 422
