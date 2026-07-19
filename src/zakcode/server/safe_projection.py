@@ -85,7 +85,19 @@ class SafeDone(BaseModel):
     stop_reason: str
 
 
-SafeEvent = SafeText | SafeStatus | SafeToolSummary | SafeTaskUpdate | SafeDone
+class SafeSessionRotated(BaseModel):
+    """A driver session-rotation notice: the watched session was re-minted (e.g. after a daemon
+    restart dropped it), so an observer should reconnect to the current session rather than treat
+    the stream close as an error. A watch meta-event, NOT an AgentEvent — it carries only a
+    redacted reason, no session ids or internals."""
+
+    event: Literal["session_rotated"] = "session_rotated"
+    reason: str = ""
+
+
+SafeEvent = (
+    SafeText | SafeStatus | SafeToolSummary | SafeTaskUpdate | SafeDone | SafeSessionRotated
+)
 
 
 # ── Extended secret redaction ────────────────────────────────────────────────
@@ -243,6 +255,10 @@ class SafeEventProjection:
         if kind == "done":
             # stop_reason only; error/trace/usage/degraded dropped.
             return SafeDone(stop_reason=str(getattr(event, "stop_reason", "")))
+        if kind == "session_rotated":
+            # A watch meta-event (not an AgentEvent): the driver rotated the watched session.
+            # Only the redacted reason escapes — no session ids or internals.
+            return SafeSessionRotated(reason=self.redact(str(getattr(event, "reason", ""))))
         # "usage", "action_required", and any unrecognized/future event type: DROP.
         return None
 
@@ -253,6 +269,7 @@ __all__ = [
     "SafeToolSummary",
     "SafeTaskUpdate",
     "SafeDone",
+    "SafeSessionRotated",
     "SafeEvent",
     "SafeEventProjection",
     "redact_secrets_extended",

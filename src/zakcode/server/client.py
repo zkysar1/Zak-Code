@@ -65,6 +65,20 @@ class ServerClient:
         resp.raise_for_status()
         return str(resp.json()["id"])
 
+    async def publish_watch_marker(self, session_id: str, *, reason: str = "") -> None:
+        """Publish a ``session_rotated`` meta-event to ``session_id``'s watch bus.
+
+        Lets the sidecar-driver tell watch observers it re-minted the session (e.g. after the
+        daemon dropped it), so they reconnect to ``current`` cleanly instead of treating the
+        stream close as an error. Raises on a non-2xx like the other calls — the driver decides
+        whether to swallow transport errors (a rotation marker must never break the serve loop).
+        """
+        resp = await self._http().post(
+            f"/watch/{session_id}/marker",
+            json={"event": "session_rotated", "reason": reason},
+        )
+        resp.raise_for_status()
+
     async def astream_turn(
         self, message: str, session_id: str | None = None, model: str | None = None
     ) -> AsyncIterator[AgentEvent]:

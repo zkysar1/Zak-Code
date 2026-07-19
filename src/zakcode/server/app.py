@@ -79,6 +79,7 @@ from zakcode.server.wire import (
     ToolInfo,
     UploadRequest,
     UploadResponse,
+    WatchMarkerRequest,
     WSActionRequired,
     WSApproval,
     WSInterrupt,
@@ -1010,6 +1011,34 @@ def create_app(
         # ping=15: a 15s keepalive comment so an idle watch (no turn running yet) holds the
         # connection open through proxies without emitting spurious events.
         return EventSourceResponse(event_source(), ping=15)
+
+    @app.post("/watch/{session_id}/marker", status_code=201)
+    def publish_watch_marker(session_id: str, request: WatchMarkerRequest) -> dict[str, Any]:
+        """Publish a server-side meta-event to a session's watch bus (P0-3 companion).
+
+        The ``AgentEvent`` stream carries only turn activity; a lifecycle signal a watcher needs —
+        today, a driver ``session_rotated`` after the daemon dropped a session — has no other
+        channel. The sidecar-driver POSTs one here (via ``ServerClient.publish_watch_marker``) so
+        tailing observers see a clean rotation notice and reconnect to ``current``, instead of a
+        bare stream close they must guess at. Bearer-gated like every route. Whitelist-by-
+        construction still holds: the marker projects through :class:`SafeEventProjection`, so only
+        its allow-listed ``SafeSessionRotated`` form ever reaches a browser. The ``current`` alias
+        resolves as in ``GET /watch`` so the driver can publish without knowing the concrete id.
+
+        Uses ``get`` (not ``get_or_create``): the marker targets EXISTING watch observers, so a
+        session with no live bus (no watchers, or already discarded) is a no-op — publishing into
+        the void would only let any bearer holder spawn unbounded buses for arbitrary ids.
+        """
+        if session_id == "current":
+            resolved = _current_session_id()
+            if resolved is None:
+                raise HTTPException(status_code=404, detail="no active session to watch")
+            session_id = resolved
+        bus = event_bus_registry.get(session_id)
+        if bus is None:
+            return {"published": False, "cursor": None}
+        cursor = bus.publish(request)
+        return {"published": True, "cursor": cursor}
 
     # ── sidecar read-only surface (P0-4 /workspace/summary, P0-5 /sidecar/health) ─
     # These back the env-server SidecarProxyVerticle (spec P0-7): it proxies the public
