@@ -237,6 +237,49 @@ async def test_error_stop_reason_grows_backoff_but_clean_resets(tmp_path: Path) 
     assert ok_driver._backoff_current == 0.001  # reset after a clean turn
 
 
+async def test_consecutive_provider_errors_compound_backoff(tmp_path: Path) -> None:
+    # Regression pin for the 2026-07-19 decommissioned-model incident: a
+    # provider_error turn completes its HTTP stream successfully, and the old loop
+    # reset the backoff on every HTTP-successful turn BEFORE the stop-reason sleep —
+    # so consecutive provider errors retried at backoff_initial forever (observed
+    # live: 1,941 retries at ~1.6s). Consecutive error turns must COMPOUND:
+    # 0.001 → 0.002 → 0.004 → 0.008 with factor 2, never re-pinning to initial.
+    err = [_done("provider_error")]
+    client = FakeServerClient(turn_script=[err, err, err])
+    driver = _driver(
+        client,
+        tmp_path,
+        backoff_initial=0.001,
+        backoff_max=1.0,  # roomy cap so growth (not clamping) is what's measured
+        provider_error_escalate_after=10,  # keep escalation out of this test
+        max_turns=3,
+    )
+    await driver.run()
+    assert driver._backoff_current == 0.008  # compounded across all three error turns
+
+
+async def test_provider_error_streak_escalates_to_cap_then_clean_turn_heals(
+    tmp_path: Path,
+) -> None:
+    # A provider fault that survives the escalation threshold is non-transient
+    # (removed model, revoked key): the backoff jumps straight to backoff_max —
+    # still perpetual, but paced — and the resume cue keeps flowing.
+    err = [_done("provider_error")]
+    client = FakeServerClient(turn_script=[err, err])
+    driver = _driver(client, tmp_path, provider_error_escalate_after=2, max_turns=2)
+    await driver.run()
+    assert driver._provider_error_streak == 2
+    assert driver._backoff_current == driver.backoff_max  # jumped to the cap
+    assert "interrupted partway" in str(client.turn_calls[1]["message"])  # resume cue intact
+
+    # A later clean turn heals fully: streak zeroed, backoff reset to initial.
+    heal_client = FakeServerClient(turn_script=[err, err, [_done("completed")], [_done()]])
+    heal_driver = _driver(heal_client, tmp_path, provider_error_escalate_after=2, max_turns=4)
+    await heal_driver.run()
+    assert heal_driver._provider_error_streak == 0
+    assert heal_driver._backoff_current == 0.001
+
+
 async def test_nudge_is_framed_into_the_turn_then_consumed(tmp_path: Path) -> None:
     (tmp_path / ".nudge").write_text("look at coral reefs\n", encoding="utf-8")
     client = FakeServerClient()

@@ -133,6 +133,9 @@ _CAPABILITIES: dict[str, Capabilities] = {
         context_window=131_072,
         max_output=32_768,
     ),
+    # DECOMMISSIONED by Groq ~2026-07-19 (dropped from /models with no deprecation
+    # window; qwen3.6-27b below is its catalog successor). Entry kept so historical
+    # sessions/transcripts that reference it still resolve capabilities.
     "groq/qwen/qwen3-32b": Capabilities(
         supports_tools=True,
         supports_vision=False,
@@ -148,13 +151,18 @@ _CAPABILITIES: dict[str, Capabilities] = {
     # ops/mind-sidecar/scripts/bootstrap.sh). Same tool-capable tier — supports_tools with
     # NO tools_unreliable flag, so the auto-resolver keeps it for tool sessions.
     "groq/qwen/qwen3.6-27b": Capabilities(
+        # Numbers re-probed 2026-07-20 against Groq's LIVE /models entry from a box
+        # with Groq egress — replacing the initial qwen3-32b-mirrored placeholder
+        # (filed when /v1/models was unreachable): context_window=131072,
+        # max_completion_tokens=32768 (the mirrored 40_960 OVERSTATED the real cap
+        # and risked request rejections), input_modalities includes image (hence
+        # supports_vision=True). Live drive produced real tool-calling turns
+        # immediately after the 2026-07-20 re-pin.
         supports_tools=True,
-        supports_vision=False,
+        supports_vision=True,
         supports_caching=False,
-        # context_window/max_output MIRRORED from qwen3-32b pending a Groq-spec re-probe
-        # for qwen3.6-27b (Groq /v1/models was unreachable from the box that filed this).
-        context_window=131_000,
-        max_output=40_960,
+        context_window=131_072,
+        max_output=32_768,
     ),
     # --- Ollama (local) ---
     "ollama_chat/llama3.1": Capabilities(
