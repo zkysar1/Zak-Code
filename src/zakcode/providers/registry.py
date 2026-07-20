@@ -143,6 +143,19 @@ _CAPABILITIES: dict[str, Capabilities] = {
         # for qwen3-32b; pin that. (stack review minor #5; re-probed 2026-06-10)
         max_output=40_960,
     ),
+    # 2026-07-19 re-pin target (g-335-172): Groq DECOMMISSIONED qwen3-32b (above); the
+    # mind-sidecar drive's pinned default moved to qwen3.6-27b (Ayoai-Environment-Server
+    # ops/mind-sidecar/scripts/bootstrap.sh). Same tool-capable tier — supports_tools with
+    # NO tools_unreliable flag, so the auto-resolver keeps it for tool sessions.
+    "groq/qwen/qwen3.6-27b": Capabilities(
+        supports_tools=True,
+        supports_vision=False,
+        supports_caching=False,
+        # context_window/max_output MIRRORED from qwen3-32b pending a Groq-spec re-probe
+        # for qwen3.6-27b (Groq /v1/models was unreachable from the box that filed this).
+        context_window=131_000,
+        max_output=40_960,
+    ),
     # --- Ollama (local) ---
     "ollama_chat/llama3.1": Capabilities(
         supports_tools=True,
