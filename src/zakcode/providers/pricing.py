@@ -25,7 +25,12 @@ GROQ_RATES_PER_M: dict[str, tuple[float, float]] = {
     "llama-3.1-8b-instant": (0.05, 0.08),
     "gpt-oss-120b": (0.15, 0.60),
     "gpt-oss-20b": (0.075, 0.30),
+    # qwen3-32b was decommissioned by Groq ~2026-07-19; stem kept so historical
+    # sessions still cost correctly. qwen3.6-27b is its catalog successor (rates
+    # read from the live /models pricing block, 2026-07-20; its cache-read rate
+    # $0.30/M = 50% of input, consistent with GROQ_CACHED_INPUT_FACTOR).
     "qwen3-32b": (0.29, 0.59),
+    "qwen3.6-27b": (0.60, 3.00),
 }
 
 #: Groq prompt-cache discount: cached input tokens bill at ~50% of the input rate.

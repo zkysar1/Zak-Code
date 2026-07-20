@@ -133,6 +133,9 @@ _CAPABILITIES: dict[str, Capabilities] = {
         context_window=131_072,
         max_output=32_768,
     ),
+    # DECOMMISSIONED by Groq ~2026-07-19 (dropped from /models with no deprecation
+    # window; qwen3.6-27b below is its catalog successor). Entry kept so historical
+    # sessions/transcripts that reference it still resolve capabilities.
     "groq/qwen/qwen3-32b": Capabilities(
         supports_tools=True,
         supports_vision=False,
@@ -142,6 +145,21 @@ _CAPABILITIES: dict[str, Capabilities] = {
         # certainly a conflated field. Groq documents 40,960 max completion tokens
         # for qwen3-32b; pin that. (stack review minor #5; re-probed 2026-06-10)
         max_output=40_960,
+    ),
+    "groq/qwen/qwen3.6-27b": Capabilities(
+        # qwen3-32b's catalog successor and the PEARL sidecar drive pin as of
+        # 2026-07-20 (env-server ops/mind-sidecar bootstrap.sh ZAKCODE_MODEL_PIN).
+        # All four numbers read from Groq's live /models entry (2026-07-20), not
+        # litellm's DB: context_window=131072, max_completion_tokens=32768,
+        # input_modalities includes image (hence supports_vision=True).
+        # Tool-capable like its predecessor — no tools_unreliable behavior
+        # observed (live drive produced real tool-calling turns immediately
+        # after the 2026-07-20 re-pin).
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=False,
+        context_window=131_072,
+        max_output=32_768,
     ),
     # --- Ollama (local) ---
     "ollama_chat/llama3.1": Capabilities(

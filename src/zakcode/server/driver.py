@@ -109,6 +109,7 @@ class ServeDriver:
         backoff_factor: float = 2.0,
         inter_turn_delay: float = 0.0,
         recreate_after_failures: int = 3,
+        provider_error_escalate_after: int = 5,
         max_turns: int | None = None,
         nudge_file: str | os.PathLike[str] | None = None,
         nudge_frame: str = _DEFAULT_NUDGE_FRAME,
@@ -126,6 +127,7 @@ class ServeDriver:
         self.backoff_factor = backoff_factor
         self.inter_turn_delay = inter_turn_delay
         self.recreate_after_failures = recreate_after_failures
+        self.provider_error_escalate_after = provider_error_escalate_after
         self.max_turns = max_turns
         self.nudge_frame = nudge_frame
         # A relative nudge path is resolved against the workspace (same root as
@@ -137,6 +139,7 @@ class ServeDriver:
             self._nudge_path = p if p.is_absolute() else self.workspace_root / p
         self._stop = stop if stop is not None else asyncio.Event()
         self._backoff_current = backoff_initial
+        self._provider_error_streak = 0
 
     # ── public control ───────────────────────────────────────────────────────
 
@@ -185,7 +188,6 @@ class ServeDriver:
                 continue
 
             consecutive_failures = 0
-            self._reset_backoff()
             turn += 1
             message = self.continue_message
             if done is not None and done.stop_reason == "provider_error":
@@ -195,12 +197,45 @@ class ServeDriver:
                 # cap is a whole-turn wall, not a half-done step. The detail is already
                 # secret-redacted by the provider's error mapping; bounded for prompt
                 # hygiene.
+                self._provider_error_streak += 1
                 detail = f" ({done.error[:200]})" if done.error else ""
+                # Per-occurrence log line: a provider_error turn is otherwise INVISIBLE
+                # in the journal (the HTTP stream itself succeeds), which turned the
+                # 2026-07-19 decommissioned-model incident into a silent 1,941-retry
+                # loop that had to be diagnosed from the session store.
+                logger.warning(
+                    "turn ended provider_error (streak %d)%s", self._provider_error_streak, detail
+                )
+                if self._provider_error_streak >= self.provider_error_escalate_after:
+                    # A provider fault that survives this many straight resume attempts
+                    # is not transient — a removed/renamed model, a revoked key, a
+                    # broken deployment. Resume cues cannot fix it, and each retry
+                    # appends another resume message to the transcript. Jump the
+                    # backoff to its cap: still perpetual (the fault may clear
+                    # upstream — the recipe-level model preflight owns hard failure),
+                    # but paced at backoff_max instead of hammering.
+                    if self._provider_error_streak == self.provider_error_escalate_after:
+                        logger.error(
+                            "provider_error persisted %d consecutive turns%s — treating as "
+                            "non-transient; pacing retries at backoff_max=%.0fs",
+                            self._provider_error_streak,
+                            detail,
+                            self.backoff_max,
+                        )
+                    self._backoff_current = self.backoff_max
                 message = self.resume_message.format(error=detail)
+            else:
+                self._provider_error_streak = 0
             if done is not None and done.stop_reason in _BACKOFF_STOP_REASONS:
+                # NO backoff reset on these turns: the HTTP stream succeeded but the
+                # TURN did not. Resetting here (the pre-2026-07-19 behavior) pinned the
+                # sleep at backoff_initial forever — consecutive provider_error turns
+                # retried every ~1.6s instead of compounding toward the cap.
                 await self._sleep_backoff()
-            elif self.inter_turn_delay > 0:
-                await self._interruptible_sleep(self.inter_turn_delay)
+            else:
+                self._reset_backoff()
+                if self.inter_turn_delay > 0:
+                    await self._interruptible_sleep(self.inter_turn_delay)
 
     # ── turn execution ───────────────────────────────────────────────────────
 
