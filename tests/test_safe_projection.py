@@ -26,6 +26,7 @@ from zakcode.secrets import redact_secrets
 from zakcode.server.safe_projection import (
     SafeDone,
     SafeEventProjection,
+    SafeSessionRotated,
     SafeStatus,
     SafeTaskUpdate,
     SafeText,
@@ -126,6 +127,29 @@ def test_unknown_event_type_is_dropped_not_passed_through() -> None:
     assert _proj().project(SimpleNamespace(event="action_required", prompt="approve?")) is None
     assert _proj().project(SimpleNamespace(event="some_future_event_type", secret=SK)) is None
     assert _proj().project(SimpleNamespace(event=None)) is None
+
+
+def test_session_rotated_marker_projects_to_safe_form_and_redacts() -> None:
+    # The watch meta-event (a driver session rotation) projects to its allow-listed
+    # SafeSessionRotated form; its reason is secret-redacted like every escaping text field.
+    out = _proj().project(
+        SimpleNamespace(event="session_rotated", reason=f"daemon restarted with {GSK}")
+    )
+    assert isinstance(out, SafeSessionRotated)
+    assert out.event == "session_rotated"
+    assert GSK not in out.reason and "daemon restarted" in out.reason
+
+
+def test_session_rotated_marker_carries_no_ids_or_extra_fields() -> None:
+    # Whitelist by construction: even if the raw marker smuggles a session id or other field,
+    # only the allow-listed {event, reason} escape — the projection reads nothing else.
+    out = _proj().project(
+        SimpleNamespace(event="session_rotated", reason="rotated", new_sid="sess-secret", cursor=9)
+    )
+    assert isinstance(out, SafeSessionRotated)
+    dumped = out.model_dump()
+    assert dumped == {"event": "session_rotated", "reason": "rotated"}
+    assert "new_sid" not in dumped and "cursor" not in dumped
 
 
 # ── Extended redaction (redact_secrets_extended + P0-6 base) ─────────────────

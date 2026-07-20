@@ -182,6 +182,15 @@ class ServeDriver:
                     consecutive_failures >= self.recreate_after_failures
                     and await self._wait_healthy()
                 ):
+                    # Tell any watch observers on the OLD session it's rotating, so they reconnect
+                    # to `current` cleanly instead of guessing at the stream close. Best-effort: a
+                    # marker publish failure must never break the serve loop (this method never
+                    # raises for an ordinary daemon hiccup), and it is a no-op server-side when the
+                    # old session has no live watch bus.
+                    with contextlib.suppress(Exception):
+                        await self.client.publish_watch_marker(
+                            sid, reason="daemon restarted; session re-minted"
+                        )
                     sid = await self._new_session()
                     message = self.boot_message
                     consecutive_failures = 0

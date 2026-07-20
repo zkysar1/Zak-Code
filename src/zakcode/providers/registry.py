@@ -146,15 +146,18 @@ _CAPABILITIES: dict[str, Capabilities] = {
         # for qwen3-32b; pin that. (stack review minor #5; re-probed 2026-06-10)
         max_output=40_960,
     ),
+    # 2026-07-19 re-pin target (g-335-172): Groq DECOMMISSIONED qwen3-32b (above); the
+    # mind-sidecar drive's pinned default moved to qwen3.6-27b (Ayoai-Environment-Server
+    # ops/mind-sidecar/scripts/bootstrap.sh). Same tool-capable tier — supports_tools with
+    # NO tools_unreliable flag, so the auto-resolver keeps it for tool sessions.
     "groq/qwen/qwen3.6-27b": Capabilities(
-        # qwen3-32b's catalog successor and the PEARL sidecar drive pin as of
-        # 2026-07-20 (env-server ops/mind-sidecar bootstrap.sh ZAKCODE_MODEL_PIN).
-        # All four numbers read from Groq's live /models entry (2026-07-20), not
-        # litellm's DB: context_window=131072, max_completion_tokens=32768,
-        # input_modalities includes image (hence supports_vision=True).
-        # Tool-capable like its predecessor — no tools_unreliable behavior
-        # observed (live drive produced real tool-calling turns immediately
-        # after the 2026-07-20 re-pin).
+        # Numbers re-probed 2026-07-20 against Groq's LIVE /models entry from a box
+        # with Groq egress — replacing the initial qwen3-32b-mirrored placeholder
+        # (filed when /v1/models was unreachable): context_window=131072,
+        # max_completion_tokens=32768 (the mirrored 40_960 OVERSTATED the real cap
+        # and risked request rejections), input_modalities includes image (hence
+        # supports_vision=True). Live drive produced real tool-calling turns
+        # immediately after the 2026-07-20 re-pin.
         supports_tools=True,
         supports_vision=True,
         supports_caching=False,
