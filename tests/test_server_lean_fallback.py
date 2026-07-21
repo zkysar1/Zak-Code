@@ -83,6 +83,26 @@ def test_knowledge_node_serves_raw_note_body(tmp_path: Path) -> None:
     assert "Bends spacetime" in node["summary"]
 
 
+def test_knowledge_node_carries_full_body_distinct_from_summary(tmp_path: Path) -> None:
+    # g-335-191: a multi-paragraph raw note exposes a short sampler ``summary`` for the
+    # map AND the full article as ``body`` so click-through shows the whole note.
+    long_note = "# Gravity\n\nFirst paragraph sampler.\n\n" + "Deep detail. " * 200
+    _seed_raw_tree(tmp_path, {"gravity": long_note})
+    node = _client(tmp_path).get("/knowledge/node/gravity").json()
+    assert node["summary"] == "First paragraph sampler."
+    assert "Deep detail." in node["body"]
+    assert node["body"] != node["summary"]
+    assert len(node["body"]) > len(node["summary"])
+
+
+def test_knowledge_tree_map_omits_body(tmp_path: Path) -> None:
+    # g-335-191 verification check: the listing endpoint stays lightweight — no body.
+    _seed_raw_tree(tmp_path, {"gravity": "# Gravity\n\nBends spacetime.\n\n" + "x " * 100})
+    body = _client(tmp_path).get("/knowledge/tree").json()
+    assert body["count"] == 1
+    assert "body" not in body["nodes"][0]
+
+
 def test_raw_note_title_falls_back_to_filename_without_heading(tmp_path: Path) -> None:
     _seed_raw_tree(tmp_path, {"no-heading": "just body text, no markdown heading\n"})
     node = _client(tmp_path).get("/knowledge/node/no-heading").json()
