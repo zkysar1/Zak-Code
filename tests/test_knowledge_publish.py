@@ -20,6 +20,8 @@ call rather than hanging.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from zakcode.config import Settings
@@ -28,6 +30,7 @@ from zakcode.server.knowledge_publish import (
     PublishResult,
     publish_bundle,
     publish_url,
+    publish_workspace_bundle,
 )
 
 KEY = "vin_secretkeyvalue0123456789"
@@ -214,6 +217,65 @@ def test_injected_client_is_not_closed_by_the_callee() -> None:
     stub = _StubClient()
     publish_bundle(_settings(), BUNDLE, client=stub)
     assert stub.closed is False
+
+
+# ── the render→publish integration path ──────────────────────────────────────
+#
+# Everything above drives publish_bundle with a hand-written dict. That leaves
+# the path the CLI ACTUALLY takes untested: read the workspace bundle, render it
+# to OKF, publish the result. A regression in that wiring — a renamed helper, a
+# changed return shape — would keep every test above green while
+# `zakcode publish-knowledge` published nothing.
+
+
+def test_workspace_path_renders_the_real_bundle_and_publishes_it(tmp_path) -> None:
+    (tmp_path / ".knowledge-bundle.json").write_text(
+        json.dumps({"tree": [{"key": "root", "title": "Root", "summary": "the top"}]}),
+        encoding="utf-8",
+    )
+    stub = _StubClient()
+    result = publish_workspace_bundle(_settings(), tmp_path, client=stub)
+
+    assert result.ok, result.failed
+    # Rendered by the SAME producer GET /knowledge/export uses, so the published
+    # paths are the bundle's real paths — not a shape invented here.
+    assert sorted(result.published) == ["index.md", "nodes/root.md"]
+    body = next(c["content"] for c in stub.calls if c["url"].endswith("nodes/root.md"))
+    assert b'type: "node"' in body, "must publish the OKF doc, not the raw viewer JSON"
+
+
+def test_workspace_path_no_ops_before_the_first_export(tmp_path) -> None:
+    # No .knowledge-bundle.json yet — the daemon fails open to an empty base, so
+    # the bundle is index-only. Publishing that is correct (it is a real, valid
+    # bundle), and must not error.
+    result = publish_workspace_bundle(_settings(), tmp_path, client=_StubClient())
+    assert result.ok
+    assert result.published == ["index.md"]
+
+
+def test_workspace_path_skips_the_render_entirely_when_unconfigured(tmp_path, monkeypatch) -> None:
+    """The guard must run BEFORE the render, not just before the PUT.
+
+    Asserting "no calls were made" cannot prove this — `publish_bundle` has its
+    own readiness guard, so moving the outer one after the render still yields a
+    clean skip with zero calls. (A mutation confirmed exactly that: the earlier
+    version of this test stayed green with the guard moved.) Booby-trapping the
+    renderer is what actually observes the ordering: if the render is reached,
+    this raises instead of skipping.
+    """
+    import zakcode.server.app as app_mod
+
+    def _explode(*_a, **_k):  # pragma: no cover - must never be reached
+        raise AssertionError("rendered the bundle on an unconfigured box")
+
+    monkeypatch.setattr(app_mod, "_okf_bundle", _explode)
+    monkeypatch.setattr(app_mod, "_read_knowledge_bundle", _explode)
+
+    stub = _StubClient()
+    unconfigured = Settings(default_model="scripted/test")
+    result = publish_workspace_bundle(unconfigured, tmp_path, client=stub)
+    assert result.ok and result.skipped_reason
+    assert stub.calls == []
 
 
 def test_result_summary_is_readable_in_both_states() -> None:
