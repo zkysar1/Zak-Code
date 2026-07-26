@@ -647,8 +647,10 @@ def _okf_frontmatter(fields: dict[str, Any]) -> str:
             lines.append(f"{key}: {json.dumps([str(x) for x in v], ensure_ascii=False)}")
         else:
             # Unmodelled composite — preserve it losslessly as a JSON scalar
-            # rather than dropping it (invariant 4).
-            lines.append(f"{key}: {json.dumps(json.dumps(v, ensure_ascii=False), ensure_ascii=False)}")
+            # rather than dropping it (invariant 4). Encoded twice on purpose:
+            # once to JSON, then again so the result is a single-line scalar.
+            inner = json.dumps(v, ensure_ascii=False)
+            lines.append(f"{key}: {json.dumps(inner, ensure_ascii=False)}")
     lines.append("---")
     return "\n".join(lines)
 
@@ -719,13 +721,13 @@ def _okf_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
         files[p] = _okf_doc("guardrail", g, rule or f"Guardrail {i + 1}", [])
         listing.setdefault("guardrails", []).append((rule or p, p))
 
-    for i, l in enumerate(bundle.get("lessons") or []):
-        if not isinstance(l, dict):
+    for i, lesson in enumerate(bundle.get("lessons") or []):
+        if not isinstance(lesson, dict):
             continue
-        heading = str(l.get("title") or l.get("text") or f"Lesson {i + 1}")
-        body = str(l.get("content") or l.get("text") or l.get("summary") or "")
+        heading = str(lesson.get("title") or lesson.get("text") or f"Lesson {i + 1}")
+        body = str(lesson.get("content") or lesson.get("text") or lesson.get("summary") or "")
         p = _path("lessons", _okf_slug(heading[:60], f"lesson-{i + 1}"))
-        files[p] = _okf_doc("lesson", l, heading, [body])
+        files[p] = _okf_doc("lesson", lesson, heading, [body])
         listing.setdefault("lessons", []).append((heading, p))
 
     index = ["---", 'type: "index"', "---", "", "# Knowledge base", ""]
