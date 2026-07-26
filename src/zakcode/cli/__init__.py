@@ -171,6 +171,28 @@ def info() -> None:
     )
 
 
+@app.command(name="publish-knowledge")
+def publish_knowledge() -> None:
+    """Publish the OKF knowledge bundle to durable storage (PEARL §10.5).
+
+    A no-op — and a SUCCESS — on a box that has not configured publishing, so a
+    scheduler can call this unconditionally on every box in a fleet. Exits
+    non-zero only when a file was actually attempted and failed, which is the
+    signal a scheduler should alert on.
+    """
+    # Imported lazily: the publish module needs httpx (server/web extra), and
+    # `zakcode version` must not require it just to parse the command table.
+    from zakcode.server.knowledge_publish import publish_workspace_bundle
+
+    settings = load_settings()
+    result = publish_workspace_bundle(settings, settings.workspace_root)
+    typer.echo(f"publish-knowledge: {result.summary()}")
+    for bundle_path, reason in result.failed:
+        # Path + reason only. The credential never reaches stdout.
+        typer.echo(f"  failed: {bundle_path} ({reason})", err=True)
+    raise typer.Exit(code=0 if result.ok else 1)
+
+
 @app.command(name="eval")
 def eval_(
     verbose: bool = typer.Option(

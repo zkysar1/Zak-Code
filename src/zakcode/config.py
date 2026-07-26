@@ -585,6 +585,48 @@ class Settings(BaseSettings):
         description="Base URL of a self-hosted SearXNG instance (when search_backend=searxng).",
     )
 
+    # ── Durable knowledge publish (PEARL §10.5) ──────────────────────────────
+    # The browse routes serve a bundle held on THIS box, so they die with the box.
+    # The offline "survives a restart" read is an OKF bundle published to the
+    # account/env S3 prefix through the gateway's storage route
+    # (PUT /v1/vinheim/storage/{envId}/{filePath}). All three are optional and
+    # default to unset: an unconfigured box must NO-OP, never fail — publishing is
+    # an enhancement, and a box that cannot publish must still serve /knowledge/*.
+    # `knowledge_publish_ready` below is the single predicate every caller checks;
+    # do not re-derive "are all three set?" at call sites.
+    knowledge_publish_url: str | None = Field(
+        default=None,
+        description="Gateway base URL for durable knowledge publish (unset = publishing disabled).",
+    )
+    knowledge_publish_env_id: str | None = Field(
+        default=None,
+        description="Environment ID owning the published bundle (gateway fences on ownership).",
+    )
+    # `exclude=True` mirrors `auth_token`: keep the credential out of every
+    # model_dump(), so GET /config and trace dumps cannot leak it.
+    knowledge_publish_key: str | None = Field(
+        default=None,
+        exclude=True,
+        description="vin_-prefixed key authorizing the storage route (unset = publishing off).",
+    )
+
+    @property
+    def knowledge_publish_ready(self) -> bool:
+        """True only when url, env id AND key are all present and non-blank.
+
+        Partial configuration is treated as NOT ready rather than as an error:
+        a half-configured box no-ops exactly like an unconfigured one, which is
+        the whole point of defaulting these to unset.
+        """
+        return all(
+            (v or "").strip()
+            for v in (
+                self.knowledge_publish_url,
+                self.knowledge_publish_env_id,
+                self.knowledge_publish_key,
+            )
+        )
+
     @property
     def provider(self) -> str:
         """The provider prefix of the configured model (text before the first '/')."""

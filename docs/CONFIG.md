@@ -111,3 +111,20 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 | --- | --- | --- | --- |
 | `auth_token` | `ZAKCODE_AUTH_TOKEN` | unset | Bearer token required on every route except `/health` when set; unset = loopback-only dev (non-loopback bind needs `--insecure`). Excluded from every `model_dump()`. |
 | `allowed_models` | `ZAKCODE_ALLOWED_MODELS` | `[]` | When non-empty, the only model strings a request may override to. |
+
+## Durable knowledge publish (`zakcode publish-knowledge`)
+
+The `/knowledge/*` routes serve a bundle held on this box, so what they serve
+dies with the box. `zakcode publish-knowledge` renders the same OKF transfer
+bundle and PUTs each file to the account/env S3 prefix through the gateway's
+storage route, giving an offline copy that survives a restart.
+
+All three are optional. **A box with none (or only some) of them set no-ops and
+exits 0**, so a fleet scheduler can call the command unconditionally; a non-zero
+exit means a file was actually attempted and failed.
+
+| Field | Env var | Default | Meaning |
+| --- | --- | --- | --- |
+| `knowledge_publish_url` | `ZAKCODE_KNOWLEDGE_PUBLISH_URL` | unset | Gateway base URL; files go to `{url}/v1/vinheim/storage/{envId}/knowledge/{path}`. |
+| `knowledge_publish_env_id` | `ZAKCODE_KNOWLEDGE_PUBLISH_ENV_ID` | unset | Environment ID owning the bundle. The gateway fences on the calling account owning this env — a 403 means "not your env", never "this env is private". |
+| `knowledge_publish_key` | `ZAKCODE_KNOWLEDGE_PUBLISH_KEY` | unset | `vin_`-prefixed API key authorizing the storage route. Sent only as a request header, never in the URL (which lands in access logs). Excluded from every `model_dump()`. |
