@@ -408,12 +408,38 @@ def _empty_bundle() -> dict[str, Any]:
     return {"counts": {}, "tree": [], "hypotheses": [], "guardrails": [], "lessons": []}
 
 
+#: Caps for the lean-agent raw-note fallback (g-335-191): a short sampler ``summary``
+#: for the wiki map vs the fuller clickable ``body``. Mirrors the Mind projection's
+#: summary/body split so the viewer shows a sampler in the tree and the full note on
+#: click. The raw path is workspace-isolated (a research agent writes only its own
+#: domain notes under ``knowledge/tree/``) — unlike the kid-facing PEARL path, which
+#: serves the Mind's already-redacted projected bundle, this fallback carries the note
+#: as written and never reads a framework ``system/`` path.
+_RAW_NODE_SUMMARY_CAP = 500
+_RAW_NODE_BODY_CAP = 32_000
+
+
+def _raw_summary(text: str) -> str:
+    """A short sampler for a raw markdown note: the first non-heading paragraph, capped
+    at ``_RAW_NODE_SUMMARY_CAP``. The full note is carried separately as ``body`` so the
+    viewer renders a sampler in the map and the whole article on click (g-335-191)."""
+    for para in text.split("\n\n"):
+        stripped = "\n".join(
+            ln for ln in para.splitlines() if not ln.strip().startswith("#")
+        ).strip()
+        if stripped:
+            return stripped[:_RAW_NODE_SUMMARY_CAP]
+    return text[:_RAW_NODE_SUMMARY_CAP]
+
+
 def _read_raw_tree(workspace_root: Path) -> list[dict[str, Any]]:
     """Fallback for lean research agents that write raw markdown notes to
     ``<workspace>/knowledge/tree/*.md`` instead of running the Mind's
     ``KnowledgeProjection``. Each ``<key>.md`` becomes a node: the first ``# ``
-    heading is the title, the file body (capped) is the summary. Flat — raw notes
-    carry no parent/child edges. Returns ``[]`` when the directory is absent, so a
+    heading is the title, a short first-paragraph sampler is the ``summary``, and the
+    full note (capped) is the ``body`` — so the map stays light and clicking a node
+    shows the whole article (g-335-191). Flat — raw notes carry no parent/child edges.
+    Returns ``[]`` when the directory is absent, so a
     full Mind (whose tree lives elsewhere and is surfaced via the projected bundle)
     is never affected: there is simply nothing to read at this path.
     """
@@ -438,7 +464,8 @@ def _read_raw_tree(workspace_root: Path) -> list[dict[str, Any]]:
             {
                 "key": f.stem,
                 "title": title,
-                "summary": text[:8000],
+                "summary": _raw_summary(text),
+                "body": text[:_RAW_NODE_BODY_CAP],
                 "parent": "",
                 "children": [],
             }
@@ -1271,7 +1298,13 @@ def create_app(
 
     @app.get("/knowledge/node/{key}")
     def knowledge_node(key: str) -> dict[str, Any]:
-        """One projected node (title, summary/body, parent, child links). 404 if absent."""
+        """One node (title, summary sampler, full body, parent, child links). 404 if absent.
+
+        ``body`` is the full node article — already redacted upstream by the Mind's
+        KnowledgeProjection for a full Mind, or the raw note for a lean-agent workspace
+        (g-335-191). Deliberately kept OUT of ``/knowledge/tree`` (the map), which stays
+        lightweight; the body is fetched only on a per-node click.
+        """
         bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
         for n in bundle["tree"]:
             if isinstance(n, dict) and str(n.get("key") or "") == key:
@@ -1279,6 +1312,7 @@ def create_app(
                     "key": key,
                     "title": str(n.get("title") or ""),
                     "summary": str(n.get("summary") or ""),
+                    "body": str(n.get("body") or ""),
                     "parent": str(n.get("parent") or ""),
                     "children": [str(c) for c in (n.get("children") or []) if c],
                 }
