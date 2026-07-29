@@ -261,6 +261,13 @@ class ToolContext(BaseModel):
     #: error rather than crashing. (A sub-agent gets the PARENT's resolver — shared registry +
     #: budget — but its own ``caller_query`` below, so attribution stays correct.)
     skill_resolver: SkillResolver | None = None
+    #: The session's :class:`~zakcode.rules.RuleRegistry`, which the ``read_rule`` tool reads to
+    #: return ONE rule body by name (Vinheim Lever A chunk 2). It is the retrieval half of
+    #: ``lean_rules``: ``render_index()`` puts every rule's name + summary in the prompt and the
+    #: model fetches a body on demand instead of paying for all of them every turn. The ``Agent``
+    #: wires it when ``enable_rules``; ``None`` otherwise, so the tool returns a clean
+    #: "rules not enabled" error rather than crashing.
+    rule_registry: Any | None = None
     #: The user text that triggered THIS loop's turn — passed to ``use_skill`` so the
     #: ``ON_SKILL_SELECTED`` signal records the *invoking* turn's prompt (the sub-agent's task, not
     #: the parent's originating turn). Each loop stamps its own; empty for a loop that builds a

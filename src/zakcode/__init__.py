@@ -530,6 +530,15 @@ class Agent:
             rules_text = (
                 self.rule_registry.render_index() if use_lean else self.rule_registry.render()
             )
+            # Vinheim Lever A chunk 2 (g-016-82): the retrieval half of the lean path. The
+            # index names every rule but carries no bodies, so the model needs a cheap,
+            # unambiguous way to fetch one — register ``read_rule`` whenever rules are on.
+            # Registered for BOTH renders on purpose: under the full render the index header
+            # is absent, but a rule dropped past MAX_RULES_TOTAL_CHARS is still reachable by
+            # name, which is exactly the completeness gap the full render otherwise has.
+            from zakcode.tools.builtins.read_rule import ReadRuleTool
+
+            self.registry.register(ReadRuleTool())
 
         # Claude Code output style (opt-in): the active outputStyle's body, folded into the
         # SAME stable tier as rules so it shapes generation and stays cache-safe. Loaded here
@@ -893,6 +902,10 @@ class Agent:
             # signal. None unless enable_skills, so the use_skill tool (also only registered then)
             # has its seam exactly when skills are on.
             skill_resolver=skill_resolver,
+            # read_rule's source: the discovered rule registry, so the model can fetch a rule
+            # body by name. None unless enable_rules (same shape as skill_resolver above), so
+            # the tool's seam exists exactly when rules are on.
+            rule_registry=self.rule_registry,
             # TURN_END veto seam (T2/T3/T4): 0 (the default) disables the gate.
             turn_end_veto_budget=self.settings.turn_end_veto_budget,
             # Completion-review gate: 0 (the default) disables it; when >0, a code-changing turn
