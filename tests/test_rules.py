@@ -405,7 +405,13 @@ def test_env_var_reaches_a_non_server_agent(tmp_path: Path, monkeypatch) -> None
     agent.run_turn("go")
     system = (prov.systems or [""])[0]
     # The index instructs on-demand reading and does NOT inline rule bodies.
-    assert "READ the full rule file" in system
+    # Marker must be INDEX-SPECIFIC. A bare "read_rule" does NOT work here: the tool is
+    # registered whenever rules are on, so its name reaches this same system prompt through
+    # the tool catalog ("- read_rule(name): ...") even when the FULL render is in use. That
+    # marker passes against both arms and so proves nothing about which render ran — verified
+    # by re-running this test against the pre-g-016-82 header. This phrase appears only in
+    # render_index()'s header.
+    assert "call read_rule with its name" in system
     assert "BODY-MARKER-0" not in system
 
 

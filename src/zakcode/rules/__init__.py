@@ -181,8 +181,10 @@ class RuleRegistry:
             return ""
         header = (
             "Project rules (operator-authored standing guidance). Each rule is listed by "
-            "name with a one-line summary; READ the full rule file (path shown) with your "
-            "file-read tool when a rule looks relevant to the current step, then apply it:"
+            "name with a one-line summary; when a rule looks relevant to the current step, "
+            "call read_rule with its name to get the full text, then apply it. (The file "
+            "path is shown too, so your file-read tool also works if read_rule is "
+            "unavailable.):"
         )
         lines: list[str] = []
         note_slack = 80

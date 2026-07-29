@@ -487,6 +487,7 @@ class AgentLoop:
         difficulty_classifier: DifficultyClassifier | None = None,
         sampler: Sampler | None = None,
         skill_resolver: SkillResolver | None = None,
+        rule_registry: Any | None = None,
         turn_end_veto_budget: int = 0,
         completion_review_attempts: int = 0,
         fire_session_start: bool = True,
@@ -502,6 +503,10 @@ class AgentLoop:
         # makes use_skill return a clean "not enabled" error. The Agent wires it to the session's
         # skill registry and fires ON_SKILL_SELECTED (source="tool") on each load.
         self._skill_resolver = skill_resolver
+        # Rules seam (Vinheim Lever A chunk 2): the discovered RuleRegistry the read_rule
+        # tool reads to return ONE rule body by name. Threaded into every ToolContext;
+        # ``None`` (rules disabled) makes read_rule return a clean "not enabled" error.
+        self._rule_registry = rule_registry
         # Runtime model failover seam (PKG-AUTO): on a NON-rate-limit provider failure
         # the loop asks this callback for a replacement ``(provider, description)`` —
         # once per turn, and on the streaming path only before any event reached the
@@ -1673,6 +1678,7 @@ class AgentLoop:
             task_network=self.session.task_network,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
+            rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
@@ -2331,6 +2337,7 @@ class AgentLoop:
             task_network=self.session.task_network,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
+            rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
