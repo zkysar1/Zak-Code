@@ -363,3 +363,97 @@ def test_agent_subagents_inherit_parent_rules(tmp_path: Path) -> None:
     # The runner behind the task spawner carries the parent's rendered rules.
     runner = agent.loop.spawner._runner  # type: ignore[union-attr]
     assert runner.rules is not None and "DELEGATED_RULE_MARKER" in runner.rules
+
+
+# ── g-016-86: the env var must reach a NON-server Agent construction ─────────
+#
+# ZAKCODE_LEAN_RULES was documented as a deployment knob ("set ZAKCODE_LEAN_RULES=true
+# for token-constrained deployments") but reached the Agent through exactly one call
+# site — server/app.py — because the constructor parameter hard-defaulted to False.
+# Every other construction (CLI, library, bench, evals) silently took the full render.
+# The cost was a VACUOUS A/B: setting the env var produced byte-identical system
+# prompts in both arms, which reads as "no regression" and invites flipping a default
+# on a measurement that never varied the variable.
+
+
+def _mind_with_rules(tmp_path: Path, n: int = 3) -> Path:
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    for i in range(n):
+        (rules / f"rule-{i}.md").write_text(
+            f"---\ndescription: summary of rule {i}\n---\n# Rule {i}\nBODY-MARKER-{i} full text.\n",
+            encoding="utf-8",
+        )
+    return tmp_path
+
+
+def test_env_var_reaches_a_non_server_agent(tmp_path: Path, monkeypatch) -> None:
+    """ZAKCODE_LEAN_RULES=true renders the index through a plain Agent construction."""
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+    from zakcode.permissions import PermissionPolicy
+
+    ws = _mind_with_rules(tmp_path)
+    monkeypatch.setenv("ZAKCODE_LEAN_RULES", "true")
+    prov = ScriptedProvider([reply("ok")])
+    agent = Agent(
+        provider=prov,
+        workspace_root=str(ws),
+        enable_rules=True,
+        permission_policy=PermissionPolicy("allow"),
+    )
+    agent.run_turn("go")
+    system = (prov.systems or [""])[0]
+    # The index instructs on-demand reading and does NOT inline rule bodies.
+    assert "READ the full rule file" in system
+    assert "BODY-MARKER-0" not in system
+
+
+def test_env_var_off_still_renders_full_bodies(tmp_path: Path, monkeypatch) -> None:
+    """The DISCRIMINATING half: without the env var the full bodies still render.
+
+    Without this, the test above would pass against an implementation that always
+    renders the index — the assertion would no longer be about the env var at all.
+    """
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+    from zakcode.permissions import PermissionPolicy
+
+    ws = _mind_with_rules(tmp_path)
+    monkeypatch.delenv("ZAKCODE_LEAN_RULES", raising=False)
+    prov = ScriptedProvider([reply("ok")])
+    agent = Agent(
+        provider=prov,
+        workspace_root=str(ws),
+        enable_rules=True,
+        permission_policy=PermissionPolicy("allow"),
+    )
+    agent.run_turn("go")
+    system = (prov.systems or [""])[0]
+    assert "BODY-MARKER-0" in system
+    assert "READ the full rule file" not in system
+
+
+def test_explicit_parameter_still_wins_over_the_env_var(tmp_path: Path, monkeypatch) -> None:
+    """An explicit False from the host overrides ZAKCODE_LEAN_RULES=true.
+
+    The deferral is None-means-defer, not env-always-wins — same shape as
+    enable_status_line / enable_output_style.
+    """
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+    from zakcode.permissions import PermissionPolicy
+
+    ws = _mind_with_rules(tmp_path)
+    monkeypatch.setenv("ZAKCODE_LEAN_RULES", "true")
+    prov = ScriptedProvider([reply("ok")])
+    agent = Agent(
+        provider=prov,
+        workspace_root=str(ws),
+        enable_rules=True,
+        lean_rules=False,
+        permission_policy=PermissionPolicy("allow"),
+    )
+    agent.run_turn("go")
+    system = (prov.systems or [""])[0]
+    assert "BODY-MARKER-0" in system

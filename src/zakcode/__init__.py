@@ -256,7 +256,7 @@ class Agent:
         extra_skill_dirs: Sequence[str | Path] | None = None,
         extra_workspace_roots: Sequence[str | Path] | None = None,
         enable_rules: bool = False,
-        lean_rules: bool = False,
+        lean_rules: bool | None = None,
         enable_identity: bool = True,
         identity: str | None = None,
         enable_compaction: bool = False,
@@ -518,8 +518,17 @@ class Agent:
             from zakcode.rules import discover_rules
 
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
+            # ``None`` defers to Settings.lean_rules (ZAKCODE_LEAN_RULES); an explicit
+            # True/False from the host wins — the same deferral shape as
+            # enable_status_line / enable_output_style / settings_permissions above.
+            # Before g-016-86 this was a hard ``False`` default, so the documented env
+            # var reached the Agent through server/app.py ONLY: CLI, library and bench
+            # constructions silently took the full render, and an A/B driven by the env
+            # var returned byte-identical arms. Settings.lean_rules still defaults to
+            # False, so an operator who sets nothing sees no change.
+            use_lean = self.settings.lean_rules if lean_rules is None else lean_rules
             rules_text = (
-                self.rule_registry.render_index() if lean_rules else self.rule_registry.render()
+                self.rule_registry.render_index() if use_lean else self.rule_registry.render()
             )
 
         # Claude Code output style (opt-in): the active outputStyle's body, folded into the
