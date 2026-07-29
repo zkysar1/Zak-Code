@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -51,11 +52,16 @@ def rules_text_for(lean: bool, rules_root: str | None) -> tuple[str, int]:
     else:
         os.environ.pop("ZBENCH_RULES_ROOT", None)
     workspace = Path(tempfile.mkdtemp(prefix="zbench-control-"))
-    agent = _build_agent(workspace, SPEC)
-    builder = getattr(getattr(agent, "loop", None), "prompt_builder", None)
-    text = getattr(builder, "rules", None) if builder is not None else None
-    registry = getattr(agent, "rule_registry", None)
-    return (text or ""), (len(registry) if registry is not None else 0)
+    try:
+        agent = _build_agent(workspace, SPEC)
+        builder = getattr(getattr(agent, "loop", None), "prompt_builder", None)
+        text = getattr(builder, "rules", None) if builder is not None else None
+        registry = getattr(agent, "rule_registry", None)
+        return (text or ""), (len(registry) if registry is not None else 0)
+    finally:
+        # Match run_task.py's temp-workspace hygiene (it rmtree's at both exit paths);
+        # this control builds 4 agents per run and would otherwise leak 4 dirs each time.
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def report(label: str, rules_root: str | None, want_differ: bool) -> bool:
