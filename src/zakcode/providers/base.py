@@ -67,6 +67,14 @@ class Capabilities(BaseModel):
     #: sort: the auto-resolver skips tools-unreliable models whenever the session
     #: has tools registered, so the rule survives future model additions. (D21)
     tools_unreliable: bool = False
+    #: The provider has REMOVED this model from its live catalog. Kept in the
+    #: registry so historical receipts and pinned configs still resolve their
+    #: capability facts, but nothing may ROUTE to it. Structured rather than a
+    #: comment because a comment cannot be asserted: qwen3-32b was decommissioned
+    #: 2026-07-19, the note was written in the registry, its successor's
+    #: capabilities were registered — and DEFAULT_CATEGORY_MODELS kept routing two
+    #: categories to the dead model for ten days because nothing checked. (g-016-83)
+    decommissioned: bool = False
     supports_vision: bool = False
     supports_caching: bool = False
     context_window: int = 8192
