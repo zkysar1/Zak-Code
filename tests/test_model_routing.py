@@ -140,3 +140,44 @@ async def test_compaction_summarizer_defaults_to_main_provider(tmp_path: Path) -
     loop = AgentLoop(gen, ToolRegistry(), Session(cwd=str(tmp_path), model="t"), max_iterations=5)
     out = await loop._summarize_for_compaction([Message.user("x")])
     assert out == "gen-summary" and gen.calls == 1
+
+
+# ── g-016-83: routed models must not be decommissioned ───────────────────────
+#
+# THE DEFECT THIS PINS. Groq removed ``qwen/qwen3-32b`` from its catalog around
+# 2026-07-19. The registry recorded that — in a COMMENT — and its successor's
+# capabilities were registered the same day. But DEFAULT_CATEGORY_MODELS kept
+# routing ``quick_code`` and ``plan`` at the dead model for ten days, because a
+# comment cannot be asserted and nothing checked. Confirmed against Groq's live
+# /v1/models on 2026-07-29: qwen3-32b ABSENT, qwen3.6-27b PRESENT.
+#
+# Hermetic: reads the static registry only, no network.
+
+
+def test_routed_models_are_not_decommissioned() -> None:
+    """Every default category route resolves to a model still in the catalog."""
+    from zakcode.providers.registry import get_capabilities
+    from zakcode.providers.routing import DEFAULT_CATEGORY_MODELS
+
+    dead = {
+        category: model.litellm_string
+        for category, model in DEFAULT_CATEGORY_MODELS.items()
+        if get_capabilities(model.litellm_string).decommissioned
+    }
+    assert not dead, (
+        f"DEFAULT_CATEGORY_MODELS routes to decommissioned model(s): {dead}. "
+        "Repoint the category to the catalog successor and update the registry."
+    )
+
+
+def test_decommissioned_flag_actually_discriminates() -> None:
+    """The guard above is only meaningful if the flag is ever True.
+
+    A test asserting 'nothing is decommissioned' passes trivially when NOTHING is
+    ever marked — the same vacuity that let the original defect through. Pin that
+    the flag is set on the model we know is dead, so the check has real teeth.
+    """
+    from zakcode.providers.registry import get_capabilities
+
+    assert get_capabilities("groq/qwen/qwen3-32b").decommissioned is True
+    assert get_capabilities("groq/qwen/qwen3.6-27b").decommissioned is False

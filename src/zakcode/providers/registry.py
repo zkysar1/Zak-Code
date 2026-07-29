@@ -145,6 +145,9 @@ _CAPABILITIES: dict[str, Capabilities] = {
         # certainly a conflated field. Groq documents 40,960 max completion tokens
         # for qwen3-32b; pin that. (stack review minor #5; re-probed 2026-06-10)
         max_output=40_960,
+        # Confirmed ABSENT from Groq's LIVE /v1/models on 2026-07-29 (g-016-83) —
+        # the decommission below is now probed, not just asserted in a comment.
+        decommissioned=True,
     ),
     # 2026-07-19 re-pin target (g-335-172): Groq DECOMMISSIONED qwen3-32b (above); the
     # mind-sidecar drive's pinned default moved to qwen3.6-27b (Ayoai-Environment-Server

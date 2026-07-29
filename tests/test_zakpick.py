@@ -68,8 +68,11 @@ def test_defaults_are_groq_and_graduated() -> None:
     s = Settings(default_model="zakpick", workspace_root=".")
     assert r.model_for_category("classify", s) == "groq/llama-3.1-8b-instant"  # cheapest
     assert r.model_for_category("summarize", s) == "groq/openai/gpt-oss-20b"  # no-tool prose
-    assert r.model_for_category("quick_code", s) == "groq/qwen/qwen3-32b"  # tools-reliable Groq
-    assert r.model_for_category("plan", s) == "groq/qwen/qwen3-32b"
+    # Repointed 2026-07-29 (g-016-83): Groq decommissioned qwen3-32b ~2026-07-19
+    # (confirmed ABSENT from the live /v1/models catalog); qwen3.6-27b is the
+    # catalog successor and the same tool-capable tier.
+    assert r.model_for_category("quick_code", s) == "groq/qwen/qwen3.6-27b"  # tools-reliable Groq
+    assert r.model_for_category("plan", s) == "groq/qwen/qwen3.6-27b"
     # deep_code/delegate moved to a first-party model whose native tool-calling is reliable
     # (Groq's open models emit tool calls its strict parser rejects — see routing.py rationale).
     assert r.model_for_category("deep_code", s) == "openai/gpt-4o-mini"  # reliable native + cached
@@ -108,7 +111,7 @@ def test_user_override_wins_and_flips_source() -> None:
         zakpick_models={"deep_code": {"model": "qwen3:32b", "source": "local"}},
     )
     assert r.model_for_category("deep_code", s) == "ollama_chat/qwen3:32b"  # overridden → local
-    assert r.model_for_category("quick_code", s) == "groq/qwen/qwen3-32b"  # still default
+    assert r.model_for_category("quick_code", s) == "groq/qwen/qwen3.6-27b"  # still default
 
 
 # ── classifier (the one automatic decision) ──────────────────────────────────────
@@ -260,7 +263,7 @@ def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
 def test_agent_main_provider_updates_active_model(tmp_path: Path) -> None:
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
     agent._main_provider_for("quick_code")
-    assert agent._active_model == "groq/qwen/qwen3-32b"  # easy turn → reliable quick coder
+    assert agent._active_model == "groq/qwen/qwen3.6-27b"  # easy turn → reliable quick coder
     agent._main_provider_for("deep_code")
     assert agent._active_model == "openai/gpt-4o-mini"  # hard turn → reliable deep coder
 

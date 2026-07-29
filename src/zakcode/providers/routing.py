@@ -101,8 +101,13 @@ def _o(model: str) -> ZakpickModel:
 DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
     "classify": _g("llama-3.1-8b-instant"),  # cheapest/fastest — JSON gates
     "summarize": _g("openai/gpt-oss-20b"),  # cheap, fast prose; NO tools, so the flag is moot
-    "quick_code": _g("qwen/qwen3-32b"),  # tools-RELIABLE Groq model (gpt-oss-20b's tools flake)
-    "plan": _g("qwen/qwen3-32b"),  # strong reasoning for decomposition (read-only)
+    # Repointed 2026-07-29 (g-016-83) off qwen3-32b, which Groq decommissioned
+    # ~2026-07-19 and which is confirmed ABSENT from the live /v1/models catalog.
+    # qwen3.6-27b is its catalog successor and the same tool-capable tier
+    # (supports_tools, no tools_unreliable), so the auto-resolver keeps it for
+    # tool sessions. test_routed_models_are_not_decommissioned pins this.
+    "quick_code": _g("qwen/qwen3.6-27b"),  # tools-RELIABLE Groq model (gpt-oss-20b's tools flake)
+    "plan": _g("qwen/qwen3.6-27b"),  # strong reasoning for decomposition (read-only)
     "deep_code": _o("gpt-4o-mini"),  # tools-RELIABLE native + cached — hard turns
     "delegate": _o("gpt-4o-mini"),  # tools-reliable native — general execution
 }
