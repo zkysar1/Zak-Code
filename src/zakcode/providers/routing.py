@@ -98,6 +98,23 @@ def _o(model: str) -> ZakpickModel:
 #:     cheapest per completed task. Requires ``OPENAI_API_KEY``; a Groq-only fork should
 #:     override deep_code/delegate to ``llama-3.3-70b-versatile`` with
 #:     ``ZAKCODE_TOOL_CALLING_MODE=text`` (focused tasks) instead.
+#:
+#: RE-TESTED 2026-07-29 UNDER LEAN RULES (g-016-84), because the caching argument above was
+#: measured against an ~8.2k-token rule block re-sent every turn. With ``lean_rules`` on that
+#: block is ~0.9k, so the uncached per-turn penalty that made Groq expensive should have
+#: largely vanished. It did not change the answer:
+#:   * 3 bench tasks, both arms with lean rules active (ZBENCH_RULES_ROOT + ZAKCODE_LEAN_RULES).
+#:   * ``openai/gpt-4o-mini``: 1/3 verified, $0.0328 total — real attempts on all three
+#:     (the two failures were a tie-break and an even-length-median bug, not missing work).
+#:   * ``groq/qwen/qwen3.6-27b`` (native): 0/3 verified, $0.0330 total. On 2 of 3 it wrote NO
+#:     FILE AT ALL and stopped after ONE iteration ("wordfreq.py not found", "lru.py missing")
+#:     — the same tool-unreliability signature as the other Groq open models above.
+#: CONCLUSION: the binding constraint was never per-turn token cost, so shrinking the prompt
+#: cannot fix it. Cost came out within 0.6% of each other; reliability did not move. Keep
+#: gpt-4o-mini. CAVEAT — this tested qwen3.6-27b NATIVE only; the ``llama-3.3-70b-versatile``
+#: + ``ZAKCODE_TOOL_CALLING_MODE=text`` fork path above remains UNTESTED under lean rules, and
+#: n=3 is small (gpt-4o-mini's own 1/3 did not reproduce the "completed the full benchmark"
+#: claim above, so treat both numbers as directional).
 DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
     "classify": _g("llama-3.1-8b-instant"),  # cheapest/fastest — JSON gates
     "summarize": _g("openai/gpt-oss-20b"),  # cheap, fast prose; NO tools, so the flag is moot
