@@ -82,11 +82,46 @@ def _build_agent(workspace: Path, spec: dict):
         existing["deep_code"] = ZakpickModel(model=deep_model, source=deep_source)
         existing["delegate"] = ZakpickModel(model=deep_model, source=deep_source)
         update["zakpick_models"] = existing
+    # Rules arm (g-016-91). By default this runner builds with enable_rules=False AND a temp
+    # workspace holding no rules — so a ZAKCODE_LEAN_RULES A/B is structurally incapable of
+    # varying its own variable: both arms render the empty string. Measured 2026-07-29 at
+    # 8e59d49: rules_discovered=0, full=0 chars, index=0 chars, sha1-identical. That matters
+    # because the lean_rules decision rule is "flip the default if NO regression" — a dead
+    # instrument returns exactly the null result that authorizes the flip.
+    #
+    # Opt in with ZBENCH_RULES_ROOT=<mind-repo>, which seeds that mind's .claude/rules into the
+    # temp workspace (a path `default_rule_dirs` searches) and turns rule injection on. Mirrors
+    # the ZBENCH_DEEP_MODEL / ZBENCH_DEEP_SOURCE override pattern above. Unset — the default —
+    # reproduces the previous behaviour byte-for-byte.
+    #
+    # Fails LOUD on a bad root rather than degrading to zero rules: a silent fallback would
+    # recreate the very dead-instrument failure this flag exists to remove.
+    rules_root = os.environ.get("ZBENCH_RULES_ROOT")
+    enable_rules = False
+    if rules_root:
+        src_rules = Path(rules_root) / ".claude" / "rules"
+        if not src_rules.is_dir():
+            raise SystemExit(f"ZBENCH_RULES_ROOT={rules_root!r}: no .claude/rules directory")
+        dst_rules = workspace / ".claude" / "rules"
+        dst_rules.mkdir(parents=True, exist_ok=True)
+        seeded = 0
+        for rule_file in sorted(src_rules.glob("*.md")):
+            shutil.copy2(rule_file, dst_rules / rule_file.name)
+            seeded += 1
+        if seeded == 0:
+            raise SystemExit(f"ZBENCH_RULES_ROOT={rules_root!r}: .claude/rules holds no *.md files")
+        enable_rules = True
+        lean = os.environ.get("ZAKCODE_LEAN_RULES", "false")
+        print(
+            f"[bench] rules arm ON: seeded {seeded} rule(s) from {src_rules} "
+            f"(ZAKCODE_LEAN_RULES={lean})",
+            file=sys.stderr,
+        )
     settings = base.model_copy(update=update)
     agent = Agent(
         settings=settings,
         enable_compaction=True,   # needed so long tasks survive the context window
-        enable_rules=False,       # OFF: no rule injection in the bare temp workspace
+        enable_rules=enable_rules,  # default OFF; ZBENCH_RULES_ROOT turns it on (see above)
         enable_skills=False,      # OFF: no skill dirs
         enable_subagents=False,   # OFF: keep the baseline single-agent (enable later for a "full" run)
         enable_mcp=False,
