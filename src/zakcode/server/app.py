@@ -636,7 +636,18 @@ _OKF_BODY_FIELDS = {
     "node": ("title", "summary", "body"),
     "hypothesis": ("statement",),
     "guardrail": ("rule",),
-    "lesson": ("title", "content", "text", "summary"),
+    # "lesson" leads the tuple because it is the ONLY prose key a projected
+    # lesson actually carries: the Mind's KnowledgeProjection builds each record
+    # as exactly {title, lesson} (knowledge_projection.py, bundle.lessons), and
+    # .knowledge-bundle.json is the only thing this path ever reads. Omitting it
+    # cost both halves at once — the prose fell through to FRONTMATTER as an
+    # unmodelled field while the body expression below resolved to "", so every
+    # lesson rendered as a blank page under its heading. Keep it FIRST: once the
+    # key is modelled it no longer reaches frontmatter, so a record carrying a
+    # stray content/text/summary alongside it would otherwise drop the lesson
+    # prose from BOTH places. content/text/summary stay for hand-authored and
+    # legacy records.
+    "lesson": ("lesson", "title", "content", "text", "summary"),
 }
 
 
@@ -752,7 +763,16 @@ def _okf_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(lesson, dict):
             continue
         heading = str(lesson.get("title") or lesson.get("text") or f"Lesson {i + 1}")
-        body = str(lesson.get("content") or lesson.get("text") or lesson.get("summary") or "")
+        # "lesson" first — see the _OKF_BODY_FIELDS["lesson"] comment. A
+        # projected record carries only {title, lesson}, so the other three
+        # resolve to "" on every real lesson.
+        body = str(
+            lesson.get("lesson")
+            or lesson.get("content")
+            or lesson.get("text")
+            or lesson.get("summary")
+            or ""
+        )
         p = _path("lessons", _okf_slug(heading[:60], f"lesson-{i + 1}"))
         files[p] = _okf_doc("lesson", lesson, heading, [body])
         listing.setdefault("lessons", []).append((heading, p))

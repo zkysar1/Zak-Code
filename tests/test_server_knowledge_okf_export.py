@@ -252,3 +252,64 @@ def test_empty_base_still_produces_a_valid_bundle(tmp_path: Path) -> None:
     assert body["bundle"]["format"] == "okf-transfer-bundle"
     assert list(body["files"]) == ["index.md"]
     assert json.loads(_frontmatter(body["files"]["index.md"])["type"]) == "index"
+
+
+# ── the PROJECTED lesson shape (g-115-4606) ────────────────────────────────
+#
+# Every lesson fixture above is hand-authored as {title, content}. The Mind's
+# KnowledgeProjection builds each lesson as exactly {title, lesson}
+# (knowledge_projection.py -> bundle.lessons), and .knowledge-bundle.json is the
+# only thing this path ever reads — so the suite was green against a shape the
+# real producer never emits, while every real lesson rendered as a blank page.
+# A fixture that does not match its producer is not coverage; these pin the
+# producer's actual shape.
+
+#: Exactly what KnowledgeProjection writes — two keys, no content/text/summary.
+PROJECTED_LESSON = {
+    "lessons": [{"title": "Read the raw spectra", "lesson": "Summaries hide the noise floor."}]
+}
+
+
+def _body(doc: str) -> str:
+    """Everything after the frontmatter block and the `# heading` line."""
+    assert doc.startswith("---\n"), doc[:40]
+    after_fm = doc.split("\n---\n", 1)[1]
+    lines = [ln for ln in after_fm.splitlines() if not ln.startswith("# ")]
+    return "\n".join(lines).strip()
+
+
+def test_projected_lesson_renders_a_non_empty_body(tmp_path: Path) -> None:
+    # Half 1 of the fix: the body expression must reach `lesson`. Without it the
+    # document is a heading over nothing.
+    files = _export(tmp_path, PROJECTED_LESSON)["files"]
+    doc = files["lessons/read-the-raw-spectra.md"]
+    assert _body(doc) == "Summaries hide the noise floor."
+
+
+def test_projected_lesson_prose_is_not_parked_in_frontmatter(tmp_path: Path) -> None:
+    # Half 2: `lesson` must be MODELLED, or invariant 4's preserve-unknown-keys
+    # rule faithfully carries the whole prose into a YAML scalar. Conforming as a
+    # record, unreadable as a document.
+    files = _export(tmp_path, PROJECTED_LESSON)["files"]
+    fm = _frontmatter(files["lessons/read-the-raw-spectra.md"])
+    assert "lesson" not in fm, f"prose leaked into frontmatter: {fm}"
+    assert json.loads(fm["type"]) == "lesson"
+
+
+def test_hand_authored_lesson_shapes_still_render(tmp_path: Path) -> None:
+    # The fix must not regress the legacy/hand-authored keys the map still lists.
+    for key in ("content", "text", "summary"):
+        files = _export(tmp_path, {"lessons": [{"title": "T", key: "prose via " + key}]})["files"]
+        assert _body(files["lessons/t.md"]) == "prose via " + key, key
+
+
+def test_lesson_key_wins_over_a_stray_sibling_prose_field(tmp_path: Path) -> None:
+    # Ordering is load-bearing, not cosmetic. Once `lesson` is modelled it no
+    # longer falls through to frontmatter, so if the body expression preferred a
+    # stray `summary` the lesson prose would vanish from BOTH places — silent
+    # loss at the export boundary. This pins the tuple order that prevents it.
+    files = _export(
+        tmp_path,
+        {"lessons": [{"title": "T", "lesson": "the real lesson", "summary": "a stray sampler"}]},
+    )["files"]
+    assert _body(files["lessons/t.md"]) == "the real lesson"
