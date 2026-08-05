@@ -97,12 +97,27 @@ jobs:
     needs: verify
     if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # OIDC keyless (g-010-82). A permissions block REPLACES the job's full
+    # default set, so contents is named explicitly even though this job does
+    # not check out -- omitting it would revoke it. id-token: write is what
+    # lets the runner mint the OIDC token configure-aws-credentials exchanges.
+    permissions:
+      id-token: write
+      contents: read
     steps:
+      # No step-level `if:` needed here: the JOB-level if above already gates
+      # every step. The other six workflow files in this migration put their
+      # alert step inside a job that also runs on success, so there the
+      # configure step MUST repeat the failure() condition or it will attempt
+      # an OIDC assume on every green build.
+      - name: Configure AWS credentials (OIDC, keyless)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::891377285145:role/ayoai-zds-ci-alert-oidc
+          aws-region: us-east-2
       - name: Send SES alert
         continue-on-error: true
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-2
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
