@@ -256,7 +256,7 @@ class Agent:
         extra_skill_dirs: Sequence[str | Path] | None = None,
         extra_workspace_roots: Sequence[str | Path] | None = None,
         enable_rules: bool = False,
-        lean_rules: bool = False,
+        lean_rules: bool | None = None,
         enable_identity: bool = True,
         identity: str | None = None,
         enable_compaction: bool = False,
@@ -524,9 +524,27 @@ class Agent:
             from zakcode.rules import discover_rules
 
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
+            # ``None`` defers to Settings.lean_rules (ZAKCODE_LEAN_RULES); an explicit
+            # True/False from the host wins — the same deferral shape as
+            # enable_status_line / enable_output_style / settings_permissions above.
+            # Before g-016-86 this was a hard ``False`` default, so the documented env
+            # var reached the Agent through server/app.py ONLY: CLI, library and bench
+            # constructions silently took the full render, and an A/B driven by the env
+            # var returned byte-identical arms. Settings.lean_rules still defaults to
+            # False, so an operator who sets nothing sees no change.
+            use_lean = self.settings.lean_rules if lean_rules is None else lean_rules
             rules_text = (
-                self.rule_registry.render_index() if lean_rules else self.rule_registry.render()
+                self.rule_registry.render_index() if use_lean else self.rule_registry.render()
             )
+            # Vinheim Lever A chunk 2 (g-016-82): the retrieval half of the lean path. The
+            # index names every rule but carries no bodies, so the model needs a cheap,
+            # unambiguous way to fetch one — register ``read_rule`` whenever rules are on.
+            # Registered for BOTH renders on purpose: under the full render the index header
+            # is absent, but a rule dropped past MAX_RULES_TOTAL_CHARS is still reachable by
+            # name, which is exactly the completeness gap the full render otherwise has.
+            from zakcode.tools.builtins.read_rule import ReadRuleTool
+
+            self.registry.register(ReadRuleTool())
 
         # Claude Code output style (opt-in): the active outputStyle's body, folded into the
         # SAME stable tier as rules so it shapes generation and stays cache-safe. Loaded here
@@ -890,6 +908,10 @@ class Agent:
             # signal. None unless enable_skills, so the use_skill tool (also only registered then)
             # has its seam exactly when skills are on.
             skill_resolver=skill_resolver,
+            # read_rule's source: the discovered rule registry, so the model can fetch a rule
+            # body by name. None unless enable_rules (same shape as skill_resolver above), so
+            # the tool's seam exists exactly when rules are on.
+            rule_registry=self.rule_registry,
             # TURN_END veto seam (T2/T3/T4): 0 (the default) disables the gate.
             turn_end_veto_budget=self.settings.turn_end_veto_budget,
             # Completion-review gate: 0 (the default) disables it; when >0, a code-changing turn

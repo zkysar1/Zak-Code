@@ -408,12 +408,38 @@ def _empty_bundle() -> dict[str, Any]:
     return {"counts": {}, "tree": [], "hypotheses": [], "guardrails": [], "lessons": []}
 
 
+#: Caps for the lean-agent raw-note fallback (g-335-191): a short sampler ``summary``
+#: for the wiki map vs the fuller clickable ``body``. Mirrors the Mind projection's
+#: summary/body split so the viewer shows a sampler in the tree and the full note on
+#: click. The raw path is workspace-isolated (a research agent writes only its own
+#: domain notes under ``knowledge/tree/``) — unlike the kid-facing PEARL path, which
+#: serves the Mind's already-redacted projected bundle, this fallback carries the note
+#: as written and never reads a framework ``system/`` path.
+_RAW_NODE_SUMMARY_CAP = 500
+_RAW_NODE_BODY_CAP = 32_000
+
+
+def _raw_summary(text: str) -> str:
+    """A short sampler for a raw markdown note: the first non-heading paragraph, capped
+    at ``_RAW_NODE_SUMMARY_CAP``. The full note is carried separately as ``body`` so the
+    viewer renders a sampler in the map and the whole article on click (g-335-191)."""
+    for para in text.split("\n\n"):
+        stripped = "\n".join(
+            ln for ln in para.splitlines() if not ln.strip().startswith("#")
+        ).strip()
+        if stripped:
+            return stripped[:_RAW_NODE_SUMMARY_CAP]
+    return text[:_RAW_NODE_SUMMARY_CAP]
+
+
 def _read_raw_tree(workspace_root: Path) -> list[dict[str, Any]]:
     """Fallback for lean research agents that write raw markdown notes to
     ``<workspace>/knowledge/tree/*.md`` instead of running the Mind's
     ``KnowledgeProjection``. Each ``<key>.md`` becomes a node: the first ``# ``
-    heading is the title, the file body (capped) is the summary. Flat — raw notes
-    carry no parent/child edges. Returns ``[]`` when the directory is absent, so a
+    heading is the title, a short first-paragraph sampler is the ``summary``, and the
+    full note (capped) is the ``body`` — so the map stays light and clicking a node
+    shows the whole article (g-335-191). Flat — raw notes carry no parent/child edges.
+    Returns ``[]`` when the directory is absent, so a
     full Mind (whose tree lives elsewhere and is surfaced via the projected bundle)
     is never affected: there is simply nothing to read at this path.
     """
@@ -438,7 +464,8 @@ def _read_raw_tree(workspace_root: Path) -> list[dict[str, Any]]:
             {
                 "key": f.stem,
                 "title": title,
-                "summary": text[:8000],
+                "summary": _raw_summary(text),
+                "body": text[:_RAW_NODE_BODY_CAP],
                 "parent": "",
                 "children": [],
             }
@@ -567,6 +594,210 @@ def _read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
     if not out["guardrails"]:
         out["guardrails"] = _read_raw_guardrails(workspace_root)
     return out
+
+
+# ── OKF transfer-bundle export (PEARL §10.5 / g-335-45) ──────────────────────
+# `/knowledge/export` returns a PORTABLE, HUMAN-READABLE WIKI — "Markdown nodes
+# plus a manifest, not a database dump" (§10.5). The shape is the framework's
+# own OKF-aligned contract (core/config/conventions/transfer-bundle-export-shape.md):
+#
+#   1. bundle = the unit of distribution — a self-contained directory tree,
+#      carried here as a path -> file-content map so the whole chain stays JSON
+#      (the sidecar proxy and the gateway both forward JSON; a binary archive
+#      would break both). Write `files` to disk verbatim and you have the
+#      git-shippable bundle.
+#   2. concept = ONE .md with YAML frontmatter.
+#   3. exactly one REQUIRED frontmatter key: the `type` discriminator.
+#   4. unknown keys are PRESERVED — any field on a source record that this
+#      producer does not model is carried into frontmatter rather than dropped,
+#      so the boundary never silently loses a producer's data.
+#   6. links are bundle-relative and MAY dangle — a child link to a node that
+#      was filtered out by KnowledgeProjection is a frontier marker, not an
+#      error, so no link is validated or pruned here.
+#   7. index.md is the optional progressive-disclosure index.
+#
+# NOTE this producer adds NO dependency. Frontmatter scalars/lists are emitted
+# via json.dumps, which is valid YAML by construction (YAML 1.2 is a JSON
+# superset) and escapes arbitrary content correctly — strictly safer than a
+# hand-rolled quoter, and it does not put pyyaml on a customer box's runtime.
+OKF_BUNDLE_FORMAT = "okf-transfer-bundle"
+OKF_BUNDLE_VERSION = 1
+
+# Fields this producer renders into the BODY rather than the frontmatter; every
+# other field on a record falls through to frontmatter under invariant 4.
+_OKF_BODY_FIELDS = {
+    # "node", not "concept": the Mind's own OKF writer (knowledge-export.py
+    # write_okf_bundle) already ships `type: node` for tree records, and both
+    # producers emit into `nodes/`. The convention deliberately does not
+    # enumerate type values (invariant 5 — consumers tolerate unknown ones), so
+    # neither spelling is non-conforming; but two producers of ONE declared
+    # format disagreeing on the required discriminator is precisely the
+    # misroute invariant 3 exists to prevent. Align on the shipped spelling.
+    "node": ("title", "summary", "body"),
+    "hypothesis": ("statement",),
+    "guardrail": ("rule",),
+    # "lesson" leads the tuple because it is the ONLY prose key a projected
+    # lesson actually carries: the Mind's KnowledgeProjection builds each record
+    # as exactly {title, lesson} (knowledge_projection.py, bundle.lessons), and
+    # .knowledge-bundle.json is the only thing this path ever reads. Omitting it
+    # cost both halves at once — the prose fell through to FRONTMATTER as an
+    # unmodelled field while the body expression below resolved to "", so every
+    # lesson rendered as a blank page under its heading. Keep it FIRST: once the
+    # key is modelled it no longer reaches frontmatter, so a record carrying a
+    # stray content/text/summary alongside it would otherwise drop the lesson
+    # prose from BOTH places. content/text/summary stay for hand-authored and
+    # legacy records.
+    "lesson": ("lesson", "title", "content", "text", "summary"),
+}
+
+
+def _okf_slug(raw: str, fallback: str) -> str:
+    """A safe, stable bundle-relative filename stem.
+
+    Restrictive on purpose: the stem lands in a path a consumer will write to
+    disk, so anything outside [a-z0-9._-] is collapsed, leading dots are
+    dropped (no hidden files, no traversal), and an empty result falls back to
+    the caller's positional name.
+    """
+    out = []
+    for ch in str(raw).strip().lower():
+        out.append(ch if (ch.isalnum() and ch.isascii()) or ch in "-_." else "-")
+    slug = "".join(out).strip("-.")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug[:120] or fallback
+
+
+def _okf_frontmatter(fields: dict[str, Any]) -> str:
+    """Emit a YAML frontmatter block. `type` is written first (invariant 3)."""
+    lines = ["---"]
+    ordered = ["type"] + sorted(k for k in fields if k != "type")
+    for k in ordered:
+        if k not in fields:
+            continue
+        v = fields[k]
+        if v is None or v == "" or v == []:
+            continue
+        key = _okf_slug(k, "field").replace(".", "_")
+        if isinstance(v, (str, int, float, bool)):
+            lines.append(f"{key}: {json.dumps(v, ensure_ascii=False)}")
+        elif isinstance(v, list):
+            lines.append(f"{key}: {json.dumps([str(x) for x in v], ensure_ascii=False)}")
+        else:
+            # Unmodelled composite — preserve it losslessly as a JSON scalar
+            # rather than dropping it (invariant 4). Encoded twice on purpose:
+            # once to JSON, then again so the result is a single-line scalar.
+            inner = json.dumps(v, ensure_ascii=False)
+            lines.append(f"{key}: {json.dumps(inner, ensure_ascii=False)}")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def _okf_doc(kind: str, record: dict[str, Any], heading: str, body_parts: list[str]) -> str:
+    """One concept document: frontmatter + markdown body."""
+    modelled = set(_OKF_BODY_FIELDS.get(kind, ())) | {"key", "children"}
+    fm: dict[str, Any] = {"type": kind}
+    for k, v in record.items():
+        if k in modelled:
+            continue
+        fm[k] = v
+    if record.get("key"):
+        fm["key"] = str(record["key"])
+    parts = [_okf_frontmatter(fm), "", f"# {heading}".rstrip(), ""]
+    parts.extend(p for p in body_parts if p)
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _okf_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Project the read bundle into the OKF transfer-bundle export shape."""
+    files: dict[str, str] = {}
+    used: set[str] = set()
+
+    def _path(folder: str, stem: str) -> str:
+        # De-collide: two records that slug identically must not overwrite each
+        # other (silent data loss at the export boundary).
+        candidate, n = f"{folder}/{stem}.md", 1
+        while candidate in used:
+            n += 1
+            candidate = f"{folder}/{stem}-{n}.md"
+        used.add(candidate)
+        return candidate
+
+    listing: dict[str, list[tuple[str, str]]] = {}
+
+    for i, n in enumerate(bundle.get("tree") or []):
+        if not isinstance(n, dict):
+            continue
+        key = str(n.get("key") or "")
+        title = str(n.get("title") or key or f"node-{i + 1}")
+        body = str(n.get("body") or n.get("summary") or "")
+        # Bundle-relative child links; a dangling one is a frontier marker.
+        kids = [str(c) for c in (n.get("children") or []) if c]
+        links = (
+            ["", "## Explore from here", ""]
+            + [f"- [{c}](./{_okf_slug(c, 'node')}.md)" for c in kids]
+            if kids
+            else []
+        )
+        p = _path("nodes", _okf_slug(key or title, f"node-{i + 1}"))
+        files[p] = _okf_doc("node", n, title, [body, *links])
+        listing.setdefault("nodes", []).append((title, p))
+
+    for i, h in enumerate(bundle.get("hypotheses") or []):
+        if not isinstance(h, dict):
+            continue
+        statement = str(h.get("statement") or "")
+        p = _path("hypotheses", _okf_slug(statement[:60], f"hypothesis-{i + 1}"))
+        files[p] = _okf_doc("hypothesis", h, statement or f"Hypothesis {i + 1}", [])
+        listing.setdefault("hypotheses", []).append((statement or p, p))
+
+    for i, g in enumerate(bundle.get("guardrails") or []):
+        if not isinstance(g, dict):
+            continue
+        rule = str(g.get("rule") or "")
+        p = _path("guardrails", _okf_slug(rule[:60], f"guardrail-{i + 1}"))
+        files[p] = _okf_doc("guardrail", g, rule or f"Guardrail {i + 1}", [])
+        listing.setdefault("guardrails", []).append((rule or p, p))
+
+    for i, lesson in enumerate(bundle.get("lessons") or []):
+        if not isinstance(lesson, dict):
+            continue
+        heading = str(lesson.get("title") or lesson.get("text") or f"Lesson {i + 1}")
+        # "lesson" first — see the _OKF_BODY_FIELDS["lesson"] comment. A
+        # projected record carries only {title, lesson}, so the other three
+        # resolve to "" on every real lesson.
+        body = str(
+            lesson.get("lesson")
+            or lesson.get("content")
+            or lesson.get("text")
+            or lesson.get("summary")
+            or ""
+        )
+        p = _path("lessons", _okf_slug(heading[:60], f"lesson-{i + 1}"))
+        files[p] = _okf_doc("lesson", lesson, heading, [body])
+        listing.setdefault("lessons", []).append((heading, p))
+
+    index = ["---", 'type: "index"', "---", "", "# Knowledge base", ""]
+    if not listing:
+        index += ["Nothing here yet — the agent has not recorded anything so far."]
+    for folder in ("nodes", "hypotheses", "guardrails", "lessons"):
+        rows = listing.get(folder) or []
+        if not rows:
+            continue
+        index += [f"## {folder} ({len(rows)})", ""]
+        index += [f"- [{t}](./{p})" for t, p in rows]
+        index += [""]
+    files["index.md"] = "\n".join(index).rstrip() + "\n"
+
+    return {
+        "bundle": {
+            "format": OKF_BUNDLE_FORMAT,
+            "version": OKF_BUNDLE_VERSION,
+            "counts": {k: len(v) for k, v in listing.items()},
+            "file_count": len(files),
+        },
+        "files": files,
+    }
 
 
 def create_app(
@@ -1271,7 +1502,13 @@ def create_app(
 
     @app.get("/knowledge/node/{key}")
     def knowledge_node(key: str) -> dict[str, Any]:
-        """One projected node (title, summary/body, parent, child links). 404 if absent."""
+        """One node (title, summary sampler, full body, parent, child links). 404 if absent.
+
+        ``body`` is the full node article — already redacted upstream by the Mind's
+        KnowledgeProjection for a full Mind, or the raw note for a lean-agent workspace
+        (g-335-191). Deliberately kept OUT of ``/knowledge/tree`` (the map), which stays
+        lightweight; the body is fetched only on a per-node click.
+        """
         bundle = _read_knowledge_bundle(Path(resolved_settings.workspace_root))
         for n in bundle["tree"]:
             if isinstance(n, dict) and str(n.get("key") or "") == key:
@@ -1279,6 +1516,7 @@ def create_app(
                     "key": key,
                     "title": str(n.get("title") or ""),
                     "summary": str(n.get("summary") or ""),
+                    "body": str(n.get("body") or ""),
                     "parent": str(n.get("parent") or ""),
                     "children": [str(c) for c in (n.get("children") or []) if c],
                 }
@@ -1300,8 +1538,15 @@ def create_app(
 
     @app.get("/knowledge/export")
     def knowledge_export() -> dict[str, Any]:
-        """The whole projected base as one downloadable bundle (PEARL §10.5)."""
-        return _read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        """The whole projected base as one downloadable bundle (PEARL §10.5).
+
+        Emits the OKF transfer-bundle export shape — a portable, human-readable
+        wiki (Markdown concept docs + a manifest), NOT the internal JSON dump
+        the browse routes serve. See ``_okf_bundle``. The browse routes
+        (/tree, /node, /hypotheses, /guardrails) are unchanged: they back a live
+        UI and speak the viewer shape; only the DOWNLOAD boundary is OKF.
+        """
+        return _okf_bundle(_read_knowledge_bundle(Path(resolved_settings.workspace_root)))
 
     # ── wire-schema contract + web client ────────────────────────────────────────
 
