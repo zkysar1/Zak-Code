@@ -57,6 +57,28 @@ class ZakpickModel(BaseModel):
 
     model: str
     source: str = "groq"
+    #: Per-category thinking control for reasoning models; ``None`` leaves the server's own
+    #: default alone (what every non-reasoning model wants).
+    #:
+    #: This is the per-call half of the thinking knob. Reasoning tokens are billed against
+    #: ``max_tokens`` and cost real latency, so the cheap bounded categories (``classify``,
+    #: ``summarize``) generally want it OFF while ``deep_code`` wants it ON. Measured on
+    #: llama.cpp / Qwen3.8-27B 2026-08-17: ``enable_thinking=false`` took a trivial answer
+    #: from 36 completion tokens to 4, answer unchanged.
+    #:
+    #: Emitted as ``extra_body={"chat_template_kwargs": {"enable_thinking": <bool>}}`` — the
+    #: form llama.cpp honours. A server that does not understand the key ignores it, so
+    #: setting this against a cloud model is inert rather than an error.
+    #:
+    #: A BOOLEAN, not a level, because per-request thinking *depth* does not work. Measured
+    #: on llama.cpp 2026-08-17 with a prompt that provokes long reasoning: a per-request
+    #: ``reasoning_budget`` of 64 and of 256 produced 12,914 and 13,283 reasoning characters
+    #: against an unbudgeted baseline of 13,130 — i.e. ignored entirely. ``--reasoning-budget``
+    #: is a server STARTUP flag; there is no per-request equivalent. Do not add one here
+    #: without re-measuring. (All three runs also spent the whole 3000-token ``max_tokens``
+    #: on reasoning and returned an EMPTY answer, which is the failure mode this knob exists
+    #: to avoid: thinking tokens are billed against ``max_tokens``.)
+    thinking: bool | None = None
 
     @property
     def litellm_string(self) -> str:
@@ -66,6 +88,13 @@ class ZakpickModel(BaseModel):
         if src in ("local", "ollama", "ollama_chat"):
             return f"ollama_chat/{self.model}"
         return f"{self.source}/{self.model}"
+
+    @property
+    def extra_body(self) -> dict[str, object]:
+        """The ``extra_body`` fragment this assignment contributes, or ``{}`` for none."""
+        if self.thinking is None:
+            return {}
+        return {"chat_template_kwargs": {"enable_thinking": self.thinking}}
 
 
 def _g(model: str) -> ZakpickModel:

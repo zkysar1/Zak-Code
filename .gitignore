@@ -81,3 +81,8 @@ desktop.ini
 # run's logs/JSON are reproducible output, not source. Baseline numbers live in
 # bench/README.md instead. (Keeps the dev's future runs from showing up as noise.)
 bench/results/
+
+# Windows reserved device name. A stray `>NUL` under Git Bash creates this as a real
+# file, and git cannot index it — every `git add -A` then fails until it is deleted.
+# The known producer (tests/test_proc.py) no longer emits it; this is the backstop.
+NUL
