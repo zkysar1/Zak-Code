@@ -90,6 +90,15 @@ Set **every** category when combining `zakpick` with `local_only`: an unset cate
 through to a built-in Groq/OpenAI default rather than to your pod. The startup check names
 each one it finds, so a partial config fails immediately instead of billing later.
 
+Billing is not the only cost of a missed category, and the other one slips past `local_only`
+entirely. The `delegate` default is `openai/gpt-4o-mini` — a *generic-OpenAI* model, so with
+`api_base` set it is routed to your pod, `local_only` classifies it as local (correctly: no
+money is spent), and the check passes. Your pod then does not host `gpt-4o-mini`, and a
+lenient proxy answers with whatever it does host. Observed on `zakpod1` 2026-08-17:
+`SUBSTITUTED requested model='openai/gpt-4o-mini' -> serving 'zds-qwen3.8-27b'`. The two
+guards are orthogonal and you want both — `local_only` promises nothing gets billed,
+`ZDS_STRICT_MODEL=1` promises you get the model you asked for. Neither implies the other.
+
 `api_base` needs a host this process can actually resolve. An SSH-config `Host` alias is not
 DNS — `ssh zakpod1` working says nothing about `http://zakpod1:9090/v1`, which fails with a
 bare `Connection error` that reads like the server being down. Use the IP, or add a real
