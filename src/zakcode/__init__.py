@@ -314,6 +314,12 @@ class Agent:
             startup_model = model_for_category("deep_code", self.settings)
             self.settings = self.settings.model_copy(update={"default_model": startup_model})
             logger.info("zakpick: routing per task category; startup model %s", startup_model)
+        # Cost guarantee, checked once the sentinels above have resolved to concrete models so
+        # every destination is knowable. Placed BEFORE the first provider is built (and long
+        # before any completion), and safe to run after auto-resolution because the resolver
+        # only makes read-only /v1/models probes — no billable call has happened yet.
+        if not self._provider_injected:
+            self._assert_local_only()
         # Cache of role providers built for a non-default model, keyed by model string, so
         # spawning N sub-agents on the same role model doesn't rebuild the litellm wrapper N×.
         self._provider_cache: dict[str, Provider] = {}
@@ -891,25 +897,101 @@ class Agent:
             completion_review_attempts=self.settings.completion_review_attempts,
         )
 
-    def _build_provider(self, model: str) -> Provider:
+    def _assert_local_only(self) -> None:
+        """Refuse to start when ``local_only`` is set but a configured model is metered.
+
+        The ANTICIPATION half of the cost guarantee (rb-605). It cannot be the whole
+        guarantee — it only sees the config it knows to enumerate, so a route added later
+        would bypass it; that is what the fail-closed check in
+        ``LiteLLMProvider._build_kwargs`` is for. What this half buys is a failure at
+        STARTUP, naming every offender at once, instead of a refusal mid-turn on whichever
+        one happened to be reached first.
+
+        It enumerates EFFECTIVE models, not configured ones — the distinction matters and is
+        the whole reason this is not a two-line check. Under zakpick, a category the user
+        never overrode still routes: it falls through to ``DEFAULT_CATEGORY_MODELS``, which
+        is Groq/OpenAI. So an operator who sets ``local_only`` and points only ``deep_code``
+        at their pod has FIVE categories still aimed at metered APIs, and checking only
+        ``zakpick_models`` would report a clean config for exactly the setup most likely to
+        spend money by surprise.
+        """
+        if not self.settings.local_only:
+            return
+        from zakcode.providers.endpoints import (
+            LocalOnlyViolation,
+            classify_destination,
+            is_sentinel,
+        )
+        from zakcode.providers.routing import ZAKPICK_CATEGORIES, model_for_category
+
+        api_base = self.settings.api_base
+        offenders: list[str] = []
+
+        def check(label: str, model: str | None) -> None:
+            # Sentinels name no destination; by this point default_model is already resolved
+            # to a concrete model, and anything still a sentinel is not a real call target.
+            if not model or is_sentinel(model):
+                return
+            ok, reason = classify_destination(model, api_base)
+            if not ok:
+                offenders.append(f"  - {label}: {reason}")
+
+        check("default_model", self.settings.default_model)
+        check("fallback_model", self.settings.fallback_model)
+        if self._zakpick:
+            for category in sorted(ZAKPICK_CATEGORIES):
+                check(f"zakpick category '{category}'", model_for_category(category, self.settings))
+        for role, role_model in sorted((self.settings.model_roles or {}).items()):
+            check(f"model_roles['{role}']", role_model)
+
+        if offenders:
+            raise LocalOnlyViolation(
+                "local_only is set, but these configured models would reach a metered API:\n"
+                + "\n".join(offenders)
+                + "\n\nFix by pointing them at a self-hosted endpoint (set ZAKCODE_API_BASE and "
+                "use an openai/<model> name) or an ollama_chat/<model>, or unset "
+                "ZAKCODE_LOCAL_ONLY to allow paid calls."
+            )
+
+    def _build_provider(
+        self, model: str, *, extra_body: dict[str, object] | None = None
+    ) -> Provider:
         """Build a settings-based provider for ``model`` (litellm wrapped in the text-tool
         protocol) — the same construction used for the default model and for per-role overrides.
+
+        ``extra_body`` (a zakpick category's thinking flag) is MERGED OVER the configured
+        ``Settings.extra_body`` rather than replacing it, so a global knob and a per-category
+        one compose instead of one silently erasing the other.
         """
+        from zakcode.providers.endpoints import model_uses_generic_endpoint
         from zakcode.providers.litellm_provider import LiteLLMProvider
         from zakcode.providers.text_tools import TextToolCallingProvider
 
-        if model == self.settings.default_model:
+        if model == self.settings.default_model and not extra_body:
             role_settings = self.settings
         else:
             update: dict[str, object] = {"default_model": model}
-            # api_base/api_key are ENDPOINT-specific. Don't carry the default model's custom
-            # endpoint onto a routed model on a DIFFERENT backend — e.g. an ollama_chat/* role
-            # would otherwise be sent to the default's OpenAI gateway. (review: cross-backend
-            # endpoint bleed) Same backend keeps sharing the endpoint (correct).
-            default_backend = self.settings.default_model.split("/", 1)[0].lower()
-            if model.split("/", 1)[0].lower() != default_backend:
+            # api_base/api_key are ENDPOINT-specific. Don't carry the configured custom
+            # endpoint onto a routed model that litellm sends somewhere else — an
+            # ollama_chat/* or groq/* role would otherwise be handed the OpenAI-compatible
+            # gateway. (review: cross-backend endpoint bleed)
+            #
+            # The test is "does this model use the generic endpoint?", NOT "is it the same
+            # backend as default_model?". The old same-backend comparison broke on the
+            # ROUTING SENTINELS: default_model="zakpick" (or "auto") names no backend, so
+            # splitting it yields the literal "zakpick", which equals no real prefix — the
+            # comparison was therefore false for EVERY routed model and the configured
+            # api_base was dropped on every zakpick call, including the openai/* categories
+            # that exist precisely to reach the self-hosted server. Measured 2026-08-17.
+            #
+            # Using the same predicate the request builder uses keeps the two from drifting:
+            # a model that WILL be given api_base at call time is exactly the model that
+            # should keep it here.
+            if not model_uses_generic_endpoint(model):
                 update["api_base"] = None
                 update["api_key"] = None
+            if extra_body:
+                update["extra_body"] = {**(self.settings.extra_body or {}), **extra_body}
             role_settings = self.settings.model_copy(update=update)
         return TextToolCallingProvider(
             LiteLLMProvider(role_settings),
@@ -953,18 +1035,28 @@ class Agent:
         self._active_model = new_model
         return provider, f"{failed} -> {new_model} ({reason})"
 
-    def _provider_for(self, model: str | None) -> Provider:
+    def _provider_for(
+        self, model: str | None, *, extra_body: dict[str, object] | None = None
+    ) -> Provider:
         """Resolve a per-role model string to a :class:`Provider` (the model-routing seam).
 
         Returns the default ``self.provider`` for ``None``, the default model, or when the
         provider was injected (an injected test/eval provider can't be rebuilt per model, so
         every role uses it). Otherwise builds — and caches — a provider for that model.
+
+        ``extra_body`` carries per-assignment request-body knobs (today: a zakpick category's
+        ``thinking`` flag). It participates in the CACHE KEY, which it must: two categories
+        can name the SAME model and want different thinking, and a model-only key would hand
+        the second one the first one's provider and silently apply the wrong setting.
         """
-        if not model or model == self.settings.default_model or self._provider_injected:
+        if not model or self._provider_injected:
             return self.provider
-        if model not in self._provider_cache:
-            self._provider_cache[model] = self._build_provider(model)
-        return self._provider_cache[model]
+        if model == self.settings.default_model and not extra_body:
+            return self.provider
+        key = model if not extra_body else f"{model}\x00{sorted(extra_body.items())!r}"
+        if key not in self._provider_cache:
+            self._provider_cache[key] = self._build_provider(model, extra_body=extra_body)
+        return self._provider_cache[key]
 
     # ── zakpick task-category routing seams (active only when default_model="zakpick") ──────
 
@@ -980,10 +1072,15 @@ class Agent:
         """
         if not self._zakpick or self._provider_injected:
             return self.provider, self._active_model
-        from zakcode.providers.routing import model_for_category
+        from zakcode.providers.routing import model_spec_for_category
 
-        model = model_for_category(category, self.settings)
-        return self._provider_for(model), model
+        # Read the SPEC, not just the model string: the assignment also carries this
+        # category's thinking preference, which is the whole point of setting it per
+        # category (reasoning tokens bill against max_tokens, so classify/summarize want
+        # it off and deep_code wants it on).
+        spec = model_spec_for_category(category, self.settings)
+        model = spec.litellm_string
+        return self._provider_for(model, extra_body=spec.extra_body), model
 
     def _provider_pair_for_task(self, category: str) -> tuple[Provider, str]:
         """``(provider, model)`` for a category-routed sub-agent (plan / delegate)."""

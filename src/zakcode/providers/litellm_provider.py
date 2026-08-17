@@ -45,6 +45,12 @@ from zakcode.providers.base import (
     StreamUsage,
     ToolCall,
 )
+from zakcode.providers.endpoints import (
+    GENERIC_OPENAI_PROVIDERS,
+    LocalOnlyViolation,
+    classify_destination,
+    model_uses_generic_endpoint,
+)
 from zakcode.providers.pricing import estimate_cost_usd
 from zakcode.providers.registry import get_capabilities
 from zakcode.secrets import redact_secrets
@@ -97,19 +103,18 @@ def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
 
-#: litellm providers that carry their OWN base URL (resolved from the provider's env vars).
-#: A configured generic ZAKCODE_API_BASE (the local / OpenAI-compatible llama-server) must
-#: NEVER be forwarded to one of these — doing so reroutes a cloud call to the local endpoint,
-#: the 2026-06-17 ``groq/...->localhost`` failover bug. We ALLOWLIST the generic-OpenAI
-#: providers rather than denylist the named clouds, so a new cloud prefix can never silently
-#: inherit the local base.
-_GENERIC_OPENAI_PROVIDERS: frozenset[str] = frozenset(
-    {"openai", "openai_like", "hosted_vllm", "text-completion-openai"}
-)
+#: Re-exported from :mod:`zakcode.providers.endpoints`, which is the SINGLE SOURCE OF TRUTH.
+#: The allowlist and the ``local_only`` cost predicate must answer "where does this call
+#: actually go?" identically — a second copy here is how they drift into disagreeing, and a
+#: cost guarantee that disagrees with the router is not a guarantee. The names stay importable
+#: from this module because existing callers and tests reference them here.
+_GENERIC_OPENAI_PROVIDERS = GENERIC_OPENAI_PROVIDERS
 
 
 def _model_uses_generic_endpoint(model: str) -> bool:
     """Whether a configured generic ``api_base`` should be forwarded for ``model``.
+
+    Thin alias for :func:`zakcode.providers.endpoints.model_uses_generic_endpoint`.
 
     True for the OpenAI-compatible generic path — a bare model name, or an
     ``openai`` / ``openai_like`` / ``hosted_vllm`` prefix (the local llama-server case the
@@ -119,10 +124,7 @@ def _model_uses_generic_endpoint(model: str) -> bool:
     ``groq/openai/gpt-oss-20b`` got the llama-server base, failed, and failed over to
     ``openai/gpt-4o-mini``.
     """
-    if not model or "/" not in model:
-        return True
-    prefix = model.split("/", 1)[0].strip().lower()
-    return prefix in _GENERIC_OPENAI_PROVIDERS
+    return model_uses_generic_endpoint(model)
 
 
 #: The system-prompt stable/dynamic split marker (parity #2 prompt caching). It MUST equal
@@ -193,12 +195,16 @@ class LiteLLMProvider(Provider):
         num_retries: int | None = None,
         ollama_base_url: str | None = None,
         request_timeout: float = 600.0,
+        local_only: bool | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         resolved_model = model
         resolved_temperature = temperature
         resolved_api_base = api_base
         resolved_api_key = api_key
         resolved_ollama_base = ollama_base_url
+        resolved_local_only = local_only
+        resolved_extra_body = extra_body
 
         if settings is not None:
             if resolved_model is None:
@@ -213,6 +219,10 @@ class LiteLLMProvider(Provider):
                 resolved_api_key = settings.api_key
             if resolved_ollama_base is None:
                 resolved_ollama_base = settings.ollama_base_url
+            if resolved_local_only is None:
+                resolved_local_only = settings.local_only
+            if resolved_extra_body is None:
+                resolved_extra_body = settings.extra_body
 
         if resolved_model is None:
             raise ValueError("a model must be provided via settings or the model kwarg")
@@ -223,6 +233,12 @@ class LiteLLMProvider(Provider):
         self.api_key: str | None = resolved_api_key
         self.num_retries: int = num_retries if num_retries is not None else 0
         self.ollama_base_url: str | None = resolved_ollama_base
+        #: Refuse any call that would reach a metered API (see _build_kwargs). Defaults to
+        #: False, so a provider built without settings behaves exactly as before.
+        self.local_only: bool = bool(resolved_local_only)
+        #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
+        #: later mutation of the Settings dict cannot retroactively change live requests.
+        self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
         # Per-call wall-clock ceiling: a hung/stuck model call can never block the loop forever.
         # litellm raises Timeout past this, which _map_error turns into a recoverable provider error
         # (the loop's own retry handles it; litellm's num_retries stays 0).
@@ -576,6 +592,22 @@ class LiteLLMProvider(Provider):
         Factored out of :meth:`acomplete` so the request shape (model, endpoint,
         tool wiring) is unit-testable without a network call.
         """
+        # ── local_only: the APPLICATION gate (fail CLOSED) ────────────────────────────
+        # Every completion path in the engine funnels through here, so this is the one
+        # chokepoint that cannot be bypassed by a route nobody enumerated — runtime
+        # failover, auto-resolution, a zakpick category, a sub-agent, a skill. The
+        # startup check in ZakCode._assert_local_only is the ANTICIPATION gate: it is
+        # louder and earlier, but it can only inspect the config it knows to look at.
+        # Paired deliberately (rb-605): anticipation gates warn early, application gates
+        # are the guarantee. Overspending is irreversible, so the guarantee lives here.
+        if self.local_only:
+            ok, reason = classify_destination(self.model, self.api_base)
+            if not ok:
+                raise LocalOnlyViolation(
+                    f"local_only is set, but this call would reach a metered API: {reason}. "
+                    f"Point the model at your self-hosted endpoint (ZAKCODE_API_BASE) or an "
+                    f"ollama_chat/* model, or unset ZAKCODE_LOCAL_ONLY to allow paid calls."
+                )
         # Prompt caching (parity #2): stamp cache_control on the stable system prefix for
         # caching-capable Anthropic models. Mutates wire_messages[0] in place; a no-op for
         # every other backend and for a system prompt with no DYNAMIC_BOUNDARY.
@@ -592,6 +624,13 @@ class LiteLLMProvider(Provider):
         if tools:
             call_kwargs["tools"] = tools
             call_kwargs["tool_choice"] = "auto"
+        # Server-specific request-body knobs (llama.cpp thinking control, etc). litellm
+        # forwards extra_body into the JSON body on the OpenAI-compatible path and keeps it
+        # through drop_params, so an unknown-to-litellm key still reaches the server; a
+        # server that does not understand the key ignores it. Sent only when non-empty, so
+        # the default request shape is byte-identical to before.
+        if self.extra_body:
+            call_kwargs["extra_body"] = dict(self.extra_body)
         # Forward the configured generic api_base ONLY for OpenAI-compatible models — never to
         # a named cloud provider (groq/anthropic/…), which carries its own base URL. (2026-06-17:
         # an unscoped api_base rerouted every groq/ call to the local llama-server, breaking it

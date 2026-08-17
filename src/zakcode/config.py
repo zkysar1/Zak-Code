@@ -21,7 +21,7 @@ import json
 import os
 from enum import IntEnum
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from dotenv import dotenv_values, load_dotenv
 from pydantic import Field, ValidationInfo, field_validator
@@ -180,6 +180,57 @@ class Settings(BaseSettings):
         default=None,
         exclude=True,
         description="Optional API key to pass through (e.g. a dummy for a local server).",
+    )
+
+    # ── Extra request body (server-specific knobs) ───────────────────────────
+    # Merged verbatim into every completion request as litellm's ``extra_body``, which the
+    # OpenAI-compatible path forwards into the JSON body. This is the escape hatch for
+    # features a self-hosted server supports but litellm has no first-class parameter for —
+    # notably llama.cpp's thinking controls.
+    #
+    # Verified against llama.cpp on 2026-08-17 (Qwen3.8-27B, "what is 17 times 23"):
+    #   {"chat_template_kwargs": {"enable_thinking": false}}
+    #     -> reasoning_content empty, completion_tokens 36 -> 4, same correct answer.
+    # Thinking tokens are billed against ``max_tokens``, so turning it off on bounded
+    # categories (classify / summarize) is a large latency win, and leaving it on for
+    # deep_code is what it is for. Per-category control is ``ZakpickModel.thinking``;
+    # this field is the global default and the general-purpose knob.
+    #
+    # From an env var: a JSON object, e.g.
+    # ZAKCODE_EXTRA_BODY={"chat_template_kwargs":{"enable_thinking":false}}
+    extra_body: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Extra JSON merged into every completion request body (litellm extra_body). "
+            'For llama.cpp thinking control: {"chat_template_kwargs":{"enable_thinking":false}}.'
+        ),
+    )
+
+    # ── Cost guarantee: never touch a metered API ────────────────────────────
+    # For running MANY agents against self-hosted hardware, where a silent failover to a paid
+    # provider is the thing you cannot allow. When true, every call is checked and a metered
+    # destination is REFUSED (LocalOnlyViolation) rather than degraded to — the one switch that
+    # must never fail open, because overspending is irreversible and unbilling is not a thing.
+    #
+    # "Local" means no metered third-party API is billed, NOT "on this machine": an
+    # ``ollama_chat/*`` model, or any generic-OpenAI model whose ``api_base`` points at your own
+    # inference server, both qualify. A named cloud prefix (``groq/``, ``anthropic/``) never
+    # does — by the allowlist in ``providers/endpoints``, ``api_base`` cannot redirect those.
+    #
+    # Enforced in TWO places on purpose (rb-605: anticipation gates warn, application gates
+    # guarantee): ``Agent._assert_local_only`` checks the whole config at startup so a
+    # misconfiguration fails early with every offender named, and
+    # ``LiteLLMProvider._build_kwargs`` refuses at the call itself so no unenumerated route
+    # (runtime failover, auto-resolution, a zakpick category, a sub-agent) can slip past.
+    # Default False, so nothing that works today starts refusing (guard-1562).
+    local_only: bool = Field(
+        default=False,
+        description=(
+            "Refuse any model call that would reach a metered API (ZAKCODE_LOCAL_ONLY=true). "
+            "Guarantees zero API spend: no fallback_model, auto-resolution, or runtime failover "
+            "can reach a paid provider. Local = ollama_chat/* or a generic-OpenAI model served "
+            "via api_base."
+        ),
     )
 
     # ── Agent behavior ──────────────────────────────────────────────────────

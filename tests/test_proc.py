@@ -17,9 +17,18 @@ from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 
 
 def _sleep_cmd(seconds: int) -> str:
-    """A portable shell command that blocks for ~``seconds`` (cmd.exe vs POSIX sh)."""
+    """A portable shell command that blocks for ~``seconds`` (cmd.exe vs POSIX sh).
+
+    Deliberately NOT redirected to NUL. ``run_capturing`` captures stdout already, so the
+    redirect bought nothing — and when the shell resolves to bash rather than cmd.exe (Git
+    Bash / MSYS, the normal dev shell on this project's Windows boxes), ``>NUL`` is not a
+    device at all: it creates a real 93-byte file called ``NUL`` in the repo root. Git then
+    cannot index it, because NUL is a reserved Windows device name, so every subsequent
+    ``git add -A`` in the repo dies with "short read while indexing NUL" until someone
+    deletes it by hand. A test artifact that silently blocks commits is worth one comment.
+    """
     if sys.platform == "win32":
-        return f"ping -n {seconds + 1} 127.0.0.1 >NUL"
+        return f"ping -n {seconds + 1} 127.0.0.1"
     return f"sleep {seconds}"
 
 

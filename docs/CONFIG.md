@@ -43,7 +43,68 @@ here — adding a Settings field without documenting it fails CI.
 | `ollama_base_url` | `ZAKCODE_OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint. |
 | `api_base` | `ZAKCODE_API_BASE` | unset | Any OpenAI-compatible endpoint override (llama.cpp / BitNet / vLLM / LM Studio). |
 | `api_key` | `ZAKCODE_API_KEY` | unset | Placeholder key for local servers that require one; never a real cloud key (those use the standard env vars). Excluded from every `model_dump()`. |
+| `extra_body` | `ZAKCODE_EXTRA_BODY` | `{}` | JSON merged verbatim into every completion request body (litellm `extra_body`). The escape hatch for server-specific knobs litellm has no first-class parameter for — notably llama.cpp thinking control: `ZAKCODE_EXTRA_BODY={"chat_template_kwargs":{"enable_thinking":false}}`. Thinking tokens are billed against `max_tokens`, so switching it off on bounded work is a real saving (measured on Qwen3.8-27B: 36 completion tokens → 4, same answer). Per-**category** control is `zakpick_models[...].thinking`, which merges over this. There is no per-request thinking *depth*: a `reasoning_budget` in the body is ignored by llama.cpp (measured — 64 and 256 both produced ~13k reasoning chars against a 13,130 baseline); it is a server startup flag only. |
+| `local_only` | `ZAKCODE_LOCAL_ONLY` | `false` | **Cost guarantee.** Refuse any call that would reach a metered API rather than degrading to one — for running many agents against your own hardware, where a silent failover to a paid provider is the thing you cannot allow. "Local" means no third-party billing, not "on this machine": `ollama_chat/*`, or a generic-OpenAI model (`openai/…`, a bare name, `openai_like/…`, `hosted_vllm/…`) served through `api_base`. A named cloud prefix (`groq/`, `anthropic/`) never qualifies, because `api_base` cannot redirect those. Enforced twice: at startup, naming every offending field at once — including zakpick categories you did **not** override, which otherwise fall through to Groq defaults — and again at each request, so no failover or auto-resolution path slips past. Raises `LocalOnlyViolation`, deliberately not a `ProviderError`, so nothing retries it onto another model. |
 | `provider_max_retries` | `ZAKCODE_PROVIDER_MAX_RETRIES` | `3` | Retries (with `retry_after`-aware backoff) after a rate-limited model call; `0` disables. Only 429s retry. |
+
+### Recipe: running against a self-hosted inference pod
+
+A self-hosted OpenAI-compatible server (llama.cpp, vLLM, or a routing proxy in front of
+several of them) is reached with the `openai/` prefix plus `api_base`. The prefix selects
+litellm's generic OpenAI wire protocol; `api_base` decides which host actually receives the
+request. The model name is whatever alias your server advertises at `/v1/models`.
+
+**One model, guaranteed no spend** — the many-agents case:
+
+```bash
+ZAKCODE_DEFAULT_MODEL=openai/zds-qwen3.8-27b
+ZAKCODE_API_BASE=http://zakpod1:9090/v1
+ZAKCODE_API_KEY=sk-noop          # most local servers ignore it, litellm wants one present
+ZAKCODE_LOCAL_ONLY=true          # refuse anything that would bill
+```
+
+With `local_only`, a metered call is refused rather than made — including one reached by
+runtime failover. Leave `fallback_model` unset, or point it at another local model.
+
+**Mixed: local for the heavy work, cloud fallback allowed** — omit `local_only`. Both lanes
+coexist under one `api_base`, because the base is forwarded only to generic-OpenAI models
+and never to a named cloud prefix:
+
+```bash
+ZAKCODE_DEFAULT_MODEL=openai/zds-qwen3.8-27b
+ZAKCODE_API_BASE=http://zakpod1:9090/v1
+ZAKCODE_FALLBACK_MODEL=groq/qwen/qwen3-32b   # reached only if the pod call fails
+```
+
+**Per-category routing with per-category thinking** — `zakpick` sends each task category to
+the model you assign it, and `thinking` controls reasoning per category. Reasoning tokens
+are billed against `max_tokens`, so the bounded categories are much faster with it off:
+
+```bash
+ZAKCODE_DEFAULT_MODEL=zakpick
+ZAKCODE_API_BASE=http://zakpod1:9090/v1
+ZAKCODE_ZAKPICK_MODELS={"deep_code":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true},"quick_code":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false},"classify":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false},"summarize":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false},"plan":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true},"delegate":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true}}
+```
+
+Set **every** category when combining `zakpick` with `local_only`: an unset category falls
+through to a built-in Groq/OpenAI default rather than to your pod. The startup check names
+each one it finds, so a partial config fails immediately instead of billing later.
+
+`api_base` needs a host this process can actually resolve. An SSH-config `Host` alias is not
+DNS — `ssh zakpod1` working says nothing about `http://zakpod1:9090/v1`, which fails with a
+bare `Connection error` that reads like the server being down. Use the IP, or add a real
+hosts/DNS entry.
+
+Two failure modes worth recognising, both of which look like something else:
+
+- **A confident answer from the wrong model.** If you ask for a model your server does not
+  host, a lenient proxy may substitute its default and answer normally. Check `/v1/models`
+  for the exact alias; on `zds-inference-server`, `ZDS_STRICT_MODEL=1` turns the
+  substitution into a 404 and every substitution is logged either way.
+- **An empty reply that took minutes.** Thinking tokens count against `max_tokens`, so a
+  reasoning model can spend the whole budget thinking and return nothing — `finish_reason`
+  is `length` and the content is empty. Raise `max_tokens` or set `thinking: false`
+  (measured on Qwen3.8-27B: a 3000-token budget was fully consumed by reasoning, 0 answer).
 
 ## Agent behavior & permissions
 
