@@ -206,6 +206,27 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Sent verbatim as litellm's ``extra_headers`` on every completion request.
+    #
+    # The motivating case is per-instance attribution on a self-hosted pod, and the
+    # placeholders are what make it work at fleet scale: a value may contain ``{hostname}``
+    # and ``{pid}``, expanded per process. Without them, distinguishing N terminals would
+    # need N distinct config values — a provisioning step before every launch, which nobody
+    # performs, so every terminal ends up sharing one label and the attribution collapses
+    # back into a single indistinguishable row. With them, ONE config line gives every
+    # terminal a distinct identity:
+    #   ZAKCODE_EXTRA_HEADERS={"X-ZDS-Instance":"{hostname}-{pid}"}
+    # An unknown ``{placeholder}`` is left untouched rather than raising, since a header
+    # value is not a format string by contract and a stray brace must not break inference.
+    extra_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Extra HTTP headers on every completion request (litellm extra_headers). "
+            "Values may use {hostname} and {pid}, expanded per process — one config line "
+            'gives every terminal a distinct id: {"X-ZDS-Instance":"{hostname}-{pid}"}.'
+        ),
+    )
+
     # ── Cost guarantee: never touch a metered API ────────────────────────────
     # For running MANY agents against self-hosted hardware, where a silent failover to a paid
     # provider is the thing you cannot allow. When true, every call is checked and a metered
