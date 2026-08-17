@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -66,6 +67,34 @@ setattr(litellm, "drop_params", True)  # noqa: B010
 setattr(litellm, "suppress_debug_info", True)  # noqa: B010
 
 logger = logging.getLogger("zakcode.providers")
+
+
+def _expand_headers(headers: dict[str, str] | None) -> dict[str, str]:
+    """Expand ``{hostname}`` / ``{pid}`` in header VALUES.
+
+    This is what lets one config line identify an arbitrary number of terminals. A
+    self-hosted pod attributes load per caller by API key, but a key is provisioned per
+    FAMILY, so every Zak Code process would otherwise report the same identity. Expanding
+    per process turns a single shared setting into a distinct id for each one — with no
+    registration step, which matters because a registration step before every launch is a
+    step nobody actually takes.
+
+    Substitution is deliberately NOT ``str.format``: a header value is arbitrary text, not
+    a format string, so a stray ``{`` or an unknown ``{placeholder}`` must pass through
+    untouched rather than raising KeyError/ValueError and taking inference down with it.
+    Only the two known tokens are replaced.
+    """
+    if not headers:
+        return {}
+    tokens = {"{hostname}": socket.gethostname(), "{pid}": str(os.getpid())}
+    out: dict[str, str] = {}
+    for key, value in headers.items():
+        text = str(value)
+        for token, replacement in tokens.items():
+            if token in text:
+                text = text.replace(token, replacement)
+        out[str(key)] = text
+    return out
 
 
 # Resolve litellm's exception classes defensively. Older/newer versions may not
@@ -197,6 +226,7 @@ class LiteLLMProvider(Provider):
         request_timeout: float = 600.0,
         local_only: bool | None = None,
         extra_body: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         resolved_model = model
         resolved_temperature = temperature
@@ -205,6 +235,7 @@ class LiteLLMProvider(Provider):
         resolved_ollama_base = ollama_base_url
         resolved_local_only = local_only
         resolved_extra_body = extra_body
+        resolved_extra_headers = extra_headers
 
         if settings is not None:
             if resolved_model is None:
@@ -223,6 +254,8 @@ class LiteLLMProvider(Provider):
                 resolved_local_only = settings.local_only
             if resolved_extra_body is None:
                 resolved_extra_body = settings.extra_body
+            if resolved_extra_headers is None:
+                resolved_extra_headers = getattr(settings, "extra_headers", None)
 
         if resolved_model is None:
             raise ValueError("a model must be provided via settings or the model kwarg")
@@ -239,6 +272,10 @@ class LiteLLMProvider(Provider):
         #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
         #: later mutation of the Settings dict cannot retroactively change live requests.
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
+        #: Extra HTTP headers, with {hostname}/{pid} already expanded ONCE here rather
+        #: than per call — the values are constant for the process, and expanding at
+        #: call time would put a formatting operation on the hot path for no gain.
+        self.extra_headers: dict[str, str] = _expand_headers(resolved_extra_headers)
         # Per-call wall-clock ceiling: a hung/stuck model call can never block the loop forever.
         # litellm raises Timeout past this, which _map_error turns into a recoverable provider error
         # (the loop's own retry handles it; litellm's num_retries stays 0).
@@ -631,6 +668,8 @@ class LiteLLMProvider(Provider):
         # the default request shape is byte-identical to before.
         if self.extra_body:
             call_kwargs["extra_body"] = dict(self.extra_body)
+        if self.extra_headers:
+            call_kwargs["extra_headers"] = dict(self.extra_headers)
         # Forward the configured generic api_base ONLY for OpenAI-compatible models — never to
         # a named cloud provider (groq/anthropic/…), which carries its own base URL. (2026-06-17:
         # an unscoped api_base rerouted every groq/ call to the local llama-server, breaking it

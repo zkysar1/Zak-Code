@@ -317,3 +317,40 @@ def test_per_category_thinking_merges_over_the_global_extra_body() -> None:
     body = inner.extra_body
     assert body["seed"] == 42, "the global knob must survive"
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+# ---- extra_headers: one config line, N distinguishable terminals ----
+def test_extra_headers_expand_hostname_and_pid_per_process():
+    """The property that makes fleet attribution work without per-terminal provisioning."""
+    import os
+    import socket
+
+    from zakcode.providers.litellm_provider import _expand_headers
+
+    out = _expand_headers({"X-ZDS-Instance": "{hostname}-{pid}"})
+    assert out["X-ZDS-Instance"] == f"{socket.gethostname()}-{os.getpid()}"
+
+
+def test_extra_headers_tolerate_unknown_placeholders_and_stray_braces():
+    """A header value is arbitrary text, not a format string — str.format would raise here
+    and take inference down over a typo."""
+    from zakcode.providers.litellm_provider import _expand_headers
+
+    assert _expand_headers({"A": "{nope}"}) == {"A": "{nope}"}
+    assert _expand_headers({"A": "a{b"}) == {"A": "a{b"}
+    assert _expand_headers(None) == {}
+
+
+def test_extra_headers_reach_the_provider_call_kwargs():
+    """Wiring test: a header configured in Settings must actually be sent."""
+    from zakcode.config import Settings
+    from zakcode.providers.litellm_provider import LiteLLMProvider
+
+    s = Settings(
+        default_model="openai/zds-qwen3.8-27b",
+        api_base="http://10.0.0.250:9090/v1",
+        extra_headers={"X-ZDS-Instance": "{hostname}-{pid}"},
+    )
+    p = LiteLLMProvider(s)
+    assert "X-ZDS-Instance" in p.extra_headers
+    assert "{hostname}" not in p.extra_headers["X-ZDS-Instance"], "must be expanded at build"
