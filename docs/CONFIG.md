@@ -116,6 +116,34 @@ Two failure modes worth recognising, both of which look like something else:
   is `length` and the content is empty. Raise `max_tokens` or set `thinking: false`
   (measured on Qwen3.8-27B: a 3000-token budget was fully consumed by reasoning, 0 answer).
 
+### Recipe: Vertex AI (Gemini) on Google Cloud
+
+Install the optional extra first — litellm's vertex path imports Google's auth/SDK stack,
+which base zakcode deliberately does not carry (`~30` google-cloud packages non-Vertex
+users never need). Without it the first call fails with an install hint (not a raw
+`ModuleNotFoundError` — see `providers/litellm_provider._map_error`):
+
+```bash
+uv tool install 'zakcode[google]'        # or: uv add 'zakcode[google]' in a project
+```
+
+Three settings, no key file:
+
+```bash
+ZAKCODE_DEFAULT_MODEL=vertex_ai/gemini-2.5-flash
+VERTEXAI_PROJECT=my-gcp-project          # litellm's own env names, not ZAKCODE_*
+VERTEXAI_LOCATION=us-central1
+```
+
+Auth is **ADC** (Application Default Credentials): on a GCE VM the attached service
+account authenticates via the metadata server, so there is no credential on disk at all —
+`zakcode info` correctly shows every `*_API_KEY` as *not set*. Two gotchas measured live
+(2026-08-18/19): model availability is **per-region and per-model** (a newer model can be
+`global`-endpoint-only and 404 on every regional endpoint while an older one serves fine —
+enumerate with `gcloud ai model-garden models list --project=<p>` rather than guessing),
+and a 404 `publisher model not found` means *reached and authenticated, wrong model id* —
+not a permissions or networking problem.
+
 ## Agent behavior & permissions
 
 | Field | Env var | Default | Meaning |

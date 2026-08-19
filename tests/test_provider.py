@@ -379,6 +379,25 @@ def test_error_mapping_by_class_name_fallback() -> None:
     assert isinstance(mapped, AuthError)
 
 
+def test_error_mapping_missing_google_stack_names_the_extra() -> None:
+    # Vertex AI without the optional google extra: litellm lets the raw ImportError
+    # propagate ("No module named 'google'"), which names no remedy. The mapping must
+    # surface the install command — this is the live 2026-08-19 failure shape (a fresh
+    # zakcode install + a vertex_ai model on a GCE box).
+    exc = ModuleNotFoundError("No module named 'google'", name="google")
+    mapped = LiteLLMProvider._map_error(exc)
+    assert isinstance(mapped, RequestFailed)
+    assert "zakcode[google]" in str(mapped)
+    # Submodules of the google namespace get the same hint...
+    sub = ModuleNotFoundError("No module named 'google.auth'", name="google.auth")
+    assert "zakcode[google]" in str(LiteLLMProvider._map_error(sub))
+    # ...but an unrelated missing module must NOT get a misleading google hint.
+    other = ModuleNotFoundError("No module named 'left_pad'", name="left_pad")
+    mapped_other = LiteLLMProvider._map_error(other)
+    assert isinstance(mapped_other, RequestFailed)
+    assert "zakcode[google]" not in str(mapped_other)
+
+
 def test_error_mapping_groq_tool_use_failed_is_retryable() -> None:
     # Groq rejects a malformed model-emitted tool call with code "tool_use_failed".
     # It reaches us in two shapes; BOTH must map to the retryable ModelOutputRejected

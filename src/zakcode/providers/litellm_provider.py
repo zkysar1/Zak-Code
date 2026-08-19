@@ -578,6 +578,17 @@ class LiteLLMProvider(Provider):
         # display / log / HTTP error body / traceback. (audit3 #8 / GUARDRAILS §6)
         message = redact_secrets(str(exc))[0]
 
+        if isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == "google":
+            # Vertex AI reached without the google auth/SDK stack installed. The dependency
+            # is OPTIONAL by design (the `google` extra pulls ~30 google-cloud packages
+            # non-Vertex users never need), so the failure must name the remedy — a raw
+            # "No module named 'google'" from deep inside litellm names nothing. Checked
+            # before the taxonomy matches: litellm lets the ImportError propagate unwrapped.
+            return RequestFailed(
+                "Vertex AI needs Google's auth/SDK libraries, which are an optional "
+                "extra. Install with: uv tool install 'zakcode[google]' "
+                "(or: uv add 'zakcode[google]' / pip install 'zakcode[google]'), then retry."
+            )
         if cls._is_a(exc, _LiteLLMAuthError, "AuthenticationError") or cls._is_a(
             exc, _LiteLLMPermissionError, "PermissionDeniedError"
         ):
