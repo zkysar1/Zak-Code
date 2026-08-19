@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.console import Console
 
 from zakcode import Agent
-from zakcode.cli import _invoke_skill, _render_skills
+from zakcode.cli import _render_skills, _skill_command_turn
 from zakcode.config import Settings
 from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.messages import Message
@@ -81,40 +81,44 @@ def test_render_skills_includes_bundled_research(tmp_path: Path) -> None:
     assert "research" in buf.getvalue()
 
 
-def test_invoke_skill_injects_body(tmp_path: Path) -> None:
+def test_slash_skill_composes_the_turn(tmp_path: Path) -> None:
+    # Claude Code slash semantics: /<skill> RUNS now. The helper composes the body as THIS
+    # turn's input for the REPL's shared streaming path — it must NOT inject into the session
+    # itself (delivery is the turn runner's job; injecting here would double the body).
     _write_skill(tmp_path, "g")
     agent = _agent(tmp_path, enable_skills=True)
     before = len(agent.session.messages)
     console, buf = _console()
-    handled = _invoke_skill(console, agent, "greeter")
-    assert handled is True
-    # The body was loaded (lazily) and injected as a user message.
+    outcome = _skill_command_turn(console, agent, "greeter")
+    assert outcome.handled is True
+    assert outcome.turn_text is not None
+    assert outcome.turn_text.startswith("[skill: greeter]")
+    assert "greet the user by name" in outcome.turn_text.lower()
+    # The body was loaded (lazily) but the session is untouched until the turn runs.
     assert agent.skill_registry.get("greeter").body_loaded is True
-    assert len(agent.session.messages) == before + 1
-    last = agent.session.messages[-1]
-    assert last.role == "user"
-    assert "greet the user by name" in last.text.lower()
-    assert "loaded skill" in buf.getvalue()
+    assert len(agent.session.messages) == before
+    assert "running skill" in buf.getvalue()
 
 
-def test_invoke_skill_body_unreadable_is_handled(tmp_path: Path) -> None:
+def test_slash_skill_body_unreadable_is_handled(tmp_path: Path) -> None:
     # A skill discovered at startup whose SKILL.md vanishes before invocation must not
-    # crash the REPL: _invoke_skill reports the error and returns True (it WAS a skill).
+    # crash the REPL: the helper reports the error and stays handled (it WAS a skill).
     _write_skill(tmp_path, "g")
     agent = _agent(tmp_path, enable_skills=True)
     (tmp_path / ".zakcode" / "skills" / "g" / "SKILL.md").unlink()
     before = len(agent.session.messages)
     console, buf = _console()
-    handled = _invoke_skill(console, agent, "greeter")
-    assert handled is True  # still a skill name; do not fall through to plugin dispatch
+    outcome = _skill_command_turn(console, agent, "greeter")
+    assert outcome.handled is True  # still a skill name; do not fall through to plugins
+    assert outcome.turn_text is None  # nothing to run
     assert len(agent.session.messages) == before  # nothing injected
     assert "could not load skill" in buf.getvalue()
 
 
-def test_invoke_unknown_skill_returns_false(tmp_path: Path) -> None:
+def test_slash_unknown_skill_falls_through(tmp_path: Path) -> None:
     agent = _agent(tmp_path, enable_skills=True)
     console, _ = _console()
-    assert _invoke_skill(console, agent, "nope") is False
+    assert _skill_command_turn(console, agent, "nope").handled is False
 
 
 # ── skill-selection signal (ON_SKILL_SELECTED): the seam a learning mind records from ──
@@ -181,10 +185,34 @@ async def test_unknown_skill_does_not_fire_signal(tmp_path: Path) -> None:
     assert result.invoked is False and fired == []
 
 
-def test_invoke_skill_no_registry_is_safe(tmp_path: Path) -> None:
+def test_slash_skill_no_registry_is_safe(tmp_path: Path) -> None:
     agent = _agent(tmp_path)  # skills disabled → no registry
     console, _ = _console()
-    assert _invoke_skill(console, agent, "anything") is False
+    assert _skill_command_turn(console, agent, "anything").handled is False
+
+
+async def test_composed_skill_turn_runs_like_any_turn(tmp_path: Path) -> None:
+    # End-to-end, genuinely offline: the composed text IS a normal turn — the session gains
+    # the [skill: …] user message plus the model's response, exactly the shape invoke_skill
+    # + a follow-up message used to need two steps for. The provider MUST be an explicit
+    # ScriptedProvider: a bare default_model="scripted/test" reaches litellm on a real turn
+    # (BadRequestError on CI), and on a dev box an ambient ~/.zakcode/.env fallback can make
+    # the un-hermetic version pass locally — which is exactly how this test first shipped red.
+    from zakcode.evals.harness import ScriptedProvider, reply
+
+    _write_skill(tmp_path, "g")
+    agent = Agent(
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        provider=ScriptedProvider([reply("hello, friend!")]),
+        enable_skills=True,
+    )
+    outcome = await agent.compose_skill_turn("greeter")
+    assert outcome.turn_text is not None
+    result = await agent.arun_turn(outcome.turn_text)
+    assert result.stop_reason == "completed"
+    user_texts = [m.text for m in agent.session.messages if m.role == "user"]
+    assert any(t.startswith("[skill: greeter]") for t in user_texts)
+    assert agent.session.messages[-1].role == "assistant"
 
 
 # ── extra_skill_dirs (--skill-dir) ──────────────────────────────────────────────
@@ -245,10 +273,9 @@ def test_invoke_external_skill(tmp_path: Path) -> None:
     _write_ext_skill(ext, "ext")
     agent = _agent(tmp_path, enable_skills=True, extra_skill_dirs=[str(ext)])
     console, buf = _console()
-    handled = _invoke_skill(console, agent, "ext-greeter")
-    assert handled is True
+    outcome = _skill_command_turn(console, agent, "ext-greeter")
+    assert outcome.handled is True
     assert agent.skill_registry.get("ext-greeter").body_loaded is True
-    last = agent.session.messages[-1]
-    assert last.role == "user"
-    assert "external greeting" in last.text.lower()
-    assert "loaded skill" in buf.getvalue()
+    assert outcome.turn_text is not None
+    assert "external greeting" in outcome.turn_text.lower()
+    assert "running skill" in buf.getvalue()

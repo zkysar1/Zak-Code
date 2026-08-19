@@ -264,6 +264,22 @@ async def test_slash_command_invocation_surfaces_arguments(tmp_path: Path) -> No
     assert "[arguments: loop]" in injected and "loop body" in injected.lower()
 
 
+async def test_slash_command_composes_an_immediate_turn(tmp_path: Path) -> None:
+    # Claude Code parity: typing `/looper loop` RUNS the skill — compose_skill_turn returns
+    # the text the CLI executes as THIS turn (no second "describe your task" message), and
+    # composing must not itself touch the session, or the body would double-inject when the
+    # turn runs. This is the fix for the live 2026-08-19 report: `/start sera` loaded the
+    # skill and then sat at the prompt waiting for another message.
+    _write_claude_skill(tmp_path, "looper", "Loop body.")
+    agent = _scripted_agent(tmp_path)
+    before = len(agent.session.messages)
+    result = await agent.compose_skill_turn("looper", "loop")
+    assert result.invoked and result.turn_text is not None
+    assert result.turn_text.startswith("[skill: looper]")
+    assert "[arguments: loop]" in result.turn_text and "loop body" in result.turn_text.lower()
+    assert len(agent.session.messages) == before
+
+
 async def test_use_skill_tool_passes_arguments_to_the_body(tmp_path: Path) -> None:
     # The model-facing counterpart: use_skill accepts `args` and forwards them, so chaining like
     # use_skill(name, args='loop') carries the sub-command through to the body it returns.
