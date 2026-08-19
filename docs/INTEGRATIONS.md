@@ -23,14 +23,22 @@ surface (skills, `settings.json` hooks, permissions, statusLine, output-styles) 
 while the *behavior* comes from whatever plugs in. The full plan and boundary rule are in
 [`docs/CLAUDE-CODE-HOST-ROADMAP.md`](CLAUDE-CODE-HOST-ROADMAP.md); this is the supported surface.
 
-**Every compatibility surface is OFF by default.** Each is enabled per-`Agent` (e.g.
-`Agent(enable_settings_hooks=True)`) or via its env flag, so a workspace carrying *another* runtime's
-`.claude/` config never changes Zak Code's behavior unless you opt in.
+**Every compatibility surface is OFF by default at the library layer.** Each is enabled
+per-`Agent` (e.g. `Agent(enable_settings_hooks=True)`) or via its env flag, so a workspace carrying
+*another* runtime's `.claude/` config never changes Zak Code's behavior unless someone opts in.
+**For hooks, the interactive CLI is that someone**: when `ZAKCODE_SETTINGS_HOOKS` is *unset* and the
+workspace actually declares loadable hooks, `zakcode chat` asks the operator once — Claude Code
+folder-trust semantics — and remembers the answer per workspace in `~/.zakcode/workspace-trust.json`
+(policy + persistence in `zakcode.workspace_trust`, core; the CLI only renders the question). The
+failure this replaces was the worst kind: a Claude-Code workspace's hooks block was silently ignored
+and the miss surfaced layers away as a missing hook-injected variable. Headless runs never prompt —
+they print a one-line pointer and stay off. An explicit env/`.env` `true`/`false` is honored
+silently everywhere, and the SDK/server defaults are unchanged.
 
 | Surface | What's supported | Turn it on with |
 | --- | --- | --- |
 | **Skills** | `.claude/skills/<name>/SKILL.md` discovery; slash dispatch by skill **name** OR a `triggers:` token (case-insensitive); **skill arguments** (`/skill foo --bar` and `use_skill(args=…)`) threaded into the body; a CLI `/<skill> [args]` **runs immediately** — the body is that turn's user message (Claude Code slash semantics, via `Agent.compose_skill_turn`; `Agent.invoke_skill` remains the deferred stage-context-then-run-later variant); `user-invocable: false` enforced (gates a human-typed `/x` while still allowing model→skill chaining via `use_skill`). | `Agent(enable_skills=True)` |
-| **Hooks** | A Claude-Code `settings.json` (**and `settings.local.json`**, local-over-project) hook block, parsed verbatim: `Stop` → `TURN_END` continuation, `PreToolUse` / `PostToolUse` (incl. `additionalContext`), `SessionStart` (with `source`), `PreCompact` (`trigger` at the stdin top level); `$CLAUDE_PROJECT_DIR` expansion; every command security-scanned; and a Claude-Code-shaped `transcript_path` projection handed to hooks. | `ZAKCODE_SETTINGS_HOOKS` / `Agent(enable_settings_hooks=True)` |
+| **Hooks** | A Claude-Code `settings.json` (**and `settings.local.json`**, local-over-project) hook block, parsed verbatim: `Stop` → `TURN_END` continuation, `PreToolUse` / `PostToolUse` (incl. `additionalContext`), `SessionStart` (with `source`), `PreCompact` (`trigger` at the stdin top level); `$CLAUDE_PROJECT_DIR` expansion; every command security-scanned; and a Claude-Code-shaped `transcript_path` projection handed to hooks. | `ZAKCODE_SETTINGS_HOOKS` / `Agent(enable_settings_hooks=True)`; unset + interactive CLI → folder-trust ask-once (remembered in `~/.zakcode/workspace-trust.json`) |
 | **Permissions** | `permissions.{allow,deny}` `Tool(pattern)` gestures translated into Zak Code's (stronger) deny-first policy — **deny-first, tighten-only**: the catastrophic floor is preserved (ingested allows can't loosen it), and a bare whole-tool deny binds **even read-only tools**. | `ZAKCODE_SETTINGS_PERMISSIONS` / `Agent(enable_settings_permissions=True)` |
 | **statusLine** | The `statusLine` command from settings, fed session JSON per turn and rendered (cosmetic, fail-safe). | `ZAKCODE_STATUS_LINE` / `Agent(enable_status_line=True)` |
 | **output-styles** | A named output style (`.claude/output-styles/<name>.md`, selected via `outputStyle`) injected into the system prompt to shape generation. | `ZAKCODE_OUTPUT_STYLE` / `Agent(enable_output_style=True)` |

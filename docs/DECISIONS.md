@@ -409,3 +409,42 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     slash command IS the turn. `Agent.invoke_skill` is retained, rewritten over compose, as the
     deferred stage-context variant for embedders. First defect surfaced by the Serene
     dogfooding engagement.
+
+## ADR-0013 — Workspace hook adoption: folder-trust ask-once in the interactive CLI
+
+- **Status:** Accepted (shipped, 2026-08-19).
+- **Context:** `settings_hooks` defaulted to a hard `false`, and NOTHING was said when a
+  workspace carried a `.claude/settings.json` hooks block that was being ignored. The library
+  principle ("every compatibility surface off by default — a foreign workspace never changes
+  behavior un-opted-in", INTEGRATIONS.md) is right for embedders: the SDK passes
+  `enable_settings_hooks=True` explicitly and works. But the interactive CLI inherited the
+  library default *silently*, so a Claude-Mind workspace loaded, discovered skills, ran them —
+  and dropped every hook. The first live Mind boot failed four layers downstream (`/start`
+  refused on a missing hook-injected `MIND_SID`), and the in-session model diagnosed it as an
+  unfixable environment problem. Second defect surfaced by the Serene dogfooding engagement;
+  the operator's design review named the root cause: same core, different defaults per door,
+  with the risky door silent.
+- **Decision:** Make `settings_hooks` **tri-state** (`bool | None`, default `None` = unset).
+  Explicit `true`/`false` (env or `.env`) is honored silently everywhere, unchanged. UNSET
+  resolves per host: library/server → off (principle intact, embedder behavior unchanged);
+  the **interactive CLI** → Claude Code **folder-trust semantics** — when the workspace
+  actually declares loadable hooks, ask the operator once (`always for this workspace / this
+  session only / never for this workspace`) and remember `always`/`never` per resolved
+  workspace path in `~/.zakcode/workspace-trust.json`. Headless (`-p`, no tty) never prompts:
+  one dim pointer line, hooks stay off, scripted behavior deterministic. Every remembered
+  state still prints one line at startup — the defect was SILENCE, so even "off, as you chose"
+  says so. Policy + persistence live in core (`zakcode.workspace_trust`:
+  `resolve_hooks_adoption`, `hooks_decision`, `remember_hooks_decision`;
+  `summarize_settings_hooks` in the settings loader is the detection half); the CLI supplies
+  only the ask-UI (`_ask_hooks_adoption`) — UI in the interface, policy in the core, per the
+  repo's core/interface non-negotiable.
+- **Alternatives rejected:** flipping the default to `true` globally (executes workspace shell
+  hooks by surprise in every embedder/server — a real security regression, and it breaks the
+  documented library principle); a warning banner that tells the operator to export an env var
+  (that is a workaround shipped as a fix — the operator explicitly rejected it); prompting
+  every session without persistence (nags the common case; Claude Code's folder trust is
+  remembered, so ours is).
+- **Consequences:** `zakcode chat` in a Claude-Mind workspace is now zero-config: answer `y`
+  once and the Stop-hook loop, PreToolUse injection, and SessionStart hooks all fire from then
+  on. The trust store is keyed per surface (`{path: {settings_hooks: …}}`) so permissions /
+  statusLine / output-styles can join the same one-decision flow later without re-asking.

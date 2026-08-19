@@ -572,16 +572,19 @@ class Settings(BaseSettings):
             )
         return value
 
-    # ── Workspace settings.json hook ingestion (PR-T5; opt-in) ───────────────
-    settings_hooks: bool = Field(
-        default=False,
+    # ── Workspace settings.json hook ingestion (PR-T5; opt-in, tri-state) ────
+    settings_hooks: bool | None = Field(
+        default=None,
         description=(
             "Load shell hooks from <workspace>/.claude/settings.json, "
             ".claude/settings.local.json, and .zakcode/settings.json "
-            "(ZAKCODE_SETTINGS_HOOKS=true). Off by default: "
-            "workspaces configured for other hook runtimes (e.g. Claude Code) would "
-            "otherwise have those hooks half-fire here with a different stdin schema. "
-            "Hosts can force the behavior per-Agent via "
+            "(ZAKCODE_SETTINGS_HOOKS=true/false). UNSET (None) means: off for the "
+            "library and server (a workspace carrying another runtime's hooks never "
+            "half-fires here by surprise), while the INTERACTIVE CLI treats it as "
+            "'ask the operator once per workspace and remember' — Claude Code "
+            "folder-trust semantics, decided in zakcode.workspace_trust. An explicit "
+            "true/false (env or .env) is the operator's global answer and is never "
+            "second-guessed. Hosts can force the behavior per-Agent via "
             "Agent(enable_settings_hooks=True/False)."
         ),
     )

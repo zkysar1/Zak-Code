@@ -15,6 +15,7 @@ import ipaddress
 import os
 import random
 import signal
+import sys
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine
 from datetime import date
@@ -48,6 +49,7 @@ from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest
 from zakcode.providers.base import ProviderError
 from zakcode.secrets import strip_url_credentials
+from zakcode.workspace_trust import ADOPT_ALWAYS, ADOPT_NEVER, ADOPT_SESSION
 
 if TYPE_CHECKING:
     from zakcode import Agent
@@ -441,6 +443,84 @@ class ConsolePermissionPrompter:
         self.console.print(margin(Text("no clear answer - denied", style="notice.dim")))
         self.console.print()
         return PermissionOutcome.DENY_ONCE
+
+
+def _parse_adoption_answer(answer: str) -> str | None:
+    """Map a typed folder-trust answer to an adoption decision (None = not understood).
+
+    ``1/y`` → always for this workspace, ``2/o`` → this session only, ``3/n`` → never for
+    this workspace. Mirrors :func:`_parse_permission_answer`'s shape so the two prompts
+    stay predictable together.
+    """
+    a = answer.strip().lower()
+    if a in ("1", "y", "yes", "always"):
+        return ADOPT_ALWAYS
+    if a in ("2", "o", "once", "session"):
+        return ADOPT_SESSION
+    if a in ("3", "n", "no", "never"):
+        return ADOPT_NEVER
+    return None
+
+
+def _ask_hooks_adoption(console: Console, summary: dict[str, int]) -> str | None:
+    """Render the one-time folder-trust question for workspace hooks.
+
+    The policy half lives in core (:func:`zakcode.workspace_trust.resolve_hooks_adoption`);
+    this renders the question and returns ``"always"`` / ``"session"`` / ``"never"``, or None
+    when dismissed (EOF/interrupt/no clear answer) — the resolver treats None as "off, ask
+    again next session". Runs at startup before any event loop exists, so the blocking
+    ``console.input`` is fine here (contrast the mid-turn permission prompt's to_thread).
+    """
+    g = resolve_glyphs(console)
+    label = ", ".join(f"{name} x{count}" for name, count in summary.items())
+    options = Table(show_header=False, box=None, padding=(0, 2), pad_edge=False, expand=True)
+    options.add_column(style="perm.key", no_wrap=True)
+    options.add_column(style="perm.option", overflow="fold", ratio=1)
+    options.add_column(style="perm.key", justify="right", no_wrap=True)
+    options.add_row("1", "yes, always for this workspace", "y")
+    options.add_row("2", "yes, this session only", "o")
+    options.add_row("3", f"no {g['dash']} never for this workspace", "n")
+    body: list[RenderableType] = [
+        Text.assemble(
+            ("this workspace defines Claude Code hooks: ", "notice.dim"),
+            (label, "arg.value"),
+        ),
+        Text(
+            "hooks are shell commands from the workspace; they run on zak code's seams "
+            "(turn end, tool calls, session start).",
+            style="notice.dim",
+        ),
+        Text(""),
+        options,
+    ]
+    console.print()
+    console.print(
+        panel(
+            console,
+            "[perm.title]workspace hooks[/perm.title]",
+            Group(*body),
+            border_style="perm.border",
+        )
+    )
+    prompt = f"  adopt (1-3 or y/o/n) [prompt.marker]{g['prompt']}[/prompt.marker] "
+    for _ in range(3):
+        try:
+            answer = console.input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            return None
+        decision = _parse_adoption_answer(answer)
+        if decision is not None:
+            console.print()
+            return decision
+        console.print(
+            margin(
+                Text(
+                    "please answer 1-3, or y (always) / o (this session) / n (never)",
+                    style="notice.dim",
+                )
+            )
+        )
+    return None
 
 
 def _render_permissions(console: Console, agent: Agent) -> None:
@@ -1296,6 +1376,35 @@ def chat(
     extra_skill_dirs = skill_dir if skill_dir else None
     extra_roots = extra_root if extra_root else None
     prompter = ConsolePermissionPrompter(console)
+
+    # Workspace hook adoption (Claude Code folder-trust semantics). The policy lives in
+    # core (zakcode.workspace_trust); this only supplies the ask-UI and applies the result.
+    # Only the UNSET tri-state consults the per-workspace memory or asks — an explicit
+    # ZAKCODE_SETTINGS_HOOKS (env or .env) is the operator's standing answer. Non-interactive
+    # runs (-p, no tty) never prompt: they get a one-line pointer and stay off, so headless
+    # behavior is deterministic. The silent failure this replaces: a Claude-Code workspace's
+    # hooks block was ignored with NOTHING said, and the miss surfaced layers away.
+    from zakcode.hooks.settings_loader import summarize_settings_hooks
+    from zakcode.workspace_trust import (
+        hooks_decision,
+        remember_hooks_decision,
+        resolve_hooks_adoption,
+    )
+
+    _probe = Settings(**{k: v for k, v in overrides.items() if k in Settings.model_fields})
+    adoption = resolve_hooks_adoption(
+        configured=_probe.settings_hooks,
+        summary=summarize_settings_hooks(_probe.workspace_root),
+        decision=hooks_decision(_probe.workspace_root),
+        interactive=prompt is None and sys.stdin.isatty(),
+        ask=functools.partial(_ask_hooks_adoption, console),
+    )
+    if adoption.enable:
+        overrides["enable_settings_hooks"] = True  # rides into Agent(**overrides) + /clear
+    if adoption.remember is not None:
+        remember_hooks_decision(_probe.workspace_root, adoption.remember)
+    if adoption.notice:
+        _dim(console, adoption.notice)
     from zakcode.session.store import SessionError
 
     try:
