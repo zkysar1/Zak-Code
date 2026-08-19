@@ -435,7 +435,10 @@ class Agent:
         # BOTH enable_settings_hooks=True AND a programmatic hook_manager, the
         # settings.json specs are APPENDED to the existing manager's shell_hooks.
         # None defers to Settings.settings_hooks (ZAKCODE_SETTINGS_HOOKS); an explicit
-        # True/False from the host wins either way.
+        # True/False from the host wins either way. Settings.settings_hooks is itself
+        # tri-state: an UNSET value (None) is falsy here — off — which is what lets an
+        # interactive host resolve it via folder trust (zakcode.workspace_trust) and pass
+        # the answer in as enable_settings_hooks BEFORE construction.
         if (
             enable_settings_hooks
             if enable_settings_hooks is not None
