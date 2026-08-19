@@ -254,14 +254,15 @@ def _write_claude_skill(workspace: Path, name: str, body: str, *, frontmatter: s
 
 
 async def test_slash_command_invocation_surfaces_arguments(tmp_path: Path) -> None:
-    # `/skill the args` (Claude Code): the trailing text reaches the skill as arguments, surfaced
-    # ahead of the body so a skill can branch on a sub-command. The human CLI invoke_skill path.
+    # `/skill the args` (Claude Code): the trailing text reaches the skill as <command-args>
+    # inside the command-expansion frame, ahead of the body, so a skill can branch on a
+    # sub-command. invoke_skill = the deferred human path (stages the same composed turn).
     _write_claude_skill(tmp_path, "looper", "Loop body.")
     agent = _scripted_agent(tmp_path)
     result = await agent.invoke_skill("looper", "loop")
     assert result.invoked
     injected = agent.session.messages[-1].text
-    assert "[arguments: loop]" in injected and "loop body" in injected.lower()
+    assert "<command-args>loop</command-args>" in injected and "loop body" in injected.lower()
 
 
 async def test_slash_command_composes_an_immediate_turn(tmp_path: Path) -> None:
@@ -275,8 +276,13 @@ async def test_slash_command_composes_an_immediate_turn(tmp_path: Path) -> None:
     before = len(agent.session.messages)
     result = await agent.compose_skill_turn("looper", "loop")
     assert result.invoked and result.turn_text is not None
-    assert result.turn_text.startswith("[skill: looper]")
-    assert "[arguments: loop]" in result.turn_text and "loop body" in result.turn_text.lower()
+    assert result.turn_text.startswith("<command-message>looper is running</command-message>")
+    assert "<command-name>/looper</command-name>" in result.turn_text
+    assert "<command-args>loop</command-args>" in result.turn_text
+    assert "loop body" in result.turn_text.lower()
+    # The frame is the message's OPENING — provenance only counts at the start (a
+    # body-embedded lookalike is just text), so the body must follow it, never precede.
+    assert result.turn_text.index("<command-name>") < result.turn_text.lower().index("loop body")
     assert len(agent.session.messages) == before
 
 
@@ -291,16 +297,43 @@ async def test_use_skill_tool_passes_arguments_to_the_body(tmp_path: Path) -> No
     res = await tool.execute({"name": "looper", "args": "loop"}, ctx)
     assert res.is_error is False
     assert "[arguments: loop]" in res.output
+    # Provenance asymmetry: a model-chained load must NEVER carry the human command frame —
+    # the two shapes staying distinct is what lets the model tell who invoked the skill.
+    assert "<command-name" not in res.output and "<command-message" not in res.output
 
 
 async def test_skill_without_arguments_has_no_frame(tmp_path: Path) -> None:
-    # No args (and whitespace-only args) must not emit a stray empty `[arguments: …]` frame.
+    # No args (and whitespace-only args) must not emit a stray empty args frame — neither the
+    # human path's <command-args> nor the tool path's [arguments: …].
     _write_claude_skill(tmp_path, "plain", "Plain body.")
     agent = _scripted_agent(tmp_path)
     result = await agent.invoke_skill("plain", "   ")  # whitespace-only → treated as no args
     assert result.invoked
     injected = agent.session.messages[-1].text
-    assert "[arguments:" not in injected and "plain body" in injected.lower()
+    assert "<command-args" not in injected and "[arguments:" not in injected
+    assert "plain body" in injected.lower()
+    # The provenance frame itself is unconditional on the human path.
+    assert injected.startswith("<command-message>plain is running</command-message>")
+
+
+async def test_slash_frame_echoes_the_typed_command_under_triggers_routing(
+    tmp_path: Path,
+) -> None:
+    # The command-expansion frame is invocation provenance — the only signal telling the model
+    # a HUMAN typed the slash. That is what lets a skill whose own rules forbid model
+    # self-invocation ("user-invocable only", a Mind's /start) run instead of refusing: the
+    # live 2026-08-19 report was `/start sera` answered with "user-only command, please run
+    # this yourself in the terminal" — typed from the terminal. Under `triggers:` routing the
+    # frame echoes what the USER TYPED (/start), not the resolved skill's name, while
+    # SkillInvocation.name still reports the resolved skill for display/tracking.
+    _write_claude_skill(tmp_path, "looper", "Loop body.", frontmatter='triggers: ["/start"]')
+    agent = _scripted_agent(tmp_path)
+    result = await agent.compose_skill_turn("start", "sera")
+    assert result.invoked and result.name == "looper"
+    assert result.turn_text is not None
+    assert result.turn_text.startswith("<command-message>start is running</command-message>")
+    assert "<command-name>/start</command-name>" in result.turn_text
+    assert "<command-args>sera</command-args>" in result.turn_text
 
 
 async def test_user_invocable_false_blocks_human_path_not_model_chaining(tmp_path: Path) -> None:

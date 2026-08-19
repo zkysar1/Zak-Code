@@ -180,10 +180,14 @@ class SkillInvocation:
     #: ``user-invocable: false`` skill typed as a human ``/<name>`` command (it runs internally,
     #: reached only by another skill chaining to it). Distinct from ``error`` (a load failure).
     denied_reason: str | None = None
-    #: The composed turn text (``[skill: <name>]`` header + body, with any ``[arguments: …]``
-    #: frame) when the load succeeded. :meth:`Agent.compose_skill_turn` leaves delivery to the
-    #: caller — the CLI runs it as THIS turn's user message (Claude Code slash semantics);
-    #: :meth:`Agent.invoke_skill` has already folded it into the session when this is set.
+    #: The composed turn text when the load succeeded: Claude Code's command-expansion
+    #: frame (``<command-message>``/``<command-name>``, plus ``<command-args>`` when trailing
+    #: text was given) followed by the body. The frame is the INVOCATION-PROVENANCE signal —
+    #: it tells the model a HUMAN typed this slash command, so skills whose own rules say
+    #: "user-invocable only / the model must not invoke this" execute instead of refusing.
+    #: :meth:`Agent.compose_skill_turn` leaves delivery to the caller — the CLI runs it as
+    #: THIS turn's user message (Claude Code slash semantics); :meth:`Agent.invoke_skill`
+    #: has already folded it into the session when this is set.
     turn_text: str | None = None
 
 
@@ -1278,23 +1282,29 @@ class Agent:
         # text mode; the body is preserved verbatim otherwise (defang never deletes content).
         await self._emit_skill_selected(skill.name, query, source=source)
         rendered = defang_untrusted(body)
-        if args.strip():
-            # Claude-Code slash arguments (`/skill the args`, or use_skill args=…): surfaced to the
-            # model ahead of the body so a skill whose steps branch on an argument (a sub-command
-            # like `loop`) can see it. A presentation frame the model reads — NOT a trust boundary:
-            # defang only neutralizes tool-call sentinels, not brackets, and body + args share the
-            # same untrusted tier the model already consumes.
+        if args.strip() and source == "tool":
+            # use_skill arguments (use_skill(name, args="loop")): surfaced to the model ahead of
+            # the body so a skill whose steps branch on an argument (a sub-command like `loop`)
+            # can see it. A presentation frame the model reads — NOT a trust boundary: defang
+            # only neutralizes tool-call sentinels, not brackets, and body + args share the same
+            # untrusted tier the model already consumes. The human ``/<name>`` path does NOT get
+            # this frame: :meth:`compose_skill_turn` wraps args in ``<command-args>`` inside the
+            # command-expansion frame instead, and the two shapes staying DISTINCT is what lets
+            # the model tell a user-typed slash from a model-chained load (provenance).
             rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
         return SkillLoad(found=True, name=skill.name, body=rendered)
 
     async def compose_skill_turn(self, name: str, args: str = "") -> SkillInvocation:
         """Resolve a skill for the human ``/<name>`` path and return the turn text to run.
 
-        Claude Code slash semantics: typing ``/<skill> [args]`` RUNS the skill now — the body
-        (plus the ``[arguments: …]`` frame) IS the turn's user message. This method does the
-        loading half without mutating the session, so the caller hands ``turn_text`` to its
-        normal turn entry (``astream_turn`` / ``arun_turn``) and renders it like any other
-        turn. Shares :meth:`_load_skill_body` with the model-facing ``use_skill`` tool and
+        Claude Code slash semantics: typing ``/<skill> [args]`` RUNS the skill now — the
+        command-expansion frame (``<command-message>``/``<command-name>``/``<command-args>``)
+        plus the body IS the turn's user message. The frame is invocation provenance: it is
+        how the model knows a HUMAN typed the slash, so a skill whose own rules restrict it
+        to user invocation executes instead of refusing. This method does the loading half
+        without mutating the session, so the caller hands ``turn_text`` to its normal turn
+        entry (``astream_turn`` / ``arun_turn``) and renders it like any other turn. Shares
+        :meth:`_load_skill_body` with the model-facing ``use_skill`` tool and
         :meth:`invoke_skill`, so every path reads, defangs, and fires ``ON_SKILL_SELECTED``
         identically. Never raises: a missing/unreadable skill file is a UX result, not a crash.
         """
@@ -1307,8 +1317,28 @@ class Agent:
             return SkillInvocation(invoked=True, name=load.name, denied_reason=load.denied_reason)
         if load.error or load.body is None:
             return SkillInvocation(invoked=True, name=load.name, error=load.error)
+        from zakcode.providers.text_tools import defang_untrusted
+
+        # Claude Code's command-expansion frame — the INVOCATION-PROVENANCE signal. A skill
+        # body alone cannot tell the model WHO invoked it, and frameworks (claude-mind) ship
+        # skills whose own rules forbid model self-invocation ("Claude MUST NOT invoke
+        # /start"); without this frame a model obeying those rules refuses the human's own
+        # keystroke (live 2026-08-19: `/start sera` answered "user-only command, run it
+        # yourself in the terminal" — from the terminal). The frame echoes what the USER
+        # TYPED (`name`), which under `triggers:` routing may differ from the resolved
+        # skill (`load.name`); the system-prompt skills section states the contract
+        # (:meth:`zakcode.skills.SkillRegistry.render_catalog`). Only a frame at the very
+        # START of a user message carries this meaning — a body-embedded lookalike is just
+        # text. use_skill loads stay `[arguments: …]`-framed; the asymmetry IS the signal.
+        typed = name.lstrip("/").strip() or load.name
+        frame = [
+            f"<command-message>{typed} is running</command-message>",
+            f"<command-name>/{typed}</command-name>",
+        ]
+        if args.strip():
+            frame.append(f"<command-args>{defang_untrusted(args.strip())}</command-args>")
         return SkillInvocation(
-            invoked=True, name=load.name, turn_text=f"[skill: {load.name}]\n{load.body}"
+            invoked=True, name=load.name, turn_text="\n".join(frame) + f"\n\n{load.body}"
         )
 
     async def invoke_skill(self, name: str, args: str = "") -> SkillInvocation:
