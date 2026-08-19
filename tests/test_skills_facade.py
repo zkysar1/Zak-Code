@@ -92,7 +92,8 @@ def test_slash_skill_composes_the_turn(tmp_path: Path) -> None:
     outcome = _skill_command_turn(console, agent, "greeter")
     assert outcome.handled is True
     assert outcome.turn_text is not None
-    assert outcome.turn_text.startswith("[skill: greeter]")
+    assert outcome.turn_text.startswith("<command-message>greeter is running</command-message>")
+    assert "<command-name>/greeter</command-name>" in outcome.turn_text
     assert "greet the user by name" in outcome.turn_text.lower()
     # The body was loaded (lazily) but the session is untouched until the turn runs.
     assert agent.skill_registry.get("greeter").body_loaded is True
@@ -193,7 +194,7 @@ def test_slash_skill_no_registry_is_safe(tmp_path: Path) -> None:
 
 async def test_composed_skill_turn_runs_like_any_turn(tmp_path: Path) -> None:
     # End-to-end, genuinely offline: the composed text IS a normal turn — the session gains
-    # the [skill: …] user message plus the model's response, exactly the shape invoke_skill
+    # the command-framed user message plus the model's response, exactly the shape invoke_skill
     # + a follow-up message used to need two steps for. The provider MUST be an explicit
     # ScriptedProvider: a bare default_model="scripted/test" reaches litellm on a real turn
     # (BadRequestError on CI), and on a dev box an ambient ~/.zakcode/.env fallback can make
@@ -211,7 +212,9 @@ async def test_composed_skill_turn_runs_like_any_turn(tmp_path: Path) -> None:
     result = await agent.arun_turn(outcome.turn_text)
     assert result.stop_reason == "completed"
     user_texts = [m.text for m in agent.session.messages if m.role == "user"]
-    assert any(t.startswith("[skill: greeter]") for t in user_texts)
+    assert any(
+        t.startswith("<command-message>greeter is running</command-message>") for t in user_texts
+    )
     assert agent.session.messages[-1].role == "assistant"
 
 

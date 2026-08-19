@@ -156,6 +156,19 @@ def test_render_catalog_empty() -> None:
     assert SkillRegistry().render_catalog() == ""
 
 
+def test_render_catalog_states_user_provenance_contract() -> None:
+    # The catalog block is where the model learns what a <command-name> frame MEANS: a human
+    # typed that slash in the terminal, so "user-invocable only" rules are satisfied. Without
+    # this sentence a rule-following model refuses the operator's own keystroke (live
+    # 2026-08-19: a Mind's /start declined as "user-only command" — typed by the user).
+    reg = SkillRegistry()
+    fm, _ = parse_frontmatter("---\nname: a\ndescription: alpha\n---\nbody a\n")
+    reg.add(Skill(fm, Path("a/SKILL.md")))
+    cat = reg.render_catalog()
+    assert "BEGINS with a <command-name> block" in cat
+    assert "BY THE USER" in cat
+
+
 def test_discover_skills_project_overrides(tmp_path: Path) -> None:
     # A project skill shadows a same-named user/bundled one (project discovered last).
     proj = tmp_path / ".zakcode" / "skills"

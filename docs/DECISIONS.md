@@ -409,6 +409,22 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     slash command IS the turn. `Agent.invoke_skill` is retained, rewritten over compose, as the
     deferred stage-context variant for embedders. First defect surfaced by the Serene
     dogfooding engagement.
+  - **The composed slash turn carries invocation provenance (2026-08-19, same live boot, one
+    fix later).** Running the skill immediately was not enough: the composed text
+    (`[skill: start]` + body) never said WHO invoked it, and frameworks ship skills whose own
+    rules forbid model self-invocation (a Mind's "control skills: Claude MUST NOT invoke
+    /start"). A rule-following model (Gemini, no Claude-Code training priors) therefore
+    refused the operator's own keystroke: "user-only command, please run this yourself in the
+    terminal" — answered TO the terminal. Two-part fix, both in core: `compose_skill_turn` now
+    emits Claude Code's command-expansion frame (`<command-message>` / `<command-name>` /
+    `<command-args>`, echoing the TYPED token — under `triggers:` routing that may differ from
+    the resolved skill name), and `SkillRegistry.render_catalog` states the contract in the
+    system prompt (a user message BEGINNING with `<command-name>` = the human typed it; rules
+    limiting a skill to user invocation are satisfied). The `use_skill` tool path keeps its
+    distinct `[arguments: …]` frame deliberately — the asymmetry is what makes the provenance
+    signal informative, and it is conformance-pinned in both directions. Vendor-agnostic by
+    design: the explicit prompt contract does the work for models with no Claude-Code priors;
+    the CC-shaped markers do it for models with them.
 
 ## ADR-0013 — Workspace hook adoption: folder-trust ask-once in the interactive CLI
 

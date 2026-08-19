@@ -1582,10 +1582,11 @@ def chat(
                     "compacted older history into a summary." if did else "nothing to compact yet.",
                 )
                 continue
-            # A bare /<skill-name> RUNS the skill (Claude Code slash semantics): the body —
-            # plus the [arguments: …] frame when trailing text was given — becomes THIS
-            # turn's user message, and control falls through to the shared streaming path
-            # below. No second "describe your task" message needed.
+            # A bare /<skill-name> RUNS the skill (Claude Code slash semantics): the
+            # <command-name> expansion frame (+ <command-args> when trailing text was
+            # given) plus the body becomes THIS turn's user message, and control falls
+            # through to the shared streaming path below. No second "describe your task"
+            # message needed — and the frame tells the model a HUMAN typed the slash.
             skill_args = stripped[len(command) :].strip()
             skill = _skill_command_turn(console, agent, command.lstrip("/"), args=skill_args)
             if skill.handled:

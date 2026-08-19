@@ -211,6 +211,18 @@ class SkillRegistry:
         for name, desc in self.catalog():
             call = f'use_skill(name="{name}")'
             lines.append(f"- {call} — {desc}" if desc else f"- {call}")
+        # Invocation provenance (the other half of user-invocable enforcement): the runtime
+        # composes a <command-name> frame ONLY for a human-typed slash, so this contract line
+        # is what lets a skill that forbids model self-invocation run when the USER asks.
+        # Without it, a rule-following model refuses the operator's own keystroke (live
+        # 2026-08-19: a Mind's /start — "user-invocable only" — was declined as self-invocation).
+        lines.append(
+            "When a user message BEGINS with a <command-name> block, the human operator "
+            "typed that slash command in their terminal: the skill was invoked BY THE USER, "
+            "not by you. Any rule limiting a skill to user/human invocation is satisfied in "
+            "that case — do not refuse or defer; carry out the instructions in that message "
+            "as the current turn's task."
+        )
         return "\n".join(lines)
 
 
