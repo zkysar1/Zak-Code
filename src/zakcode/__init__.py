@@ -167,7 +167,7 @@ def _infer_roots_from_skill_dir(skill_dir: Path) -> list[Path]:
 
 @dataclass(frozen=True)
 class SkillInvocation:
-    """Outcome of :meth:`Agent.invoke_skill`.
+    """Outcome of :meth:`Agent.compose_skill_turn` / :meth:`Agent.invoke_skill`.
 
     ``invoked`` is True iff ``name`` resolved to a discovered skill (so the caller treats it
     as handled, not an unknown command); ``error`` is set iff the skill's body failed to load.
@@ -180,6 +180,11 @@ class SkillInvocation:
     #: ``user-invocable: false`` skill typed as a human ``/<name>`` command (it runs internally,
     #: reached only by another skill chaining to it). Distinct from ``error`` (a load failure).
     denied_reason: str | None = None
+    #: The composed turn text (``[skill: <name>]`` header + body, with any ``[arguments: …]``
+    #: frame) when the load succeeded. :meth:`Agent.compose_skill_turn` leaves delivery to the
+    #: caller — the CLI runs it as THIS turn's user message (Claude Code slash semantics);
+    #: :meth:`Agent.invoke_skill` has already folded it into the session when this is set.
+    turn_text: str | None = None
 
 
 class _SkillToolResolver:
@@ -1279,14 +1284,16 @@ class Agent:
             rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
         return SkillLoad(found=True, name=skill.name, body=rendered)
 
-    async def invoke_skill(self, name: str, args: str = "") -> SkillInvocation:
-        """Load a discovered skill's body into the session and emit the selection signal.
+    async def compose_skill_turn(self, name: str, args: str = "") -> SkillInvocation:
+        """Resolve a skill for the human ``/<name>`` path and return the turn text to run.
 
-        The CLI ``/<skill>`` entry point: it folds the body into a TRUSTED user message so the
-        next turn applies the skill. Shares :meth:`_load_skill_body` with the model-facing
-        ``use_skill`` tool (which instead returns the body as its tool result), so both paths
-        read, defang, and fire ``ON_SKILL_SELECTED`` identically. Never raises: a
-        missing/unreadable skill file is a UX result, not a crash.
+        Claude Code slash semantics: typing ``/<skill> [args]`` RUNS the skill now — the body
+        (plus the ``[arguments: …]`` frame) IS the turn's user message. This method does the
+        loading half without mutating the session, so the caller hands ``turn_text`` to its
+        normal turn entry (``astream_turn`` / ``arun_turn``) and renders it like any other
+        turn. Shares :meth:`_load_skill_body` with the model-facing ``use_skill`` tool and
+        :meth:`invoke_skill`, so every path reads, defangs, and fires ``ON_SKILL_SELECTED``
+        identically. Never raises: a missing/unreadable skill file is a UX result, not a crash.
         """
         load = await self._load_skill_body(name, source="command", args=args)
         if not load.found:
@@ -1297,8 +1304,23 @@ class Agent:
             return SkillInvocation(invoked=True, name=load.name, denied_reason=load.denied_reason)
         if load.error or load.body is None:
             return SkillInvocation(invoked=True, name=load.name, error=load.error)
-        self.session.add_message(Message.user(f"[skill: {load.name}]\n{load.body}"))
-        return SkillInvocation(invoked=True, name=load.name)
+        return SkillInvocation(
+            invoked=True, name=load.name, turn_text=f"[skill: {load.name}]\n{load.body}"
+        )
+
+    async def invoke_skill(self, name: str, args: str = "") -> SkillInvocation:
+        """Load a discovered skill's body into the session and emit the selection signal.
+
+        The DEFERRED variant of :meth:`compose_skill_turn`: it folds the body into a TRUSTED
+        user message so the NEXT turn applies the skill, without running a turn itself —
+        for embedding hosts that stage context ahead of a run. The CLI ``/<name>`` path uses
+        :meth:`compose_skill_turn` and runs the skill immediately (Claude Code parity).
+        Never raises: a missing/unreadable skill file is a UX result, not a crash.
+        """
+        result = await self.compose_skill_turn(name, args)
+        if result.turn_text is not None:
+            self.session.add_message(Message.user(result.turn_text))
+        return result
 
     @property
     def skill_invocations_this_session(self) -> int:

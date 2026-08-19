@@ -400,3 +400,12 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   - **Validated live:** branching routing (`bench/run_skill_branch.py`) — one skill reads input and
     calls a different next-skill per case (urgent vs. routine), correct both ways; and the budget
     capping the relay at N invocations while the model finishes gracefully past the denial.
+  - **CLI `/<skill>` runs the turn immediately (2026-08-19).** The REPL used to load the body
+    lazily and print "describe your task and it will apply" — a second message was needed before
+    anything happened, which is not Claude Code's slash semantics and confused the first live
+    Claude-Mind boot (`/start sera` loaded and then sat at the prompt). Core gained
+    `Agent.compose_skill_turn` (load + defang + signal, **no session mutation**, returns
+    `turn_text`); the REPL streams that text through the same path as any typed message, so the
+    slash command IS the turn. `Agent.invoke_skill` is retained, rewritten over compose, as the
+    deferred stage-context variant for embedders. First defect surfaced by the Serene
+    dogfooding engagement.

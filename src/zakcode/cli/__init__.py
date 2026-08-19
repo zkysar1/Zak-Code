@@ -19,7 +19,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Coroutine
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import typer
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
@@ -624,7 +624,7 @@ def _render_skills(console: Console, agent: Agent) -> None:
             if desc:
                 line.append(f" {g['dash']} {desc}", style="notice.dim")
             console.print(line)
-        _dim(console, "invoke a skill with /<name> to load its instructions.")
+        _dim(console, f"run a skill with /<name> [args] {g['dash']} it executes as this turn.")
         invoked = getattr(agent, "skill_invocations_this_session", 0)
         if invoked:
             _dim(console, f"the model has invoked skills {invoked}x this session (use_skill).")
@@ -634,39 +634,50 @@ def _render_skills(console: Console, agent: Agent) -> None:
         console.print(line)
 
 
-def _invoke_skill(console: Console, agent: Agent, name: str, args: str = "") -> bool:
-    """If ``name`` is a skill, load its body into the session and return True.
+class _SkillCommandOutcome(NamedTuple):
+    """What the REPL should do with a ``/<token>`` that may be a skill."""
 
-    Delegates to the CORE :meth:`Agent.invoke_skill` (which injects the body lazily and fires
-    the observe-only skill-selection signal); this function only renders the outcome. The body
-    is ephemeral, cache-safe context the next turn naturally includes.
+    handled: bool  # True → the token matched a discovered skill; stop command fallthrough
+    turn_text: str | None  # set → run this text as the current turn's user message
+
+
+def _skill_command_turn(
+    console: Console, agent: Agent, name: str, args: str = ""
+) -> _SkillCommandOutcome:
+    """If ``name`` is a skill, compose its body as THIS turn's input (Claude Code semantics).
+
+    Delegates to the CORE :meth:`Agent.compose_skill_turn` (which loads, defangs, and fires
+    the observe-only skill-selection signal); this function only renders the outcome. On
+    success the REPL streams ``turn_text`` through the same path as any typed message — the
+    slash command IS the turn, so ``/start sera`` runs now instead of waiting for a second
+    "describe your task" message.
     """
     # The live agent may be any AgentLike (a thin/remote client) with no skills surface; a
-    # missing invoke_skill just means "not a skill here" — fall through to other command paths.
-    invoke = getattr(agent, "invoke_skill", None)
-    if invoke is None:
-        return False
-    result = _run_async(invoke(name, args))
+    # missing compose_skill_turn just means "not a skill here" — fall through to other paths.
+    compose = getattr(agent, "compose_skill_turn", None)
+    if compose is None:
+        return _SkillCommandOutcome(False, None)
+    result = _run_async(compose(name, args))
     if not result.invoked:
-        return False  # not a skill — let the caller try other command paths
+        return _SkillCommandOutcome(False, None)  # not a skill — try other command paths
     if result.error:
         # The file may have changed/vanished since discovery; report, don't crash the REPL.
         notice_error(console, "could not load skill", f"{result.name}: {result.error}")
-        return True
+        return _SkillCommandOutcome(True, None)
     if result.denied_reason:
         # A policy refusal (e.g. user-invocable: false), not a failure — a friendly notice.
         notice_info(console, result.denied_reason)
-        return True
+        return _SkillCommandOutcome(True, None)
     console.print(
         margin(
             Text.assemble(
-                ("loaded skill ", "notice.dim"),
+                ("running skill ", "notice.dim"),
                 (result.name, "bold"),
-                ("; describe your task and it will apply.", "notice.dim"),
+                ((f" {GLYPHS['dot']} {args}" if args else ""), "notice.dim"),
             )
         )
     )
-    return True
+    return _SkillCommandOutcome(True, result.turn_text)
 
 
 def _trim_kv_value(value: str, limit: int, g: dict[str, str]) -> str:
@@ -1462,28 +1473,35 @@ def chat(
                     "compacted older history into a summary." if did else "nothing to compact yet.",
                 )
                 continue
-            # A bare /<skill-name> invokes a discovered skill (loads its body).
+            # A bare /<skill-name> RUNS the skill (Claude Code slash semantics): the body —
+            # plus the [arguments: …] frame when trailing text was given — becomes THIS
+            # turn's user message, and control falls through to the shared streaming path
+            # below. No second "describe your task" message needed.
             skill_args = stripped[len(command) :].strip()
-            if _invoke_skill(console, agent, command.lstrip("/"), args=skill_args):
-                continue
-            # Fall through to plugin-registered commands before giving up. ``getattr``
-            # because the live agent may be any AgentLike (a thin/remote one without a
-            # command registry); a missing registry just means no plugin commands.
-            registry = getattr(agent, "command_registry", None)
-            cmd_result = (
-                registry.run(command, stripped[len(command) :].strip())
-                if registry is not None
-                else None
-            )
-            if cmd_result is not None:
-                # Opaque plugin output: render as plain Text so a bare [/] can't raise
-                # MarkupError (crashing the REPL) and style tags can't drop the literal.
-                console.print(
-                    margin(Text(cmd_result.output, style="err" if cmd_result.is_error else ""))
+            skill = _skill_command_turn(console, agent, command.lstrip("/"), args=skill_args)
+            if skill.handled:
+                if skill.turn_text is None:
+                    continue  # denied / unreadable — the notice already rendered
+                stripped = skill.turn_text  # the skill body is the turn; stream it below
+            else:
+                # Fall through to plugin-registered commands before giving up. ``getattr``
+                # because the live agent may be any AgentLike (a thin/remote one without a
+                # command registry); a missing registry just means no plugin commands.
+                registry = getattr(agent, "command_registry", None)
+                cmd_result = (
+                    registry.run(command, stripped[len(command) :].strip())
+                    if registry is not None
+                    else None
                 )
+                if cmd_result is not None:
+                    # Opaque plugin output: render as plain Text so a bare [/] can't raise
+                    # MarkupError (crashing the REPL) and style tags can't drop the literal.
+                    console.print(
+                        margin(Text(cmd_result.output, style="err" if cmd_result.is_error else ""))
+                    )
+                    continue
+                _dim(console, f"{command} is not yet supported.")
                 continue
-            _dim(console, f"{command} is not yet supported.")
-            continue
 
         # Stream the model response token by token through the renderer. A fresh
         # renderer per turn keeps the text/usage buffers from leaking across turns.
