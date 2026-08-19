@@ -192,14 +192,24 @@ def test_slash_skill_no_registry_is_safe(tmp_path: Path) -> None:
 
 
 async def test_composed_skill_turn_runs_like_any_turn(tmp_path: Path) -> None:
-    # End-to-end on the offline scripted provider: the composed text IS a normal turn — the
-    # session gains the [skill: …] user message plus the model's response, exactly the shape
-    # invoke_skill + a follow-up message used to need two steps for.
+    # End-to-end, genuinely offline: the composed text IS a normal turn — the session gains
+    # the [skill: …] user message plus the model's response, exactly the shape invoke_skill
+    # + a follow-up message used to need two steps for. The provider MUST be an explicit
+    # ScriptedProvider: a bare default_model="scripted/test" reaches litellm on a real turn
+    # (BadRequestError on CI), and on a dev box an ambient ~/.zakcode/.env fallback can make
+    # the un-hermetic version pass locally — which is exactly how this test first shipped red.
+    from zakcode.evals.harness import ScriptedProvider, reply
+
     _write_skill(tmp_path, "g")
-    agent = _agent(tmp_path, enable_skills=True)
+    agent = Agent(
+        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        provider=ScriptedProvider([reply("hello, friend!")]),
+        enable_skills=True,
+    )
     outcome = await agent.compose_skill_turn("greeter")
     assert outcome.turn_text is not None
-    await agent.arun_turn(outcome.turn_text)
+    result = await agent.arun_turn(outcome.turn_text)
+    assert result.stop_reason == "completed"
     user_texts = [m.text for m in agent.session.messages if m.role == "user"]
     assert any(t.startswith("[skill: greeter]") for t in user_texts)
     assert agent.session.messages[-1].role == "assistant"
