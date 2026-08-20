@@ -166,6 +166,12 @@ class ServeDriver:
         self._stop = stop if stop is not None else asyncio.Event()
         self._backoff_current = backoff_initial
         self._provider_error_streak = 0
+        # (sid, say) whose user_message marker was already surfaced to watchers just
+        # before a turn failed and the say was re-queued. Suppresses the duplicate
+        # re-publish when that SAME say is retried on that SAME session; a session
+        # rotation (new sid) clears the match so the re-minted session still surfaces
+        # the question to reconnected watchers.
+        self._suppress_republish: tuple[str, str] | None = None
 
     # ── public control ───────────────────────────────────────────────────────
 
@@ -191,8 +197,13 @@ class ServeDriver:
             if self.max_turns is not None and turn >= self.max_turns:
                 break
             say = self._read_say()
+            # A say re-queued after a failed turn was already surfaced to watchers on
+            # this session; don't double-publish it on the retry. One-shot: cleared on
+            # every read, re-armed only when the except path re-queues below.
+            suppress_republish = bool(say) and self._suppress_republish == (sid, say)
+            self._suppress_republish = None
             try:
-                if say:
+                if say and not suppress_republish:
                     # Surface the question to watch observers BEFORE the reply streams, so
                     # the shared transcript reads question-then-answer. Best-effort like the
                     # rotation marker: a publish failure must never break the serve loop
@@ -202,9 +213,12 @@ class ServeDriver:
                 done = await self._run_one_turn(sid, self._compose_message(message, say))
             except (httpx.HTTPError, ConnectionError, OSError) as exc:
                 # The consumed say never reached a completed turn — put it back so the
-                # retry (or the re-minted session) delivers it instead of eating it.
+                # retry (or the re-minted session) delivers it instead of eating it. Record
+                # (sid, say) so the retry on THIS session skips the duplicate user_message
+                # publish; a rotation to a new sid clears the match and re-surfaces it.
                 if say:
                     self._requeue_say(say)
+                    self._suppress_republish = (sid, say)
                 consecutive_failures += 1
                 logger.warning(
                     "serve turn failed (%s: %s); backing off (failure %d)",
