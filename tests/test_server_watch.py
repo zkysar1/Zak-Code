@@ -284,3 +284,22 @@ async def test_watch_marker_rejects_unknown_event_type(live_url: str) -> None:
             f"/watch/{sid}/marker", json={"event": "arbitrary_injected", "reason": "x"}
         )
         assert resp.status_code == 422
+
+
+async def test_watch_marker_publishes_user_message_to_observers(live_url: str) -> None:
+    """POST /watch/{sid}/marker with event=user_message (the watch/talk unification: the
+    question the driver consumed) reaches a since=0 watcher as the allow-listed
+    SafeUserMessage frame, so the shared transcript reads question-then-answer."""
+    sid = await _run_turn(live_url)  # buffers the turn's events AND creates the bus
+    async with httpx.AsyncClient(base_url=live_url, timeout=10.0) as ac:
+        resp = await ac.post(
+            f"/watch/{sid}/marker",
+            json={"event": "user_message", "text": "what did you learn about volcanoes?"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["published"] is True
+
+    frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=5)
+    questions = [f for f in frames if f.get("event") == "user_message"]
+    assert len(questions) == 1
+    assert questions[0]["text"] == "what did you learn about volcanoes?"
