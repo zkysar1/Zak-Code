@@ -80,7 +80,66 @@ jobs:
           name: coverage-xml
           path: coverage.xml
 
-  # Single alert job that runs ONCE after the whole matrix (needs: verify),
+  # Publish the sidecar runtime artifact to S3. This is the env-server JAR
+  # pattern (build-ayo-environment-server.yml) applied to zak-code: the sidecar
+  # runs on env-servers from an S3 tarball, NOT a git clone, so a merge that is
+  # never packaged never reaches a running sidecar (the merged!=deployed gap that
+  # forced a manual refresh for PR #156; g-364-42). `needs: verify` gates on the
+  # full test matrix; the push+main `if` keeps it off PRs. OIDC-keyless via the
+  # shared zds CI role, which carries a scoped s3:PutObject inline policy
+  # (zds-ci-zak-code-s3-publish) for exactly the two prefixes written below.
+  publish-sidecar:
+    name: Publish sidecar artifact to S3
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # A permissions block REPLACES the job default set — name contents (checkout +
+    # git archive) explicitly alongside the OIDC id-token.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC, keyless)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::891377285145:role/ayoai-zds-ci-alert-oidc
+          aws-region: us-east-2
+
+      - name: Build sidecar tarball (git archive — source runtime; the box builds the uv venv)
+        run: |
+          set -euo pipefail
+          # git archive HEAD reproduces exactly what provision-env.sh expects:
+          # tracked files at the tarball root, no .git/, no venv. checkout@v6 is
+          # shallow (depth 1) which is sufficient — archive only needs HEAD's tree.
+          git archive --format=tar.gz -o zak-code-main.tar.gz HEAD
+          echo "tarball size: $(du -h zak-code-main.tar.gz | cut -f1)"
+          # Positive control: fail loudly if the runtime is not actually in the
+          # tarball, rather than silently shipping an empty/partial archive.
+          tar tzf zak-code-main.tar.gz | grep -q '^src/zakcode/server/driver.py$' \
+            || { echo "::error::src/zakcode/server/driver.py absent from tarball — refusing to publish"; exit 1; }
+
+      - name: Publish to S3 (immutable <sha> + latest pointer + legacy bridge)
+        env:
+          BUCKET: ayoai-jar-deployments
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          META="commit_sha=${SHA},repo=${REPO},build_number=${RUN}"
+          # 1. Immutable, versioned copy — the rollback source (repoint by copy).
+          aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/${SHA}/zak-code-main.tar.gz" --metadata "$META"
+          # 2. New canonical channel pointer.
+          aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/latest/zak-code-main.tar.gz" --metadata "$META"
+          # 3. Bridge: the location provision-env.sh reads TODAY, so this closes the
+          #    merged!=deployed gap with zero provision-side change. A follow-up leg
+          #    (g-364-42) repoints provision to latest/ and retires this write.
+          aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/mind-sidecar-deployments/artifacts/zak-code-main.tar.gz" --metadata "$META"
+          echo "✅ published sha=${SHA}, latest pointer, and legacy artifacts/ bridge"
+
+  # Single alert job that runs ONCE after the whole matrix (needs: verify + publish-sidecar),
   # not once per py-version cell. `failure()` here is true iff any verify cell
   # failed; cancelled runs (concurrency cancel-in-progress) are not failures,
   # so superseded pushes never alert. Gated to push-to-main so PR/feature-branch
@@ -94,7 +153,7 @@ jobs:
   # CLI are pre-installed on ubuntu-latest; no checkout needed.
   alert-on-failure:
     name: Alert agent inbox on CI failure
-    needs: verify
+    needs: [verify, publish-sidecar]
     if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # OIDC keyless (g-010-82). A permissions block REPLACES the job's full
