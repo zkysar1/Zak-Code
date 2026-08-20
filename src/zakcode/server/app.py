@@ -407,7 +407,6 @@ NUDGE_MAX_CHARS = 500
 SAY_MAX_CHARS = 2000
 
 
-
 def create_app(
     *,
     settings: Settings | None = None,
