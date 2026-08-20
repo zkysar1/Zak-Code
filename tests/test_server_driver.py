@@ -426,6 +426,34 @@ async def test_say_requeued_when_the_turn_fails(tmp_path: Path) -> None:
     assert len(client.turn_calls) == 2  # failed attempt + successful retry
     assert "did you see the eclipse?" in str(client.turn_calls[1]["message"])
     assert not (tmp_path / ".say").exists()  # delivered by the retry, slot clear
+    # Surfaced to watchers exactly once — NOT re-published on the same-session retry
+    # (the say was already marked to watchers before the turn faulted).
+    assert len(client.user_message_calls) == 1
+
+
+async def test_say_republished_on_session_rotation_not_on_same_session_retry(
+    tmp_path: Path,
+) -> None:
+    # A re-queued say is surfaced to watchers exactly ONCE per session: suppressed on a
+    # same-session retry, but re-published when repeated failures rotate to a fresh
+    # session — new watchers on `current` need the question too.
+    (tmp_path / ".say").write_text("did you see the eclipse?", encoding="utf-8")
+    client = FakeServerClient(
+        turn_script=[httpx.ConnectError("blip"), httpx.ConnectError("blip"), [_done()]]
+    )
+    driver = _driver(client, tmp_path, recreate_after_failures=2, max_turns=1)
+    await driver.run()
+
+    # Two failures hit the rotation threshold, so a fresh session is minted and the
+    # retry delivers the say on it.
+    assert client.created_sids == ["sess-1", "sess-2"]
+    assert "did you see the eclipse?" in str(client.turn_calls[-1]["message"])
+    # Published once per session — sess-1 (before the first failure) and sess-2 (after
+    # rotation) — NOT a third time for the suppressed same-session retry on sess-1.
+    assert client.user_message_calls == [
+        {"session_id": "sess-1", "text": "did you see the eclipse?"},
+        {"session_id": "sess-2", "text": "did you see the eclipse?"},
+    ]
 
 
 async def test_say_and_nudge_compose_nudge_first_then_say(tmp_path: Path) -> None:
