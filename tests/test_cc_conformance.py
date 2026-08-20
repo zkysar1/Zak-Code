@@ -316,6 +316,18 @@ async def test_skill_without_arguments_has_no_frame(tmp_path: Path) -> None:
     assert injected.startswith("<command-message>plain is running</command-message>")
 
 
+async def test_block_style_triggers_route_the_slash(tmp_path: Path) -> None:
+    # Claude-Mind skills declare triggers in YAML BLOCK form (`triggers:` + `- "/start"`),
+    # not the inline form — 60 of 78 skills in a live Mind (2026-08-20). The block form
+    # must route a typed slash exactly like the inline form does.
+    _write_claude_skill(tmp_path, "looper", "Loop body.", frontmatter='triggers:\n  - "/go"')
+    agent = _scripted_agent(tmp_path)
+    result = await agent.compose_skill_turn("go", "now")
+    assert result.invoked and result.name == "looper"
+    assert result.turn_text is not None
+    assert "<command-name>/go</command-name>" in result.turn_text
+
+
 async def test_slash_frame_echoes_the_typed_command_under_triggers_routing(
     tmp_path: Path,
 ) -> None:

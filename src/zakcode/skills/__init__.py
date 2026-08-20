@@ -75,8 +75,13 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
     ``---`` line; the body is everything after. ``name``/``description``/``version``/
     ``allowed-tools`` (alias ``allowed_tools``) get typed fields; every OTHER key is
     preserved verbatim in :attr:`SkillFrontmatter.extras` (audit P1-2 — Mind skills'
-    cognitive metadata must survive). Raises :class:`SkillError` if the fence or
-    ``name`` is missing.
+    cognitive metadata must survive). Lists parse in BOTH YAML spellings: inline
+    (``triggers: ["/start"]``) and block sequence (``triggers:`` followed by
+    ``- "/start"`` lines) — the block form is what real Claude-Mind skills
+    overwhelmingly use (measured 2026-08-20: 60 of 78 skills in a live Mind), and
+    before this it silently parsed as an empty string, so trigger routing and the
+    extras-preservation promise both quietly degraded. Raises :class:`SkillError`
+    if the fence or ``name`` is missing.
     """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -91,19 +96,40 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
 
     fields: dict[str, object] = {}
     extras: dict[str, str | list[str]] = {}
-    for raw in lines[1:end]:
-        line = raw.strip()
+    fm = lines[1:end]
+    idx = 0
+    while idx < len(fm):
+        line = fm[idx].strip()
+        idx += 1
         if not line or line.startswith("#") or ":" not in line:
             continue
         key, _, value = line.partition(":")
         key = key.strip().replace("-", "_")
         value = value.strip()
+        block_items: list[str] | None = None
+        if not value:
+            # YAML block-sequence lookahead: a bare `key:` followed by `- item` lines is
+            # the list. Only dash lines are consumed (comments/blank/other lines end the
+            # block), so a bare `key:` with no items keeps its empty-string behavior, and
+            # a `- name: x` item survives as the string "name: x" rather than vanishing.
+            items: list[str] = []
+            while idx < len(fm):
+                cand = fm[idx].strip()
+                if not cand.startswith("- "):
+                    break
+                items.append(cand[2:].strip().strip("\"'"))
+                idx += 1
+            if items:
+                block_items = items
         if key in ("allowed_tools",):
-            fields[key] = _coerce_list(value)
+            fields[key] = block_items if block_items is not None else _coerce_list(value)
         elif key in ("name", "description", "version"):
             fields[key] = value.strip("\"'")
         elif key:
-            extras[key] = _coerce_list(value) if value.startswith("[") else value.strip("\"'")
+            if block_items is not None:
+                extras[key] = block_items
+            else:
+                extras[key] = _coerce_list(value) if value.startswith("[") else value.strip("\"'")
 
     if "name" not in fields or not fields["name"]:
         raise SkillError("frontmatter is missing a 'name'")
