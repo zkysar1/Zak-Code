@@ -168,6 +168,71 @@ def test_chat_headless_empty_prompt_is_rejected(monkeypatch) -> None:
     assert "empty" in result.stdout
 
 
+class SkillAgent(FakeAgent):
+    """FakeAgent + a ``compose_skill_turn`` surface for the one-shot slash-dispatch tests."""
+
+    #: The SkillInvocation the fake compose returns (subclasses override per scenario).
+    invocation = zakcode.SkillInvocation(
+        invoked=True,
+        name="start",
+        turn_text=(
+            "<command-message>start is running</command-message>\n"
+            "<command-name>/start</command-name>\n"
+            "<command-args>sera</command-args>\n\nBoot body."
+        ),
+    )
+
+    async def compose_skill_turn(self, name: str, args: str = "") -> zakcode.SkillInvocation:
+        return self.invocation
+
+
+def test_chat_headless_slash_dispatches_the_skill(monkeypatch) -> None:
+    # `-p "/start sera"` (the cron/systemd boot shape) runs the SKILL as the task — the same
+    # dispatch + rendering as the REPL — instead of handing the slash line to the model as
+    # prose (#148: found on the first live Claude-Mind deployment).
+    monkeypatch.setattr(zakcode, "Agent", SkillAgent)
+    result = runner.invoke(app, ["chat", "-p", "/start sera"])
+    assert result.exit_code == 0
+    assert "running skill" in result.stdout and "start" in result.stdout
+    assert CANNED_TEXT in result.stdout  # the composed turn actually ran
+
+
+def test_chat_headless_slash_denied_exits_nonzero(monkeypatch) -> None:
+    # A discovered-but-refused skill (user-invocable: false) must FAIL the one-shot loudly —
+    # exit 1, no model turn — because a scripted boot that quietly degrades is the #148 class.
+    class DeniedAgent(SkillAgent):
+        invocation = zakcode.SkillInvocation(
+            invoked=True, name="boot", denied_reason="boot is not user-invocable"
+        )
+
+    monkeypatch.setattr(zakcode, "Agent", DeniedAgent)
+    result = runner.invoke(app, ["chat", "-p", "/boot"])
+    assert result.exit_code == 1
+    assert "not user-invocable" in result.stdout
+    assert CANNED_TEXT not in result.stdout  # no model turn ran
+
+
+def test_chat_headless_unknown_slash_falls_through_to_model(monkeypatch) -> None:
+    # An unknown /token is legitimate one-shot prose (e.g. a slash-PATH) — plain turn, as before.
+    class NoSkillAgent(SkillAgent):
+        invocation = zakcode.SkillInvocation(invoked=False)
+
+    monkeypatch.setattr(zakcode, "Agent", NoSkillAgent)
+    result = runner.invoke(app, ["chat", "-p", "/etc/hosts looks wrong, why?"])
+    assert result.exit_code == 0
+    assert CANNED_TEXT in result.stdout
+    assert "running skill" not in result.stdout
+
+
+def test_chat_headless_slash_on_thin_agent_falls_through(monkeypatch) -> None:
+    # A thin/remote AgentLike with NO compose_skill_turn (the --server client) keeps today's
+    # behavior: the prompt goes to the model as plain text, no dispatch attempted.
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)  # FakeAgent has no compose surface
+    result = runner.invoke(app, ["chat", "-p", "/start sera"])
+    assert result.exit_code == 0
+    assert CANNED_TEXT in result.stdout
+
+
 def test_chat_renders_tool_lines(monkeypatch) -> None:
     class ToolAgent(FakeAgent):
         events = [

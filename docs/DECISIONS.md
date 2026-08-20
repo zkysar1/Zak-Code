@@ -425,6 +425,22 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     signal informative, and it is conformance-pinned in both directions. Vendor-agnostic by
     design: the explicit prompt contract does the work for models with no Claude-Code priors;
     the CC-shaped markers do it for models with them.
+  - **Headless one-shot slash dispatch (2026-08-20, closes #148).** `chat -p "/start sera"`
+    used to hand the slash line to the model as prose — the REPL dispatched, the one-shot
+    path did not, and cron/systemd boots are one-shots. Now the one-shot path routes through
+    the same `_skill_command_turn` helper (same compose, same rendering, same provenance
+    frame). Exit-code semantics chosen for scripts: a discovered-but-refused or unreadable
+    skill exits **1** — a scripted boot must fail loudly, because the silent alternative is
+    the model politely conversing with a cron job; an UNKNOWN `/token` (or a thin `--server`
+    agent with no skills surface) falls through as plain text, since a one-shot prompt may
+    legitimately begin with a slash-path.
+  - **Block-form frontmatter lists (2026-08-20).** A pre-deployment smoke over a live
+    Claude-Mind tree (78 skills, zero parse errors) found 60 of 78 declare lists in YAML
+    block form (`triggers:` + `- "/start"` lines) — which the minimal parser returned as an
+    EMPTY STRING, silently no-opping trigger routing (masked by name-matching) and breaking
+    the extras-preservation promise for the majority spelling. `parse_frontmatter` now does a
+    block-sequence lookahead; a bare `key:` with no items keeps its empty-string behavior,
+    and a `- name: x` list-of-maps item survives as the string `"name: x"`.
 
 ## ADR-0013 — Workspace hook adoption: folder-trust ask-once in the interactive CLI
 

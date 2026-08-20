@@ -1,6 +1,6 @@
 # Claude-Mind ↔ Zak Code — Compatibility Map
 
-*Empirical, code-grounded. **Last verified against `main` 2026-08-19** — every ✅ below names the
+*Empirical, code-grounded. **Last verified against `main` 2026-08-20** — every ✅ below names the
 code or test that proves it; re-verify the date before planning against this file.*
 
 > **Why the date is the first thing you read:** the 2026-06-22 revision of this map listed seven
@@ -48,6 +48,8 @@ clone the Mind repo, run `zakcode chat` inside it, answer the folder-trust promp
 | output-styles | `.claude/output-styles/<name>.md` via `outputStyle`, folded into the cacheable prompt tier — `ZAKCODE_OUTPUT_STYLE` | `output_styles.py` |
 | CC-shaped transcript for hook consumers | `transcript_path` projection handed to hooks (`hooks/transcript.py` writes the `sessionId` JSONL shape Mind's detectors read) | `hooks/transcript.py` |
 | Vertex/Gemini inference for a Google-cloud Mind | `zakcode[google]` extra + ADC (metadata-server auth, no key file); missing-extra failures name the install command | CONFIG.md "Recipe: Vertex AI" |
+| Block-form frontmatter (`triggers:` + `- "/start"` lines) | The YAML spelling real Mind skills actually use — 60 of 78 in a live tree — parses as lists (2026-08-20; previously silently empty, degrading trigger routing and the extras-preservation promise) | `test_parse_frontmatter_block_style_lists`; `test_block_style_triggers_route_the_slash` |
+| Cron/systemd one-shot boots (`chat -p "/start sera"`) | The one-shot path dispatches slash skills through the SAME compose path + provenance frame as the REPL (2026-08-20, closes #148). A denied/unreadable skill exits 1 — a scripted boot fails loudly, never silently sends its slash line to the model as prose; an unknown `/token` (or a thin `--server` agent) falls through as plain text | `test_chat_headless_slash_dispatches_the_skill` + denied/fallthrough siblings |
 
 ## 🟡 Real remaining gaps
 
@@ -56,10 +58,6 @@ clone the Mind repo, run `zakcode chat` inside it, answer the folder-trust promp
   silent drop). Cost to a Mind: no crash breadcrumb on a provider-error turn end, and no
   human-typed-slash telemetry distinct from `ON_SKILL_SELECTED`. Deferred until those firing
   points are designed — see the roadmap.
-- **Headless one-shot slash dispatch** — `zakcode chat -p "/start sera"` sends the text to the
-  model instead of dispatching the skill (the REPL dispatches; the one-shot path does not).
-  Matters for cron/systemd Mind boots; interactive tmux sessions (the normal deployment shape)
-  are unaffected.
 
 ## ⚪ Not load-bearing (deliberately skipped)
 
@@ -75,9 +73,19 @@ clone the Mind repo, run `zakcode chat` inside it, answer the folder-trust promp
 3. Answer the **workspace hooks** folder-trust prompt (`1` = always) — that single keystroke is
    what used to be the silent `ZAKCODE_SETTINGS_HOOKS` failure.
 4. `/start <agent-name> …` — the skill runs immediately as that turn.
-5. For unattended/autonomous operation mind the permission mode: the default `ask` blocks on a
-   human at every gated tool call. `ZAKCODE_PERMISSION_MODE` is the lever; dangerous hook
-   commands are hard-denied in autonomous mode by the settings loader.
+5. For unattended/autonomous operation THREE levers matter, and every default assumes a
+   supervised human turn (measured 2026-08-20):
+   - `ZAKCODE_PERMISSION_MODE` — default `ask` blocks on a human at every gated tool call
+     (and fails closed with no terminal); `autonomous` is the unattended posture, with
+     dangerous hook commands still hard-denied by the settings loader.
+   - `ZAKCODE_TURN_END_VETO_BUDGET` — default **0 = the Stop-hook seam is OFF**: the Mind's
+     loop hook can observe but never veto, so the perpetual loop never re-enters. Each loop
+     iteration consumes one veto per turn — size it effectively unbounded (e.g. `1000000`).
+   - `ZAKCODE_MAX_ITERATIONS` — default **50 per turn**, and an autonomous Mind session is
+     ONE long vetoed-continuation turn, so 50 model calls ends it with an unvetoable
+     `max_iterations` stop. Size like the veto budget.
+   Recommended sequence: first sprout supervised (`/start <agent> --mode assistant`, defaults
+   fine, approve prompts as they come), then flip to autonomous with all three set.
 
 ## Provenance
 

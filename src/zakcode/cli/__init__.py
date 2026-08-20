@@ -1437,7 +1437,25 @@ def chat(
     # Headless one-shot (`-p/--prompt`): run a single task, no REPL, and exit with a code that
     # reflects the outcome (0 = completed cleanly, non-zero otherwise) so it composes in scripts.
     if prompt is not None:
-        raise typer.Exit(code=_run_one_shot(loop, functools.partial(agent.astream_turn, prompt)))
+        task_text = prompt
+        stripped_prompt = prompt.strip()
+        if stripped_prompt.startswith("/"):
+            # One-shot slash dispatch (#148): `-p "/skill [args]"` runs the skill as THE task —
+            # the cron/systemd shape of the REPL's immediate slash turn, through the same
+            # helper (same rendering, same provenance frame). A discovered-but-refused or
+            # unreadable skill exits 1: a scripted boot must fail loudly, never silently hand
+            # the slash line to the model as prose. An UNKNOWN /token falls through as plain
+            # text exactly as before — a one-shot prompt may legitimately start with a
+            # slash-path, and a thin/remote AgentLike with no skills surface behaves the same.
+            token = stripped_prompt.split(maxsplit=1)[0].lower()
+            skill_args = stripped_prompt[len(token) :].strip()
+            outcome = _skill_command_turn(console, agent, token.lstrip("/"), args=skill_args)
+            if outcome.handled:
+                if outcome.turn_text is None:
+                    _shutdown_session_loop(loop)
+                    raise typer.Exit(code=1)  # denied / unreadable — the notice already rendered
+                task_text = outcome.turn_text
+        raise typer.Exit(code=_run_one_shot(loop, functools.partial(agent.astream_turn, task_text)))
 
     # zakpick advisory state for this session: [count of clean un-escalated deep_code turns,
     # 1 once the one-time nudge has fired]. See _maybe_zakpick_advisory.
