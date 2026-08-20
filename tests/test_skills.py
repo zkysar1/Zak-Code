@@ -48,6 +48,50 @@ def test_parse_frontmatter_fields_and_body() -> None:
     assert "conventional-commit" in body
 
 
+def test_parse_frontmatter_block_style_lists() -> None:
+    # YAML block sequences are the MAJORITY spelling in real Claude-Mind skills (measured
+    # 2026-08-20: 60 of 78 in a live Mind used `key:` + `- item` lines) and previously
+    # parsed as an empty string — silently dropping triggers routing and the cognitive
+    # metadata the extras-preservation promise (audit P1-2) exists to keep.
+    fm, body = parse_frontmatter(
+        "---\n"
+        "name: start\n"
+        "description: control skill.\n"
+        "allowed-tools:\n"
+        "  - read_file\n"
+        "  - bash\n"
+        "triggers:\n"
+        '  - "/start"\n'
+        "companion_scripts:\n"
+        "  - session-state-get.sh\n"
+        "  - session-mode-get.sh\n"
+        "minimum_mode: any\n"
+        "---\n"
+        "Body.\n"
+    )
+    assert fm.allowed_tools == ["read_file", "bash"]  # typed field takes the block form too
+    assert fm.extras["triggers"] == ["/start"]
+    assert fm.extras["companion_scripts"] == ["session-state-get.sh", "session-mode-get.sh"]
+    assert fm.extras["minimum_mode"] == "any"  # scalar AFTER a block is not swallowed
+    assert body == "Body."
+
+
+def test_parse_frontmatter_bare_empty_key_stays_empty() -> None:
+    # A bare `key:` with NO dash lines after it keeps the pre-existing empty-string
+    # behavior — the block lookahead only fires when items actually follow.
+    fm, _ = parse_frontmatter("---\nname: a\nprevious_revision_id:\nversion: 1.0.0\n---\nx\n")
+    assert fm.extras["previous_revision_id"] == ""
+    assert fm.version == "1.0.0"
+
+
+def test_parse_frontmatter_block_list_of_mappings_survives_as_strings() -> None:
+    # A `- name: x` item (list-of-maps, seen in Mind `parameters:` blocks) is kept as the
+    # string "name: x" — imperfect but strictly better than vanishing, and the non-dash
+    # continuation lines fall through to the ordinary key parse exactly as before.
+    fm, _ = parse_frontmatter("---\nname: a\nparameters:\n  - name: agent\n---\nx\n")
+    assert fm.extras["parameters"] == ["name: agent"]
+
+
 def test_parse_frontmatter_requires_fence() -> None:
     with pytest.raises(SkillError):
         parse_frontmatter("no frontmatter here\n")
