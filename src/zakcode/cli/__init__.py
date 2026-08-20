@@ -1836,6 +1836,14 @@ def drive(
         help="Viewer-suggestion file (relative to the workspace, e.g. .nudge) the driver "
         "folds once into the next turn's preamble, then deletes. Off when unset.",
     ),
+    say_file: str = typer.Option(
+        ".say",
+        "--say-file",
+        help="User-message inbox file (relative to the workspace) written by the serve "
+        "daemon's POST /say and delivered as the next turn's MESSAGE (the watch/talk "
+        "unification — talking is the driven session's next turn). On by default; "
+        "pass an empty string to disable.",
+    ),
     inter_turn_delay: float = typer.Option(
         0.0,
         "--inter-turn-delay",
@@ -1876,6 +1884,7 @@ def drive(
         model=model,
         max_turns=max_turns,
         nudge_file=nudge_file,
+        say_file=say_file or None,
         inter_turn_delay=max(0.0, inter_turn_delay),
     )
     if resume_message is not None:

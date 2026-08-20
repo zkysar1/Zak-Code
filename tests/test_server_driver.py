@@ -46,6 +46,7 @@ class FakeServerClient:
         self.created_sids: list[str] = []
         self.turn_calls: list[dict[str, object]] = []
         self.marker_calls: list[dict[str, object]] = []
+        self.user_message_calls: list[dict[str, object]] = []
         self._turn_script = list(turn_script or [])
         self._turn_index = 0
 
@@ -63,6 +64,9 @@ class FakeServerClient:
 
     async def publish_watch_marker(self, session_id: str, *, reason: str = "") -> None:
         self.marker_calls.append({"session_id": session_id, "reason": reason})
+
+    async def publish_user_message(self, session_id: str, *, text: str) -> None:
+        self.user_message_calls.append({"session_id": session_id, "text": text})
 
     def _next_action(self) -> list[AgentEvent] | Exception:
         if self._turn_index < len(self._turn_script):
@@ -363,3 +367,85 @@ async def test_custom_resume_message_passthrough(tmp_path: Path) -> None:
 
     # No error detail on the done frame -> the {error} seam collapses to nothing.
     assert client.turn_calls[1]["message"] == "RESUME NOW"
+
+
+# ── user says (the watch/talk unification message seam) ──────────────────────
+
+
+async def test_say_becomes_the_turn_message_and_publishes_user_message(tmp_path: Path) -> None:
+    # A pending say REPLACES the plain continue cue (defaults: boot == continue ==
+    # "Continue."), and the driver surfaces the question to watchers as a
+    # user_message marker BEFORE the turn streams the reply.
+    (tmp_path / ".say").write_text("what did you learn about volcanoes?\n", encoding="utf-8")
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, max_turns=1)
+    await driver.run()
+
+    msg = str(client.turn_calls[0]["message"])
+    assert "what did you learn about volcanoes?" in msg
+    assert "Reply to it directly in this turn" in msg  # the say frame, not raw text
+    assert "Continue." not in msg  # the plain continue cue is replaced, not appended
+    assert client.user_message_calls == [
+        {"session_id": "sess-1", "text": "what did you learn about volcanoes?"}
+    ]
+    assert not (tmp_path / ".say").exists()  # consumed exactly once
+
+
+async def test_say_preserves_a_special_boot_or_resume_cue(tmp_path: Path) -> None:
+    # A boot cue (base != continue_message) carries semantics the say must not clobber:
+    # the say leads, the special cue survives after it.
+    (tmp_path / ".say").write_text("hello there", encoding="utf-8")
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, boot_message="BOOT", continue_message="MORE", max_turns=1)
+    await driver.run()
+
+    msg = str(client.turn_calls[0]["message"])
+    assert "hello there" in msg
+    assert msg.endswith("BOOT")
+
+
+async def test_say_fires_once_not_on_the_following_turn(tmp_path: Path) -> None:
+    (tmp_path / ".say").write_text("are you there?", encoding="utf-8")
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, continue_message="MORE", max_turns=2)
+    await driver.run()
+
+    assert "are you there?" in str(client.turn_calls[0]["message"])
+    assert client.turn_calls[1]["message"] == "MORE"  # next turn is clean again
+    assert len(client.user_message_calls) == 1
+
+
+async def test_say_requeued_when_the_turn_fails(tmp_path: Path) -> None:
+    # A daemon hiccup must not eat the user's message: the consumed say is re-queued
+    # and delivered by the retry turn.
+    (tmp_path / ".say").write_text("did you see the eclipse?", encoding="utf-8")
+    client = FakeServerClient(turn_script=[httpx.ConnectError("blip"), [_done()]])
+    driver = _driver(client, tmp_path, max_turns=1)
+    await driver.run()
+
+    assert len(client.turn_calls) == 2  # failed attempt + successful retry
+    assert "did you see the eclipse?" in str(client.turn_calls[1]["message"])
+    assert not (tmp_path / ".say").exists()  # delivered by the retry, slot clear
+
+
+async def test_say_and_nudge_compose_nudge_first_then_say(tmp_path: Path) -> None:
+    (tmp_path / ".say").write_text("what is a reef?", encoding="utf-8")
+    (tmp_path / ".nudge").write_text("look at coral", encoding="utf-8")
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, nudge_file=".nudge", max_turns=1)
+    await driver.run()
+
+    msg = str(client.turn_calls[0]["message"])
+    assert "look at coral" in msg and "what is a reef?" in msg
+    assert msg.index("look at coral") < msg.index("what is a reef?")  # nudge preamble leads
+
+
+async def test_say_file_disabled_leaves_pending_file_untouched(tmp_path: Path) -> None:
+    (tmp_path / ".say").write_text("ignored", encoding="utf-8")
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, say_file=None, boot_message="BOOT", max_turns=1)
+    await driver.run()
+
+    assert client.turn_calls[0]["message"] == "BOOT"  # untouched by the pending file
+    assert (tmp_path / ".say").exists()  # not consumed when the seam is off
+    assert client.user_message_calls == []

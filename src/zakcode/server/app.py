@@ -75,6 +75,7 @@ from zakcode.server.wire import (
     CompleteRequest,
     CompleteResponse,
     NudgeRequest,
+    SayRequest,
     SessionInfo,
     ToolInfo,
     UploadRequest,
@@ -398,6 +399,11 @@ class WebSocketPermissionPrompter:
 #: Defense-in-depth length cap on a queued viewer nudge. The gateway is the real
 #: sanitization + rate-limit trust boundary; the server only caps and queues.
 NUDGE_MAX_CHARS = 500
+
+#: Defense-in-depth length cap on a queued user say (the watch/talk unification).
+#: Larger than a nudge — a say is a real conversational message, not a suggestion —
+#: but still bounded; the gateway is the real sanitization + ownership boundary.
+SAY_MAX_CHARS = 2000
 
 KNOWLEDGE_BUNDLE_FILE = ".knowledge-bundle.json"
 
@@ -1475,6 +1481,35 @@ def create_app(
             raise HTTPException(status_code=429, detail="a suggestion is already pending")
         root.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(f".nudge.{os.getpid()}.tmp")
+        tmp.write_text(text + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+        return {"queued": True}
+
+    # ── PEARL user say (watch/talk unification) ───────────────────────────────────
+    # Backs the env-server /sidecar/say proxy → gateway /say → the unified session
+    # view. Unlike a /nudge suggestion (folded into the preamble), a say IS the next
+    # turn's message: the driver replaces its continue cue with it and publishes a
+    # user_message watch marker, so every watcher sees the question and then the
+    # reply streaming on the same /watch feed — talking is just the session's next turn.
+    @app.post("/say")
+    def say(request: SayRequest) -> dict[str, Any]:
+        """Queue a user message for the driver to deliver as the next turn's message.
+        Written to ``<workspace>/.say`` (atomic temp-write + replace). Refuses with 429
+        while one is pending (single-slot queue — the sender waits for the agent to
+        finish its current thought). Bearer-gated by the server middleware; the gateway
+        is the sanitization + rate-limit + ownership trust boundary — here we only
+        length-cap and queue.
+        """
+        text = (request.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        text = text[:SAY_MAX_CHARS]
+        root = Path(resolved_settings.workspace_root)
+        target = root / ".say"
+        if target.exists():
+            raise HTTPException(status_code=429, detail="a message is already pending")
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f".say.{os.getpid()}.tmp")
         tmp.write_text(text + "\n", encoding="utf-8")
         os.replace(tmp, target)
         return {"queued": True}

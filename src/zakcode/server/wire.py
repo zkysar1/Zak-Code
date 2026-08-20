@@ -97,17 +97,30 @@ class NudgeRequest(BaseModel):
     text: str
 
 
+class SayRequest(BaseModel):
+    """Body of ``POST /say`` — a user message the driver delivers as the next turn's
+    MESSAGE (the watch/talk unification: talking is just the driven session's next
+    turn). Distinct from a ``/nudge`` suggestion, which only decorates the preamble.
+    Sanitization + rate-limiting + ownership are the caller's (gateway) responsibility;
+    the server only length-caps and queues it."""
+
+    text: str
+
+
 class WatchMarkerRequest(BaseModel):
     """Body of ``POST /watch/{session_id}/marker`` — a server-side meta-event published to a
     session's watch bus so late-joining observers learn of lifecycle changes the ``AgentEvent``
-    stream does not carry (e.g. a driver session rotation). ``event`` is a closed allow-list
-    matching the ``SafeEvent`` discriminator, so the body is publishable straight to the bus and
-    projects through ``SafeEventProjection`` unchanged; ``reason`` is a short human-facing note
-    (secret-redacted at projection). Published by the sidecar-driver via
-    :meth:`~zakcode.server.client.ServerClient.publish_watch_marker`."""
+    stream does not carry (e.g. a driver session rotation, a consumed user say). ``event`` is a
+    closed allow-list matching the ``SafeEvent`` discriminator, so the body is publishable
+    straight to the bus and projects through ``SafeEventProjection`` unchanged; ``reason`` is a
+    short human-facing note and ``text`` the user-message body (both secret-redacted at
+    projection). Published by the sidecar-driver via
+    :meth:`~zakcode.server.client.ServerClient.publish_watch_marker` /
+    :meth:`~zakcode.server.client.ServerClient.publish_user_message`."""
 
-    event: Literal["session_rotated"] = "session_rotated"
+    event: Literal["session_rotated", "user_message"] = "session_rotated"
     reason: str = ""
+    text: str = ""
 
 
 class ChatResponse(BaseModel):

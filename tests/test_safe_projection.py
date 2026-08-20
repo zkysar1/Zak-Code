@@ -31,6 +31,7 @@ from zakcode.server.safe_projection import (
     SafeTaskUpdate,
     SafeText,
     SafeToolSummary,
+    SafeUserMessage,
     redact_secrets_extended,
 )
 
@@ -150,6 +151,30 @@ def test_session_rotated_marker_carries_no_ids_or_extra_fields() -> None:
     dumped = out.model_dump()
     assert dumped == {"event": "session_rotated", "reason": "rotated"}
     assert "new_sid" not in dumped and "cursor" not in dumped
+
+
+def test_user_message_marker_projects_to_safe_form_and_redacts() -> None:
+    # The watch/talk unification meta-event (the question the driver consumed) projects to
+    # its allow-listed SafeUserMessage form; the text is redacted as defense in depth even
+    # though it already crossed the gateway's sanitization boundary.
+    out = _proj().project(
+        SimpleNamespace(event="user_message", text=f"what is this key {GSK} for?")
+    )
+    assert isinstance(out, SafeUserMessage)
+    assert out.event == "user_message"
+    assert GSK not in out.text and "what is this key" in out.text
+
+
+def test_user_message_marker_carries_only_the_text_field() -> None:
+    # Whitelist by construction, same property as the rotation marker: only {event, text}
+    # escape, whatever else rides on the raw object.
+    out = _proj().project(
+        SimpleNamespace(event="user_message", text="hi", sender="kid-7", session="sess-1")
+    )
+    assert isinstance(out, SafeUserMessage)
+    dumped = out.model_dump()
+    assert dumped == {"event": "user_message", "text": "hi"}
+    assert "sender" not in dumped and "session" not in dumped
 
 
 # ── Extended redaction (redact_secrets_extended + P0-6 base) ─────────────────

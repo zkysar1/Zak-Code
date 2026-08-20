@@ -95,7 +95,25 @@ class SafeSessionRotated(BaseModel):
     reason: str = ""
 
 
-SafeEvent = SafeText | SafeStatus | SafeToolSummary | SafeTaskUpdate | SafeDone | SafeSessionRotated
+class SafeUserMessage(BaseModel):
+    """A user message consumed by the driver (the watch/talk unification): the question that
+    became this turn's message, surfaced so every watcher sees it before the reply streams.
+    A watch meta-event, NOT an AgentEvent. The text already crossed the gateway's
+    sanitization boundary; it is redacted again here as defense in depth."""
+
+    event: Literal["user_message"] = "user_message"
+    text: str = ""
+
+
+SafeEvent = (
+    SafeText
+    | SafeStatus
+    | SafeToolSummary
+    | SafeTaskUpdate
+    | SafeDone
+    | SafeSessionRotated
+    | SafeUserMessage
+)
 
 
 # ── Extended secret redaction ────────────────────────────────────────────────
@@ -257,6 +275,10 @@ class SafeEventProjection:
             # A watch meta-event (not an AgentEvent): the driver rotated the watched session.
             # Only the redacted reason escapes — no session ids or internals.
             return SafeSessionRotated(reason=self.redact(str(getattr(event, "reason", ""))))
+        if kind == "user_message":
+            # A watch meta-event (not an AgentEvent): the question the driver just consumed.
+            # Gateway-sanitized upstream; redacted again here as defense in depth.
+            return SafeUserMessage(text=self.redact(str(getattr(event, "text", ""))))
         # "usage", "action_required", and any unrecognized/future event type: DROP.
         return None
 
@@ -268,6 +290,7 @@ __all__ = [
     "SafeTaskUpdate",
     "SafeDone",
     "SafeSessionRotated",
+    "SafeUserMessage",
     "SafeEvent",
     "SafeEventProjection",
     "redact_secrets_extended",

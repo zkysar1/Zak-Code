@@ -79,6 +79,20 @@ class ServerClient:
         )
         resp.raise_for_status()
 
+    async def publish_user_message(self, session_id: str, *, text: str) -> None:
+        """Publish a ``user_message`` meta-event to ``session_id``'s watch bus.
+
+        Lets the sidecar-driver surface a consumed user say to watch observers BEFORE the
+        reply streams, so the shared transcript shows the question as well as the answer
+        (the watch/talk unification). Raises on a non-2xx like the other calls — the driver
+        decides whether to swallow transport errors (a marker must never break the serve loop).
+        """
+        resp = await self._http().post(
+            f"/watch/{session_id}/marker",
+            json={"event": "user_message", "text": text},
+        )
+        resp.raise_for_status()
+
     async def astream_turn(
         self, message: str, session_id: str | None = None, model: str | None = None
     ) -> AsyncIterator[AgentEvent]:
