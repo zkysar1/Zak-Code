@@ -117,7 +117,13 @@ jobs:
           echo "tarball size: $(du -h zak-code-main.tar.gz | cut -f1)"
           # Positive control: fail loudly if the runtime is not actually in the
           # tarball, rather than silently shipping an empty/partial archive.
-          tar tzf zak-code-main.tar.gz | grep -q '^src/zakcode/server/driver.py$' \
+          # Capture the listing to a file first — piping `tar tzf` into `grep -q`
+          # trips SIGPIPE under `set -o pipefail`: grep -q exits on the first
+          # match, tar gets "stdout: write error" (SIGPIPE), pipefail propagates
+          # its non-zero, and the check fails EXACTLY WHEN THE FILE IS PRESENT
+          # (the false "absent" abort on the first publish run, 32420052582).
+          tar tzf zak-code-main.tar.gz > tarball-contents.txt
+          grep -q '^src/zakcode/server/driver.py$' tarball-contents.txt \
             || { echo "::error::src/zakcode/server/driver.py absent from tarball — refusing to publish"; exit 1; }
 
       - name: Publish to S3 (immutable <sha> + latest pointer + legacy bridge)
