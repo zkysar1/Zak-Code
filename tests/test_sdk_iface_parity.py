@@ -5,15 +5,15 @@ WHY THIS FILE EXISTS
 --------------------
 guard-4547: interfaces carry NO business logic. The SDK (:class:`zakcode.Agent`)
 owns all of it and emits the one canonical stream of
-:data:`~zakcode.events.AgentEvent`; every interface (HTTP/SSE and WebSocket now,
-CLI later) is a thin transport that RELAYS that stream. This test pins that
-contract with a demonstrable *break point*: it proves the interface reproduces
-the SDK's stream, and when it does not, it says WHICH layer broke.
+:data:`~zakcode.events.AgentEvent`; every interface (HTTP/SSE, WebSocket, and the
+CLI's remote client) is a thin transport that RELAYS that stream. This test pins
+that contract with a demonstrable *break point*: it proves the interface
+reproduces the SDK's stream, and when it does not, it says WHICH layer broke.
 
 THE DESIGN
 ----------
 A golden scenario is ``(canonical input, deterministic ScriptedProvider script,
-expected normalized AgentEvent stream)``. One scenario runs through three layers:
+expected normalized AgentEvent stream)``. One scenario runs through four layers:
 
 * ``sdk``  — :meth:`Agent.astream_turn` called directly (the canonical stream).
 * ``http`` — the SAME agent injected into the ASGI app and driven through
@@ -22,6 +22,15 @@ expected normalized AgentEvent stream)``. One scenario runs through three layers
 * ``ws``   — the SAME agent driven through the ``/ws/{session_id}`` WebSocket;
   each server→client frame is the same ``event_to_dict`` payload, parsed back
   through the same adapter.
+* ``cli``  — the CLI's REMOTE path: the SAME agent reached through the real
+  :class:`~zakcode.server.client.ServerClient` (the production ``zakcode chat
+  --server`` → sidecar transport) over an in-memory ASGI client. This is the
+  only true *interface* in the CLI's path — the CLI's LOCAL mode calls
+  :meth:`Agent.astream_turn` directly (no relay), and the terminal
+  :class:`~zakcode.cli.render.StreamRenderer` is a lossy human-facing sink whose
+  correctness is a separate axis, not event-stream parity. This layer exercises
+  the production client-side deserializer that ``http`` (hand-rolled parser)
+  bypasses.
 
 All layers run the IDENTICAL ``Agent`` + ``ScriptedProvider`` (built by one
 :func:`_build_parity_agent`), so the ONLY variable is the transport. ``layer`` is
@@ -38,9 +47,12 @@ written golden stale.
 
 EXTENDING
 ---------
-Add a scenario to :data:`SCENARIOS`, or a runner to :data:`_LAYERS` (a ``"cli"``
-entry). Every scenario is then checked against every interface against the one
-golden — the widening the say/watch milestone called for.
+Add a scenario to :data:`SCENARIOS`, or a runner to :data:`_LAYERS`. Every
+scenario is then checked against every interface against the one golden. The
+three end interfaces (http, ws, cli) are covered; the remaining widenings are new
+scenarios and the DISTINCT axes this harness deliberately does not test —
+rendering-correctness (the lossy CLI ``StreamRenderer``), the permission
+escalation round-trip, and config-parity (server-reduced vs CLI-full agent).
 
 HERMETIC
 --------
@@ -62,6 +74,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -81,6 +94,7 @@ from zakcode.events import (
 from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import LLMResult
 from zakcode.server.app import create_app
+from zakcode.server.client import ServerClient
 from zakcode.server.wire import event_from_dict
 from zakcode.session.store import Session, SessionStore
 
@@ -184,7 +198,7 @@ SCENARIOS: list[Scenario] = [
 ]
 
 
-# ── one agent builder, used identically under both layers ─────────────────────────
+# ── one agent builder, used identically under every layer ─────────────────────────
 
 
 def _build_parity_agent(
@@ -193,13 +207,13 @@ def _build_parity_agent(
     workspace_root: Path,
     session: Session | None = None,
 ) -> Agent:
-    """The single Agent construction both layers share.
+    """The single Agent construction every layer shares.
 
     Injecting ``provider`` makes the agent hermetic (``_provider_injected`` skips
     the litellm import + availability probe and drives every role from the
     script). ``permission_policy="allow"`` lets the tool scenario's ``write_file``
     run without a prompter. Because this is the ONLY place an agent is built, the
-    sole difference between the ``sdk`` and ``http`` runs below is the transport.
+    sole difference between any two layer runs below is the transport.
     """
     return Agent(
         provider=ScriptedProvider(list(script)),
@@ -295,10 +309,49 @@ def _run_ws(scenario: Scenario, workspace_root: Path) -> list[AgentEvent]:
     return [event_from_dict(frame) for frame in frames]
 
 
+def _run_cli(scenario: Scenario, workspace_root: Path) -> list[AgentEvent]:
+    """L3 — the CLI's REMOTE path: the SAME agent reached through ``ServerClient``.
+
+    ``zakcode chat --server`` drives a turn through
+    :meth:`ServerClient.astream_turn`, which POSTs ``/chat/stream`` and
+    reconstructs each ``AgentEvent`` from the wire (``event_from_dict``) before the
+    terminal renderer ever sees it. That reconstruction is the CLI's real interface
+    to a served SDK — and it is DIFFERENT code from the ``http`` layer, whose
+    hand-rolled SSE parser bypasses the production client deserializer this layer
+    exercises. Driven over ``httpx``'s in-memory ASGI transport (no socket), the
+    same idiom the repo's M3 parity criterion (``test_server_client.py``) uses.
+
+    NOT covered here (by design — separate axes, see the module docstring): the
+    CLI's LOCAL mode calls :meth:`Agent.astream_turn` directly (no interface to
+    test), and the ``StreamRenderer`` is a lossy human-facing sink, not an
+    event-stream relay.
+    """
+    settings = Settings(default_model="scripted/parity", workspace_root=workspace_root)
+    store = SessionStore(base_dir=workspace_root / "sessions")
+
+    def factory(session: Session, model: str | None, prompter: object) -> Agent:  # noqa: ARG001
+        return _build_parity_agent(scenario.script, workspace_root=workspace_root, session=session)
+
+    app = create_app(settings=settings, store=store, agent_factory=factory)
+
+    async def go() -> list[AgentEvent]:
+        transport = httpx.ASGITransport(app=app)
+        http = httpx.AsyncClient(transport=transport, base_url="http://parity.testserver")
+        try:
+            client = ServerClient(http_client=http)
+            return [ev async for ev in client.astream_turn(scenario.canonical_input)]
+        finally:
+            await http.aclose()  # injected client is caller-owned; ServerClient won't close it
+
+    # Sync wrapper (asyncio.run) so the parametrized test stays sync, like _run_sdk.
+    return asyncio.run(go())
+
+
 _LAYERS: dict[str, Callable[[Scenario, Path], list[AgentEvent]]] = {
     "sdk": _run_sdk,
     "http": _run_http,
     "ws": _run_ws,
+    "cli": _run_cli,
 }
 
 # The interface layers = every layer that is not the canonical SDK reference.
