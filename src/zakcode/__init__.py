@@ -959,6 +959,7 @@ class Agent:
         from zakcode.providers.routing import ZAKPICK_CATEGORIES, model_for_category
 
         api_base = self.settings.api_base
+        local_api_bases = list(getattr(self.settings, "local_api_bases", []) or [])
         offenders: list[str] = []
 
         def check(label: str, model: str | None) -> None:
@@ -966,7 +967,7 @@ class Agent:
             # to a concrete model, and anything still a sentinel is not a real call target.
             if not model or is_sentinel(model):
                 return
-            ok, reason = classify_destination(model, api_base)
+            ok, reason = classify_destination(model, api_base, local_api_bases)
             if not ok:
                 offenders.append(f"  - {label}: {reason}")
 

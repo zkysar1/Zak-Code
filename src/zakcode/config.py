@@ -248,9 +248,26 @@ class Settings(BaseSettings):
         default=False,
         description=(
             "Refuse any model call that would reach a metered API (ZAKCODE_LOCAL_ONLY=true). "
-            "Guarantees zero API spend: no fallback_model, auto-resolution, or runtime failover "
-            "can reach a paid provider. Local = ollama_chat/* or a generic-OpenAI model served "
-            "via api_base."
+            "No fallback_model, auto-resolution, or runtime failover can reach a paid provider. "
+            "Local = ollama_chat/* or a generic-OpenAI model served via api_base. NOTE: the "
+            "check is by MODEL PREFIX, so an api_base pointing at a GATEWAY that fans out to "
+            "metered providers is trusted unless you set local_api_bases."
+        ),
+    )
+
+    # The allowlist that makes local_only a real guarantee rather than a prefix check.
+    # EMPTY (default) = trust any api_base, i.e. today's behavior — nothing that works now
+    # starts refusing. Set it and an api_base outside the list is treated as METERED.
+    # Why it is needed: a self-hosted pod and an LLM gateway both speak the generic OpenAI
+    # protocol, so `openai/<model>` + api_base is indistinguishable between "my hardware"
+    # and "a proxy that bills me". Measured 2026-08-21 — a litellm gateway fronting
+    # deepinfra/groq/openai passed local_only untouched.
+    local_api_bases: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "api_base values that count as genuinely local under local_only "
+            "(ZAKCODE_LOCAL_API_BASES). Empty = trust any base. Set it to refuse a base "
+            "that is not yours, e.g. a gateway that forwards to metered providers."
         ),
     )
 
@@ -495,6 +512,7 @@ class Settings(BaseSettings):
         "tool_exposure_allow",
         "tool_exposure_deny",
         "web_allowed_domains",
+        "local_api_bases",
         "egress_allowed_domains",
         "auto_model_preference",
         mode="before",

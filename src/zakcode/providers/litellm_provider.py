@@ -225,6 +225,7 @@ class LiteLLMProvider(Provider):
         ollama_base_url: str | None = None,
         request_timeout: float = 600.0,
         local_only: bool | None = None,
+        local_api_bases: list[str] | None = None,
         extra_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
@@ -234,6 +235,7 @@ class LiteLLMProvider(Provider):
         resolved_api_key = api_key
         resolved_ollama_base = ollama_base_url
         resolved_local_only = local_only
+        resolved_local_api_bases = local_api_bases
         resolved_extra_body = extra_body
         resolved_extra_headers = extra_headers
 
@@ -252,6 +254,8 @@ class LiteLLMProvider(Provider):
                 resolved_ollama_base = settings.ollama_base_url
             if resolved_local_only is None:
                 resolved_local_only = settings.local_only
+            if resolved_local_api_bases is None:
+                resolved_local_api_bases = list(getattr(settings, "local_api_bases", []) or [])
             if resolved_extra_body is None:
                 resolved_extra_body = settings.extra_body
             if resolved_extra_headers is None:
@@ -269,6 +273,9 @@ class LiteLLMProvider(Provider):
         #: Refuse any call that would reach a metered API (see _build_kwargs). Defaults to
         #: False, so a provider built without settings behaves exactly as before.
         self.local_only: bool = bool(resolved_local_only)
+        #: api_base values the operator declared local. Empty = trust any base (the
+        #: historical default); non-empty makes an unlisted base count as METERED.
+        self.local_api_bases: list[str] = list(resolved_local_api_bases or [])
         #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
         #: later mutation of the Settings dict cannot retroactively change live requests.
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
@@ -649,7 +656,7 @@ class LiteLLMProvider(Provider):
         # Paired deliberately (rb-605): anticipation gates warn early, application gates
         # are the guarantee. Overspending is irreversible, so the guarantee lives here.
         if self.local_only:
-            ok, reason = classify_destination(self.model, self.api_base)
+            ok, reason = classify_destination(self.model, self.api_base, self.local_api_bases)
             if not ok:
                 raise LocalOnlyViolation(
                     f"local_only is set, but this call would reach a metered API: {reason}. "

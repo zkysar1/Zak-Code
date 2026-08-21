@@ -22,6 +22,8 @@ keeping its own copy.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 #: litellm providers that speak the generic OpenAI wire protocol and therefore accept an
 #: injected ``api_base``. A configured generic base (a self-hosted llama-server / vLLM /
 #: gateway) must NEVER be forwarded to a provider that carries its OWN base URL — doing so
@@ -90,7 +92,37 @@ def is_ollama_model(model: str) -> bool:
     return provider_prefix(model) in OLLAMA_PROVIDERS
 
 
-def classify_destination(model: str, api_base: str | None) -> tuple[bool, str]:
+def _normalize_base(base: str) -> str:
+    """Compare api_base values without tripping on a trailing slash or case."""
+    return base.strip().rstrip("/").lower()
+
+
+def api_base_is_trusted(api_base: str | None, local_api_bases: Sequence[str] | None) -> bool:
+    """Whether ``api_base`` is one the operator has declared genuinely local.
+
+    An EMPTY (or unset) allowlist trusts any base — that is the historical behavior and
+    it stays the default, so no working configuration starts refusing (guard-1562).
+
+    Setting the allowlist closes a real hole. ``local_only`` classifies by MODEL PREFIX,
+    so any ``openai/*`` model with an ``api_base`` counted as local — including a base
+    pointing at an LLM **gateway** that fans out to metered providers. A gateway speaks
+    the generic OpenAI protocol, so it is indistinguishable from a self-hosted pod at
+    this layer; only the operator knows which endpoints are theirs. Measured 2026-08-21:
+    a litellm gateway fronting deepinfra/groq/openai passed the guard untouched.
+    """
+    if not local_api_bases:
+        return True
+    if not api_base:
+        return False
+    target = _normalize_base(api_base)
+    return any(_normalize_base(b) == target for b in local_api_bases if b and b.strip())
+
+
+def classify_destination(
+    model: str,
+    api_base: str | None,
+    local_api_bases: Sequence[str] | None = None,
+) -> tuple[bool, str]:
     """``(is_local, reason)`` — where a call on ``model`` lands, and why.
 
     The reason string is the whole point: a refusal that says only "not local" leaves the
@@ -118,6 +150,13 @@ def classify_destination(model: str, api_base: str | None) -> tuple[bool, str]:
         return True, f"{model} is served by the local Ollama daemon"
     if model_uses_generic_endpoint(model):
         if api_base:
+            if not api_base_is_trusted(api_base, local_api_bases):
+                return False, (
+                    f"{model} is routed to {api_base}, which is NOT listed in "
+                    f"ZAKCODE_LOCAL_API_BASES. A generic-OpenAI base may be a self-hosted "
+                    f"pod OR a gateway that forwards to metered providers, and the two are "
+                    f"indistinguishable here — add the base to the allowlist if it is yours"
+                )
             return True, f"{model} is routed to the self-hosted endpoint at {api_base}"
         return False, (
             f"{model} uses the generic OpenAI path but no api_base is configured, so it "
@@ -131,9 +170,13 @@ def classify_destination(model: str, api_base: str | None) -> tuple[bool, str]:
     )
 
 
-def is_local_model(model: str, api_base: str | None) -> bool:
+def is_local_model(
+    model: str,
+    api_base: str | None,
+    local_api_bases: Sequence[str] | None = None,
+) -> bool:
     """Whether a call on ``model`` avoids every metered API. See :func:`classify_destination`."""
-    return classify_destination(model, api_base)[0]
+    return classify_destination(model, api_base, local_api_bases)[0]
 
 
 __all__ = [
@@ -141,6 +184,7 @@ __all__ = [
     "OLLAMA_PROVIDERS",
     "MODEL_SENTINELS",
     "LocalOnlyViolation",
+    "api_base_is_trusted",
     "provider_prefix",
     "is_sentinel",
     "model_uses_generic_endpoint",
