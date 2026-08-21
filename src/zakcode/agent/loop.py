@@ -73,6 +73,7 @@ import contextlib
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -993,9 +994,27 @@ class AgentLoop:
                 {} if next_temperature is None else {"temperature": next_temperature}
             )
             try:
-                return await self.provider.acomplete(
+                call_started = time.monotonic()
+                result = await self.provider.acomplete(
                     messages, system=system, tools=tools, **call_kw
                 )
+                # Per-request usage on the decision trace: the one point every
+                # buffered completion passes, so a trace_dir session yields
+                # per-request prompt/completion/latency stats without parsing
+                # transcripts (the streaming path notes at its usage-commit
+                # point). Best-effort like every _note.
+                self._note(
+                    "usage",
+                    f"{result.usage.prompt_tokens}p+{result.usage.completion_tokens}c tok "
+                    f"in {time.monotonic() - call_started:.1f}s",
+                    model=self.provider.model_id(),
+                    prompt_tokens=result.usage.prompt_tokens,
+                    completion_tokens=result.usage.completion_tokens,
+                    total_tokens=result.usage.total_tokens,
+                    cost_usd=result.usage.cost_usd,
+                    latency_s=round(time.monotonic() - call_started, 3),
+                )
+                return result
             except RateLimited as exc:
                 if attempt >= self.provider_max_retries:
                     raise
@@ -2442,6 +2461,7 @@ class AgentLoop:
                     # /cost (fresh-eyes review of the mid-stream-retry exemption below).
                     attempt_usage = Usage()
                     saw_usage = False
+                    attempt_started = time.monotonic()
                     # A rejection retry resamples at a raised temperature (see the buffered
                     # twin); every other attempt uses the configured temperature.
                     call_kw: dict[str, Any] = (
@@ -2480,6 +2500,21 @@ class AgentLoop:
                         if saw_usage:
                             # Tag with the model for per-model /cost attribution (streaming).
                             self.session.add_usage(attempt_usage, model=self.provider.model_id())
+                            # Per-request usage on the decision trace (streaming twin of
+                            # _call_provider's note): committed only with the attempt, so
+                            # a retried mid-stream attempt is never double-counted.
+                            self._note(
+                                "usage",
+                                f"{attempt_usage.prompt_tokens}p+{attempt_usage.completion_tokens}c tok "
+                                f"in {time.monotonic() - attempt_started:.1f}s",
+                                model=self.provider.model_id(),
+                                prompt_tokens=attempt_usage.prompt_tokens,
+                                completion_tokens=attempt_usage.completion_tokens,
+                                total_tokens=attempt_usage.total_tokens,
+                                cost_usd=attempt_usage.cost_usd,
+                                latency_s=round(time.monotonic() - attempt_started, 3),
+                                streamed=True,
+                            )
                     except RateLimited as exc:
                         # A generic mid-stream RateLimited is terminal (re-yielding rendered
                         # text would duplicate it), but ModelOutputRejected is retried even
