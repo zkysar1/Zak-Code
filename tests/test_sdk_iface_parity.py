@@ -257,6 +257,35 @@ SCENARIOS: list[Scenario] = [
             ("done", "completed", 3, False, "", None, False),
         ],
     ),
+    Scenario(
+        # A tool that FAILS: is_error=True must relay across every transport, together
+        # with the full multi-line error text — the error-relay twin of the happy-path
+        # scenarios. A transport that dropped the is_error flag (rendering a failure as
+        # a success) or truncated the multi-line output would diverge HERE while the
+        # happy-path scenarios stayed green. The turn still COMPLETES — the agent
+        # recovers and replies, so stop_reason stays "completed"; the failure lives in
+        # the tool_result, exactly where a client must read it (not in a stream error).
+        id="tool_error",
+        canonical_input=_CANONICAL_INPUT,
+        script=(
+            call_tool("read_file", {"path": "missing.txt"}, id="r1"),
+            reply("Could not read it."),
+        ),
+        expected=[
+            ("tool_call", "r1", "read_file", {"path": "missing.txt"}),
+            (
+                "tool_result",
+                "r1",
+                True,
+                "File not found: missing.txt\n"
+                "Fix: check the path -- use list_dir or glob to find it; "
+                "paths resolve relative to the workspace root.",
+            ),
+            ("text", "Could not read it."),
+            ("usage",),
+            ("done", "completed", 2, False, "", None, False),
+        ],
+    ),
 ]
 
 
