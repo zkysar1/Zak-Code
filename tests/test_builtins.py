@@ -250,6 +250,7 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "powershell",
         "web_search",
         "web_fetch",
+        "secret_names",
         "update_plan",
         "deep_think",
     }
@@ -283,6 +284,8 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
     assert reg.get("plan") is reg.get("update_plan")
     assert reg.get("todo") is reg.get("update_plan")
     assert reg.get("deliberate") is reg.get("deep_think")
+    assert reg.get("secrets") is reg.get("secret_names")
+    assert reg.get("list_secrets") is reg.get("secret_names")
     # Aliases are NOT canonical names (silent fallback; not exposed in the prompt).
     assert "cat" not in reg.names() and "search" not in reg.names()
 

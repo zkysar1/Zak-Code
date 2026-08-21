@@ -13,12 +13,20 @@ Security is the whole job here (the URL often comes from a model, so it is untru
 * **Untrusted** — every model-facing string (the body AND error messages that interpolate an
   attacker-influenced URL/exception) is run through ``defang_untrusted``, so page content can
   never smuggle tool-protocol frames or chat-template tokens into the loop.
+* **Named secrets** — ``{{secret:NAME}}`` placeholders in the URL and in ``headers`` values are
+  resolved by :class:`zakcode.tools.builtins._secrets.SecretsProvider` at request-build time,
+  OUTSIDE the model: the resolved form exists only in the outbound request, every model-facing
+  string keeps the placeholder form, and everything returned (body, errors, final_url) is
+  scrubbed so an echoing API cannot carry a value back into context. Scrub runs BEFORE
+  ``defang_untrusted`` — defang rewrites characters, so the value must be folded back into its
+  placeholder while the text still contains it verbatim.
 """
 
 from __future__ import annotations
 
 import asyncio
 import codecs
+import re
 from urllib.parse import urlsplit
 
 from zakcode._http import (
@@ -38,6 +46,7 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.tools.builtins._html import html_to_text
+from zakcode.tools.builtins._secrets import SecretsProvider, UnknownSecretError
 
 _DEFAULT_TIMEOUT = 15
 _MAX_BYTES = 2 * 1024 * 1024  # cap bytes downloaded off the wire
@@ -47,6 +56,15 @@ _MAX_REDIRECTS = 5
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 _USER_AGENT = "zakcode-webfetch/0.1 (+https://github.com/zkysar1/Zak-Code)"
 _INSTALL_FIX = f"web_fetch needs the httpx package: {pip_install_hint('httpx')}"
+_MAX_REQ_HEADERS = 16
+_MAX_HEADER_VALUE_CHARS = 2048
+_HEADER_NAME_RE_TEXT = r"^[A-Za-z0-9-]+$"
+# Model-supplied headers may never override the transport-integrity set: Host carries the
+# SSRF pin, identity encoding is the decompression-bomb defense, and the length/framing
+# headers belong to the transport.
+_FORBIDDEN_REQ_HEADERS = frozenset(
+    {"host", "content-length", "transfer-encoding", "accept-encoding", "connection"}
+)
 
 
 def _looks_textual(content_type: str) -> bool:
@@ -90,14 +108,25 @@ class WebFetchTool(Tool):
         description=(
             "Fetch a public http(s) URL and return its readable text (HTML is converted to "
             "plain text). For reading a web page or doc found via web_search. Output is "
-            "size-capped; localhost/private/internal addresses are refused."
+            "size-capped; localhost/private/internal addresses are refused. To call an API "
+            "with a saved secret, write {{secret:NAME}} in the url or a header value — the "
+            "real value is substituted outside your context (see the secret_names tool)."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "The http(s) URL to fetch.",
+                    "description": "The http(s) URL to fetch. May contain {{secret:NAME}}.",
+                },
+                "headers": {
+                    "type": "object",
+                    "description": (
+                        "Optional request headers, e.g. "
+                        '{"Authorization": "Bearer {{secret:MY_API_KEY}}"}. Values may '
+                        "contain {{secret:NAME}} placeholders."
+                    ),
+                    "additionalProperties": {"type": "string"},
                 },
                 "max_chars": {
                     "type": "integer",
@@ -111,9 +140,27 @@ class WebFetchTool(Tool):
         concurrency=ConcurrencyClass.READ_ONLY_SAFE,
     )
 
-    def __init__(self, *, allowed_domains: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        allowed_domains: list[str] | None = None,
+        secrets: SecretsProvider | None = None,
+    ) -> None:
         # Optional egress allowlist (ZAKCODE_WEB_ALLOWED_DOMAINS). Empty = any public host.
         self._allowed = [d for d in (allowed_domains or []) if d and d.strip()]
+        # Always hold a provider (an empty one when unconfigured) so no call site branches
+        # on "is the feature on" — an empty provider's scrub is the identity and any
+        # placeholder resolves to a clean unknown-secret error.
+        self._secrets = secrets or SecretsProvider(None)
+
+    def _out(self, text: str) -> str:
+        """Model-facing string hygiene, in the mandatory order: scrub THEN defang.
+
+        Scrub folds any secret value back into its placeholder; defang then neutralizes
+        protocol/template tokens. Reversed order would let defang rewrite characters
+        inside a value so the scrub no longer matches it.
+        """
+        return defang_untrusted(self._secrets.scrub(text))
 
     async def execute(self, args: dict, ctx: ToolContext) -> ToolResult:
         url = args.get("url")
@@ -126,34 +173,80 @@ class WebFetchTool(Tool):
             max_chars = _MAX_CHARS
         max_chars = min(max_chars, _MAX_CHARS)
 
+        raw_headers = args.get("headers")
+        if raw_headers is None:
+            raw_headers = {}
+        if not isinstance(raw_headers, dict):
+            return ToolResult.error("'headers' must be an object of string values.")
+        if len(raw_headers) > _MAX_REQ_HEADERS:
+            return ToolResult.error(f"too many headers (max {_MAX_REQ_HEADERS}).")
+        for name, value in raw_headers.items():
+            if not isinstance(name, str) or not re.fullmatch(_HEADER_NAME_RE_TEXT, name):
+                return ToolResult.error(f"invalid header name: {defang_untrusted(str(name))!r}")
+            if name.lower() in _FORBIDDEN_REQ_HEADERS:
+                return ToolResult.error(
+                    f"header {name!r} is transport-controlled and cannot be set here."
+                )
+            if not isinstance(value, str) or len(value) > _MAX_HEADER_VALUE_CHARS:
+                return ToolResult.error(
+                    f"header {name!r} value must be a string of at most "
+                    f"{_MAX_HEADER_VALUE_CHARS} chars."
+                )
+
+        # Resolve {{secret:NAME}} OUTSIDE the model: the resolved forms exist only in the
+        # outbound request; `url` (the placeholder form) stays the one used in every
+        # model-facing message below. The SSRF guard runs on the RESOLVED url — the form
+        # that will actually be fetched is the form that gets validated.
+        try:
+            resolved_url, used = self._secrets.resolve(url)
+            resolved_headers: dict[str, str] = {}
+            for name, value in raw_headers.items():
+                resolved_value, used_in_header = self._secrets.resolve(value)
+                resolved_headers[name] = resolved_value
+                used |= used_in_header
+        except UnknownSecretError as exc:
+            return ToolResult.error(
+                str(exc), fix="call secret_names to see which secret names are available"
+            )
+
         try:
             httpx = load_httpx()
         except ImportError as exc:
             return ToolResult.error(str(exc), fix=_INSTALL_FIX)
 
+        # Names-only usage record, written once the values are released into a request
+        # attempt (whatever the remote end then answers).
+        self._secrets.record_use(used)
+
         try:
-            body, final_url, content_type = await self._fetch(httpx, url)
+            body, final_url, content_type = await self._fetch(
+                httpx, resolved_url, extra_headers=resolved_headers
+            )
         except BlockedUrlError as exc:
+            # str(exc) can embed the RESOLVED url/host of a later redirect hop — _out folds
+            # any value back into its placeholder before the model sees it.
             return ToolResult.error(
-                f"refusing to fetch {defang_untrusted(url)}: {defang_untrusted(str(exc))}",
+                f"refusing to fetch {defang_untrusted(url)}: {self._out(str(exc))}",
                 fix="fetch a public http(s) URL; loopback/private/internal hosts are blocked",
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(
-                f"failed to fetch {defang_untrusted(url)}: {defang_untrusted(str(exc))}"
+                f"failed to fetch {defang_untrusted(url)}: {self._out(str(exc))}"
             )
 
         if not _looks_textual(content_type):
             return ToolResult.error(
-                f"{defang_untrusted(final_url)} returned non-text content (content-type: "
+                f"{self._out(final_url)} returned non-text content (content-type: "
                 f"{defang_untrusted(content_type) or 'unknown'}); web_fetch only reads text/HTML.",
-                data={"final_url": final_url, "content_type": content_type},
+                data={"final_url": self._secrets.scrub(final_url), "content_type": content_type},
             )
 
         raw = body.decode(_charset(content_type), errors="replace")
         ct = content_type.split(";", 1)[0].strip().lower()
         text = html_to_text(raw) if ct in ("text/html", "application/xhtml+xml") else raw
-        text = defang_untrusted(text)
+        # _out = scrub-then-defang: an API that echoes the request cannot hand the model a
+        # secret value back through the page body.
+        text = self._out(text)
 
         truncated = len(text) > max_chars
         if truncated:
@@ -165,13 +258,22 @@ class WebFetchTool(Tool):
         return ToolResult.ok(
             text or "(the page had no readable text)",
             data={
-                "final_url": final_url,
+                # Scrubbed: a redirect can land on a URL that carries a substituted
+                # query value, and data fields reach the model like output does.
+                "final_url": self._secrets.scrub(final_url),
                 "content_type": content_type,
                 "truncated": truncated,
             },
         )
 
-    async def _fetch(self, httpx, url: str, *, timeout: int = _DEFAULT_TIMEOUT):
+    async def _fetch(
+        self,
+        httpx,
+        url: str,
+        *,
+        timeout: int = _DEFAULT_TIMEOUT,
+        extra_headers: dict[str, str] | None = None,
+    ):
         """GET ``url``, following redirects MANUALLY so every hop is SSRF-revalidated + IP-pinned.
 
         Returns ``(body_bytes, final_url, content_type)`` where ``final_url`` is the validated
@@ -183,6 +285,10 @@ class WebFetchTool(Tool):
             "Accept": "text/html,text/plain,*/*",
             "Accept-Encoding": "identity",  # no transparent compression -> no decompression bomb
         }
+        # Caller headers may override the defaults above, but never the pin headers merged
+        # last per hop (Host carries the SSRF pin) — and execute() has already refused the
+        # transport-controlled names outright.
+        headers = {**headers, **(extra_headers or {})}
         current = url
         async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
             for _hop in range(_MAX_REDIRECTS + 1):

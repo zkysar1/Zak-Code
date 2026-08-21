@@ -489,6 +489,17 @@ class Settings(BaseSettings):
         default=False,
         description="Require operator confirmation before each web_fetch (egress gate).",
     )
+    # Named secrets for {{secret:NAME}} substitution (tools/builtins/_secrets.py). These are
+    # PATHS, not secrets — the values stay in the pointed-at file, consistent with the "secrets
+    # out of our config surface" rule in the module docstring. Absent (default) = feature off.
+    secrets_file: Path | None = Field(
+        default=None,
+        description="JSON name->value file backing {{secret:NAME}} substitution; None = off.",
+    )
+    secrets_usage_file: Path | None = Field(
+        default=None,
+        description="JSONL file where names-only secret-usage events are appended; None = off.",
+    )
     # Network-egress sandbox (opt-in). When ``egress_proxy`` is true, subprocess tools (bash /
     # powershell) are pointed at a localhost domain-allowlisting proxy via HTTP(S)_PROXY, so their
     # outbound HTTP/HTTPS to ``egress_allowed_domains`` (+ subdomains) on the standard web ports
