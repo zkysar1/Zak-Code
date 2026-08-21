@@ -15,8 +15,10 @@ from zakcode.agent.loop import AgentLoop
 from zakcode.agent.trace import TraceEvent, TurnTrace
 from zakcode.config import load_settings
 from zakcode.evals.harness import ScriptedProvider, call_tool, reply
+from zakcode.events import AgentDone
 from zakcode.session.store import Session
 from zakcode.tools import default_registry
+from zakcode.usage import Usage
 
 # ── TurnTrace model ────────────────────────────────────────────────────────────
 
@@ -109,10 +111,39 @@ async def test_trace_dump_is_best_effort(tmp_path: Path) -> None:
     assert result.stop_reason == "completed"
 
 
+async def test_buffered_call_traces_usage(tmp_path: Path) -> None:
+    u = Usage(prompt_tokens=100, completion_tokens=7, total_tokens=107)
+    loop = _loop(tmp_path, ScriptedProvider([reply("done", usage=u)]))
+    result = await loop.arun_turn("hi")
+    events = result.trace.of_kind("usage")
+    assert len(events) == 1  # one model call -> one usage event
+    data = events[0].data
+    assert data["prompt_tokens"] == 100 and data["completion_tokens"] == 7
+    assert data["total_tokens"] == 107
+    assert data["latency_s"] >= 0.0
+    assert "model" in data
+
+
+async def test_streaming_turn_traces_usage(tmp_path: Path) -> None:
+    # ScriptedProvider streams via the base-class astream shim, which emits one
+    # StreamUsage from the buffered result — exercising the streaming commit path.
+    u = Usage(prompt_tokens=50, completion_tokens=3, total_tokens=53)
+    loop = _loop(tmp_path, ScriptedProvider([reply("done", usage=u)]))
+    done = [ev async for ev in loop.astream_turn("hi")][-1]
+    assert isinstance(done, AgentDone)
+    events = done.trace.of_kind("usage")
+    assert len(events) == 1
+    data = events[0].data
+    assert data["prompt_tokens"] == 50 and data["completion_tokens"] == 3
+    assert data["streamed"] is True
+    assert data["latency_s"] >= 0.0
+
+
 async def test_trace_resets_each_turn(tmp_path: Path) -> None:
     loop = _loop(tmp_path, ScriptedProvider([reply("a"), reply("b")]))
     r1 = await loop.arun_turn("one")
     r2 = await loop.arun_turn("two")
     assert r1.trace.of_kind("stop") and r2.trace.of_kind("stop")
-    # No carryover: turn two's trace is its own (clean turn = route?+stop, not accumulated).
-    assert len(r2.trace.events) <= 2
+    # No carryover: turn two's trace is its own (clean turn = route? + one usage
+    # per model call + stop, not accumulated).
+    assert len(r2.trace.events) <= 3
