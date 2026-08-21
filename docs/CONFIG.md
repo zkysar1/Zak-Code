@@ -62,6 +62,7 @@ here — adding a Settings field without documenting it fails CI.
 | `local_only` | `ZAKCODE_LOCAL_ONLY` | `false` | **Cost guarantee.** Refuse any call that would reach a metered API rather than degrading to one — for running many agents against your own hardware, where a silent failover to a paid provider is the thing you cannot allow. "Local" means no third-party billing, not "on this machine": `ollama_chat/*`, or a generic-OpenAI model (`openai/…`, a bare name, `openai_like/…`, `hosted_vllm/…`) served through `api_base`. A named cloud prefix (`groq/`, `anthropic/`) never qualifies, because `api_base` cannot redirect those. Enforced twice: at startup, naming every offending field at once — including zakpick categories you did **not** override, which otherwise fall through to Groq defaults — and again at each request, so no failover or auto-resolution path slips past. Raises `LocalOnlyViolation`, deliberately not a `ProviderError`, so nothing retries it onto another model. **Boundary:** the check is by model prefix, so ANY `api_base` is trusted as local — including a **gateway** that forwards to metered providers. Constrain it with `local_api_bases`. |
 | `local_api_bases` | `ZAKCODE_LOCAL_API_BASES` | *(empty)* | Comma/space-separated `api_base` values that count as genuinely local under `local_only`. Empty (the default) trusts any base, so nothing that works today starts refusing. Set it and an `api_base` outside the list is treated as **metered** and refused. Needed because a self-hosted pod and an LLM gateway both speak the generic OpenAI protocol — `openai/<model>` + `api_base` cannot distinguish "my hardware" from "a proxy that bills me", and only you know which is which. Matching ignores trailing slashes and case. |
 | `provider_max_retries` | `ZAKCODE_PROVIDER_MAX_RETRIES` | `3` | Retries (with `retry_after`-aware backoff) after a rate-limited model call; `0` disables. Only 429s retry. |
+| `request_timeout` | `ZAKCODE_REQUEST_TIMEOUT` | `600.0` | Per-call wall-clock ceiling (seconds) for one model call, so a hung call can never block the loop forever. litellm raises `Timeout` past it, mapped to a recoverable provider error. 600s suits hosted APIs; a self-hosted backend on modest hardware can need more — e.g. a P40 pod measured ~100s of prefill for a 28.8k-token prompt, so a large prompt plus a long thinking phase can brush the default. Raise it there rather than letting healthy calls time out. |
 
 ### Recipe: running against a self-hosted inference pod
 
@@ -78,6 +79,7 @@ ZAKCODE_API_BASE=http://zakpod1:9090/v1
 ZAKCODE_API_KEY=sk-noop          # most local servers ignore it, litellm wants one present
 ZAKCODE_LOCAL_ONLY=true          # refuse anything that would bill
 ZAKCODE_LOCAL_API_BASES=http://zakpod1:9090/v1   # ...and only THIS base counts as local
+ZAKCODE_REQUEST_TIMEOUT=1200     # slow hardware: prefill alone can take minutes
 ```
 
 With `local_only`, a metered call is refused rather than made — including one reached by

@@ -325,6 +325,16 @@ class Settings(BaseSettings):
         ge=0,
         description="Retries (with backoff) after a rate-limited provider call; 0 disables.",
     )
+    # Per-call wall-clock ceiling for ONE model call, so a hung call can never block
+    # the loop forever. 600s suits hosted APIs; a self-hosted backend on modest
+    # hardware can legitimately need more — measured on a P40 pod: 28.8k prompt
+    # tokens took ~100s of prefill, so a large prompt plus a long thinking phase can
+    # brush the default. Raise it there rather than letting healthy calls time out.
+    request_timeout: float = Field(
+        default=600.0,
+        gt=0,
+        description="Per-call wall-clock ceiling (seconds) for one model call.",
+    )
     # TURN_END veto seam (T2/T3): how many times per turn a TURN_END hook may veto a
     # vetoable stop (completed / doom_loop / stuck) and re-enter the loop with its
     # continuation prompt. 0 (default) disables the gate — no hook fires at turn end.
