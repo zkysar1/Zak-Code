@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import functools
 import ipaddress
+import json
 import os
 import random
 import signal
@@ -31,6 +32,7 @@ from rich.table import Table
 from rich.text import Text
 
 from zakcode import __version__
+from zakcode.build_info import version_line
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
     heading,
@@ -81,6 +83,59 @@ os.environ.setdefault("LITELLM_LOG", "ERROR")
 _PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"]
 
 
+def _sourced(name: str, value: str) -> str:
+    """``value`` annotated with WHERE the env var came from.
+
+    A real environment variable always outranks ``~/.zakcode/.env`` (see
+    ``config.load_settings``), so an operator editing the user file can be looking at a
+    value that never applied. Naming the source turns that silent shadowing into a
+    visible one — the panel already does this for provider keys; the settings that
+    decide cost and routing deserve it at least as much.
+    """
+    source = env_source(name)
+    if source in ("not set", "env"):
+        return value
+    # Parentheses, NOT square brackets: rich parses "[...]" as style markup and silently
+    # swallows an unknown tag, so "[user .env]" renders as nothing at all. Measured while
+    # building this — build_info_lines returned the annotation and the panel did not show
+    # it, which is the failure mode this whole change exists to remove.
+    return f"{value}  (from {source})"
+
+
+def _cost_rows(settings: Settings) -> list[tuple[str, str]]:
+    """Rows for the cost guarantee and request-shaping knobs.
+
+    These were absent from ``info`` while being exactly the settings that fail SILENTLY:
+    an older build simply has no ``local_only`` field, and a shadowed one never applies —
+    in both cases every visible row still reads correct. Surfacing them is what makes
+    "did my config take?" answerable in one command.
+    """
+    rows: list[tuple[str, str]] = []
+    on = settings.local_only
+    rows.append(
+        ("Local only", _sourced("ZAKCODE_LOCAL_ONLY", "on" if on else "off (metered allowed)"))
+    )
+    if on:
+        # Only meaningful while the guarantee is on, and the empty case is the actionable
+        # one: local_only classifies by model prefix, so with no allowlist a gateway that
+        # forwards to metered providers is trusted as local.
+        allow = settings.local_api_bases
+        rows.append(
+            (
+                "Local api_bases",
+                ", ".join(allow) if allow else "any base trusted -- set ZAKCODE_LOCAL_API_BASES",
+            )
+        )
+    if settings.extra_body:
+        rows.append(("Extra body", _sourced("ZAKCODE_EXTRA_BODY", json.dumps(settings.extra_body))))
+    if settings.extra_headers:
+        # NAMES ONLY, never values: headers are the usual carrier for an auth token and
+        # `info` must never print a secret (CLAUDE.md rule 4).
+        names = ", ".join(sorted(settings.extra_headers))
+        rows.append(("Extra headers", _sourced("ZAKCODE_EXTRA_HEADERS", f"{names} (names only)")))
+    return rows
+
+
 def _provider_key_status() -> dict[str, str]:
     """Map each known provider key env-var to its provenance (never its value).
 
@@ -108,11 +163,17 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = [
         ("Model", model_row),
         ("Provider", settings.provider),
-        ("API base", strip_url_credentials(settings.api_base) or "(default for provider)"),
+        (
+            "API base",
+            _sourced(
+                "ZAKCODE_API_BASE",
+                strip_url_credentials(settings.api_base) or "(default for provider)",
+            ),
+        ),
         ("Fallback model", settings.fallback_model or "(none)"),
         ("Temperature", str(settings.temperature)),
         ("Ollama base URL", settings.ollama_base_url),
-        ("Permission mode", settings.permission_mode),
+        ("Permission mode", _sourced("ZAKCODE_PERMISSION_MODE", settings.permission_mode)),
         ("Max iterations", str(settings.max_iterations)),
         ("Workspace root", str(settings.workspace_root)),
         ("Search backend", settings.search_backend),
@@ -135,6 +196,7 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
                 "proxy -> " + (", ".join(settings.egress_allowed_domains) or "deny all"),
             )
         )
+    rows.extend(_cost_rows(settings))
     for name, source in _provider_key_status().items():
         rows.append((name, "not set" if source == "not set" else f"set ({source})"))
     return rows
@@ -142,8 +204,8 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
 
 @app.command()
 def version() -> None:
-    """Print the Zak Code version."""
-    typer.echo(f"zakcode {__version__}")
+    """Print the Zak Code version (and the commit, for a VCS install)."""
+    typer.echo(f"zakcode {version_line(__version__)}")
 
 
 @app.command()
@@ -156,7 +218,7 @@ def info() -> None:
             Text.assemble(
                 (g["spark"] + " ", "brand"),
                 ("Zak Code ", "banner.title"),
-                (__version__, "banner.version"),
+                (version_line(__version__), "banner.version"),
             )
         )
     )
@@ -274,7 +336,7 @@ def _print_help(console: Console) -> None:
             Text.assemble(
                 (g["spark"] + " ", "brand"),
                 ("Zak Code ", "banner.title"),
-                (__version__, "banner.version"),
+                (version_line(__version__), "banner.version"),
             )
         )
     )
