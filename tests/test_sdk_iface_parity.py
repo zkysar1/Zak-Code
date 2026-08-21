@@ -169,6 +169,21 @@ class Scenario:
     expected: list[tuple[Any, ...]]
 
 
+# A deliberately long turn: six sequential ``write_file`` calls before the reply
+# (7 iterations, 15 relayed events). It stresses the ONE thing a short scenario
+# can't — that every interface relays a LONG stream without dropping, reordering,
+# or coalescing events. The byte counts are distinct (1..6), so each ``tool_result``
+# is unique and a de-dup / off-by-one bug in a transport cannot hide behind
+# identical lines. Built as a comprehension so the six calls stay readable; the
+# ``expected`` golden below is still captured verbatim from the live SDK, never
+# generated from this script (a golden re-derived from the code it guards would
+# move WITH a regression instead of catching it).
+_LONG_HORIZON_SCRIPT: tuple[LLMResult, ...] = tuple(
+    call_tool("write_file", {"path": f"note-{i}.txt", "content": "x" * i}, id=f"w{i}")
+    for i in range(1, 7)
+) + (reply("Wrote all six notes."),)
+
+
 SCENARIOS: list[Scenario] = [
     Scenario(
         id="text_only",
@@ -193,6 +208,51 @@ SCENARIOS: list[Scenario] = [
             ("text", "Wrote parity.txt."),
             ("usage",),
             ("done", "completed", 2, False, "", None, False),
+        ],
+    ),
+    Scenario(
+        id="long_horizon",
+        canonical_input=_CANONICAL_INPUT,
+        script=_LONG_HORIZON_SCRIPT,
+        expected=[
+            ("tool_call", "w1", "write_file", {"path": "note-1.txt", "content": "x"}),
+            ("tool_result", "w1", False, "Wrote 1 bytes to note-1.txt"),
+            ("tool_call", "w2", "write_file", {"path": "note-2.txt", "content": "xx"}),
+            ("tool_result", "w2", False, "Wrote 2 bytes to note-2.txt"),
+            ("tool_call", "w3", "write_file", {"path": "note-3.txt", "content": "xxx"}),
+            ("tool_result", "w3", False, "Wrote 3 bytes to note-3.txt"),
+            ("tool_call", "w4", "write_file", {"path": "note-4.txt", "content": "xxxx"}),
+            ("tool_result", "w4", False, "Wrote 4 bytes to note-4.txt"),
+            ("tool_call", "w5", "write_file", {"path": "note-5.txt", "content": "xxxxx"}),
+            ("tool_result", "w5", False, "Wrote 5 bytes to note-5.txt"),
+            ("tool_call", "w6", "write_file", {"path": "note-6.txt", "content": "xxxxxx"}),
+            ("tool_result", "w6", False, "Wrote 6 bytes to note-6.txt"),
+            ("text", "Wrote all six notes."),
+            ("usage",),
+            ("done", "completed", 7, False, "", None, False),
+        ],
+    ),
+    Scenario(
+        # A read that depends on a prior write in the SAME turn: proves the
+        # interfaces relay a tool whose RESULT is real content (not a "Wrote N
+        # bytes" receipt) and that intra-turn ordering (write must land before the
+        # read observes it) survives the transport. read_file exercises a distinct
+        # tool result shape the write-only scenarios never produce.
+        id="read_after_write",
+        canonical_input=_CANONICAL_INPUT,
+        script=(
+            call_tool("write_file", {"path": "note.txt", "content": "hello horizon"}, id="w1"),
+            call_tool("read_file", {"path": "note.txt"}, id="r1"),
+            reply("Read the note back."),
+        ),
+        expected=[
+            ("tool_call", "w1", "write_file", {"path": "note.txt", "content": "hello horizon"}),
+            ("tool_result", "w1", False, "Wrote 13 bytes to note.txt"),
+            ("tool_call", "r1", "read_file", {"path": "note.txt"}),
+            ("tool_result", "r1", False, "hello horizon"),
+            ("text", "Read the note back."),
+            ("usage",),
+            ("done", "completed", 3, False, "", None, False),
         ],
     ),
 ]
