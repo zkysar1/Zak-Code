@@ -26,6 +26,20 @@ every `zakcode` invocation on the machine has them; a workspace `.env` overrides
 per-project. `zakcode info` names each key's source (`env` / `workspace .env` /
 `user .env`) so "why is it using that key on this machine" is always answerable.
 
+`zakcode info` names the source for the settings that decide **cost and routing** too —
+`api_base`, `permission_mode`, `local_only` — annotating anything that came from a file
+with `(from user .env)` / `(from workspace .env)`. A real environment variable always
+outranks `~/.zakcode/.env`, so a value edited in the user file may never have applied;
+the annotation makes that shadowing visible instead of silent. `info` also reports
+`local_only`, `local_api_bases`, `extra_body`, and `extra_headers` (header **names**
+only — never values, per [GUARDRAILS](GUARDRAILS.md)), because those fail quietly: an
+older build has no such field at all, and every other row still reads correct.
+
+`zakcode version` reports the commit for a VCS install — `0.0.1 (git ab2c313e0482)` —
+recovered from PEP 610 install metadata. The `version` string in `pyproject.toml` is
+hand-maintained, so without this two checkouts weeks apart are indistinguishable from
+inside the process.
+
 A completeness test (`tests/test_config_docs.py`) asserts every field is documented
 here — adding a Settings field without documenting it fails CI.
 
