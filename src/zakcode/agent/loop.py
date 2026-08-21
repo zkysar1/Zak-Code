@@ -2503,9 +2503,10 @@ class AgentLoop:
                             # Per-request usage on the decision trace (streaming twin of
                             # _call_provider's note): committed only with the attempt, so
                             # a retried mid-stream attempt is never double-counted.
+                            u = attempt_usage
                             self._note(
                                 "usage",
-                                f"{attempt_usage.prompt_tokens}p+{attempt_usage.completion_tokens}c tok "
+                                f"{u.prompt_tokens}p+{u.completion_tokens}c tok "
                                 f"in {time.monotonic() - attempt_started:.1f}s",
                                 model=self.provider.model_id(),
                                 prompt_tokens=attempt_usage.prompt_tokens,
