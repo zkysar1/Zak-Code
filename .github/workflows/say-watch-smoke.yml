@@ -1,0 +1,148 @@
+name: say-watch smoke
+
+# Machine-run verification of the sidecar say->watch exactly-once contract, on a
+# cadence, so the surface is tested WITHOUT a human (asp-357 / g-357-12). The
+# push-CI in ci.yml already runs the deterministic in-process say->watch e2e on
+# every commit; this workflow adds the two things a push cannot see:
+#
+#   * canary   — re-resolve the ASGI/SSE transport stack to its LATEST releases
+#                (uvicorn / sse-starlette / starlette / fastapi / httpx / anyio)
+#                and run the say/watch test surface against them. The lockfile
+#                pins those, so a breaking upstream release is invisible to push
+#                CI until someone bumps the lock; this leg surfaces it first. The
+#                say/watch tests lean on SSE parking-stream + loopback-server
+#                behavior, so that stack is exactly where drift would bite.
+#   * from-afar — the env-gated exactly-once probe pointed at a LIVE sidecar
+#                (tests/test_server_say_watch_e2e.py::
+#                 test_say_watch_exactly_once_against_live_sidecar). Runs only
+#                when the ZAKCODE_LIVE_URL repo variable is set; otherwise it
+#                prints a LOUD ::notice:: and the job passes (never a silent
+#                no-op). Activate it by pointing ZAKCODE_LIVE_URL at a reachable
+#                sidecar (e.g. an always-on demo env) + ZAKCODE_LIVE_TOKEN.
+#
+# Non-gating by construction: scheduled + manual only, never on push/PR, so it
+# can never block a merge. Failures alert the agent inbox via the same OIDC-
+# keyless SES path ci.yml uses (no new credentials, no new SES identity).
+
+on:
+  schedule:
+    # 07:17 UTC daily — off the top of the hour to dodge cron scheduling load.
+    - cron: "17 7 * * *"
+  workflow_dispatch: {}
+
+# Supersede an in-flight run on the same ref (a manual dispatch during a
+# scheduled run). A cancelled run is NOT a failure, so alert-on-failure below
+# stays quiet on supersede.
+concurrency:
+  group: say-watch-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    name: say/watch dep-drift canary (latest ASGI/SSE stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          # No cache: a warm cache could serve a stale resolve and mask the very
+          # drift this leg exists to catch.
+          enable-cache: false
+
+      - name: Sync, upgrading ONLY the transport stack (isolate the drift signal)
+        # --upgrade-package bumps just the named packages past the lock and keeps
+        # everything else pinned, so a canary failure points at the say/watch
+        # transport surface rather than at some unrelated dependency churning.
+        run: >
+          uv sync --extra dev --extra server --python 3.12
+          --upgrade-package uvicorn
+          --upgrade-package sse-starlette
+          --upgrade-package starlette
+          --upgrade-package fastapi
+          --upgrade-package httpx
+          --upgrade-package anyio
+
+      - name: Run the say/watch surface against the upgraded stack
+        env:
+          PYTHONFAULTHANDLER: "1"
+        # The four files that exercise say -> driver -> marker -> bus -> watch SSE.
+        # All hermetic (no LLM, no network), so a red here is real transport drift.
+        run: >
+          uv run --no-sync pytest -q
+          tests/test_server_say_watch_e2e.py
+          tests/test_server_watch.py
+          tests/test_server_say.py
+          tests/test_server_driver.py
+
+  from-afar:
+    name: say/watch exactly-once against a live sidecar
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Is the live leg configured?
+        id: gate
+        env:
+          LIVE_URL: ${{ vars.ZAKCODE_LIVE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LIVE_URL:-}" ]; then
+            echo "::notice title=from-afar leg not configured::Set the ZAKCODE_LIVE_URL repo variable (and the ZAKCODE_LIVE_TOKEN secret) to a reachable sidecar to activate the live exactly-once probe. Skipping the live leg; the canary leg still ran."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync (dev + server)
+        if: steps.gate.outputs.run == 'true'
+        run: uv sync --extra dev --extra server --python 3.12
+
+      - name: Probe the live sidecar (exactly one echo of a unique say)
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ZAKCODE_LIVE_URL: ${{ vars.ZAKCODE_LIVE_URL }}
+          ZAKCODE_LIVE_TOKEN: ${{ secrets.ZAKCODE_LIVE_TOKEN }}
+        run: >
+          uv run --no-sync pytest -q
+          tests/test_server_say_watch_e2e.py::test_say_watch_exactly_once_against_live_sidecar
+
+  alert-on-failure:
+    name: Alert agent inbox on smoke failure
+    needs: [canary, from-afar]
+    # failure() is true iff a needed job FAILED; a cancelled run (concurrency
+    # supersede) is not a failure, and a from-afar job whose steps skipped still
+    # SUCCEEDS — so an unconfigured live leg never alerts. Same posture as ci.yml.
+    if: failure()
+    runs-on: ubuntu-latest
+    # A permissions block REPLACES the default set — name contents alongside the
+    # OIDC id-token even though this job never checks out.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC, keyless)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::891377285145:role/ayoai-zds-ci-alert-oidc
+          aws-region: us-east-2
+
+      - name: Send SES alert
+        continue-on-error: true
+        env:
+          AWS_DEFAULT_REGION: us-east-2
+          REPO: ${{ github.repository }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n --arg repo "$REPO" --arg run "$RUN_URL" \
+            '{FromEmailAddress:"agents@zacharykysar.com",Destination:{ToAddresses:["agents@zacharykysar.com"]},Content:{Simple:{Subject:{Data:("[SMOKE-FAIL] say-watch @ "+$repo)},Body:{Text:{Data:("The scheduled say/watch smoke failed.\nrepo: "+$repo+"\nrun: "+$run+"\n\nEither the say/watch surface broke against the latest ASGI/SSE stack (canary leg) or a live sidecar failed the exactly-once probe (from-afar leg). Read the run, then fix the surface or file an Investigate goal. Automated CI alert -- read-only notification. Do NOT reply by email.")}}}}}' > smoke-alert.json
+          aws sesv2 send-email --cli-input-json file://smoke-alert.json
