@@ -49,10 +49,12 @@ EXTENDING
 ---------
 Add a scenario to :data:`SCENARIOS`, or a runner to :data:`_LAYERS`. Every
 scenario is then checked against every interface against the one golden. The
-three end interfaces (http, ws, cli) are covered; the remaining widenings are new
-scenarios and the DISTINCT axes this harness deliberately does not test —
-rendering-correctness (the lossy CLI ``StreamRenderer``), the permission
-escalation round-trip, and config-parity (server-reduced vs CLI-full agent).
+three end interfaces (http, ws, cli) are covered here; the DISTINCT axes this
+harness deliberately does NOT fold in — each needs its own positive control —
+now live in sibling files: config-parity (``test_sdk_iface_config_parity.py``),
+the permission-escalation round-trip (``test_sdk_iface_permission_parity.py``),
+and rendering-correctness of the lossy CLI ``StreamRenderer``
+(``test_sdk_iface_render_correctness.py``).
 
 HERMETIC
 --------
