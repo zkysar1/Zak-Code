@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import httpx
+import pytest
 
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.server.driver import CURRENT_SESSION_FILE, ServeDriver
@@ -477,3 +478,26 @@ async def test_say_file_disabled_leaves_pending_file_untouched(tmp_path: Path) -
     assert client.turn_calls[0]["message"] == "BOOT"  # untouched by the pending file
     assert (tmp_path / ".say").exists()  # not consumed when the seam is off
     assert client.user_message_calls == []
+
+
+@pytest.mark.parametrize("n_failures", [1, 2, 3, 5])
+async def test_say_published_exactly_once_across_n_same_session_requeues(
+    tmp_path: Path, n_failures: int
+) -> None:
+    # Property generalizing test_say_requeued_when_the_turn_fails (its n=1 case): however
+    # many times a same-session turn faults and re-queues the say, the driver surfaces it
+    # to watchers EXACTLY ONCE. Suppression is sticky across N retries, not reset after
+    # the first. recreate_after_failures sits above n_failures so NO rotation intervenes
+    # (rotation is the one case that legitimately re-publishes — covered separately in
+    # test_say_republished_on_session_rotation_not_on_same_session_retry).
+    (tmp_path / ".say").write_text("is the say sticky?", encoding="utf-8")
+    script: list[list[AgentEvent] | Exception] = [httpx.ConnectError("blip")] * n_failures
+    script.append([_done()])
+    client = FakeServerClient(turn_script=script)
+    driver = _driver(client, tmp_path, max_turns=1, recreate_after_failures=n_failures + 1)
+    await driver.run()
+
+    assert len(client.turn_calls) == n_failures + 1  # N faulted attempts + the delivering retry
+    assert client.created_sids == ["sess-1"]  # never rotated
+    assert client.user_message_calls == [{"session_id": "sess-1", "text": "is the say sticky?"}]
+    assert not (tmp_path / ".say").exists()  # delivered by the final retry, slot clear
