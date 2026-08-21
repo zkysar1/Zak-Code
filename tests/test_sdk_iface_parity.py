@@ -5,7 +5,7 @@ WHY THIS FILE EXISTS
 --------------------
 guard-4547: interfaces carry NO business logic. The SDK (:class:`zakcode.Agent`)
 owns all of it and emits the one canonical stream of
-:data:`~zakcode.events.AgentEvent`; every interface (HTTP/SSE now, WebSocket and
+:data:`~zakcode.events.AgentEvent`; every interface (HTTP/SSE and WebSocket now,
 CLI later) is a thin transport that RELAYS that stream. This test pins that
 contract with a demonstrable *break point*: it proves the interface reproduces
 the SDK's stream, and when it does not, it says WHICH layer broke.
@@ -13,14 +13,17 @@ the SDK's stream, and when it does not, it says WHICH layer broke.
 THE DESIGN
 ----------
 A golden scenario is ``(canonical input, deterministic ScriptedProvider script,
-expected normalized AgentEvent stream)``. One scenario runs through two layers:
+expected normalized AgentEvent stream)``. One scenario runs through three layers:
 
 * ``sdk``  — :meth:`Agent.astream_turn` called directly (the canonical stream).
 * ``http`` — the SAME agent injected into the ASGI app and driven through
   ``POST /chat/stream``; its SSE frames are parsed back into ``AgentEvent`` via
   the wire adapter (:func:`~zakcode.server.wire.event_from_dict`).
+* ``ws``   — the SAME agent driven through the ``/ws/{session_id}`` WebSocket;
+  each server→client frame is the same ``event_to_dict`` payload, parsed back
+  through the same adapter.
 
-Both layers run the IDENTICAL ``Agent`` + ``ScriptedProvider`` (built by one
+All layers run the IDENTICAL ``Agent`` + ``ScriptedProvider`` (built by one
 :func:`_build_parity_agent`), so the ONLY variable is the transport. ``layer`` is
 a pytest parameter, so a failure LOCALIZES::
 
@@ -35,18 +38,19 @@ written golden stale.
 
 EXTENDING
 ---------
-Add a scenario to :data:`SCENARIOS`, or a runner to :data:`_LAYERS` (a ``"ws"`` /
-``"cli"`` entry). Every scenario is then checked against every interface against
-the one golden — the widening the say/watch milestone called for.
+Add a scenario to :data:`SCENARIOS`, or a runner to :data:`_LAYERS` (a ``"cli"``
+entry). Every scenario is then checked against every interface against the one
+golden — the widening the say/watch milestone called for.
 
 HERMETIC
 --------
-``ScriptedProvider`` never touches a network; ``TestClient`` drives the finite
-``/chat/stream`` in-process (no live server — the infinite ``/watch`` stream is
-the one that needs a real socket, not this). :func:`_normalize` excludes the
-volatile fields (the per-turn decision ``trace``, raw ``usage`` numbers) and
-collapses consecutive text deltas, so the contract is robust to a future
-interface that re-chunks text.
+``ScriptedProvider`` never touches a network; ``TestClient`` drives both the
+finite ``/chat/stream`` and the ``/ws`` socket in-process (no live server — the
+infinite ``/watch`` stream is the one that needs a real socket, not these). The
+WS turn runs server-side as a background task and the client drains frames to the
+terminal ``done`` event. :func:`_normalize` excludes the volatile fields (the
+per-turn decision ``trace``, raw ``usage`` numbers) and collapses consecutive
+text deltas, so the contract is robust to a future interface that re-chunks text.
 """
 
 from __future__ import annotations
@@ -252,10 +256,53 @@ def _run_http(scenario: Scenario, workspace_root: Path) -> list[AgentEvent]:
     return [event_from_dict(frame) for frame in _sse_data_frames(resp.text)]
 
 
+def _run_ws(scenario: Scenario, workspace_root: Path) -> list[AgentEvent]:
+    """L2 — the SAME agent, driven through the WebSocket interface.
+
+    The ``/ws/{session_id}`` handler LOADS an existing session by path id (unlike
+    ``/chat/stream``'s get-or-create), so the session is pre-created in the store.
+    The client sends one ``input`` message; the turn runs server-side as a
+    background task that relays ``event_to_dict`` over the socket — the same 1:1
+    relay as SSE — and the client drains frames to the terminal ``done`` event.
+
+    A non-event control frame (an ``error`` or ``action_required``) is itself a
+    divergence from the SDK stream, so it fails loudly rather than being silently
+    parsed. The server-supplied ``prompter`` is ignored on purpose: the ``allow``
+    policy never escalates, keeping the agent config identical across every layer.
+    """
+    settings = Settings(default_model="scripted/parity", workspace_root=workspace_root)
+    store = SessionStore(base_dir=workspace_root / "sessions")
+
+    def factory(session: Session, model: str | None, prompter: object) -> Agent:  # noqa: ARG001
+        return _build_parity_agent(scenario.script, workspace_root=workspace_root, session=session)
+
+    app = create_app(settings=settings, store=store, agent_factory=factory)
+    client = TestClient(app)
+    # WS loads the session by path id, so it must exist before the handshake.
+    session = Session(cwd=".", model="scripted/parity")
+    store.save(session)
+
+    frames: list[dict[str, Any]] = []
+    with client.websocket_connect(f"/ws/{session.id}") as ws:
+        ws.send_json({"type": "input", "message": scenario.canonical_input})
+        while True:
+            frame = ws.receive_json()
+            if "event" not in frame:  # error / action_required: a real divergence
+                raise AssertionError(f"WS sent a non-event control frame: {frame}")
+            frames.append(frame)
+            if frame["event"] == "done":
+                break
+    return [event_from_dict(frame) for frame in frames]
+
+
 _LAYERS: dict[str, Callable[[Scenario, Path], list[AgentEvent]]] = {
     "sdk": _run_sdk,
     "http": _run_http,
+    "ws": _run_ws,
 }
+
+# The interface layers = every layer that is not the canonical SDK reference.
+_INTERFACE_LAYERS: list[str] = sorted(name for name in _LAYERS if name != "sdk")
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────────
@@ -274,14 +321,15 @@ def test_layer_matches_golden(scenario: Scenario, layer: str, tmp_path: Path) ->
     assert _normalize(events) == scenario.expected
 
 
+@pytest.mark.parametrize("layer", _INTERFACE_LAYERS)
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.id)
-def test_interface_matches_sdk_reference(scenario: Scenario, tmp_path: Path) -> None:
-    """Golden-independent: the HTTP interface matches whatever the SDK emits NOW.
+def test_interface_matches_sdk_reference(scenario: Scenario, layer: str, tmp_path: Path) -> None:
+    """Golden-independent: each interface matches whatever the SDK emits NOW.
 
     This never goes stale on an intentional SDK wording change (both sides move
-    together); it fires only when the interface stops faithfully relaying the
+    together); it fires only when an interface stops faithfully relaying the
     SDK — the purest statement of the break point.
     """
     sdk = _normalize(_run_sdk(scenario, tmp_path / "sdk"))
-    http = _normalize(_run_http(scenario, tmp_path / "http"))
-    assert http == sdk
+    iface = _normalize(_LAYERS[layer](scenario, tmp_path / layer))
+    assert iface == sdk
