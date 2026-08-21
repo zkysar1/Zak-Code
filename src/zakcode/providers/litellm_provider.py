@@ -223,7 +223,7 @@ class LiteLLMProvider(Provider):
         api_key: str | None = None,
         num_retries: int | None = None,
         ollama_base_url: str | None = None,
-        request_timeout: float = 600.0,
+        request_timeout: float | None = None,
         local_only: bool | None = None,
         local_api_bases: list[str] | None = None,
         extra_body: dict[str, Any] | None = None,
@@ -234,6 +234,7 @@ class LiteLLMProvider(Provider):
         resolved_api_base = api_base
         resolved_api_key = api_key
         resolved_ollama_base = ollama_base_url
+        resolved_request_timeout = request_timeout
         resolved_local_only = local_only
         resolved_local_api_bases = local_api_bases
         resolved_extra_body = extra_body
@@ -252,6 +253,9 @@ class LiteLLMProvider(Provider):
                 resolved_api_key = settings.api_key
             if resolved_ollama_base is None:
                 resolved_ollama_base = settings.ollama_base_url
+            if resolved_request_timeout is None:
+                # getattr: an older/faked Settings without the field keeps the default.
+                resolved_request_timeout = getattr(settings, "request_timeout", None)
             if resolved_local_only is None:
                 resolved_local_only = settings.local_only
             if resolved_local_api_bases is None:
@@ -285,8 +289,11 @@ class LiteLLMProvider(Provider):
         self.extra_headers: dict[str, str] = _expand_headers(resolved_extra_headers)
         # Per-call wall-clock ceiling: a hung/stuck model call can never block the loop forever.
         # litellm raises Timeout past this, which _map_error turns into a recoverable provider error
-        # (the loop's own retry handles it; litellm's num_retries stays 0).
-        self.request_timeout: float = request_timeout
+        # (the loop's own retry handles it; litellm's num_retries stays 0). Explicit kwarg wins,
+        # then Settings.request_timeout (ZAKCODE_REQUEST_TIMEOUT), then the 600s safety net.
+        self.request_timeout: float = (
+            resolved_request_timeout if resolved_request_timeout is not None else 600.0
+        )
 
         # litellm reads OLLAMA_API_BASE from the environment for ollama_chat/*.
         if _is_ollama_model(self.model) and self.ollama_base_url:

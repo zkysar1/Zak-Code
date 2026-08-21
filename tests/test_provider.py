@@ -224,6 +224,22 @@ def test_build_kwargs_sets_request_timeout() -> None:
     assert p2._build_kwargs(wire, None)["timeout"] == 42.0
 
 
+def test_request_timeout_resolves_from_settings() -> None:
+    # Settings.request_timeout (ZAKCODE_REQUEST_TIMEOUT) reaches the wire — the knob a
+    # self-hosted pod needs, where prefill alone can outlast the hosted-API default.
+    from zakcode.config import load_settings
+
+    wire = [{"role": "user", "content": "x"}]
+    s = load_settings(default_model="openai/gpt-4o", request_timeout=1200.0)
+    p = LiteLLMProvider(s)
+    assert p._build_kwargs(wire, None)["timeout"] == 1200.0
+    # Explicit kwarg wins over settings (same precedence as every other field).
+    p2 = LiteLLMProvider(s, request_timeout=42.0)
+    assert p2._build_kwargs(wire, None)["timeout"] == 42.0
+    # No settings, no kwarg: the 600s safety net holds.
+    assert LiteLLMProvider(model="openai/gpt-4o")._build_kwargs(wire, None)["timeout"] == 600.0
+
+
 async def test_acomplete_parses_tool_calls_dict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
