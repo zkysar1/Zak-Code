@@ -221,3 +221,85 @@ def test_high_entropy_token_redacted_but_normal_text_survives() -> None:
 def test_redaction_never_raises_on_empty() -> None:
     assert redact_secrets_extended("") == ""
     assert _proj().project(AgentTextDelta(text="")) == SafeText(text="")
+
+
+# ── g-366-05: named-vault layer — usage NAMES surfaced, stored VALUES scrubbed ─
+
+
+def test_tool_call_surfaces_placeholder_names_only() -> None:
+    out = _proj().project(
+        AgentToolCall(
+            id="c2",
+            name="web_fetch",
+            arguments={
+                "url": "https://api.example.com?key={{secret:WEATHER_API_KEY}}",
+                "headers": {"Authorization": "Bearer {{secret:API_TOKEN_A}}"},
+                "retries": [1, "then {{secret:WEATHER_API_KEY}} again"],
+            },
+        )
+    )
+    assert isinstance(out, SafeToolSummary)
+    # Sorted, deduplicated NAMES — the "agent used WEATHER_API_KEY" watch signal.
+    assert out.used_secrets == ["API_TOKEN_A", "WEATHER_API_KEY"]
+    # Arguments themselves still never escape.
+    dumped = out.model_dump_json()
+    assert "arguments" not in dumped and "api.example.com" not in dumped
+
+
+def test_tool_call_without_placeholders_has_empty_used_secrets() -> None:
+    out = _proj().project(
+        # Lowercase name is OUTSIDE the placeholder grammar — must not match.
+        AgentToolCall(id="c3", name="bash", arguments={"cmd": "echo {{secret:weather}}"})
+    )
+    assert isinstance(out, SafeToolSummary) and out.used_secrets == []
+    result = _proj().project(AgentToolResult(tool_use_id="c3", output="x", is_error=False))
+    assert isinstance(result, SafeToolSummary) and result.used_secrets == []
+
+
+def test_vault_value_is_scrubbed_from_text_events(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    vault = tmp_path / "secrets.json"
+    vault.write_text('{"WEATHER_API_KEY": "wombat-wombat-secret-01"}', encoding="utf-8")
+    p = _proj(secrets_file=vault)
+    out = p.project(AgentTextDelta(text="calling with wombat-wombat-secret-01 now"))
+    assert isinstance(out, SafeText)
+    # Low-entropy value (below the layer-4 catch-all) — only the vault layer can remove it,
+    # folding it back into its placeholder so the watcher still sees WHICH secret.
+    assert "wombat-wombat-secret-01" not in out.text
+    assert "{{secret:WEATHER_API_KEY}}" in out.text
+
+
+def test_vault_value_saved_after_init_is_still_scrubbed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    vault = tmp_path / "secrets.json"
+    vault.write_text("{}", encoding="utf-8")
+    p = _proj(secrets_file=vault)
+    # Pre-save: the value passes through untouched (proves the scrub below is the vault's).
+    before = p.project(AgentTextDelta(text="value wombat-wombat-secret-02 here"))
+    assert isinstance(before, SafeText) and "wombat-wombat-secret-02" in before.text
+    # The operator saves a NEW secret while the server is running (no restart, no re-init).
+    vault.write_text('{"ROTATED_KEY": "wombat-wombat-secret-02"}', encoding="utf-8")
+    after = p.project(AgentTextDelta(text="value wombat-wombat-secret-02 here"))
+    assert isinstance(after, SafeText)
+    assert "wombat-wombat-secret-02" not in after.text
+    assert "{{secret:ROTATED_KEY}}" in after.text
+
+
+def test_vault_missing_file_is_harmless(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    p = _proj(secrets_file=tmp_path / "never-created.json")
+    out = p.project(AgentTextDelta(text="ordinary sentence survives"))
+    assert isinstance(out, SafeText) and out.text == "ordinary sentence survives"
+
+
+def test_placeholder_names_survive_redaction_in_text() -> None:
+    # The name is the watch stream's public currency — layer 1's assignment heuristic
+    # ("secret:NAME" reads as key/value) must not mangle it to {{secret:[REDACTED]}}.
+    out = _proj().project(AgentTextDelta(text="calling with {{secret:WEATHER_API_KEY}} now"))
+    assert isinstance(out, SafeText)
+    assert out.text == "calling with {{secret:WEATHER_API_KEY}} now"
+
+
+def test_placeholder_shell_cannot_smuggle_an_env_value() -> None:
+    # An env secret VALUE that happens to fit the name grammar, wrapped in placeholder
+    # syntax, must NOT ride the name-protection through redaction (fail-closed lift guard).
+    p = _proj(env={"SNEAKY_KEY": "UPPERCASEVALUE99"})
+    out = p.redact("x {{secret:UPPERCASEVALUE99}} y")
+    assert "UPPERCASEVALUE99" not in out

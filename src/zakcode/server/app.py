@@ -473,10 +473,15 @@ def create_app(
     # Read-only watch fan-out (P0-3). Every turn tees its AgentEvents into the per-session
     # bus; GET /watch tails that bus, projecting each event to a secret-redacted SafeEvent.
     # The registry is bounded per session (ring buffer) so an abandoned watcher never grows
-    # memory. The projection loads secret VALUES + workspace paths once here (deterministic
-    # per event thereafter), so it is safe to share across sessions.
+    # memory. The projection loads env secret VALUES + workspace paths once here; named-vault
+    # values (secrets_file — the same file the tool registry's SecretsProvider reads) are
+    # re-read live per redact call so a secret saved after startup is scrubbed too. Safe to
+    # share across sessions.
     event_bus_registry = EventBusRegistry()
-    safe_projection = SafeEventProjection(workspace_root=str(resolved_settings.workspace_root))
+    safe_projection = SafeEventProjection(
+        workspace_root=str(resolved_settings.workspace_root),
+        secrets_file=resolved_settings.secrets_file,
+    )
 
     # ── helpers ────────────────────────────────────────────────────────────────
 
