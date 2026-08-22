@@ -29,6 +29,7 @@ from zakcode.providers.base import (
     RateLimited,
     StreamDone,
     StreamTextDelta,
+    StreamThinkingDelta,
 )
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
@@ -264,6 +265,49 @@ def test_streaming_midstream_failure_is_terminal_not_retried(fast_sleep: list[fl
     assert any("provider error" in s for s in statuses)
     # Partial streamed text is not persisted: the failed turn leaves no assistant msg.
     assert [m.role for m in loop.session.messages] == ["user"]
+
+
+class ThinkingThenFailProvider(FlakyStreamProvider):
+    """Streams a *reasoning* delta (never assistant text), then fails mid-stream."""
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kw: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        self.stream_calls += 1
+        yield StreamThinkingDelta(text="weighing the options")
+        if self._fail_midstream is not None:
+            exc = self._fail_midstream
+            self._fail_midstream = None  # consume once: the retried stream succeeds
+            raise exc
+        yield StreamTextDelta(text="recovered")
+        yield StreamDone(finish_reason="stop")
+
+
+def test_thinking_only_stream_stays_retryable(fast_sleep: list[float]) -> None:
+    """Reasoning deltas must not consume the mid-stream retry budget.
+
+    Twin of ``test_streaming_midstream_failure_is_terminal_not_retried`` above: there,
+    a delta the client *rendered as an answer* had escaped, so retrying would duplicate
+    it and the failure is terminal. A thinking delta is not an answer — nothing the
+    retry would duplicate — so ``received_any`` stays False and the turn recovers.
+
+    This is the property that makes a long reasoning phase safe: without it, a model
+    that thinks for two minutes and then hits a 429 would burn the whole turn, and the
+    longer it reasoned the more likely that became.
+    """
+    provider = ThinkingThenFailProvider([], fail_midstream=RateLimited("429 mid-stream"))
+    loop = _make_loop(provider)
+    events = asyncio.run(_collect(loop, "hi"))
+
+    done = events[-1]
+    assert done.stop_reason != "provider_error"
+    assert provider.stream_calls == 2  # retried, unlike the assistant-text case
+    assert any(getattr(ev, "text", None) == "recovered" for ev in events)
 
 
 def test_streaming_exhausted_retries_end_gracefully(fast_sleep: list[float]) -> None:

@@ -60,6 +60,7 @@ def test_event_type_names(tmp_path: Path) -> None:
         "status",
         "task_update",
         "text",
+        "thinking",
         "tool_call",
         "tool_result",
         "usage",

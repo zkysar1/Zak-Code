@@ -42,6 +42,7 @@ from zakcode.providers.base import (
     RequestFailed,
     StreamDone,
     StreamTextDelta,
+    StreamThinkingDelta,
     StreamToolCallDelta,
     StreamUsage,
     ToolCall,
@@ -802,9 +803,9 @@ class LiteLLMProvider(Provider):
         may be a pydantic-like object or a plain dict. Nothing here raises: a
         malformed chunk simply yields no events.
 
-        Ordering within a chunk is text -> tool-call fragments -> usage, mirroring
-        how a single OpenAI-shaped delta is laid out. ``StreamDone`` is emitted by
-        the caller after the loop, never here.
+        Ordering within a chunk is text -> thinking -> tool-call fragments -> usage,
+        mirroring how a single OpenAI-shaped delta is laid out. ``StreamDone`` is
+        emitted by the caller after the loop, never here.
         """
         events: list[ProviderStreamEvent] = []
         finish_reason: str | None = None
@@ -820,11 +821,21 @@ class LiteLLMProvider(Provider):
             content = _get(delta, "content")
             if isinstance(content, str) and content:
                 events.append(StreamTextDelta(text=content))
-            # DELIBERATE (stack review minor #6): a delta carrying only
-            # ``reasoning_content`` yields no event — the provider event model has no
-            # StreamThinkingDelta (yet), and reasoning must never surface as assistant
-            # text. The buffered path captures it on ``LLMResult.thinking``; streaming
-            # clients see reasoning models "pause" until real text starts.
+            # Reasoning ("thinking") rides its OWN event, never ``content``. The
+            # invariant the previous comment here protected is unchanged — reasoning
+            # must never surface as assistant text — but it is now enforced by the
+            # TYPE rather than by dropping the data: StreamThinkingDelta is a distinct
+            # variant the loop re-emits as AgentThinkingDelta and never folds into
+            # ``text_parts``. Dropping these was what made a reasoning model look
+            # frozen: the pod streams reasoning_content incrementally (78 deltas,
+            # median gap 0.127s, measured g-326-564) and every one used to vanish, so
+            # a streaming client saw zero bytes for the whole thinking phase.
+            # Emitted after ``content`` only because a single delta carries one or the
+            # other in practice, never both; the buffered path still captures the same
+            # text on ``LLMResult.thinking``.
+            reasoning = _get(delta, "reasoning_content")
+            if isinstance(reasoning, str) and reasoning:
+                events.append(StreamThinkingDelta(text=reasoning))
 
             raw_tool_calls = _get(delta, "tool_calls")
             if raw_tool_calls:

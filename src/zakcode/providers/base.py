@@ -99,6 +99,26 @@ class StreamTextDelta(BaseModel):
     text: str
 
 
+class StreamThinkingDelta(BaseModel):
+    """An incremental chunk of model *reasoning* ("thinking"), never assistant text.
+
+    A SEPARATE variant from :class:`StreamTextDelta` on purpose, and the separation
+    is the invariant — not a stylistic choice. Reasoning must never be concatenated
+    into the assistant's answer: it is the model's scratchpad, it is not addressed
+    to the user, and on some providers it is explicitly not for display alongside
+    output. Giving it its own event type is what lets a client render it in its own
+    region (dim, collapsible, discarded) while making the "just treat it as text"
+    mistake impossible to make by accident.
+
+    Reasoning models emit these incrementally throughout a thinking phase that can
+    last minutes; before this variant existed the mapper dropped every one of them
+    and a streaming client saw a silent zero-byte window for the whole phase.
+    """
+
+    event: Literal["thinking_delta"] = "thinking_delta"
+    text: str
+
+
 class StreamToolCallDelta(BaseModel):
     """An incremental fragment of a tool call, keyed by ``index``.
 
@@ -129,7 +149,7 @@ class StreamDone(BaseModel):
 
 
 ProviderStreamEvent = Annotated[
-    StreamTextDelta | StreamToolCallDelta | StreamUsage | StreamDone,
+    StreamTextDelta | StreamThinkingDelta | StreamToolCallDelta | StreamUsage | StreamDone,
     Field(discriminator="event"),
 ]
 
@@ -282,6 +302,7 @@ __all__ = [
     "LLMResult",
     "Capabilities",
     "StreamTextDelta",
+    "StreamThinkingDelta",
     "StreamToolCallDelta",
     "StreamUsage",
     "StreamDone",

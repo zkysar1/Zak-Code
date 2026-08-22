@@ -18,6 +18,9 @@ from zakcode.providers.base import (
     Capabilities,
     LLMResult,
     Provider,
+    StreamDone,
+    StreamTextDelta,
+    StreamThinkingDelta,
     StreamToolCallDelta,
     ToolCall,
 )
@@ -511,6 +514,55 @@ async def test_astream_auto_salvages_stray_text_call() -> None:
     assert len(deltas) == 1
     assert deltas[0].name == "read_file"  # rescued on the streaming path too
     assert inner.calls[0]["tools"] == TOOLS  # native path was used
+
+
+class _ThinkingStreamProvider(_RecordingProvider):
+    """Streams a reasoning delta (optionally carrying tool-call *syntax*), then done."""
+
+    def __init__(self, thinking: str, *, trailing_text: str = "") -> None:
+        super().__init__(reply(""), supports_tools=True)
+        self._thinking = thinking
+        self._trailing_text = trailing_text
+
+    async def astream(self, messages: list[Message], **kwargs: Any) -> Any:
+        yield StreamThinkingDelta(text=self._thinking)
+        if self._trailing_text:
+            yield StreamTextDelta(text=self._trailing_text)
+        yield StreamDone(finish_reason="stop")
+
+
+async def test_astream_auto_never_salvages_a_call_out_of_reasoning() -> None:
+    """A ``<tool_call>`` block the model merely *thought about* must not be executed.
+
+    The auto-mode salvage scans buffered assistant text for a stray ``<tool_call>``
+    block. Reasoning is deliberately not buffered into that text (``text_tools.py``
+    routes it through the pass-through arm), so a model weighing "should I call
+    read_file?" out loud cannot have its deliberation fired as a real call. Without
+    this separation the salvage turns the thinking stream into an execution channel.
+    """
+    block = '<tool_call>{"name": "read_file", "arguments": {"path": "a"}}</tool_call>'
+
+    # POSITIVE CONTROL first: the identical block delivered as assistant TEXT through
+    # this same double and wrapper IS salvaged. Without this the assertion below is
+    # green by default — it would also pass if the reasoning never reached the wrapper
+    # at all, or if the auto-salvage branch were never entered.
+    control = TextToolCallingProvider(
+        _ThinkingStreamProvider("thinking about it", trailing_text=f"Sure. {block}"),
+        mode="auto",
+    )
+    control_events = [ev async for ev in control.astream([Message.user("hi")], tools=TOOLS)]
+    control_calls = [e for e in control_events if isinstance(e, StreamToolCallDelta)]
+    assert len(control_calls) == 1 and control_calls[0].name == "read_file"
+
+    # The real assertion: the same block in the REASONING bucket is not salvaged.
+    inner = _ThinkingStreamProvider(f"Maybe I should {block}", trailing_text="Actually, no need.")
+    wrap = TextToolCallingProvider(inner, mode="auto")
+    events = [ev async for ev in wrap.astream([Message.user("hi")], tools=TOOLS)]
+
+    assert not [e for e in events if isinstance(e, StreamToolCallDelta)]
+    # The reasoning is still forwarded to the client — suppressed from salvage, not dropped.
+    thinking = [e for e in events if isinstance(e, StreamThinkingDelta)]
+    assert len(thinking) == 1 and "read_file" in thinking[0].text
 
 
 # ── review-driven hardening: untrusted-output frame defanging ────────────────

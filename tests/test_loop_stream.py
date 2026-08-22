@@ -19,6 +19,7 @@ from zakcode.events import (
     AgentDone,
     AgentStatus,
     AgentTextDelta,
+    AgentThinkingDelta,
     AgentToolCall,
     AgentToolResult,
     AgentUsage,
@@ -31,6 +32,7 @@ from zakcode.providers.base import (
     ProviderStreamEvent,
     StreamDone,
     StreamTextDelta,
+    StreamThinkingDelta,
     StreamToolCallDelta,
     StreamUsage,
 )
@@ -253,6 +255,53 @@ async def test_text_only_turn_completes(tmp_path: Any) -> None:
 
     # No tool calls in a text-only turn.
     assert not any(isinstance(e, AgentToolCall) for e in events)
+
+
+@pytest.mark.anyio
+async def test_thinking_delta_is_forwarded_and_never_becomes_assistant_text(
+    tmp_path: Any,
+) -> None:
+    """Reasoning surfaces as its own event and stays out of the assistant answer.
+
+    The visible half is the point of the feature — the thinking phase is no longer a
+    silent window. The invisible half is the safety property: reasoning must never be
+    folded into the assistant text, or it would be persisted to the session and fed
+    back to the model as if it had said it out loud.
+    """
+    provider = ScriptedStreamProvider(
+        [
+            [
+                StreamThinkingDelta(text="let me check "),
+                StreamThinkingDelta(text="the units"),
+                StreamTextDelta(text="42 metres."),
+                StreamUsage(usage=Usage(total_tokens=5)),
+                StreamDone(finish_reason="stop"),
+            ]
+        ]
+    )
+    loop = _build_loop(tmp_path, provider)
+    events = await _collect(loop, "how far?")
+
+    thinking = [e for e in events if isinstance(e, AgentThinkingDelta)]
+    assert [e.text for e in thinking] == ["let me check ", "the units"]
+
+    text = "".join(e.text for e in events if isinstance(e, AgentTextDelta))
+    assert text == "42 metres."
+
+    # Ordering: the reasoning is surfaced before the answer it produced.
+    assert events.index(thinking[0]) < events.index(
+        next(e for e in events if isinstance(e, AgentTextDelta))
+    )
+
+    # The persisted assistant message carries the answer only — never the reasoning.
+    assistant = [m for m in loop.session.messages if m.role == "assistant"]
+    assert len(assistant) == 1
+    assert "the units" not in assistant[0].text
+    assert "42 metres." in assistant[0].text
+
+    done = events[-1]
+    assert isinstance(done, AgentDone)
+    assert done.stop_reason == "completed"
 
 
 @pytest.mark.anyio

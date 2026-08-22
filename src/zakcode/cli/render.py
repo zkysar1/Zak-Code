@@ -50,6 +50,7 @@ from zakcode.events import (
     AgentEvent,
     AgentStatus,
     AgentTextDelta,
+    AgentThinkingDelta,
     AgentToolCall,
     AgentToolResult,
     AgentUsage,
@@ -280,6 +281,11 @@ class StreamRenderer:
         self._last_call_id: str | None = None
         self._turn_start = 0.0
         self._assistant_marked = False
+        #: has this turn already announced that the model is reasoning? A reasoning
+        #: model emits hundreds of thinking deltas; the CLI announces the PHASE once
+        #: and then stays quiet, rather than streaming the model's scratchpad into
+        #: the transcript (the web client renders it incrementally in its own region).
+        self._thinking_marked = False
         #: was the last physical line written blank (gaps coalesce through _gap).
         self._at_blank = False
         #: None | "prose" | "code" | "tool_call" | "tool" | "status".
@@ -295,10 +301,13 @@ class StreamRenderer:
         self._at_blank = False
         self._last_block = None
         self._assistant_marked = False
+        self._thinking_marked = False
 
         async for event in events:
             if isinstance(event, AgentTextDelta):
                 self._on_text_delta(event.text)
+            elif isinstance(event, AgentThinkingDelta):
+                self._on_thinking_delta()
             elif isinstance(event, AgentToolCall):
                 self._on_tool_call(event)
             elif isinstance(event, AgentToolResult):
@@ -539,6 +548,33 @@ class StreamRenderer:
                 (self._g["todo_open"] + " ", "todo.open"), (line[4:], "result.output")
             )
         return Text(line, style="result.output")
+
+    def _on_thinking_delta(self) -> None:
+        """Announce the reasoning PHASE once per turn, then stay silent.
+
+        Takes no text on purpose. A reasoning model emits hundreds of thinking
+        deltas over a phase that can run for minutes, and piping that scratchpad
+        into a terminal transcript would bury the answer it precedes — and blur the
+        one line this feature exists to keep sharp, that reasoning is not assistant
+        output. What the CLI user actually needs is the difference between "hung"
+        and "working", which one marker supplies; the web client, which has its own
+        region to put it in, renders the content incrementally.
+        """
+        if self._thinking_marked:
+            return
+        self._thinking_marked = True
+        self._flush_remaining_text()
+        self._gap()
+        self._out(
+            block(
+                self.console,
+                Text("thinking…", style="status"),
+                marker=self._g["dot"],
+                marker_style="status",
+            )
+        )
+        self._last_block = "status"
+        self._assistant_marked = False
 
     def _on_status(self, event: AgentStatus) -> None:
         self._flush_remaining_text()  # buffered prose precedes the notice (see _on_tool_call)
