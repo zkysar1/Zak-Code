@@ -16,6 +16,7 @@ marker — the ragged left edge is structurally impossible.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 
 from rich.box import ROUNDED
@@ -129,6 +130,23 @@ def _frame_width(console: Console) -> int:
     return max(24, min(console.width - 4, 100))
 
 
+_FRAME_OFF = {"0", "false", "off", "no", "hidden"}
+
+
+def input_frame_enabled() -> bool:
+    """Whether :func:`read_prompt` draws its labeled frame (default: yes).
+
+    An embedding cockpit that provides its own input affordance — e.g. a tmux
+    pane feeding this session via ``send-keys`` — sets ``ZAKCODE_INPUT_FRAME=off``
+    so the screen offers exactly ONE labeled place to type (2026-08-22 operator
+    feedback: zakcode's frame plus the cockpit's input box read as two competing
+    message boxes). Only the chrome is suppressed; the read is unchanged, so
+    typed or injected text still echoes on the tty. Any value outside the off
+    set (unset included) keeps the frame.
+    """
+    return os.environ.get("ZAKCODE_INPUT_FRAME", "").strip().lower() not in _FRAME_OFF
+
+
 def read_prompt(console: Console) -> str:
     """Print the turn seam, then read a line inside a visible input frame.
 
@@ -140,7 +158,13 @@ def read_prompt(console: Console) -> str:
     owns it. Raises ``EOFError`` / ``KeyboardInterrupt`` exactly like
     ``console.input``; the bottom border still closes on interrupt (``finally``)
     so the frame never dangles open.
+
+    When :func:`input_frame_enabled` is off, the read happens with no chrome at
+    all — no border, no label, no chevron — after the same turn-seam blank line.
     """
+    if not input_frame_enabled():
+        console.print()
+        return console.input("")
     g = resolve_glyphs(console)
     w = _frame_width(console)
     label = " your message "
