@@ -81,7 +81,19 @@ async def test_unknown_subagent_type_errors(tmp_path: Path) -> None:
     )
     assert result.is_error
     assert "unknown subagent_type" in result.output
+    assert "omit subagent_type for the default" in result.output  # steers the retry
     assert spawner.calls == []  # validation happens before any spawn
+
+
+async def test_default_alias_coerces_to_default_type(tmp_path: Path) -> None:
+    # Models routinely guess "default" (measured: a 27B did, 2026-08-22); on slow local
+    # inference a bounced call costs a full model round-trip, so that one alias is absorbed.
+    spawner = _FakeSpawner(types=["general-purpose", "plan"])
+    result = await TaskTool().execute(
+        {"tasks": [{"subagent_type": "default", "prompt": "go"}]}, _ctx(tmp_path, spawner)
+    )
+    assert not result.is_error
+    assert spawner.calls == [("general-purpose", "go")]
 
 
 async def test_no_spawner_is_graceful_error(tmp_path: Path) -> None:

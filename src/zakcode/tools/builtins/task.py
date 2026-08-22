@@ -95,9 +95,17 @@ class TaskTool(Tool):
                 return ToolResult.error(f"task[{i}]: 'prompt' must be a non-empty string")
             type_name = task.get("subagent_type") or default_type
             if available and type_name not in available:
-                return ToolResult.error(
-                    f"task[{i}]: unknown subagent_type {type_name!r}; available: {available}"
-                )
+                # Models routinely guess "default" (the docstrings call general-purpose "the
+                # default delegate"). On slow local inference a recoverable error costs a full
+                # model round-trip, so absorb that one predictable guess; anything else still
+                # errors — a misspelled real type must not silently get the full toolset.
+                if type_name == "default":
+                    type_name = default_type
+                else:
+                    return ToolResult.error(
+                        f"task[{i}]: unknown subagent_type {type_name!r}; available: "
+                        f"{available} (omit subagent_type for the default: {default_type!r})"
+                    )
             prepared.append((type_name, prompt))
 
         # Run every subtask concurrently. return_exceptions=True so one child's

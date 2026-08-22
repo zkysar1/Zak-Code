@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from zakcode.agent.loop import (
+    _EMPTY_COMPLETION_PLACEHOLDER,
     _MAX_DOOM_RECOVERIES,
     DEFAULT_MAX_ITERATIONS,
     DOOM_LOOP_THRESHOLD,
@@ -216,10 +217,12 @@ async def test_empty_completion_completes_cleanly(tmp_path: Path) -> None:
     assert isinstance(result, TurnResult)
     assert result.stop_reason == "completed"
     assert result.iterations == 1
-    # The assistant message exists but has no blocks; its text is empty.
+    # The assistant message carries a PLACEHOLDER block (contract changed 2026-08-22):
+    # an empty-blocks assistant message poisons the stored history — OpenAI-compat
+    # providers reject the whole transcript on every later call.
     assert len(result.assistant_messages) == 1
-    assert result.assistant_messages[-1].blocks == []
-    assert result.assistant_messages[-1].text == ""
+    assert result.assistant_messages[-1].blocks
+    assert result.assistant_messages[-1].text == _EMPTY_COMPLETION_PLACEHOLDER
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ session) — it adds no new agent behavior and imports no vendor SDK.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -174,6 +175,9 @@ class SubAgentRunner:
         # same discovered skills and draws from the same per-turn skill budget. ``None`` (skills
         # off) leaves a child's use_skill returning a clean "not enabled" error.
         self._skill_resolver = skill_resolver
+        # Monotonic per-spawn sequence for the children's trace_label — children share the
+        # parent's trace_dir, so unlabeled child dumps would overwrite the root turn_N files.
+        self._spawn_seq = itertools.count(1)
 
     def child_registry(self, definition: SubAgentDefinition) -> ToolRegistry:
         """The tool registry a child of ``definition`` will see (full, or a subset)."""
@@ -255,6 +259,7 @@ class SubAgentRunner:
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent
             skill_resolver=self._skill_resolver,  # child use_skill resolves the parent's skills
+            trace_label=f"sub{next(self._spawn_seq)}-{definition.name}",  # no turn_N clobber
             # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
             # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )
