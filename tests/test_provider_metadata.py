@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from zakcode.cli import _PROVIDER_KEY_ENV, _provider_key_status
+from zakcode.providers.base import StreamTextDelta, StreamThinkingDelta
 from zakcode.providers.litellm_provider import LiteLLMProvider
 from zakcode.providers.registry import _lookup_static, get_capabilities
 
@@ -161,15 +162,27 @@ def test_openai_shape_still_normalizes_without_thinking() -> None:
     assert result.usage.total_tokens == 4  # derived from the parts
 
 
-def test_streaming_reasoning_delta_yields_no_text_event() -> None:
-    """A streamed reasoning fragment (``delta.reasoning_content``) must not surface as
-    assistant text; a later real content delta still streams normally."""
+def test_streaming_reasoning_delta_yields_thinking_not_text() -> None:
+    """A streamed reasoning fragment (``delta.reasoning_content``) surfaces as a
+    ``StreamThinkingDelta`` and must never surface as assistant text; a later real
+    content delta still streams normally.
+
+    Until 2026-08-22 the fragment was dropped outright (``events == []``), which made
+    the model's thinking phase a silent multi-minute window. The no-assistant-text
+    invariant is unchanged and is pinned below alongside the new event.
+    """
     events, _fr = LiteLLMProvider._parse_chunk(
         {"choices": [{"delta": {"reasoning_content": "mulling it over"}}]}
     )
-    assert events == []
+    assert len(events) == 1
+    assert isinstance(events[0], StreamThinkingDelta)
+    assert events[0].text == "mulling it over"
+    # The invariant this test has always protected: no assistant text from reasoning.
+    assert not any(isinstance(e, StreamTextDelta) for e in events)
+
     events, _fr = LiteLLMProvider._parse_chunk({"choices": [{"delta": {"content": "4"}}]})
-    assert len(events) == 1 and events[0].text == "4"
+    assert len(events) == 1 and isinstance(events[0], StreamTextDelta)
+    assert events[0].text == "4"
 
 
 # ── cost accounting (audit P0-1e; acceptance 10) ─────────────────────────────

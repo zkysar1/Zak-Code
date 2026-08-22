@@ -35,6 +35,25 @@ class AgentTextDelta(BaseModel):
     text: str
 
 
+class AgentThinkingDelta(BaseModel):
+    """An incremental chunk of model reasoning — NEVER assistant-visible text.
+
+    The client-facing twin of
+    :class:`~zakcode.providers.base.StreamThinkingDelta`. Kept a distinct event
+    from :class:`AgentTextDelta` so a renderer can give reasoning its own region
+    (dim, collapsible, or dropped entirely) and so the loop's text accumulator
+    cannot pick it up: reasoning is the model's scratchpad, not its answer, and
+    concatenating the two would corrupt the transcript.
+
+    Emitted throughout a reasoning model's thinking phase, which can run for
+    minutes. Without it a streaming client shows nothing at all for that whole
+    window (g-326-567).
+    """
+
+    event: Literal["thinking"] = "thinking"
+    text: str
+
+
 class AgentToolCall(BaseModel):
     """The loop is about to execute a (fully-assembled) tool call."""
 
@@ -116,6 +135,7 @@ class AgentDone(BaseModel):
 
 AgentEvent = Annotated[
     AgentTextDelta
+    | AgentThinkingDelta
     | AgentToolCall
     | AgentToolResult
     | AgentStatus
@@ -128,6 +148,7 @@ AgentEvent = Annotated[
 
 __all__ = [
     "AgentTextDelta",
+    "AgentThinkingDelta",
     "AgentToolCall",
     "AgentToolResult",
     "AgentStatus",

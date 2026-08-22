@@ -96,6 +96,7 @@ from zakcode.events import (
     AgentStatus,
     AgentTaskUpdate,
     AgentTextDelta,
+    AgentThinkingDelta,
     AgentToolCall,
     AgentToolResult,
     AgentUsage,
@@ -119,6 +120,7 @@ from zakcode.providers.base import (
     RateLimited,
     StreamDone,
     StreamTextDelta,
+    StreamThinkingDelta,
     StreamToolCallDelta,
     StreamUsage,
     ToolCall,
@@ -2474,6 +2476,25 @@ class AgentLoop:
                             tools=tool_defs or None,
                             **call_kw,
                         ):
+                            if isinstance(ev, StreamThinkingDelta):
+                                # NOT folded into ``text_parts`` — reasoning is the
+                                # model's scratchpad, never its answer, and mixing the
+                                # two would corrupt the transcript. Its own event type
+                                # is what makes that impossible to get wrong.
+                                #
+                                # And deliberately does NOT set ``received_any``.
+                                # That flag means "output the user would see
+                                # DUPLICATED if this attempt were retried", which is
+                                # what gates retry and model-failover below. Reasoning
+                                # is ephemeral and rendered in its own region, so
+                                # re-streaming it after a failover is harmless —
+                                # whereas treating a thinking phase as committed
+                                # output would silently disable failover for exactly
+                                # the long-reasoning models this event exists to
+                                # serve, whose thinking phase runs for minutes before
+                                # any text arrives.
+                                yield AgentThinkingDelta(text=ev.text)
+                                continue
                             received_any = True
                             if isinstance(ev, StreamTextDelta):
                                 text_parts.append(ev.text)

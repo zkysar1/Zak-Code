@@ -120,6 +120,23 @@
       font: 13px/1.5 var(--font-mono); overflow: hidden;
     }
     details.tool.err { border-left: 2px solid var(--err); }
+    /* Reasoning: its own collapsed region, never the assistant prose group. Dim and
+       collapsed by default so a multi-minute scratchpad cannot bury the answer it
+       precedes — visible enough to prove the model is working, quiet enough to ignore. */
+    details.thinking {
+      margin-top: .9rem; background: var(--surface);
+      border: 1px solid var(--line); border-radius: 8px;
+      font: 13px/1.5 var(--font-mono); overflow: hidden; opacity: .75;
+    }
+    .thinking summary {
+      display: flex; align-items: center; gap: .55rem;
+      padding: .5rem .75rem; cursor: pointer; list-style: none; color: var(--muted);
+    }
+    .thinking summary::-webkit-details-marker { display: none; }
+    .thinking .thinking-body {
+      padding: 0 .75rem .6rem; color: var(--muted);
+      white-space: pre-wrap; max-height: 18rem; overflow-y: auto;
+    }
     .tool summary {
       display: flex; align-items: center; gap: .55rem;
       padding: .5rem .75rem; cursor: pointer; list-style: none;
@@ -341,7 +358,7 @@
 
   // The exact AgentEvent discriminator values this renderer handles. Kept in sync
   // with the server's GET /schema/events (the contract test asserts they match).
-  const EVENT_TYPES = ["done", "status", "task_update", "text", "tool_call", "tool_result", "usage"];
+  const EVENT_TYPES = ["done", "status", "task_update", "text", "thinking", "tool_call", "tool_result", "usage"];
 
   // Mirrors the terminal renderer's display names: one short name per known tool.
   const DISPLAY_NAMES = {
@@ -659,6 +676,29 @@
     follow();
   }
 
+  // ── reasoning ("thinking"): accumulates in its OWN collapsed region ──────────
+  // Deliberately NOT routed through onTextDelta: reasoning is the model's scratchpad,
+  // not its answer, and appending it to the prose group would corrupt the transcript
+  // that gets copied, quoted and saved. Separate event type, separate DOM node.
+  let thinkingBody = null;
+  let thinkingText = "";
+  function onThinkingDelta(text) {
+    if (!thinkingBody) {
+      thinkingText = "";
+      const card = el("details", "thinking");
+      card.appendChild(el("summary", "thinking-summary", "thinking…"));
+      thinkingBody = el("div", "thinking-body");
+      card.appendChild(thinkingBody);
+      add(row("assistant", el("span", "adot"), card));
+      // Re-anchor prose: text arriving after this must open a NEW group below the
+      // reasoning card, never continue one that was open above it.
+      assistantBody = null;
+    }
+    thinkingText += text;
+    thinkingBody.textContent = thinkingText;
+    follow();
+  }
+
   // ── tool cards: created pending on tool_call, resolved by id on tool_result ──
   function onToolCall(ev) {
     assistantBody = null;
@@ -795,6 +835,11 @@
     approval.hidden = true;
     abandonPending();
     assistantBody = null;
+    // Close the reasoning region too. The "text" case also clears it, but a turn
+    // that ends without ever emitting text (tool-only, interrupted, error) would
+    // otherwise leave it open and the NEXT turn's thinking would grow the previous
+    // turn's card.
+    thinkingBody = null;
     updateJump();
   }
 
@@ -802,8 +847,16 @@
   function renderEvent(ev) {
     switch (ev.event) {
       case "text":
+        // A real token ends the reasoning phase: close the region so a later
+        // thinking phase (after a tool call) opens a fresh one instead of
+        // re-growing the previous turn's card.
+        thinkingBody = null;
         onTextDelta(ev.text);
         if (toolCards.size === 0) setStatus("writing…");
+        return;
+      case "thinking":
+        onThinkingDelta(ev.text);
+        if (toolCards.size === 0) setStatus("thinking…");
         return;
       case "tool_call":
         onToolCall(ev);
