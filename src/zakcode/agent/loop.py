@@ -248,6 +248,10 @@ _CTX_SENTINEL_RE = re.compile(r"</?\s*injected_context", re.IGNORECASE)
 # future flip to e.g. "Next:" is a one-constant change.) Observations — ``[harness]``/``[hook]``/
 # ``[verified]`` — keep a distinct bracket idiom because they report, they don't direct.
 _RAIL_HINT = "Hint:"  # a suggested/required next action
+
+#: Stored in place of an empty assistant completion (no text, no tool calls) so the
+#: session history stays provider-valid — see :meth:`AgentLoop._assistant_message`.
+_EMPTY_COMPLETION_PLACEHOLDER = "(empty completion — the model produced no visible output)"
 _RAIL_FIX = "Fix:"  # the remedy for an error/blocker
 
 
@@ -494,6 +498,7 @@ class AgentLoop:
         turn_end_veto_budget: int = 0,
         completion_review_attempts: int = 0,
         fire_session_start: bool = True,
+        trace_label: str | None = None,
     ) -> None:
         self.provider = provider
         # Deliberation seam: a Sampler for tools that make their own model calls (deep_think's
@@ -506,6 +511,7 @@ class AgentLoop:
         # makes use_skill return a clean "not enabled" error. The Agent wires it to the session's
         # skill registry and fires ON_SKILL_SELECTED (source="tool") on each load.
         self._skill_resolver = skill_resolver
+        self._trace_label = trace_label
         # Rules seam (Vinheim Lever A chunk 2): the discovered RuleRegistry the read_rule
         # tool reads to return ONE rule body by name. Threaded into every ToolContext;
         # ``None`` (rules disabled) makes read_rule return a clean "not enabled" error.
@@ -624,9 +630,14 @@ class AgentLoop:
         try:
             trace_dir = Path(self.settings.trace_dir)
             trace_dir.mkdir(parents=True, exist_ok=True)
-            (trace_dir / f"turn_{self._turn_count}.jsonl").write_text(
-                self._trace.to_jsonl(), encoding="utf-8"
-            )
+            # Sub-agent loops share the parent's trace_dir but count their own turns from 1,
+            # so unlabeled children would silently OVERWRITE the parent's turn_N.jsonl
+            # (measured 2026-08-22: a 4-child fan-out clobbered the session's turn_1). The
+            # spawner labels each child; the root loop keeps the bare turn_N name.
+            stem = f"turn_{self._turn_count}"
+            if self._trace_label:
+                stem = f"{self._trace_label}_{stem}"
+            (trace_dir / f"{stem}.jsonl").write_text(self._trace.to_jsonl(), encoding="utf-8")
         except OSError:
             pass
 
@@ -1047,14 +1058,20 @@ class AgentLoop:
     def _assistant_message(result: LLMResult) -> Message:
         """Build the assistant message for one completion.
 
-        A completion with neither text nor tool calls yields an assistant message
-        with no blocks (rather than a crash): the turn still ends cleanly.
+        A completion with neither text nor tool calls (e.g. a thinking-only response)
+        yields a placeholder text block rather than an empty-blocks message: OpenAI-compat
+        providers reject any HISTORY message with neither content nor tool_calls, so an
+        empty assistant message poisons the transcript — every later call in the session
+        fails until a restart (measured 2026-08-22 on a local pod, twice). The turn still
+        ends cleanly; the placeholder just keeps the stored history provider-valid.
         """
         blocks: list[ContentBlock] = []
         if result.text:
             blocks.append(TextBlock(text=result.text))
         for call in result.tool_calls:
             blocks.append(ToolUseBlock(id=call.id, name=call.name, input=call.arguments))
+        if not blocks:
+            blocks.append(TextBlock(text=_EMPTY_COMPLETION_PLACEHOLDER))
         return Message(role="assistant", blocks=blocks)
 
     async def _execute_tool_call(
@@ -3110,12 +3127,14 @@ class AgentLoop:
 
         Mirrors :meth:`_assistant_message` (the buffered builder): a leading
         :class:`TextBlock` when any text streamed, then one :class:`ToolUseBlock`
-        per finalized call. A response with neither yields an empty-blocks message
-        (the turn still ends cleanly).
+        per finalized call — including its empty-completion placeholder, so a
+        thinking-only streamed response cannot poison the stored history either.
         """
         blocks: list[ContentBlock] = []
         if text:
             blocks.append(TextBlock(text=text))
         for call in tool_calls:
             blocks.append(ToolUseBlock(id=call.id, name=call.name, input=call.arguments))
+        if not blocks:
+            blocks.append(TextBlock(text=_EMPTY_COMPLETION_PLACEHOLDER))
         return Message(role="assistant", blocks=blocks)
