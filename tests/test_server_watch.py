@@ -171,8 +171,18 @@ async def test_watch_replays_buffered_turn_events_as_safe_events(live_url: str) 
     frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=4)
     assert [f["event"] for f in frames] == ["text", "tool_summary", "tool_summary", "done"]
     assert frames[0] == {"event": "text", "text": CANNED}
-    assert frames[1] == {"event": "tool_summary", "name": "write_file", "status": "running"}
-    assert frames[2] == {"event": "tool_summary", "name": "", "status": "completed"}
+    assert frames[1] == {
+        "event": "tool_summary",
+        "name": "write_file",
+        "status": "running",
+        "used_secrets": [],
+    }
+    assert frames[2] == {
+        "event": "tool_summary",
+        "name": "",
+        "status": "completed",
+        "used_secrets": [],
+    }
     assert frames[3] == {"event": "done", "stop_reason": "completed"}
 
 
