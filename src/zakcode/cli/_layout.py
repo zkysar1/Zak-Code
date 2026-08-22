@@ -124,17 +124,40 @@ def prompt_str(console: Console) -> str:
     return f"  [prompt.marker]{g['prompt']}[/prompt.marker] "
 
 
-def read_prompt(console: Console) -> str:
-    """Print TWO leading blank lines (the turn seam), then read a line of input.
+def _frame_width(console: Console) -> int:
+    """Input-frame width: console width minus the 2-col margin, capped for readability."""
+    return max(24, min(console.width - 4, 100))
 
-    The two-blank seam is the macro beat between turns; the renderer's first gap
-    prints the single blank under the echoed prompt. Raises ``EOFError`` /
-    ``KeyboardInterrupt`` exactly like ``console.input`` — the REPL catches those
-    to exit cleanly.
+
+def read_prompt(console: Console) -> str:
+    """Print the turn seam, then read a line inside a visible input frame.
+
+    The frame draws in three beats around ``console.input`` — top border with a
+    ``your message`` label, a bordered prompt line, and a bottom border printed on
+    Enter — so the reply point is findable on a busy transcript. A bare chevron on
+    a quiet line was routinely missed by humans attaching mid-session (2026-08-22
+    operator feedback). The middle line stays open on the right because the cursor
+    owns it. Raises ``EOFError`` / ``KeyboardInterrupt`` exactly like
+    ``console.input``; the bottom border still closes on interrupt (``finally``)
+    so the frame never dangles open.
     """
+    g = resolve_glyphs(console)
+    w = _frame_width(console)
+    label = " your message "
+    top = Text("  ")
+    top.append(g["corner_tl"] + g["hline"], style="notice.dim")
+    top.append(label, style="banner.label")
+    top.append(g["hline"] * max(1, w - 4 - len(label)) + g["corner_tr"], style="notice.dim")
+    bottom = Text("  ")
+    bottom.append(g["corner_bl"] + g["hline"] * (w - 2) + g["corner_br"], style="notice.dim")
     console.print()
-    console.print()
-    return console.input(prompt_str(console))
+    console.print(top)
+    try:
+        return console.input(
+            f"  [notice.dim]{g['bar']}[/notice.dim] [prompt.marker]{g['prompt']}[/prompt.marker] "
+        )
+    finally:
+        console.print(bottom)
 
 
 def notice_info(console: Console, msg: str) -> None:

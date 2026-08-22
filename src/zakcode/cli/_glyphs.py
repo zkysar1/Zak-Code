@@ -48,6 +48,10 @@ _UNICODE: dict[str, str] = {
     "spin2": "✦",
     "spin3": "✶",
     "spin4": "✧",
+    "corner_tl": "╭",
+    "corner_tr": "╮",
+    "corner_bl": "╰",
+    "corner_br": "╯",
 }
 #: cp1252-safe fallbacks (used when the console cannot encode the unicode set).
 #: ``marker_tool`` falls back to ``o`` (vs the prose marker's ``*``) so a
@@ -78,6 +82,10 @@ _ASCII: dict[str, str] = {
     "spin2": "\\",
     "spin3": "|",
     "spin4": "/",
+    "corner_tl": "+",
+    "corner_tr": "+",
+    "corner_bl": "+",
+    "corner_br": "+",
 }
 
 #: Every distinct non-ASCII glyph we might print — the encode probe target.
