@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from zakcode.tools.base import ToolRegistry
+from zakcode.tools.builtins._secrets import SecretsProvider
 from zakcode.tools.builtins.bash import BashTool
 from zakcode.tools.builtins.deep_think import DeepThinkTool
 from zakcode.tools.builtins.edit import EditFileTool
@@ -16,6 +17,7 @@ from zakcode.tools.builtins.office import CreateDocxTool, CreateXlsxTool, ReadDo
 from zakcode.tools.builtins.pdf import CreatePdfTool, ReadPdfTool
 from zakcode.tools.builtins.powershell import PowerShellTool
 from zakcode.tools.builtins.read_file import ReadFileTool
+from zakcode.tools.builtins.secret_names import SecretNamesTool
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.tools.builtins.web_fetch import WebFetchTool
 from zakcode.tools.builtins.web_search import WebSearchTool
@@ -62,7 +64,17 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(PowerShellTool(), aliases=["pwsh"])
     registry.register(WebSearchTool(make_search_backend(settings)), aliases=["websearch"])
     web_allowlist = settings.web_allowed_domains if settings else None
-    registry.register(WebFetchTool(allowed_domains=web_allowlist), aliases=["fetch", "webfetch"])
+    # One provider instance shared by every secrets-aware tool, so web_fetch's
+    # substitution and secret_names' listing can never disagree about the source.
+    secrets = SecretsProvider(
+        settings.secrets_file if settings else None,
+        usage_path=settings.secrets_usage_file if settings else None,
+    )
+    registry.register(
+        WebFetchTool(allowed_domains=web_allowlist, secrets=secrets),
+        aliases=["fetch", "webfetch"],
+    )
+    registry.register(SecretNamesTool(secrets), aliases=["secrets", "list_secrets"])
     # Opt-in deliberation: only WORKS when a Sampler is wired (the main Agent loop); a bare or
     # delegated loop exposes it but it returns a clean "unavailable" error.
     registry.register(DeepThinkTool(), aliases=["deliberate"])

@@ -213,6 +213,8 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 | `web_fetch_confirm` | `ZAKCODE_WEB_FETCH_CONFIRM` | `false` | Escalate every `web_fetch` to a confirmation prompt (denied outright in `deny`/`autonomous`). |
 | `egress_proxy` | `ZAKCODE_EGRESS_PROXY` | `false` | Route bash/powershell egress through a localhost domain-allowlisting proxy. |
 | `egress_allowed_domains` | `ZAKCODE_EGRESS_ALLOWED_DOMAINS` | `[]` | Domains the egress proxy permits; empty + proxy on = deny all subprocess egress. |
+| `secrets_file` | `ZAKCODE_SECRETS_FILE` | unset | JSON `name -> value` file backing `{{secret:NAME}}` substitution in `web_fetch` (see GUARDRAILS §6, "Named secrets"). Unset = feature off. |
+| `secrets_usage_file` | `ZAKCODE_SECRETS_USAGE_FILE` | unset | JSONL file where names-only secret-usage events are appended (for "last used" surfacing by an orchestrator). |
 
 ## Settings ingestion (Claude Code `.claude/settings.json`)
 
