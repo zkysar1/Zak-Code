@@ -847,3 +847,130 @@ def test_chat_resume_ambiguous_prefix_is_refused(tmp_path, monkeypatch) -> None:
     result = runner.invoke(app, ["chat"], input="/resume aaaa\n/exit\n")
     assert result.exit_code == 0
     assert "ambiguous session prefix" in result.stdout
+
+
+# ── /resume replays the transcript (2026-08-24: "resumed" over a blank screen) ──
+
+
+def test_chat_resume_replays_transcript(tmp_path, monkeypatch) -> None:
+    from zakcode.messages import Message
+
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    store = _seed_session_store(tmp_path, monkeypatch)
+    sess = Session(id="cafe0001", cwd=".", model="test-model")
+    sess.add_message(Message.user("what is our draft strategy?"))
+    sess.add_message(Message.assistant_text("Zero-RB: load WR early, backs in rounds 5+."))
+    store.save(sess)
+
+    # FakeAgent ignores the loaded session, so patch the builder's product post-hoc:
+    # the REPL reads agent.session for the replay — hand it the stored one.
+    import zakcode.cli as cli_mod
+
+    real_builder = cli_mod._build_chat_agent
+
+    def builder(*args, **kwargs):
+        agent = real_builder(*args, **kwargs)
+        if kwargs.get("session_id"):
+            agent.session = store.load(kwargs["session_id"])
+        return agent
+
+    monkeypatch.setattr(cli_mod, "_build_chat_agent", builder)
+    result = runner.invoke(app, ["chat"], input="/resume cafe\n/exit\n")
+    assert result.exit_code == 0
+    assert "resumed session cafe0001" in result.stdout
+    # The old conversation is VISIBLE, both sides, plus the replay bookends.
+    assert "what is our draft strategy?" in result.stdout
+    assert "Zero-RB: load WR early" in result.stdout
+    assert "replaying" in result.stdout
+    assert "end of replay" in result.stdout
+
+
+def test_render_transcript_elides_and_counts_tools() -> None:
+    from zakcode.cli import _render_transcript
+    from zakcode.messages import Message, TextBlock, ToolUseBlock
+
+    def _rec_console() -> Console:
+        return Console(record=True, width=100, force_terminal=True, legacy_windows=False)
+
+    console = _rec_console()
+    sess = Session(id="feed0002", cwd=".", model="test-model")
+    for i in range(15):
+        sess.add_message(Message.user(f"question {i}"))
+        sess.add_message(Message.assistant_text(f"answer {i}"))
+    tool_msg = Message(
+        role="assistant",
+        blocks=[
+            TextBlock(text="running a check"),
+            ToolUseBlock(id="t1", name="run", input={}),
+            ToolUseBlock(id="t2", name="read", input={}),
+        ],
+    )
+    sess.add_message(tool_msg)
+    _render_transcript(console, sess, limit=5)
+    out = console.export_text()
+    assert "replaying the last 5 of 31 messages" in out
+    assert "question 0" not in out  # elided
+    assert "ran 2 tool calls" in out
+    long = Session(id="feed0003", cwd=".", model="test-model")
+    long.add_message(Message.assistant_text("x" * 3000))
+    console2 = _rec_console()
+    _render_transcript(console2, long)
+    assert "(+1000 chars)" in console2.export_text()
+
+
+# ── zakcode update: self-update from the recorded install source ──
+
+
+def test_update_refuses_non_vcs_install(monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "build_url", lambda: None)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 1
+    assert "not a VCS install" in result.stdout
+
+
+def test_update_runs_pip_with_force_reinstall(monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "build_url", lambda: "https://example.com/repo.git")
+    calls = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = "0.0.1 (git abcdef123456)\n"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0
+    pip_cmd = calls[0]
+    assert "--force-reinstall" in pip_cmd and "--no-deps" in pip_cmd
+    assert "zakcode @ git+https://example.com/repo.git@main" in pip_cmd
+    assert "updated" in result.stdout
+    assert "abcdef123456" in result.stdout
+
+
+def test_update_accepts_a_ref(monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "build_url", lambda: "https://example.com/repo.git")
+    calls = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    result = runner.invoke(app, ["update", "v2"])
+    assert result.exit_code == 0
+    assert any("@v2" in str(part) for part in calls[0])

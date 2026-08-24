@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 
-__all__ = ["build_commit", "build_source", "version_line"]
+__all__ = ["build_commit", "build_source", "build_url", "version_line"]
 
 
 @lru_cache(maxsize=1)
@@ -50,6 +50,18 @@ def build_commit(short: bool = True) -> str | None:
         return None
     commit = commit.strip()
     return commit[:12] if short else commit
+
+
+def build_url() -> str | None:
+    """The VCS URL this build was installed from, or ``None`` for a non-VCS install.
+
+    This is what lets ``zakcode update`` self-locate its source: PEP 610 records the
+    exact URL pip installed from, so the update needs no configuration.
+    """
+    if not isinstance(_direct_url().get("vcs_info"), dict):
+        return None
+    url = _direct_url().get("url")
+    return url if isinstance(url, str) and url.strip() else None
 
 
 def build_source() -> str | None:
