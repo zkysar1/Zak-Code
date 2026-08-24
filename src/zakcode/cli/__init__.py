@@ -305,6 +305,7 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("/cost", "session token usage and cost"),
             ("/compact", "summarize older history to free context"),
             ("/clear", "start a fresh session"),
+            ("/resume [id]", "list saved sessions, or resume one"),
             ("/exit /quit", "leave the chat"),
         ),
     ),
@@ -362,6 +363,23 @@ def _print_help(console: Console) -> None:
 def _dim(console: Console, msg: str) -> None:
     """One dim line in the shared document margin (the slash-command notice style)."""
     console.print(margin(Text(msg, style="notice.dim")))
+
+
+#: Seconds within which a second Ctrl-C at the input prompt exits the REPL.
+#: One press never exits (it clears the moment and hints); see the prompt loops.
+_CTRL_C_EXIT_WINDOW_S = 2.0
+
+
+def _age_str(seconds: float) -> str:
+    """Compact human age for the ``/resume`` picker: ``12s`` / ``3m`` / ``5h`` / ``2d`` ago."""
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"{int(seconds)}s ago"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
 
 
 def _abbrev(value: object, *, limit: int = 80) -> str:
@@ -1523,12 +1541,27 @@ def chat(
     # 1 once the one-time nudge has fired]. See _maybe_zakpick_advisory.
     zakpick_advisory = [0, 0]
 
+    last_interrupt = 0.0
     while True:
         try:
             line = read_prompt(console)
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
             break
+        except KeyboardInterrupt:
+            # A single Ctrl-C at the prompt must NOT kill the session — terminal
+            # muscle memory sends it constantly (aborting a copy, clearing a
+            # half-typed line), and a live transcript is too expensive to lose to
+            # one keystroke (2026-08-24 operator report: Ctrl-C-to-copy exited a
+            # mid-ceremony session). Double-press within the window exits, the
+            # Claude Code convention.
+            now = time.monotonic()
+            if now - last_interrupt <= _CTRL_C_EXIT_WINDOW_S:
+                notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
+                break
+            last_interrupt = now
+            _dim(console, "press ctrl-c again to exit")
+            continue
 
         stripped = line.strip()
         if not stripped:
@@ -1585,6 +1618,66 @@ def chat(
                 # latch), so it never leaks across the documented session boundary.
                 zakpick_advisory[:] = [0, 0]
                 notice_info(console, "started a fresh session")
+                continue
+            if command == "/resume":
+                # In-REPL twin of the `-s/--session` startup flag (2026-08-24 operator
+                # report: the flag existed but the slash command fell through to "not
+                # yet supported"). Bare `/resume` lists newest-first; `/resume <id>`
+                # swaps the live agent for one rebuilt on the stored transcript —
+                # the same rebuild shape as /clear, same store the flag uses.
+                from zakcode.session.store import SessionError, SessionStore
+
+                store = SessionStore()
+                arg = stripped[len(command) :].strip()
+                rows = store.list_recent()
+                if not arg:
+                    if not rows:
+                        _dim(console, "no saved sessions yet.")
+                        continue
+                    current_id = getattr(getattr(agent, "session", None), "id", None)
+                    for sid, mtime in rows[:10]:
+                        marker = "  (current)" if sid == current_id else ""
+                        console.print(
+                            margin(
+                                Text.assemble(
+                                    (sid, "arg.value"),
+                                    (f"  {_age_str(time.time() - mtime)}{marker}", "notice.dim"),
+                                )
+                            )
+                        )
+                    _dim(console, "resume one with /resume <id> — a unique prefix works.")
+                    continue
+                matches = [sid for sid, _ in rows if sid == arg] or [
+                    sid for sid, _ in rows if sid.startswith(arg)
+                ]
+                if not matches:
+                    notice_error(console, f"no saved session matches {arg!r}", "")
+                    continue
+                if len(matches) > 1:
+                    notice_error(
+                        console,
+                        f"ambiguous session prefix {arg!r}",
+                        f"{len(matches)} sessions match — give more characters.",
+                    )
+                    continue
+                sid = matches[0]
+                try:
+                    agent = _build_chat_agent(
+                        prompter,
+                        overrides,
+                        enable_rules=not no_rules,
+                        extra_skill_dirs=extra_skill_dirs,
+                        extra_workspace_roots=extra_roots,
+                        session_id=sid,
+                    )
+                except SessionError as exc:
+                    notice_error(console, f"could not resume session {sid!r}", str(exc))
+                    continue
+                zakpick_advisory[:] = [0, 0]
+                notice_info(
+                    console,
+                    f"resumed session {sid} ({len(agent.session.messages)} messages)",
+                )
                 continue
             if command == "/cost":
                 usage = agent.session.cumulative_usage()
@@ -1744,12 +1837,23 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
     _SESSION_LOOP = loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    last_interrupt = 0.0
     while True:
         try:
             line = read_prompt(console)
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             notice_info(console, f"session closed {g['dash']} goodbye")
             break
+        except KeyboardInterrupt:
+            # Same double-press exit convention as the local REPL — one Ctrl-C
+            # never kills the session (see the local loop's rationale).
+            now = time.monotonic()
+            if now - last_interrupt <= _CTRL_C_EXIT_WINDOW_S:
+                notice_info(console, f"session closed {g['dash']} goodbye")
+                break
+            last_interrupt = now
+            _dim(console, "press ctrl-c again to exit")
+            continue
         stripped = line.strip()
         if not stripped:
             continue
