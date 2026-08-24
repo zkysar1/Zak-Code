@@ -31,6 +31,7 @@ Robustness policy (corruption + version drift)
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import json
 import ntpath
@@ -307,6 +308,27 @@ class SessionStore:
                 continue
             ids.append(p.stem)
         return sorted(ids)
+
+    # NB: annotated via ``builtins.list`` — in class scope the sibling ``list``
+    # method above shadows the builtin, and mypy rejects a method as a type.
+    def list_recent(self) -> builtins.list[tuple[str, float]]:
+        """Return ``(id, mtime)`` for every persisted session, newest first.
+
+        The mtime ordering is what an interactive ``/resume`` picker wants —
+        :meth:`list` keeps its stable id-sorted contract for programmatic
+        callers. Same junk-tolerance as :meth:`list`; an entry whose stat fails
+        mid-listing is skipped rather than crashing the picker.
+        """
+        rows: list[tuple[str, float]] = []
+        for p in self.base_dir.glob("*.json"):
+            if p.name.endswith(_TMP_SUFFIX) or not p.is_file():
+                continue
+            try:
+                rows.append((p.stem, p.stat().st_mtime))
+            except OSError:
+                continue
+        rows.sort(key=lambda r: r[1], reverse=True)
+        return rows
 
     def resume(self, session_id: str) -> Session:
         """Load a previously saved session so work can continue."""

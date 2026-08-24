@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import io
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -740,3 +741,109 @@ def test_wait_handle_verb_tracks_outstanding_tools() -> None:
     assert handle.line.verb == "Running"  # one call still outstanding
     handle.observe(AgentToolResult(tool_use_id="t2", output="", is_error=False))
     assert handle.line.verb != "Running"  # all results in: back to a gerund
+
+
+# ── Ctrl-C at the prompt: double-press to exit (issue: one press killed the session) ──
+
+
+def _scripted_prompt(monkeypatch, script):
+    """Replace read_prompt with a scripted sequence; an exception INSTANCE raises."""
+    seq = iter(script)
+
+    def fake_read_prompt(console):
+        item = next(seq)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    monkeypatch.setattr("zakcode.cli.read_prompt", fake_read_prompt)
+
+
+def test_chat_single_ctrl_c_does_not_exit(monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    _scripted_prompt(monkeypatch, [KeyboardInterrupt(), "/exit"])
+    result = runner.invoke(app, ["chat"])
+    assert result.exit_code == 0
+    assert "press ctrl-c again to exit" in result.stdout
+    # The session survived the single interrupt and closed via /exit.
+    assert "goodbye" in result.stdout
+
+
+def test_chat_double_ctrl_c_exits(monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    _scripted_prompt(monkeypatch, [KeyboardInterrupt(), KeyboardInterrupt()])
+    result = runner.invoke(app, ["chat"])
+    assert result.exit_code == 0
+    assert "press ctrl-c again to exit" in result.stdout
+    assert "goodbye" in result.stdout
+
+
+def test_chat_slow_second_ctrl_c_still_does_not_exit(monkeypatch) -> None:
+    # Two interrupts OUTSIDE the window are two singles — the session survives both.
+    # A negative window makes every interrupt "slow" without patching time.monotonic
+    # (which asyncio shares).
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    monkeypatch.setattr("zakcode.cli._CTRL_C_EXIT_WINDOW_S", -1.0)
+    _scripted_prompt(monkeypatch, [KeyboardInterrupt(), KeyboardInterrupt(), "/exit"])
+    result = runner.invoke(app, ["chat"])
+    assert result.exit_code == 0
+    assert result.stdout.count("press ctrl-c again to exit") == 2
+
+
+# ── /resume: in-REPL twin of the -s/--session flag ──
+
+
+def _seed_session_store(tmp_path, monkeypatch, *ids):
+    """Point the default SessionStore at tmp and persist one session per id."""
+    from zakcode.session.store import SessionStore
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    store = SessionStore()
+    for sid in ids:
+        store.save(Session(id=sid, cwd=".", model="test-model"))
+    return store
+
+
+def test_chat_resume_lists_saved_sessions(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    _seed_session_store(tmp_path, monkeypatch, "aaaa1111", "bbbb2222")
+    result = runner.invoke(app, ["chat"], input="/resume\n/exit\n")
+    assert result.exit_code == 0
+    assert "aaaa1111" in result.stdout
+    assert "bbbb2222" in result.stdout
+    assert "a unique prefix works" in result.stdout
+
+
+def test_chat_resume_empty_store_is_friendly(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    _seed_session_store(tmp_path, monkeypatch)
+    result = runner.invoke(app, ["chat"], input="/resume\n/exit\n")
+    assert result.exit_code == 0
+    assert "no saved sessions yet" in result.stdout
+
+
+def test_chat_resume_by_unique_prefix(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    _seed_session_store(tmp_path, monkeypatch, "aaaa1111", "bbbb2222")
+    result = runner.invoke(app, ["chat"], input="/resume aaaa\n/exit\n")
+    assert result.exit_code == 0
+    assert "resumed session aaaa1111" in result.stdout
+
+
+def test_chat_resume_unknown_id_keeps_session(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    _seed_session_store(tmp_path, monkeypatch, "aaaa1111")
+    result = runner.invoke(app, ["chat"], input="/resume zzzz\nhello\n/exit\n")
+    assert result.exit_code == 0
+    assert "no saved session matches" in result.stdout
+    # The live session survived the failed resume and still ran a turn.
+    assert CANNED_TEXT in result.stdout
+
+
+def test_chat_resume_ambiguous_prefix_is_refused(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    _seed_session_store(tmp_path, monkeypatch, "aaaa1111", "aaaa2222")
+    result = runner.invoke(app, ["chat"], input="/resume aaaa\n/exit\n")
+    assert result.exit_code == 0
+    assert "ambiguous session prefix" in result.stdout
