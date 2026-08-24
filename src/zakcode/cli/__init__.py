@@ -16,6 +16,7 @@ import json
 import os
 import random
 import signal
+import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine
@@ -32,7 +33,7 @@ from rich.table import Table
 from rich.text import Text
 
 from zakcode import __version__
-from zakcode.build_info import version_line
+from zakcode.build_info import build_url, version_line
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
     heading,
@@ -209,6 +210,75 @@ def version() -> None:
 
 
 @app.command()
+def update(
+    ref: str = typer.Argument("main", help="Git ref (branch, tag, or commit) to install."),
+) -> None:
+    """Update Zak Code in place from the git source it was installed from.
+
+    Owns the exact pip incantation a VCS install needs — ``--force-reinstall
+    --no-deps`` — because the version string rarely changes between commits, so a
+    plain ``pip install --upgrade`` compares versions, sees them equal, and silently
+    keeps the old build (measured 2026-08-21). The source URL comes from the
+    install's own PEP 610 metadata, so nothing needs configuring. Prints old → new
+    build identity; running chat sessions keep the old code until restarted.
+    """
+    url = build_url()
+    if url is None:
+        notice_error(
+            console,
+            "not a VCS install — cannot self-update",
+            "This build was not installed from git, so there is no recorded source URL.\n"
+            "Reinstall from your original source, e.g.:\n"
+            '  pip install --force-reinstall --no-deps "zakcode @ git+https://github.com/<owner>/Zak-Code.git"',
+        )
+        raise typer.Exit(code=1)
+    old = version_line(__version__)
+    _dim(console, f"updating from {url} @ {ref} …")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-deps",
+            f"zakcode @ git+{url}@{ref}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        notice_error(console, "pip install failed", (proc.stderr or proc.stdout).strip()[-2000:])
+        raise typer.Exit(code=proc.returncode)
+    # Fresh process: this one's importlib metadata is cached pre-update.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from zakcode import __version__ as v;"
+            "from zakcode.build_info import version_line;"
+            "print(version_line(v))",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    new = probe.stdout.strip() if probe.returncode == 0 and probe.stdout.strip() else "(unreadable)"
+    console.print(
+        margin(
+            Text.assemble(
+                ("updated  ", ""),
+                (old, "notice.dim"),
+                ("  →  ", "notice.dim"),
+                (new, "arg.value"),
+            )
+        )
+    )
+    if new == old != "(unreadable)":
+        _dim(console, "same commit — you were already current")
+    _dim(console, "running chat sessions keep the old build until restarted")
+
+
+@app.command()
 def info() -> None:
     """Show resolved configuration and detected providers (never prints secrets)."""
     settings = load_settings()
@@ -380,6 +450,60 @@ def _age_str(seconds: float) -> str:
     if seconds < 86400:
         return f"{int(seconds // 3600)}h ago"
     return f"{int(seconds // 86400)}d ago"
+
+
+#: Replay caps for a resumed transcript: last N visible messages, chars per message.
+_REPLAY_MESSAGE_LIMIT = 12
+_REPLAY_CHAR_LIMIT = 2000
+
+
+def _render_transcript(
+    console: Console, session: object, *, limit: int = _REPLAY_MESSAGE_LIMIT
+) -> None:
+    """Replay the visible tail of a resumed session so the human sees where they were.
+
+    The model gets the FULL history from the session document; this paints the human's
+    copy — user lines in the prompt style, assistant text plain, tool activity as one dim
+    count per message. Without it a resume prints ``resumed (N messages)`` over a blank
+    screen: the model remembers a conversation the operator cannot see (2026-08-24
+    operator report, first field use of ``/resume``). Long messages are elided at
+    ``_REPLAY_CHAR_LIMIT`` — the replay is orientation, not an archive dump.
+    """
+    g = resolve_glyphs(console)
+    rows: list[tuple[str, str, int]] = []
+    for msg in getattr(session, "messages", []):
+        if msg.role not in ("user", "assistant"):
+            continue
+        tool_count = len(msg.tool_uses) if msg.role == "assistant" else 0
+        text = msg.text.strip()
+        if text or tool_count:
+            rows.append((msg.role, text, tool_count))
+    if not rows:
+        return
+    shown = rows[-limit:]
+    console.print()
+    elided = len(rows) - len(shown)
+    if elided:
+        _dim(console, f"{g['dash']} replaying the last {len(shown)} of {len(rows)} messages")
+    else:
+        _dim(console, f"{g['dash']} replaying {len(shown)} message{'s' if len(shown) != 1 else ''}")
+    for role, text, tool_count in shown:
+        console.print()
+        if len(text) > _REPLAY_CHAR_LIMIT:
+            elided_chars = len(text) - _REPLAY_CHAR_LIMIT
+            text = text[:_REPLAY_CHAR_LIMIT].rstrip() + f" … (+{elided_chars} chars)"
+        if role == "user":
+            console.print(
+                margin(Text.assemble((g["prompt"] + " ", "prompt.marker"), (text, "notice.dim")))
+            )
+        else:
+            if text:
+                console.print(margin(Text(text)))
+            if tool_count:
+                plural = "s" if tool_count != 1 else ""
+                _dim(console, f"{g['dot']} ran {tool_count} tool call{plural}")
+    console.print()
+    _dim(console, f"{g['dash']} end of replay — the conversation continues from here")
 
 
 def _abbrev(value: object, *, limit: int = 80) -> str:
@@ -1507,6 +1631,10 @@ def chat(
         raise typer.Exit(code=1) from exc
     if prompt is None:
         _print_banner(console, agent)
+        if session is not None:
+            # `-s <id>` resumes: replay the tail so the human sees where they were,
+            # exactly as the in-REPL /resume does.
+            _render_transcript(console, agent.session)
 
     # One event loop for the whole session (never one per turn) — see
     # _SESSION_LOOP / _shutdown_session_loop.
@@ -1678,6 +1806,7 @@ def chat(
                     console,
                     f"resumed session {sid} ({len(agent.session.messages)} messages)",
                 )
+                _render_transcript(console, agent.session)
                 continue
             if command == "/cost":
                 usage = agent.session.cumulative_usage()
