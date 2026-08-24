@@ -31,6 +31,7 @@ Robustness policy (corruption + version drift)
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import json
 import ntpath
@@ -308,7 +309,9 @@ class SessionStore:
             ids.append(p.stem)
         return sorted(ids)
 
-    def list_recent(self) -> list[tuple[str, float]]:
+    # NB: annotated via ``builtins.list`` — in class scope the sibling ``list``
+    # method above shadows the builtin, and mypy rejects a method as a type.
+    def list_recent(self) -> builtins.list[tuple[str, float]]:
         """Return ``(id, mtime)`` for every persisted session, newest first.
 
         The mtime ordering is what an interactive ``/resume`` picker wants —
