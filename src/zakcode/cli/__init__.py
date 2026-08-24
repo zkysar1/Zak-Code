@@ -15,6 +15,7 @@ import ipaddress
 import json
 import os
 import random
+import shutil
 import signal
 import subprocess
 import sys
@@ -33,7 +34,7 @@ from rich.table import Table
 from rich.text import Text
 
 from zakcode import __version__
-from zakcode.build_info import build_url, version_line
+from zakcode.build_info import build_dir, build_url, version_line
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
     heading,
@@ -209,46 +210,153 @@ def version() -> None:
     typer.echo(f"zakcode {version_line(__version__)}")
 
 
-@app.command()
-def update(
-    ref: str = typer.Argument("main", help="Git ref (branch, tag, or commit) to install."),
-) -> None:
-    """Update Zak Code in place from the git source it was installed from.
+#: Files a `uv tool install` from a local checkout rewrites in that checkout; safe to
+#: auto-revert before a pull because the install regenerates them anyway.
+_INSTALL_CHURN_FILES = frozenset({"pyproject.toml", "uv.lock"})
 
-    Owns the exact pip incantation a VCS install needs — ``--force-reinstall
-    --no-deps`` — because the version string rarely changes between commits, so a
-    plain ``pip install --upgrade`` compares versions, sees them equal, and silently
-    keeps the old build (measured 2026-08-21). The source URL comes from the
-    install's own PEP 610 metadata, so nothing needs configuring. Prints old → new
-    build identity; running chat sessions keep the old code until restarted.
+
+def _refresh_checkout(directory: str) -> None:
+    """``git pull --ff-only`` the checkout a local-path install came from.
+
+    Reverts ONLY the known install-churn files when they are the whole dirty set
+    (the exact manual step operators were performing); any other local change makes
+    this refuse rather than risk someone's work. Exits loudly on a non-repo or a
+    failed pull.
     """
-    url = build_url()
-    if url is None:
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", "-C", directory, *args], capture_output=True, text=True)
+
+    head = git("rev-parse", "--short", "HEAD")
+    if head.returncode != 0:
         notice_error(
             console,
-            "not a VCS install — cannot self-update",
-            "This build was not installed from git, so there is no recorded source URL.\n"
-            "Reinstall from your original source, e.g.:\n"
+            f"{directory} is not a git checkout",
+            "Update it by hand (or reinstall from a git URL), then rerun zakcode update.",
+        )
+        raise typer.Exit(code=1)
+    old_sha = head.stdout.strip()
+    status = git("status", "--porcelain")
+    dirty = sorted({line[3:].strip() for line in status.stdout.splitlines() if line.strip()})
+    if dirty and set(dirty) <= _INSTALL_CHURN_FILES:
+        git("checkout", "--", *dirty)
+        _dim(console, f"reverted install churn in {', '.join(dirty)}")
+    elif dirty:
+        notice_error(
+            console,
+            "checkout has local changes — not touching it",
+            "\n".join(dirty[:10]) + "\nCommit, stash, or revert them, then rerun zakcode update.",
+        )
+        raise typer.Exit(code=1)
+    pull = git("pull", "--ff-only")
+    if pull.returncode != 0:
+        notice_error(console, "git pull failed", (pull.stderr or pull.stdout).strip()[-2000:])
+        raise typer.Exit(code=pull.returncode)
+    new_sha = git("rev-parse", "--short", "HEAD").stdout.strip()
+    if new_sha == old_sha:
+        _dim(console, f"checkout already at {old_sha}")
+    else:
+        _dim(console, f"checkout {old_sha} {GLYPHS['dash']} pulled {GLYPHS['dash']} {new_sha}")
+
+
+def _uv_tool_spec(source: str) -> str:
+    """``zakcode[extras] @ source``, extras recovered from uv's install receipt.
+
+    The receipt (``uv-receipt.toml`` at the tool env root) records the requirement
+    as originally requested — dropping its extras on update would silently uninstall
+    a provider (e.g. ``[google]`` = the vertex deps). Unreadable receipt ⇒ no extras:
+    the update still lands, worst case a provider needs one manual reinstall.
+    """
+    extras: list[str] = []
+    try:
+        import tomllib
+
+        data = tomllib.loads((Path(sys.prefix) / "uv-receipt.toml").read_text(encoding="utf-8"))
+        reqs = data.get("tool", {}).get("requirements", [])
+        for req in reqs:
+            if isinstance(req, dict) and req.get("name") == "zakcode":
+                got = req.get("extras")
+                if isinstance(got, list):
+                    extras = [e for e in got if isinstance(e, str)]
+    except Exception:  # noqa: BLE001 - extras are a nicety, never block the update
+        pass
+    name = "zakcode" + (f"[{','.join(extras)}]" if extras else "")
+    return f"{name} @ {source}"
+
+
+def _reinstall_command(source: str) -> list[str]:
+    """The reinstall invocation for this environment: uv when uv owns it, else pip.
+
+    A uv tool environment has NO pip module, so ``sys.executable -m pip`` fails
+    there; the ``uv-receipt.toml`` at the env root is the discriminator.
+    """
+    if (Path(sys.prefix) / "uv-receipt.toml").is_file():
+        uv = shutil.which("uv")
+        if uv is None:
+            notice_error(
+                console,
+                "this install is uv-managed but no uv on PATH",
+                "Install uv (or run its reinstall by hand), then rerun zakcode update.",
+            )
+            raise typer.Exit(code=1)
+        return [uv, "tool", "install", "--force", "--reinstall", _uv_tool_spec(source)]
+    return [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--force-reinstall",
+        "--no-deps",
+        f"zakcode @ {source}",
+    ]
+
+
+@app.command()
+def update(
+    ref: str = typer.Argument("main", help="Git ref to install (VCS-URL installs only)."),
+) -> None:
+    """Update Zak Code in place, whichever way it was installed.
+
+    Both supported shapes come from the install's own PEP 610 metadata, so nothing
+    needs configuring:
+
+    - **git-URL install** (``pip/uv install 'zakcode @ git+https://…'``): reinstall
+      from that URL at ``REF``.
+    - **local-checkout install** (``uv tool install 'zakcode[…] @ file:///path'``):
+      ``git pull`` the checkout first — auto-reverting the ``pyproject.toml`` /
+      ``uv.lock`` churn a prior install left behind — then force-reinstall from it.
+
+    Owns the traps: a plain ``pip install --upgrade`` silently keeps the old build
+    when the version string is unchanged (measured 2026-08-21), and a uv tool
+    environment carries no pip, so the reinstall leg goes through ``uv tool install
+    --force --reinstall`` whenever uv owns this install (extras recovered from uv's
+    receipt). Prints old → new build identity; running chat sessions keep the old
+    code until restarted.
+    """
+    old = version_line(__version__)
+    url = build_url()
+    directory = build_dir()
+    if url is not None:
+        source = f"git+{url}@{ref}"
+        _dim(console, f"updating from {url} @ {ref} …")
+    elif directory is not None:
+        if ref != "main":
+            _dim(console, "ref ignored — a local-checkout install pulls its tracked branch")
+        _refresh_checkout(directory)
+        source = Path(directory).as_uri()
+        _dim(console, f"reinstalling from {directory} …")
+    else:
+        notice_error(
+            console,
+            "cannot self-update — no recorded install source",
+            "This build was installed from neither a git URL nor a local checkout,\n"
+            "so there is nothing to pull from. Reinstall from your original source, e.g.:\n"
             '  pip install --force-reinstall --no-deps "zakcode @ git+https://github.com/<owner>/Zak-Code.git"',
         )
         raise typer.Exit(code=1)
-    old = version_line(__version__)
-    _dim(console, f"updating from {url} @ {ref} …")
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--force-reinstall",
-            "--no-deps",
-            f"zakcode @ git+{url}@{ref}",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    proc = subprocess.run(_reinstall_command(source), capture_output=True, text=True)
     if proc.returncode != 0:
-        notice_error(console, "pip install failed", (proc.stderr or proc.stdout).strip()[-2000:])
+        notice_error(console, "reinstall failed", (proc.stderr or proc.stdout).strip()[-2000:])
         raise typer.Exit(code=proc.returncode)
     # Fresh process: this one's importlib metadata is cached pre-update.
     probe = subprocess.run(

@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 
-__all__ = ["build_commit", "build_source", "build_url", "version_line"]
+__all__ = ["build_commit", "build_dir", "build_source", "build_url", "version_line"]
 
 
 @lru_cache(maxsize=1)
@@ -62,6 +62,26 @@ def build_url() -> str | None:
         return None
     url = _direct_url().get("url")
     return url if isinstance(url, str) and url.strip() else None
+
+
+def build_dir() -> str | None:
+    """The local directory this build was installed from, or ``None`` (not a path install).
+
+    A ``file://`` URL plus ``dir_info`` is what pip/uv record for an install from a
+    local checkout (``uv tool install 'zakcode @ file:///path/to/clone'``) — the shape
+    ``zakcode update`` refreshes with a git pull before reinstalling.
+    """
+    info = _direct_url()
+    if not isinstance(info.get("dir_info"), dict):
+        return None
+    url = info.get("url")
+    if not isinstance(url, str) or not url.startswith("file://"):
+        return None
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    path = url2pathname(urlparse(url).path)
+    return path if path.strip() else None
 
 
 def build_source() -> str | None:

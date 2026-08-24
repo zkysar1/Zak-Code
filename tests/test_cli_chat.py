@@ -925,9 +925,10 @@ def test_update_refuses_non_vcs_install(monkeypatch) -> None:
     import zakcode.cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "build_url", lambda: None)
+    monkeypatch.setattr(cli_mod, "build_dir", lambda: None)
     result = runner.invoke(app, ["update"])
     assert result.exit_code == 1
-    assert "not a VCS install" in result.stdout
+    assert "cannot self-update" in result.stdout
 
 
 def test_update_runs_pip_with_force_reinstall(monkeypatch) -> None:
@@ -974,3 +975,132 @@ def test_update_accepts_a_ref(monkeypatch) -> None:
     result = runner.invoke(app, ["update", "v2"])
     assert result.exit_code == 0
     assert any("@v2" in str(part) for part in calls[0])
+
+
+# ── zakcode update v2: local-checkout installs (uv tool install from a clone) ──
+
+
+def _make_clone_pair(tmp_path):
+    """A bare 'origin' plus a working clone one commit behind it."""
+    import subprocess as sp
+
+    def run(cwd, *args):
+        sp.run(args, cwd=cwd, check=True, capture_output=True, text=True)
+
+    origin = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    clone = tmp_path / "clone"
+    origin.mkdir()
+    run(origin, "git", "init", "--bare", "-q", "-b", "main")
+    seed.mkdir()
+    run(seed, "git", "init", "-q", "-b", "main")
+    run(seed, "git", "config", "user.email", "t@t")
+    run(seed, "git", "config", "user.name", "t")
+    (seed / "pyproject.toml").write_text("v1\n")
+    (seed / "uv.lock").write_text("lock1\n")
+    run(seed, "git", "add", "-A")
+    run(seed, "git", "commit", "-qm", "one")
+    run(seed, "git", "remote", "add", "origin", str(origin))
+    run(seed, "git", "push", "-q", "origin", "HEAD:main")
+    sp.run(["git", "clone", "-q", str(origin), str(clone)], check=True, capture_output=True)
+    run(clone, "git", "config", "user.email", "t@t")
+    run(clone, "git", "config", "user.name", "t")
+    # Advance origin past the clone.
+    (seed / "pyproject.toml").write_text("v2\n")
+    run(seed, "git", "add", "-A")
+    run(seed, "git", "commit", "-qm", "two")
+    run(seed, "git", "push", "-q", "origin", "HEAD:main")
+    return clone
+
+
+def test_refresh_checkout_reverts_churn_and_pulls(tmp_path) -> None:
+    from zakcode.cli import _refresh_checkout
+
+    clone = _make_clone_pair(tmp_path)
+    # The exact operator situation: only the install-churn files are dirty.
+    (clone / "pyproject.toml").write_text("churned by uv tool install\n")
+    (clone / "uv.lock").write_text("churned\n")
+    _refresh_checkout(str(clone))
+    assert (clone / "pyproject.toml").read_text() == "v2\n"  # reverted, then pulled
+
+
+def test_refresh_checkout_refuses_real_local_changes(tmp_path) -> None:
+    import typer as typer_mod
+
+    from zakcode.cli import _refresh_checkout
+
+    clone = _make_clone_pair(tmp_path)
+    (clone / "my-experiment.py").write_text("precious\n")
+    import subprocess as sp
+
+    sp.run(["git", "add", "my-experiment.py"], cwd=clone, check=True, capture_output=True)
+    with pytest.raises(typer_mod.Exit):
+        _refresh_checkout(str(clone))
+    assert (clone / "my-experiment.py").read_text() == "precious\n"  # untouched
+
+
+def test_update_local_checkout_uses_uv_with_receipt_extras(tmp_path, monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    clone = _make_clone_pair(tmp_path)
+    monkeypatch.setattr(cli_mod, "build_url", lambda: None)
+    monkeypatch.setattr(cli_mod, "build_dir", lambda: str(clone))
+    # Simulate a uv tool env: receipt with the [google] extra at the env root.
+    fake_prefix = tmp_path / "toolenv"
+    fake_prefix.mkdir()
+    (fake_prefix / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{ name = "zakcode", extras = ["google"] }]\n'
+    )
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(fake_prefix))
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda name: "/usr/bin/uv")
+    calls = []
+    real_run = cli_mod.subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            return real_run(cmd, **kwargs)  # the checkout refresh is real
+        calls.append(cmd)
+
+        class P:
+            returncode = 0
+            stdout = "0.0.1 (git feedbead1234)\n"
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0
+    reinstall = calls[0]
+    assert reinstall[:5] == ["/usr/bin/uv", "tool", "install", "--force", "--reinstall"]
+    assert reinstall[5].startswith("zakcode[google] @ file://")
+    assert "updated" in result.stdout
+
+
+def test_update_local_checkout_without_uv_receipt_uses_pip(tmp_path, monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    clone = _make_clone_pair(tmp_path)
+    monkeypatch.setattr(cli_mod, "build_url", lambda: None)
+    monkeypatch.setattr(cli_mod, "build_dir", lambda: str(clone))
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(tmp_path / "no-receipt-here"))
+    calls = []
+    real_run = cli_mod.subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            return real_run(cmd, **kwargs)
+        calls.append(cmd)
+
+        class P:
+            returncode = 0
+            stdout = "ok\n"
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0
+    assert "--force-reinstall" in calls[0] and "--no-deps" in calls[0]
+    assert any(str(part).startswith("zakcode @ file://") for part in calls[0])
