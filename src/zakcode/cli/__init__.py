@@ -17,7 +17,6 @@ import os
 import queue
 import random
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -457,7 +456,7 @@ def info() -> None:
         margin(
             Text.assemble(
                 ("start the interactive agent with ", "banner.hint"),
-                ("zakcode chat", "banner.title"),
+                ("zakcode cli", "banner.title"),
             )
         )
     )
@@ -1918,7 +1917,7 @@ def _cockpit_elevation(
     return (True, None)
 
 
-@app.command()
+@app.command(name="cli")
 def chat(
     model: str = typer.Option(None, "--model", "-m", help="Override the model id."),
     prompt: str = typer.Option(
@@ -2570,7 +2569,7 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-@app.command()
+@app.command(name="webapp")
 def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
     port: int = typer.Option(8000, "--port", "-p", help="Bind port."),
@@ -2586,7 +2585,7 @@ def serve(
         help="Allow binding a non-loopback host with NO auth token (unauthenticated exposure).",
     ),
 ) -> None:
-    """Run the Zak Code HTTP API server (FastAPI over the same core).
+    """Serve the web app: the browser chat page + HTTP API, over the same core.
 
     The network front door: REST + SSE + the built-in web page at ``/`` — see
     ``docs/ARCHITECTURE.md``. Requires the ``server`` extra
@@ -2596,10 +2595,9 @@ def serve(
     toggle.
 
     Input rides the ONE say contract: ``POST /say`` (and the web page, and ``zakcode
-    say``) writes the workspace say inbox, and the server's reactive consumer runs a
-    turn per say — including y/a/n permission answers mid-prompt. Set
-    ``ZAKCODE_SERVE_CONSUME=off`` when ``zakcode drive`` owns this workspace's turns
-    (two consumers would race the single say slot).
+    say``) writes the workspace say inbox, and the webapp runs a turn per say —
+    including y/a/n permission answers mid-prompt. The webapp is always the
+    workspace's turn-runner; there is no second consumer to configure around.
 
     Auth: set ``ZAKCODE_AUTH_TOKEN`` to require ``Authorization: Bearer <token>`` on
     every request. Without a token the server is unauthenticated, so binding a
@@ -2638,133 +2636,6 @@ def serve(
         f"[bold]Zak Code[/bold] {__version__} — serving on http://{host}:{port}{where}{auth_note}"
     )
     uvicorn.run(fastapi_app, host=host, port=port)
-
-
-@app.command()
-def drive(
-    workspace: str = typer.Option(
-        ...,
-        "--workspace",
-        "-w",
-        help="Served-mind workspace root — where .current-session (the watch 'current' "
-        "alias source) is written. Must match the workspace 'serve' was pointed at.",
-    ),
-    base_url: str = typer.Option(
-        "http://127.0.0.1:8000",
-        "--base-url",
-        help="Base URL of the running zakcode serve daemon to drive.",
-    ),
-    boot_message: str = typer.Option(
-        "Continue.",
-        "--boot-message",
-        help="First message that opens the autonomous loop (e.g. the mind's boot cue).",
-    ),
-    continue_message: str = typer.Option(
-        "Continue.",
-        "--continue-message",
-        envvar="ZAKCODE_CONTINUE_MESSAGE",
-        help="Message sent on every turn AFTER the first (the perpetual continuation cue). "
-        "Defaults to 'Continue.'. A weak mind that no-ops on a bare 'Continue.' needs a "
-        "concrete per-turn directive here — this is the one lever that shapes what each "
-        "driven turn actually does. Also settable via the ZAKCODE_CONTINUE_MESSAGE env var.",
-    ),
-    resume_message: str | None = typer.Option(
-        None,
-        "--resume-message",
-        help="Message for the turn after a provider_error stop (default: a built-in cue "
-        "to re-check and resume the interrupted work; '{error}' expands to the redacted "
-        "provider detail).",
-    ),
-    model: str | None = typer.Option(
-        None, "--model", "-m", help="Model override applied to every driven turn."
-    ),
-    max_turns: int | None = typer.Option(
-        None, "--max-turns", help="Stop after N turns (default: perpetual, until signalled)."
-    ),
-    nudge_file: str | None = typer.Option(
-        None,
-        "--nudge-file",
-        help="Viewer-suggestion file (relative to the workspace, e.g. .nudge) the driver "
-        "folds once into the next turn's preamble, then deletes. Off when unset.",
-    ),
-    say_file: str = typer.Option(
-        ".say",
-        "--say-file",
-        help="User-message inbox file (relative to the workspace) written by the serve "
-        "daemon's POST /say and delivered as the next turn's MESSAGE (the watch/talk "
-        "unification — talking is the driven session's next turn). On by default; "
-        "pass an empty string to disable.",
-    ),
-    inter_turn_delay: float = typer.Option(
-        0.0,
-        "--inter-turn-delay",
-        envvar="ZAKCODE_INTER_TURN_DELAY",
-        help="Seconds to pause between turns to pace the agent under a provider rate limit. "
-        "0 = no pacing (fastest, but may hit the provider's tokens/requests-per-minute limit); "
-        "higher spreads token usage over time and reduces rate-limit stalls. A per-agent 'speed' "
-        "setting. Also settable via the ZAKCODE_INTER_TURN_DELAY environment variable.",
-    ),
-) -> None:
-    """Drive an autonomous, watchable mind against a running ``zakcode serve`` daemon.
-
-    The autonomous half of ``serve``: it creates a session, records it in
-    ``<workspace>/.current-session``, then keeps a turn always running so a ``/watch``
-    client sees a live stream. Each turn self-continues via the served mind's own
-    ``TURN_END``/Stop-hook veto; the driver only supervises liveness (backoff on a
-    daemon hiccup, recreate the session if the daemon was restarted) — it never decides
-    what the mind does. The bearer token, if any, is read from ``ZAKCODE_AUTH_TOKEN``,
-    the same source ``serve`` uses.
-
-    Run the serve daemon with ``ZAKCODE_SERVE_CONSUME=off`` for a driven workspace:
-    the driver consumes the say inbox between its turns, and serve's own reactive
-    consumer would race it for the single say slot.
-    """
-    try:
-        from zakcode.server.client import ServerClient
-        from zakcode.server.driver import ServeDriver
-    except ImportError as exc:  # pragma: no cover - depends on optional extra
-        console.print(
-            "[red]The server extra is not installed.[/red] "
-            "Install it with: [bold]pip install 'zakcode[server]'[/bold]"
-        )
-        raise typer.Exit(code=1) from exc
-
-    auth_token = os.environ.get("ZAKCODE_AUTH_TOKEN") or None
-    client = ServerClient(base_url, auth_token=auth_token)
-    driver = ServeDriver(
-        client,
-        workspace,
-        boot_message=boot_message,
-        continue_message=continue_message,
-        model=model,
-        max_turns=max_turns,
-        nudge_file=nudge_file,
-        say_file=say_file or None,
-        inter_turn_delay=max(0.0, inter_turn_delay),
-    )
-    if resume_message is not None:
-        # Override the driver's built-in resume cue only when the flag was given — the
-        # default lives on ServeDriver (not importable at module scope: optional extra).
-        driver.resume_message = resume_message
-    console.print(
-        f"[bold]Zak Code[/bold] {__version__} — driving watched mind at {base_url} "
-        f"(workspace: {workspace})"
-    )
-
-    async def _runner() -> None:
-        loop = asyncio.get_running_loop()
-        # Graceful stop on SIGTERM/SIGINT (systemd sends SIGTERM). Not implemented on
-        # Windows event loops — harmless there; Ctrl+C still unwinds via KeyboardInterrupt.
-        with contextlib.suppress(NotImplementedError):
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, driver.request_stop)
-        try:
-            await driver.run()
-        finally:
-            await client.aclose()
-
-    with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(_runner())
 
 
 # Registered at the bottom so cockpit's lazy imports back into this module (banner

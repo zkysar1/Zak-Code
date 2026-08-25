@@ -27,7 +27,7 @@ while the *behavior* comes from whatever plugs in. The full plan and boundary ru
 per-`Agent` (e.g. `Agent(enable_settings_hooks=True)`) or via its env flag, so a workspace carrying
 *another* runtime's `.claude/` config never changes Zak Code's behavior unless someone opts in.
 **For hooks, the interactive CLI is that someone**: when `ZAKCODE_SETTINGS_HOOKS` is *unset* and the
-workspace actually declares loadable hooks, `zakcode chat` asks the operator once — Claude Code
+workspace actually declares loadable hooks, `zakcode cli` asks the operator once — Claude Code
 folder-trust semantics — and remembers the answer per workspace in `~/.zakcode/workspace-trust.json`
 (policy + persistence in `zakcode.workspace_trust`, core; the CLI only renders the question). The
 failure this replaces was the worst kind: a Claude-Code workspace's hooks block was silently ignored

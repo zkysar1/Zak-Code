@@ -4,7 +4,7 @@
 length-capped). Unlike a /nudge suggestion (folded into the preamble), a say is
 delivered by the driver as the next turn's MESSAGE — talking to the driven mind is
 just its next turn. Plain JSON (no streaming), so Starlette's TestClient drives it
-directly; the driver-side consumption is pinned in test_server_driver.py.
+directly; turn-side consumption is pinned in test_server_consumer.py.
 """
 
 from __future__ import annotations

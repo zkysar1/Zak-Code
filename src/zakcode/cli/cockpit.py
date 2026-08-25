@@ -1,13 +1,13 @@
 """``zakcode cockpit`` — a supervised two-pane tmux workstation for a long-running agent.
 
 Top pane: a session header (generic lines from zakcode, deployment lines from an
-optional ``.zakcode/banner`` hook in the workspace), then ``zakcode chat``, then an
+optional ``.zakcode/banner`` hook in the workspace), then ``zakcode cli``, then an
 Enter-to-relaunch loop so a finished or crashed chat never leaves a dead pane.
 
 Bottom pane: the *say box* — a persistent input that appends every message to a
 JSONL ledger (operator provenance) and delivers it through the workspace **say
 inbox** (``<workspace>/.say`` — ``zakcode.session.say_inbox``): the SAME single-slot
-contract the server's ``POST /say`` writes and the serve driver consumes. Every chat
+contract the server's ``POST /say`` writes and the webapp consumes. Every chat
 always listens to its workspace's say inbox (messages arrive exactly like typed
 lines, slash commands included). Inside the cockpit that inbox is the ONLY door:
 the chat pane runs with ``ZAKCODE_INPUT_FRAME=off`` and does not read its own
@@ -221,7 +221,7 @@ def launch_cockpit(
 ) -> None:
     """Create (if needed) and join the workspace's cockpit — the chat interface.
 
-    This is what ``zakcode chat`` elevates itself into whenever the environment
+    This is what ``zakcode cli`` elevates itself into whenever the environment
     supports it (tty + tmux), so the operator never launches or configures the
     cockpit by hand. Re-running joins the same session; from inside another tmux
     session the client is switched rather than nested.
@@ -323,7 +323,7 @@ def cockpit(
 ) -> None:
     """(internal) Open or re-join a workspace's cockpit directly.
 
-    Operators never need this: ``zakcode`` / ``zakcode chat`` elevates itself into
+    Operators never need this: ``zakcode`` / ``zakcode cli`` elevates itself into
     the cockpit automatically wherever a tty and tmux exist. Kept (hidden) for
     provisioning scripts and headless creation (``--no-attach``).
     """
@@ -341,7 +341,7 @@ def cockpit_main(
     # always listens to the workspace say inbox (the shared POST /say contract),
     # so the box's messages arrive as real input — no keystroke injection.
     # ZAKCODE_COCKPIT_PANE marks the child as already-inside-the-cockpit, which is
-    # what stops `zakcode chat`'s self-elevation from recursing.
+    # what stops `zakcode cli`'s self-elevation from recursing.
     env = {**os.environ, "ZAKCODE_INPUT_FRAME": "off", "ZAKCODE_COCKPIT_PANE": "1"}
     while True:
         console.clear()
@@ -357,7 +357,7 @@ def cockpit_main(
         prev = signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             subprocess.run(
-                [*_self_invocation(), "chat"],
+                [*_self_invocation(), "cli"],
                 cwd=workspace,
                 env=env,
                 check=False,

@@ -473,15 +473,6 @@ class Settings(BaseSettings):
         exclude=True,
         description="Bearer token required by the HTTP server when set (else unauthenticated).",
     )
-    # The serve daemon's reactive turn-runner: consume the workspace say inbox and run
-    # each message as a turn on the current session (the web page and every remote
-    # surface are pure viewers + say-writers). Turn OFF (ZAKCODE_SERVE_CONSUME=off)
-    # when an external ``zakcode drive`` owns the workspace — two consumers would race
-    # the single-slot inbox.
-    serve_consume: bool = Field(
-        default=True,
-        description="Serve consumes the say inbox and runs turns (off when `drive` owns it).",
-    )
     # Optional allowlist for the per-request ``model`` override on /chat, /chat/stream and
     # /complete. When non-empty, a request whose ``model`` is not listed is rejected (400),
     # so a client cannot route prompts/cost to an arbitrary provider the host has creds for.
