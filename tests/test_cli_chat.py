@@ -1510,3 +1510,79 @@ def test_answer_line_worker_ends_when_wait_is_abandoned(monkeypatch, tmp_path) -
     stop.set()
     worker.join(timeout=5)
     assert not worker.is_alive()
+
+
+def test_update_local_checkout_reports_real_shas_not_same_commit(tmp_path, monkeypatch) -> None:
+    """2026-08-25 field report (serene): a local-path install pulled 2d3134d→c5a1725
+    yet printed "same commit — you were already current", because PEP 610 metadata
+    for a dir install records no commit and both sides read "0.0.1 (local path)".
+    The verdict must come from the checkout's own before/after shas."""
+    import subprocess as sp
+
+    import zakcode.cli as cli_mod
+
+    clone = _make_clone_pair(tmp_path)
+    old_sha = sp.run(
+        ["git", "-C", str(clone), "rev-parse", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(cli_mod, "build_url", lambda: None)
+    monkeypatch.setattr(cli_mod, "build_dir", lambda: str(clone))
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(tmp_path / "no-receipt-here"))
+    real_run = cli_mod.subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            return real_run(cmd, **kwargs)
+
+        class P:
+            returncode = 0
+            stdout = "0.0.1 (local path)\n"  # what the post-install probe really prints
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0
+    new_sha = sp.run(
+        ["git", "-C", str(clone), "rev-parse", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert old_sha != new_sha  # the pair really was one commit behind
+    assert f"(git {old_sha})" in result.stdout
+    assert f"(git {new_sha})" in result.stdout
+    assert "already current" not in result.stdout
+
+
+def test_update_local_checkout_already_current_says_so_with_sha(tmp_path, monkeypatch) -> None:
+    import subprocess as sp
+
+    import zakcode.cli as cli_mod
+
+    clone = _make_clone_pair(tmp_path)
+    sp.run(["git", "-C", str(clone), "pull", "-q", "--ff-only"], check=True, capture_output=True)
+    monkeypatch.setattr(cli_mod, "build_url", lambda: None)
+    monkeypatch.setattr(cli_mod, "build_dir", lambda: str(clone))
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(tmp_path / "no-receipt-here"))
+    real_run = cli_mod.subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "git":
+            return real_run(cmd, **kwargs)
+
+        class P:
+            returncode = 0
+            stdout = "0.0.1 (local path)\n"
+            stderr = ""
+
+        return P()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0
+    assert "already current" in result.stdout

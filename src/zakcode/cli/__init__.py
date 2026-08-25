@@ -219,13 +219,17 @@ def version() -> None:
 _INSTALL_CHURN_FILES = frozenset({"pyproject.toml", "uv.lock"})
 
 
-def _refresh_checkout(directory: str) -> None:
+def _refresh_checkout(directory: str) -> tuple[str, str]:
     """``git pull --ff-only`` the checkout a local-path install came from.
 
     Reverts ONLY the known install-churn files when they are the whole dirty set
     (the exact manual step operators were performing); any other local change makes
     this refuse rather than risk someone's work. Exits loudly on a non-repo or a
-    failed pull.
+    failed pull. Returns ``(old_sha, new_sha)`` — a local-path install's PEP 610
+    metadata records no commit, so these shas are the ONLY truthful before/after
+    identity ``update`` has (2026-08-25 field report: the metadata-based verdict
+    printed "same commit — you were already current" on a real 2d3134d→c5a1725
+    update, because both sides read "0.0.1 (local path)").
     """
 
     def git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -261,6 +265,7 @@ def _refresh_checkout(directory: str) -> None:
         _dim(console, f"checkout already at {old_sha}")
     else:
         _dim(console, f"checkout {old_sha} {GLYPHS['dash']} pulled {GLYPHS['dash']} {new_sha}")
+    return old_sha, new_sha
 
 
 def _uv_tool_spec(source: str) -> str:
@@ -344,13 +349,14 @@ def update(
     old = version_line(__version__)
     url = build_url()
     directory = build_dir()
+    shas: tuple[str, str] | None = None
     if url is not None:
         source = f"git+{url}@{ref}"
         _dim(console, f"updating from {url} @ {ref} …")
     elif directory is not None:
         if ref != "main":
             _dim(console, "ref ignored — a local-checkout install pulls its tracked branch")
-        _refresh_checkout(directory)
+        shas = _refresh_checkout(directory)
         source = Path(directory).as_uri()
         _dim(console, f"reinstalling from {directory} …")
     else:
@@ -380,6 +386,14 @@ def update(
         text=True,
     )
     new = probe.stdout.strip() if probe.returncode == 0 and probe.stdout.strip() else "(unreadable)"
+    if shas is not None:
+        # A local-path install's metadata carries no commit — both sides would read
+        # "(local path)" and the verdict below would ALWAYS say "same commit", even
+        # right after a real pull. The checkout's own before/after shas are the
+        # truthful identity, so display and compare with those instead.
+        old = old.replace("(local path)", f"(git {shas[0]})")
+        if new != "(unreadable)":
+            new = new.replace("(local path)", f"(git {shas[1]})")
     console.print(
         margin(
             Text.assemble(
