@@ -147,6 +147,50 @@ def input_frame_enabled() -> bool:
     return os.environ.get("ZAKCODE_INPUT_FRAME", "").strip().lower() not in _FRAME_OFF
 
 
+def open_input_frame(console: Console) -> None:
+    """The just-in-time half of :func:`read_prompt`: seam + frame top + the bordered
+    prompt prefix, WITHOUT reading. The in-process REPL waits for input from a
+    multiplexer (keyboard pump OR the say inbox), so nothing may block on stdin
+    here — the frame opens when the REPL starts waiting and is closed by
+    :func:`close_input_frame` when input arrives from either door. Frameless mode
+    prints only the turn-seam blank line.
+    """
+    if not input_frame_enabled():
+        console.print()
+        return
+    g = resolve_glyphs(console)
+    w = _frame_width(console)
+    label = " your message "
+    top = Text("  ")
+    top.append(g["corner_tl"] + g["hline"], style="notice.dim")
+    top.append(label, style="banner.label")
+    top.append(g["hline"] * max(1, w - 4 - len(label)) + g["corner_tr"], style="notice.dim")
+    console.print()
+    console.print(top)
+    console.print(
+        f"  [notice.dim]{g['bar']}[/notice.dim] [prompt.marker]{g['prompt']}[/prompt.marker] ",
+        end="",
+    )
+
+
+def close_input_frame(console: Console, *, newline: bool) -> None:
+    """Close a frame opened by :func:`open_input_frame`.
+
+    ``newline=True`` when the input did NOT come from the keyboard (a say, EOF,
+    an interrupt) — the prefix line is still open and needs ending first; a typed
+    line's Enter already moved the cursor. No-op in frameless mode.
+    """
+    if not input_frame_enabled():
+        return
+    if newline:
+        console.print()
+    g = resolve_glyphs(console)
+    w = _frame_width(console)
+    bottom = Text("  ")
+    bottom.append(g["corner_bl"] + g["hline"] * (w - 2) + g["corner_br"], style="notice.dim")
+    console.print(bottom)
+
+
 def read_prompt(console: Console) -> str:
     """Print the turn seam, then read a line inside a visible input frame.
 

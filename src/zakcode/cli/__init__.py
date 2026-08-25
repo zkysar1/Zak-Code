@@ -39,12 +39,14 @@ from zakcode import __version__
 from zakcode.build_info import build_dir, build_url, version_line
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
+    close_input_frame,
     heading,
     kv_table,
     margin,
     notice_error,
     notice_info,
     notice_warn,
+    open_input_frame,
     panel,
     read_prompt,
 )
@@ -719,6 +721,110 @@ _TIER_LABEL: dict[PermissionTier, str] = {
 }
 
 
+def _read_stdin_line() -> str:
+    """Read one raw keyboard line — the pump's single read point (patchable in tests)."""
+    return input()
+
+
+class _InputMux:
+    """The ONE owner of interactive input for a chat session.
+
+    Multiplexes the two doors — the keyboard (via a pump thread) and the
+    workspace say inbox — and hands the next line to whoever is currently
+    asking the operator a question: the REPL's message prompt, or a mid-turn
+    permission prompt. Exactly one thread ever blocks on stdin.
+
+    Why it exists (2026-08-25 field incident): the permission prompter used to
+    run its own ``console.input`` in a second thread while the stdin pump was
+    also blocked reading — two readers racing one file descriptor. The
+    operator's y/a/n answers were swallowed into the message frame, two
+    answers concatenated ("aa") reached the model as a prompt, and the
+    permission prompt re-asked into a broken screen.
+    """
+
+    def __init__(self, inbox: Path, interrupt_fp: Path) -> None:
+        from zakcode.session.say_inbox import read_say, take_interrupt
+
+        self._read_say = read_say
+        self._take_interrupt = take_interrupt
+        self.inbox = inbox
+        self.interrupt_fp = interrupt_fp
+        self.queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True, name="stdin-pump").start()
+
+    def _pump(self) -> None:
+        while True:
+            try:
+                self.queue.put(("line", _read_stdin_line()))
+            except EOFError:
+                self.queue.put(("eof", None))
+                return
+            except KeyboardInterrupt:
+                self.queue.put(("interrupt", None))
+            except BaseException:  # noqa: BLE001 — a dying pump must not kill chat
+                self.queue.put(("eof", None))
+                return
+
+    def next_input(self, *, idle: bool) -> tuple[str, str | None]:
+        """Block until input arrives from either door.
+
+        Kinds: ``line`` (keyboard), ``say`` (inbox), ``eof``, ``interrupt``
+        (Ctrl-C forwarded by the pump), ``stop`` (the interrupt FILE, mid-turn
+        only). ``idle=True`` is the REPL between turns: a stop signal has
+        nothing to stop and is cleared. ``idle=False`` is a mid-turn consumer
+        (the permission prompt): the signal is LEFT IN PLACE — reported as
+        ``stop`` here, while the turn's interrupt watcher consumes it and
+        cancels the turn.
+        """
+        while True:
+            if idle:
+                self._take_interrupt(self.interrupt_fp)
+            elif self.interrupt_fp.exists():
+                return ("stop", None)
+            say_text = self._read_say(self.inbox)
+            if say_text is not None:
+                return ("say", say_text)
+            try:
+                return self.queue.get(timeout=0.3)
+            except queue.Empty:
+                continue
+
+    def try_input(self) -> tuple[str, str | None] | None:
+        """Non-blocking peek-and-take: input that arrived while the REPL was busy.
+
+        Lets the loop skip drawing an input frame around input that is already
+        here (a queued say, or a line typed during the turn) — a frame opened and
+        instantly closed renders as a glitched empty box. Idle semantics: a stale
+        stop signal is cleared, same as ``next_input(idle=True)``.
+        """
+        self._take_interrupt(self.interrupt_fp)
+        say_text = self._read_say(self.inbox)
+        if say_text is not None:
+            return ("say", say_text)
+        try:
+            return self.queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def answer_line(self, console: Console) -> str:
+        """One answer line for a mid-turn question (the permission prompt).
+
+        A say answers exactly like a typed line (echoed with provenance) — this
+        is what lets the cockpit say box approve tool calls. EOF denies;
+        Ctrl-C or a stop signal denies AND (for the stop file) the turn watcher
+        cancels the turn moments later.
+        """
+        kind, value = self.next_input(idle=False)
+        if kind == "line":
+            return value or ""
+        if kind == "say":
+            console.print(f"(say) {escape(value or '')}", style="notice.dim")
+            return value or ""
+        if kind == "eof":
+            raise EOFError
+        raise KeyboardInterrupt  # 'interrupt' or 'stop'
+
+
 class ConsolePermissionPrompter:
     """Asks the operator to confirm an escalated tool call at the terminal.
 
@@ -732,8 +838,13 @@ class ConsolePermissionPrompter:
     after the decision line — it never touches renderer state.
     """
 
-    def __init__(self, console: Console) -> None:
+    def __init__(self, console: Console, line_source: Callable[[], str] | None = None) -> None:
         self.console = console
+        # When set, answers come from the session's input mux instead of a
+        # direct console.input — mandatory whenever a stdin pump is running
+        # (two blocking readers on one fd race; see _InputMux), and it is what
+        # lets a cockpit say box answer y/a/n at all.
+        self._line_source = line_source
 
     async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
         # The REPL's wait line repaints the bottom row; pause it while the panel
@@ -797,7 +908,11 @@ class ConsolePermissionPrompter:
                 # Offload the blocking read so concurrent sub-agents (TaskTool runs children
                 # via asyncio.gather, sharing this one prompter) don't freeze the event loop
                 # — matching bash.py/powershell.py's asyncio.to_thread pattern. (audit2 #11)
-                answer = await asyncio.to_thread(self.console.input, prompt)
+                if self._line_source is not None:
+                    self.console.print(prompt, end="")
+                    answer = await asyncio.to_thread(self._line_source)
+                else:
+                    answer = await asyncio.to_thread(self.console.input, prompt)
             except (EOFError, KeyboardInterrupt):
                 self.console.print(margin(Text("denied", style="notice.dim")))
                 self.console.print()
@@ -1786,7 +1901,14 @@ def chat(
     # itself still lives in the core; the CLI only renders the prompt.
     extra_skill_dirs = skill_dir if skill_dir else None
     extra_roots = extra_root if extra_root else None
-    prompter = ConsolePermissionPrompter(console)
+    repl_mux: list[_InputMux] = []
+
+    def _prompter_line() -> str:
+        if not repl_mux:
+            raise EOFError  # non-interactive (one-shot -p): fail toward deny, as before
+        return repl_mux[0].answer_line(console)
+
+    prompter = ConsolePermissionPrompter(console, line_source=_prompter_line)
 
     # Workspace hook adoption (Claude Code folder-trust semantics). The policy lives in
     # core (zakcode.workspace_trust); this only supplies the ask-UI and applies the result.
@@ -1876,22 +1998,20 @@ def chat(
     # 1 once the one-time nudge has fired]. See _maybe_zakpick_advisory.
     zakpick_advisory = [0, 0]
 
-    # ── one input rule, two doors ────────────────────────────────────────────────
-    # An interactive chat ALWAYS listens to (a) its keyboard and (b) its workspace's
-    # say inbox (<workspace>/.say — the same single-slot contract the server's
-    # POST /say and `zakcode say` write). Both arrive as ordinary lines, slash
-    # commands included; inbox lines echo with "(say)" provenance. There is no
-    # opt-in and no mode: it works the same way every time.
+    # ── one input rule, two doors, ONE reader ───────────────────────────────────
+    # An interactive chat always listens to (a) its keyboard and (b) its
+    # workspace's say inbox (<workspace>/.say — the same single-slot contract the
+    # server's POST /say and `zakcode say` write). Both arrive as ordinary lines,
+    # slash commands included; inbox lines echo with "(say)" provenance. The
+    # _InputMux is the ONLY stdin owner — the permission prompt takes its answers
+    # from the same mux (never a second console.input), and the input frame is
+    # drawn just-in-time by THIS loop, so mid-turn output never renders inside a
+    # dangling frame.
     #
-    # Stdin lives in a pump thread so the loop can poll both doors. A REAL Ctrl-C
-    # (SIGINT) raises in the MAIN thread's poll (PEP 475 keeps the pump's blocking
-    # read alive through it); a read_prompt-raised interrupt (scripted stdin) is
-    # forwarded by the pump — both feed the same double-press exit logic below.
-    #
-    # Safety rule that keeps always-on honest: chat only OBEYS messages sent while
-    # it is listening. A message already queued when the session starts — a stale
-    # file from a dead session, or a .say shipped inside a cloned repo — is
-    # discarded with a visible notice, never executed.
+    # Safety rule that keeps always-on honest: chat only OBEYS messages sent
+    # while it is listening. A message already queued when the session starts —
+    # a stale file from a dead session, or a .say shipped inside a cloned repo —
+    # is discarded with a visible notice, never executed.
     from zakcode.session.say_inbox import interrupt_path, read_say, say_path, take_interrupt
 
     inbox_path = say_path(agent.settings.workspace_root)
@@ -1905,44 +2025,25 @@ def chat(
             f"say inbox: discarded a message queued before this session started "
             f"({preview!r}) — resend it if still wanted",
         )
-    input_q: queue.Queue[tuple[str, str | None]] = queue.Queue()
-
-    def _stdin_pump(q: queue.Queue[tuple[str, str | None]]) -> None:
-        while True:
-            try:
-                q.put(("line", read_prompt(console)))
-            except EOFError:
-                q.put(("eof", None))
-                return
-            except KeyboardInterrupt:
-                q.put(("interrupt", None))
-            except BaseException:  # noqa: BLE001 — a dying pump must not kill chat
-                q.put(("eof", None))
-                return
-
-    threading.Thread(
-        target=_stdin_pump, args=(input_q,), daemon=True, name="say-inbox-stdin"
-    ).start()
+    mux = _InputMux(inbox_path, interrupt_fp)
+    repl_mux.append(mux)
 
     last_interrupt = 0.0
     while True:
-        try:
-            got: tuple[str, str | None] | None = None
-            while got is None:
-                # An interrupt arriving while idle has nothing to stop — clear it so
-                # it cannot kill the NEXT turn instead.
-                take_interrupt(interrupt_fp)
-                say_text = read_say(inbox_path)
-                if say_text is not None:
-                    got = ("say", say_text)
-                    break
-                try:
-                    got = input_q.get(timeout=0.3)
-                except queue.Empty:
-                    continue
-        except KeyboardInterrupt:
-            got = ("interrupt", None)
+        # Input that arrived during the turn (a queued say, a typed-ahead line)
+        # is taken WITHOUT a frame — opening one just to slam it shut renders a
+        # glitched empty box. The frame is drawn only when the REPL truly waits.
+        got = mux.try_input()
+        framed = got is None
+        if framed:
+            open_input_frame(console)
+            try:
+                got = mux.next_input(idle=True)
+            except KeyboardInterrupt:
+                got = ("interrupt", None)
         kind, value = got
+        if framed:
+            close_input_frame(console, newline=kind != "line")
         if kind == "eof":
             notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
             break
@@ -1962,11 +2063,14 @@ def chat(
             continue
         line = value or ""
         via_say = kind == "say"
-        if via_say and line.strip():
-            # Echo the injected message where a typed line would have echoed, with
-            # provenance — the transcript must show what the agent was just told.
+        if line.strip() and (via_say or not framed):
+            # Echo input that never appeared in a frame — an injected say (with
+            # provenance) or a line typed ahead during the turn — where a typed
+            # line would have echoed: the transcript must show what the agent was
+            # just told.
+            tag = "(say) " if via_say else ""
             console.print()
-            console.print(f"  ▸ (say) {escape(line)}", style="notice.dim")
+            console.print(f"  ▸ {tag}{escape(line)}", style="notice.dim")
 
         stripped = line.strip()
         if not stripped:
