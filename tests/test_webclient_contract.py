@@ -1,10 +1,11 @@
 """Contract test (M10-2): the bundled web client agrees with the server's wire.
 
-The web client is a thin renderer of the AgentEvent stream. These tests guard the
+The web client is a pure viewer + say-writer: it renders the ``?full=1`` watch
+stream and writes input — messages, y/a/n permission answers, interrupts — through
+the say contract (``POST /say`` / ``POST /interrupt``). These tests guard the
 JS↔server contract from drifting: the renderer's declared event-type set must equal
-the server's, and the client must speak the WebSocket protocol verbs (input /
-approval) the server's permission bridge expects. Pure string/JSON inspection of the
-shipped asset — no browser needed.
+the server's, and the client must speak exactly those contract endpoints. Pure
+string/JSON inspection of the shipped asset — no browser needed.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ def test_index_exists_and_is_html() -> None:
     assert _INDEX.is_file(), f"missing bundled web client at {_INDEX}"
     html = _html()
     assert "<!doctype html>" in html.lower()
-    assert "websocket" in html.lower()
+    assert "websocket" not in html.lower()  # the WS private pipe is gone — say contract only
 
 
 def test_event_types_match_server() -> None:
@@ -63,28 +64,31 @@ def test_client_can_upload_files_to_session() -> None:
     assert "uploadFiles" in html
 
 
-def test_client_speaks_ws_protocol_verbs() -> None:
-    # The client must send the exact WS client-message shapes the server parses:
-    # {type:"input"} to start a turn and {type:"approval", outcome:...} for the
-    # permission bridge. (Asserted as substrings of the shipped JS.)
+def test_client_speaks_the_say_contract() -> None:
+    # Input and approvals both go through POST /say — the ONE contract every
+    # surface writes; the page renders its own user rows from the bus's
+    # ``user_message`` frames, never from a local echo.
     html = _html()
-    assert '"type": "input"' in html or 'type: "input"' in html
-    assert '"type": "approval"' in html or 'type: "approval"' in html
-    # And it consumes the server's permission prompt frame.
+    assert '"/say"' in html
+    assert 'case "user_message":' in html
+    # It consumes the announced permission prompt frame from the full watch.
     assert "action_required" in html
-    # The approval outcomes it sends are valid PermissionOutcome values.
-    from zakcode.permissions import PermissionOutcome
+    # And answers with the say grammar the server's SayInboxPrompter parses.
+    match = re.search(r"OUTCOME_KEYS\s*=\s*\{([^}]*)\}", html)
+    assert match, "client must map approval outcomes to say answers"
+    from zakcode.permissions import parse_permission_answer
 
-    valid = {o.value for o in PermissionOutcome}
-    sent = set(re.findall(r'sendApproval\("([a-z_]+)"\)', html))
-    assert sent, "client must send at least one approval outcome"
-    assert sent <= valid, (sent, valid)
+    mapping = dict(re.findall(r'(\w+):\s*"(\w)"', match.group(1)))
+    assert mapping, "OUTCOME_KEYS must not be empty"
+    for outcome_name, answer in mapping.items():
+        parsed = parse_permission_answer(answer)
+        assert parsed is not None and parsed.value == outcome_name, (outcome_name, answer)
 
 
 def test_client_can_interrupt_a_turn() -> None:
-    # The Stop button sends the WS interrupt frame the server's bridge parses.
+    # The Stop button POSTs /interrupt — the contract's sibling control file.
     html = _html()
-    assert '"type": "interrupt"' in html or 'type: "interrupt"' in html
+    assert '"/interrupt"' in html
 
 
 def test_client_surfaces_unknown_events_and_frames() -> None:
@@ -133,7 +137,7 @@ def test_client_creates_session_via_rest() -> None:
 
 def test_no_agent_logic_leaked_into_client() -> None:
     # A thin renderer must not embed provider/model/agent-loop logic. Guard against
-    # the obvious leaks (it should only ever talk to the server over HTTP/WS).
+    # the obvious leaks (it should only ever talk to the server over HTTP/SSE).
     html = _html().lower()
     for banned in ("litellm", "openai", "api_key", "system prompt", "tool registry"):
         assert banned not in html, f"web client must not contain '{banned}'"

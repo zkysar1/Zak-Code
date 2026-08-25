@@ -7,13 +7,14 @@ the ONE place an interface talks BACK to the SDK mid-turn.
 THE CLAIM
 ---------
 When a tool call escalates (ASK mode, a write-tier tool), the SDK asks its
-:class:`~zakcode.permissions.PermissionPrompter` for a decision. Over WebSocket
-that becomes a round-trip: the server emits a ``WSActionRequired`` control frame,
-the client answers with a ``WSApproval``, and the server hands the decision back
-to the SDK's prompter. Parity means: **given the same client decision, the SDK
-produces the SAME event stream it would with a direct in-process prompter** —
-i.e. the WS bridge delivers the outcome faithfully, and serializes the request
-faithfully on the way out.
+:class:`~zakcode.permissions.PermissionPrompter` for a decision. On the server
+that is the say-inbox round-trip: ``SayInboxPrompter`` announces a
+``WSActionRequired`` frame on the watch bus and polls the workspace say inbox
+for a y/a/n answer — the ONE contract every surface writes. Parity means:
+**given the same answer through the inbox, the SDK produces the SAME event
+stream it would with a direct in-process prompter** — i.e. the say bridge
+delivers the outcome faithfully, and announces the request faithfully on the
+way out.
 
 THE DESIGN
 ----------
@@ -23,11 +24,13 @@ run for each outcome through two layers that share ONE agent builder
 
 * ``sdk`` — the agent with a direct :class:`_ScriptedPrompter` that records the
   request and returns a fixed outcome.
-* ``ws``  — the SAME agent behind ``/ws``; the client answers the
-  ``action_required`` frame with the SAME outcome and drains the resumed events.
+* ``say`` — the SAME agent with a ``SayInboxPrompter``; the announce callback
+  answers the ``action_required`` frame by writing the SAME outcome into the
+  workspace say inbox, exactly as a cockpit box / ``zakcode say`` / ``POST /say``
+  user would.
 
-The break point: if the WS bridge mis-serializes the request or mis-delivers the
-decision, ``ws`` diverges from ``sdk`` for that outcome.
+The break point: if the say bridge mis-announces the request or mis-delivers the
+decision, ``say`` diverges from ``sdk`` for that outcome.
 
 WHY BOTH allow AND deny
 -----------------------
@@ -36,8 +39,8 @@ blocked), so per-outcome parity is a real constraint — a bridge that dropped t
 client's decision (always-deny, say) would match one outcome and FAIL the other.
 :func:`test_outcome_actually_changes_the_result` pins that the outcome matters.
 
-HERMETIC: ``ScriptedProvider`` (no network); ``TestClient`` drives ``/ws``
-in-process; the escalating tool writes into a tmp workspace.
+HERMETIC: ``ScriptedProvider`` (no network); the inbox is a tmp-path file; the
+escalating tool writes into a tmp workspace.
 """
 
 from __future__ import annotations
@@ -47,10 +50,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 from zakcode import Agent
-from zakcode.config import Settings
 from zakcode.evals.harness import ScriptedProvider, call_tool, reply
 from zakcode.events import (
     AgentDone,
@@ -69,9 +70,9 @@ from zakcode.permissions import (
     PermissionPrompter,
     PermissionRequest,
 )
-from zakcode.server.app import create_app
-from zakcode.server.wire import event_from_dict
-from zakcode.session.store import Session, SessionStore
+from zakcode.server.app import SayInboxPrompter
+from zakcode.session.say_inbox import say_path, write_say
+from zakcode.session.store import Session
 
 _CANONICAL_INPUT = "__canonical permission input__"
 
@@ -191,75 +192,66 @@ def _run_sdk(
     return events, prompter.requests
 
 
-def _run_ws(
+_ANSWER_TEXT = {PermissionOutcome.ALLOW_ONCE: "y", PermissionOutcome.DENY_ONCE: "n"}
+
+
+def _run_say(
     outcome: PermissionOutcome, workspace_root: Path
 ) -> tuple[list[AgentEvent], list[dict[str, Any]]]:
-    """L1 — the WS round-trip: answer the ``action_required`` frame with ``outcome``.
+    """L1 — the say-inbox round-trip: answer the announced frame through the inbox.
 
-    Returns (the resumed event stream, the ``action_required`` control frames seen).
-    ``action_required`` is a control frame (``type``, not ``event``) delivered
-    out-of-band; it is handled inline and filtered from the event stream, so the
-    remaining events are exactly what the SDK produced — comparable to ``sdk``.
+    The prompter's ``publish`` callback stands in for a watching user: the moment
+    the ``action_required`` frame is announced, the answer is written into the
+    workspace say inbox (the same file every surface writes), and the prompter's
+    poll picks it up.
     """
-    settings = Settings(default_model="scripted/parity", workspace_root=workspace_root)
-    store = SessionStore(base_dir=workspace_root / "sessions")
-
-    def factory(session: Session, model: str | None, prompter: PermissionPrompter | None) -> Agent:  # noqa: ARG001 — model unused; prompter IS the WS bridge (the point of this test)
-        return _build_escalation_agent(prompter, workspace_root=workspace_root, session=session)
-
-    app = create_app(settings=settings, store=store, agent_factory=factory)
-    client = TestClient(app)
-    session = Session(cwd=".", model="scripted/parity")
-    store.save(session)
-
-    event_frames: list[dict[str, Any]] = []
+    workspace_root.mkdir(parents=True, exist_ok=True)
     action_frames: list[dict[str, Any]] = []
-    with client.websocket_connect(f"/ws/{session.id}") as ws:
-        ws.send_json({"type": "input", "message": _CANONICAL_INPUT})
-        while True:
-            frame = ws.receive_json()
-            if frame.get("type") == "action_required":
-                action_frames.append(frame)
-                ws.send_json({"type": "approval", "outcome": outcome.value})
-                continue
-            if "event" not in frame:  # an error frame here is a real divergence
-                raise AssertionError(f"WS sent an unexpected control frame: {frame}")
-            event_frames.append(frame)
-            if frame["event"] == "done":
-                break
-    return [event_from_dict(f) for f in event_frames], action_frames
+
+    def announce(frame: dict[str, Any]) -> None:
+        action_frames.append(frame)
+        assert write_say(say_path(workspace_root), _ANSWER_TEXT[outcome])
+
+    prompter = SayInboxPrompter(workspace_root, publish=announce, poll=0.02, timeout=5.0)
+    session = Session(cwd=".", model="scripted/parity")
+
+    async def go() -> list[AgentEvent]:
+        agent = _build_escalation_agent(prompter, workspace_root=workspace_root, session=session)
+        return [ev async for ev in agent.astream_turn(_CANONICAL_INPUT)]
+
+    return asyncio.run(go()), action_frames
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("outcome", _OUTCOMES, ids=lambda o: o.value)
-def test_ws_escalation_outcome_matches_sdk(outcome: PermissionOutcome, tmp_path: Path) -> None:
-    """The WS round-trip delivers the client's decision faithfully.
+def test_say_escalation_outcome_matches_sdk(outcome: PermissionOutcome, tmp_path: Path) -> None:
+    """The say-inbox round-trip delivers the answer faithfully.
 
-    For the same outcome, the resumed WS event stream equals the direct-prompter
+    For the same outcome, the say-bridge event stream equals the direct-prompter
     stream. ``[..-deny]`` green while ``[..-allow]`` red (or vice-versa) would mean
     the bridge dropped or fixed the decision instead of relaying it.
     """
     sdk_events, _ = _run_sdk(outcome, tmp_path / "sdk")
-    ws_events, _ = _run_ws(outcome, tmp_path / "ws")
-    assert _normalize(ws_events) == _normalize(sdk_events)
+    say_events, _ = _run_say(outcome, tmp_path / "say")
+    assert _normalize(say_events) == _normalize(sdk_events)
 
 
 @pytest.mark.parametrize("outcome", _OUTCOMES, ids=lambda o: o.value)
-def test_ws_action_required_frame_is_faithful(outcome: PermissionOutcome, tmp_path: Path) -> None:
-    """The outbound half: the ``action_required`` frame carries the SDK's request.
+def test_say_action_required_frame_is_faithful(outcome: PermissionOutcome, tmp_path: Path) -> None:
+    """The outbound half: the announced frame carries the SDK's request.
 
     Exactly one escalation happens, and the frame's tool/args/tier match the
     ``PermissionRequest`` the direct prompter recorded for the same run.
     """
     _, sdk_requests = _run_sdk(outcome, tmp_path / "sdk")
-    _, ws_actions = _run_ws(outcome, tmp_path / "ws")
+    _, say_actions = _run_say(outcome, tmp_path / "say")
 
     assert len(sdk_requests) == 1
-    assert len(ws_actions) == 1
+    assert len(say_actions) == 1
     request = sdk_requests[0]
-    frame = ws_actions[0]
+    frame = say_actions[0]
     assert frame["tool_name"] == request.tool_name
     assert frame["arguments"] == request.arguments
     assert frame["tier"] == request.tier.name

@@ -2588,16 +2588,23 @@ def serve(
 ) -> None:
     """Run the Zak Code HTTP API server (FastAPI over the same core).
 
-    Exposes REST + SSE + a WebSocket channel — see ``docs/ARCHITECTURE.md``. Requires
-    the ``server`` extra (``pip install 'zakcode[server]'``). ``--workspace`` points the
-    served mind at one customer env (one container per env); without it the server uses the
-    configured workspace root (``ZAKCODE_WORKSPACE_ROOT`` / cwd). It is a pointer, not a
-    behavior toggle.
+    The network front door: REST + SSE + the built-in web page at ``/`` — see
+    ``docs/ARCHITECTURE.md``. Requires the ``server`` extra
+    (``pip install 'zakcode[server]'``). ``--workspace`` points the served mind at one
+    customer env (one container per env); without it the server uses the configured
+    workspace root (``ZAKCODE_WORKSPACE_ROOT`` / cwd). It is a pointer, not a behavior
+    toggle.
 
-    Auth: set ``ZAKCODE_AUTH_TOKEN`` to require ``Authorization: Bearer <token>`` on every
-    request (browsers authenticate the WS via the ``Sec-WebSocket-Protocol: bearer, <token>``
-    subprotocol). Without a token the server is unauthenticated, so binding a non-loopback
-    ``--host`` is refused unless you pass ``--insecure`` (acknowledging the exposure).
+    Input rides the ONE say contract: ``POST /say`` (and the web page, and ``zakcode
+    say``) writes the workspace say inbox, and the server's reactive consumer runs a
+    turn per say — including y/a/n permission answers mid-prompt. Set
+    ``ZAKCODE_SERVE_CONSUME=off`` when ``zakcode drive`` owns this workspace's turns
+    (two consumers would race the single say slot).
+
+    Auth: set ``ZAKCODE_AUTH_TOKEN`` to require ``Authorization: Bearer <token>`` on
+    every request. Without a token the server is unauthenticated, so binding a
+    non-loopback ``--host`` is refused unless you pass ``--insecure`` (acknowledging
+    the exposure).
     """
     try:
         import uvicorn
@@ -2707,6 +2714,10 @@ def drive(
     daemon hiccup, recreate the session if the daemon was restarted) — it never decides
     what the mind does. The bearer token, if any, is read from ``ZAKCODE_AUTH_TOKEN``,
     the same source ``serve`` uses.
+
+    Run the serve daemon with ``ZAKCODE_SERVE_CONSUME=off`` for a driven workspace:
+    the driver consumes the say inbox between its turns, and serve's own reactive
+    consumer would race it for the single say slot.
     """
     try:
         from zakcode.server.client import ServerClient

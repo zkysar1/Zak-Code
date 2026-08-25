@@ -23,10 +23,10 @@ Endpoints (see ``docs/ARCHITECTURE.md`` — Server API surface):
 * ``POST /chat``              — run one buffered turn → :class:`ChatResponse`
 * ``POST /chat/stream``       — run one turn, streaming ``AgentEvent``s as SSE
 * ``POST /complete``          — raw schema-valid completion (no tools / loop / session)
-* ``WS   /ws/{session_id}``   — bidirectional: input, interrupt, permission approval
+* ``POST /interrupt``         — stop the current turn (writes the ``.interrupt`` file)
 
 ``/chat`` and ``/chat/stream`` refuse a second turn on a session that already has
-one in flight (HTTP 409); the WebSocket enforces the same one-turn-at-a-time rule
+one in flight (HTTP 409); the say inbox's single slot enforces the same rule
 per connection. Secrets never leave the process: ``GET /config`` dumps settings
 with the only secret-bearing field (``api_key``) excluded at the model level.
 """
@@ -42,12 +42,11 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-import pydantic
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
@@ -83,14 +82,17 @@ from zakcode.server.wire import (
     UploadResponse,
     WatchMarkerRequest,
     WSActionRequired,
-    WSApproval,
-    WSInterrupt,
-    WSUserInput,
-    client_message_from_dict,
     event_to_dict,
     events_schema,
 )
-from zakcode.session.say_inbox import say_path, write_say
+from zakcode.session.say_inbox import (
+    interrupt_path,
+    read_say,
+    request_interrupt,
+    say_path,
+    take_interrupt,
+    write_say,
+)
 from zakcode.session.store import (
     Session,
     SessionCorruptError,
@@ -103,12 +105,9 @@ from zakcode.tools.builtins.default_registry import default_registry
 
 logger = logging.getLogger("zakcode.server")
 
-#: How long the WebSocket permission bridge waits for a client's approval before
-#: failing closed (deny-once). Bounds a stuck/disconnected client from hanging a turn.
+#: How long a permission prompt waits for an operator's answer before failing
+#: closed (deny-once). Bounds an unattended ask-mode deployment from hanging a turn.
 APPROVAL_TIMEOUT_SECONDS = 120.0
-
-#: WebSocket close code for an unauthenticated handshake (RFC 6455 policy violation).
-WS_UNAUTHORIZED_CODE = 1008
 
 #: The only HTTP path served without a bearer token when auth is enabled (liveness probes
 #: from a load balancer / orchestrator must not need a credential).
@@ -154,23 +153,6 @@ def _token_matches(provided: str | None, expected: str) -> bool:
     if not provided:
         return False
     return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
-
-
-def _subprotocol_token(header: str | None) -> str | None:
-    """Extract a bearer token offered as ``Sec-WebSocket-Protocol: bearer, <token>``.
-
-    Browsers cannot set an ``Authorization`` header on a WebSocket handshake, but they CAN
-    offer subprotocols. The client offers exactly two — ``bearer`` and the token — and the
-    server echoes ``bearer`` on accept. This keeps the token out of the URL (and therefore
-    out of uvicorn's access log) unlike a ``?token=`` query param. Returns ``None`` unless the
-    header is precisely ``bearer, <token>``.
-    """
-    if not header:
-        return None
-    parts = [p.strip() for p in header.split(",") if p.strip()]
-    if len(parts) == 2 and parts[0].lower() == "bearer":
-        return parts[1]
-    return None
 
 
 def _decode_upload_data(data: str) -> bytes:
@@ -376,28 +358,6 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
     return factory
 
 
-class WebSocketPermissionPrompter:
-    """A :class:`~zakcode.permissions.PermissionPrompter` that asks over a WebSocket.
-
-    When the core escalates a tool call, :meth:`confirm` sends a
-    :class:`~zakcode.server.wire.WSActionRequired` frame to the client and awaits a
-    matching ``approval`` message (delivered by the connection's receive loop via
-    ``await_approval``). The core stays UI-agnostic; this is just the transport.
-    """
-
-    def __init__(
-        self,
-        send: Callable[[dict[str, Any]], Awaitable[None]],
-        await_approval: Callable[[], Awaitable[PermissionOutcome]],
-    ) -> None:
-        self._send = send
-        self._await_approval = await_approval
-
-    async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
-        await self._send(WSActionRequired.from_request(request).model_dump(mode="json"))
-        return await self._await_approval()
-
-
 #: Live references to background held-say re-queue tasks (a bare ``create_task``
 #: result can be garbage-collected mid-flight; the done-callback discards).
 _REQUEUE_TASKS: set[asyncio.Task[None]] = set()
@@ -434,7 +394,7 @@ class SayInboxPrompter:
     Server-run turns (REST ``/chat`` and ``/chat/stream``, which is every turn the
     autonomous serve driver runs) used to get NO prompter, so ``ask`` mode failed
     closed with nobody ever asked. Now the escalation is announced on the session's
-    watch bus (the same ``action_required`` frame the WebSocket bridge sends; the
+    watch bus as an ``action_required`` frame (visible on ``?full=1`` watches; the
     kid-facing safe projection still drops it by whitelist) and the workspace say
     inbox is polled for a parseable y/a/n answer — the same file ``zakcode say``,
     ``POST /say`` and the cockpit box write, and the same answer grammar
@@ -443,9 +403,9 @@ class SayInboxPrompter:
     Same semantics as the CLI's input mux: a say that is NOT an answer is held and
     re-queued after the prompt resolves (a real message sent mid-prompt is delivered
     as input, never burned on the prompt); a pending interrupt file denies. No
-    answer within ``timeout`` denies — fail toward safe, same bound as the
-    WebSocket bridge — so an unattended ask-mode deployment degrades to exactly the
-    old behavior, just ``timeout`` later.
+    answer within ``timeout`` denies — fail toward safe — so an unattended
+    ask-mode deployment degrades to exactly the old behavior, just ``timeout``
+    later.
     """
 
     def __init__(
@@ -524,10 +484,21 @@ def create_app(
     resolved_provider_factory = provider_factory or _default_provider_factory(resolved_settings)
     resolved_registry = tool_registry or default_registry()
 
+    @contextlib.asynccontextmanager
+    async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # _start_consumer/_stop_consumer are defined later in this function body;
+        # the closure resolves them at server start, long after create_app returns.
+        await _start_consumer()
+        try:
+            yield
+        finally:
+            await _stop_consumer()
+
     app = FastAPI(
         title="Zak Code",
         version=__version__,
         summary="Vendor-agnostic agentic coding engine over HTTP.",
+        lifespan=_lifespan,
     )
 
     # ── auth (opt-in; inert and zero-overhead when no token is configured) ───────
@@ -666,7 +637,26 @@ def create_app(
             model=resolved_settings.default_model,
         )
         resolved_store.save(session)
+        # First session in a fresh workspace becomes the CURRENT conversation: the
+        # marker is what /watch/current and the say consumer resolve, so the web
+        # page and the turn-runner converge on one session. Never steals an
+        # existing marker (a driver-owned workspace keeps its session).
+        marker = _workspace_root / ".current-session"
+        if not marker.exists():
+            with contextlib.suppress(OSError):
+                marker.write_text(session.id + "\n", encoding="utf-8")
         return SessionInfo.from_session(session)
+
+    @app.get("/sessions/current")
+    def get_current_session() -> SessionInfo:
+        """The workspace's CURRENT conversation (the ``.current-session`` marker), 404 if none.
+
+        The web page uses this to join the ongoing conversation instead of creating a
+        session of its own — one workspace, one current conversation, every surface."""
+        sid = _current_session_id()
+        if sid is None:
+            raise HTTPException(status_code=404, detail="no current session")
+        return SessionInfo.from_session(_load_session_or_404(sid))
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str) -> SessionInfo:
@@ -888,136 +878,24 @@ def create_app(
 
     # ── WebSocket: bidirectional input + interrupt + permission approval ────────
 
-    @app.websocket("/ws/{session_id}")
-    async def ws_chat(websocket: WebSocket, session_id: str) -> None:
-        # Authenticate the handshake BEFORE accepting. http middleware never runs for the
-        # websocket scope, so the token is checked here. The token comes from the
-        # ``Authorization`` header (server-to-server clients, e.g. a reverse proxy) or, for
-        # browsers that cannot set that header, the ``Sec-WebSocket-Protocol: bearer, <token>``
-        # subprotocol. We deliberately do NOT read a ``?token=`` query param: uvicorn logs the
-        # request path+query, so a token there would be persisted in the access log. Reject by
-        # closing before accept → the client sees a failed handshake (HTTP 403).
-        if auth_token:
-            presented = _extract_bearer(websocket.headers.get("authorization"))
-            selected_subprotocol: str | None = None
-            if presented is None:
-                presented = _subprotocol_token(websocket.headers.get("sec-websocket-protocol"))
-                if presented is not None:
-                    selected_subprotocol = "bearer"  # echo only what the client offered
-            if not _token_matches(presented, auth_token):
-                await websocket.close(code=WS_UNAUTHORIZED_CODE)
-                return
-            await websocket.accept(subprotocol=selected_subprotocol)
-        else:
-            # Auth off: still ECHO an offered ``bearer`` subprotocol. A browser client written
-            # for an auth-ON deployment always offers ``bearer, <token>``, and per RFC 6455 it
-            # aborts the handshake if it offered subprotocols and the server selected none — so
-            # one client can talk to both postures. There is no token to enforce here.
-            offered = _subprotocol_token(websocket.headers.get("sec-websocket-protocol"))
-            await websocket.accept(subprotocol="bearer" if offered is not None else None)
-        try:
-            session = resolved_store.load(session_id)
-        except SessionNotFound:
-            await websocket.send_json({"type": "error", "detail": f"no session {session_id!r}"})
-            await websocket.close()
-            return
+    @app.post("/interrupt")
+    def interrupt() -> dict[str, Any]:
+        """Ask the workspace's running agent to stop its current turn.
 
-        send_lock = asyncio.Lock()
-        # Holds the future the prompter is currently waiting on (one at a time).
-        approval: dict[str, asyncio.Future[PermissionOutcome]] = {}
-
-        async def send(payload: dict[str, Any]) -> None:
-            # Serialize sends so a turn's events and an action_required prompt never
-            # interleave on the wire.
-            async with send_lock:
-                await websocket.send_json(payload)
-
-        async def await_approval() -> PermissionOutcome:
-            fut: asyncio.Future[PermissionOutcome] = asyncio.get_running_loop().create_future()
-            approval["fut"] = fut
-            try:
-                # Fail CLOSED if the client never answers: a disconnected or unresponsive
-                # client must not hang the turn (and the server resources behind it)
-                # forever. On timeout we deny once — the model sees the denial and the
-                # turn proceeds; the operator can retry.
-                return await asyncio.wait_for(fut, timeout=APPROVAL_TIMEOUT_SECONDS)
-            except TimeoutError:
-                return PermissionOutcome.DENY_ONCE
-            finally:
-                approval.pop("fut", None)
-
-        prompter = WebSocketPermissionPrompter(send, await_approval)
-        agent = resolved_factory(session, None, prompter)
-        current_turn: asyncio.Task[None] | None = None
-
-        async def run_turn(text: str) -> None:
-            try:
-                async for event in agent.astream_turn(text):
-                    # Tee into the watch bus (P0-3) — see chat_stream for the suppress rationale.
-                    with contextlib.suppress(Exception):
-                        event_bus_registry.get_or_create(session.id).publish(event)
-                    await send(event_to_dict(event))
-            except asyncio.CancelledError:
-                await send({"event": "status", "message": "interrupted"})
-                raise
-            except Exception:  # noqa: BLE001 — surface generically, never crash the socket
-                # Log the real detail server-side; send the client a GENERIC frame so a
-                # raw exception string (which may echo filesystem paths / internals) never
-                # crosses the wire. (RISKS.md: WS info-leak) The socket stays alive.
-                logger.exception("turn failed for session %s", session.id)
-                await send({"type": "error", "detail": "internal error"})
-            finally:
-                # Release the per-session reservation in its own finally so a save error
-                # cannot strand it (mirrors /chat/stream). (audit2 #4/#5)
-                try:
-                    resolved_store.save(agent.session)
-                finally:
-                    inflight.discard(session.id)
-
-        try:
-            while True:
-                raw = await websocket.receive_json()
-                try:
-                    msg = client_message_from_dict(raw)
-                except pydantic.ValidationError:
-                    await send({"type": "error", "detail": "unrecognized message"})
-                    continue
-
-                if isinstance(msg, WSUserInput):
-                    # Honor the SAME per-session reservation REST uses: reject if a turn is
-                    # in flight on this connection OR on this session via any transport
-                    # (another WS client or a REST turn) — else two turns race on
-                    # Session.messages/store.save and clobber the transcript. (audit2 #4)
-                    turn_running = current_turn is not None and not current_turn.done()
-                    if turn_running or session.id in inflight:
-                        await send({"type": "error", "detail": "a turn is already running"})
-                        continue
-                    inflight.add(session.id)
-                    current_turn = asyncio.create_task(run_turn(msg.message))
-                elif isinstance(msg, WSInterrupt):
-                    if current_turn is not None and not current_turn.done():
-                        current_turn.cancel()
-                elif isinstance(msg, WSApproval):
-                    fut = approval.get("fut")
-                    if fut is not None and not fut.done():
-                        try:
-                            fut.set_result(PermissionOutcome(msg.outcome))
-                        except ValueError:
-                            fut.set_result(PermissionOutcome.DENY_ONCE)
-        except WebSocketDisconnect:
-            if current_turn is not None and not current_turn.done():
-                current_turn.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await current_turn
-        finally:
-            # The per-connection agent is done — release its egress-proxy listener (no-op unless
-            # ZAKCODE_EGRESS_PROXY is on) so it isn't leaked for the life of the server loop.
-            await _release_agent(agent)
+        Writes the ``.interrupt`` file — the say contract's sibling control signal,
+        the SAME file ``zakcode interrupt`` and the cockpit's Esc write. The serve
+        turn-runner's interrupt watcher consumes it mid-turn and cancels; idle, the
+        next turn start clears it (a stale signal never kills a future turn).
+        """
+        request_interrupt(interrupt_path(resolved_settings.workspace_root))
+        return {"requested": True}
 
     # ── read-only watch surface (P0-3) ──────────────────────────────────────────
 
     @app.get("/watch/{session_id}")
-    async def watch(session_id: str, since: int | None = None) -> EventSourceResponse:
+    async def watch(
+        session_id: str, since: int | None = None, full: bool = False
+    ) -> EventSourceResponse:
         """Read-only SSE tail of a session's events, secret-redacted (P0-3, spec sec 4+7).
 
         A late-joining, read-only observer (a parent watching a kid's agent, a dashboard)
@@ -1045,6 +923,22 @@ def create_app(
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             async for cursor, event in bus.subscribe(since=since):
+                if full:
+                    # Operator-fidelity stream (the served web chat): raw AgentEvents plus
+                    # the control frames the bus carries (action_required announcements are
+                    # plain dicts; user_message/session_rotated markers are models). Bearer-
+                    # gated like every route; the kid-facing default below stays projected.
+                    if isinstance(event, dict):
+                        payload = event
+                    elif isinstance(event, WatchMarkerRequest):
+                        payload = event.model_dump(mode="json")
+                    else:
+                        try:
+                            payload = event_to_dict(event)
+                        except Exception:  # noqa: BLE001 — never break the stream on one frame
+                            continue
+                    yield {"id": str(cursor), "data": json.dumps(payload)}
+                    continue
                 safe = safe_projection.project(event)
                 if safe is None:
                     continue  # dropped by the whitelist (usage/action_required/unknown type)
@@ -1312,6 +1206,126 @@ def create_app(
             return FileResponse(static_dir / "index.html")
 
         app.mount("/app", StaticFiles(directory=static_dir, html=True), name="webclient")
+
+    # ── the reactive turn-runner: serve itself consumes the say inbox ────────────
+    # The web page (and every other surface) is a pure viewer + say-writer: input
+    # reaches the agent ONLY through the say contract, and the SERVER runs the
+    # turn. One message → one turn on the workspace's current session, every event
+    # teed to the watch bus. Disabled via ZAKCODE_SERVE_CONSUME=off when an
+    # external `zakcode drive` owns the workspace (two consumers would race the
+    # single-slot inbox).
+
+    async def _run_turn_for_say(text: str) -> None:
+        sid = _current_session_id()
+        session: Session | None = None
+        if sid is not None:
+            with contextlib.suppress(SessionNotFound, SessionCorruptError, SessionVersionError):
+                session = resolved_store.load(sid)
+        if session is None:
+            session = Session(
+                cwd=str(resolved_settings.workspace_root),
+                model=resolved_settings.default_model,
+            )
+            resolved_store.save(session)
+            with contextlib.suppress(OSError):
+                (_workspace_root / ".current-session").write_text(
+                    session.id + "\n", encoding="utf-8"
+                )
+        bus = event_bus_registry.get_or_create(session.id)
+        # The transcript's user row comes from the bus — the one source of truth,
+        # so a remote `zakcode say` renders on the web page exactly like a typed one.
+        with contextlib.suppress(Exception):
+            bus.publish(WatchMarkerRequest(event="user_message", text=text))
+        inflight.add(session.id)
+        agent: AgentLike | None = None
+        interrupt_fp = interrupt_path(resolved_settings.workspace_root)
+        take_interrupt(interrupt_fp)  # a signal predating this turn has nothing to stop
+        try:
+            agent = resolved_factory(session, None, _inbox_prompter(session.id))
+
+            async def _run() -> None:
+                assert agent is not None
+                async for event in agent.astream_turn(text):
+                    with contextlib.suppress(Exception):
+                        bus.publish(event)
+
+            async def _watch_interrupt() -> None:
+                while True:
+                    await asyncio.sleep(0.3)
+                    if take_interrupt(interrupt_fp):
+                        return
+
+            turn = asyncio.create_task(_run())
+            watcher = asyncio.create_task(_watch_interrupt())
+            try:
+                done, _pending = await asyncio.wait(
+                    {turn, watcher}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if watcher in done and not turn.done():
+                    turn.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await turn
+                    from zakcode.events import AgentStatus
+
+                    with contextlib.suppress(Exception):
+                        bus.publish(AgentStatus(message="interrupted"))
+                elif turn in done:
+                    turn.result()  # surface a turn exception to the except below
+            finally:
+                for t in (turn, watcher):
+                    if not t.done():
+                        t.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await t
+        except Exception:  # noqa: BLE001 — the consumer loop must survive a failed turn
+            logger.exception("say consumer: turn failed for session %s", session.id)
+        finally:
+            try:
+                if agent is not None:
+                    resolved_store.save(agent.session)
+            finally:
+                if agent is not None:
+                    await _release_agent(agent)
+                inflight.discard(session.id)
+
+    async def _consume_one_say() -> bool:
+        """One consumer beat: run a turn if a say is waiting and nothing is in flight."""
+        if inflight:
+            return False
+        text = read_say(say_path(resolved_settings.workspace_root))
+        if text is None:
+            return False
+        await _run_turn_for_say(text)
+        return True
+
+    async def _consume_say_loop() -> None:
+        while True:
+            try:
+                ran = await _consume_one_say()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — a bad beat must not kill the runner
+                logger.exception("say consumer: beat failed")
+                ran = False
+            await asyncio.sleep(0.1 if ran else 0.5)
+
+    consumer_tasks: list[asyncio.Task[None]] = []
+
+    async def _start_consumer() -> None:
+        if resolved_settings.serve_consume:
+            consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
+
+    async def _stop_consumer() -> None:
+        for task in consumer_tasks:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        consumer_tasks.clear()
+
+    # (The lifespan defined above app construction starts/stops the consumer.)
+    # Test seam: exercise one consumer beat without running the background loop
+    # (httpx's ASGITransport does not run lifespan events).
+    app.state.consume_one_say = _consume_one_say
 
     return app
 

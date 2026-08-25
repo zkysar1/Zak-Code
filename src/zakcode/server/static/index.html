@@ -352,8 +352,10 @@
   </div>
 
   <script>
-  // ── A thin client: it creates a session, opens the WebSocket, sends user input,
-  //    and RENDERS the server's AgentEvent stream. No agent logic lives here. All
+  // ── A pure VIEWER + SAY-WRITER: input goes through the say contract (POST /say
+  //    writes <workspace>/.say; POST /interrupt writes .interrupt) and the server
+  //    runs the turns; this page only renders the full-fidelity watch stream
+  //    (GET /watch/current?full=1, SSE). One contract, every surface. All
   //    server/model data reaches the DOM via createElement + textContent only. ────
 
   // The exact AgentEvent discriminator values this renderer handles. Kept in sync
@@ -402,8 +404,8 @@
   const connDot = document.getElementById("conn-dot");
   const connLabel = document.getElementById("conn-label");
 
-  let ws = null;
   let sessionId = null;
+  let lastCursor = null;
   let turnActive = false;
   let turnStart = 0;                            // performance.now() at input send
   let turnUsage = { total_tokens: 0, cost_usd: 0 };  // per-turn accumulator, reset on send
@@ -880,6 +882,25 @@
           add(row("plan", el("span", "", "☰"), box));
         }
         return;
+      case "user_message":
+        // Every surface's says arrive here — the page's own sends included (the
+        // bus is the one source of truth, so a remote `zakcode say` renders
+        // identically to a typed message).
+        assistantBody = null;
+        thinkingBody = null;
+        add(row("user", el("span", "", "›"), el("div", "", ev.text || "")));
+        turnActive = true;
+        turnStart = performance.now();
+        turnUsage = { total_tokens: 0, cost_usd: 0 };
+        setSendMode(true);
+        setStatus("thinking…");
+        stick = true;
+        follow();
+        return;
+      case "session_rotated":
+        add(row("status", el("span", "", "·"), el("div", "meta", "session restarted" + (ev.reason ? " — " + ev.reason : ""))));
+        endTurn();
+        return;
       case "usage":
         if (ev.usage) {
           turnUsage = {
@@ -946,14 +967,23 @@
     document.getElementById("allow-once").focus();
   }
 
-  function sendApproval(outcome) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "approval", outcome }));
+  const OUTCOME_KEYS = { allow_once: "y", allow_session: "a", deny_once: "n" };
+  async function sendApproval(outcome) {
+    try {
+      const resp = await fetch("/say", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: OUTCOME_KEYS[outcome] }),
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
       // The consent audit trail: a permanent receipt — written only when the
       // decision actually went to the server, so it can never claim a grant
       // the server didn't receive.
       const label = CONSENT_LABELS[outcome] || outcome.replace(/_/g, " ");
       add(row("consent", el("span", "", "·"), el("div", "meta", approvedTool + " — " + label)));
+    } catch (e) {
+      add(errCard("approval failed: " + e.message));
+      return;
     }
     approval.hidden = true;
     setStatus("thinking…");
@@ -994,27 +1024,31 @@
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
 
-  function sendMessage() {
+  async function sendMessage() {
     const text = input.value.trim();
-    // The textarea stays enabled during a turn (compose ahead); only submission gates.
-    if (!text || turnActive || !ws || ws.readyState !== WebSocket.OPEN) return;
-    add(row("user", el("span", "", "›"), el("div", "", text)));
-    ws.send(JSON.stringify({ type: "input", message: text }));
+    if (!text) return;
+    try {
+      const resp = await fetch("/say", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (resp.status === 429) { setStatus("agent is busy — a message is already pending"); return; }
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+    } catch (e) {
+      add(errCard("send failed: " + e.message));
+      return;
+    }
+    // The transcript row arrives back on the watch stream as user_message — the
+    // one source of truth, shared with every other surface.
     input.value = "";
     autoGrow();
-    turnActive = true;
-    turnStart = performance.now();
-    turnUsage = { total_tokens: 0, cost_usd: 0 };
-    assistantBody = null;
-    setSendMode(true);
-    setStatus("thinking…");
-    stick = true;
-    follow();
+    setStatus("queued…");
   }
 
   sendBtn.onclick = () => {
     if (turnActive) {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "interrupt" }));
+      fetch("/interrupt", { method: "POST" }).catch(() => add(errCard("interrupt failed")));
       return;
     }
     sendMessage();
@@ -1038,31 +1072,65 @@
   async function init() {
     setConn("connecting", "connecting");
     try {
-      const resp = await fetch("/sessions", { method: "POST" });
-      if (!resp.ok) throw new Error("POST /sessions " + resp.status);
+      // Join the workspace's CURRENT conversation; create it only if none exists —
+      // one workspace, one conversation, shared with every surface.
+      let resp = await fetch("/sessions/current");
+      if (resp.status === 404) resp = await fetch("/sessions", { method: "POST" });
+      if (!resp.ok) throw new Error("session " + resp.status);
       const info = await resp.json();
       sessionId = info.id;
       const id8 = sessionId.slice(0, 8);
       document.getElementById("chip-model").textContent = info.model;
       document.getElementById("chip-session").textContent = id8;
       document.getElementById("empty-meta").textContent = info.model + " · session " + id8;
-      openSocket();
+      watchLoop();
     } catch (e) {
       setConn("closed", "disconnected");
-      add(errCard("could not create a session: " + e.message));
+      add(errCard("could not join a session: " + e.message));
     }
   }
 
-  function openSocket() {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(proto + "://" + location.host + "/ws/" + sessionId);
-    ws.onopen = () => setConn("open", "connected");
-    ws.onmessage = (e) => {
-      try { onFrame(JSON.parse(e.data)); }
-      catch { add(errCard("[bad frame]")); }
-    };
-    ws.onclose = () => { setConn("closed", "disconnected"); endTurn(); };
-    ws.onerror = () => add(errCard("websocket error"));
+  // SSE over fetch (EventSource cannot follow the id/cursor resume contract we
+  // need); reconnects forever, resuming after the last seen cursor.
+  async function watchLoop() {
+    for (;;) {
+      try {
+        const qs = lastCursor !== null ? "&since=" + encodeURIComponent(lastCursor) : "";
+        const resp = await fetch("/watch/" + sessionId + "?full=1" + qs);
+        if (!resp.ok) throw new Error("watch " + resp.status);
+        setConn("open", "connected");
+        await readSse(resp.body, (id, data) => {
+          if (id) lastCursor = id;
+          try { onFrame(JSON.parse(data)); }
+          catch { add(errCard("[bad frame]")); }
+        });
+      } catch (e) { /* fall through to reconnect */ }
+      setConn("connecting", "reconnecting");
+      endTurn();
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+
+  async function readSse(body, onEvent) {
+    const reader = body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let id = null, data = "";
+        for (const line of chunk.split("\n")) {
+          if (line.startsWith("id:")) id = line.slice(3).trim();
+          else if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (data) onEvent(id, data);
+      }
+    }
   }
 
   init();

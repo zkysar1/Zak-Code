@@ -18,7 +18,7 @@ The single source of truth for the *event* shapes remains
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -280,50 +280,14 @@ class ToolInfo(BaseModel):
 # frames are serialized AgentEvents plus the out-of-band action_required prompt.
 
 
-class WSUserInput(BaseModel):
-    """Client asks the server to run a turn."""
-
-    type: Literal["input"] = "input"
-    message: str
-
-
-class WSInterrupt(BaseModel):
-    """Client asks the server to cancel the in-flight turn."""
-
-    type: Literal["interrupt"] = "interrupt"
-
-
-class WSApproval(BaseModel):
-    """Client answers an :class:`WSActionRequired` permission prompt.
-
-    ``outcome`` is a :class:`~zakcode.permissions.PermissionOutcome` value
-    (``allow_once`` / ``allow_session`` / ``deny_once`` / ``deny_session``).
-    """
-
-    type: Literal["approval"] = "approval"
-    outcome: str
-
-
-WSClientMessage = Annotated[
-    WSUserInput | WSInterrupt | WSApproval,
-    Field(discriminator="type"),
-]
-
-_CLIENT_MSG_ADAPTER: TypeAdapter[WSClientMessage] = TypeAdapter(WSClientMessage)
-
-
-def client_message_from_dict(data: dict[str, Any]) -> WSClientMessage:
-    """Parse a client→server WebSocket frame into its typed message."""
-    return _CLIENT_MSG_ADAPTER.validate_python(data)
-
-
 class WSActionRequired(BaseModel):
     """Server→client: a tool call needs operator approval before it can run.
 
-    Sent by the WebSocket permission bridge; the client replies with a
-    :class:`WSApproval`. This is the ``action_required`` control frame from the
-    architecture's API surface (kept separate from :data:`AgentEvent` because it
-    is a request *to* the client, not a turn event).
+    Published by the server's say-inbox permission prompter onto the session's
+    watch bus (the ``action_required`` control frame from the architecture's API
+    surface — kept separate from :data:`AgentEvent` because it is a request *to*
+    the operator, not a turn event). Answered through the say contract: a y/a/n
+    written to the inbox (``POST /say``, ``zakcode say``, the cockpit box).
     """
 
     type: Literal["action_required"] = "action_required"
@@ -354,10 +318,5 @@ __all__ = [
     "UploadResponse",
     "SessionInfo",
     "ToolInfo",
-    "WSUserInput",
-    "WSInterrupt",
-    "WSApproval",
-    "WSClientMessage",
     "WSActionRequired",
-    "client_message_from_dict",
 ]

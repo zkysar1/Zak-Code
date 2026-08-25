@@ -25,7 +25,6 @@ from zakcode.server.wire import (
     UploadRequest,
     UploadResponse,
     WSActionRequired,
-    client_message_from_dict,
     event_from_dict,
     event_to_dict,
 )
@@ -182,21 +181,7 @@ def test_tool_info_from_spec() -> None:
     assert info.parameters["properties"]["command"]["type"] == "string"
 
 
-# ── WebSocket control frames ──────────────────────────────────────────────────
-
-
-def test_ws_client_message_discriminates() -> None:
-    assert client_message_from_dict({"type": "input", "message": "go"}).message == "go"
-    assert client_message_from_dict({"type": "interrupt"}).type == "interrupt"
-    appr = client_message_from_dict({"type": "approval", "outcome": "allow_once"})
-    assert appr.outcome == "allow_once"
-
-
-def test_ws_client_message_rejects_unknown_type() -> None:
-    import pydantic
-
-    with pytest.raises(pydantic.ValidationError):
-        client_message_from_dict({"type": "mystery"})
+# ── control frames ────────────────────────────────────────────────────────────
 
 
 def test_ws_action_required_from_request() -> None:
