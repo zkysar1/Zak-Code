@@ -496,7 +496,7 @@ class AgentLoop:
         sampler: Sampler | None = None,
         skill_resolver: SkillResolver | None = None,
         rule_registry: Any | None = None,
-        turn_end_veto_budget: int = 0,
+        turn_end_vetoable: bool = False,
         completion_review_attempts: int = 0,
         fire_session_start: bool = True,
         trace_label: str | None = None,
@@ -538,9 +538,11 @@ class AgentLoop:
         self.difficulty_classifier = difficulty_classifier
         # TURN_END veto seam (T2/T3): at a vetoable break site (completed / doom_loop /
         # stuck) the loop runs TURN_END hooks; a veto re-enters the loop with the hook's
-        # continuation prompt, at most this many times per turn. 0 (default) disables
-        # the gate entirely — no hook fires, behavior is byte-identical to pre-T2.
-        self.turn_end_veto_budget = turn_end_veto_budget
+        # continuation prompt. Structural, not a knob (2026-08-25 no-knobs ruling): the
+        # MAIN Agent loop is always vetoable; sub-agent loops never are (their completions
+        # return to the parent — a Stop hook must not resurrect them). A registered hook
+        # IS a live hook; vetoes are unbounded and the cost budget is the real bound.
+        self.turn_end_vetoable = turn_end_vetoable
         # Completion-review gate (bounded): when a code-changing turn tries to finish, an
         # INDEPENDENT fresh-context critic (_completion_critic) judges whether the claimed result
         # covers the whole request; only a flagged gap sends the agent back, at most this many
@@ -594,10 +596,12 @@ class AgentLoop:
         # (daemon/locks) -- which can make "parallel" delegation slower than sequential. Skipping it
         # also matches Claude Code, where a sub-agent (Task) does not re-fire SessionStart.
         self._session_started = not fire_session_start
-        if max_iterations is not None:
-            self.max_iterations = max_iterations
-        else:
-            self.max_iterations = self.settings.max_iterations
+        # 0 = unlimited (the only product behavior — minds run for days). A positive cap
+        # is an SDK/test affordance passed by a CALLER (evals, tests, embedders), never
+        # read from operator config: ZAKCODE_MAX_ITERATIONS was removed 2026-08-25.
+        self.max_iterations = (
+            max_iterations if max_iterations is not None else DEFAULT_MAX_ITERATIONS
+        )
         # Bounded RateLimited retry budget (audit P0-4); 0 disables retrying.
         self.provider_max_retries = self.settings.provider_max_retries
         # Per-turn decision trace (observability): the loop records how it routed and every
@@ -1627,15 +1631,16 @@ class AgentLoop:
     ) -> str | None:
         """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
 
-        Returns the continuation prompt when a hook vetoes the stop and the per-turn
-        budget allows re-entry; ``None`` (the overwhelmingly common case) lets the
-        turn end. Observe-only hooks (``register_turn_end_observer``) fire on EVERY turn end,
-        regardless of the budget. Fail-open: a crashing hook run never blocks the stop.
+        Returns the continuation prompt when a hook vetoes the stop; ``None`` (the
+        overwhelmingly common case) lets the turn end. Vetoes are UNBOUNDED on a
+        vetoable loop — a registered Stop hook is in charge of standing down (and the
+        cost budget is the hard bound), matching Claude Code. Observe-only hooks
+        (``register_turn_end_observer``) fire on EVERY turn end, vetoable or not.
+        Fail-open: a crashing hook run never blocks the stop.
         """
         observe = self.hook_manager.has_turn_end_observers()
         vetoable = (
-            self.turn_end_veto_budget > 0
-            and veto_count < self.turn_end_veto_budget
+            self.turn_end_vetoable
             and stop_reason in _VETOABLE_STOP_REASONS
             and self.hook_manager.has_turn_end_hooks()
         )
@@ -1651,8 +1656,8 @@ class AgentLoop:
             degraded=stuck_took_action or stop_reason in _DEGRADED_STOP_REASONS,
             last_assistant_message=_last_assistant_text(turn_assistant),
         )
-        # Observe-only hooks (e.g. signal logging) fire on EVERY turn end — any stop reason, any
-        # budget. Veto-capable hooks below run only at a vetoable break site with budget remaining.
+        # Observe-only hooks (e.g. signal logging) fire on EVERY turn end — any stop reason.
+        # Veto-capable hooks below run only at a vetoable break site on a vetoable loop.
         if observe:
             try:
                 await self.hook_manager.run_turn_end_observers(payload)
@@ -1668,10 +1673,9 @@ class AgentLoop:
         if not result.vetoed:
             return None
         logger.info(
-            "TURN_END hook vetoed stop_reason=%r (veto %d/%d)",
+            "TURN_END hook vetoed stop_reason=%r (veto %d this turn)",
             stop_reason,
             veto_count + 1,
-            self.turn_end_veto_budget,
         )
         return result.continuation_prompt or "Continue."
 
@@ -2094,7 +2098,9 @@ class AgentLoop:
             else:
                 repeat_count = 1
                 last_signature = signature
-            if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
+            if repeat_count >= DOOM_LOOP_THRESHOLD and (
+                self.max_iterations == 0 or iterations < self.max_iterations
+            ):
                 signal_latched = True  # zakpick: a doom loop latches the harder category
                 if doom_recoveries < _MAX_DOOM_RECOVERIES:
                     # Confidently-wrong recovery: before giving up, try ONCE to unstick the model —
@@ -2905,7 +2911,9 @@ class AgentLoop:
                 else:
                     repeat_count = 1
                     last_signature = signature
-                if repeat_count >= DOOM_LOOP_THRESHOLD and iterations < self.max_iterations:
+                if repeat_count >= DOOM_LOOP_THRESHOLD and (
+                    self.max_iterations == 0 or iterations < self.max_iterations
+                ):
                     signal_latched = True  # zakpick: a doom loop latches the harder category
                     if doom_recoveries < _MAX_DOOM_RECOVERIES:
                         # Confidently-wrong recovery (streaming twin of the buffered path): try

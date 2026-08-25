@@ -19,7 +19,7 @@ def test_settings_defaults() -> None:
     settings = Settings()
     assert settings.default_model
     assert settings.provider == settings.default_model.split("/", 1)[0]
-    assert settings.max_iterations == 0  # 0 = unlimited, the field default
+    assert not hasattr(settings, "max_iterations")  # no knob — unlimited is the only behavior
     assert 0.0 <= settings.temperature <= 2.0
 
 

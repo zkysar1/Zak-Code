@@ -178,7 +178,7 @@ def _registry() -> ToolRegistry:
 
 
 def _settings(tmp_path: Path, **over: Any):
-    base: dict[str, Any] = {"workspace_root": tmp_path, "max_iterations": 10}
+    base: dict[str, Any] = {"workspace_root": tmp_path}
     base.update(over)
     return load_settings(**base)
 
@@ -194,13 +194,16 @@ def _make_loop(
     *,
     session: Session | None = None,
     store: SessionStore | None = None,
+    max_iterations: int = 10,
     **settings_over: Any,
 ) -> AgentLoop:
+    # max_iterations is an AgentLoop constructor arg, not a setting (no-knobs ruling).
     return AgentLoop(
         provider,
         _registry(),
         session if session is not None else _session(tmp_path),
         settings=_settings(tmp_path, **settings_over),
+        max_iterations=max_iterations,
         store=store,
     )
 
@@ -264,6 +267,19 @@ async def test_max_iterations_exact_boundary(tmp_path: Path) -> None:
     result = await loop.arun_turn("count")
     assert result.stop_reason == "max_iterations"
     assert result.iterations == cap
+
+
+@pytest.mark.asyncio
+async def test_doom_loop_still_fires_under_unlimited_iterations(tmp_path: Path) -> None:
+    """The doom-loop guard must not depend on a finite cap: with max_iterations=0
+    (unlimited — the product default), an identical-batch loop still halts as
+    "doom_loop". The pre-fix predicate `iterations < self.max_iterations` was
+    always False at 0, silently disabling the guard (found 2026-08-25)."""
+    same = LLMResult(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "again"})])
+    provider = ScriptedProvider([same] * 20)  # identical batch every iteration
+    loop = _make_loop(provider, tmp_path, max_iterations=0)
+    result = await loop.arun_turn("go")
+    assert result.stop_reason == "doom_loop"
 
 
 @pytest.mark.asyncio

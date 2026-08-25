@@ -180,7 +180,7 @@ async def test_unlimited_default_runs_past_the_old_cap(tmp_path: Path) -> None:
     turn sails past the old 50 ceiling and only stops on the provider's own end."""
     from zakcode.config import Settings
 
-    assert Settings(workspace_root=tmp_path).max_iterations == 0
+    assert not hasattr(Settings(workspace_root=tmp_path), "max_iterations")
 
     class _NToolsThenDone(_AlwaysToolProvider):
         async def acomplete(

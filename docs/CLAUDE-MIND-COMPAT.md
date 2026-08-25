@@ -38,7 +38,7 @@ clone the Mind repo, run `zakcode chat` inside it, answer the folder-trust promp
 | **Control skills run when the USER types them** ("Claude MUST NOT invoke /start" — Mind's own rule) | The composed slash turn opens with Claude Code's command-expansion frame (`<command-message>`/`<command-name>`/`<command-args>`) and the system prompt states the contract: a message BEGINNING with `<command-name>` means the human typed it, so user-invocable-only rules are satisfied. Without this the first live boot's model refused `/start sera` as self-invocation ("user-only command, run it yourself in the terminal" — typed from the terminal, 2026-08-19). `use_skill` loads stay `[arguments: …]`-framed — the asymmetry IS the provenance signal, pinned in both directions | `test_slash_frame_echoes_the_typed_command_under_triggers_routing`; `test_render_catalog_states_user_provenance_contract` |
 | `Skill('aspirations') with args='loop'` from the model | `use_skill(name, args=…)` with the `[arguments: …]` frame — deliberately NOT the human path's `<command-args>` shape, so provenance stays legible | `test_use_skill_tool_passes_arguments_to_the_body` |
 | `user-invocable: false` control skills | Enforced on the human `/<name>` path; model→skill chaining still allowed (Mind's own rule) | `test_user_invocable_false_blocks_human_path_not_model_chaining` |
-| **The perpetual loop** (`stop-hook.sh` BLOCK + continue) | `Stop` → `TURN_END`; `{"decision":"block","reason":…}` veto + continuation, bounded by `turn_end_veto_budget` | INTEGRATIONS "Turn-end continuation" |
+| **The perpetual loop** (`stop-hook.sh` BLOCK + continue) | `Stop` → `TURN_END`; `{"decision":"block","reason":…}` veto + continuation — always on for the main loop when a hook is registered | INTEGRATIONS "Turn-end continuation" |
 | PreToolUse deny / rewrite (the `MIND_SID` inject) | `permissionDecision:"deny"` + `updatedInput`; Claude-Code stdin shape (`session_id`, `tool_input`, `cwd`, `tool_response`, `transcript_path`); CC tool-name matchers (`Skill` → `use_skill`, …) | `test_claude_code_hook_contract.py` |
 | `settings.json` + `settings.local.json` hooks | Both read (local over project, plus `.zakcode/settings.json`); `$CLAUDE_PROJECT_DIR` expanded; commands danger-scanned; provider keys scrubbed | `test_settings_loader.py` |
 | **Hooks actually load without env gymnastics** | **Folder trust (2026-08-19, ADR-0013):** unset `ZAKCODE_SETTINGS_HOOKS` + interactive CLI ⇒ ask once per workspace, remember in `~/.zakcode/workspace-trust.json`. The silent-drop failure (hooks ignored, `MIND_SID` missing four layers later) is gone | `test_workspace_trust.py` |
@@ -78,14 +78,14 @@ clone the Mind repo, run `zakcode chat` inside it, answer the folder-trust promp
    - `ZAKCODE_PERMISSION_MODE` — default `ask` blocks on a human at every gated tool call
      (and fails closed with no terminal); `autonomous` is the unattended posture, with
      dangerous hook commands still hard-denied by the settings loader.
-   - `ZAKCODE_TURN_END_VETO_BUDGET` — default **0 = the Stop-hook seam is OFF**: the Mind's
-     loop hook can observe but never veto, so the perpetual loop never re-enters. Each loop
-     iteration consumes one veto per turn — size it effectively unbounded (e.g. `1000000`).
-   - `ZAKCODE_MAX_ITERATIONS` — default **50 per turn**, and an autonomous Mind session is
-     ONE long vetoed-continuation turn, so 50 model calls ends it with an unvetoable
-     `max_iterations` stop. Size like the veto budget.
-   Recommended sequence: first sprout supervised (`/start <agent> --mode assistant`, defaults
-   fine, approve prompts as they come), then flip to autonomous with all three set.
+   Both former sizing knobs are GONE (2026-08-25 no-knobs ruling — their silent-off
+   defaults cost a full autonomous-loop death): the Stop-hook seam is structurally
+   ALWAYS ON for the main loop (a registered `Stop` hook fires at every vetoable turn
+   end, vetoes unbounded — the hook stands down, the cost budget is the hard bound),
+   and iterations are ALWAYS unlimited (a hard cap exists only as an SDK constructor
+   arg for tests/evals). Recommended sequence: first sprout supervised
+   (`/start <agent> --mode assistant`, approve prompts as they come), then flip to
+   autonomous — nothing to size.
 
 ## Provenance
 

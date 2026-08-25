@@ -86,15 +86,22 @@ def _registry() -> ToolRegistry:
     return reg
 
 
-def _make_loop(provider: Provider, tmp_path: Path, **settings_over: Any) -> AgentLoop:
-    settings_over.setdefault("max_iterations", 10)
+def _make_loop(
+    provider: Provider,
+    tmp_path: Path,
+    *,
+    max_iterations: int = 10,
+    turn_end_vetoable: bool = True,
+    **settings_over: Any,
+) -> AgentLoop:
     settings = load_settings(workspace_root=tmp_path, **settings_over)
     return AgentLoop(
         provider,
         _registry(),
         Session(cwd=str(tmp_path), model="test/model"),
         settings=settings,
-        turn_end_veto_budget=settings.turn_end_veto_budget,
+        max_iterations=max_iterations,
+        turn_end_vetoable=turn_end_vetoable,
     )
 
 
@@ -124,26 +131,29 @@ def _same_call(i: int) -> LLMResult:
     return LLMResult(tool_calls=[ToolCall(id=f"c{i}", name="echo", arguments={"text": "same"})])
 
 
-# ── budget zero: byte-identical default ───────────────────────────────────────
+# ── non-vetoable loop (the sub-agent shape): seam structurally off ────────────
 
 
 @pytest.mark.asyncio
-async def test_turn_end_budget_zero_no_hook_fires(tmp_path: Path) -> None:
+async def test_turn_end_subagent_loop_never_vetoes(tmp_path: Path) -> None:
+    """A loop built without ``turn_end_vetoable`` (the sub-agent construction shape)
+    never consults veto hooks — a Stop hook must not resurrect a sub-agent whose
+    completion returns to its parent."""
     hook = RecordingHook([_veto()])
-    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path)  # budget defaults to 0
+    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path, turn_end_vetoable=False)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "completed"
     assert hook.payloads == []  # gate short-circuits before any payload is built
 
 
-# ── allow / veto / budget on "completed" ──────────────────────────────────────
+# ── allow / veto on "completed" ───────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_turn_end_hook_allows_completed(tmp_path: Path) -> None:
     hook = RecordingHook([None])
-    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path, turn_end_veto_budget=5)
+    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "completed"
@@ -155,7 +165,7 @@ async def test_turn_end_hook_allows_completed(tmp_path: Path) -> None:
 async def test_turn_end_hook_vetoes_completed_once(tmp_path: Path) -> None:
     hook = RecordingHook([_veto("Run the tests before declaring done."), None])
     provider = ScriptedProvider([_TEXT_DONE, LLMResult(text="ran them; done")])
-    loop = _make_loop(provider, tmp_path, turn_end_veto_budget=5)
+    loop = _make_loop(provider, tmp_path)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "completed"
@@ -168,15 +178,17 @@ async def test_turn_end_hook_vetoes_completed_once(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_turn_end_budget_exhausted(tmp_path: Path) -> None:
-    hook = RecordingHook([_veto(), _veto(), _veto()])
-    provider = ScriptedProvider([_TEXT_DONE, _TEXT_DONE, _TEXT_DONE])
-    loop = _make_loop(provider, tmp_path, turn_end_veto_budget=2)
+async def test_turn_end_vetoes_are_unbounded(tmp_path: Path) -> None:
+    """No per-turn veto cap (no-knobs ruling): the hook is consulted at EVERY vetoable
+    stop and is itself in charge of standing down (here: after three vetoes)."""
+    hook = RecordingHook([_veto(), _veto(), _veto(), None])
+    provider = ScriptedProvider([_TEXT_DONE, _TEXT_DONE, _TEXT_DONE, _TEXT_DONE])
+    loop = _make_loop(provider, tmp_path)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "completed"
-    assert result.iterations == 3  # 2 vetoes consumed, third stop is final
-    assert len(hook.payloads) == 2  # the third gate short-circuits on the spent budget
+    assert result.iterations == 4  # 3 vetoes consumed, the hook then allowed the stop
+    assert len(hook.payloads) == 4  # consulted every time — no budget short-circuit
 
 
 # ── non-vetoable stop reasons ─────────────────────────────────────────────────
@@ -192,7 +204,7 @@ async def test_turn_end_max_iterations_not_vetoable(tmp_path: Path) -> None:
             for i in range(4)
         ]
     )
-    loop = _make_loop(provider, tmp_path, max_iterations=2, turn_end_veto_budget=5)
+    loop = _make_loop(provider, tmp_path, max_iterations=2)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("go")
     assert result.stop_reason == "max_iterations"
@@ -202,7 +214,7 @@ async def test_turn_end_max_iterations_not_vetoable(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_turn_end_provider_error_not_vetoable(tmp_path: Path) -> None:
     hook = RecordingHook([_veto()])
-    loop = _make_loop(FailingProvider(), tmp_path, provider_max_retries=0, turn_end_veto_budget=5)
+    loop = _make_loop(FailingProvider(), tmp_path, provider_max_retries=0)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "provider_error"
@@ -214,7 +226,7 @@ async def test_turn_end_fire_refuses_non_vetoable_reasons(tmp_path: Path) -> Non
     # Unit check on the gate itself: even with budget + hooks, the non-vetoable
     # reasons (incl. recipe_stalled, whose full ladder is heavy to script) get None.
     hook = RecordingHook([_veto(), _veto(), _veto()])
-    loop = _make_loop(ScriptedProvider([]), tmp_path, turn_end_veto_budget=5)
+    loop = _make_loop(ScriptedProvider([]), tmp_path)
     loop.hook_manager.register_turn_end(hook)
     for reason in ("recipe_stalled", "max_iterations", "provider_error"):
         prompt = await loop._fire_turn_end(
@@ -234,7 +246,7 @@ async def test_turn_end_doom_loop_veto_pairs_and_resets(tmp_path: Path) -> None:
     # + re-enter, the hook is NOT consulted), THEN the turn_end veto re-enters, THEN the final
     # non-veto break. The RESET means each needs a full fresh streak -> 3 * THRESHOLD iterations.
     provider = ScriptedProvider([_same_call(i) for i in range(3 * DOOM_LOOP_THRESHOLD + 1)])
-    loop = _make_loop(provider, tmp_path, max_iterations=12, turn_end_veto_budget=5)
+    loop = _make_loop(provider, tmp_path, max_iterations=12)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("repeat")
     assert result.stop_reason == "doom_loop"
@@ -261,7 +273,7 @@ async def test_turn_end_doom_loop_veto_pairs_and_resets(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_turn_end_payload_contents(tmp_path: Path) -> None:
     hook = RecordingHook([None])
-    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path, turn_end_veto_budget=1)
+    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path)
     loop.hook_manager.register_turn_end(hook)
     await loop.arun_turn("hi")
     payload = hook.payloads[0]
@@ -281,7 +293,7 @@ async def test_turn_end_payload_contents(tmp_path: Path) -> None:
 async def test_turn_end_streaming_veto_yields_status(tmp_path: Path) -> None:
     hook = RecordingHook([_veto("Keep going."), None])
     provider = ScriptedProvider([_TEXT_DONE, LLMResult(text="done now")])
-    loop = _make_loop(provider, tmp_path, turn_end_veto_budget=5)
+    loop = _make_loop(provider, tmp_path)
     loop.hook_manager.register_turn_end(hook)
     events = [ev async for ev in loop.astream_turn("hi")]
     statuses = [ev.message for ev in events if isinstance(ev, AgentStatus)]
@@ -292,9 +304,9 @@ async def test_turn_end_streaming_veto_yields_status(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_turn_end_streaming_budget_zero_unchanged(tmp_path: Path) -> None:
+async def test_turn_end_streaming_subagent_loop_unchanged(tmp_path: Path) -> None:
     hook = RecordingHook([_veto()])
-    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path)  # budget 0
+    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path, turn_end_vetoable=False)
     loop.hook_manager.register_turn_end(hook)
     events = [ev async for ev in loop.astream_turn("hi")]
     assert [ev for ev in events if isinstance(ev, AgentDone)][-1].stop_reason == "completed"
@@ -309,29 +321,34 @@ async def test_turn_end_crashing_hook_fails_open(tmp_path: Path) -> None:
     def explode(payload: TurnEndPayload) -> TurnEndResult | None:
         raise RuntimeError("hook bug")
 
-    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path, turn_end_veto_budget=5)
+    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path)
     loop.hook_manager.register_turn_end(explode)
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "completed"  # a broken hook never blocks the stop
 
 
-# ── settings / Agent plumbing (T4) ────────────────────────────────────────────
+# ── settings / Agent plumbing (T4, no-knobs) ──────────────────────────────────
 
 
-def test_turn_end_budget_parses_from_env(monkeypatch, tmp_path: Path) -> None:
+def test_no_turn_end_env_knob(monkeypatch, tmp_path: Path) -> None:
+    """The veto-budget knob is GONE (no-knobs ruling): the retired env var is inert
+    and Settings carries no field for it."""
     monkeypatch.setenv("ZAKCODE_TURN_END_VETO_BUDGET", "50")
     settings = load_settings(workspace_root=tmp_path)
-    assert settings.turn_end_veto_budget == 50
+    assert not hasattr(settings, "turn_end_veto_budget")
 
 
-def test_agent_threads_budget_to_loop(tmp_path: Path) -> None:
+def test_agent_main_loop_is_always_vetoable(tmp_path: Path) -> None:
     agent = zakcode.Agent(
         default_model="ollama_chat/qwen2.5",
         workspace_root=tmp_path,
-        turn_end_veto_budget=7,
     )
-    assert agent.loop.turn_end_veto_budget == 7
+    assert agent.loop.turn_end_vetoable is True
 
 
-def test_default_budget_is_zero(tmp_path: Path) -> None:
-    assert load_settings(workspace_root=tmp_path).turn_end_veto_budget == 0
+def test_no_max_iterations_setting(monkeypatch, tmp_path: Path) -> None:
+    """ZAKCODE_MAX_ITERATIONS is inert: no Settings field — a hard cap is an SDK
+    constructor arg only, and the product runs unlimited."""
+    monkeypatch.setenv("ZAKCODE_MAX_ITERATIONS", "200")
+    settings = load_settings(workspace_root=tmp_path)
+    assert not hasattr(settings, "max_iterations")

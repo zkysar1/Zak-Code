@@ -390,7 +390,7 @@ def test_agent_bad_weights_falls_back(tmp_path) -> None:
 
 async def test_signal_log_written_through_real_turn(tmp_path) -> None:
     # The gap that hid the dead-by-default bug: drive a REAL turn and assert the signal logger
-    # fires with the DEFAULT turn_end_veto_budget (0). It must run as an observe-only hook.
+    # fires as an observe-only hook even when no veto hook is registered.
     (tmp_path / "target.py").write_text("x = 1\n", encoding="utf-8")
     log = tmp_path / "sig.jsonl"
     agent = Agent(
