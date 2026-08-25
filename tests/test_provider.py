@@ -566,3 +566,43 @@ def test_ollama_sets_env_base(monkeypatch: pytest.MonkeyPatch) -> None:
     import os
 
     assert os.environ["OLLAMA_API_BASE"] == "http://host:11434"
+
+
+# ---------------------------------------------------------------------------
+# Traffic smoothing (_pace) — ADR-0014
+
+
+@pytest.mark.asyncio
+async def test_pace_spaces_rapid_request_starts(monkeypatch) -> None:
+    """A request starting inside the interval sleeps out the remainder. The previous
+    start is planted directly (patching time.monotonic globally breaks the event
+    loop, which reads the same clock)."""
+    import time as _time
+
+    provider = _provider()
+    slept: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(lp.asyncio, "sleep", fake_sleep)
+    provider._last_request_started = _time.monotonic()  # a request JUST started
+    await provider._pace()
+    assert len(slept) == 1
+    assert 0.9 <= slept[0] <= lp._MIN_REQUEST_INTERVAL_S
+
+
+@pytest.mark.asyncio
+async def test_pace_never_delays_after_a_normal_length_call(monkeypatch) -> None:
+    import time as _time
+
+    provider = _provider()
+
+    async def fail_sleep(delay: float) -> None:  # pragma: no cover — must never run
+        raise AssertionError(f"paced a non-burst request by {delay}s")
+
+    monkeypatch.setattr(lp.asyncio, "sleep", fail_sleep)
+    provider._last_request_started = 0.0
+    await provider._pace()  # first request of the instance: never paced
+    provider._last_request_started = _time.monotonic() - 5.0  # a normal-length call ago
+    await provider._pace()

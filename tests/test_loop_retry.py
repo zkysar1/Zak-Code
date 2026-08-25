@@ -180,14 +180,17 @@ def test_rate_limit_retry(fast_sleep: list[float]) -> None:
     assert fast_sleep == [0.5]  # honored the server-suggested delay
 
 
-def test_rate_limit_exhausted_ends_turn_gracefully(fast_sleep: list[float]) -> None:
+def test_rate_limit_exhausted_ends_turn_gracefully(fast_sleep: list[float], monkeypatch) -> None:
+    # The horizon is wall clock; zeroing it makes exhaustion immediate (the first
+    # 429 always gets one grace retry before the elapsed check can fire).
+    monkeypatch.setattr("zakcode.agent.loop._RATE_LIMIT_RETRY_HORIZON", 0.0)
     provider = FlakyProvider([RateLimited("429", retry_after=0.0)] * 10)
-    loop = _make_loop(provider, provider_max_retries=2)
+    loop = _make_loop(provider)
     result = asyncio.run(loop.arun_turn("hi"))
     assert result.stop_reason == "provider_error"
     assert result.degraded
     assert "429" in result.error
-    assert provider.calls == 3  # initial + 2 retries
+    assert provider.calls == 2  # initial + the single grace retry
     # The session is consistent: the user message persisted, no half assistant turn.
     assert [m.role for m in loop.session.messages] == ["user"]
 
@@ -202,13 +205,16 @@ def test_non_retryable_provider_error_is_terminal_immediately(fast_sleep: list[f
     assert fast_sleep == []
 
 
-def test_retries_disabled_by_config(fast_sleep: list[float]) -> None:
-    provider = FlakyProvider([RateLimited("429")])
-    loop = _make_loop(provider, provider_max_retries=0)
+def test_rate_limit_storm_is_outlasted_within_horizon(fast_sleep: list[float]) -> None:
+    """The 2026-08-26 field shape: a 429 burst longer than any small attempt count
+    must be ridden out — the budget is TIME inside _RATE_LIMIT_RETRY_HORIZON, not a
+    3-attempt counter (three 2s/4s retries killed a 42-iteration vertex_ai run)."""
+    provider = FlakyProvider([RateLimited("429", retry_after=0.0)] * 10)
+    loop = _make_loop(provider)
     result = asyncio.run(loop.arun_turn("hi"))
-    assert result.stop_reason == "provider_error"
-    assert provider.calls == 1
-    assert fast_sleep == []
+    assert result.stop_reason == "completed"
+    assert provider.calls == 11  # initial + 10 storm retries, then recovery
+    assert fast_sleep == [0.0] * 10
 
 
 def test_loop_still_usable_after_provider_error(fast_sleep: list[float]) -> None:
@@ -227,13 +233,14 @@ def test_loop_still_usable_after_provider_error(fast_sleep: list[float]) -> None
 
 def test_retry_delay_honors_retry_after_and_caps() -> None:
     assert AgentLoop._retry_delay(RateLimited("x", retry_after=5.0), 1) == 5.0
-    assert AgentLoop._retry_delay(RateLimited("x", retry_after=999.0), 1) == 30.0  # capped
+    assert AgentLoop._retry_delay(RateLimited("x", retry_after=999.0), 1) == 120.0  # ceiling
     assert AgentLoop._retry_delay(RateLimited("x", retry_after=-1.0), 1) == 0.0  # floored
-    # No retry_after → exponential from the base, capped.
-    assert AgentLoop._retry_delay(RateLimited("x"), 1) == 1.0
-    assert AgentLoop._retry_delay(RateLimited("x"), 2) == 2.0
-    assert AgentLoop._retry_delay(RateLimited("x"), 3) == 4.0
-    assert AgentLoop._retry_delay(RateLimited("x"), 10) == 30.0  # capped
+    # No retry_after → exponential from the base with EQUAL JITTER: uniform over the
+    # top half of the capped 2 * 2**(attempt-1) schedule, so fleets de-synchronize.
+    for attempt, ceiling in [(1, 2.0), (2, 4.0), (3, 8.0), (10, 60.0)]:
+        for _ in range(25):
+            d = AgentLoop._retry_delay(RateLimited("x"), attempt)
+            assert ceiling / 2 <= d <= ceiling
 
 
 # ── streaming path ───────────────────────────────────────────────────────────
@@ -254,8 +261,12 @@ def test_streaming_rate_limit_retries_before_first_event(fast_sleep: list[float]
     assert any(getattr(ev, "text", None) == "hello" for ev in events)
 
 
-def test_streaming_midstream_failure_is_terminal_not_retried(fast_sleep: list[float]) -> None:
-    """Once deltas reached the client, a retry would duplicate them — never retry."""
+def test_streaming_midstream_failure_is_terminal_but_resumable(
+    fast_sleep: list[float],
+) -> None:
+    """Once deltas reached the client, a retry would duplicate them — never retry.
+    But the stop is RESUMABLE (2026-08-26 vertex_ai incident): the partial text is
+    persisted with an interruption rail, and the status names the saved session."""
     provider = FlakyStreamProvider([], fail_midstream=RateLimited("429 mid-stream"))
     loop = _make_loop(provider)
     events = asyncio.run(_collect(loop, "hi"))
@@ -266,8 +277,12 @@ def test_streaming_midstream_failure_is_terminal_not_retried(fast_sleep: list[fl
     assert fast_sleep == []
     statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
     assert any("provider error" in s for s in statuses)
-    # Partial streamed text is not persisted: the failed turn leaves no assistant msg.
-    assert [m.role for m in loop.session.messages] == ["user"]
+    assert any("continues from here" in s for s in statuses)
+    # The partial streamed text IS persisted (resumable stop), flagged interrupted.
+    roles = [m.role for m in loop.session.messages]
+    assert roles == ["user", "assistant", "user"]
+    assert loop.session.messages[1].text == "hello"
+    assert "interrupted partway" in loop.session.messages[2].text
 
 
 class ThinkingThenFailProvider(FlakyStreamProvider):
@@ -313,13 +328,14 @@ def test_thinking_only_stream_stays_retryable(fast_sleep: list[float]) -> None:
     assert any(getattr(ev, "text", None) == "recovered" for ev in events)
 
 
-def test_streaming_exhausted_retries_end_gracefully(fast_sleep: list[float]) -> None:
-    provider = FlakyStreamProvider([RateLimited("429")] * 10)
-    loop = _make_loop(provider, provider_max_retries=1)
+def test_streaming_exhausted_retries_end_gracefully(fast_sleep: list[float], monkeypatch) -> None:
+    monkeypatch.setattr("zakcode.agent.loop._RATE_LIMIT_RETRY_HORIZON", 0.0)
+    provider = FlakyStreamProvider([RateLimited("429", retry_after=0.0)] * 10)
+    loop = _make_loop(provider)
     events = asyncio.run(_collect(loop, "hi"))
     done = events[-1]
     assert done.stop_reason == "provider_error"
-    assert provider.stream_calls == 2  # initial + 1 retry
+    assert provider.stream_calls == 2  # initial + the single grace retry
 
 
 def test_streaming_done_event_carries_error_detail(fast_sleep: list[float]) -> None:
@@ -593,7 +609,7 @@ def test_buffered_consecutive_rejections_escalate_temperature(
             ModelOutputRejected("malformed 2 (tool_use_failed)"),
         ]
     )
-    loop = _make_loop(provider, provider_max_retries=3)
+    loop = _make_loop(provider)  # rejection retries: fixed _MAX_INTERRUPT_RETRIES bound
     result = asyncio.run(loop.arun_turn("hi"))
     assert result.stop_reason == "completed"
     assert provider.calls == 3
@@ -614,7 +630,7 @@ def test_buffered_rejection_then_rate_limit_resets_temperature(
             RateLimited("429"),
         ]
     )
-    loop = _make_loop(provider, provider_max_retries=3)
+    loop = _make_loop(provider)  # rejection retries: fixed _MAX_INTERRUPT_RETRIES bound
     result = asyncio.run(loop.arun_turn("hi"))
     assert result.stop_reason == "completed"
     assert provider.calls == 3

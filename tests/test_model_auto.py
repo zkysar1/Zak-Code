@@ -333,7 +333,7 @@ class FailingProvider(Provider):
 
 
 def _make_loop(provider: Provider, failover) -> AgentLoop:
-    settings = load_settings(workspace_root=Path.cwd(), provider_max_retries=0)
+    settings = load_settings(workspace_root=Path.cwd())
     return AgentLoop(
         provider,
         ToolRegistry(),
@@ -373,13 +373,15 @@ def test_failover_fires_at_most_once_per_turn() -> None:
     assert len(calls) == 1  # once per turn, then graceful stop
 
 
-def test_rate_limited_exhaustion_does_not_fail_over() -> None:
+def test_rate_limited_exhaustion_does_not_fail_over(monkeypatch) -> None:
     calls: list[str] = []
 
     def failover(exc):  # pragma: no cover — must never run
         calls.append(str(exc))
         return FailingProvider(None), "a -> b"
 
+    # Zero the wall-clock horizon so the 429 exhausts after its one grace retry.
+    monkeypatch.setattr("zakcode.agent.loop._RATE_LIMIT_RETRY_HORIZON", 0.0)
     loop = _make_loop(FailingProvider(RateLimited("429", retry_after=0.0)), failover)
     result = asyncio.run(loop.arun_turn("hi"))
     assert result.stop_reason == "provider_error"

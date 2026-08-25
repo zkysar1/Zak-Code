@@ -480,3 +480,42 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   once and the Stop-hook loop, PreToolUse injection, and SessionStart hooks all fire from then
   on. The trust store is keyed per surface (`{path: {settings_hooks: …}}`) so permissions /
   statusLine / output-styles can join the same one-decision flow later without re-asking.
+
+## ADR-0014 — Provider 429s are survivable: fixed backoff horizon, smoothing, resumable stop
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** A 429 RESOURCE_EXHAUSTED mid-run on Vertex AI (gemini-2.5-flash, dynamic
+  shared quota) was retried 3 times over ~6 seconds, then the run hard-stopped with a
+  mid-stream fallback error and the operator read a 42-iteration / 2.45M-token run as lost.
+  Google's own guidance for dynamic shared quota is that a 429 is *temporary contention*:
+  the remedy is minutes-scale exponential backoff with jitter plus traffic smoothing — a
+  3-attempt counter is the wrong shape entirely. Separately, the engine already persisted
+  every iteration at message boundaries, but discarded the final partial streamed text and
+  never *said* the session was resumable, so a survivable stop looked like a total loss.
+- **Decision:** Three changes in the core engine, none of them knobs (no-knobs ruling —
+  the task brief proposed `ZAKCODE_PROVIDER_RETRY_ATTEMPTS` / `..._MAX_SECONDS` envs and
+  they were deliberately not added; the former `provider_max_retries` setting was removed):
+  1. **Fixed retry policy** (`agent/loop.py`): a pure rate limit (429 / transient 5xx)
+     retries with equal-jitter exponential backoff (base 2s, per-wait cap 60s), honoring
+     `Retry-After` up to 120s, for as long as wall-clock elapsed since the first 429 stays
+     inside a 300s horizon (`_RATE_LIMIT_RETRY_HORIZON`). Wall clock — not an attempt count
+     or a sum of sleeps — so zero-delay `Retry-After` sequences cannot retry unboundedly.
+     Timeouts and provider-rejected tool calls keep a small fixed bound
+     (`_MAX_INTERRUPT_RETRIES = 3`): waiting minutes on a hung backend helps nobody.
+  2. **Traffic smoothing** (`providers/litellm_provider.py`): request STARTS on one
+     provider instance are paced ≥1s apart (`_pace`). Invisible on real calls (every model
+     call takes longer); it only shaves the burst edge that dynamic shared quota punishes.
+  3. **Resumable stop** (`agent/loop.py`): when retries genuinely exhaust, the turn ends
+     `provider_error` as before — but a mid-stream failure's partial *text* is now persisted
+     (with an "interrupted partway; continue from where it left off" rail; partial tool-call
+     fragments stay discarded — unexecutable), and the stop status names the recovery:
+     the session is saved, the next message or `/resume` continues it. No parallel store —
+     this is the existing #184 session/transcript machinery doing what it already did,
+     plus the two missing pieces (the tail, and saying so).
+- **Alternatives rejected:** the brief's env-var knobs (cognitive load; one way of doing
+  things); retrying mid-stream 429s (re-issuing re-yields text the client already rendered);
+  litellm-level `num_retries` (two compounding retry layers — the loop stays THE mechanism).
+- **Consequences:** a quota storm now costs up to ~5 minutes of jittered waiting instead of
+  killing the run at 6 seconds; fleets desynchronize instead of re-spiking in lockstep; and
+  when the horizon is genuinely exhausted the operator is told, truthfully, that nothing
+  was lost.

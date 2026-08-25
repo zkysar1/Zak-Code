@@ -11,6 +11,7 @@ their results are validated/narrowed explicitly before use.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -226,6 +227,16 @@ def _max_stop_sequences(model: str) -> int | None:
 _OLLAMA_NUM_CTX_CAP = 16_384
 
 
+#: Minimum seconds between request STARTS on one provider instance (traffic
+#: smoothing). Google's dynamic-shared-quota guidance pairs exponential backoff with
+#: SMOOTHING: second-level burst spikes trigger 429s even when average traffic is
+#: fine, and an agent loop bursts exactly that way when tool calls return instantly
+#: (vertex_ai/gemini-2.5-flash field incident, 2026-08-26). One second is invisible
+#: on real calls (every model call takes longer than this) — it only shaves the
+#: burst edge. Fixed, not a knob (no-knobs ruling).
+_MIN_REQUEST_INTERVAL_S = 1.0
+
+
 class LiteLLMProvider(Provider):
     """A :class:`Provider` backed by litellm.
 
@@ -307,6 +318,9 @@ class LiteLLMProvider(Provider):
         #: than per call — the values are constant for the process, and expanding at
         #: call time would put a formatting operation on the hot path for no gain.
         self.extra_headers: dict[str, str] = _expand_headers(resolved_extra_headers)
+        #: Traffic smoothing (2026-08-26): monotonic time of the most recent request
+        #: START on this instance — see _pace(). Never a knob.
+        self._last_request_started = 0.0
         # Per-call wall-clock ceiling: a hung/stuck model call can never block the loop forever.
         # litellm raises Timeout past this, which _map_error turns into a recoverable provider error
         # (the loop's own retry handles it; litellm's num_retries stays 0). Explicit kwarg wins,
@@ -777,6 +791,18 @@ class LiteLLMProvider(Provider):
             blocks.append({"type": "text", "text": dynamic})
         wire_messages[0] = {**wire_messages[0], "content": blocks}
 
+    async def _pace(self) -> None:
+        """Sleep just enough to keep request STARTS >= ``_MIN_REQUEST_INTERVAL_S`` apart.
+
+        Per-instance traffic smoothing for dynamic shared quota: paces only the burst
+        edge (instant tool round-trips re-calling the model sub-second); a request
+        following a normal-length call never waits.
+        """
+        wait = self._last_request_started + _MIN_REQUEST_INTERVAL_S - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._last_request_started = time.monotonic()
+
     async def acomplete(
         self,
         messages: list[Message],
@@ -791,6 +817,7 @@ class LiteLLMProvider(Provider):
             wire_messages, tools, response_format=response_format, **kw
         )
 
+        await self._pace()
         start = time.perf_counter()
         try:
             response = await litellm.acompletion(**call_kwargs)
@@ -916,6 +943,7 @@ class LiteLLMProvider(Provider):
         call_kwargs["stream_options"] = {"include_usage": True}
 
         finish_reason: str | None = None
+        await self._pace()
         try:
             resp = await litellm.acompletion(**call_kwargs)
             async for chunk in resp:

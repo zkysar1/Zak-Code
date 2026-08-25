@@ -223,9 +223,9 @@ class Provider(ABC):
     retry, error-taxonomy mapping, and token/cost accounting. The agent loop holds only
     this type. Rate-limit retry POLICY (whether to wait out a 429, how long, how often)
     deliberately lives one level up, in the agent loop — the harness decides whether
-    waiting is worth it, not the transport (see ``Settings.provider_max_retries``);
-    implementations should surface a clean :class:`RateLimited` rather than retrying
-    429s themselves.
+    waiting is worth it, not the transport (a fixed jittered-backoff horizon; see the
+    retry-policy constants in ``agent/loop.py``); implementations should surface a
+    clean :class:`RateLimited` rather than retrying 429s themselves.
     """
 
     @abstractmethod

@@ -48,8 +48,9 @@ Stop conditions
   thinking channel and emit nothing; without this reason such turns masqueraded as
   clean completions with zero user-visible output (field incidents 2026-08-25).
 * ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4).
-  A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried up
-  to ``Settings.provider_max_retries`` times with ``retry_after``-aware backoff;
+  A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried with
+  ``retry_after``-aware jittered backoff inside a fixed ~5-minute horizon (its
+  timeout/rejection subclasses: a fixed :data:`_MAX_INTERRUPT_RETRIES` attempts);
   a :class:`~zakcode.providers.base.ContextWindowExceeded` is recovered up to
   ``_MAX_CONTEXT_RECOVERY`` times by force-compacting and retrying the same call in
   place (parity #1b); any other :class:`~zakcode.providers.base.ProviderError` is
@@ -78,6 +79,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import random
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -186,11 +188,26 @@ _DOOM_RECOVERY_NUDGE = (
     "mistaken assumption). Then take a DIFFERENT approach — a different command, tool, or edit."
 )
 
-#: RateLimited retry backoff (audit P0-4): when the provider gave no ``retry_after``,
-#: wait ``_RETRY_BASE_DELAY * 2**(attempt-1)`` seconds; either source is capped at
-#: ``_RETRY_MAX_DELAY`` so a hostile/huge Retry-After can't stall a turn for minutes.
-_RETRY_BASE_DELAY = 1.0
-_RETRY_MAX_DELAY = 30.0
+#: Rate-limit retry policy (audit P0-4; widened 2026-08-26 after a field 429 storm).
+#: A PURE rate limit / transient 5xx (:class:`RateLimited` that is not one of its
+#: retry-semantics subclasses) retries with exponential backoff + equal jitter —
+#: ``_RETRY_BASE_DELAY * 2**(attempt-1)`` capped at ``_RETRY_MAX_DELAY``, a server
+#: ``Retry-After`` honored up to ``_RETRY_AFTER_CEILING`` — for as long as the SUMMED
+#: waiting stays inside ``_RATE_LIMIT_RETRY_HORIZON``. Google's own guidance for
+#: Gemini's dynamic shared quota is that a 429 is temporary CONTENTION, remedied by
+#: minutes-scale exponential backoff plus traffic smoothing; the previous 3-attempt /
+#: 6-second budget was hopeless against that failure mode and killed a 42-iteration
+#: run mid-flight (vertex_ai/gemini-2.5-flash, 2026-08-26). Timeouts and
+#: provider-rejected tool calls keep a small FIXED attempt bound
+#: (``_MAX_INTERRUPT_RETRIES``) — waiting minutes on a hung backend or a
+#: malformed-tool-call loop helps nobody. There is deliberately no knob for any of
+#: this (no-knobs ruling): the policy is fixed, and jitter exists precisely so a
+#: fleet of loops does not re-spike in lockstep.
+_RETRY_BASE_DELAY = 2.0
+_RETRY_MAX_DELAY = 60.0
+_RETRY_AFTER_CEILING = 120.0
+_RATE_LIMIT_RETRY_HORIZON = 300.0
+_MAX_INTERRUPT_RETRIES = 3
 
 #: Resample temperature for a ModelOutputRejected retry (Groq ``tool_use_failed``). At
 #: ``temperature=0.0`` the model is deterministic, so re-issuing the SAME request re-emits
@@ -626,8 +643,6 @@ class AgentLoop:
         self.max_iterations = (
             max_iterations if max_iterations is not None else DEFAULT_MAX_ITERATIONS
         )
-        # Bounded RateLimited retry budget (audit P0-4); 0 disables retrying.
-        self.provider_max_retries = self.settings.provider_max_retries
         # Per-turn decision trace (observability): the loop records how it routed and every
         # gate/recovery intervention it fired into this, replaced fresh at the start of each turn.
         # Attached to the turn's TurnResult/AgentDone and — when settings.trace_dir is set —
@@ -972,15 +987,18 @@ class AgentLoop:
     def _retry_delay(exc: RateLimited, attempt: int) -> float:
         """Seconds to wait before retry ``attempt`` (1-based) of a rate-limited call.
 
-        Honors the server-suggested ``retry_after`` when present, else exponential
-        backoff from :data:`_RETRY_BASE_DELAY`. Either source is clamped to
-        ``[0, _RETRY_MAX_DELAY]`` so a hostile/huge Retry-After cannot stall a turn.
+        Honors the server-suggested ``retry_after`` when present (clamped to
+        ``[0, _RETRY_AFTER_CEILING]`` — the server knows its own contention, but a
+        hostile/huge value must not stall a turn indefinitely). Otherwise
+        exponential backoff from :data:`_RETRY_BASE_DELAY` capped at
+        :data:`_RETRY_MAX_DELAY`, with EQUAL JITTER (uniform over the top half) so
+        many loops backing off from the same 429 storm do not re-spike in lockstep
+        — Google's documented remedy for dynamic-shared-quota contention.
         """
         if exc.retry_after is not None:
-            delay = exc.retry_after
-        else:
-            delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
-        return min(max(delay, 0.0), _RETRY_MAX_DELAY)
+            return min(max(exc.retry_after, 0.0), _RETRY_AFTER_CEILING)
+        delay = min(_RETRY_BASE_DELAY * (2 ** (attempt - 1)), _RETRY_MAX_DELAY)
+        return delay / 2 + random.uniform(0.0, delay / 2)
 
     @staticmethod
     def _rejection_retry_temperature(attempt: int) -> float:
@@ -1020,14 +1038,20 @@ class AgentLoop:
     ) -> LLMResult:
         """One buffered completion with bounded ``RateLimited`` retry (audit P0-4).
 
-        Only ``RateLimited`` is retried — up to ``provider_max_retries`` times,
-        ``retry_after``-aware — because a 429 is the one failure class where waiting
-        is the documented remedy. Every other :class:`ProviderError` (auth, context
-        window, generic) propagates immediately; the caller ends the TURN gracefully
-        (``stop_reason="provider_error"``) instead of letting the exception unwind
-        an unattended session.
+        Only ``RateLimited`` is retried, ``retry_after``-aware, because a 429 is the
+        one failure class where waiting is the documented remedy: a PURE rate limit
+        retries inside the :data:`_RATE_LIMIT_RETRY_HORIZON` backoff budget (minutes
+        — dynamic shared quota is temporary contention); its retry-semantics
+        subclasses (``TimedOut``, ``ModelOutputRejected``) retry a fixed
+        :data:`_MAX_INTERRUPT_RETRIES` times. Every other :class:`ProviderError`
+        (auth, context window, generic) propagates immediately; the caller ends the
+        TURN gracefully (``stop_reason="provider_error"``) instead of letting the
+        exception unwind an unattended session — with the session persisted at a
+        message boundary, so the run is RESUMABLE, never lost.
         """
         attempt = 0
+        interrupt_attempts = 0  # TimedOut / ModelOutputRejected retries (fixed bound)
+        rate_limit_started: float | None = None  # wall clock of the first pure 429
         next_temperature: float | None = None
         while True:
             # A rejection retry resamples at a raised temperature so a deterministic
@@ -1059,30 +1083,48 @@ class AgentLoop:
                 )
                 return result
             except RateLimited as exc:
-                if attempt >= self.provider_max_retries:
+                # ModelOutputRejected and TimedOut subclass RateLimited for their retry
+                # semantics but keep a small FIXED attempt bound; a pure rate limit
+                # retries inside the backoff-horizon budget instead (see the policy
+                # constants). The bound check precedes the counter bump so exhausting
+                # either budget re-raises the ORIGINAL failure.
+                interrupt_class = isinstance(exc, ModelOutputRejected | TimedOut)
+                if interrupt_class:
+                    if interrupt_attempts >= _MAX_INTERRUPT_RETRIES:
+                        raise
+                    interrupt_attempts += 1
+                elif rate_limit_started is None:
+                    # The horizon is WALL CLOCK from the first pure 429, not a count or a
+                    # sum of sleeps: zero-delay Retry-After sequences must not retry
+                    # unboundedly, and real request latency counts against contention.
+                    rate_limit_started = time.monotonic()
+                elif time.monotonic() - rate_limit_started >= _RATE_LIMIT_RETRY_HORIZON:
                     raise
                 attempt += 1
                 delay = self._retry_delay(exc, attempt)
-                # ModelOutputRejected and TimedOut subclass RateLimited for their retry
-                # semantics; the log names the real cause (mirrors the streaming notice).
                 if isinstance(exc, ModelOutputRejected):
                     reason = "provider rejected a malformed tool call"
+                    budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                 elif isinstance(exc, TimedOut):
                     reason = "request timed out (ZAKCODE_REQUEST_TIMEOUT)"
+                    budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                 else:
+                    # A pure 429 reaching here always set the clock above (mypy cannot
+                    # see through the branch ladder).
+                    assert rate_limit_started is not None
+                    elapsed = time.monotonic() - rate_limit_started
+                    # Clamp so the waiting never overshoots the horizon by a full delay.
+                    delay = max(0.0, min(delay, _RATE_LIMIT_RETRY_HORIZON - elapsed))
                     reason = "provider rate-limited"
+                    budget = (
+                        f"{elapsed:.0f}s into the {_RATE_LIMIT_RETRY_HORIZON:.0f}s backoff budget"
+                    )
                 next_temperature = (
                     self._rejection_retry_temperature(attempt)
                     if isinstance(exc, ModelOutputRejected)
                     else None
                 )
-                logger.warning(
-                    "%s; retry %d/%d in %.1fs",
-                    reason,
-                    attempt,
-                    self.provider_max_retries,
-                    delay,
-                )
+                logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
                 await asyncio.sleep(delay)
 
     @staticmethod
@@ -2547,6 +2589,8 @@ class AgentLoop:
 
                 provider_failure: str | None = None
                 retry_attempts = 0
+                interrupt_attempts = 0  # TimedOut / ModelOutputRejected (fixed bound)
+                rate_limit_started: float | None = None  # wall clock of the first pure 429
                 next_temperature: float | None = None
 
                 # Bounded RateLimited retry for THIS provider call (audit P0-4). A retry
@@ -2652,9 +2696,22 @@ class AgentLoop:
                         # text would duplicate it), but ModelOutputRejected is retried even
                         # mid-stream — the provider rejected the model's own malformed tool
                         # call, so the partial stream is known-invalid and re-issuing is the
-                        # documented recovery (base.py). Still bounded by provider_max_retries.
+                        # documented recovery (base.py). Same budgets as _call_provider:
+                        # pure 429s ride the backoff horizon; interrupt classes keep the
+                        # small fixed bound.
                         retryable = not received_any or isinstance(exc, ModelOutputRejected)
-                        if retryable and retry_attempts < self.provider_max_retries:
+                        interrupt_class = isinstance(exc, ModelOutputRejected | TimedOut)
+                        if interrupt_class:
+                            within_budget = interrupt_attempts < _MAX_INTERRUPT_RETRIES
+                        elif rate_limit_started is None:
+                            # Wall-clock horizon from the first pure 429 — see the
+                            # buffered twin for why (zero-delay Retry-After sequences).
+                            within_budget = True
+                        else:
+                            within_budget = (
+                                time.monotonic() - rate_limit_started < _RATE_LIMIT_RETRY_HORIZON
+                            )
+                        if retryable and within_budget:
                             retry_attempts += 1
                             delay = self._retry_delay(exc, retry_attempts)
                             next_temperature = (
@@ -2662,26 +2719,33 @@ class AgentLoop:
                                 if isinstance(exc, ModelOutputRejected)
                                 else None
                             )
-                            # ModelOutputRejected and TimedOut subclass RateLimited for
-                            # their retry semantics; the notice names the real cause.
                             if isinstance(exc, ModelOutputRejected):
+                                interrupt_attempts += 1
                                 reason = "provider rejected a malformed tool call"
+                                budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                             elif isinstance(exc, TimedOut):
+                                interrupt_attempts += 1
                                 reason = "request timed out (ZAKCODE_REQUEST_TIMEOUT)"
+                                budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                             else:
+                                if rate_limit_started is None:
+                                    rate_limit_started = time.monotonic()
+                                elapsed = time.monotonic() - rate_limit_started
+                                delay = max(
+                                    0.0,
+                                    min(delay, _RATE_LIMIT_RETRY_HORIZON - elapsed),
+                                )
                                 reason = "rate limited"
-                            logger.warning(
-                                "%s; retry %d/%d in %.1fs",
-                                reason,
-                                retry_attempts,
-                                self.provider_max_retries,
-                                delay,
-                            )
+                                budget = (
+                                    f"{elapsed:.0f}s into the "
+                                    f"{_RATE_LIMIT_RETRY_HORIZON:.0f}s backoff budget"
+                                )
+                            logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
                             yield AgentStatus(
                                 message=(
                                     f"{reason}; retrying"
                                     + (f" in {delay:.1f}s" if delay else "")
-                                    + f" ({retry_attempts}/{self.provider_max_retries})"
+                                    + f" ({budget})"
                                 )
                             )
                             await asyncio.sleep(delay)
@@ -2740,22 +2804,47 @@ class AgentLoop:
                                 # budget (the buffered path's _call_provider resets its
                                 # attempt counter per call — keep the paths symmetric).
                                 retry_attempts = 0
+                                interrupt_attempts = 0
+                                rate_limit_started = None
                                 yield AgentStatus(message=f"switching model: {note}")
                                 continue  # fresh accumulators, retry on the new provider
                         provider_failure = str(exc)
                     break
 
                 if provider_failure is not None:
-                    # Graceful turn end (see _run_turn's twin): state is consistent at
-                    # the last message boundary; the partial streamed text (if any) is
-                    # NOT persisted — the failed turn left no assistant message.
+                    # Graceful turn end (see _run_turn's twin): state is consistent at a
+                    # message boundary. A MID-STREAM failure's partial TEXT is persisted
+                    # (2026-08-26, vertex_ai 429 storm: a mid-stream kill on iteration 42
+                    # read as "the whole run is lost" — every prior iteration was in fact
+                    # saved; keeping the interrupted tail too makes the resume seamless).
+                    # Partial TOOL-CALL fragments stay discarded — an unfinished call is
+                    # unexecutable and would poison the tool_use/tool_result pairing.
                     stop_reason = "provider_error"
                     turn_error = provider_failure
+                    partial_text = "".join(text_parts)
+                    if partial_text:
+                        self.session.add_message(self._stream_assistant_message(partial_text, []))
+                        self.session.add_message(
+                            Message.user(
+                                _control_rail(
+                                    "Your previous response was interrupted partway "
+                                    "through by a provider failure. When the session "
+                                    "resumes, continue from where it left off."
+                                )
+                            )
+                        )
+                        self._persist()
                     logger.error("turn aborted by provider error: %s", provider_failure)
-                    yield AgentStatus(message=f"stopping: provider error — {provider_failure}")
-                    # Refund the iteration: pre-event failure did no work at all, and a
-                    # mid-stream failure's partial output is DISCARDED (not persisted),
-                    # so either way nothing this iteration consumed survives the turn.
+                    yield AgentStatus(
+                        message=(
+                            f"stopping: provider error — {provider_failure} — the session "
+                            "is saved; your next message (or resuming it) continues from "
+                            "here"
+                        )
+                    )
+                    # Refund the iteration: the failed call produced no committed work
+                    # (any partial text above is bookkeeping for the resume, not a
+                    # completed model step), so nothing this iteration consumed survives.
                     # (stack review minor #7 — the buffered twin refunds identically.)
                     self._refund_iteration()
                     break
