@@ -35,6 +35,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -127,6 +128,10 @@ class ServeDriver:
         recreate_after_failures: int = 3,
         provider_error_escalate_after: int = 5,
         max_turns: int | None = None,
+        max_duration: float | None = None,
+        consolidation_reserve: float = 0.0,
+        consolidation_message: str | None = None,
+        auto_extend: bool = False,
         nudge_file: str | os.PathLike[str] | None = None,
         nudge_frame: str = _DEFAULT_NUDGE_FRAME,
         say_file: str | os.PathLike[str] | None = ".say",
@@ -147,6 +152,20 @@ class ServeDriver:
         self.recreate_after_failures = recreate_after_failures
         self.provider_error_escalate_after = provider_error_escalate_after
         self.max_turns = max_turns
+        self.max_duration = max_duration
+        self.consolidation_reserve = consolidation_reserve
+        self.consolidation_message = consolidation_message
+        self.auto_extend = auto_extend
+        #: Why the last :meth:`run` ended. ``None`` while running / never run.
+        #: ``"stopped"`` (explicit request_stop), ``"max_turns"``, ``"duration_cap"``,
+        #: ``"daemon_unreachable"``. The digest is written from this — a cap-hit and a
+        #: human stop are DIFFERENT stories to tell the customer, and collapsing them
+        #: is what makes a receipt feel like a trick.
+        self.stop_reason: str | None = None
+        #: Monotonic instant the turn loop must stop taking NEW turns. Set in
+        #: :meth:`run`; ``None`` means unbounded.
+        self._turn_deadline: float | None = None
+        self._run_deadline: float | None = None
         self.nudge_frame = nudge_frame
         self.say_frame = say_frame
         # A relative nudge path is resolved against the workspace (same root as
@@ -180,14 +199,65 @@ class ServeDriver:
         """Ask the run loop to exit after the in-flight turn (idempotent)."""
         self._stop.set()
 
+    def extend_deadline(self, seconds: float) -> bool:
+        """Push a bounded run's cap out by ``seconds``. Returns whether it moved.
+
+        REFUSES unless ``auto_extend`` was explicitly enabled. That refusal is the
+        whole point and it is why this is a method rather than a mutable attribute:
+        a bounded run is a PRICE the customer agreed to up front, so extending it is
+        a decision someone has to have made, never a default the machinery drifts
+        into. Host-dominant billing with no enforced ceiling is a bill-shock machine
+        (the ``never sleeps`` note in the Pearl design says exactly this), and the
+        failure is silent — the customer only learns the cap did not hold when the
+        invoice arrives.
+
+        No-ops for an unbounded run: there is no deadline to move.
+        """
+        if not self.auto_extend:
+            logger.info("deadline extension refused: auto_extend is off")
+            return False
+        if self._run_deadline is None or self._turn_deadline is None:
+            return False
+        self._run_deadline += seconds
+        self._turn_deadline += seconds
+        return True
+
     async def run(self) -> None:
         """Drive turns until stopped (or ``max_turns`` reached, for bounded runs).
 
         Returns cleanly when the stop event is set — never raises for an ordinary
         daemon hiccup (those are absorbed by backoff). A programming error inside a
         callback or an unexpected exception type still propagates.
+
+        ``max_duration`` adds a WALL-CLOCK bound alongside the turn-count one, and
+        ``consolidation_reserve`` is carved OUT of it rather than added to it: the
+        turn loop stops at ``max_duration - consolidation_reserve`` so the reserve is
+        still on the clock when the mind is asked to consolidate. A cap-hit therefore
+        ends in a real digest instead of a severed stream, which is the difference
+        between a receipt and a cut-off.
+
+        WHERE the deadline lands in the step ordering is deliberate (guard-2840): it
+        is checked BETWEEN turns, never mid-turn. A turn already in flight always
+        finishes. Killing a turn at its midpoint would leave exactly the half-done
+        work the ``resume_message`` path exists to recover, and it would do so on the
+        one path where nobody is coming back to resume it.
         """
+        self.stop_reason = None
+        started = time.monotonic()
+        if self.max_duration is None:
+            self._run_deadline = None
+            self._turn_deadline = None
+        else:
+            self._run_deadline = started + self.max_duration
+            # Never negative: a reserve >= the cap would otherwise put the turn
+            # deadline BEFORE the start and the run would take zero turns while
+            # still being billed for the vessel.
+            self._turn_deadline = started + max(
+                0.0, self.max_duration - self.consolidation_reserve
+            )
+
         if not await self._wait_healthy():
+            self.stop_reason = "daemon_unreachable"
             return  # stopped before the daemon ever came up
         sid = await self._new_session()
         message = self.boot_message
@@ -196,6 +266,13 @@ class ServeDriver:
 
         while not self._stop.is_set():
             if self.max_turns is not None and turn >= self.max_turns:
+                self.stop_reason = "max_turns"
+                break
+            # Read the clock, not a remembered timestamp (guard-3303), and read it
+            # against this process's own monotonic start so a wall-clock adjustment
+            # mid-run cannot shorten or extend a paid run.
+            if self._turn_deadline is not None and time.monotonic() >= self._turn_deadline:
+                self.stop_reason = "duration_cap"
                 break
             say = self._read_say()
             # A say re-queued after a failed turn was already surfaced to watchers on
@@ -298,6 +375,69 @@ class ServeDriver:
                 self._reset_backoff()
                 if self.inter_turn_delay > 0:
                     await self._interruptible_sleep(self.inter_turn_delay)
+
+        if self.stop_reason is None:
+            # Fell out of the `while` guard rather than a `break`: an explicit
+            # request_stop(). A human asking her to step out of her world is a
+            # DIFFERENT story from the clock running out, and the digest says so.
+            self.stop_reason = "stopped"
+        await self._consolidate(sid)
+
+    async def _consolidate(self, sid: str) -> None:
+        """Spend the reserved budget on one final turn, so the run ends in a digest.
+
+        Runs on EVERY graceful end, not only a cap-hit: an explicit stop is
+        ``finish in-flight task -> consolidate -> digest`` too, so a customer who
+        stops early gets the same receipt as one who runs out the clock. It does NOT
+        run when the daemon was never reachable — there is nothing to consolidate
+        with, and ``run`` has already returned by then.
+
+        MECHANISM, NOT POLICY. The driver owns WHEN this fires and how long it may
+        take; the caller supplies WHAT to say via ``consolidation_message``, exactly
+        as it supplies ``resume_message`` for the provider-error path. No
+        consolidation message configured means no final turn — a driver with no
+        policy attached stays a plain turn driver.
+
+        Fail-open, deliberately: a consolidation that errors or overruns must not
+        raise out of ``run``, which never raises for an ordinary daemon hiccup. A
+        missing digest is a bad receipt; an exception here would strand the vessel
+        and turn a bad receipt into an unbounded host bill.
+        """
+        if not self.consolidation_message:
+            return
+        budget: float | None
+        if self._run_deadline is None:
+            # UNBOUNDED run: there is no cap to spend down, so the reserve is a plain
+            # timeout when one was given and there is nothing to enforce otherwise.
+            # Do NOT fall through to the `budget <= 0` skip here — the default
+            # (unbounded, reserve 0) would then silently drop every consolidation on
+            # exactly the configuration most runs use.
+            budget = self.consolidation_reserve if self.consolidation_reserve > 0 else None
+        else:
+            # Whatever is actually left of the cap — the turn loop may have exited
+            # early (stop, max_turns), in which case the reserve is not the binding
+            # constraint and the full remaining run budget is available.
+            budget = max(0.0, self._run_deadline - time.monotonic())
+            if self.consolidation_reserve > 0:
+                budget = max(budget, self.consolidation_reserve)
+            if budget <= 0:
+                logger.warning(
+                    "consolidation skipped: no budget left (reason=%s)", self.stop_reason
+                )
+                return
+        logger.info(
+            "consolidating within %s reserve (reason=%s)",
+            "unbounded" if budget is None else f"{budget:.0f}s",
+            self.stop_reason,
+        )
+        try:
+            await asyncio.wait_for(
+                self._run_one_turn(sid, self.consolidation_message), timeout=budget
+            )
+        except TimeoutError:
+            logger.warning("consolidation turn exceeded its %.0fs reserve", budget)
+        except Exception as exc:  # noqa: BLE001 — see the fail-open note above
+            logger.warning("consolidation turn failed (%s: %s)", type(exc).__name__, exc)
 
     # ── turn execution ───────────────────────────────────────────────────────
 

@@ -501,3 +501,225 @@ async def test_say_published_exactly_once_across_n_same_session_requeues(
     assert client.created_sids == ["sess-1"]  # never rotated
     assert client.user_message_calls == [{"session_id": "sess-1", "text": "is the say sticky?"}]
     assert not (tmp_path / ".say").exists()  # delivered by the final retry, slot clear
+
+
+# ── bounded runs: wall-clock cap + reserved consolidation budget (g-369-08) ──
+#
+# The clock is driven, never slept. A wall-clock bound tested against real sleeps is
+# either slow or flaky, and the thing under test is the ARITHMETIC (where the deadline
+# lands relative to the reserve), not asyncio's timing.
+
+
+class _Clock:
+    """A controllable stand-in for the driver module's ``time``.
+
+    ``monotonic`` is pure — it never advances on its own. Tests age it explicitly from
+    an ``on_event`` hook, so "one turn costs N seconds" is stated in the test rather
+    than emerging from how many times the driver happens to read the clock.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _ages_per_turn(clock: _Clock, seconds: float):
+    """An ``on_event`` hook that ages the clock once per completed turn."""
+
+    def hook(event: AgentEvent) -> None:
+        if isinstance(event, AgentDone):
+            clock.advance(seconds)
+
+    return hook
+
+
+async def test_duration_cap_stops_the_turn_loop_and_records_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _Clock()
+    monkeypatch.setattr("zakcode.server.driver.time", clock)
+    client = FakeServerClient()  # perpetual clean turns — only the clock can stop it
+    driver = _driver(
+        client, tmp_path, max_turns=None, max_duration=10.0, on_event=_ages_per_turn(clock, 3.0)
+    )
+    await asyncio.wait_for(driver.run(), timeout=5)
+
+    # deadline 10.0, 3.0 per turn: turns start at 0/3/6/9 and 12 >= 10 stops it.
+    assert len(client.turn_calls) == 4
+    assert driver.stop_reason == "duration_cap"
+
+
+async def test_cap_hit_still_consolidates_within_the_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap-hit path — not the clean-stop path — still ends in a digest turn."""
+    clock = _Clock()
+    monkeypatch.setattr("zakcode.server.driver.time", clock)
+    client = FakeServerClient()
+    driver = _driver(
+        client,
+        tmp_path,
+        max_turns=None,
+        max_duration=10.0,
+        consolidation_reserve=3.0,
+        consolidation_message="DIGEST",
+        on_event=_ages_per_turn(clock, 2.0),
+    )
+    await asyncio.wait_for(driver.run(), timeout=5)
+
+    assert driver.stop_reason == "duration_cap"
+    # Turn deadline is 10 - 3 = 7: turns start at 0/2/4/6, then 8 >= 7 stops the loop.
+    # The digest is the 5th turn, spent out of the reserve.
+    assert len(client.turn_calls) == 5
+    assert client.turn_calls[-1]["message"] == "DIGEST"
+    assert [c["message"] for c in client.turn_calls[:4]] != ["DIGEST"] * 4
+
+
+async def test_reserve_is_carved_out_of_the_cap_not_added_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reserve must SHORTEN the turn loop, never extend the run past its cap.
+
+    The failure this pins is the plausible inverse — reserving budget by adding it on
+    top — which silently bills the customer past the cap they agreed to.
+    """
+    clock = _Clock()
+    monkeypatch.setattr("zakcode.server.driver.time", clock)
+    client = FakeServerClient()
+    driver = _driver(
+        client,
+        tmp_path,
+        max_turns=None,
+        max_duration=10.0,
+        consolidation_reserve=4.0,
+        on_event=_ages_per_turn(clock, 2.0),
+    )
+    await asyncio.wait_for(driver.run(), timeout=5)
+
+    # Turn deadline 10 - 4 = 6: turns at 0/2/4, then 6 >= 6 stops. WITHOUT the carve-out
+    # it would run to 10 and take 5 turns.
+    assert len(client.turn_calls) == 3
+    assert driver._turn_deadline == 6.0
+    assert driver._run_deadline == 10.0
+
+
+async def test_explicit_stop_also_consolidates(tmp_path: Path) -> None:
+    """Graceful stop is finish-in-flight -> consolidate -> digest, same as a cap-hit."""
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, max_turns=None, consolidation_message="DIGEST")
+
+    def stopper(event: AgentEvent) -> None:
+        if isinstance(event, AgentDone) and driver.stop_reason is None:
+            driver.request_stop()
+
+    driver.on_event = stopper
+    await asyncio.wait_for(driver.run(), timeout=5)
+
+    assert driver.stop_reason == "stopped"
+    assert [c["message"] for c in client.turn_calls][-1] == "DIGEST"
+
+
+async def test_auto_extend_is_off_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _Clock()
+    monkeypatch.setattr("zakcode.server.driver.time", clock)
+    client = FakeServerClient()
+    driver = _driver(
+        client, tmp_path, max_turns=None, max_duration=10.0, on_event=_ages_per_turn(clock, 3.0)
+    )
+
+    assert driver.auto_extend is False
+    await asyncio.wait_for(driver.run(), timeout=5)
+    before = driver._turn_deadline
+    assert driver.extend_deadline(1000.0) is False
+    assert driver._turn_deadline == before  # refused AND did not move
+
+
+async def test_auto_extend_enabled_moves_both_deadlines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _Clock()
+    monkeypatch.setattr("zakcode.server.driver.time", clock)
+    client = FakeServerClient()
+    driver = _driver(
+        client,
+        tmp_path,
+        max_turns=None,
+        max_duration=10.0,
+        auto_extend=True,
+        on_event=_ages_per_turn(clock, 3.0),
+    )
+    await asyncio.wait_for(driver.run(), timeout=5)
+
+    assert driver.extend_deadline(5.0) is True
+    assert driver._run_deadline == 15.0
+    assert driver._turn_deadline == 15.0
+
+
+async def test_no_consolidation_message_means_no_extra_turn(tmp_path: Path) -> None:
+    """Mechanism without policy stays a plain turn driver."""
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, max_turns=2)
+    await driver.run()
+
+    assert len(client.turn_calls) == 2  # no phantom third turn
+    assert driver.stop_reason == "max_turns"
+
+
+async def test_unbounded_run_still_consolidates(tmp_path: Path) -> None:
+    """No cap and no reserve is the DEFAULT shape — the digest must still fire.
+
+    Regression guard: computing the budget as `reserve or remaining` makes this case
+    zero, and a zero budget skips the digest on the configuration most runs use.
+    """
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, max_turns=1, consolidation_message="DIGEST")
+    await driver.run()
+
+    assert [c["message"] for c in client.turn_calls][-1] == "DIGEST"
+
+
+async def test_consolidation_failure_does_not_raise(tmp_path: Path) -> None:
+    """A bad digest is a bad receipt; an exception here would strand the vessel."""
+    client = FakeServerClient(turn_script=[[_done()], httpx.ConnectError("boom")])
+    driver = _driver(client, tmp_path, max_turns=1, consolidation_message="DIGEST")
+    await asyncio.wait_for(driver.run(), timeout=5)  # must not raise
+
+    assert driver.stop_reason == "max_turns"
+
+
+async def test_reserve_larger_than_cap_does_not_take_a_negative_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _Clock()
+    monkeypatch.setattr("zakcode.server.driver.time", clock)
+    client = FakeServerClient()
+    driver = _driver(
+        client, tmp_path, max_turns=None, max_duration=2.0, consolidation_reserve=99.0
+    )
+    await asyncio.wait_for(driver.run(), timeout=5)
+
+    assert driver._turn_deadline == 0.0  # clamped at the start instant, never negative
+    assert driver.stop_reason == "duration_cap"
+    assert client.turn_calls == []  # no turn taken, and the run still terminated
+
+
+async def test_daemon_unreachable_records_its_own_reason(tmp_path: Path) -> None:
+    """The digest must be able to tell 'never started' from 'ran out of clock'."""
+    client = FakeServerClient(health_fail_times=99)
+    driver = _driver(client, tmp_path, max_turns=1, consolidation_message="DIGEST")
+
+    async def stop_soon() -> None:
+        await asyncio.sleep(0.02)
+        driver.request_stop()
+
+    await asyncio.wait_for(asyncio.gather(driver.run(), stop_soon()), timeout=5)
+
+    assert driver.stop_reason == "daemon_unreachable"
+    assert client.turn_calls == []  # no digest turn against a daemon that never came up
