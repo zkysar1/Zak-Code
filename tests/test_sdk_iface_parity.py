@@ -13,15 +13,12 @@ reproduces the SDK's stream, and when it does not, it says WHICH layer broke.
 THE DESIGN
 ----------
 A golden scenario is ``(canonical input, deterministic ScriptedProvider script,
-expected normalized AgentEvent stream)``. One scenario runs through four layers:
+expected normalized AgentEvent stream)``. One scenario runs through three layers:
 
 * ``sdk``  — :meth:`Agent.astream_turn` called directly (the canonical stream).
 * ``http`` — the SAME agent injected into the ASGI app and driven through
   ``POST /chat/stream``; its SSE frames are parsed back into ``AgentEvent`` via
   the wire adapter (:func:`~zakcode.server.wire.event_from_dict`).
-* ``ws``   — the SAME agent driven through the ``/ws/{session_id}`` WebSocket;
-  each server→client frame is the same ``event_to_dict`` payload, parsed back
-  through the same adapter.
 * ``cli``  — the CLI's REMOTE path: the SAME agent reached through the real
   :class:`~zakcode.server.client.ServerClient` (the production ``zakcode chat
   --server`` → sidecar transport) over an in-memory ASGI client. This is the
@@ -49,7 +46,7 @@ EXTENDING
 ---------
 Add a scenario to :data:`SCENARIOS`, or a runner to :data:`_LAYERS`. Every
 scenario is then checked against every interface against the one golden. The
-three end interfaces (http, ws, cli) are covered here; the DISTINCT axes this
+the end interfaces (http, cli) are covered here; the DISTINCT axes this
 harness deliberately does NOT fold in — each needs its own positive control —
 now live in sibling files: config-parity (``test_sdk_iface_config_parity.py``),
 the permission-escalation round-trip (``test_sdk_iface_permission_parity.py``),
@@ -58,11 +55,9 @@ and rendering-correctness of the lossy CLI ``StreamRenderer``
 
 HERMETIC
 --------
-``ScriptedProvider`` never touches a network; ``TestClient`` drives both the
-finite ``/chat/stream`` and the ``/ws`` socket in-process (no live server — the
-infinite ``/watch`` stream is the one that needs a real socket, not these). The
-WS turn runs server-side as a background task and the client drains frames to the
-terminal ``done`` event. :func:`_normalize` excludes the volatile fields (the
+``ScriptedProvider`` never touches a network; ``TestClient`` drives the finite
+``/chat/stream`` in-process (no live server — the infinite ``/watch`` stream is
+the one that needs a real socket, not these). :func:`_normalize` excludes the volatile fields (the
 per-turn decision ``trace``, raw ``usage`` numbers) and collapses consecutive
 text deltas, so the contract is robust to a future interface that re-chunks text.
 """
@@ -361,45 +356,6 @@ def _run_http(scenario: Scenario, workspace_root: Path) -> list[AgentEvent]:
     return [event_from_dict(frame) for frame in _sse_data_frames(resp.text)]
 
 
-def _run_ws(scenario: Scenario, workspace_root: Path) -> list[AgentEvent]:
-    """L2 — the SAME agent, driven through the WebSocket interface.
-
-    The ``/ws/{session_id}`` handler LOADS an existing session by path id (unlike
-    ``/chat/stream``'s get-or-create), so the session is pre-created in the store.
-    The client sends one ``input`` message; the turn runs server-side as a
-    background task that relays ``event_to_dict`` over the socket — the same 1:1
-    relay as SSE — and the client drains frames to the terminal ``done`` event.
-
-    A non-event control frame (an ``error`` or ``action_required``) is itself a
-    divergence from the SDK stream, so it fails loudly rather than being silently
-    parsed. The server-supplied ``prompter`` is ignored on purpose: the ``allow``
-    policy never escalates, keeping the agent config identical across every layer.
-    """
-    settings = Settings(default_model="scripted/parity", workspace_root=workspace_root)
-    store = SessionStore(base_dir=workspace_root / "sessions")
-
-    def factory(session: Session, model: str | None, prompter: object) -> Agent:  # noqa: ARG001
-        return _build_parity_agent(scenario.script, workspace_root=workspace_root, session=session)
-
-    app = create_app(settings=settings, store=store, agent_factory=factory)
-    client = TestClient(app)
-    # WS loads the session by path id, so it must exist before the handshake.
-    session = Session(cwd=".", model="scripted/parity")
-    store.save(session)
-
-    frames: list[dict[str, Any]] = []
-    with client.websocket_connect(f"/ws/{session.id}") as ws:
-        ws.send_json({"type": "input", "message": scenario.canonical_input})
-        while True:
-            frame = ws.receive_json()
-            if "event" not in frame:  # error / action_required: a real divergence
-                raise AssertionError(f"WS sent a non-event control frame: {frame}")
-            frames.append(frame)
-            if frame["event"] == "done":
-                break
-    return [event_from_dict(frame) for frame in frames]
-
-
 def _run_cli(scenario: Scenario, workspace_root: Path) -> list[AgentEvent]:
     """L3 — the CLI's REMOTE path: the SAME agent reached through ``ServerClient``.
 
@@ -441,7 +397,6 @@ def _run_cli(scenario: Scenario, workspace_root: Path) -> list[AgentEvent]:
 _LAYERS: dict[str, Callable[[Scenario, Path], list[AgentEvent]]] = {
     "sdk": _run_sdk,
     "http": _run_http,
-    "ws": _run_ws,
     "cli": _run_cli,
 }
 

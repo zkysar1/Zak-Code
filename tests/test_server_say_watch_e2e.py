@@ -84,7 +84,10 @@ def _factory(session: Session, model: str | None, prompter: object = None) -> _E
 def _make_app(tmp_path: Path) -> FastAPI:
     from zakcode.server.app import create_app
 
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    # serve_consume=False: this harness models the sidecar deployment, where an
+    # external ServeDriver owns the say inbox — serve's own reactive consumer must
+    # be off or the two would race the single-slot file (the documented config).
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path, serve_consume=False)
     store = SessionStore(base_dir=tmp_path / "sessions")
     return create_app(settings=settings, store=store, agent_factory=_factory)
 

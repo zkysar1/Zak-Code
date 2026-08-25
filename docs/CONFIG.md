@@ -234,4 +234,5 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
 | `auth_token` | `ZAKCODE_AUTH_TOKEN` | unset | Bearer token required on every route except `/health` when set; unset = loopback-only dev (non-loopback bind needs `--insecure`). Excluded from every `model_dump()`. |
+| `serve_consume` | `ZAKCODE_SERVE_CONSUME` | `true` | Serve's reactive turn-runner: consume the workspace say inbox and run one turn per say (the web page and `POST /say` ride this). Set `off` when an external `zakcode drive` owns the workspace — two consumers would race the single-slot inbox. |
 | `allowed_models` | `ZAKCODE_ALLOWED_MODELS` | `[]` | When non-empty, the only model strings a request may override to. |
