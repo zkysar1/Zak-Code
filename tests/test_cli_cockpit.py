@@ -322,3 +322,18 @@ def test_say_box_busy_notice_while_message_pending(
     assert not ledger.exists()
     assert (tmp_path / ".say").read_text(encoding="utf-8") == "unconsumed\n"
     assert "busy" in cockpit.console.export_text()
+
+
+def test_interrupt_command_writes_signal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    cockpit.interrupt(workspace=tmp_path)
+    assert (tmp_path / ".interrupt").exists()
+    assert "stop signal sent" in cockpit.console.export_text()
+
+
+def test_say_box_prompt_falls_back_to_input_without_tty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda prompt="": "typed line")
+    kind, line = cockpit._say_box_prompt(tmp_path / ".say", tmp_path / ".interrupt")
+    assert (kind, line) == ("line", "typed line")

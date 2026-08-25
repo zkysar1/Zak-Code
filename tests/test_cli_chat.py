@@ -1207,3 +1207,54 @@ def test_chat_discards_pre_session_say_instead_of_executing(monkeypatch, tmp_pat
     assert "discarded a message queued before this session started" in result.output
     assert "(say) malicious" not in result.output
     assert not si.say_pending(si.say_path(tmp_path))
+
+
+def test_interrupt_file_stops_a_running_turn(monkeypatch, tmp_path) -> None:
+    """The file-based twin of Ctrl-C: while a turn is streaming, writing
+    <workspace>/.interrupt stops it through the exact same path — the
+    "interrupted" notice prints and the session survives to take /exit."""
+    import threading
+    import time as _time
+
+    from zakcode.session import say_inbox as si
+
+    class SlowFakeAgent(FakeAgent):
+        async def _gen(self):  # noqa: ANN202
+            yield AgentTextDelta(text="starting…\n")
+            await asyncio.sleep(30)  # cancelled by the interrupt long before this ends
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    monkeypatch.setattr(zakcode, "Agent", SlowFakeAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+
+    block = threading.Event()
+    listening = threading.Event()
+
+    def _blocked_prompt(console):  # noqa: ANN001, ANN202
+        listening.set()
+        block.wait(timeout=30)
+        raise EOFError
+
+    monkeypatch.setattr("zakcode.cli.read_prompt", _blocked_prompt)
+    inbox = si.say_path(tmp_path)
+    sig = si.interrupt_path(tmp_path)
+
+    def _driver() -> None:
+        assert listening.wait(timeout=15)
+        assert si.write_say(inbox, "do something slow")
+        for _ in range(200):  # wait until the turn has consumed the say
+            if not si.say_pending(inbox):
+                break
+            _time.sleep(0.05)
+        _time.sleep(0.5)  # turn is now streaming (first delta out, then the long sleep)
+        si.request_interrupt(sig)
+        _time.sleep(1.5)  # give the watcher a poll cycle to stop the turn
+        si.write_say(inbox, "/exit")
+
+    threading.Thread(target=_driver, daemon=True).start()
+    result = runner.invoke(app, ["chat"], input="")
+    block.set()
+    assert result.exit_code == 0
+    assert "interrupted" in result.output
+    assert "goodbye" in result.output
+    assert not sig.exists()

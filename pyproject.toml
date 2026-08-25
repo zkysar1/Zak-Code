@@ -26,6 +26,7 @@ dependencies = [
   "openpyxl>=3.1",          # create_xlsx: native Excel workbooks, tables, and charts
   "Pillow>=10.4",           # create_chart_image: raster charts; future Excel image embedding
   "pydantic>=2.7",          # typed models for tools, messages, config
+  "prompt-toolkit>=3.0",    # cockpit say box: Esc recall/stop key handling, native paste
   "pydantic-settings>=2.3", # 12-factor config from env / .env
   "python-docx>=1.1",       # create_docx: native Microsoft Word documents
   "pdfplumber>=0.11",       # read_pdf: layout-aware PDF text extraction (MIT; on pdfminer.six)

@@ -76,3 +76,38 @@ def requeue_say(path: Path, text: str) -> None:
 def say_pending(path: Path) -> bool:
     """True while a message sits in the inbox unconsumed."""
     return path.exists()
+
+
+# ── the interrupt file: .say's sibling control signal ──────────────────────────────
+# Where a say is a MESSAGE ("here is your next input"), an interrupt is a CONTROL
+# signal ("stop the turn you are running"). Same one-contract discipline: any surface
+# (Esc in the cockpit say box, `zakcode interrupt`, a future web stop button) writes
+# the file; the running chat consumes it mid-turn and stops through the exact same
+# path as a keyboard Ctrl-C. Unlike the say slot it is idempotent — writing twice is
+# still one stop — and a stale file is cleared (not obeyed) by an idle or starting
+# chat, so a leftover signal can never kill a future turn.
+
+#: The interrupt filename under the workspace root.
+INTERRUPT_FILENAME = ".interrupt"
+
+
+def interrupt_path(workspace_root: str | os.PathLike[str]) -> Path:
+    """The interrupt-signal file for a workspace."""
+    return Path(workspace_root) / INTERRUPT_FILENAME
+
+
+def request_interrupt(path: Path) -> None:
+    """Ask the workspace's running agent to stop its current turn. Idempotent."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text("stop\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def take_interrupt(path: Path) -> bool:
+    """Consume a pending interrupt request, if any. Fail-open (False on any error)."""
+    try:
+        path.unlink()
+    except OSError:  # includes FileNotFoundError — nothing pending
+        return False
+    return True

@@ -48,3 +48,14 @@ def test_empty_file_reads_as_no_say(tmp_path: Path) -> None:
     inbox.write_text("\n", encoding="utf-8")
     assert read_say(inbox) is None
     assert not inbox.exists()
+
+
+def test_interrupt_request_take_idempotent(tmp_path: Path) -> None:
+    from zakcode.session.say_inbox import interrupt_path, request_interrupt, take_interrupt
+
+    sig = interrupt_path(tmp_path)
+    assert not take_interrupt(sig)
+    request_interrupt(sig)
+    request_interrupt(sig)  # idempotent — two asks are one stop
+    assert take_interrupt(sig)
+    assert not take_interrupt(sig)
