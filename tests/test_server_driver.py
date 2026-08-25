@@ -700,9 +700,7 @@ async def test_reserve_larger_than_cap_does_not_take_a_negative_deadline(
     clock = _Clock()
     monkeypatch.setattr("zakcode.server.driver.time", clock)
     client = FakeServerClient()
-    driver = _driver(
-        client, tmp_path, max_turns=None, max_duration=2.0, consolidation_reserve=99.0
-    )
+    driver = _driver(client, tmp_path, max_turns=None, max_duration=2.0, consolidation_reserve=99.0)
     await asyncio.wait_for(driver.run(), timeout=5)
 
     assert driver._turn_deadline == 0.0  # clamped at the start instant, never negative

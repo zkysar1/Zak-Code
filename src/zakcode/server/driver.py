@@ -252,9 +252,7 @@ class ServeDriver:
             # Never negative: a reserve >= the cap would otherwise put the turn
             # deadline BEFORE the start and the run would take zero turns while
             # still being billed for the vessel.
-            self._turn_deadline = started + max(
-                0.0, self.max_duration - self.consolidation_reserve
-            )
+            self._turn_deadline = started + max(0.0, self.max_duration - self.consolidation_reserve)
 
         if not await self._wait_healthy():
             self.stop_reason = "daemon_unreachable"
