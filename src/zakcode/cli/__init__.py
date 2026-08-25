@@ -286,11 +286,19 @@ def _uv_tool_spec(source: str) -> str:
     return f"{name} @ {source}"
 
 
-def _reinstall_command(source: str) -> list[str]:
-    """The reinstall invocation for this environment: uv when uv owns it, else pip.
+def _reinstall_commands(source: str) -> list[list[str]]:
+    """The reinstall invocations for this environment: uv when uv owns it, else pip.
 
     A uv tool environment has NO pip module, so ``sys.executable -m pip`` fails
-    there; the ``uv-receipt.toml`` at the env root is the discriminator.
+    there; the ``uv-receipt.toml`` at the env root is the discriminator. uv is one
+    command (a full resolve, dependencies included). pip is TWO: the
+    ``--force-reinstall --no-deps`` pass replaces the package code even when the
+    version string is unchanged (pip's same-version no-op trap) without churning
+    the whole dependency tree — but it also means a build that ADDS a dependency
+    installs without it (measured live 2026-08-25: prompt_toolkit missing after
+    an update, the say box silently fell back to its no-Esc reader). The second,
+    plain pass resolves the freshly-installed package's dependency list and
+    installs only what is missing.
     """
     if (Path(sys.prefix) / "uv-receipt.toml").is_file():
         uv = shutil.which("uv")
@@ -301,15 +309,11 @@ def _reinstall_command(source: str) -> list[str]:
                 "Install uv (or run its reinstall by hand), then rerun zakcode update.",
             )
             raise typer.Exit(code=1)
-        return [uv, "tool", "install", "--force", "--reinstall", _uv_tool_spec(source)]
+        return [[uv, "tool", "install", "--force", "--reinstall", _uv_tool_spec(source)]]
+    pip = [sys.executable, "-m", "pip", "install"]
     return [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--force-reinstall",
-        "--no-deps",
-        f"zakcode @ {source}",
+        [*pip, "--force-reinstall", "--no-deps", f"zakcode @ {source}"],
+        [*pip, f"zakcode @ {source}"],
     ]
 
 
@@ -356,10 +360,11 @@ def update(
             '  pip install --force-reinstall --no-deps "zakcode @ git+https://github.com/<owner>/Zak-Code.git"',
         )
         raise typer.Exit(code=1)
-    proc = subprocess.run(_reinstall_command(source), capture_output=True, text=True)
-    if proc.returncode != 0:
-        notice_error(console, "reinstall failed", (proc.stderr or proc.stdout).strip()[-2000:])
-        raise typer.Exit(code=proc.returncode)
+    for command in _reinstall_commands(source):
+        proc = subprocess.run(command, capture_output=True, text=True)
+        if proc.returncode != 0:
+            notice_error(console, "reinstall failed", (proc.stderr or proc.stdout).strip()[-2000:])
+            raise typer.Exit(code=proc.returncode)
     # Fresh process: this one's importlib metadata is cached pre-update.
     probe = subprocess.run(
         [

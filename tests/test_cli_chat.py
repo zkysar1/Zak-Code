@@ -953,6 +953,12 @@ def test_update_runs_pip_with_force_reinstall(monkeypatch) -> None:
     pip_cmd = calls[0]
     assert "--force-reinstall" in pip_cmd and "--no-deps" in pip_cmd
     assert "zakcode @ git+https://example.com/repo.git@main" in pip_cmd
+    # Second pass: a PLAIN pip install of the same requirement, so a build that
+    # ADDS a dependency actually gets it (--no-deps alone skipped new deps —
+    # measured live 2026-08-25, prompt_toolkit missing after an update).
+    dep_cmd = calls[1]
+    assert "pip" in dep_cmd and "zakcode @ git+https://example.com/repo.git@main" in dep_cmd
+    assert "--no-deps" not in dep_cmd and "--force-reinstall" not in dep_cmd
     assert "updated" in result.stdout
     assert "abcdef123456" in result.stdout
 
@@ -1105,6 +1111,7 @@ def test_update_local_checkout_without_uv_receipt_uses_pip(tmp_path, monkeypatch
     assert result.exit_code == 0
     assert "--force-reinstall" in calls[0] and "--no-deps" in calls[0]
     assert any(str(part).startswith("zakcode @ file://") for part in calls[0])
+    assert "--no-deps" not in calls[1]  # dependency-resolution pass
 
 
 # ── terminal hygiene: stale COLUMNS/LINES + bracketed paste (2026-08-25 reports) ──
