@@ -585,6 +585,8 @@ def _enable_multiline_paste() -> None:
     carries the embedded newlines. POSIX-only nicety — a platform without readline
     (or a libedit that rejects the binding) just keeps today's behavior.
     """
+    if sys.platform == "win32":
+        return  # no GNU readline; pastes keep today's behavior
     if not sys.stdin.isatty():
         return
     try:
