@@ -204,3 +204,40 @@ def test_say_box_ledgers_sends_then_exits_on_ctrl_c(
     assert rows[0]["via"] == "cockpit-say-box"
     sends = [c for c in fake_tmux.calls if c[1] == "send-keys"]
     assert len(sends) == 2 and sends[0][-1] == "do the thing"
+
+
+def test_multiline_send_uses_one_bracketed_paste(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
+    """A multi-line message must reach the chat pane as ONE prompt, never line-by-line."""
+    fake_tmux.has_session_rc = 0
+    text = "first line\nsecond line\nthird line"
+    cockpit.say(text=text, session="agentbox", ledger=tmp_path / "l.jsonl", operator=None)
+    subs = fake_tmux.subcommands()
+    assert "load-buffer" in subs
+    paste = next(c for c in fake_tmux.calls if c[1] == "paste-buffer")
+    assert "-p" in paste and "agentbox:0.0" in paste
+    # Exactly one Enter submits the whole block; no per-line send-keys of content.
+    sends = [c for c in fake_tmux.calls if c[1] == "send-keys"]
+    assert [c[-1] for c in sends] == ["Enter"]
+    # The ledger keeps the message whole, as one row.
+    row = json.loads((tmp_path / "l.jsonl").read_text(encoding="utf-8").strip())
+    assert row["text"] == text
+
+
+def test_say_box_multiline_reports_line_count(
+    fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_tmux.has_session_rc = 0
+    lines = iter(["alpha\nbeta"])
+
+    def _next_line(prompt: str = "") -> str:
+        try:
+            return next(lines)
+        except StopIteration:
+            raise KeyboardInterrupt from None
+
+    monkeypatch.setattr("builtins.input", _next_line)
+    with pytest.raises(typer.Exit):
+        cockpit.cockpit_say_box(session="x", ledger=tmp_path / "l.jsonl", operator="h@b")
+    assert "2 lines" in cockpit.console.export_text()
+    subs = fake_tmux.subcommands()
+    assert "load-buffer" in subs and "paste-buffer" in subs

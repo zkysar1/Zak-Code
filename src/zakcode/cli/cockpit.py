@@ -102,13 +102,26 @@ def _append_ledger(ledger: Path, text: str, *, via: str, operator: str | None) -
 
 
 def _send_to_pane(session: str, text: str) -> None:
-    """Type ``text`` into the chat pane (pane 0.0) and press Enter.
+    """Deliver ``text`` to the chat pane (pane 0.0) as ONE message and press Enter.
 
-    ``-l`` sends the line literally so tmux never interprets it as key names; the
-    separate Enter keypress is what actually submits it.
+    Single line: ``send-keys -l`` types it literally so tmux never interprets it as
+    key names. Multi-line: keystroke delivery would submit at every newline — N
+    separate prompts confusing the agent — so the text goes through a tmux paste
+    buffer instead, and ``paste-buffer -p`` wraps it in bracketed-paste markers,
+    which the chat's readline (see ``_enable_multiline_paste``) accepts as one
+    block. The separate Enter keypress is what actually submits it.
     """
-    _tmux("send-keys", "-t", f"{session}:0.0", "-l", "--", text)
-    _tmux("send-keys", "-t", f"{session}:0.0", "Enter")
+    target = f"{session}:0.0"
+    if "\n" in text:
+        subprocess.run(
+            [_tmux_bin(), "load-buffer", "-b", "zakcode-say", "-"],
+            input=text.encode(),
+            check=True,
+        )
+        _tmux("paste-buffer", "-d", "-p", "-b", "zakcode-say", "-t", target)
+    else:
+        _tmux("send-keys", "-t", target, "-l", "--", text)
+    _tmux("send-keys", "-t", target, "Enter")
 
 
 def _chat_pane_mid_turn(session: str) -> bool:
@@ -252,7 +265,15 @@ def cockpit_say_box(
         str | None, typer.Option("--operator", help="Provenance label (default user@host).")
     ] = None,
 ) -> None:
-    """(internal) Bottom-pane loop: read a line, ledger it, type it into the chat pane."""
+    """(internal) Bottom-pane loop: read a message, ledger it, deliver it as one prompt.
+
+    Bracketed paste is enabled on the box's own readline, so a multi-line paste
+    arrives as ONE editable block returned by a single ``input()`` — never as a
+    stream of auto-submitting lines each fired at the agent separately.
+    """
+    from zakcode.cli import _prepare_interactive_terminal
+
+    _prepare_interactive_terminal()
     ledger_path = ledger if ledger is not None else _default_ledger()
     last = ""
     while True:
@@ -271,10 +292,10 @@ def cockpit_say_box(
         _append_ledger(ledger_path, line, via="cockpit-say-box", operator=operator)
         _send_to_pane(session, line)
         stamp = time.strftime("%H:%M")
-        if _chat_pane_mid_turn(session):
-            last = f"✓ queued (agent is mid-turn) {stamp}"
-        else:
-            last = f"✓ sent {stamp}"
+        lines = line.count("\n") + 1
+        sent = f"✓ sent ({lines} lines) {stamp}" if lines > 1 else f"✓ sent {stamp}"
+        mid_turn = _chat_pane_mid_turn(session)
+        last = f"✓ queued (agent is mid-turn) {stamp}" if mid_turn else sent
 
 
 def say(
