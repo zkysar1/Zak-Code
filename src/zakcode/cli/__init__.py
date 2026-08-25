@@ -750,6 +750,14 @@ class _InputMux:
         self.inbox = inbox
         self.interrupt_fp = interrupt_fp
         self.queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        #: Says consumed during a permission prompt that were NOT answers to it —
+        #: held here and delivered as ordinary input once the REPL is idle again,
+        #: never swallowed by the prompt's re-ask loop.
+        self._held_says: list[str] = []
+        #: Sticky EOF: once the pump reports end-of-stdin, every later consumer
+        #: sees it too (a prompter consuming the one eof item must not leave the
+        #: REPL waiting forever on a queue that can no longer fill).
+        self._eof = False
         threading.Thread(target=self._pump, daemon=True, name="stdin-pump").start()
 
     def _pump(self) -> None:
@@ -765,29 +773,44 @@ class _InputMux:
                 self.queue.put(("eof", None))
                 return
 
-    def next_input(self, *, idle: bool) -> tuple[str, str | None]:
+    def next_input(
+        self, *, idle: bool, stop: threading.Event | None = None
+    ) -> tuple[str, str | None]:
         """Block until input arrives from either door.
 
         Kinds: ``line`` (keyboard), ``say`` (inbox), ``eof``, ``interrupt``
         (Ctrl-C forwarded by the pump), ``stop`` (the interrupt FILE, mid-turn
-        only). ``idle=True`` is the REPL between turns: a stop signal has
-        nothing to stop and is cleared. ``idle=False`` is a mid-turn consumer
-        (the permission prompt): the signal is LEFT IN PLACE — reported as
-        ``stop`` here, while the turn's interrupt watcher consumes it and
-        cancels the turn.
+        only), ``cancelled`` (the ``stop`` event was set — the asker abandoned
+        this wait). ``idle=True`` is the REPL between turns: a stop signal has
+        nothing to stop and is cleared, and says held aside during a permission
+        prompt are delivered first. ``idle=False`` is a mid-turn consumer (the
+        permission prompt): the signal is LEFT IN PLACE — reported as ``stop``
+        here, while the turn's interrupt watcher consumes it and cancels the
+        turn. ``stop`` lets a cancelled asker end this wait promptly — without
+        it, an abandoned worker thread would poll forever, stealing the next
+        input and blocking interpreter exit.
         """
         while True:
+            if stop is not None and stop.is_set():
+                return ("cancelled", None)
             if idle:
                 self._take_interrupt(self.interrupt_fp)
+                if self._held_says:
+                    return ("say", self._held_says.pop(0))
             elif self.interrupt_fp.exists():
                 return ("stop", None)
             say_text = self._read_say(self.inbox)
             if say_text is not None:
                 return ("say", say_text)
             try:
-                return self.queue.get(timeout=0.3)
+                got = self.queue.get(timeout=0.3)
             except queue.Empty:
+                if self._eof:
+                    return ("eof", None)
                 continue
+            if got[0] == "eof":
+                self._eof = True
+            return got
 
     def try_input(self) -> tuple[str, str | None] | None:
         """Non-blocking peek-and-take: input that arrived while the REPL was busy.
@@ -798,31 +821,61 @@ class _InputMux:
         stop signal is cleared, same as ``next_input(idle=True)``.
         """
         self._take_interrupt(self.interrupt_fp)
+        if self._held_says:
+            return ("say", self._held_says.pop(0))
         say_text = self._read_say(self.inbox)
         if say_text is not None:
             return ("say", say_text)
         try:
-            return self.queue.get_nowait()
+            got = self.queue.get_nowait()
         except queue.Empty:
-            return None
+            return ("eof", None) if self._eof else None
+        if got[0] == "eof":
+            self._eof = True
+        return got
 
-    def answer_line(self, console: Console) -> str:
+    def answer_line(
+        self,
+        console: Console,
+        *,
+        stop: threading.Event | None = None,
+        accept: Callable[[str], object | None] | None = None,
+    ) -> str:
         """One answer line for a mid-turn question (the permission prompt).
 
         A say answers exactly like a typed line (echoed with provenance) — this
-        is what lets the cockpit say box approve tool calls. EOF denies;
-        Ctrl-C or a stop signal denies AND (for the stop file) the turn watcher
-        cancels the turn moments later.
+        is what lets the cockpit say box approve tool calls. A say that does NOT
+        parse as an answer (``accept`` returns None — e.g. the operator sends a
+        real message while a prompt is open) is HELD and delivered as ordinary
+        input after the turn, never burned on the prompt's re-ask loop; typed
+        lines always pass through (a typo should re-ask). EOF denies; Ctrl-C or
+        a stop signal denies AND (for the stop file) the turn watcher cancels
+        the turn moments later. A set ``stop`` event ends the wait quietly —
+        the asker was cancelled and nobody will read the result.
         """
-        kind, value = self.next_input(idle=False)
-        if kind == "line":
-            return value or ""
-        if kind == "say":
-            console.print(f"(say) {escape(value or '')}", style="notice.dim")
-            return value or ""
-        if kind == "eof":
-            raise EOFError
-        raise KeyboardInterrupt  # 'interrupt' or 'stop'
+        while True:
+            kind, value = self.next_input(idle=False, stop=stop)
+            if kind == "cancelled":
+                return ""
+            if kind == "line":
+                return value or ""
+            if kind == "say":
+                text = value or ""
+                if accept is not None and text.strip() and accept(text) is None:
+                    self._held_says.append(text)
+                    preview = text.splitlines()[0][:60]
+                    console.print()
+                    console.print(
+                        f"  (say) held {GLYPHS['dash']} not an answer to this prompt; "
+                        f"runs after this turn: {escape(preview)!s}",
+                        style="notice.dim",
+                    )
+                    continue
+                console.print(f"(say) {escape(text)}", style="notice.dim")
+                return text
+            if kind == "eof":
+                raise EOFError
+            raise KeyboardInterrupt  # 'interrupt' or 'stop'
 
 
 class ConsolePermissionPrompter:
@@ -838,12 +891,18 @@ class ConsolePermissionPrompter:
     after the decision line — it never touches renderer state.
     """
 
-    def __init__(self, console: Console, line_source: Callable[[], str] | None = None) -> None:
+    def __init__(
+        self,
+        console: Console,
+        line_source: Callable[[threading.Event], str] | None = None,
+    ) -> None:
         self.console = console
         # When set, answers come from the session's input mux instead of a
         # direct console.input — mandatory whenever a stdin pump is running
         # (two blocking readers on one fd race; see _InputMux), and it is what
-        # lets a cockpit say box answer y/a/n at all.
+        # lets a cockpit say box answer y/a/n at all. The Event passed in is the
+        # cancellation token: set when this prompt stops waiting for any reason,
+        # so the worker thread ends instead of polling forever.
         self._line_source = line_source
 
     async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
@@ -910,7 +969,14 @@ class ConsolePermissionPrompter:
                 # — matching bash.py/powershell.py's asyncio.to_thread pattern. (audit2 #11)
                 if self._line_source is not None:
                     self.console.print(prompt, end="")
-                    answer = await asyncio.to_thread(self._line_source)
+                    # The stop event ends the worker if this wait is abandoned
+                    # (turn cancelled mid-prompt) — an orphaned poller would
+                    # steal the next input and block interpreter exit.
+                    stop = threading.Event()
+                    try:
+                        answer = await asyncio.to_thread(self._line_source, stop)
+                    finally:
+                        stop.set()
                 else:
                     answer = await asyncio.to_thread(self.console.input, prompt)
             except (EOFError, KeyboardInterrupt):
@@ -1903,10 +1969,12 @@ def chat(
     extra_roots = extra_root if extra_root else None
     repl_mux: list[_InputMux] = []
 
-    def _prompter_line() -> str:
+    def _prompter_line(stop: threading.Event) -> str:
         if not repl_mux:
             raise EOFError  # non-interactive (one-shot -p): fail toward deny, as before
-        return repl_mux[0].answer_line(console)
+        # A say that isn't a parseable y/a/n answer is a real message for the
+        # model — held by the mux and run after this turn, never burned here.
+        return repl_mux[0].answer_line(console, stop=stop, accept=_parse_permission_answer)
 
     prompter = ConsolePermissionPrompter(console, line_source=_prompter_line)
 

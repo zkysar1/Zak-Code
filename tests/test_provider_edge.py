@@ -596,3 +596,29 @@ def test_registry_lookup_exception_falls_back(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("zakcode.providers.registry._lookup_static", _boom)
     caps = get_capabilities("anything")
     assert caps.context_window == 8192
+
+
+def test_litellm_logging_worker_cancellation_noise_is_filtered() -> None:
+    """Interrupting a turn cancels litellm's async logging worker, which logs a full
+    TimeoutError traceback at ERROR into the transcript (2026-08-25 field report).
+    The provider installs a filter on the "LiteLLM" logger dropping records emitted
+    from logging_worker.py — and ONLY those; other litellm errors still print."""
+    import logging
+
+    import zakcode.providers.litellm_provider  # noqa: F401 — installs the filter at import
+
+    lite = logging.getLogger("LiteLLM")
+
+    def _record(pathname: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            name="LiteLLM",
+            level=logging.ERROR,
+            pathname=pathname,
+            lineno=102,
+            msg="LoggingWorker error: %s",
+            args=("boom",),
+            exc_info=None,
+        )
+
+    assert not lite.filter(_record("/site-packages/litellm/litellm_core_utils/logging_worker.py"))
+    assert lite.filter(_record("/site-packages/litellm/main.py"))

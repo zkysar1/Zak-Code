@@ -1360,7 +1360,9 @@ def test_prompter_denied_by_interrupt_file_leaves_signal_for_turn_watcher(
     mux = _make_mux(tmp_path)
     console = Console(record=True, width=100, theme=ZAK_THEME)
     si.request_interrupt(si.interrupt_path(tmp_path))
-    prompter = ConsolePermissionPrompter(console, line_source=lambda: mux.answer_line(console))
+    prompter = ConsolePermissionPrompter(
+        console, line_source=lambda stop: mux.answer_line(console, stop=stop)
+    )
     outcome = asyncio.run(prompter.confirm(_perm_request()))
     assert outcome is PermissionOutcome.DENY_ONCE
     assert "denied" in console.export_text()
@@ -1450,3 +1452,61 @@ def test_chat_permission_prompt_answered_from_say_inbox(monkeypatch, tmp_path) -
     assert "(say) y" in result.output
     assert "outcome=allow_once" in result.output
     assert "goodbye" in result.output
+
+
+def test_prompter_holds_non_answer_say_and_delivers_it_after_the_turn(
+    monkeypatch, tmp_path
+) -> None:
+    """A real message sent while a permission prompt is open (2026-08-25 field
+    report: 'continue, why did you stop?') must NOT be burned on the prompt's
+    re-ask loop — it is held and delivered as ordinary input once idle."""
+    import threading
+    import time as _time
+
+    from zakcode.cli import _parse_permission_answer
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    mux = _make_mux(tmp_path)
+    console = Console(record=True, width=100, theme=ZAK_THEME)
+    prompter = ConsolePermissionPrompter(
+        console,
+        line_source=lambda stop: mux.answer_line(
+            console, stop=stop, accept=_parse_permission_answer
+        ),
+    )
+    inbox = si.say_path(tmp_path)
+    assert si.write_say(inbox, "also, please add tests for this")
+
+    def _writer() -> None:
+        for _ in range(200):  # the non-answer say is consumed (held) first
+            if not si.say_pending(inbox):
+                break
+            _time.sleep(0.05)
+        si.write_say(inbox, "y")
+
+    threading.Thread(target=_writer, daemon=True).start()
+    outcome = asyncio.run(prompter.confirm(_perm_request()))
+    assert outcome is PermissionOutcome.ALLOW_ONCE
+    out = console.export_text()
+    assert "held" in out and "also, please add tests" in out
+    # Once idle, the held message is the next input — with say provenance.
+    assert mux.try_input() == ("say", "also, please add tests for this")
+
+
+def test_answer_line_worker_ends_when_wait_is_abandoned(monkeypatch, tmp_path) -> None:
+    """A cancelled permission prompt must END its waiting worker thread — an
+    orphaned poller steals the next input and blocks interpreter exit."""
+    import threading
+
+    _quiet_pump(monkeypatch)
+    mux = _make_mux(tmp_path)
+    console = Console(record=True, width=100, theme=ZAK_THEME)
+    stop = threading.Event()
+    worker = threading.Thread(target=lambda: mux.answer_line(console, stop=stop), daemon=True)
+    worker.start()
+    worker.join(timeout=0.2)
+    assert worker.is_alive()  # waiting, as a live prompt would be
+    stop.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
