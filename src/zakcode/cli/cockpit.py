@@ -9,9 +9,12 @@ JSONL ledger (operator provenance) and delivers it through the workspace **say
 inbox** (``<workspace>/.say`` — ``zakcode.session.say_inbox``): the SAME single-slot
 contract the server's ``POST /say`` writes and the serve driver consumes. Every chat
 always listens to its workspace's say inbox (messages arrive exactly like typed
-lines, slash commands included), and the pane runs with ``ZAKCODE_INPUT_FRAME=off``
-so there is exactly one place to type. tmux is only the window manager here — it is never the
-message transport.
+lines, slash commands included). Inside the cockpit that inbox is the ONLY door:
+the chat pane runs with ``ZAKCODE_INPUT_FRAME=off`` and does not read its own
+keyboard at all (``_InputMux(keyboard=False)``), so the say box — and the file
+contract behind it, which is what lets outside programs inject into a session —
+is canonically the one place input comes from. tmux is only the window manager
+here — it is never the message transport.
 
 Everything here is session-scoped tmux configuration — the operator's global
 ``.tmux.conf`` is never touched.

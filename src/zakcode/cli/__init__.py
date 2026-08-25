@@ -775,6 +775,13 @@ class _InputMux:
     asking the operator a question: the REPL's message prompt, or a mid-turn
     permission prompt. Exactly one thread ever blocks on stdin.
 
+    Inside a cockpit pane there is only ONE door: the say box below is the
+    canonical input, so the mux is built with ``keyboard=False`` and never
+    reads the pane's own stdin at all — text typed into the screen pane goes
+    nowhere, by design (the say-inbox FILE is the input contract; that is what
+    lets outside programs inject into a session, and it must never grow a
+    parallel keystroke door).
+
     Why it exists (2026-08-25 field incident): the permission prompter used to
     run its own ``console.input`` in a second thread while the stdin pump was
     also blocked reading — two readers racing one file descriptor. The
@@ -783,7 +790,7 @@ class _InputMux:
     permission prompt re-asked into a broken screen.
     """
 
-    def __init__(self, inbox: Path, interrupt_fp: Path) -> None:
+    def __init__(self, inbox: Path, interrupt_fp: Path, *, keyboard: bool = True) -> None:
         from zakcode.session.say_inbox import read_say, take_interrupt
 
         self._read_say = read_say
@@ -799,7 +806,8 @@ class _InputMux:
         #: sees it too (a prompter consuming the one eof item must not leave the
         #: REPL waiting forever on a queue that can no longer fill).
         self._eof = False
-        threading.Thread(target=self._pump, daemon=True, name="stdin-pump").start()
+        if keyboard:
+            threading.Thread(target=self._pump, daemon=True, name="stdin-pump").start()
 
     def _pump(self) -> None:
         while True:
@@ -2192,7 +2200,16 @@ def chat(
     inbox_path = say_path(agent.settings.workspace_root)
     interrupt_fp = interrupt_path(agent.settings.workspace_root)
     take_interrupt(interrupt_fp)  # a stop signal predating the session has nothing to stop
-    mux = _InputMux(inbox_path, interrupt_fp)
+    # Inside a cockpit pane the say box is the ONE door: the pane's own keyboard
+    # is not read at all, so the box (and the file contract behind it — remote
+    # `zakcode say`, POST /say) is canonically the only way anything reaches
+    # this session. Everywhere else the keyboard is the local door into the
+    # same mux. Ctrl-C stays signal-driven and works in both.
+    mux = _InputMux(
+        inbox_path,
+        interrupt_fp,
+        keyboard=os.environ.get("ZAKCODE_COCKPIT_PANE") != "1",
+    )
     repl_mux.append(mux)
 
     last_interrupt = 0.0
