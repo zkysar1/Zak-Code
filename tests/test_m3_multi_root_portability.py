@@ -197,3 +197,41 @@ def test_m3_safety_layer_rejects_traversal_from_multi_root(mock_mind_repo):
             "../../../../../../etc/passwd",
             [repo, world, meta],
         )
+
+
+# --------------------------------------------------------------------------- #
+# Workspace-IS-the-mind: externals auto-added with no --skill-dir (2026-08-25)
+# --------------------------------------------------------------------------- #
+
+
+def test_mind_workspace_gets_its_own_external_roots(mock_mind_repo):
+    """When the WORKSPACE ITSELF is a Mind repo (agents/*/local-paths.conf), its
+    external world/meta homes are workspace roots automatically — no --skill-dir,
+    no flag. Without this, file tools refused the real world ("resolves outside
+    the workspace root") and a relative Write("world/…") landed in a stray world/
+    INSIDE the repo (measured on serene, 2026-08-25)."""
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+
+    repo, world, meta, _skill_dir = mock_mind_repo
+    agent = Agent(
+        provider=ScriptedProvider([reply("hi")]),
+        default_model="scripted/mind-roots",
+        workspace_root=str(repo),
+    )
+    resolved = [r.resolve() for r in agent.loop.extra_workspace_roots]
+    assert world.resolve() in resolved
+    assert meta.resolve() in resolved
+
+
+def test_plain_workspace_gets_no_extra_roots(tmp_path):
+    """A non-Mind workspace (no agents/*/local-paths.conf) stays single-root."""
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+
+    agent = Agent(
+        provider=ScriptedProvider([reply("hi")]),
+        default_model="scripted/mind-roots",
+        workspace_root=str(tmp_path),
+    )
+    assert agent.loop.extra_workspace_roots == []

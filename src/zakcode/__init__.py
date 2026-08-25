@@ -132,6 +132,25 @@ def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
     return paths
 
 
+def _mind_external_roots(repo_root: Path) -> list[Path]:
+    """External world/meta roots a Mind repo declares via ``agents/*/local-paths.conf``.
+
+    Returns a deduplicated list of existing absolute directories.
+    """
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    agents_dir = repo_root / "agents"
+    if agents_dir.is_dir():
+        for child in sorted(agents_dir.iterdir()):
+            conf = child / "local-paths.conf"
+            for p in _parse_local_paths_conf(conf):
+                rp = p.resolve()
+                if rp not in seen:
+                    roots.append(rp)
+                    seen.add(rp)
+    return roots
+
+
 def _infer_roots_from_skill_dir(skill_dir: Path) -> list[Path]:
     """Infer extra workspace roots from a ``--skill-dir`` path.
 
@@ -151,16 +170,10 @@ def _infer_roots_from_skill_dir(skill_dir: Path) -> list[Path]:
             roots.append(resolved)
             seen.add(resolved)
 
-        # Scan for agent local-paths.conf files under the repo root.
-        agents_dir = repo_root / "agents"
-        if agents_dir.is_dir():
-            for child in agents_dir.iterdir():
-                conf = child / "local-paths.conf"
-                for p in _parse_local_paths_conf(conf):
-                    rp = p.resolve()
-                    if rp not in seen:
-                        roots.append(rp)
-                        seen.add(rp)
+        for rp in _mind_external_roots(repo_root):
+            if rp not in seen:
+                roots.append(rp)
+                seen.add(rp)
 
     return roots
 
@@ -659,6 +672,13 @@ class Agent:
         if extra_skill_dirs:
             for sd in extra_skill_dirs:
                 computed_extra_roots.extend(_infer_roots_from_skill_dir(Path(sd)))
+        # A Mind workspace declares its EXTERNAL world/meta homes in
+        # agents/*/local-paths.conf — the same inference --skill-dir repos already
+        # get. Without this, file tools refuse the real world ("resolves outside
+        # the workspace root") and a relative Write("world/…") lands in a stray
+        # world/ INSIDE the repo (measured on serene, 2026-08-25: scripts written
+        # to a divergent copy the framework never reads). Structural, no config.
+        computed_extra_roots.extend(_mind_external_roots(Path(self.settings.workspace_root)))
 
         # Build the shared budget when delegation is on (its original reason) OR when an
         # optional cost/token ceiling is configured (parity #4) — so a single non-delegating
