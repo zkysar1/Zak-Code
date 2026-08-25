@@ -317,16 +317,21 @@ class Settings(BaseSettings):
         ge=1,
         description="Stop the turn-tree once cumulative total tokens reach this; None = off.",
     )
-    # Bounded retry for RATE-LIMITED provider calls only (a 429 is the one failure
-    # class where waiting is the documented remedy). Other provider errors are never
-    # retried — they end the turn gracefully with stop_reason="provider_error".
-    # This is THE retry mechanism: litellm's own ``num_retries`` stays 0 so the two
-    # layers can never compound (see the Provider ABC docstring on retry layering).
-    provider_max_retries: int = Field(
-        default=3,
-        ge=0,
-        description="Retries (with backoff) after a rate-limited provider call; 0 disables.",
-    )
+    # There is deliberately NO provider-retry knob (removed 2026-08-26, no-knobs
+    # ruling — the former ``provider_max_retries`` / ZAKCODE_PROVIDER_MAX_RETRIES).
+    # The retry policy is fixed in agent/loop.py: a rate-limited call (429 /
+    # transient 5xx) retries with jittered exponential backoff, honoring
+    # Retry-After, inside a ~5-minute horizon (_RATE_LIMIT_RETRY_HORIZON) — Google's
+    # dynamic-shared-quota guidance is that a 429 is temporary contention and the
+    # remedy is minutes-scale backoff, not a tunable attempt count (a 3-attempt /
+    # 6-second budget killed a 42-iteration run in the field). Timeouts and
+    # provider-rejected tool calls retry a fixed _MAX_INTERRUPT_RETRIES times.
+    # Other provider errors are never retried — the turn ends gracefully
+    # (stop_reason="provider_error") with the session persisted and resumable.
+    # The loop is still THE retry mechanism: litellm's own ``num_retries`` stays 0
+    # so two layers can never compound (see the Provider ABC docstring). NOTE:
+    # because this Settings model uses extra="ignore", a deleted field passed by
+    # old callers is silently dropped — update callers, don't re-add the field.
     # Per-call wall-clock ceiling for ONE model call, so a hung call can never block
     # the loop forever. 600s suits hosted APIs; a self-hosted backend on modest
     # hardware can legitimately need more — measured on a P40 pod: 28.8k prompt

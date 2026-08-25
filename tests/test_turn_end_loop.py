@@ -214,7 +214,7 @@ async def test_turn_end_max_iterations_not_vetoable(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_turn_end_provider_error_not_vetoable(tmp_path: Path) -> None:
     hook = RecordingHook([_veto()])
-    loop = _make_loop(FailingProvider(), tmp_path, provider_max_retries=0)
+    loop = _make_loop(FailingProvider(), tmp_path)  # RequestFailed is never retried
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "provider_error"
