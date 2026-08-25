@@ -1687,15 +1687,6 @@ def chat(
         ".zakcode/traces/ in the workspace: routing, gate firings, tool calls, and why each turn "
         "ended. For a custom location, set ZAKCODE_TRACE_DIR instead.",
     ),
-    say_inbox: bool = typer.Option(
-        False,
-        "--say-inbox",
-        envvar="ZAKCODE_SAY_INBOX",
-        help="Also accept messages from the workspace say inbox (<workspace>/.say — the same "
-        "single-slot file the server's POST /say writes). Each message is consumed exactly "
-        "like a typed line, slash commands included. The cockpit sets this for its chat "
-        "pane. In-process interactive sessions only.",
-    ),
 ) -> None:
     """Start an interactive agent session.
 
@@ -1715,7 +1706,6 @@ def chat(
                 ("--skill-dir", skill_dir),
                 ("--extra-root", extra_root),
                 ("--trace", trace),
-                ("--say-inbox", say_inbox),
                 ("--session/-s", session),
             )
             if val
@@ -1845,93 +1835,92 @@ def chat(
     # 1 once the one-time nudge has fired]. See _maybe_zakpick_advisory.
     zakpick_advisory = [0, 0]
 
-    # ── say inbox (--say-inbox / cockpit): the shared ``.say`` file is a second input
-    # channel, consumed exactly like a typed line (slash commands included) — the same
-    # single-slot contract POST /say writes and the serve driver consumes. Stdin moves
-    # to a pump thread so the loop can poll both sources; the thread owns the readline
-    # prompt, and SIGINT still lands in the MAIN thread's poll, where the double-press
-    # exit logic lives (PEP 475 keeps the pump's blocking read alive through it).
-    inbox_path: Path | None = None
-    input_q: queue.Queue[tuple[str, str | None]] | None = None
-    if say_inbox:
-        from zakcode.session.say_inbox import read_say, say_path
+    # ── one input rule, two doors ────────────────────────────────────────────────
+    # An interactive chat ALWAYS listens to (a) its keyboard and (b) its workspace's
+    # say inbox (<workspace>/.say — the same single-slot contract the server's
+    # POST /say and `zakcode say` write). Both arrive as ordinary lines, slash
+    # commands included; inbox lines echo with "(say)" provenance. There is no
+    # opt-in and no mode: it works the same way every time.
+    #
+    # Stdin lives in a pump thread so the loop can poll both doors. A REAL Ctrl-C
+    # (SIGINT) raises in the MAIN thread's poll (PEP 475 keeps the pump's blocking
+    # read alive through it); a read_prompt-raised interrupt (scripted stdin) is
+    # forwarded by the pump — both feed the same double-press exit logic below.
+    #
+    # Safety rule that keeps always-on honest: chat only OBEYS messages sent while
+    # it is listening. A message already queued when the session starts — a stale
+    # file from a dead session, or a .say shipped inside a cloned repo — is
+    # discarded with a visible notice, never executed.
+    from zakcode.session.say_inbox import read_say, say_path
 
-        inbox_path = say_path(agent.settings.workspace_root)
-        input_q = queue.Queue()
+    inbox_path = say_path(agent.settings.workspace_root)
+    stale_say = read_say(inbox_path)
+    if stale_say is not None:
+        preview = stale_say.splitlines()[0][:80]
+        notice_warn(
+            console,
+            f"say inbox: discarded a message queued before this session started "
+            f"({preview!r}) — resend it if still wanted",
+        )
+    input_q: queue.Queue[tuple[str, str | None]] = queue.Queue()
 
-        def _stdin_pump(q: queue.Queue[tuple[str, str | None]]) -> None:
-            while True:
-                try:
-                    q.put(("line", read_prompt(console)))
-                except EOFError:
-                    q.put(("eof", None))
-                    return
-                except BaseException:  # noqa: BLE001 — a dying pump must not kill chat
-                    q.put(("eof", None))
-                    return
+    def _stdin_pump(q: queue.Queue[tuple[str, str | None]]) -> None:
+        while True:
+            try:
+                q.put(("line", read_prompt(console)))
+            except EOFError:
+                q.put(("eof", None))
+                return
+            except KeyboardInterrupt:
+                q.put(("interrupt", None))
+            except BaseException:  # noqa: BLE001 — a dying pump must not kill chat
+                q.put(("eof", None))
+                return
 
-        threading.Thread(
-            target=_stdin_pump, args=(input_q,), daemon=True, name="say-inbox-stdin"
-        ).start()
+    threading.Thread(
+        target=_stdin_pump, args=(input_q,), daemon=True, name="say-inbox-stdin"
+    ).start()
 
     last_interrupt = 0.0
     while True:
-        via_say = False
-        if inbox_path is not None and input_q is not None:
-            try:
-                got: tuple[str, str | None] | None = None
-                while got is None:
-                    say_text = read_say(inbox_path)
-                    if say_text is not None:
-                        got = ("say", say_text)
-                        break
-                    try:
-                        got = input_q.get(timeout=0.3)
-                    except queue.Empty:
-                        continue
-            except KeyboardInterrupt:
-                now = time.monotonic()
-                if now - last_interrupt <= _CTRL_C_EXIT_WINDOW_S:
-                    notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
+        try:
+            got: tuple[str, str | None] | None = None
+            while got is None:
+                say_text = read_say(inbox_path)
+                if say_text is not None:
+                    got = ("say", say_text)
                     break
-                last_interrupt = now
-                _dim(console, "press ctrl-c again to exit")
-                continue
-            kind, value = got
-            if kind == "eof":
+                try:
+                    got = input_q.get(timeout=0.3)
+                except queue.Empty:
+                    continue
+        except KeyboardInterrupt:
+            got = ("interrupt", None)
+        kind, value = got
+        if kind == "eof":
+            notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
+            break
+        if kind == "interrupt":
+            # A single Ctrl-C at the prompt must NOT kill the session — terminal
+            # muscle memory sends it constantly (aborting a copy, clearing a
+            # half-typed line), and a live transcript is too expensive to lose to
+            # one keystroke (2026-08-24 operator report: Ctrl-C-to-copy exited a
+            # mid-ceremony session). Double-press within the window exits, the
+            # Claude Code convention.
+            now = time.monotonic()
+            if now - last_interrupt <= _CTRL_C_EXIT_WINDOW_S:
                 notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
                 break
-            line = value or ""
-            via_say = kind == "say"
-            if via_say and line.strip():
-                # Echo the injected message where a typed line would have echoed, with
-                # provenance — the transcript must show what the agent was just told.
-                console.print()
-                console.print(f"  ▸ (say) {escape(line)}", style="notice.dim")
-            stripped = line.strip()
-            if not stripped:
-                continue
-            # fall through to the shared line handling below
-        else:
-            try:
-                line = read_prompt(console)
-            except EOFError:
-                notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
-                break
-            except KeyboardInterrupt:
-                # A single Ctrl-C at the prompt must NOT kill the session — terminal
-                # muscle memory sends it constantly (aborting a copy, clearing a
-                # half-typed line), and a live transcript is too expensive to lose to
-                # one keystroke (2026-08-24 operator report: Ctrl-C-to-copy exited a
-                # mid-ceremony session). Double-press within the window exits, the
-                # Claude Code convention.
-                now = time.monotonic()
-                if now - last_interrupt <= _CTRL_C_EXIT_WINDOW_S:
-                    notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
-                    break
-                last_interrupt = now
-                _dim(console, "press ctrl-c again to exit")
-                continue
+            last_interrupt = now
+            _dim(console, "press ctrl-c again to exit")
+            continue
+        line = value or ""
+        via_say = kind == "say"
+        if via_say and line.strip():
+            # Echo the injected message where a typed line would have echoed, with
+            # provenance — the transcript must show what the agent was just told.
+            console.print()
+            console.print(f"  ▸ (say) {escape(line)}", style="notice.dim")
 
         stripped = line.strip()
         if not stripped:

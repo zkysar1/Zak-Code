@@ -149,7 +149,6 @@ def test_cockpit_main_runs_chat_frameless_then_exits_on_eof(
     chat_runs = [(argv, env) for argv, env in runs if argv[-1] == "chat"]
     assert len(chat_runs) == 1
     assert chat_runs[0][1].get("ZAKCODE_INPUT_FRAME") == "off"
-    assert chat_runs[0][1].get("ZAKCODE_SAY_INBOX") == "1"
     text = cockpit.console.export_text()
     assert "zakcode cockpit" in text
     assert "press Enter to relaunch" in text

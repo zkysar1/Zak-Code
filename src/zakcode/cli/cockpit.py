@@ -7,10 +7,10 @@ Enter-to-relaunch loop so a finished or crashed chat never leaves a dead pane.
 Bottom pane: the *say box* — a persistent input that appends every message to a
 JSONL ledger (operator provenance) and delivers it through the workspace **say
 inbox** (``<workspace>/.say`` — ``zakcode.session.say_inbox``): the SAME single-slot
-contract the server's ``POST /say`` writes and the serve driver consumes. The chat
-pane runs with ``ZAKCODE_SAY_INBOX=1`` so it consumes inbox messages exactly like
-typed lines (slash commands included), and ``ZAKCODE_INPUT_FRAME=off`` so there is
-exactly one place to type. tmux is only the window manager here — it is never the
+contract the server's ``POST /say`` writes and the serve driver consumes. Every chat
+always listens to its workspace's say inbox (messages arrive exactly like typed
+lines, slash commands included), and the pane runs with ``ZAKCODE_INPUT_FRAME=off``
+so there is exactly one place to type. tmux is only the window manager here — it is never the
 message transport.
 
 Everything here is session-scoped tmux configuration — the operator's global
@@ -217,10 +217,10 @@ def cockpit_main(
 ) -> None:
     """(internal) Top-pane loop: banner, chat, Enter-to-relaunch."""
     workspace = workspace.resolve()
-    # The say box below is the single input: hide chat's own input frame, and have
-    # chat consume the workspace say inbox — the shared POST /say contract — so the
-    # box's messages arrive as real input, not injected keystrokes.
-    env = {**os.environ, "ZAKCODE_INPUT_FRAME": "off", "ZAKCODE_SAY_INBOX": "1"}
+    # The say box below is the single input: hide chat's own input frame. Chat
+    # always listens to the workspace say inbox (the shared POST /say contract),
+    # so the box's messages arrive as real input — no keystroke injection.
+    env = {**os.environ, "ZAKCODE_INPUT_FRAME": "off"}
     while True:
         console.clear()
         _print_cockpit_banner(workspace)
