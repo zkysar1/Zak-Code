@@ -85,6 +85,34 @@ def _locate_basename(root: Path, name: str) -> str | None:
     return None
 
 
+#: An inline-program Python invocation: ``python -c`` / ``python3 -c`` / ``py -3 -c``.
+#: Intermediate tokens must look like options so ``python3 x.py && grep -c foo`` never matches.
+_PY_INLINE_RE = re.compile(r"(?:^|[\s;&|(])(?:python[0-9.]*|py)(?:\s+-\S+)*\s+-c(?=\s)")
+
+
+def _python_inline_fix(command: str, output: str) -> str | None:
+    """A remedy hint when an inline ``python -c`` program failed to parse, else None.
+
+    A multi-line program passed through ``-c`` gets mangled by shell quoting — most
+    famously an apostrophe inside a single-quoted program (a comment like "we'll…")
+    ends the quote and truncates the code, so Python reports a Syntax/IndentationError
+    on a line that looks perfectly fine. Models then retry the identical command
+    verbatim (measured 2026-08-26: three identical IndentationError retries, then a
+    dead turn) — naming the real cause and the file-based escape breaks that loop.
+    """
+    if "SyntaxError" not in output and "IndentationError" not in output:
+        return None
+    if not _PY_INLINE_RE.search(command):
+        return None
+    return (
+        "The inline -c program likely got mangled by shell quoting — an apostrophe "
+        'inside a single-quoted program (e.g. a comment like "we\'ll") ends the quote '
+        "and truncates the code, so the reported syntax error is not the real problem. "
+        "Do not retry the same command: write the program to a file with the write_file "
+        "tool and run `python3 <file>` instead."
+    )
+
+
 def _posix_exit_fix(command: str, output: str, exit_code: int, root: Path) -> str | None:
     """A remedy hint for the two classic script-invocation failures, else None.
 
@@ -199,8 +227,10 @@ class BashTool(Tool):
             "truncated": truncated,
         }
         if exit_code != 0:
-            fix = _posix_exit_fix(
-                command, output, exit_code, Path(str(ctx.workspace_root))
-            ) or _windows_shell_fix(command, output)
+            fix = (
+                _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
+                or _python_inline_fix(command, output)
+                or _windows_shell_fix(command, output)
+            )
             return ToolResult.error(combined, data=data, fix=fix)
         return ToolResult.ok(combined, data=data)

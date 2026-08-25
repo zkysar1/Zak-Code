@@ -119,11 +119,19 @@ def test_max_tokens_finish_reason_also_continues() -> None:
 
 
 def test_empty_truncated_does_not_continue() -> None:
-    """A length finish with NO text is not a continuable answer (empty-completion path)."""
-    provider = ScriptedProvider([LLMResult(text="", finish_reason="length")])
-    result = asyncio.run(_loop(provider).arun_turn("go"))
+    """A length finish with NO text is not a continuable answer — it takes the
+    empty-completion path (a "say something" nudge, 2026-08-26), never the
+    "continue exactly where you left off" length continuation."""
+    provider = ScriptedProvider(
+        [LLMResult(text="", finish_reason="length"), LLMResult(text="answer")]
+    )
+    loop = _loop(provider)
+    result = asyncio.run(loop.arun_turn("go"))
     assert result.stop_reason == "completed"
-    assert provider.calls == 1  # no continuation
+    assert result.assistant_messages[-1].text == "answer"
+    assert not any(
+        "cut off at the output limit" in m.text for m in loop.session.messages if m.role == "user"
+    )  # the LENGTH continuation never fired
 
 
 def test_length_with_tool_calls_does_not_continue() -> None:
@@ -196,12 +204,19 @@ def test_streaming_max_tokens_finish_reason_also_continues() -> None:
 
 
 def test_streaming_empty_truncated_does_not_continue() -> None:
-    """A length finish with NO text is not a continuable answer (empty-completion path)."""
-    provider = ScriptedProvider([LLMResult(text="", finish_reason="length")])
-    events = asyncio.run(_collect(_loop(provider), "go"))
+    """A length finish with NO text is not a continuable answer — it takes the
+    empty-completion path (a "say something" nudge, 2026-08-26), never the
+    "continue exactly where you left off" length continuation."""
+    provider = ScriptedProvider(
+        [LLMResult(text="", finish_reason="length"), LLMResult(text="answer")]
+    )
+    loop = _loop(provider)
+    events = asyncio.run(_collect(loop, "go"))
     done = events[-1]
     assert done.stop_reason == "completed"
-    assert provider.calls == 1  # no continuation
+    assert not any(
+        "cut off at the output limit" in m.text for m in loop.session.messages if m.role == "user"
+    )  # the LENGTH continuation never fired
 
 
 def test_streaming_length_with_tool_calls_does_not_continue() -> None:

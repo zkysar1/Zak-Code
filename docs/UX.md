@@ -129,12 +129,15 @@ All content sits on this grid; nothing else exists:
 13. **Footer receipt (state-colored).** A `block()` at indent 2: marker `●` styled
     `ok` / `warn` / `err`; body dim: `{label} · {n} iterations · {tokens} · {cost} ·
     {elapsed}`. Label map (from the stop reasons in `agent/loop.py`):
-    `completed → "done"`, `max_iterations → "stopped early — max iterations"`,
-    `provider_error → "provider error"` (+ ` — ` + first line of `done.error` when
-    present), `doom_loop → "stopped — repeating itself"`, `stuck → "stopped — no
-    progress"`, `recipe_stalled → "stopped — recipe stalled"`, unknown →
-    `stop_reason.replace("_", " ")`. Marker: `ok` for `completed`, `err` for
-    `provider_error`, `warn` for everything else. Tokens: `f"{n/1000:.1f}k tokens"`
+    `completed → "done"` (`"done — struggled"` with a `warn` marker when
+    `done.degraded` — a clean-looking footer over a turn that engaged failure
+    recovery hid real give-ups, 2026-08-26), `max_iterations → "stopped early — max
+    iterations"`, `provider_error → "provider error"` (+ ` — ` + first line of
+    `done.error` when present), `doom_loop → "stopped — repeating itself"`, `stuck →
+    "stopped — no progress"`, `gave_up → "stopped — gave up (no output)"`,
+    `recipe_stalled → "stopped — recipe stalled"`, unknown →
+    `stop_reason.replace("_", " ")`. Marker: `ok` for un-degraded `completed`, `err`
+    for `provider_error`, `warn` for everything else. Tokens: `f"{n/1000:.1f}k tokens"`
     at ≥1000 else `f"{n} tokens"`. Cost: `f"{c:.4f}"` with trailing zeros stripped to
     a minimum of 2 decimals, `$`-prefixed — `0.0230 → $0.023`, `0.0004 → $0.0004`,
     `0.0 → $0.00`, `1.5 → $1.50`. `done.usage` wins over the accumulated sum when

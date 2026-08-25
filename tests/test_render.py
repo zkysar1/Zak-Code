@@ -793,6 +793,16 @@ async def test_pinned_footer_states() -> None:
     out = await footer_for(AgentDone(stop_reason="completed", iterations=1, usage=_usage(5, 5)))
     assert "done ·" in out
     assert "stopped" not in out
+    # gave_up gets its own honest label (the model went silent mid-task, 2026-08-26).
+    out = await footer_for(AgentDone(stop_reason="gave_up", iterations=3, usage=_usage(5, 5)))
+    assert "stopped — gave up (no output)" in out
+    # A DEGRADED completion must not print an indistinguishable clean "done": the
+    # degraded flag was computed and silently dropped by the footer (field incident
+    # 2026-08-25 — a stuck-nudged give-up rendered exactly like a good turn).
+    out = await footer_for(
+        AgentDone(stop_reason="completed", iterations=5, usage=_usage(5, 5), degraded=True)
+    )
+    assert "done — struggled" in out
 
 
 def test_pinned_permission_parser_legacy_synonyms() -> None:

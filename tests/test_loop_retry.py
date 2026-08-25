@@ -141,6 +141,9 @@ class TempRecordingProvider(FlakyProvider):
         self.stream_temps.append(temperature)
         if self._fail_stream:
             raise self._fail_stream.pop(0)
+        # Mirror the buffered path's LLMResult(text="recovered"): an EMPTY success
+        # stream is no longer a clean completion (the empty give-up gate nudges it).
+        yield StreamTextDelta(text="recovered")
         yield StreamDone(finish_reason="stop")
 
 

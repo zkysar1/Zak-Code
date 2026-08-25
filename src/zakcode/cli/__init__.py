@@ -595,6 +595,14 @@ def _dim(console: Console, msg: str) -> None:
 #: One press never exits (it clears the moment and hints); see the prompt loops.
 _CTRL_C_EXIT_WINDOW_S = 2.0
 
+#: Monotonic time of the most recent Ctrl-C anywhere in the CLI — the prompt loops AND a
+#: mid-turn interrupt share this one window, so two presses total always exit. Module-level
+#: because the presses land in different functions: with a per-loop local, interrupting a
+#: RUNNING turn did not arm the window and exiting took interrupt + arm + exit = three
+#: presses (field report 2026-08-26 — and a fourth to kill the cockpit's say pane on
+#: builds predating the #210 teardown chain).
+_LAST_CTRL_C = 0.0
+
 
 def _drop_stale_size_env() -> None:
     """Ignore COLUMNS/LINES env vars that contradict the real terminal size.
@@ -1762,19 +1770,34 @@ def _run_streamed_turn(
         notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
         return False
     except KeyboardInterrupt:
+        global _LAST_CTRL_C
         task.cancel()
         try:
             # Pump the loop so the task observes the cancellation and unwinds
-            # (its CancelledError handler persists state and re-raises).
-            with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
-                loop.run_until_complete(task)
+            # (its CancelledError handler persists state and re-raises). ONLY while
+            # the task is still pending: a task that already FINISHED with the
+            # KeyboardInterrupt as its own exception (an interrupt delivered inside
+            # the task tree, e.g. during an open permission prompt) must not be
+            # pumped — asyncio's _run_until_complete_cb special-cases a
+            # KeyboardInterrupt result by NOT stopping the loop (bpo-22429), so
+            # run_until_complete on such a task never returns and the CLI hangs.
+            if not task.done():
+                with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
+                    loop.run_until_complete(task)
         finally:
             # A SECOND Ctrl-C during the drain aborts the pump before the task's
             # finally ran — stop the wait line unconditionally here, or its refresh
             # thread keeps repainting over the next REPL prompt.
             if _ACTIVE_WAIT is not None:
                 _ACTIVE_WAIT.stop()
-        notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
+        # Arm the double-press exit window AFTER the drain (so it starts when the
+        # prompt is actually back): the next Ctrl-C inside the window exits the
+        # session — two presses total, whether or not a turn was running.
+        _LAST_CTRL_C = time.monotonic()
+        notice_warn(
+            console,
+            f"interrupted {GLYPHS['dash']} turn stopped (ctrl-c again exits)",
+        )
         return False
     finally:
         # The watcher must not outlive the turn: a leftover task would stack a
@@ -2189,7 +2212,8 @@ def chat(
     )
     repl_mux.append(mux)
 
-    last_interrupt = 0.0
+    global _LAST_CTRL_C
+    _LAST_CTRL_C = 0.0  # the double-press window is per-session; never inherit one
     while True:
         # Input that arrived during the turn (a queued say, a typed-ahead line)
         # is taken WITHOUT a frame — opening one just to slam it shut renders a
@@ -2214,12 +2238,13 @@ def chat(
             # half-typed line), and a live transcript is too expensive to lose to
             # one keystroke (2026-08-24 operator report: Ctrl-C-to-copy exited a
             # mid-ceremony session). Double-press within the window exits, the
-            # Claude Code convention.
+            # Claude Code convention. The window is the module-wide _LAST_CTRL_C,
+            # so a press that interrupted a running turn counts as the first press.
             now = time.monotonic()
-            if now - last_interrupt <= _CTRL_C_EXIT_WINDOW_S:
+            if now - _LAST_CTRL_C <= _CTRL_C_EXIT_WINDOW_S:
                 notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
                 break
-            last_interrupt = now
+            _LAST_CTRL_C = now
             _dim(console, "press ctrl-c again to exit")
             continue
         line = value or ""
@@ -2513,7 +2538,8 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
     _SESSION_LOOP = loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    last_interrupt = 0.0
+    global _LAST_CTRL_C
+    _LAST_CTRL_C = 0.0  # the double-press window is per-session; never inherit one
     while True:
         try:
             line = read_prompt(console)
@@ -2522,12 +2548,13 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
             break
         except KeyboardInterrupt:
             # Same double-press exit convention as the local REPL — one Ctrl-C
-            # never kills the session (see the local loop's rationale).
+            # never kills the session (see the local loop's rationale). Shares
+            # _LAST_CTRL_C so a mid-turn interrupt counts as the first press.
             now = time.monotonic()
-            if now - last_interrupt <= _CTRL_C_EXIT_WINDOW_S:
+            if now - _LAST_CTRL_C <= _CTRL_C_EXIT_WINDOW_S:
                 notice_info(console, f"session closed {g['dash']} goodbye")
                 break
-            last_interrupt = now
+            _LAST_CTRL_C = now
             _dim(console, "press ctrl-c again to exit")
             continue
         stripped = line.strip()

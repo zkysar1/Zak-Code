@@ -41,6 +41,12 @@ Stop conditions
   nudge, then narrow the next iteration to read-only tools) and only ends as
   ``"stuck"`` if recovery fails. Catches the many stall shapes the exact-repeat
   doom guard misses; capable models and transient single errors never trigger it.
+* ``"gave_up"`` — the model went silent: an empty completion (no text, no tool calls)
+  in a turn whose user has seen no assistant text at all (or right after a stuck
+  nudge), persisting through :data:`_MAX_EMPTY_RETRIES` "say something" nudges.
+  Reasoning-heavy local models sometimes burn the whole completion budget in the
+  thinking channel and emit nothing; without this reason such turns masqueraded as
+  clean completions with zero user-visible output (field incidents 2026-08-25).
 * ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4).
   A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried up
   to ``Settings.provider_max_retries`` times with ``retry_after``-aware backoff;
@@ -209,6 +215,23 @@ _MAX_CONTEXT_RECOVERY = 2
 #: OpenAI reports ``length``; litellm maps Anthropic's ``max_tokens`` stop reason similarly.
 _LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
 
+#: Empty-completion give-up recovery. A completion with neither text nor tool calls, in a
+#: turn whose user has seen NO assistant text at all (or right after a stuck nudge), is a
+#: give-up signal, not an answer — reasoning-heavy local models sometimes burn the whole
+#: completion in the thinking channel and emit nothing (measured 2026-08-25, twice: a
+#: /start ceremony died 9 iterations in, and a stuck-nudged turn ended silently; both
+#: footers read a clean "done" over zero user-visible output). The model is asked for a
+#: real answer up to ``_MAX_EMPTY_RETRIES`` times; if it stays silent the turn ends
+#: ``gave_up`` (degraded, vetoable) instead of masquerading as completed. An empty
+#: completion AFTER the model already produced text this turn keeps the historical
+#: clean-end semantics — that shape is a deliberate "nothing more to say".
+_MAX_EMPTY_RETRIES = 2
+_EMPTY_COMPLETION_NUDGE = (
+    "You ended your response without any visible output. Do not end your turn silently. "
+    "If the task is done, state the outcome and answer the user's request in plain text. "
+    "If you cannot finish, say what you tried, what failed, and what should happen next."
+)
+
 #: How many times a single turn may auto-continue a length-truncated FINAL answer before
 #: accepting it as-is. Each continuation is a real new iteration (draws iteration + budget),
 #: so it is bounded separately from — and far below — the iteration cap.
@@ -354,6 +377,7 @@ def _fence_injected_context(texts: list[str]) -> str:
 _DEGRADED_STOP_REASONS = {
     "stuck",
     "doom_loop",
+    "gave_up",
     "recipe_stalled",
     "verification_failed",
     "provider_error",
@@ -364,7 +388,7 @@ _DEGRADED_STOP_REASONS = {
 #: are hard bounds (iteration / spend / infrastructure — a hook must not override them), and
 #: ``recipe_stalled`` is the recipe gate's own bounded give-up (re-entering would stall the
 #: same way again).
-_VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck"})
+_VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck", "gave_up"})
 
 #: The independent completion critic (the bounded completion-review gate). When a code-changing
 #: turn tries to finish, ``AgentLoop._completion_critic`` runs a SEPARATE, fresh-context judge
@@ -1705,6 +1729,8 @@ class AgentLoop:
         # The cheap SCOPE verdict (quick_code/deep_code), computed once per turn; None until then.
         base_difficulty: Literal["quick_code", "deep_code"] | None = None
         signal_latched = False
+        empty_retries = 0  # empty-completion "say something" nudges spent this turn
+        turn_saw_text = False  # whether ANY completion this turn carried visible text
 
         # Doom-loop tracking: the signature of the previous iteration's tool-call
         # batch and how many times in a row we have now seen it.
@@ -1883,6 +1909,7 @@ class AgentLoop:
             self.session.add_usage(result.usage, model=self.provider.model_id())
             turn_assistant.append(assistant_msg)
             turn_usage = turn_usage + result.usage
+            turn_saw_text = turn_saw_text or bool(result.text)
             self._persist()
 
             # Cost/token budget stop (parity #4): fold this call's actuals into the shared
@@ -1915,7 +1942,8 @@ class AgentLoop:
                         self._persist()
                     break
 
-            # An empty completion (no text, no tool calls) ends the turn cleanly.
+            # No tool calls → the turn is finishing (cleanly when the model has said
+            # anything this turn; the empty give-up gate below handles total silence).
             if not result.has_tool_calls:
                 # Length-truncation continuation (parity #5): a final answer cut off at the
                 # output cap must not be reported as a clean "completed". Continue it (a new
@@ -2016,6 +2044,51 @@ class AgentLoop:
                         stuck.reset()
                         continue
                     turn_degraded = True  # finishing with open plan steps after the nudge cap
+                # Empty give-up gate: a completion with no text at all, in a turn whose user
+                # has seen NOTHING (or right after a stuck nudge), is a silent give-up — never
+                # a clean finish. Ask for a real answer (bounded by _MAX_EMPTY_RETRIES), then
+                # end honestly as gave_up (degraded, vetoable) instead of "done". Runs after
+                # the recipe/verify/plan gates so their more specific nudges take precedence.
+                if not result.text and (not turn_saw_text or stuck.took_action):
+                    if empty_retries < _MAX_EMPTY_RETRIES:
+                        empty_retries += 1
+                        self._note(
+                            "intervention",
+                            "empty completion — asking for a real answer",
+                            kind="empty_completion",
+                        )
+                        self.session.add_message(
+                            Message.user(_control_rail(_EMPTY_COMPLETION_NUDGE))
+                        )
+                        self._refund_iteration()  # an empty completion did no work
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    prompt = await self._fire_turn_end(
+                        "gave_up",
+                        iterations=iterations,
+                        veto_count=turn_end_vetoes,
+                        turn_assistant=turn_assistant,
+                        stuck_took_action=stuck.took_action,
+                    )
+                    if prompt is not None:
+                        turn_end_vetoes += 1
+                        self.session.add_message(Message.user(_control_rail(prompt)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    stop_reason = "gave_up"
+                    self._note(
+                        "intervention",
+                        "model went silent — repeated empty completions",
+                        kind="gave_up",
+                    )
+                    self._refund_iteration()
+                    break
                 # Completion-review gate (bounded): a turn that CHANGED code is reviewed by an
                 # INDEPENDENT, fresh-context critic before it may finish — the critic sees only the
                 # request and the claimed result and flags requirements that were silently dropped
@@ -2371,6 +2444,8 @@ class AgentLoop:
         # cheap SCOPE verdict, computed once per turn
         base_difficulty: Literal["quick_code", "deep_code"] | None = None
         signal_latched = False
+        empty_retries = 0  # empty-completion "say something" nudges spent this turn
+        turn_saw_text = False  # whether ANY completion this turn carried visible text
         # This turn's assistant messages — kept only for the TURN_END payload's
         # ``last_assistant_message`` (the buffered path reuses its result list).
         turn_assistant: list[Message] = []
@@ -2687,6 +2762,7 @@ class AgentLoop:
 
                 tool_calls = accumulator.finalize()
                 assistant_text = "".join(text_parts)
+                turn_saw_text = turn_saw_text or bool(assistant_text)
 
                 assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
                 self.session.add_message(assistant_msg)
@@ -2842,6 +2918,53 @@ class AgentLoop:
                             yield AgentStatus(message="plan has open steps; continuing")
                             continue
                         turn_degraded = True
+                    # Empty give-up gate (streaming twin): a completion with no text at all,
+                    # in a turn whose user has seen NOTHING (or right after a stuck nudge),
+                    # is a silent give-up — nudge for a real answer (bounded), then end
+                    # honestly as gave_up (degraded, vetoable) instead of "done".
+                    if not assistant_text and (not turn_saw_text or stuck.took_action):
+                        if empty_retries < _MAX_EMPTY_RETRIES:
+                            empty_retries += 1
+                            self._note(
+                                "intervention",
+                                "empty completion — asking for a real answer",
+                                kind="empty_completion",
+                            )
+                            self.session.add_message(
+                                Message.user(_control_rail(_EMPTY_COMPLETION_NUDGE))
+                            )
+                            self._refund_iteration()  # an empty completion did no work
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            yield AgentStatus(message="model went silent; asking for a real answer")
+                            continue
+                        prompt = await self._fire_turn_end(
+                            "gave_up",
+                            iterations=iterations,
+                            veto_count=turn_end_vetoes,
+                            turn_assistant=turn_assistant,
+                            stuck_took_action=stuck.took_action,
+                        )
+                        if prompt is not None:
+                            turn_end_vetoes += 1
+                            self.session.add_message(Message.user(_control_rail(prompt)))
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                            continue
+                        stop_reason = "gave_up"
+                        self._note(
+                            "intervention",
+                            "model went silent — repeated empty completions",
+                            kind="gave_up",
+                        )
+                        self._refund_iteration()
+                        yield AgentStatus(message="stopping: the model went silent (no output)")
+                        break
                     # Completion-review gate (streaming twin): see the buffered path. An
                     # independent fresh-context critic reviews the finishing turn; only a flagged
                     # gap re-enters (and only then is a "reviewing" status worth surfacing).

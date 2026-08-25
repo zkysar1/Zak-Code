@@ -781,6 +781,40 @@ def test_chat_double_ctrl_c_exits(monkeypatch) -> None:
     assert "goodbye" in result.stdout
 
 
+def test_mid_turn_ctrl_c_arms_the_shared_exit_window(monkeypatch) -> None:
+    # Field report 2026-08-26: with a per-prompt-loop window, interrupting a RUNNING
+    # turn took interrupt + arm + exit = three presses — the mid-turn press never
+    # armed the prompt's double-press window. The interrupt handler now stamps the
+    # module-wide window, so the NEXT press exits: two presses total, always.
+    import io
+
+    from rich.console import Console
+
+    import zakcode.cli as cli_mod
+    from zakcode.cli.render import StreamRenderer
+
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C", 0.0)
+    loop = asyncio.new_event_loop()
+    monkeypatch.setattr(cli_mod, "_SESSION_LOOP", loop)
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, force_terminal=False)
+
+    async def dead_stream() -> AsyncIterator[AgentEvent]:
+        # The press lands while the turn runs: the pump re-raises it from the task.
+        raise KeyboardInterrupt
+        yield  # pragma: no cover — makes this an async generator
+
+    try:
+        completed = cli_mod._run_streamed_turn(
+            console, dead_stream, StreamRenderer(console=console)
+        )
+    finally:
+        loop.close()
+    assert completed is False
+    assert cli_mod._LAST_CTRL_C > 0.0  # the window is armed — the next press exits
+    assert "ctrl-c again exits" in buffer.getvalue()  # the notice names the affordance
+
+
 def test_chat_slow_second_ctrl_c_still_does_not_exit(monkeypatch) -> None:
     # Two interrupts OUTSIDE the window are two singles — the session survives both.
     # A negative window makes every interrupt "slow" without patching time.monotonic
