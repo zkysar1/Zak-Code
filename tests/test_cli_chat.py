@@ -748,16 +748,18 @@ def test_wait_handle_verb_tracks_outstanding_tools() -> None:
 
 
 def _scripted_prompt(monkeypatch, script):
-    """Replace read_prompt with a scripted sequence; an exception INSTANCE raises."""
+    """Script the keyboard: replace the pump's read point (_read_stdin_line) with a
+    sequence; an exception INSTANCE raises. The seam moved from read_prompt when
+    the input mux became the single stdin owner."""
     seq = iter(script)
 
-    def fake_read_prompt(console):
+    def fake_read_line():
         item = next(seq)
         if isinstance(item, BaseException):
             raise item
         return item
 
-    monkeypatch.setattr("zakcode.cli.read_prompt", fake_read_prompt)
+    monkeypatch.setattr("zakcode.cli._read_stdin_line", fake_read_line)
 
 
 def test_chat_single_ctrl_c_does_not_exit(monkeypatch) -> None:
@@ -1168,7 +1170,7 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
     block = threading.Event()
     listening = threading.Event()
 
-    def _blocked_prompt(console):  # noqa: ANN001, ANN202
+    def _blocked_read():  # noqa: ANN202
         # The stdin pump parks here; the 30s ceiling bounds the test if the inbox
         # path is broken (EOF then ends the REPL instead of hanging CI). Setting
         # `listening` first tells the writer the session is PAST the pre-session
@@ -1178,7 +1180,7 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
         block.wait(timeout=30)
         raise EOFError
 
-    monkeypatch.setattr("zakcode.cli.read_prompt", _blocked_prompt)
+    monkeypatch.setattr("zakcode.cli._read_stdin_line", _blocked_read)
     inbox = si.say_path(tmp_path)
 
     def _writer() -> None:
@@ -1237,12 +1239,12 @@ def test_interrupt_file_stops_a_running_turn(monkeypatch, tmp_path) -> None:
     block = threading.Event()
     listening = threading.Event()
 
-    def _blocked_prompt(console):  # noqa: ANN001, ANN202
+    def _blocked_read():  # noqa: ANN202
         listening.set()
         block.wait(timeout=30)
         raise EOFError
 
-    monkeypatch.setattr("zakcode.cli.read_prompt", _blocked_prompt)
+    monkeypatch.setattr("zakcode.cli._read_stdin_line", _blocked_read)
     inbox = si.say_path(tmp_path)
     sig = si.interrupt_path(tmp_path)
 
@@ -1265,3 +1267,186 @@ def test_interrupt_file_stops_a_running_turn(monkeypatch, tmp_path) -> None:
     assert "interrupted" in result.output
     assert "goodbye" in result.output
     assert not sig.exists()
+
+
+# ── the input mux: ONE stdin owner; permission answers ride it ─────────────────────
+# 2026-08-25 field incident: the prompter's own console.input raced the stdin pump
+# (two blocking readers on one fd) — y/a/n answers were swallowed into the message
+# frame and "aa" reached the model as a prompt. These tests pin the fix: the mux is
+# the only reader, and a permission prompt can be answered from the keyboard, from
+# the say inbox, or denied by the interrupt file.
+
+
+def _quiet_pump(monkeypatch) -> None:
+    """Park the mux's pump thread forever — tests feed the mux by other doors."""
+    import threading as _threading
+
+    def _blocked() -> str:
+        _threading.Event().wait(timeout=60)
+        raise EOFError
+
+    monkeypatch.setattr("zakcode.cli._read_stdin_line", _blocked)
+
+
+def _make_mux(tmp_path: Path):
+    from zakcode.cli import _InputMux
+    from zakcode.session import say_inbox as si
+
+    return _InputMux(si.say_path(tmp_path), si.interrupt_path(tmp_path))
+
+
+def _perm_request() -> PermissionRequest:
+    from zakcode.permissions import PermissionTier
+
+    return PermissionRequest(
+        tool_name="bash",
+        tier=PermissionTier.WORKSPACE_WRITE,
+        arguments={"command": "ls"},
+        reason="test escalation",
+    )
+
+
+def test_mux_idle_clears_stale_stop_signal_and_delivers_say(monkeypatch, tmp_path) -> None:
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    mux = _make_mux(tmp_path)
+    si.request_interrupt(si.interrupt_path(tmp_path))
+    assert si.write_say(si.say_path(tmp_path), "hello")
+    assert mux.next_input(idle=True) == ("say", "hello")
+    # Idle consumers CLEAR a stale stop signal — there is no turn to stop.
+    assert not si.interrupt_path(tmp_path).exists()
+
+
+def test_mux_midturn_reports_stop_without_consuming_the_signal(monkeypatch, tmp_path) -> None:
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    mux = _make_mux(tmp_path)
+    si.request_interrupt(si.interrupt_path(tmp_path))
+    assert mux.next_input(idle=False) == ("stop", None)
+    # Mid-turn the signal is LEFT IN PLACE for the turn's interrupt watcher.
+    assert si.interrupt_path(tmp_path).exists()
+
+
+def test_mux_try_input_takes_waiting_input_without_blocking(monkeypatch, tmp_path) -> None:
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    mux = _make_mux(tmp_path)
+    assert mux.try_input() is None
+    assert si.write_say(si.say_path(tmp_path), "queued while busy")
+    assert mux.try_input() == ("say", "queued while busy")
+    assert mux.try_input() is None
+
+
+def test_mux_answer_line_from_say_echoes_provenance(monkeypatch, tmp_path) -> None:
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    mux = _make_mux(tmp_path)
+    console = Console(record=True, width=100, theme=ZAK_THEME)
+    assert si.write_say(si.say_path(tmp_path), "y")
+    assert mux.answer_line(console) == "y"
+    assert "(say) y" in console.export_text()
+
+
+def test_prompter_denied_by_interrupt_file_leaves_signal_for_turn_watcher(
+    monkeypatch, tmp_path
+) -> None:
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    mux = _make_mux(tmp_path)
+    console = Console(record=True, width=100, theme=ZAK_THEME)
+    si.request_interrupt(si.interrupt_path(tmp_path))
+    prompter = ConsolePermissionPrompter(console, line_source=lambda: mux.answer_line(console))
+    outcome = asyncio.run(prompter.confirm(_perm_request()))
+    assert outcome is PermissionOutcome.DENY_ONCE
+    assert "denied" in console.export_text()
+    # The signal survives — the turn's interrupt watcher consumes it and cancels.
+    assert si.interrupt_path(tmp_path).exists()
+
+
+class _PermissionAskingAgent(FakeAgent):
+    """A fake agent whose turn escalates one tool call through the CLI's prompter."""
+
+    outcomes: list[PermissionOutcome] = []
+    confirm_started: object = None  # threading.Event set just before the prompt blocks
+
+    async def _gen(self) -> AsyncIterator[AgentEvent]:
+        prompter = self.overrides["prompter"]
+        if _PermissionAskingAgent.confirm_started is not None:
+            _PermissionAskingAgent.confirm_started.set()
+        outcome = await prompter.confirm(_perm_request())
+        _PermissionAskingAgent.outcomes.append(outcome)
+        yield AgentTextDelta(text=f"outcome={outcome.value}\n")
+        yield AgentDone(
+            stop_reason="completed",
+            iterations=1,
+            usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+
+def test_chat_permission_prompt_answered_from_keyboard_through_mux(monkeypatch, tmp_path) -> None:
+    """A typed y/a/n reaches the prompter through the mux — the exact path that the
+    two-reader race used to swallow. The pump reads ahead ("a" is queued before the
+    prompt even opens); the mux still routes it to the prompter, not the model."""
+    monkeypatch.setattr(zakcode, "Agent", _PermissionAskingAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    _PermissionAskingAgent.outcomes = []
+    _PermissionAskingAgent.confirm_started = None
+    _scripted_prompt(monkeypatch, ["please do the thing", "a", EOFError()])
+    result = runner.invoke(app, ["chat"], input="")
+    assert result.exit_code == 0
+    assert _PermissionAskingAgent.outcomes == [PermissionOutcome.ALLOW_SESSION]
+    assert "outcome=allow_session" in result.output
+    # The answer must NOT have become a model prompt.
+    assert "outcome=" in result.output and "\na\n" not in result.output
+
+
+def test_chat_permission_prompt_answered_from_say_inbox(monkeypatch, tmp_path) -> None:
+    """The cockpit say box can approve a tool call: a 'y' written to <workspace>/.say
+    while the prompter waits is consumed as the answer, echoed with provenance."""
+    import threading
+    import time as _time
+
+    from zakcode.session import say_inbox as si
+
+    monkeypatch.setattr(zakcode, "Agent", _PermissionAskingAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    _PermissionAskingAgent.outcomes = []
+    confirm_started = threading.Event()
+    _PermissionAskingAgent.confirm_started = confirm_started
+
+    block = threading.Event()
+    listening = threading.Event()
+
+    def _blocked_read() -> str:
+        listening.set()
+        block.wait(timeout=30)
+        raise EOFError
+
+    monkeypatch.setattr("zakcode.cli._read_stdin_line", _blocked_read)
+    inbox = si.say_path(tmp_path)
+
+    def _writer() -> None:
+        assert listening.wait(timeout=15), "chat never started listening"
+        assert si.write_say(inbox, "run the turn")
+        assert confirm_started.wait(timeout=15), "prompter never asked"
+        si.write_say(inbox, "y")
+        for _ in range(200):  # exactly-once: wait for the answer's consumption
+            if not si.say_pending(inbox):
+                break
+            _time.sleep(0.05)
+        si.write_say(inbox, "/exit")
+
+    writer = threading.Thread(target=_writer, daemon=True)
+    writer.start()
+    result = runner.invoke(app, ["chat"], input="")
+    block.set()
+    assert result.exit_code == 0
+    assert _PermissionAskingAgent.outcomes == [PermissionOutcome.ALLOW_ONCE]
+    assert "(say) y" in result.output
+    assert "outcome=allow_once" in result.output
+    assert "goodbye" in result.output
