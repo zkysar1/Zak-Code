@@ -178,7 +178,7 @@ async def test_web_page_path_say_to_full_watch(tmp_path: Path) -> None:
     lifespan-started consumer runs the turn → GET /sessions/current resolves →
     a late-joining ``?full=1`` watcher replays the ``user_message`` marker and
     the turn's AgentEvents in order."""
-    app, _ = _build(tmp_path)  # serve_consume defaults ON — the loop runs for real
+    app, _ = _build(tmp_path)  # under a real server the lifespan starts the consumer
     with _LiveServer(app) as base_url:
         timeout = httpx.Timeout(10.0, read=5.0)
         async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as ac:
@@ -206,5 +206,8 @@ async def test_web_page_path_say_to_full_watch(tmp_path: Path) -> None:
 
     assert frames[0]["event"] == "user_message"
     assert frames[0]["text"] == "hello there"
+    # Exactly once: the say produces ONE user row on the bus (the double-publish
+    # class the retired driver-era e2e guarded — same claim, new turn-runner).
+    assert sum(1 for f in frames if f.get("event") == "user_message") == 1
     assert {"event": "text", "text": "ok"} in frames
     assert frames[-1]["event"] == "done"

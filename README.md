@@ -37,7 +37,7 @@ The design goal is a single **core engine** that any interface can drive:
                 └───────────────┬───────────────┬─────────────┘
                                 │  in-process    │  over HTTP/SSE/WS
                 ┌───────────────▼──────┐  ┌──────▼─────────────────────┐
-                │   zakcode CLI        │  │   zakcode serve  (FastAPI) │
+                │   zakcode CLI        │  │   zakcode webapp  (FastAPI) │
                 │   (typer + rich)     │  └──────┬─────────────────────┘
                 └──────────────────────┘         │
                                           ┌───────▼──────┐   ┌──────────────┐
@@ -90,14 +90,14 @@ uv run zakcode info        # show resolved config + which provider keys are pres
 ollama pull qwen2.5:3b           # small + fast; needs a tool-calling template
 
 # 2. Tell Zak Code to use it (Ollama serves on http://localhost:11434 by default):
-uv run zakcode chat --model ollama_chat/qwen2.5:3b
+uv run zakcode cli --model ollama_chat/qwen2.5:3b
 ```
 
 **OpenAI (cloud):**
 
 ```bash
 export OPENAI_API_KEY=sk-...                       # PowerShell: $env:OPENAI_API_KEY="sk-..."
-uv run zakcode chat --model openai/gpt-4o-mini
+uv run zakcode cli --model openai/gpt-4o-mini
 ```
 
 > **Pick a tool-capable model.** The agent always offers tools, so the model needs a
@@ -114,7 +114,7 @@ directory is a workspace:
 uv tool install "zakcode[server] @ git+https://github.com/zkysar1/Zak-Code.git"
 mkdir -p ~/.zakcode && $EDITOR ~/.zakcode/.env   # GROQ_API_KEY=..., ZAKCODE_DEFAULT_MODEL=...
 cd any/project/dir
-zakcode chat                                     # workspace = the current directory
+zakcode cli                                     # workspace = the current directory
 ```
 
 A workspace `.env` still overrides the user file per-project, and real environment
@@ -141,7 +141,7 @@ async for event in agent.astream_turn("add type hints to utils.py"):
 
 ```bash
 uv sync --extra server
-uv run zakcode serve            # FastAPI on http://127.0.0.1:8000 (loopback-only)
+uv run zakcode webapp            # FastAPI on http://127.0.0.1:8000 (loopback-only)
 # then open http://127.0.0.1:8000/ for the bundled web client
 ```
 
@@ -211,8 +211,8 @@ no agent logic.
 
 | Command | What it does |
 | --- | --- |
-| `zakcode chat` | interactive agent session (slash commands: `/help`, `/model`, `/permissions`, `/plan`, `/agents`, `/mcp`, `/plugins`, `/skills`, `/compact`, `/cost`, `/clear`) |
-| `zakcode serve` | run the FastAPI server (+ bundled web client) |
+| `zakcode cli` | interactive agent session (slash commands: `/help`, `/model`, `/permissions`, `/plan`, `/agents`, `/mcp`, `/plugins`, `/skills`, `/compact`, `/cost`, `/clear`) |
+| `zakcode webapp` | run the FastAPI server (+ bundled web client) |
 | `zakcode eval` | run the behavioral eval suite (offline; exits non-zero on failure) |
 | `zakcode info` | show resolved config + detected providers (never prints secrets) |
 | `zakcode version` | print the version |

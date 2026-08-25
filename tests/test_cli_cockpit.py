@@ -147,7 +147,7 @@ def test_cockpit_main_runs_chat_frameless_then_exits_on_eof(
     if os.name == "posix":
         hook.chmod(0o755)
     cockpit.cockpit_main(workspace=tmp_path)
-    chat_runs = [(argv, env) for argv, env in runs if argv[-1] == "chat"]
+    chat_runs = [(argv, env) for argv, env in runs if argv[-1] == "cli"]
     assert len(chat_runs) == 1
     assert chat_runs[0][1].get("ZAKCODE_INPUT_FRAME") == "off"
     text = cockpit.console.export_text()
@@ -193,7 +193,7 @@ def test_cockpit_main_shields_relaunch_loop_from_ctrl_c(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("builtins.input", _raise_eof)
     cockpit.cockpit_main(workspace=tmp_path)
-    chat = next(r for r in runs if r["argv"][-1] == "chat")  # type: ignore[index]
+    chat = next(r for r in runs if r["argv"][-1] == "cli")  # type: ignore[index]
     if os.name == "posix":
         assert chat["preexec_fn"] is not None
     # Ignored while chat ran, then restored to whatever was there before.
@@ -380,7 +380,7 @@ def test_cockpit_main_marks_pane_env_for_no_recursion(
     envs: list[dict] = []
 
     def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN003, ANN202
-        if "chat" in cmd:
+        if "cli" in cmd:
             envs.append(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0)
 
@@ -445,7 +445,7 @@ def test_chat_elevates_into_cockpit(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setattr(cli_mod, "_cockpit_elevation", lambda **kw: (True, None))
     launched: list[Path] = []
     monkeypatch.setattr(cockpit, "launch_cockpit", lambda ws, **kw: launched.append(ws))
-    result = CliRunner().invoke(app, ["chat"])
+    result = CliRunner().invoke(app, ["cli"])
     assert result.exit_code == 0
     assert launched == [tmp_path]
     assert "tip:" not in result.output
@@ -476,7 +476,7 @@ def test_chat_hints_when_only_tmux_is_missing(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(zakcode, "Agent", _NoTurnAgent)
     monkeypatch.setattr(cli_mod, "_cockpit_elevation", lambda **kw: (False, "no-tmux"))
-    result = CliRunner().invoke(app, ["chat"], input="/exit\n")
+    result = CliRunner().invoke(app, ["cli"], input="/exit\n")
     assert result.exit_code == 0
     assert "install tmux" in result.output
 
@@ -561,7 +561,7 @@ def test_chat_delivers_boot_time_say(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(zakcode, "Agent", _RecordingAgent)
     monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
     assert write_say(say_path(tmp_path), "typed while the agent was booting")
-    result = CliRunner().invoke(app, ["chat"], input="/exit\n")
+    result = CliRunner().invoke(app, ["cli"], input="/exit\n")
     assert result.exit_code == 0
     assert "discarded" not in result.output
     assert _RecordingAgent.turns == ["typed while the agent was booting"]
@@ -603,7 +603,7 @@ def test_chat_in_cockpit_pane_ignores_pane_keyboard(monkeypatch, tmp_path: Path)
     monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("ZAKCODE_COCKPIT_PANE", "1")
     assert write_say(say_path(tmp_path), "/exit")
-    result = CliRunner().invoke(app, ["chat"], input="this text must never reach anything\n")
+    result = CliRunner().invoke(app, ["cli"], input="this text must never reach anything\n")
     assert result.exit_code == 0
     assert "goodbye" in result.output
     assert not touched

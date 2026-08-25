@@ -91,7 +91,7 @@ class FakeAgent:
 
 def test_chat_streams_assistant_text_and_exits(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat"], input="hello\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="hello\n/exit\n")
     assert result.exit_code == 0
     assert CANNED_TEXT in result.stdout
 
@@ -99,7 +99,7 @@ def test_chat_streams_assistant_text_and_exits(monkeypatch) -> None:
 def test_chat_eof_exits_cleanly_with_bookend(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     # No "/exit" — EOF on the empty stream must still exit 0, with the close bookend.
-    result = runner.invoke(app, ["chat"], input="")
+    result = runner.invoke(app, ["cli"], input="")
     assert result.exit_code == 0
     assert "session closed" in result.stdout
     assert "goodbye" in result.stdout
@@ -107,7 +107,7 @@ def test_chat_eof_exits_cleanly_with_bookend(monkeypatch) -> None:
 
 def test_chat_exit_prints_session_close_bookend(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat"], input="/exit\n")
+    result = runner.invoke(app, ["cli"], input="/exit\n")
     assert result.exit_code == 0
     assert "session closed" in result.stdout
     assert "goodbye" in result.stdout
@@ -115,7 +115,7 @@ def test_chat_exit_prints_session_close_bookend(monkeypatch) -> None:
 
 def test_chat_slash_help_and_model(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat"], input="/help\n/model\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/help\n/model\n/exit\n")
     assert result.exit_code == 0
     # The grouped /help layout: three section headings + the full command set.
     for section in ("session", "agent", "integrations"):
@@ -128,14 +128,14 @@ def test_chat_slash_help_and_model(monkeypatch) -> None:
 
 def test_chat_unknown_slash_is_friendly(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat"], input="/bananas\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/bananas\n/exit\n")
     assert result.exit_code == 0
     assert "not yet" in result.stdout
 
 
 def test_chat_cost_reports_usage(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat"], input="hello\n/cost\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="hello\n/cost\n/exit\n")
     assert result.exit_code == 0
     assert "total=8" in result.stdout
 
@@ -143,7 +143,7 @@ def test_chat_cost_reports_usage(monkeypatch) -> None:
 def test_chat_headless_prompt_runs_once_and_exits_zero(monkeypatch) -> None:
     # `-p TASK` runs a single turn (no REPL, no banner) and exits 0 when the turn completes.
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat", "-p", "do the thing"])
+    result = runner.invoke(app, ["cli", "-p", "do the thing"])
     assert result.exit_code == 0
     assert CANNED_TEXT in result.stdout  # the turn actually ran
     assert "session closed" not in result.stdout  # it never entered the REPL
@@ -158,14 +158,14 @@ def test_chat_headless_prompt_nonzero_when_incomplete(monkeypatch) -> None:
         ]
 
     monkeypatch.setattr(zakcode, "Agent", CappedAgent)
-    result = runner.invoke(app, ["chat", "-p", "do the thing"])
+    result = runner.invoke(app, ["cli", "-p", "do the thing"])
     assert result.exit_code == 1
 
 
 def test_chat_headless_empty_prompt_is_rejected(monkeypatch) -> None:
     # `-p "   "` is a usage error (exit 2), not a silent no-op.
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat", "-p", "   "])
+    result = runner.invoke(app, ["cli", "-p", "   "])
     assert result.exit_code == 2
     assert "empty" in result.stdout
 
@@ -193,7 +193,7 @@ def test_chat_headless_slash_dispatches_the_skill(monkeypatch) -> None:
     # dispatch + rendering as the REPL — instead of handing the slash line to the model as
     # prose (#148: found on the first live Claude-Mind deployment).
     monkeypatch.setattr(zakcode, "Agent", SkillAgent)
-    result = runner.invoke(app, ["chat", "-p", "/start sera"])
+    result = runner.invoke(app, ["cli", "-p", "/start sera"])
     assert result.exit_code == 0
     assert "running skill" in result.stdout and "start" in result.stdout
     assert CANNED_TEXT in result.stdout  # the composed turn actually ran
@@ -208,7 +208,7 @@ def test_chat_headless_slash_denied_exits_nonzero(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(zakcode, "Agent", DeniedAgent)
-    result = runner.invoke(app, ["chat", "-p", "/boot"])
+    result = runner.invoke(app, ["cli", "-p", "/boot"])
     assert result.exit_code == 1
     assert "not user-invocable" in result.stdout
     assert CANNED_TEXT not in result.stdout  # no model turn ran
@@ -220,7 +220,7 @@ def test_chat_headless_unknown_slash_falls_through_to_model(monkeypatch) -> None
         invocation = zakcode.SkillInvocation(invoked=False)
 
     monkeypatch.setattr(zakcode, "Agent", NoSkillAgent)
-    result = runner.invoke(app, ["chat", "-p", "/etc/hosts looks wrong, why?"])
+    result = runner.invoke(app, ["cli", "-p", "/etc/hosts looks wrong, why?"])
     assert result.exit_code == 0
     assert CANNED_TEXT in result.stdout
     assert "running skill" not in result.stdout
@@ -230,7 +230,7 @@ def test_chat_headless_slash_on_thin_agent_falls_through(monkeypatch) -> None:
     # A thin/remote AgentLike with NO compose_skill_turn (the --server client) keeps today's
     # behavior: the prompt goes to the model as plain text, no dispatch attempted.
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)  # FakeAgent has no compose surface
-    result = runner.invoke(app, ["chat", "-p", "/start sera"])
+    result = runner.invoke(app, ["cli", "-p", "/start sera"])
     assert result.exit_code == 0
     assert CANNED_TEXT in result.stdout
 
@@ -249,7 +249,7 @@ def test_chat_renders_tool_lines(monkeypatch) -> None:
         ]
 
     monkeypatch.setattr(zakcode, "Agent", ToolAgent)
-    result = runner.invoke(app, ["chat"], input="run ls\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="run ls\n/exit\n")
     assert result.exit_code == 0
     # Exactly one tool-call line is rendered for the single tool use (its target),
     # followed by the result summary and the assistant text.
@@ -264,14 +264,14 @@ def test_chat_provider_error_stays_in_repl(monkeypatch) -> None:
             raise ProviderError("model unreachable")
 
     monkeypatch.setattr(zakcode, "Agent", BoomAgent)
-    result = runner.invoke(app, ["chat"], input="hello\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="hello\n/exit\n")
     assert result.exit_code == 0
     assert "provider error" in result.stdout
 
 
 def test_chat_permissions_command(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat"], input="/permissions\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/permissions\n/exit\n")
     assert result.exit_code == 0
     assert "permission mode" in result.stdout
     assert load_settings().permission_mode in result.stdout
@@ -279,7 +279,7 @@ def test_chat_permissions_command(monkeypatch) -> None:
 
 def test_chat_hooks_command_empty(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
-    result = runner.invoke(app, ["chat"], input="/hooks\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/hooks\n/exit\n")
     assert result.exit_code == 0
     assert "no hooks configured" in result.stdout
 
@@ -293,7 +293,7 @@ def test_chat_hooks_command_lists_configured(monkeypatch) -> None:
             )
 
     monkeypatch.setattr(zakcode, "Agent", HookedAgent)
-    result = runner.invoke(app, ["chat"], input="/hooks\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/hooks\n/exit\n")
     assert result.exit_code == 0
     assert "PreToolUse" in result.stdout
     assert "echo hi" in result.stdout
@@ -386,7 +386,7 @@ def test_chat_builds_agent_with_prompter(monkeypatch) -> None:
             super().__init__(**{k: v for k, v in overrides.items() if k != "prompter"})
 
     monkeypatch.setattr(zakcode, "Agent", CapturingAgent)
-    result = runner.invoke(app, ["chat"], input="/exit\n")
+    result = runner.invoke(app, ["cli"], input="/exit\n")
     assert result.exit_code == 0
     assert isinstance(captured.get("prompter"), ConsolePermissionPrompter)
 
@@ -408,7 +408,7 @@ def test_chat_clear_preserves_no_rules(monkeypatch) -> None:
     # The no-drift guarantee the single-builder design rests on: /clear must rebuild
     # with the SAME flag choice, not silently re-enable rules.
     builds = _capture_builds(monkeypatch)
-    result = runner.invoke(app, ["chat", "--no-rules"], input="/clear\n/exit\n")
+    result = runner.invoke(app, ["cli", "--no-rules"], input="/clear\n/exit\n")
     assert result.exit_code == 0
     assert len(builds) == 2  # initial build + the /clear rebuild
     for b in builds:
@@ -417,7 +417,7 @@ def test_chat_clear_preserves_no_rules(monkeypatch) -> None:
 
 def test_chat_clear_default_keeps_rules_on(monkeypatch) -> None:
     builds = _capture_builds(monkeypatch)
-    result = runner.invoke(app, ["chat"], input="/clear\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/clear\n/exit\n")
     assert result.exit_code == 0
     assert len(builds) == 2
     assert all(b.get("enable_rules") is True for b in builds)
@@ -765,7 +765,7 @@ def _scripted_prompt(monkeypatch, script):
 def test_chat_single_ctrl_c_does_not_exit(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     _scripted_prompt(monkeypatch, [KeyboardInterrupt(), "/exit"])
-    result = runner.invoke(app, ["chat"])
+    result = runner.invoke(app, ["cli"])
     assert result.exit_code == 0
     assert "press ctrl-c again to exit" in result.stdout
     # The session survived the single interrupt and closed via /exit.
@@ -775,7 +775,7 @@ def test_chat_single_ctrl_c_does_not_exit(monkeypatch) -> None:
 def test_chat_double_ctrl_c_exits(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     _scripted_prompt(monkeypatch, [KeyboardInterrupt(), KeyboardInterrupt()])
-    result = runner.invoke(app, ["chat"])
+    result = runner.invoke(app, ["cli"])
     assert result.exit_code == 0
     assert "press ctrl-c again to exit" in result.stdout
     assert "goodbye" in result.stdout
@@ -788,7 +788,7 @@ def test_chat_slow_second_ctrl_c_still_does_not_exit(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     monkeypatch.setattr("zakcode.cli._CTRL_C_EXIT_WINDOW_S", -1.0)
     _scripted_prompt(monkeypatch, [KeyboardInterrupt(), KeyboardInterrupt(), "/exit"])
-    result = runner.invoke(app, ["chat"])
+    result = runner.invoke(app, ["cli"])
     assert result.exit_code == 0
     assert result.stdout.count("press ctrl-c again to exit") == 2
 
@@ -811,7 +811,7 @@ def _seed_session_store(tmp_path, monkeypatch, *ids):
 def test_chat_resume_lists_saved_sessions(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     _seed_session_store(tmp_path, monkeypatch, "aaaa1111", "bbbb2222")
-    result = runner.invoke(app, ["chat"], input="/resume\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/resume\n/exit\n")
     assert result.exit_code == 0
     assert "aaaa1111" in result.stdout
     assert "bbbb2222" in result.stdout
@@ -821,7 +821,7 @@ def test_chat_resume_lists_saved_sessions(tmp_path, monkeypatch) -> None:
 def test_chat_resume_empty_store_is_friendly(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     _seed_session_store(tmp_path, monkeypatch)
-    result = runner.invoke(app, ["chat"], input="/resume\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/resume\n/exit\n")
     assert result.exit_code == 0
     assert "no saved sessions yet" in result.stdout
 
@@ -829,7 +829,7 @@ def test_chat_resume_empty_store_is_friendly(tmp_path, monkeypatch) -> None:
 def test_chat_resume_by_unique_prefix(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     _seed_session_store(tmp_path, monkeypatch, "aaaa1111", "bbbb2222")
-    result = runner.invoke(app, ["chat"], input="/resume aaaa\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/resume aaaa\n/exit\n")
     assert result.exit_code == 0
     assert "resumed session aaaa1111" in result.stdout
 
@@ -837,7 +837,7 @@ def test_chat_resume_by_unique_prefix(tmp_path, monkeypatch) -> None:
 def test_chat_resume_unknown_id_keeps_session(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     _seed_session_store(tmp_path, monkeypatch, "aaaa1111")
-    result = runner.invoke(app, ["chat"], input="/resume zzzz\nhello\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/resume zzzz\nhello\n/exit\n")
     assert result.exit_code == 0
     assert "no saved session matches" in result.stdout
     # The live session survived the failed resume and still ran a turn.
@@ -847,7 +847,7 @@ def test_chat_resume_unknown_id_keeps_session(tmp_path, monkeypatch) -> None:
 def test_chat_resume_ambiguous_prefix_is_refused(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     _seed_session_store(tmp_path, monkeypatch, "aaaa1111", "aaaa2222")
-    result = runner.invoke(app, ["chat"], input="/resume aaaa\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/resume aaaa\n/exit\n")
     assert result.exit_code == 0
     assert "ambiguous session prefix" in result.stdout
 
@@ -878,7 +878,7 @@ def test_chat_resume_replays_transcript(tmp_path, monkeypatch) -> None:
         return agent
 
     monkeypatch.setattr(cli_mod, "_build_chat_agent", builder)
-    result = runner.invoke(app, ["chat"], input="/resume cafe\n/exit\n")
+    result = runner.invoke(app, ["cli"], input="/resume cafe\n/exit\n")
     assert result.exit_code == 0
     assert "resumed session cafe0001" in result.stdout
     # The old conversation is VISIBLE, both sides, plus the replay bookends.
@@ -1194,7 +1194,7 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
 
     writer = threading.Thread(target=_writer, daemon=True)
     writer.start()
-    result = runner.invoke(app, ["chat"], input="")
+    result = runner.invoke(app, ["cli"], input="")
     block.set()
     assert result.exit_code == 0
     assert "(say) hello from the inbox" in result.output
@@ -1212,7 +1212,7 @@ def test_chat_delivers_pre_session_say_as_first_input(monkeypatch, tmp_path) -> 
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
     assert si.write_say(si.say_path(tmp_path), "typed while the agent was booting")
-    result = runner.invoke(app, ["chat"], input="/exit\n")
+    result = runner.invoke(app, ["cli"], input="/exit\n")
     assert result.exit_code == 0
     assert "discarded" not in result.output
     assert "(say) typed while the agent was booting" in result.output
@@ -1264,7 +1264,7 @@ def test_interrupt_file_stops_a_running_turn(monkeypatch, tmp_path) -> None:
         si.write_say(inbox, "/exit")
 
     threading.Thread(target=_driver, daemon=True).start()
-    result = runner.invoke(app, ["chat"], input="")
+    result = runner.invoke(app, ["cli"], input="")
     block.set()
     assert result.exit_code == 0
     assert "interrupted" in result.output
@@ -1402,7 +1402,7 @@ def test_chat_permission_prompt_answered_from_keyboard_through_mux(monkeypatch, 
     _PermissionAskingAgent.outcomes = []
     _PermissionAskingAgent.confirm_started = None
     _scripted_prompt(monkeypatch, ["please do the thing", "a", EOFError()])
-    result = runner.invoke(app, ["chat"], input="")
+    result = runner.invoke(app, ["cli"], input="")
     assert result.exit_code == 0
     assert _PermissionAskingAgent.outcomes == [PermissionOutcome.ALLOW_SESSION]
     assert "outcome=allow_session" in result.output
@@ -1448,7 +1448,7 @@ def test_chat_permission_prompt_answered_from_say_inbox(monkeypatch, tmp_path) -
 
     writer = threading.Thread(target=_writer, daemon=True)
     writer.start()
-    result = runner.invoke(app, ["chat"], input="")
+    result = runner.invoke(app, ["cli"], input="")
     block.set()
     assert result.exit_code == 0
     assert _PermissionAskingAgent.outcomes == [PermissionOutcome.ALLOW_ONCE]
