@@ -123,8 +123,8 @@ jobs:
           # its non-zero, and the check fails EXACTLY WHEN THE FILE IS PRESENT
           # (the false "absent" abort on the first publish run, 32420052582).
           tar tzf zak-code-main.tar.gz > tarball-contents.txt
-          grep -q '^src/zakcode/server/driver.py$' tarball-contents.txt \
-            || { echo "::error::src/zakcode/server/driver.py absent from tarball — refusing to publish"; exit 1; }
+          grep -q '^src/zakcode/server/app.py$' tarball-contents.txt \
+            || { echo "::error::src/zakcode/server/app.py absent from tarball — refusing to publish"; exit 1; }
 
       - name: Publish to S3 (immutable <sha> + latest pointer + legacy bridge)
         env:
