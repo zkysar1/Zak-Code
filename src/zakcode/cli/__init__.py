@@ -2371,6 +2371,13 @@ def drive(
         asyncio.run(_runner())
 
 
+# Registered at the bottom so cockpit's lazy imports back into this module (banner
+# helpers) always find a fully initialized package.
+from zakcode.cli.cockpit import register_cockpit_commands  # noqa: E402
+
+register_cockpit_commands(app)
+
+
 def main() -> None:
     """Console-script entry point (see ``[project.scripts]`` in pyproject.toml)."""
     app()
