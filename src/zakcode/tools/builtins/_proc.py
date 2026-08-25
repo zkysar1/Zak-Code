@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
-import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -103,13 +102,22 @@ async def run_capturing(
         **new_group_kwargs(),
     }
     if shell_command is not None:
-        # On Windows, create_subprocess_shell runs the command through cmd.exe — but the "bash"
-        # tool must actually run bash (bash-isms, and Claude-Code-style frameworks like
-        # claude-mind whose scripts assume Git Bash). Route through real Git Bash when present;
-        # fall back to the platform shell (cmd.exe) only if no bash is found. On POSIX the
-        # platform shell is already a POSIX sh, so this redirect is Windows-only.
-        bash = find_bash() if sys.platform == "win32" else None
+        # The tool is NAMED bash and models write bash — run REAL bash wherever one
+        # exists, on every platform. create_subprocess_shell uses cmd.exe on Windows
+        # and /bin/sh on POSIX, and /bin/sh is dash on Debian/Ubuntu: bashisms fail
+        # and Claude-Code-style frameworks (mind worlds) whose playbooks assume bash
+        # trip over it. Fall back to the platform shell only when no bash is found.
+        #
+        # Workspace env hook: an executable-adjacent sibling of .zakcode/banner —
+        # when <workspace>/.zakcode/env exists, BASH_ENV makes every non-interactive
+        # bash source it first, so a workspace can extend PATH (e.g. a mind world
+        # putting its core/scripts on PATH so bare script names in its own playbooks
+        # resolve) without zakcode learning any domain layout.
+        bash = find_bash()
         if bash is not None:
+            env_hook = Path(cwd) / ".zakcode" / "env"
+            if env_hook.is_file():
+                child_env["BASH_ENV"] = env_hook.as_posix()
             proc = await asyncio.create_subprocess_exec(bash, "-c", shell_command, **spawn_kwargs)
         else:
             proc = await asyncio.create_subprocess_shell(shell_command, **spawn_kwargs)

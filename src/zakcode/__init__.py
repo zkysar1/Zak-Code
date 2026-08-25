@@ -1395,6 +1395,8 @@ class Agent:
         out best-of-N isolated retries and adopt (diff-apply) the first that verifies.
         """
         self._skill_invocations_this_turn = 0  # new top-level turn: refill the skills budget
+        if self._shared_budget is not None:
+            self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         result = await self.loop.arun_turn(user_text)
         if (
             self.settings.best_of_attempts > 1
@@ -1427,6 +1429,8 @@ class Agent:
         is the incremental counterpart to :meth:`run_turn` / :meth:`arun_turn`.
         """
         self._skill_invocations_this_turn = 0  # new top-level turn: refill the skills budget
+        if self._shared_budget is not None:
+            self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         return self.loop.astream_turn(user_text)
 
     async def connect_mcp(self) -> DiscoveryReport | None:

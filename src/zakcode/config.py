@@ -272,8 +272,12 @@ class Settings(BaseSettings):
     )
 
     # ── Agent behavior ──────────────────────────────────────────────────────
+    # 0 (the default) = UNLIMITED — minds are expected to run for days; the real
+    # runaway guards are the doom-loop detector (identical-call loops) and the cost
+    # budget (metered spend), not an arbitrary per-turn step count. Set a positive
+    # value only when a caller genuinely wants a hard per-turn bound (tests do).
     max_iterations: int = Field(
-        default=50, ge=1, description="Hard cap on agent-loop iterations per turn."
+        default=0, ge=0, description="Hard cap on agent-loop iterations per turn (0 = unlimited)."
     )
     # Per-turn ceiling on MODEL-driven skill invocations (the use_skill tool), shared across a
     # turn and its whole sub-agent tree (one counter, reset per top-level turn). Bounds a runaway

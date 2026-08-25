@@ -283,7 +283,9 @@ async def test_explicit_max_iterations_overrides_settings(tmp_path: Path) -> Non
 
 
 def test_default_max_iterations_constant() -> None:
-    assert DEFAULT_MAX_ITERATIONS == 50
+    # 0 = UNLIMITED (2026-08-25 field decision: minds run for days; the real
+    # runaway guards are the doom-loop detector and the cost budget).
+    assert DEFAULT_MAX_ITERATIONS == 0
 
 
 # ── doom-loop guard ───────────────────────────────────────────────────────────
