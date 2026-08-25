@@ -552,3 +552,40 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   interface — now get one explicit chance to re-derive it before stopping; doomed turns
   cost up to 5 more iterations; every step-back turn reports `degraded` so a recovery is
   never mistaken for a clean run.
+
+## ADR-0016 — One Ctrl-C gesture can never kill the session (or the cockpit)
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Field incident (serene): the operator hammered Ctrl-C at a turn that looked
+  hung (a model call chewing a 529-line `git status` prompt), and the whole cockpit died —
+  every tmux pane, one gesture. Three stacked defects: (1) presses landing in the gaps of
+  the mid-turn interrupt teardown (during the drain pump, the wait-line stop, the notice
+  print) escaped as raw KeyboardInterrupts and unwound the REPL; (2) the freshly-armed
+  double-press window then read any surviving rapid press as the deliberate "yes, exit"
+  second press; (3) the REPL's turn call caught only ProviderError, so ANY other escape —
+  interrupt or crash — exited the REPL. And the cockpit chat pane deliberately chains the
+  tmux session teardown onto REPL exit (#210, the requested double-press-closes-everything
+  affordance), which turned each of those escapes into a full cockpit kill.
+- **Decision:** Three layers, no knobs:
+  1. **Atomic teardown** (`_absorb_interrupts`): every step of the mid-turn interrupt
+     teardown retries through further presses; between the interrupt and the next live
+     prompt a Ctrl-C can only mean "still mashing at the hung thing". The drain also
+     switched from `run_until_complete(task)` to `asyncio.wait(timeout=5s)` — immune to
+     the bpo-22429 hang AND to a tool that ignores cancellation (state is persisted at
+     message boundaries, so abandoning a stuck drain is safe).
+  2. **Gesture refractory** (`_ctrl_c_disposition`): a press within 0.35s of a
+     MID-TURN-armed window is the same hammer gesture and is absorbed — for as long as
+     presses stay rapid. A deliberate second press after reading the notice still exits:
+     two presses total, the requested affordance. At an idle prompt nothing changes — a
+     rapid double-press there remains the documented exit gesture.
+  3. **REPL survival arms**: both prompt loops absorb an escaped KeyboardInterrupt and
+     survive any turn-level exception ("turn failed: …" + prompt back). The session is
+     persisted either way; a bad turn must never cost the transcript or the cockpit.
+- **Alternatives rejected:** SIG_IGN during teardown (platform-uneven, and a stuck teardown
+  would make the CLI Ctrl-C-immune); dropping the cockpit's exit chain (double-press
+  close-everything is the requested behavior); a refractory at the idle prompt too (breaks
+  the documented rapid double-press exit and its tests).
+- **Consequences:** interrupting a hung-looking turn is now always safe regardless of how
+  many times the key is hammered; deliberate exit still takes exactly two presses; a
+  crashed turn reports and returns to the prompt; the only way a REPL (and thus a cockpit)
+  ends is EOF, `/exit`, or a deliberate double-press.

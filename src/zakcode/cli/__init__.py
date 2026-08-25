@@ -595,6 +595,21 @@ def _dim(console: Console, msg: str) -> None:
 #: One press never exits (it clears the moment and hints); see the prompt loops.
 _CTRL_C_EXIT_WINDOW_S = 2.0
 
+#: Presses closer together than this are one physical GESTURE (a frustrated hammer at a
+#: hung turn), never a deliberate "yes, exit" second press. Applied only when the window
+#: was armed by a MID-TURN interrupt: at an idle prompt a rapid double-press is the
+#: documented exit gesture and stays one. Field incident 2026-08-26: a hammer at a
+#: slow model call rode the freshly-armed window straight into REPL exit — and the
+#: cockpit chat pane chains the whole tmux session's teardown onto REPL exit, so one
+#: gesture took down every pane.
+_CTRL_C_GESTURE_S = 0.35
+
+#: How long the mid-turn interrupt teardown pumps the loop waiting for the cancelled
+#: turn task to unwind. A tool that ignores cancellation must not hang the teardown
+#: forever — state is already persisted at message boundaries, so after this the CLI
+#: abandons the drain and returns to the prompt.
+_INTERRUPT_DRAIN_TIMEOUT_S = 5.0
+
 #: Monotonic time of the most recent Ctrl-C anywhere in the CLI — the prompt loops AND a
 #: mid-turn interrupt share this one window, so two presses total always exit. Module-level
 #: because the presses land in different functions: with a per-loop local, interrupting a
@@ -602,6 +617,51 @@ _CTRL_C_EXIT_WINDOW_S = 2.0
 #: presses (field report 2026-08-26 — and a fourth to kill the cockpit's say pane on
 #: builds predating the #210 teardown chain).
 _LAST_CTRL_C = 0.0
+
+#: True when _LAST_CTRL_C was stamped by a mid-turn interrupt (or a press absorbed as
+#: part of that same gesture) rather than an at-prompt press. Gates the gesture
+#: refractory in _ctrl_c_disposition: only a mid-turn-armed window absorbs rapid
+#: follow-on presses.
+_LAST_CTRL_C_MID_TURN = False
+
+
+def _ctrl_c_disposition() -> str:
+    """Classify an at-prompt Ctrl-C against the shared double-press window.
+
+    Returns ``"exit"`` (deliberate second press inside the window), ``"absorb"``
+    (rapid tail of the same hammer gesture that just interrupted a turn — never an
+    exit), or ``"arm"`` (first press: warn and start the window). Owns all writes to
+    the module window state, so both prompt loops share one contract.
+    """
+    global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
+    now = time.monotonic()
+    elapsed = now - _LAST_CTRL_C
+    from_turn = _LAST_CTRL_C_MID_TURN
+    _LAST_CTRL_C = now
+    if from_turn and elapsed <= _CTRL_C_GESTURE_S:
+        # Same physical gesture as the press that interrupted the turn: the hammer
+        # continues for as long as presses stay rapid, however many there are.
+        return "absorb"
+    _LAST_CTRL_C_MID_TURN = False
+    if elapsed <= _CTRL_C_EXIT_WINDOW_S:
+        return "exit"
+    return "arm"
+
+
+def _absorb_interrupts(step: Callable[[], None]) -> None:
+    """Run one teardown step to completion, absorbing hammered Ctrl-C presses.
+
+    Between a mid-turn interrupt and the next live prompt there is no place a
+    KeyboardInterrupt can mean anything except "still mashing at the hung thing" —
+    and one escaping here unwinds the REPL itself (in the cockpit, the pane chain
+    then tears down the whole tmux session). Retry the step until it completes.
+    """
+    while True:
+        try:
+            step()
+            return
+        except KeyboardInterrupt:
+            continue
 
 
 def _drop_stale_size_env() -> None:
@@ -1770,42 +1830,67 @@ def _run_streamed_turn(
         notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
         return False
     except KeyboardInterrupt:
-        global _LAST_CTRL_C
-        task.cancel()
-        try:
-            # Pump the loop so the task observes the cancellation and unwinds
-            # (its CancelledError handler persists state and re-raises). ONLY while
-            # the task is still pending: a task that already FINISHED with the
-            # KeyboardInterrupt as its own exception (an interrupt delivered inside
-            # the task tree, e.g. during an open permission prompt) must not be
-            # pumped — asyncio's _run_until_complete_cb special-cases a
-            # KeyboardInterrupt result by NOT stopping the loop (bpo-22429), so
-            # run_until_complete on such a task never returns and the CLI hangs.
-            if not task.done():
-                with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
-                    loop.run_until_complete(task)
-        finally:
-            # A SECOND Ctrl-C during the drain aborts the pump before the task's
-            # finally ran — stop the wait line unconditionally here, or its refresh
-            # thread keeps repainting over the next REPL prompt.
+        global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
+        # The whole teardown runs under _absorb_interrupts: a frustrated operator
+        # hammers Ctrl-C at a hung turn, and any later press that landed in a gap
+        # here used to escape as a raw KeyboardInterrupt, unwind the REPL, and —
+        # via the cockpit pane's teardown chain — kill the entire tmux session
+        # (field incident 2026-08-26: one gesture, dead cockpit).
+
+        def _drain() -> None:
+            task.cancel()
+            # Pump the loop so the task observes the cancellation and unwinds (its
+            # CancelledError handler persists state). asyncio.wait — never
+            # run_until_complete(task) — for two reasons: a task that already
+            # FINISHED with the KeyboardInterrupt as its own exception (a press
+            # delivered inside the task tree, e.g. during an open permission
+            # prompt) would hang that pump forever (asyncio's
+            # _run_until_complete_cb refuses to stop the loop for it, bpo-22429),
+            # and a tool that ignores cancellation must not hang the teardown —
+            # wait() gives up after _INTERRUPT_DRAIN_TIMEOUT_S; the turn's state
+            # is already persisted at message boundaries.
+            with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
+                loop.run_until_complete(asyncio.wait({task}, timeout=_INTERRUPT_DRAIN_TIMEOUT_S))
+            if task.done() and not task.cancelled():
+                task.exception()  # retrieve, so an errored turn cannot warn at GC
+
+        def _stop_wait() -> None:
+            # A press during the drain can abort before the task's finally ran —
+            # stop the wait line unconditionally, or its refresh thread keeps
+            # repainting over the next REPL prompt.
             if _ACTIVE_WAIT is not None:
                 _ACTIVE_WAIT.stop()
+
+        _absorb_interrupts(_drain)
+        _absorb_interrupts(_stop_wait)
         # Arm the double-press exit window AFTER the drain (so it starts when the
-        # prompt is actually back): the next Ctrl-C inside the window exits the
-        # session — two presses total, whether or not a turn was running.
+        # prompt is actually back): the next DELIBERATE Ctrl-C inside the window
+        # exits the session — two presses total. The mid-turn flag makes the
+        # prompt absorb presses that are just the rapid tail of this same gesture
+        # (_ctrl_c_disposition) instead of reading them as "yes, exit".
         _LAST_CTRL_C = time.monotonic()
-        notice_warn(
-            console,
-            f"interrupted {GLYPHS['dash']} turn stopped (ctrl-c again exits)",
+        _LAST_CTRL_C_MID_TURN = True
+        _absorb_interrupts(
+            lambda: notice_warn(
+                console,
+                f"interrupted {GLYPHS['dash']} turn stopped (ctrl-c again exits)",
+            )
         )
         return False
     finally:
         # The watcher must not outlive the turn: a leftover task would stack a
         # duplicate per turn and could fire a stale interrupt into a LATER turn.
+        # Absorbing, for the same reason as the interrupt teardown above — this
+        # finally is on the hammer path too.
         if watcher is not None:
-            watcher.cancel()
-            with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
-                loop.run_until_complete(watcher)
+            pending_watcher = watcher
+
+            def _drop_watcher() -> None:
+                pending_watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
+                    loop.run_until_complete(pending_watcher)
+
+            _absorb_interrupts(_drop_watcher)
 
 
 async def _server_turn_stream(
@@ -2212,8 +2297,9 @@ def chat(
     )
     repl_mux.append(mux)
 
-    global _LAST_CTRL_C
+    global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
     _LAST_CTRL_C = 0.0  # the double-press window is per-session; never inherit one
+    _LAST_CTRL_C_MID_TURN = False
     while True:
         # Input that arrived during the turn (a queued say, a typed-ahead line)
         # is taken WITHOUT a frame — opening one just to slam it shut renders a
@@ -2239,13 +2325,15 @@ def chat(
             # one keystroke (2026-08-24 operator report: Ctrl-C-to-copy exited a
             # mid-ceremony session). Double-press within the window exits, the
             # Claude Code convention. The window is the module-wide _LAST_CTRL_C,
-            # so a press that interrupted a running turn counts as the first press.
-            now = time.monotonic()
-            if now - _LAST_CTRL_C <= _CTRL_C_EXIT_WINDOW_S:
+            # so a press that interrupted a running turn counts as the first press
+            # — but the rapid tail of that same interrupt gesture is absorbed
+            # (_ctrl_c_disposition), never read as the deliberate exit press.
+            disposition = _ctrl_c_disposition()
+            if disposition == "exit":
                 notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
                 break
-            _LAST_CTRL_C = now
-            _dim(console, "press ctrl-c again to exit")
+            if disposition == "arm":
+                _dim(console, "press ctrl-c again to exit")
             continue
         line = value or ""
         via_say = kind == "say"
@@ -2492,13 +2580,25 @@ def chat(
                 renderer,
                 interrupt_file=interrupt_fp,
             )
+            _maybe_zakpick_advisory(console, renderer.last_done, zakpick_advisory)
+            # Cosmetic Claude Code statusLine (opt-in; no-op unless configured). After the
+            # turn, in-process only — it never gated or slowed the turn that just ran.
+            _maybe_render_status_line(console, agent)
         except ProviderError as exc:
             notice_error(console, "provider error", str(exc))
             continue
-        _maybe_zakpick_advisory(console, renderer.last_done, zakpick_advisory)
-        # Cosmetic Claude Code statusLine (opt-in; no-op unless configured). After the turn,
-        # in-process only — it never gated or slowed the turn that just ran.
-        _maybe_render_status_line(console, agent)
+        except KeyboardInterrupt:
+            # A press that slipped past the turn's interrupt teardown is the tail
+            # of the SAME gesture, never the deliberate at-prompt exit press.
+            # Absorb it — REPL exit here would take the whole cockpit with it.
+            continue
+        except Exception as exc:  # noqa: BLE001 — the REPL survives any turn failure
+            # A turn-level crash (renderer, session store, event-loop edge) used
+            # to unwind the REPL — and the cockpit pane chains tmux teardown onto
+            # REPL exit, so one bad turn killed every pane. The session is
+            # persisted at message boundaries: report it and keep the prompt.
+            notice_error(console, "turn failed", str(exc))
+            continue
 
     _shutdown_session_loop(loop)
 
@@ -2538,8 +2638,9 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
     _SESSION_LOOP = loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    global _LAST_CTRL_C
+    global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
     _LAST_CTRL_C = 0.0  # the double-press window is per-session; never inherit one
+    _LAST_CTRL_C_MID_TURN = False
     while True:
         try:
             line = read_prompt(console)
@@ -2549,13 +2650,14 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
         except KeyboardInterrupt:
             # Same double-press exit convention as the local REPL — one Ctrl-C
             # never kills the session (see the local loop's rationale). Shares
-            # _LAST_CTRL_C so a mid-turn interrupt counts as the first press.
-            now = time.monotonic()
-            if now - _LAST_CTRL_C <= _CTRL_C_EXIT_WINDOW_S:
+            # _ctrl_c_disposition, so a mid-turn interrupt counts as the first
+            # press while its rapid hammer tail is absorbed.
+            disposition = _ctrl_c_disposition()
+            if disposition == "exit":
                 notice_info(console, f"session closed {g['dash']} goodbye")
                 break
-            _LAST_CTRL_C = now
-            _dim(console, "press ctrl-c again to exit")
+            if disposition == "arm":
+                _dim(console, "press ctrl-c again to exit")
             continue
         stripped = line.strip()
         if not stripped:
@@ -2573,6 +2675,12 @@ def _run_server_chat(base_url: str, model: str | None) -> None:
             )
         except httpx.HTTPError as exc:
             notice_error(console, "server error", str(exc))
+            continue
+        except KeyboardInterrupt:
+            # Tail of the same interrupt gesture (see the local REPL) — absorb.
+            continue
+        except Exception as exc:  # noqa: BLE001 — the REPL survives any turn failure
+            notice_error(console, "turn failed", str(exc))
             continue
 
     _shutdown_session_loop(loop)
