@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -367,6 +368,7 @@ async def test_bash_127_unknown_command_gets_no_fix(tmp_path) -> None:
     assert res.fix is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="exec-bit / exit-126 semantics are POSIX-only")
 async def test_bash_126_names_the_chmod_escape(tmp_path) -> None:
     """A non-executable script run directly gets the chmod / `bash path` hint once,
     instead of the model rediscovering it per file."""
