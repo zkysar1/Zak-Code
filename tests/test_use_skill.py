@@ -413,27 +413,33 @@ def test_subagents_have_no_skill_seam_when_skills_off(tmp_path: Path) -> None:
 
 
 async def test_budget_denies_after_the_cap(tmp_path: Path) -> None:
-    _write_skill(tmp_path, "greeter")
+    # Distinct skills: a same-skill repeat is now answered by the reload dedup (a short
+    # pointer, budget-free), so only NEW bodies spend the budget.
+    for name in ("alpha", "beta", "gamma"):
+        _write_skill(tmp_path, name)
     agent = Agent(
         settings=Settings(
             default_model="scripted/test", workspace_root=tmp_path, skill_invocation_budget=2
         ),
         enable_skills=True,
     )
-    r1 = await agent._load_skill_body("greeter", source="tool")
-    r2 = await agent._load_skill_body("greeter", source="tool")
-    r3 = await agent._load_skill_body("greeter", source="tool")  # over the cap
+    r1 = await agent._load_skill_body("alpha", source="tool")
+    r2 = await agent._load_skill_body("beta", source="tool")
+    r3 = await agent._load_skill_body("gamma", source="tool")  # over the cap
     assert r1.body and r2.body and r1.denied_reason is None
     assert r3.body is None and r3.denied_reason is not None and "budget" in r3.denied_reason
     assert agent._skill_invocations_this_turn == 2  # the denied one did not count
 
 
 async def test_budget_zero_is_unlimited(tmp_path: Path) -> None:
-    _write_skill(tmp_path, "greeter")
+    # Distinct skills (a same-skill repeat is dedup-answered without spending budget).
+    names = [f"skill{i}" for i in range(5)]
+    for name in names:
+        _write_skill(tmp_path, name)
     agent = _agent(tmp_path, enable_skills=True)  # skill_invocation_budget defaults 0 = off
     last = None
-    for _ in range(5):
-        last = await agent._load_skill_body("greeter", source="tool")
+    for name in names:
+        last = await agent._load_skill_body(name, source="tool")
     assert last is not None and last.body is not None and last.denied_reason is None
     assert agent._skill_invocations_this_turn == 5
 
@@ -495,3 +501,46 @@ def test_streaming_turn_also_resets_the_budget(tmp_path: Path) -> None:
 def test_skill_invocations_count_is_exposed(tmp_path: Path) -> None:
     agent = _agent(tmp_path, enable_skills=True)
     assert agent.skill_invocations_this_session == 0  # the /skills accounting surface
+
+
+# ── per-turn reload dedup (2026-08-25) ────────────────────────────────────────
+
+
+async def test_same_turn_reload_returns_a_pointer_not_the_body(tmp_path: Path) -> None:
+    """The second use_skill of an UNCHANGED skill in one turn returns a short pointer —
+    the ~1,200-line body is already in context (measured: one turn loaded the same skill
+    three times). Costs no invocation budget and fires no second selection signal."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    fired: list[LifecyclePayload] = []
+    agent.hook_manager.register_lifecycle(HookEvent.ON_SKILL_SELECTED, _capture(fired))
+
+    first = await agent.loop._skill_resolver.load("greeter")
+    second = await agent.loop._skill_resolver.load("greeter")
+
+    assert "greet warmly" in (first.body or "").lower()
+    assert "[already loaded]" in (second.body or "")
+    assert "greet warmly" not in (second.body or "").lower()
+    assert agent._skill_invocations_this_turn == 1  # the pointer costs no budget
+    assert len(fired) == 1  # no second selection signal: nothing new was loaded
+
+
+async def test_a_different_skill_is_never_deduped(tmp_path: Path) -> None:
+    """Dedup is per-skill: loading a DIFFERENT skill mid-turn returns its full body."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    _write_skill(tmp_path, "parter", body="Part fondly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    await agent.loop._skill_resolver.load("greeter")
+    other = await agent.loop._skill_resolver.load("parter")
+    assert "part fondly" in (other.body or "").lower()
+
+
+async def test_new_turn_loads_in_full_again(tmp_path: Path) -> None:
+    """The dedup is per-TURN: after the per-turn reset, the full body returns (a later
+    turn's context may have been compacted, so a pointer would dangle)."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    await agent.loop._skill_resolver.load("greeter")
+    agent._skills_loaded_this_turn.clear()  # what arun_turn/astream_turn do at turn start
+    again = await agent.loop._skill_resolver.load("greeter")
+    assert "greet warmly" in (again.body or "").lower()

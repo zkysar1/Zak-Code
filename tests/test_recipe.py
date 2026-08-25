@@ -852,3 +852,51 @@ def test_harness_run_fires_under_allow_policy(tmp_path: Path) -> None:
     assert result.stop_reason == "completed"
     transcript = "\n".join(m.text or "" for m in loop.session.messages)
     assert "[harness]" in transcript  # the harness auto-ran it
+
+
+# ── usage-refusal verification (2026-08-25) ───────────────────────────────────
+
+
+def test_usage_refusal_verifies_an_args_required_script() -> None:
+    """A no-args run that exits nonzero with a leading Usage: synopsis verifies the
+    script — it parsed, ran, and correctly demanded arguments the harness cannot invent."""
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="fetch.sh")], [_r("w", path="fetch.sh")])
+    assert c.needs_verification() is True
+    c.observe(
+        [_c("r", "bash", command="bash fetch.sh")],
+        [_r("r", is_error=True, output="Usage: fetch.sh <file_id>")],
+    )
+    assert c.needs_verification() is False
+
+
+def test_generic_failure_still_verifies_nothing() -> None:
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="fetch.sh")], [_r("w", path="fetch.sh")])
+    c.observe(
+        [_c("r", "bash", command="bash fetch.sh")],
+        [_r("r", is_error=True, output="Traceback (most recent call last):\n  boom")],
+    )
+    assert c.needs_verification() is True
+
+
+def test_buried_usage_word_does_not_verify() -> None:
+    """Only a LEADING usage/synopsis line counts — 'usage' deep in a real failure never does."""
+    c = RecipeCursor(enabled=True)
+    c.observe([_c("w", "write_file", path="fetch.sh")], [_r("w", path="fetch.sh")])
+    c.observe(
+        [_c("r", "bash", command="bash fetch.sh")],
+        [_r("r", is_error=True, output="error: bad flag\nsee usage below\nUsage: fetch.sh")],
+    )
+    assert c.needs_verification() is True
+
+
+def test_usage_refusal_does_not_satisfy_an_acceptance_literal() -> None:
+    """An explicit expected-output literal still demands a real green run."""
+    c = RecipeCursor(enabled=True, acceptance="FETCHED")
+    c.observe([_c("w", "write_file", path="fetch.sh")], [_r("w", path="fetch.sh")])
+    c.observe(
+        [_c("r", "bash", command="bash fetch.sh")],
+        [_r("r", is_error=True, output="Usage: fetch.sh <file_id>")],
+    )
+    assert c.needs_verification() is True

@@ -269,6 +269,24 @@ def _runs_test_suite(command: str) -> bool:
     return False
 
 
+_USAGE_LINE = re.compile(r"^\s*usage[: ]", re.IGNORECASE)
+
+
+def _is_usage_refusal(output: str) -> bool:
+    """True when a failed run's output leads with a usage/synopsis line.
+
+    An args-required CLI run with no arguments that prints ``Usage: x.sh <id>`` and
+    exits nonzero has parsed, executed, and correctly demanded its arguments — the
+    strongest verification a harness run can get without inventing arguments. Only
+    the FIRST non-empty line (within the first three) counts, so an incidental
+    "usage" deep in a real failure never matches.
+    """
+    for line in output.splitlines()[:3]:
+        if line.strip():
+            return bool(_USAGE_LINE.match(line))
+    return False
+
+
 def _runnable_path(call: ToolCall, result: ToolResultBlock) -> str | None:
     """The path a successful write/edit touched IF it is a runnable script, else ``None``.
 
@@ -372,7 +390,23 @@ class RecipeCursor:
             if result is None:
                 continue
             if result.is_error:
-                continue  # a failed run verifies nothing
+                # A failed run verifies nothing — EXCEPT a usage refusal: an
+                # args-required script run without arguments that prints its
+                # synopsis and exits nonzero has run and refused CORRECTLY.
+                # Without this, the gate re-ran such a script to the attempt cap
+                # and bounced the finish each time (measured 2026-08-25:
+                # drive-fetch.sh <file_id> — three identical Usage exits). An
+                # explicit acceptance literal still demands a real green run.
+                if (
+                    call.name in _RUN_TOOLS
+                    and self.wrote_runnable
+                    and self.acceptance is None
+                    and _is_usage_refusal(result.output or "")
+                ):
+                    command = call.arguments.get("command")
+                    if isinstance(command, str):
+                        self._verified |= _executed_targets(command, self._targets)
+                continue
             if call.name in _WRITE_TOOLS:
                 path = _runnable_path(call, result)
                 if path is not None:

@@ -620,3 +620,14 @@ def test_chat_in_cockpit_pane_ignores_pane_keyboard(monkeypatch, tmp_path: Path)
     assert result.exit_code == 0
     assert "goodbye" in result.output
     assert not touched
+
+
+def test_chat_exit_tears_down_the_whole_cockpit(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
+    """Leaving the chat (double ctrl-c / EOF / crash) must close the WHOLE cockpit — the
+    chat pane's command chains a kill-session, so a dead chat never strands a headless
+    say box (operator report 2026-08-25)."""
+    cockpit.cockpit(session="agentbox", workspace=tmp_path, ledger=None, attach=True)
+    split = next(c for c in fake_tmux.calls if c[1] == "split-window")
+    pane_cmd = split[-1]
+    assert "cockpit-main" in pane_cmd
+    assert "kill-session" in pane_cmd and "agentbox" in pane_cmd
