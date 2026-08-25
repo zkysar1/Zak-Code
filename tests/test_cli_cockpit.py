@@ -52,6 +52,7 @@ def fake_tmux(monkeypatch: pytest.MonkeyPatch) -> _FakeTmux:
     fake = _FakeTmux()
     # Deterministic regardless of whether the test process itself runs inside tmux.
     monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.setattr(
         cockpit.shutil,
         "which",
@@ -337,3 +338,157 @@ def test_say_box_prompt_falls_back_to_input_without_tty(
     monkeypatch.setattr("builtins.input", lambda prompt="": "typed line")
     kind, line = cockpit._say_box_prompt(tmp_path / ".say", tmp_path / ".interrupt")
     assert (kind, line) == ("line", "typed line")
+
+
+# ── one interface: chat elevates itself into the cockpit ──────────────────────────
+# 2026-08-25 operator directive: "when I start zakcode, I expect zakcode to start
+# the cockpit if it needs it … one canonical input". These pin the elevation rules
+# and the derived per-workspace session identity.
+
+
+def test_cockpit_session_name_is_stable_sanitized_and_per_workspace(tmp_path: Path) -> None:
+    a = tmp_path / "serene.mind"
+    b = tmp_path / "other" / "serene.mind"
+    name_a = cockpit._cockpit_session_name(a)
+    assert name_a == cockpit._cockpit_session_name(a)  # stable
+    assert name_a != cockpit._cockpit_session_name(b)  # same basename, different workspace
+    assert "." not in name_a and " " not in name_a  # tmux-safe
+    assert name_a.startswith("zakcode-serene-mind-")
+
+
+def test_launch_cockpit_derives_session_name(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
+    cockpit.launch_cockpit(tmp_path, attach=False)
+    expected = cockpit._cockpit_session_name(tmp_path.resolve())
+    new_session = next(c for c in fake_tmux.calls if c[1] == "new-session")
+    assert expected in new_session
+
+
+def test_launch_cockpit_inside_tmux_switches_client(
+    fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_tmux.has_session_rc = 0
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+    cockpit.launch_cockpit(tmp_path, session="x", attach=True)
+    assert fake_tmux.subcommands() == ["has-session", "switch-client"]
+
+
+def test_cockpit_main_marks_pane_env_for_no_recursion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chat child must carry ZAKCODE_COCKPIT_PANE=1 (stops self-elevation
+    recursing) and ZAKCODE_INPUT_FRAME=off (the say box is the one input)."""
+    envs: list[dict] = []
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        if "chat" in cmd:
+            envs.append(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cockpit.subprocess, "run", fake_run)
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    monkeypatch.setattr(cockpit, "_print_cockpit_banner", lambda ws: None)
+    # One chat round, then the relaunch prompt ends the loop.
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(EOFError()))
+    cockpit.cockpit_main(workspace=tmp_path)
+    assert envs and envs[0]["ZAKCODE_COCKPIT_PANE"] == "1"
+    assert envs[0]["ZAKCODE_INPUT_FRAME"] == "off"
+
+
+def _tty_env(monkeypatch: pytest.MonkeyPatch, *, tmux: bool = True) -> None:
+    import zakcode.cli as cli_mod
+
+    monkeypatch.delenv("ZAKCODE_COCKPIT_PANE", raising=False)
+    monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli_mod.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli_mod.os, "name", "posix")
+    monkeypatch.setattr(
+        cli_mod.shutil, "which", lambda name: "/usr/bin/tmux" if (tmux and name == "tmux") else None
+    )
+
+
+def test_elevation_yes_on_plain_interactive_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    from zakcode.cli import _cockpit_elevation
+
+    _tty_env(monkeypatch)
+    kwargs = dict(
+        prompt=None,
+        server=None,
+        session=None,
+        model=None,
+        no_rules=False,
+        skill_dir=None,
+        extra_root=None,
+        trace=False,
+    )
+    assert _cockpit_elevation(**kwargs) == (True, None)
+    # Expert flags run the inline one-off engine instead.
+    assert _cockpit_elevation(**{**kwargs, "session": "abc"}) == (False, "expert-flags")
+    assert _cockpit_elevation(**{**kwargs, "prompt": "do it"}) == (False, "non-interactive")
+    # Inside a cockpit pane the marker stops recursion.
+    monkeypatch.setenv("ZAKCODE_COCKPIT_PANE", "1")
+    assert _cockpit_elevation(**kwargs) == (False, "inside-pane")
+    monkeypatch.delenv("ZAKCODE_COCKPIT_PANE")
+    # tmux missing is the one obstacle worth hinting about.
+    _tty_env(monkeypatch, tmux=False)
+    assert _cockpit_elevation(**kwargs) == (False, "no-tmux")
+
+
+def test_chat_elevates_into_cockpit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A plain interactive `zakcode chat` becomes the cockpit — no REPL banner,
+    no second way to chat; launch_cockpit gets the resolved workspace."""
+    from typer.testing import CliRunner
+
+    import zakcode.cli as cli_mod
+    from zakcode.cli import app
+
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(cli_mod, "_cockpit_elevation", lambda **kw: (True, None))
+    launched: list[Path] = []
+    monkeypatch.setattr(cockpit, "launch_cockpit", lambda ws, **kw: launched.append(ws))
+    result = CliRunner().invoke(app, ["chat"])
+    assert result.exit_code == 0
+    assert launched == [tmp_path]
+    assert "tip:" not in result.output
+
+
+class _NoTurnAgent:
+    """Just enough Agent for a chat that only ever sees /exit (no turns run)."""
+
+    def __init__(self, **overrides: object) -> None:
+        from zakcode.config import load_settings
+        from zakcode.hooks import HookManager
+        from zakcode.permissions import PermissionPolicy
+        from zakcode.session.store import Session
+
+        self.overrides = overrides
+        self.settings = load_settings()
+        self.session = Session(cwd=".", model=self.settings.default_model)
+        self.permission_policy = PermissionPolicy(self.settings.permission_mode)
+        self.hook_manager = HookManager()
+
+
+def test_chat_hints_when_only_tmux_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from typer.testing import CliRunner
+
+    import zakcode
+    import zakcode.cli as cli_mod
+    from zakcode.cli import app
+
+    monkeypatch.setattr(zakcode, "Agent", _NoTurnAgent)
+    monkeypatch.setattr(cli_mod, "_cockpit_elevation", lambda **kw: (False, "no-tmux"))
+    result = CliRunner().invoke(app, ["chat"], input="/exit\n")
+    assert result.exit_code == 0
+    assert "install tmux" in result.output
+
+
+def test_bare_zakcode_starts_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`zakcode` with no subcommand IS the chat — no launch ceremony."""
+    from typer.testing import CliRunner
+
+    import zakcode
+    from zakcode.cli import app
+
+    monkeypatch.setattr(zakcode, "Agent", _NoTurnAgent)
+    result = CliRunner().invoke(app, [], input="/exit\n")
+    assert result.exit_code == 0
+    assert "goodbye" in result.output

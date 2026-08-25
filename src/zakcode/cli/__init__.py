@@ -66,9 +66,36 @@ if TYPE_CHECKING:
 app = typer.Typer(
     name="zakcode",
     help="Zak Code — a clean-room, vendor-agnostic, API-first agentic coding tool.",
-    no_args_is_help=True,
     add_completion=False,
 )
+
+
+@app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context) -> None:
+    """Zak Code — a clean-room, vendor-agnostic, API-first agentic coding tool.
+
+    Bare ``zakcode`` starts the chat (elevating itself into the cockpit wherever
+    the environment supports it) — the interface is the interface, no launch
+    ceremony. ``zakcode --help`` lists the full command surface.
+    """
+    if ctx.invoked_subcommand is None:
+        # chat's params are typer-declared `str` with None defaults (the typer
+        # idiom), so route the explicit defaults through an Any-typed mapping.
+        defaults: dict[str, Any] = {
+            "model": None,
+            "prompt": None,
+            "provider": None,
+            "session": None,
+            "workspace": None,
+            "server": None,
+            "no_rules": False,
+            "skill_dir": None,
+            "extra_root": None,
+            "trace": False,
+        }
+        chat(**defaults)
+
+
 # Upgrade the console to UTF-8 where possible, then build it with the Zak theme and
 # highlight=False (so rich never auto-colors our metadata). GLYPHS resolves to ASCII
 # fallbacks on a cp1252 console.
@@ -1870,6 +1897,40 @@ def _run_one_shot(
     return 0 if done is not None and done.stop_reason == "completed" else 1
 
 
+def _cockpit_elevation(
+    *,
+    prompt: str | None,
+    server: str | None,
+    session: str | None,
+    model: str | None,
+    no_rules: bool,
+    skill_dir: list[str] | None,
+    extra_root: list[str] | None,
+    trace: bool,
+) -> tuple[bool, str | None]:
+    """Should this chat invocation become the cockpit? ``(yes, obstacle)``.
+
+    One interface, chosen by zakcode rather than the operator: a plain
+    interactive chat on a tty with tmux available elevates; anything that can't
+    host panes (or explicitly configures a one-off in-process engine) runs the
+    inline REPL. ``obstacle`` names the first reason elevation was skipped —
+    only ``"no-tmux"`` is worth a hint, because it is the one an operator can fix.
+    """
+    if prompt is not None or server:
+        return (False, "non-interactive")
+    if any([session, model, no_rules, skill_dir, extra_root, trace]):
+        return (False, "expert-flags")
+    if os.environ.get("ZAKCODE_COCKPIT_PANE") == "1":
+        return (False, "inside-pane")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return (False, "no-tty")
+    if os.name != "posix":
+        return (False, "platform")
+    if shutil.which("tmux") is None:
+        return (False, "no-tmux")
+    return (True, None)
+
+
 @app.command()
 def chat(
     model: str = typer.Option(None, "--model", "-m", help="Override the model id."),
@@ -1965,6 +2026,35 @@ def chat(
     if prompt is not None and not prompt.strip():
         notice_error(console, "--prompt was empty", 'pass a task, e.g. -p "fix the tests".')
         raise typer.Exit(code=2)
+
+    # The cockpit IS the chat interface. A plain interactive `zakcode` / `zakcode
+    # chat` elevates itself into the workspace's two-pane cockpit whenever the
+    # environment supports it — the operator never launches or wires it by hand.
+    # The inline REPL below remains ONLY for environments that cannot host panes
+    # (no tty, no tmux, Windows console, scripted/-p runs) and for expert flags
+    # that configure a one-off in-process engine.
+    elevate, obstacle = _cockpit_elevation(
+        prompt=prompt,
+        server=server,
+        session=session,
+        model=model,
+        no_rules=no_rules,
+        skill_dir=skill_dir,
+        extra_root=extra_root,
+        trace=trace,
+    )
+    if elevate:
+        from zakcode.cli.cockpit import launch_cockpit
+
+        root = Path(workspace).resolve() if workspace else load_settings().workspace_root
+        launch_cockpit(Path(root))
+        return
+    if obstacle == "no-tmux":
+        _dim(
+            console,
+            "tip: install tmux to get the full cockpit (scrolling screen + message box) "
+            "— running inline chat",
+        )
 
     overrides: dict[str, Any] = {}
     if model:

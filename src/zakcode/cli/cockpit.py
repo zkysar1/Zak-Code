@@ -195,22 +195,37 @@ def _print_cockpit_banner(workspace: Path) -> None:
     console.print(panel(console, "zakcode cockpit", kv_table(rows), border_style="banner.border"))
 
 
-def cockpit(
-    session: Annotated[str, typer.Option("--session", "-s", help="tmux session name.")] = "zakcode",
-    workspace: Annotated[
-        Path, typer.Option("--workspace", "-w", help="Directory the agent works in.")
-    ] = _DOT,
-    ledger: Annotated[
-        Path | None,
-        typer.Option("--ledger", help="Say-box ledger JSONL (default ~/.zakcode/say-ledger.jsonl)"),
-    ] = None,
-    attach: Annotated[
-        bool, typer.Option("--attach/--no-attach", help="Attach after creating.")
-    ] = True,
+def _cockpit_session_name(workspace: Path) -> str:
+    """The one tmux session name for a workspace's cockpit — derived, never chosen.
+
+    Per-workspace (name + a short path hash) so two workspaces never share a
+    cockpit, and two cockpits never race one workspace's single-slot say inbox.
+    """
+    import hashlib
+
+    slug = "".join(c if c.isalnum() or c == "-" else "-" for c in workspace.name) or "workspace"
+    digest = hashlib.sha1(str(workspace).encode("utf-8")).hexdigest()[:6]
+    return f"zakcode-{slug}-{digest}"
+
+
+def launch_cockpit(
+    workspace: Path,
+    *,
+    session: str | None = None,
+    ledger: Path | None = None,
+    attach: bool = True,
 ) -> None:
-    """Open (or re-join) the two-pane cockpit: chat on top, the say box below."""
+    """Create (if needed) and join the workspace's cockpit — the chat interface.
+
+    This is what ``zakcode chat`` elevates itself into whenever the environment
+    supports it (tty + tmux), so the operator never launches or configures the
+    cockpit by hand. Re-running joins the same session; from inside another tmux
+    session the client is switched rather than nested.
+    """
     tmux = _tmux_bin()
     workspace = workspace.resolve()
+    if session is None:
+        session = _cockpit_session_name(workspace)
     if not _has_session(session):
         ledger_path = ledger if ledger is not None else _default_ledger()
         zakcode = _self_invocation()
@@ -261,13 +276,42 @@ def cockpit(
         )
         _tmux("select-pane", "-t", f"{session}:0.0")
         notice_info(console, f"cockpit session '{session}' created")
-    if attach and sys.stdin.isatty():
+    if attach and os.environ.get("TMUX"):
+        # Already inside a tmux client: nesting an attach is refused by tmux, so
+        # move THIS client to the cockpit session instead.
+        subprocess.run([tmux, "switch-client", "-t", session], check=False)
+    elif attach and sys.stdin.isatty():
         subprocess.run([tmux, "attach-session", "-t", session], check=False)
     elif not attach:
         notice_info(
             console,
             f"cockpit session '{session}' running — attach with: tmux attach -t {session}",
         )
+
+
+def cockpit(
+    session: Annotated[
+        str | None,
+        typer.Option("--session", "-s", help="tmux session name (default: derived per workspace)."),
+    ] = None,
+    workspace: Annotated[
+        Path, typer.Option("--workspace", "-w", help="Directory the agent works in.")
+    ] = _DOT,
+    ledger: Annotated[
+        Path | None,
+        typer.Option("--ledger", help="Say-box ledger JSONL (default ~/.zakcode/say-ledger.jsonl)"),
+    ] = None,
+    attach: Annotated[
+        bool, typer.Option("--attach/--no-attach", help="Attach after creating.")
+    ] = True,
+) -> None:
+    """(internal) Open or re-join a workspace's cockpit directly.
+
+    Operators never need this: ``zakcode`` / ``zakcode chat`` elevates itself into
+    the cockpit automatically wherever a tty and tmux exist. Kept (hidden) for
+    provisioning scripts and headless creation (``--no-attach``).
+    """
+    launch_cockpit(workspace, session=session, ledger=ledger, attach=attach)
 
 
 def cockpit_main(
@@ -280,7 +324,9 @@ def cockpit_main(
     # The say box below is the single input: hide chat's own input frame. Chat
     # always listens to the workspace say inbox (the shared POST /say contract),
     # so the box's messages arrive as real input — no keystroke injection.
-    env = {**os.environ, "ZAKCODE_INPUT_FRAME": "off"}
+    # ZAKCODE_COCKPIT_PANE marks the child as already-inside-the-cockpit, which is
+    # what stops `zakcode chat`'s self-elevation from recursing.
+    env = {**os.environ, "ZAKCODE_INPUT_FRAME": "off", "ZAKCODE_COCKPIT_PANE": "1"}
     while True:
         console.clear()
         _print_cockpit_banner(workspace)
@@ -440,7 +486,8 @@ def interrupt(
 
 
 def register_cockpit_commands(app: typer.Typer) -> None:
-    app.command()(cockpit)
+    # `cockpit` is plumbing, not a user choice: chat elevates itself into it.
+    app.command(hidden=True)(cockpit)
     app.command()(say)
     app.command()(interrupt)
     app.command(name="cockpit-main", hidden=True)(cockpit_main)
