@@ -827,6 +827,144 @@ def test_chat_slow_second_ctrl_c_still_does_not_exit(monkeypatch) -> None:
     assert result.stdout.count("press ctrl-c again to exit") == 2
 
 
+# ── one hammer gesture must never kill the session (field incident 2026-08-26) ──
+
+
+def test_ctrl_c_disposition_contract(monkeypatch) -> None:
+    # The shared window classifier: an idle-prompt rapid double-press is the documented
+    # exit gesture, but the rapid tail of a MID-TURN interrupt is the same hammer and is
+    # absorbed — however many presses it has — until the presses slow down.
+    import time as time_mod
+
+    import zakcode.cli as cli_mod
+
+    # Idle prompt: first press arms, rapid second press exits (the documented gesture).
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C", 0.0)
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C_MID_TURN", False)
+    assert cli_mod._ctrl_c_disposition() == "arm"
+    assert cli_mod._ctrl_c_disposition() == "exit"
+
+    # Mid-turn-armed window: presses inside the gesture refractory absorb, repeatedly.
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C", time_mod.monotonic())
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C_MID_TURN", True)
+    assert cli_mod._ctrl_c_disposition() == "absorb"
+    assert cli_mod._LAST_CTRL_C_MID_TURN is True  # the gesture continues
+    assert cli_mod._ctrl_c_disposition() == "absorb"
+
+    # Mid-turn-armed window, DELIBERATE second press (past the refractory, inside the
+    # window): exits — two presses total, the requested affordance.
+    monkeypatch.setattr(
+        cli_mod, "_LAST_CTRL_C", time_mod.monotonic() - (cli_mod._CTRL_C_GESTURE_S + 0.05)
+    )
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C_MID_TURN", True)
+    assert cli_mod._ctrl_c_disposition() == "exit"
+
+    # Stale window (mid-turn or not): back to arming.
+    monkeypatch.setattr(
+        cli_mod, "_LAST_CTRL_C", time_mod.monotonic() - (cli_mod._CTRL_C_EXIT_WINDOW_S + 1.0)
+    )
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C_MID_TURN", True)
+    assert cli_mod._ctrl_c_disposition() == "arm"
+
+
+def test_absorb_interrupts_retries_through_hammered_presses() -> None:
+    # The teardown wrapper must complete its step no matter how many presses land in it.
+    import zakcode.cli as cli_mod
+
+    calls = {"n": 0}
+
+    def step() -> None:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise KeyboardInterrupt
+
+    cli_mod._absorb_interrupts(step)  # returns instead of letting a press escape
+    assert calls["n"] == 3
+
+
+def test_hammered_press_during_teardown_does_not_escape(monkeypatch) -> None:
+    # A press landing INSIDE the interrupt teardown (here: while the notice prints) used
+    # to escape as a raw KeyboardInterrupt, unwind the REPL, and — via the cockpit pane
+    # chain — kill the whole tmux session. The teardown now absorbs it and completes.
+    import io
+
+    from rich.console import Console
+
+    import zakcode.cli as cli_mod
+    from zakcode.cli.render import StreamRenderer
+
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C", 0.0)
+    monkeypatch.setattr(cli_mod, "_LAST_CTRL_C_MID_TURN", False)
+    loop = asyncio.new_event_loop()
+    monkeypatch.setattr(cli_mod, "_SESSION_LOOP", loop)
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, force_terminal=False)
+
+    real_notice_warn = cli_mod.notice_warn
+    hammered = {"n": 0}
+
+    def hammering_notice(*args, **kwargs):
+        hammered["n"] += 1
+        if hammered["n"] == 1:
+            raise KeyboardInterrupt  # the hammer's second press lands mid-teardown
+        return real_notice_warn(*args, **kwargs)
+
+    monkeypatch.setattr(cli_mod, "notice_warn", hammering_notice)
+
+    async def dead_stream() -> AsyncIterator[AgentEvent]:
+        raise KeyboardInterrupt
+        yield  # pragma: no cover — makes this an async generator
+
+    try:
+        completed = cli_mod._run_streamed_turn(
+            console, dead_stream, StreamRenderer(console=console)
+        )
+    finally:
+        loop.close()
+    assert completed is False  # no KeyboardInterrupt escaped
+    assert hammered["n"] == 2  # the notice was retried to completion
+    assert "ctrl-c again exits" in buffer.getvalue()
+    # The window is armed AND flagged mid-turn, so the prompt absorbs the hammer tail.
+    assert cli_mod._LAST_CTRL_C > 0.0
+    assert cli_mod._LAST_CTRL_C_MID_TURN is True
+
+
+class _CrashingAgent(FakeAgent):
+    """astream_turn blows up synchronously — the shape that used to unwind the REPL."""
+
+    def astream_turn(self, text: str):  # type: ignore[override]
+        raise RuntimeError("kaboom mid-turn")
+
+
+def test_repl_survives_turn_crash(monkeypatch) -> None:
+    # A turn-level crash is reported and the prompt survives: in the cockpit, REPL death
+    # tears down every tmux pane, so "turn failed" must never become "cockpit gone".
+    monkeypatch.setattr(zakcode, "Agent", _CrashingAgent)
+    _scripted_prompt(monkeypatch, ["do the thing", "/exit"])
+    result = runner.invoke(app, ["cli"])
+    assert result.exit_code == 0
+    assert "turn failed" in result.stdout
+    assert "kaboom mid-turn" in result.stdout
+    assert "goodbye" in result.stdout  # reached /exit — the REPL outlived the crash
+
+
+class _InterruptLeakingAgent(FakeAgent):
+    """astream_turn raises KeyboardInterrupt before the turn machinery even starts —
+    the escape shape a hammered press can produce outside the teardown's coverage."""
+
+    def astream_turn(self, text: str):  # type: ignore[override]
+        raise KeyboardInterrupt
+
+
+def test_repl_absorbs_interrupt_that_escapes_the_turn(monkeypatch) -> None:
+    monkeypatch.setattr(zakcode, "Agent", _InterruptLeakingAgent)
+    _scripted_prompt(monkeypatch, ["hello", "/exit"])
+    result = runner.invoke(app, ["cli"])
+    assert result.exit_code == 0
+    assert "goodbye" in result.stdout  # absorbed, prompt survived to /exit
+    assert "Traceback" not in result.stdout
+
+
 # ── /resume: in-REPL twin of the -s/--session flag ──
 
 
