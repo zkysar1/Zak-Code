@@ -206,10 +206,6 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
         ("Temperature", str(settings.temperature)),
         ("Ollama base URL", settings.ollama_base_url),
         ("Permission mode", _sourced("ZAKCODE_PERMISSION_MODE", settings.permission_mode)),
-        (
-            "Max iterations",
-            str(settings.max_iterations) if settings.max_iterations else "unlimited",
-        ),
         ("Workspace root", str(settings.workspace_root)),
         ("Search backend", settings.search_backend),
         (

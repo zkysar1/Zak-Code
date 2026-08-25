@@ -254,6 +254,10 @@ class Agent:
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
         budget: IterationBudget | None = None,
+        # SDK-only hard per-turn iteration bound (tests, evals, embedders). None/0 =
+        # unlimited — the only product behavior; there is no operator config for this
+        # (ZAKCODE_MAX_ITERATIONS removed 2026-08-25, no-knobs ruling).
+        max_iterations: int | None = None,
         enable_subagents: bool = False,
         enable_mcp: bool = False,
         mcp_servers: list[McpServerConfig] | None = None,
@@ -282,6 +286,9 @@ class Agent:
         **setting_overrides: Any,
     ) -> None:
         self.settings = settings or load_settings(**setting_overrides)
+        # SDK-only per-turn iteration bound (see the kwarg comment); normalized so 0 and
+        # None both mean unlimited everywhere downstream (loop + shared budget).
+        self._max_iterations = max_iterations or 0
         # The provider is normally built from settings (litellm — the one vendor seam),
         # but a caller may inject any ``Provider`` (the eval harness drives the loop with
         # a no-network ScriptedProvider this way). Importing litellm lazily keeps the
@@ -664,7 +671,7 @@ class Agent:
             or self.settings.max_tokens is not None
         ):
             shared_budget = IterationBudget(
-                self.settings.max_iterations,
+                self._max_iterations,
                 max_cost_usd=self.settings.max_cost_usd,
                 max_tokens=self.settings.max_tokens,
             )
@@ -924,8 +931,13 @@ class Agent:
             # body by name. None unless enable_rules (same shape as skill_resolver above), so
             # the tool's seam exists exactly when rules are on.
             rule_registry=self.rule_registry,
-            # TURN_END veto seam (T2/T3/T4): 0 (the default) disables the gate.
-            turn_end_veto_budget=self.settings.turn_end_veto_budget,
+            # TURN_END veto seam (T2/T3/T4): structurally ALWAYS ON for the main loop —
+            # a Stop hook registered by the workspace's adopted hooks fires at every
+            # vetoable turn end. Sub-agent loops never set this (their completions
+            # return to the parent). No knob (2026-08-25 no-knobs ruling).
+            turn_end_vetoable=True,
+            # SDK-only per-turn bound; 0 = unlimited (the only product behavior).
+            max_iterations=self._max_iterations,
             # Completion-review gate: 0 (the default) disables it; when >0, a code-changing turn
             # is sent back that many times to verify it satisfied the request before finishing.
             completion_review_attempts=self.settings.completion_review_attempts,

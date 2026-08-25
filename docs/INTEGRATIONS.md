@@ -92,8 +92,9 @@ arguments) — the seam for runtime guardrails.
 `TURN_END` seam) fires when a turn would otherwise end. Returning
 `{"decision": "block", "reason": "…"}` (or exit `2`) **vetoes the stop and re-enters the
 loop** with `reason` as the next instruction — the mechanism a perpetual / autonomous
-framework uses to keep itself running. Bounded by `turn_end_veto_budget` so it can never
-loop forever.
+framework uses to keep itself running. Always on for the main loop when a `Stop` hook is
+registered (sub-agent loops are never vetoable); vetoes are unbounded — the hook stands
+down, and the cost budget is the hard bound.
 
 ### 2. Per-turn context injection (`PreLLMCall`)
 
@@ -206,7 +207,7 @@ Two pieces the original fold-in scoped out are now built — together they are t
 running an autonomous framework on Zak Code:
 
 - **Turn-end continuation ("never terminate").** A `Stop` hook can veto turn-end and inject a
-  continuation (seam #1) — bounded by `turn_end_veto_budget`. This is the perpetual-loop engine.
+  continuation (seam #1) — always armed on the main loop. This is the perpetual-loop engine.
 - **`settings.json` hook ingestion.** A Claude-Code `settings.json` hook block is parsed verbatim
   (`zakcode.hooks.settings_loader`): event names mapped (`Stop` → `TURN_END`, `PreToolUse`, …),
   `$CLAUDE_PROJECT_DIR` substituted, every command security-scanned, gated behind

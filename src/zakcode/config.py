@@ -272,13 +272,11 @@ class Settings(BaseSettings):
     )
 
     # ── Agent behavior ──────────────────────────────────────────────────────
-    # 0 (the default) = UNLIMITED — minds are expected to run for days; the real
-    # runaway guards are the doom-loop detector (identical-call loops) and the cost
-    # budget (metered spend), not an arbitrary per-turn step count. Set a positive
-    # value only when a caller genuinely wants a hard per-turn bound (tests do).
-    max_iterations: int = Field(
-        default=0, ge=0, description="Hard cap on agent-loop iterations per turn (0 = unlimited)."
-    )
+    # There is deliberately NO max-iterations setting (removed 2026-08-25, no-knobs
+    # ruling): the product runs unlimited — minds run for days — and the real runaway
+    # guards are the doom-loop detector and the cost budget. A hard per-turn bound is
+    # an SDK affordance (``Agent(max_iterations=N)`` / ``AgentLoop(max_iterations=N)``)
+    # for tests, evals, and embedders — never operator config.
     # Per-turn ceiling on MODEL-driven skill invocations (the use_skill tool), shared across a
     # turn and its whole sub-agent tree (one counter, reset per top-level turn). Bounds a runaway
     # or cyclic skill chain (A -> B -> A) more tightly than max_iterations. A human /<name>
@@ -339,15 +337,12 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-call wall-clock ceiling (seconds) for one model call.",
     )
-    # TURN_END veto seam (T2/T3): how many times per turn a TURN_END hook may veto a
-    # vetoable stop (completed / doom_loop / stuck) and re-enter the loop with its
-    # continuation prompt. 0 (default) disables the gate — no hook fires at turn end.
-    # max_iterations / provider_error / recipe_stalled are never vetoable.
-    turn_end_veto_budget: int = Field(
-        default=0,
-        ge=0,
-        description="Max TURN_END hook vetoes per turn (Stop-hook seam); 0 disables.",
-    )
+    # There is deliberately NO turn-end veto budget (removed 2026-08-25, no-knobs
+    # ruling): the TURN_END seam (Claude Code's Stop hook) is structurally ALWAYS ON
+    # for the main Agent loop when the workspace's adopted hooks register one, and
+    # never on for sub-agent loops. A registered hook is a live hook; the hook itself
+    # stands down, and the cost budget is the hard bound. The silent-off default cost
+    # a full autonomous-loop death on 2026-08-25 (the hook had never fired once).
 
     # Completion-review gate: when a turn CHANGED code (wrote a runnable file) and the agent tries
     # to finish, send it back this many times to re-read the request and verify EVERY requirement
