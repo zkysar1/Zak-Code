@@ -99,37 +99,6 @@ def test_cockpit_existing_session_attaches_only(
     assert fake_tmux.subcommands() == ["has-session", "attach-session"]
 
 
-def test_say_refuses_without_session(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
-    ledger = tmp_path / "ledger.jsonl"
-    with pytest.raises(typer.Exit) as excinfo:
-        cockpit.say(text="hi", session="ghost", ledger=ledger, operator=None)
-    assert excinfo.value.exit_code == 1
-    assert not ledger.exists()
-    assert "not running" in cockpit.console.export_text()
-
-
-def test_say_ledgers_and_sends(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
-    fake_tmux.has_session_rc = 0
-    ledger = tmp_path / "deep" / "ledger.jsonl"
-    cockpit.say(text="hello there", session="agentbox", ledger=ledger, operator="alpha@cc-14")
-    row = json.loads(ledger.read_text(encoding="utf-8").strip())
-    assert row["text"] == "hello there"
-    assert row["via"] == "zakcode-say"
-    assert row["operator"] == "alpha@cc-14"
-    sends = [c for c in fake_tmux.calls if c[1] == "send-keys"]
-    assert len(sends) == 2
-    assert sends[0][-1] == "hello there" and "-l" in sends[0] and "agentbox:0.0" in sends[0]
-    assert sends[1][-1] == "Enter"
-    assert "sent" in cockpit.console.export_text()
-
-
-def test_say_reports_queued_mid_turn(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
-    fake_tmux.has_session_rc = 0
-    fake_tmux.capture_stdout = b"thinking (ctrl-c to interrupt . 12s)"
-    cockpit.say(text="hi", session="x", ledger=tmp_path / "l.jsonl", operator=None)
-    assert "queued" in cockpit.console.export_text()
-
-
 def test_append_ledger_default_operator(tmp_path: Path) -> None:
     ledger = tmp_path / "a" / "b.jsonl"
     cockpit._append_ledger(ledger, "line one", via="cockpit-say-box", operator=None)
@@ -180,6 +149,7 @@ def test_cockpit_main_runs_chat_frameless_then_exits_on_eof(
     chat_runs = [(argv, env) for argv, env in runs if argv[-1] == "chat"]
     assert len(chat_runs) == 1
     assert chat_runs[0][1].get("ZAKCODE_INPUT_FRAME") == "off"
+    assert chat_runs[0][1].get("ZAKCODE_SAY_INBOX") == "1"
     text = cockpit.console.export_text()
     assert "zakcode cockpit" in text
     assert "press Enter to relaunch" in text
@@ -187,105 +157,6 @@ def test_cockpit_main_runs_chat_frameless_then_exits_on_eof(
 
 def _raise_eof() -> str:
     raise EOFError
-
-
-def test_say_box_ledgers_sends_then_exits_on_ctrl_c(
-    fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fake_tmux.has_session_rc = 0
-    ledger = tmp_path / "ledger.jsonl"
-    lines = iter(["  ", "do the thing"])
-
-    def _next_line(prompt: str = "") -> str:
-        try:
-            return next(lines)
-        except StopIteration:
-            raise KeyboardInterrupt from None
-
-    monkeypatch.setattr("builtins.input", _next_line)
-    with pytest.raises(typer.Exit) as excinfo:
-        cockpit.cockpit_say_box(session="agentbox", ledger=ledger, operator="human@box")
-    assert excinfo.value.exit_code == 0
-    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
-    # The blank line was ignored; only the real one was ledgered and sent.
-    assert [r["text"] for r in rows] == ["do the thing"]
-    assert rows[0]["via"] == "cockpit-say-box"
-    sends = [c for c in fake_tmux.calls if c[1] == "send-keys"]
-    assert len(sends) == 2 and sends[0][-1] == "do the thing"
-
-
-def test_multiline_send_uses_one_bracketed_paste(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
-    """A multi-line message must reach the chat pane as ONE prompt, never line-by-line."""
-    fake_tmux.has_session_rc = 0
-    text = "first line\nsecond line\nthird line"
-    cockpit.say(text=text, session="agentbox", ledger=tmp_path / "l.jsonl", operator=None)
-    subs = fake_tmux.subcommands()
-    assert "load-buffer" in subs
-    paste = next(c for c in fake_tmux.calls if c[1] == "paste-buffer")
-    assert "-p" in paste and "agentbox:0.0" in paste
-    # Exactly one Enter submits the whole block; no per-line send-keys of content.
-    sends = [c for c in fake_tmux.calls if c[1] == "send-keys"]
-    assert [c[-1] for c in sends] == ["Enter"]
-    # The ledger keeps the message whole, as one row.
-    row = json.loads((tmp_path / "l.jsonl").read_text(encoding="utf-8").strip())
-    assert row["text"] == text
-
-
-def test_say_box_multiline_reports_line_count(
-    fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fake_tmux.has_session_rc = 0
-    lines = iter(["alpha\nbeta"])
-
-    def _next_line(prompt: str = "") -> str:
-        try:
-            return next(lines)
-        except StopIteration:
-            raise KeyboardInterrupt from None
-
-    monkeypatch.setattr("builtins.input", _next_line)
-    with pytest.raises(typer.Exit):
-        cockpit.cockpit_say_box(session="x", ledger=tmp_path / "l.jsonl", operator="h@b")
-    assert "2 lines" in cockpit.console.export_text()
-    subs = fake_tmux.subcommands()
-    assert "load-buffer" in subs and "paste-buffer" in subs
-
-
-def test_say_refuses_self_target_pane(
-    fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """If the chat pane died, the say box got renumbered to 0.0 — never send to self."""
-    fake_tmux.has_session_rc = 0
-    fake_tmux.display_stdout = b"%7\n"
-    monkeypatch.setenv("TMUX_PANE", "%7")
-    ledger = tmp_path / "l.jsonl"
-    with pytest.raises(typer.Exit) as excinfo:
-        cockpit.say(text="hi", session="x", ledger=ledger, operator=None)
-    assert excinfo.value.exit_code == 1
-    assert not ledger.exists()
-    assert "chat pane is gone" in cockpit.console.export_text()
-
-
-def test_say_box_warns_instead_of_self_echo(
-    fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fake_tmux.has_session_rc = 0
-    fake_tmux.display_rc = 1  # chat pane cannot even be resolved
-    lines = iter(["hello"])
-
-    def _next_line(prompt: str = "") -> str:
-        try:
-            return next(lines)
-        except StopIteration:
-            raise KeyboardInterrupt from None
-
-    monkeypatch.setattr("builtins.input", _next_line)
-    ledger = tmp_path / "l.jsonl"
-    with pytest.raises(typer.Exit):
-        cockpit.cockpit_say_box(session="x", ledger=ledger, operator="h@b")
-    assert not ledger.exists()
-    assert not any(c[1] == "send-keys" for c in fake_tmux.calls)
-    assert "NOT sent" in cockpit.console.export_text()
 
 
 def test_cockpit_main_shields_relaunch_loop_from_ctrl_c(
@@ -328,3 +199,127 @@ def test_cockpit_main_shields_relaunch_loop_from_ctrl_c(
     # Ignored while chat ran, then restored to whatever was there before.
     assert (_SigStub.SIGINT, _SigStub.SIG_IGN) in sig_calls
     assert (_SigStub.SIGINT, "prev-handler") in sig_calls
+
+
+# ── say-inbox transport (the converged path: tmux is never the wire) ──────────────
+
+
+def test_say_writes_inbox_and_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    ledger = tmp_path / "ledger.jsonl"
+    cockpit.say(
+        text="first line\nsecond line", workspace=tmp_path, url=None, ledger=ledger, operator="a@b"
+    )
+    inbox = tmp_path / ".say"
+    assert inbox.read_text(encoding="utf-8") == "first line\nsecond line\n"
+    row = json.loads(ledger.read_text(encoding="utf-8").strip())
+    assert row["text"] == "first line\nsecond line"
+    assert row["via"] == "zakcode-say"
+    assert "sent" in cockpit.console.export_text()
+
+
+def test_say_refuses_while_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    (tmp_path / ".say").write_text("earlier\n", encoding="utf-8")
+    ledger = tmp_path / "ledger.jsonl"
+    with pytest.raises(typer.Exit) as excinfo:
+        cockpit.say(text="hi", workspace=tmp_path, url=None, ledger=ledger, operator=None)
+    assert excinfo.value.exit_code == 1
+    assert not ledger.exists()
+    assert (tmp_path / ".say").read_text(encoding="utf-8") == "earlier\n"
+    assert "already pending" in cockpit.console.export_text()
+
+
+def test_say_url_posts_to_daemon_with_bearer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    monkeypatch.setenv("ZAKCODE_AUTH_TOKEN", "sekret")
+    posts: list[tuple[str, dict, dict | None]] = []
+
+    def _fake_post(url, json=None, headers=None, timeout=None):  # noqa: ANN001, ANN204
+        posts.append((url, json, headers))
+        return httpx.Response(200, json={"queued": True}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    ledger = tmp_path / "ledger.jsonl"
+    cockpit.say(
+        text="over the wire",
+        workspace=tmp_path,
+        url="http://127.0.0.1:8000/",
+        ledger=ledger,
+        operator=None,
+    )
+    assert posts == [
+        (
+            "http://127.0.0.1:8000/say",
+            {"text": "over the wire"},
+            {"Authorization": "Bearer sekret"},
+        )
+    ]
+    assert not (tmp_path / ".say").exists()  # remote transport — no local file
+    assert json.loads(ledger.read_text(encoding="utf-8").strip())["text"] == "over the wire"
+
+
+def test_say_url_maps_429_to_pending_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    monkeypatch.delenv("ZAKCODE_AUTH_TOKEN", raising=False)
+
+    def _fake_post(url, json=None, headers=None, timeout=None):  # noqa: ANN001, ANN204
+        return httpx.Response(429, text="pending", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    ledger = tmp_path / "ledger.jsonl"
+    with pytest.raises(typer.Exit) as excinfo:
+        cockpit.say(text="hi", workspace=tmp_path, url="http://x:1", ledger=ledger, operator=None)
+    assert excinfo.value.exit_code == 1
+    assert not ledger.exists()
+    assert "already pending" in cockpit.console.export_text()
+
+
+def _say_box_input(monkeypatch: pytest.MonkeyPatch, lines: list[str]) -> None:
+    seq = iter(lines)
+
+    def _next(prompt: str = "") -> str:
+        try:
+            return next(seq)
+        except StopIteration:
+            raise KeyboardInterrupt from None
+
+    monkeypatch.setattr("builtins.input", _next)
+
+
+def test_say_box_delivers_multiline_to_inbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    _say_box_input(monkeypatch, ["  ", "alpha\nbeta"])
+    ledger = tmp_path / "ledger.jsonl"
+    with pytest.raises(typer.Exit) as excinfo:
+        cockpit.cockpit_say_box(workspace=tmp_path, ledger=ledger, operator="h@b")
+    assert excinfo.value.exit_code == 0
+    assert (tmp_path / ".say").read_text(encoding="utf-8") == "alpha\nbeta\n"
+    rows = [json.loads(x) for x in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [r["text"] for r in rows] == ["alpha\nbeta"]
+    assert rows[0]["via"] == "cockpit-say-box"
+    assert "2 lines" in cockpit.console.export_text()
+
+
+def test_say_box_busy_notice_while_message_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    (tmp_path / ".say").write_text("unconsumed\n", encoding="utf-8")
+    _say_box_input(monkeypatch, ["hello"])
+    ledger = tmp_path / "ledger.jsonl"
+    with pytest.raises(typer.Exit):
+        cockpit.cockpit_say_box(workspace=tmp_path, ledger=ledger, operator=None)
+    assert not ledger.exists()
+    assert (tmp_path / ".say").read_text(encoding="utf-8") == "unconsumed\n"
+    assert "busy" in cockpit.console.export_text()

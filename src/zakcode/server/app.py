@@ -90,6 +90,7 @@ from zakcode.server.wire import (
     event_to_dict,
     events_schema,
 )
+from zakcode.session.say_inbox import say_path, write_say
 from zakcode.session.store import (
     Session,
     SessionCorruptError,
@@ -1110,14 +1111,8 @@ def create_app(
         if not text:
             raise HTTPException(status_code=400, detail="text required")
         text = text[:SAY_MAX_CHARS]
-        root = Path(resolved_settings.workspace_root)
-        target = root / ".say"
-        if target.exists():
+        if not write_say(say_path(resolved_settings.workspace_root), text):
             raise HTTPException(status_code=429, detail="a message is already pending")
-        root.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".say.{os.getpid()}.tmp")
-        tmp.write_text(text + "\n", encoding="utf-8")
-        os.replace(tmp, target)
         return {"queued": True}
 
     # ── PEARL knowledge base (§10.4) — read-only browse over the pre-projected bundle ──
