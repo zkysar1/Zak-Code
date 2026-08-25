@@ -329,6 +329,22 @@ def test_map_error_retries_transient_infra_errors() -> None:
         assert isinstance(mapped, lp.RateLimited), f"{name} -> {type(mapped).__name__}"
 
 
+def test_map_error_names_timeouts_truthfully() -> None:
+    # A client-timeout is retryable (subclasses RateLimited) but must be distinguishable:
+    # "rate limited" sent the operator to the wrong knob during the zc-03 boot wedges —
+    # the real remedy was ZAKCODE_REQUEST_TIMEOUT on an uncached slow backend.
+    from zakcode.providers.base import TimedOut
+
+    for name in ("Timeout", "APITimeoutError"):
+        exc = type(name, (Exception,), {})("boom")
+        mapped = lp.LiteLLMProvider._map_error(exc)
+        assert isinstance(mapped, TimedOut), f"{name} -> {type(mapped).__name__}"
+    for name in ("APIConnectionError", "ServiceUnavailableError", "InternalServerError"):
+        exc = type(name, (Exception,), {})("boom")
+        mapped = lp.LiteLLMProvider._map_error(exc)
+        assert not isinstance(mapped, TimedOut), f"{name} must stay a plain RateLimited"
+
+
 # ---------------------------------------------------------------------------
 # Error mapping
 # ---------------------------------------------------------------------------

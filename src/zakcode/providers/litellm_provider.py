@@ -45,6 +45,7 @@ from zakcode.providers.base import (
     StreamThinkingDelta,
     StreamToolCallDelta,
     StreamUsage,
+    TimedOut,
     ToolCall,
 )
 from zakcode.providers.endpoints import (
@@ -624,16 +625,18 @@ class LiteLLMProvider(Provider):
                 "the model produced a malformed tool call and the provider "
                 "rejected it (tool_use_failed)"
             )
+        if cls._is_a(exc, None, "Timeout", "APITimeoutError"):
+            # The client timeout expired. Retried like a rate limit, but reported
+            # truthfully — see TimedOut's docstring for why the distinction matters.
+            return TimedOut(message, retry_after=retry_after)
         if cls._is_a(
             exc,
             None,
-            "Timeout",
-            "APITimeoutError",
             "APIConnectionError",
             "ServiceUnavailableError",
             "InternalServerError",
         ):
-            # Transient infrastructure errors (network timeout, dropped connection, 503/500): the
+            # Transient infrastructure errors (dropped connection, 503/500): the
             # remedy is a bounded backoff-retry, not a dead turn. Surfaced as RateLimited so the
             # loop's existing retry path handles it (no retry_after -> default backoff).
             return RateLimited(message, retry_after=retry_after)

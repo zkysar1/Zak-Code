@@ -183,6 +183,18 @@ class RateLimited(ProviderError):
         self.retry_after = retry_after
 
 
+class TimedOut(RateLimited):
+    """The request exceeded the client-side timeout (``ZAKCODE_REQUEST_TIMEOUT``).
+
+    Subclasses :class:`RateLimited` ONLY for its bounded-retry semantics. The
+    operator-facing notice must name the timeout, not a rate limit: on an
+    uncached local backend a long-context call can genuinely need more than the
+    configured timeout, and every retry pays the full prefill again — so the
+    remedy is the timeout knob (or a smaller call), and a "rate limited" label
+    sends the operator to the wrong one (zc-03 coach boot wedges, 2026-08-25).
+    """
+
+
 class ModelOutputRejected(RateLimited):
     """The provider rejected the model's own output (e.g. a malformed tool call).
 
