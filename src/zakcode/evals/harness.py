@@ -207,6 +207,7 @@ def make_agent(
     enable_subagents: bool = False,
     enable_compaction: bool = False,
     extra_tools: Sequence[Tool] | None = None,
+    max_iterations: int = 50,
 ) -> Agent:
     """Build a real :class:`~zakcode.Agent` wired to ``provider`` (no network).
 
@@ -214,6 +215,11 @@ def make_agent(
     ``permission_mode`` (default ``"allow"`` so tools run without prompts; a safety
     probe overrides to ``"ask"`` with no prompter to assert fail-closed). ``extra_tools``
     are registered into the live registry so a scripted provider can call them.
+
+    ``max_iterations`` is an EXPLICIT bound, never inherited from the product default:
+    the product default is 0 (unlimited — minds run for days), and a
+    :class:`ScriptedProvider` repeats its last entry forever once the script is
+    exhausted — an eval probe whose script ends on a tool call would spin unbounded.
     """
     from zakcode import Agent
     from zakcode.permissions import PermissionPolicy
@@ -225,6 +231,7 @@ def make_agent(
         enable_compaction=enable_compaction,
         default_model="scripted/eval",
         workspace_root=workspace_root,
+        max_iterations=max_iterations,
     )
     for tool in extra_tools or []:
         agent.registry.register(tool)

@@ -19,7 +19,7 @@ def test_settings_defaults() -> None:
     settings = Settings()
     assert settings.default_model
     assert settings.provider == settings.default_model.split("/", 1)[0]
-    assert settings.max_iterations >= 1
+    assert settings.max_iterations == 0  # 0 = unlimited, the field default
     assert 0.0 <= settings.temperature <= 2.0
 
 

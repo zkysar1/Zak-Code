@@ -146,3 +146,63 @@ async def test_budget_bounds_the_streaming_path_too(tmp_path: Path) -> None:
     assert done.stop_reason == "max_iterations"
     assert done.iterations == 2
     assert budget.remaining == 0
+
+
+async def test_agent_turns_do_not_wedge_after_an_exhausted_turn(tmp_path: Path) -> None:
+    """The 2026-08-25 field wedge: the budget is per-TURN-tree ("a turn and its
+    sub-agents"), but it lived for the Agent's lifetime — one turn that drained the
+    pool made every LATER turn stop instantly with max_iterations at 0 iterations
+    ("(say) continue → stopped early — max iterations · 0 iterations"). The Agent's
+    turn entry points now reset the shared pool per top-level turn."""
+    from zakcode import Agent
+
+    budget = IterationBudget(2)
+    agent = Agent(
+        provider=_AlwaysToolProvider(),
+        tool_registry=_registry(),
+        session=Session(cwd=str(tmp_path), model="fake/test"),
+        default_model="fake/test",
+        workspace_root=str(tmp_path),
+        max_iterations=2,
+        budget=budget,
+    )
+    first = await agent.arun_turn("go")
+    assert first.stop_reason == "max_iterations"
+    assert first.iterations == 2
+
+    second = await agent.arun_turn("continue")
+    assert second.iterations == 2  # a FRESH pool — not the drained one
+    assert second.stop_reason == "max_iterations"
+
+
+async def test_unlimited_default_runs_past_the_old_cap(tmp_path: Path) -> None:
+    """max_iterations now defaults to 0 = unlimited (minds run for days); prove a
+    turn sails past the old 50 ceiling and only stops on the provider's own end."""
+    from zakcode.config import Settings
+
+    assert Settings(workspace_root=tmp_path).max_iterations == 0
+
+    class _NToolsThenDone(_AlwaysToolProvider):
+        async def acomplete(
+            self, messages: list, *, tools: list | None = None, system: str | None = None
+        ) -> LLMResult:
+            self.calls += 1
+            if self.calls <= 60:
+                return LLMResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id=f"c{self.calls}", name="noop", arguments={"n": self.calls})
+                    ],
+                    usage=Usage(total_tokens=1),
+                )
+            return LLMResult(text="done", tool_calls=[], usage=Usage(total_tokens=1))
+
+    loop = AgentLoop(
+        _NToolsThenDone(),
+        _registry(),
+        Session(cwd=str(tmp_path), model="fake/test"),
+        workspace_root=tmp_path,
+    )
+    result = await loop.arun_turn("go")
+    assert result.stop_reason == "completed"
+    assert result.iterations == 61  # 60 tool rounds + the closing text round — past 50

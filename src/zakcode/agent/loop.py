@@ -158,7 +158,7 @@ MainProviderFor = Callable[[str], Provider]
 DifficultyClassifier = Callable[[str, float], Awaitable[Literal["quick_code", "deep_code"]]]
 
 #: Fallback iteration budget when neither an explicit value nor settings provide one.
-DEFAULT_MAX_ITERATIONS = 50
+DEFAULT_MAX_ITERATIONS = 0  # 0 = unlimited (the doom-loop + cost budget are the real guards)
 
 #: How many consecutive iterations may request the *same* tool with *identical*
 #: arguments before the loop gives up with ``stop_reason="doom_loop"``. The model
@@ -597,7 +597,7 @@ class AgentLoop:
         if max_iterations is not None:
             self.max_iterations = max_iterations
         else:
-            self.max_iterations = self.settings.max_iterations or DEFAULT_MAX_ITERATIONS
+            self.max_iterations = self.settings.max_iterations
         # Bounded RateLimited retry budget (audit P0-4); 0 disables retrying.
         self.provider_max_retries = self.settings.provider_max_retries
         # Per-turn decision trace (observability): the loop records how it routed and every
@@ -783,7 +783,7 @@ class AgentLoop:
         Returning ``False`` is the loop's signal to stop with
         ``stop_reason="max_iterations"``.
         """
-        if iterations_done >= self.max_iterations:
+        if self.max_iterations > 0 and iterations_done >= self.max_iterations:
             return False
         if self.budget is not None:
             return self.budget.try_consume(1)

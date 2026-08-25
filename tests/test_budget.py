@@ -86,3 +86,31 @@ def test_negative_consume_rejected() -> None:
     b = IterationBudget(10)
     with pytest.raises(ValueError):
         b.try_consume(-1)
+
+
+def test_zero_total_is_unlimited() -> None:
+    # total=0 = no iteration ceiling (the Settings default since max_iterations went
+    # unlimited): consume never refuses, however much is drawn.
+    b = IterationBudget(0)
+    assert b.unlimited
+    for _ in range(10_000):
+        assert b.try_consume(1)
+    assert b.consumed == 10_000
+
+
+def test_reset_starts_a_fresh_turn_tree() -> None:
+    # The budget is "for a turn and its sub-agents" — reset() is what makes that
+    # true across an Agent's lifetime. Without it, one exhausted turn wedged every
+    # later turn into an instant max_iterations stop at 0 iterations (2026-08-25
+    # field report).
+    b = IterationBudget(2, max_cost_usd=1.0, max_tokens=100)
+    b.try_consume(2)
+    b.add_usage(0.9, 90)
+    b.register_child()
+    assert not b.try_consume(1)  # drained
+    b.reset()
+    assert b.consumed == 0
+    assert b.cost_spent == 0.0
+    assert b.tokens_spent == 0
+    assert b.children_spawned == 0
+    assert b.try_consume(1)  # the next turn gets a full pool

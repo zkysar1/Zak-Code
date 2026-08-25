@@ -91,6 +91,19 @@ def test_cockpit_creates_session_in_inheritance_safe_order(
     assert "attach-session" not in subs
 
 
+def test_cockpit_sets_focus_follows_color_borders(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
+    """The focused pane's border glows orange, unfocused recede to gray — set by the
+    cockpit itself, never left to a host tmux.conf (2026-08-25: zc-03 had a hand
+    conf, serene did not, and the two boxes looked different)."""
+    cockpit.cockpit(session="agentbox", workspace=tmp_path, ledger=None, attach=True)
+    active = next(c for c in fake_tmux.calls if "pane-active-border-style" in c)
+    assert active[-1] == "fg=colour214"
+    inactive = next(
+        c for c in fake_tmux.calls if "pane-border-style" in c and "active" not in " ".join(c)
+    )
+    assert inactive[-1] == "fg=colour240"
+
+
 def test_cockpit_existing_session_attaches_only(
     fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

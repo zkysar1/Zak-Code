@@ -75,3 +75,34 @@ async def test_terminate_tree_reaps_a_running_child() -> None:
     assert proc.returncode is None  # alive
     await terminate_process_tree(proc)
     assert proc.returncode is not None  # killed + reaped, not orphaned
+
+
+async def test_shell_commands_run_under_real_bash(tmp_path) -> None:
+    # The tool is NAMED bash; /bin/sh is dash on Debian/Ubuntu, where bashisms fail
+    # (mind-world playbooks assume bash — 2026-08-25 field report from a live box).
+    # [[ ]] is a bashism dash rejects, so this passes only under real bash.
+    out, code = await run_capturing(
+        shell_command='[[ -n "x" ]] && echo real-bash', cwd=str(tmp_path), timeout=10.0
+    )
+    assert code == 0
+    assert "real-bash" in out
+
+
+async def test_workspace_env_hook_extends_path(tmp_path) -> None:
+    # <workspace>/.zakcode/env is sourced (via BASH_ENV) by every shell command, so a
+    # workspace can put its own script dirs on PATH — a mind world's bare script
+    # names then resolve without the model re-deriving the bash-prefix form.
+    bin_dir = tmp_path / "myscripts"
+    bin_dir.mkdir()
+    script = bin_dir / "hello-from-workspace.sh"
+    script.write_text("#!/usr/bin/env bash\necho workspace-script-ran\n", encoding="utf-8")
+    script.chmod(0o755)
+    hook_dir = tmp_path / ".zakcode"
+    hook_dir.mkdir()
+    (hook_dir / "env").write_text('PATH="$PWD/myscripts:$PATH"\n', encoding="utf-8")
+
+    out, code = await run_capturing(
+        shell_command="hello-from-workspace.sh", cwd=str(tmp_path), timeout=10.0
+    )
+    assert code == 0
+    assert "workspace-script-ran" in out

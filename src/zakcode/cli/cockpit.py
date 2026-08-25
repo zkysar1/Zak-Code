@@ -273,6 +273,13 @@ def launch_cockpit(
         _tmux("set-option", "-t", session, "mouse", "on")
         _tmux("set-option", "-w", "-t", f"{session}:0", "pane-border-status", "top")
         _tmux("set-option", "-w", "-t", f"{session}:0", "pane-border-format", " #{pane_title} ")
+        # Focus-follows-color: the focused pane's border + title glow orange, the
+        # rest recede to gray — so "where will my keys land" is answerable at a
+        # glance. Set per-window (not left to host tmux.conf) so every box looks
+        # the same (2026-08-25 operator report: zc-03 had it via a hand conf,
+        # serene did not).
+        _tmux("set-option", "-w", "-t", f"{session}:0", "pane-border-style", "fg=colour240")
+        _tmux("set-option", "-w", "-t", f"{session}:0", "pane-active-border-style", "fg=colour214")
         _tmux("split-window", "-b", "-v", "-t", f"{session}:0.0", "-c", str(workspace), main_cmd)
         _tmux("resize-pane", "-t", f"{session}:0.1", "-y", str(_SAY_BOX_HEIGHT))
         screen_title = (

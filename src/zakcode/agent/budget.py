@@ -83,8 +83,14 @@ class IterationBudget:
 
     @property
     def total(self) -> int:
-        """The size of the shared pool (constant for the budget's lifetime)."""
+        """The size of the shared pool (constant for the budget's lifetime). 0 = unlimited."""
         return self._total
+
+    @property
+    def unlimited(self) -> bool:
+        """True when the pool has no iteration ceiling (``total == 0``) — the cost/token
+        ceilings and the doom-loop detector are then the only bounds."""
+        return self._total == 0
 
     @property
     def consumed(self) -> int:
@@ -152,7 +158,7 @@ class IterationBudget:
         """
         if n < 0:
             raise ValueError("cannot consume a negative amount")
-        if n > self.remaining:
+        if not self.unlimited and n > self.remaining:
             return False
         self._consumed += n
         return True
@@ -181,6 +187,23 @@ class IterationBudget:
         refunded = min(n, self._consumed)
         self._consumed -= refunded
         return refunded
+
+    def reset(self) -> None:
+        """Start a new top-level turn-tree: zero the consumed iterations, the cumulative
+        spend, and the children count.
+
+        The module docstring has always said this budget is "for a turn and its
+        sub-agents", but nothing ever reset it — the pool was drained across an
+        Agent's LIFETIME, so one long turn that hit ``max_iterations`` wedged every
+        later turn into an instant ``max_iterations`` stop at 0 iterations (field
+        report 2026-08-25: "(say) continue → stopped early — max iterations · 0
+        iterations"). Called by the Agent's turn entry points only — sub-agent loops
+        share the object mid-tree and must never reset it.
+        """
+        self._consumed = 0
+        self._cost_spent = 0.0
+        self._tokens_spent = 0
+        self._children_spawned = 0
 
     # ── child accounting ─────────────────────────────────────────────────────
 
