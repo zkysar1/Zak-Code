@@ -71,6 +71,24 @@ setattr(litellm, "suppress_debug_info", True)  # noqa: B010
 logger = logging.getLogger("zakcode.providers")
 
 
+class _DropLoggingWorkerCancellation(logging.Filter):
+    """Silence litellm's background LoggingWorker cancellation tracebacks.
+
+    When a turn is interrupted (Esc / Ctrl-C / the .interrupt file) or the process
+    exits, litellm's async logging worker gets cancelled mid-flush and logs a
+    full TimeoutError/CancelledError traceback at ERROR level into the operator's
+    transcript. That is shutdown noise, not a provider failure — real errors reach
+    the operator through the ProviderError taxonomy. Only records emitted from the
+    worker module are dropped; every other litellm error still prints.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "logging_worker" not in (record.pathname or "")
+
+
+logging.getLogger("LiteLLM").addFilter(_DropLoggingWorkerCancellation())
+
+
 def _expand_headers(headers: dict[str, str] | None) -> dict[str, str]:
     """Expand ``{hostname}`` / ``{pid}`` in header VALUES.
 
