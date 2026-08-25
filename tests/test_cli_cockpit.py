@@ -566,3 +566,44 @@ def test_chat_delivers_boot_time_say(monkeypatch, tmp_path: Path) -> None:
     assert "discarded" not in result.output
     assert _RecordingAgent.turns == ["typed while the agent was booting"]
     assert "(say) typed while the agent was booting" in result.output
+
+
+# ── one door: inside a cockpit pane the pane keyboard is not read at all ──────────
+# Operator ruling (2026-08-25): the say-inbox FILE is the input contract — it is
+# what lets outside programs inject into a session — and it must never coexist
+# with a parallel keystroke door inside the cockpit.
+
+
+def test_mux_without_keyboard_never_touches_stdin(monkeypatch, tmp_path: Path) -> None:
+    import zakcode.cli as cli_mod
+    from zakcode.cli import _InputMux
+    from zakcode.session.say_inbox import interrupt_path, say_path, write_say
+
+    touched: list[bool] = []
+    monkeypatch.setattr(cli_mod, "_read_stdin_line", lambda: touched.append(True) or "")
+    mux = _InputMux(say_path(tmp_path), interrupt_path(tmp_path), keyboard=False)
+    assert write_say(say_path(tmp_path), "via the contract")
+    assert mux.next_input(idle=True) == ("say", "via the contract")
+    assert not touched
+
+
+def test_chat_in_cockpit_pane_ignores_pane_keyboard(monkeypatch, tmp_path: Path) -> None:
+    """With the pane marker set, chat consumes ONLY the say inbox: stdin is never
+    read, and the session is driven (and ended) entirely through the contract."""
+    from typer.testing import CliRunner
+
+    import zakcode
+    import zakcode.cli as cli_mod
+    from zakcode.cli import app
+    from zakcode.session.say_inbox import say_path, write_say
+
+    touched: list[bool] = []
+    monkeypatch.setattr(cli_mod, "_read_stdin_line", lambda: touched.append(True) or "")
+    monkeypatch.setattr(zakcode, "Agent", _NoTurnAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("ZAKCODE_COCKPIT_PANE", "1")
+    assert write_say(say_path(tmp_path), "/exit")
+    result = CliRunner().invoke(app, ["chat"], input="this text must never reach anything\n")
+    assert result.exit_code == 0
+    assert "goodbye" in result.output
+    assert not touched
