@@ -548,6 +548,59 @@ def _dim(console: Console, msg: str) -> None:
 _CTRL_C_EXIT_WINDOW_S = 2.0
 
 
+def _drop_stale_size_env() -> None:
+    """Ignore COLUMNS/LINES env vars that contradict the real terminal size.
+
+    Terminal width detection prefers the ``COLUMNS``/``LINES`` env vars over the
+    tty ioctl (``shutil.get_terminal_size`` contract). Bash keeps these as UNexported
+    shell vars, so when they appear in the environment it is almost always a stale
+    export from a sourced env script or a parent launched at a different size — and
+    every wrapped line then renders in a narrow column with dead whitespace to the
+    right (2026-08-25 operator report, wide terminal rendering at ~80 cols). Dropped
+    only when a real tty disagrees with them, so a deliberate ``COLUMNS=80 zakcode
+    chat`` that matches nothing is a case that cannot occur, and a matching value —
+    or a non-tty stdout, where the vars are the only signal — is left alone.
+    """
+    stdout = sys.__stdout__
+    if stdout is None:
+        return
+    try:
+        real = os.get_terminal_size(stdout.fileno())
+    except (OSError, ValueError):
+        return  # no tty behind stdout — the env vars are the only width signal; keep them
+    for var, true_value in (("COLUMNS", real.columns), ("LINES", real.lines)):
+        raw = os.environ.get(var, "").strip()
+        if raw and raw != str(true_value):
+            del os.environ[var]
+
+
+def _enable_multiline_paste() -> None:
+    """Make a multi-line paste land in the input line instead of auto-sending.
+
+    Without readline, ``input()`` returns at the FIRST pasted newline — the first
+    line fires as a message immediately and the remaining lines fire one-by-one as
+    subsequent messages (2026-08-25 operator report). Loading readline and turning
+    on bracketed paste makes the terminal deliver the whole paste as one editable
+    block: nothing is sent until the operator presses Enter, and the returned string
+    carries the embedded newlines. POSIX-only nicety — a platform without readline
+    (or a libedit that rejects the binding) just keeps today's behavior.
+    """
+    if not sys.stdin.isatty():
+        return
+    try:
+        import readline
+
+        readline.parse_and_bind("set enable-bracketed-paste on")
+    except Exception:  # noqa: BLE001 - strictly a best-effort enhancement
+        return
+
+
+def _prepare_interactive_terminal() -> None:
+    """One-time terminal hygiene for an interactive command: width truth + paste safety."""
+    _drop_stale_size_env()
+    _enable_multiline_paste()
+
+
 def _age_str(seconds: float) -> str:
     """Compact human age for the ``/resume`` picker: ``12s`` / ``3m`` / ``5h`` / ``2d`` ago."""
     seconds = max(0.0, seconds)
@@ -1639,6 +1692,7 @@ def chat(
     without an interactive permission prompter, so ``ask`` mode fails closed there;
     use the WebSocket channel for interactive approval.)
     """
+    _prepare_interactive_terminal()
     if server:
         ignored = [
             flag

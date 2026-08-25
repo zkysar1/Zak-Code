@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -1104,3 +1105,40 @@ def test_update_local_checkout_without_uv_receipt_uses_pip(tmp_path, monkeypatch
     assert result.exit_code == 0
     assert "--force-reinstall" in calls[0] and "--no-deps" in calls[0]
     assert any(str(part).startswith("zakcode @ file://") for part in calls[0])
+
+
+# ── terminal hygiene: stale COLUMNS/LINES + bracketed paste (2026-08-25 reports) ──
+
+
+def test_drop_stale_size_env_removes_mismatched_vars(monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.os, "get_terminal_size", lambda fd: os.terminal_size((240, 60)))
+    monkeypatch.setenv("COLUMNS", "80")  # stale narrow export — the bug
+    monkeypatch.setenv("LINES", "60")  # happens to match — deliberate/harmless
+    cli_mod._drop_stale_size_env()
+    assert "COLUMNS" not in os.environ
+    assert os.environ["LINES"] == "60"
+
+
+def test_drop_stale_size_env_keeps_vars_without_a_tty(monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    def boom(fd):
+        raise OSError("not a tty")
+
+    monkeypatch.setattr(cli_mod.os, "get_terminal_size", boom)
+    monkeypatch.setenv("COLUMNS", "80")
+    cli_mod._drop_stale_size_env()
+    assert os.environ["COLUMNS"] == "80"  # only width signal there is — untouched
+
+
+def test_enable_multiline_paste_is_safe_everywhere(monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    # Non-tty: early return, no readline import required.
+    monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: False)
+    cli_mod._enable_multiline_paste()
+    # Tty: must not raise whether or not this platform has readline/libedit.
+    monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True)
+    cli_mod._enable_multiline_paste()
