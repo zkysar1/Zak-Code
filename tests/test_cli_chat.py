@@ -1148,8 +1148,8 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
     """The converged input path: a message written to <workspace>/.say (the same
     single-slot file POST /say writes) is consumed exactly like a typed line —
     it runs a turn, is echoed with provenance, and /exit via the inbox ends the
-    session. Stdin is blocked the whole time, so delivery is proven to be the
-    inbox, not the keyboard."""
+    session. Always on — no flag, no env var. Stdin is blocked the whole time,
+    so delivery is proven to be the inbox, not the keyboard."""
     import threading
     import time as _time
 
@@ -1179,9 +1179,25 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
 
     writer = threading.Thread(target=_writer, daemon=True)
     writer.start()
-    result = runner.invoke(app, ["chat", "--say-inbox"], input="")
+    result = runner.invoke(app, ["chat"], input="")
     block.set()
     assert result.exit_code == 0
     assert "(say) hello from the inbox" in result.output
     assert CANNED_TEXT in result.output
     assert "goodbye" in result.output
+
+
+def test_chat_discards_pre_session_say_instead_of_executing(monkeypatch, tmp_path) -> None:
+    """Chat only OBEYS messages sent while it is listening: a .say that predates the
+    session (stale file from a dead session, or one shipped inside a cloned repo)
+    is discarded with a visible notice — never run as input."""
+    from zakcode.session import say_inbox as si
+
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    assert si.write_say(si.say_path(tmp_path), "malicious or stale line")
+    result = runner.invoke(app, ["chat"], input="/exit\n")
+    assert result.exit_code == 0
+    assert "discarded a message queued before this session started" in result.output
+    assert "(say) malicious" not in result.output
+    assert not si.say_pending(si.say_path(tmp_path))
