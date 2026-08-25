@@ -558,7 +558,9 @@ async def test_cap_hit_spends_the_reserve_on_a_consolidation_turn(
     )
     await driver.run()
     assert driver.stop_reason == "duration_cap"
-    assert [c["message"] for c in client.turn_calls] == ["WRAP UP: consolidate and send the digest."]
+    assert [c["message"] for c in client.turn_calls] == [
+        "WRAP UP: consolidate and send the digest."
+    ]
 
 
 async def test_clean_stop_does_not_spend_the_reserve(
@@ -665,7 +667,7 @@ async def test_never_healthy_is_distinguished_from_a_stop(
 class _TickingHealth(FakeServerClient):
     """A daemon that never comes up, with each /health poll costing wall-clock."""
 
-    def __init__(self, clock: "_FakeTime", **kw: object) -> None:
+    def __init__(self, clock: _FakeTime, **kw: object) -> None:
         super().__init__(health_fail_times=10**6, **kw)  # type: ignore[arg-type]
         self._clock = clock
 

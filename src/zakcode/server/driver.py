@@ -398,7 +398,7 @@ class ServeDriver:
             await asyncio.wait_for(
                 self._run_one_turn(sid, self.consolidation_message), timeout=remaining
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "consolidation turn exceeded its %.0fs reserve; cut at the hard deadline",
                 self.consolidation_reserve,
