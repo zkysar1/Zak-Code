@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 
 from zakcode._subprocess import find_bash
 from zakcode.config import PermissionTier
@@ -47,6 +49,74 @@ def _windows_shell_fix(command: str, output: str) -> str | None:
             "cmd.exe did not find that command (the bash tool runs under cmd.exe on Windows). "
             "Check the name, or use the powershell tool."
         )
+    return None
+
+
+#: ``bash: line 1: name: command not found`` / dash ``sh: 1: name: not found``.
+_NOT_FOUND_RE = re.compile(r"(?:line )?\d*:?\s*([^\s:]+): (?:command )?not found")
+#: ``bash: line 1: ./x.sh: Permission denied``.
+_PERM_DENIED_RE = re.compile(r"(?:line )?\d*:?\s*([^\s:]+): Permission denied")
+#: Directories never worth descending into when locating a script by basename.
+_SKIP_DIRS = frozenset({"node_modules", "__pycache__", ".venv", "venv", ".tox", ".mypy_cache"})
+#: Bounded search: depth below the workspace root, and total directories visited.
+_FIND_MAX_DEPTH = 4
+_FIND_MAX_DIRS = 800
+
+
+def _locate_basename(root: Path, name: str) -> str | None:
+    """Workspace-relative path of the first file named ``name``, else None (bounded walk).
+
+    Hidden dirs and dependency trees are pruned, depth and visited-dir count are capped,
+    so the search stays cheap even in a large repo — this only runs on a failed command.
+    """
+    if not name or "/" in name or "\\" in name:
+        return None
+    visited = 0
+    root = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(root):
+        visited += 1
+        rel_depth = len(Path(dirpath).relative_to(root).parts)
+        if visited > _FIND_MAX_DIRS or rel_depth >= _FIND_MAX_DEPTH:
+            dirnames[:] = []
+        else:
+            dirnames[:] = sorted(
+                d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+            )
+        if name in filenames:
+            return (Path(dirpath) / name).relative_to(root).as_posix()
+    return None
+
+
+def _posix_exit_fix(command: str, output: str, exit_code: int, root: Path) -> str | None:
+    """A remedy hint for the two classic script-invocation failures, else None.
+
+    * exit 127 — a bare script name not on PATH: locate the basename in the workspace and
+      name the working invocation (measured 2026-08-25: a mind agent burned an error +
+      find + retry ritual per script, dozens of times, because ``x.sh`` lived at
+      ``core/scripts/x.sh``).
+    * exit 126 — the file exists but is not executable: name the chmod (or ``bash path``)
+      escape, once, instead of letting the model rediscover it per file.
+    """
+    if exit_code == 127:
+        m = _NOT_FOUND_RE.search(output)
+        if m:
+            found = _locate_basename(root, m.group(1))
+            if found:
+                return (
+                    f"'{m.group(1)}' is not on PATH but exists in the workspace at {found} — "
+                    f"run it as `bash {found}` (or add its directory to PATH for every future "
+                    "command via a <workspace>/.zakcode/env line like "
+                    f'`PATH="$PWD/{Path(found).parent.as_posix()}:$PATH"`).'
+                )
+        return None
+    if exit_code == 126:
+        m = _PERM_DENIED_RE.search(output)
+        if m:
+            return (
+                f"{m.group(1)} exists but is not executable — run it as `bash {m.group(1)}`, "
+                f"or fix the whole class once with `chmod +x` on the scripts directory "
+                "instead of one file at a time."
+            )
     return None
 
 
@@ -131,5 +201,8 @@ class BashTool(Tool):
             "truncated": truncated,
         }
         if exit_code != 0:
-            return ToolResult.error(combined, data=data, fix=_windows_shell_fix(command, output))
+            fix = _posix_exit_fix(
+                command, output, exit_code, Path(str(ctx.workspace_root))
+            ) or _windows_shell_fix(command, output)
+            return ToolResult.error(combined, data=data, fix=fix)
         return ToolResult.ok(combined, data=data)
