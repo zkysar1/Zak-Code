@@ -239,8 +239,9 @@ async def _probe_stuck_recovery(workspace: str) -> str:
     """A model stuck on VARYING-arg failures is recovered, then halted as ``stuck``.
 
     Distinct args each iteration mean the exact-repeat doom guard never fires — only the
-    multi-signal stuck ladder (nudge → narrow-to-read-only → stop) can end the turn. Proves
-    the loop never flails forever on the many stall shapes the doom guard misses.
+    multi-signal stuck ladder (nudge → narrow-to-read-only → step-back → stop) can end the
+    turn. Proves the loop never flails forever on the many stall shapes the doom guard
+    misses.
     """
     failing = AlwaysFailTool()
 
@@ -253,8 +254,9 @@ async def _probe_stuck_recovery(workspace: str) -> str:
     result = await agent.arun_turn("keep trying the broken tool")
     assert result.stop_reason == "stuck", result.stop_reason
     assert result.degraded is True, result.degraded
-    # Halted by the recovery ladder (nudge→narrow→stop), far below the iteration cap.
-    assert result.iterations <= 6, result.iterations
+    # Halted by the recovery ladder (nudge→narrow→step-back, which resets the streak for
+    # one re-climb→stop): a model ignoring every rung ends at 10, below the iteration cap.
+    assert result.iterations <= 10, result.iterations
     return (
         f"varying-arg failure loop recovered then halted as 'stuck' after {result.iterations} iters"
     )

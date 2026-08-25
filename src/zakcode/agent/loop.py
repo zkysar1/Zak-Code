@@ -38,7 +38,8 @@ Stop conditions
   (:class:`~zakcode.agent.stuck.StuckTracker`): when several stuck signals (an
   all-failing batch, a repeatedly-failing call, near-repeats with no progress)
   persist for a streak of iterations, the loop first tries to *recover* (inject a
-  nudge, then narrow the next iteration to read-only tools) and only ends as
+  nudge, then narrow the next iteration to read-only tools, then one final
+  step-back reassessment that resets the streak) and only ends as
   ``"stuck"`` if recovery fails. Catches the many stall shapes the exact-repeat
   doom guard misses; capable models and transient single errors never trigger it.
 * ``"gave_up"`` — the model went silent: an empty completion (no text, no tool calls)
@@ -493,8 +494,9 @@ class TurnResult(BaseModel):
     #: secret-redacted by the provider's error mapping); empty on every other stop.
     error: str = ""
     #: True when the turn engaged failure-recovery machinery or ended in a non-clean
-    #: terminal (stuck / doom_loop / recipe_stalled, or any stuck-ladder nudge/narrow
-    #: fired). A thin "this turn struggled" roll-up; clean turns leave it False.
+    #: terminal (stuck / doom_loop / recipe_stalled, or any stuck-ladder
+    #: nudge/narrow/step-back fired). A thin "this turn struggled" roll-up; clean turns
+    #: leave it False.
     degraded: bool = False
     #: Under zakpick, the task category the MAIN turn ended on (``"quick_code"`` /
     #: ``"deep_code"``); ``None`` when zakpick is off. With ``routed_escalated`` it lets a client
@@ -2355,10 +2357,11 @@ class AgentLoop:
             cursor.observe(result.tool_calls, result_blocks)
             verify.observe(result.tool_calls, result_blocks)
 
-            # Stuck detection + recovery ladder: nudge -> narrow-to-read-only -> stop.
-            # Generalizes the (exact-repeat) doom guard above to the many ways a weak model
-            # stalls; fires only on a sustained multi-signal streak, so capable models and
-            # transient single errors are unaffected.
+            # Stuck detection + recovery ladder: nudge -> narrow-to-read-only -> step-back
+            # (one-shot reassessment; resets the streak) -> stop. Generalizes the
+            # (exact-repeat) doom guard above to the many ways a weak model stalls; fires
+            # only on a sustained multi-signal streak, so capable models and transient
+            # single errors are unaffected.
             stuck.observe(result.tool_calls, result_blocks, assistant_text=assistant_msg.text)
             action = stuck.next_action()
             if action is StuckAction.STOP:
@@ -2390,6 +2393,17 @@ class AgentLoop:
                 self._note("intervention", "limiting to read-only tools", kind="stuck")
                 self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                 restrict_readonly_next = True
+                self._persist()
+            elif action is StuckAction.STEP_BACK:
+                # Last rung before stop: the field-proven "take a step back" reassessment
+                # (attack the shared premise, verify it with probes). The tracker already
+                # reset the streak, so a failing first discovery probe cannot trip the stop.
+                self._note(
+                    "intervention",
+                    "still stuck — stepping back to re-check assumptions",
+                    kind="stuck",
+                )
+                self.session.add_message(Message.user(_control_rail(stuck.step_back_message())))
                 self._persist()
 
         logger.info(
@@ -3320,6 +3334,17 @@ class AgentLoop:
                     yield AgentStatus(
                         message="recovering: limiting to read-only tools to break the loop"
                     )
+                elif action is StuckAction.STEP_BACK:
+                    # Last rung before stop (see _run_turn): field-proven reassessment
+                    # prompt; the tracker reset the streak so discovery probes get runway.
+                    self._note(
+                        "intervention",
+                        "still stuck — stepping back to re-check assumptions",
+                        kind="stuck",
+                    )
+                    self.session.add_message(Message.user(_control_rail(stuck.step_back_message())))
+                    self._persist()
+                    yield AgentStatus(message="recovering: stepping back to re-check assumptions")
         except asyncio.CancelledError:
             # Cancellation is a control signal, not a stop reason. State has only
             # been mutated + persisted at message boundaries, so it is consistent.
