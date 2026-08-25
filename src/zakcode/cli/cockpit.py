@@ -4,12 +4,14 @@ Top pane: a session header (generic lines from zakcode, deployment lines from an
 optional ``.zakcode/banner`` hook in the workspace), then ``zakcode chat``, then an
 Enter-to-relaunch loop so a finished or crashed chat never leaves a dead pane.
 
-Bottom pane: the *say box* — a persistent one-line input that appends every line to a
-JSONL ledger (operator provenance) and types it into the chat pane via tmux
-``send-keys``. It works mid-turn: the CLI queues typed input, and the box reports
-"queued" instead of "sent" when the agent is busy. With the say box as the single
-input, the chat pane runs with ``ZAKCODE_INPUT_FRAME=off`` so there is exactly one
-place to type.
+Bottom pane: the *say box* — a persistent input that appends every message to a
+JSONL ledger (operator provenance) and delivers it through the workspace **say
+inbox** (``<workspace>/.say`` — ``zakcode.session.say_inbox``): the SAME single-slot
+contract the server's ``POST /say`` writes and the serve driver consumes. The chat
+pane runs with ``ZAKCODE_SAY_INBOX=1`` so it consumes inbox messages exactly like
+typed lines (slash commands included), and ``ZAKCODE_INPUT_FRAME=off`` so there is
+exactly one place to type. tmux is only the window manager here — it is never the
+message transport.
 
 Everything here is session-scoped tmux configuration — the operator's global
 ``.tmux.conf`` is never touched.
@@ -38,6 +40,7 @@ from zakcode import __version__
 from zakcode.build_info import version_line
 from zakcode.cli._layout import kv_table, notice_error, notice_info, panel
 from zakcode.cli._theme import ZAK_THEME
+from zakcode.session.say_inbox import say_path, write_say
 
 console = Console(theme=ZAK_THEME, highlight=False)
 
@@ -47,8 +50,6 @@ _SAY_BOX_HEIGHT = 5
 _HISTORY_LIMIT = 50000
 #: Detached-create size; tmux resizes to the client on attach.
 _CREATE_SIZE = ("220", "50")
-#: Status line the chat pane shows while a turn is running (mid-turn detection).
-_MID_TURN_MARK = "ctrl-c to interrupt"
 #: Module-level singleton so a call never appears in an argument default (B008).
 _DOT = Path(".")
 
@@ -100,57 +101,6 @@ def _append_ledger(ledger: Path, text: str, *, via: str, operator: str | None) -
     }
     with ledger.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row) + "\n")
-
-
-def _send_to_pane(session: str, text: str) -> None:
-    """Deliver ``text`` to the chat pane (pane 0.0) as ONE message and press Enter.
-
-    Single line: ``send-keys -l`` types it literally so tmux never interprets it as
-    key names. Multi-line: keystroke delivery would submit at every newline — N
-    separate prompts confusing the agent — so the text goes through a tmux paste
-    buffer instead, and ``paste-buffer -p`` wraps it in bracketed-paste markers,
-    which the chat's readline (see ``_enable_multiline_paste``) accepts as one
-    block. The separate Enter keypress is what actually submits it.
-    """
-    target = f"{session}:0.0"
-    if "\n" in text:
-        subprocess.run(
-            [_tmux_bin(), "load-buffer", "-b", "zakcode-say", "-"],
-            input=text.encode(),
-            check=True,
-        )
-        _tmux("paste-buffer", "-d", "-p", "-b", "zakcode-say", "-t", target)
-    else:
-        _tmux("send-keys", "-t", target, "-l", "--", text)
-    _tmux("send-keys", "-t", target, "Enter")
-
-
-def _chat_pane_ok(session: str) -> bool:
-    """True when the chat pane exists and is not the CALLING pane itself.
-
-    If the chat pane dies, tmux renumbers the say box to index 0 and every send
-    becomes a self-echo loop. Refusing to send is the honest failure.
-    """
-    out = subprocess.run(
-        [_tmux_bin(), "display-message", "-p", "-t", f"{session}:0.0", "#{pane_id}"],
-        capture_output=True,
-        check=False,
-    )
-    if out.returncode != 0:
-        return False
-    target = out.stdout.decode().strip()
-    own = os.environ.get("TMUX_PANE")
-    return not own or target != own
-
-
-def _chat_pane_mid_turn(session: str) -> bool:
-    """True when the chat pane's visible text shows a turn in flight."""
-    out = subprocess.run(
-        [_tmux_bin(), "capture-pane", "-p", "-t", f"{session}:0.0"],
-        capture_output=True,
-        check=False,
-    )
-    return _MID_TURN_MARK.encode() in out.stdout
 
 
 def _restore_sigint() -> None:
@@ -214,8 +164,8 @@ def cockpit(
             [
                 *zakcode,
                 "cockpit-say-box",
-                "--session",
-                session,
+                "--workspace",
+                str(workspace),
                 "--ledger",
                 str(ledger_path),
             ]
@@ -267,8 +217,10 @@ def cockpit_main(
 ) -> None:
     """(internal) Top-pane loop: banner, chat, Enter-to-relaunch."""
     workspace = workspace.resolve()
-    # The say box below is the single input; hide chat's own input frame.
-    env = {**os.environ, "ZAKCODE_INPUT_FRAME": "off"}
+    # The say box below is the single input: hide chat's own input frame, and have
+    # chat consume the workspace say inbox — the shared POST /say contract — so the
+    # box's messages arrive as real input, not injected keystrokes.
+    env = {**os.environ, "ZAKCODE_INPUT_FRAME": "off", "ZAKCODE_SAY_INBOX": "1"}
     while True:
         console.clear()
         _print_cockpit_banner(workspace)
@@ -302,21 +254,26 @@ def cockpit_main(
 
 
 def cockpit_say_box(
-    session: Annotated[str, typer.Option("--session", help="Cockpit session to feed.")] = "zakcode",
+    workspace: Annotated[
+        Path, typer.Option("--workspace", help="Workspace whose say inbox to feed.")
+    ] = _DOT,
     ledger: Annotated[Path | None, typer.Option("--ledger", help="Ledger JSONL path.")] = None,
     operator: Annotated[
         str | None, typer.Option("--operator", help="Provenance label (default user@host).")
     ] = None,
 ) -> None:
-    """(internal) Bottom-pane loop: read a message, ledger it, deliver it as one prompt.
+    """(internal) Bottom-pane loop: read a message, ledger it, drop it in the say inbox.
 
     Bracketed paste is enabled on the box's own readline, so a multi-line paste
-    arrives as ONE editable block returned by a single ``input()`` — never as a
-    stream of auto-submitting lines each fired at the agent separately.
+    arrives as ONE editable block returned by a single ``input()`` — and the inbox
+    delivers it as ONE message. Single-slot semantics: while the agent is mid-turn
+    with a message already waiting, a new one is refused with a clear notice
+    (identical to POST /say's 429) instead of silently stacking.
     """
     from zakcode.cli import _prepare_interactive_terminal
 
     _prepare_interactive_terminal()
+    inbox = say_path(workspace.resolve())
     ledger_path = ledger if ledger is not None else _default_ledger()
     last = ""
     while True:
@@ -332,51 +289,69 @@ def cockpit_say_box(
             raise typer.Exit(code=0) from None
         if not line.strip():
             continue
-        if not _chat_pane_ok(session):
-            last = "⚠ chat pane is gone — recreate with: zakcode cockpit (message NOT sent)"
+        stamp = time.strftime("%H:%M")
+        if not write_say(inbox, line):
+            last = f"⏳ agent is busy — previous message still pending; try again shortly {stamp}"
             continue
         _append_ledger(ledger_path, line, via="cockpit-say-box", operator=operator)
-        _send_to_pane(session, line)
-        stamp = time.strftime("%H:%M")
         lines = line.count("\n") + 1
-        sent = f"✓ sent ({lines} lines) {stamp}" if lines > 1 else f"✓ sent {stamp}"
-        mid_turn = _chat_pane_mid_turn(session)
-        last = f"✓ queued (agent is mid-turn) {stamp}" if mid_turn else sent
+        last = f"✓ sent ({lines} lines) {stamp}" if lines > 1 else f"✓ sent {stamp}"
 
 
 def say(
-    text: Annotated[str, typer.Argument(help="The line to type into the cockpit's chat pane.")],
-    session: Annotated[
-        str, typer.Option("--session", "-s", help="Cockpit session to feed.")
-    ] = "zakcode",
+    text: Annotated[str, typer.Argument(help="The message to deliver to the agent.")],
+    workspace: Annotated[
+        Path, typer.Option("--workspace", "-w", help="Workspace whose say inbox to write.")
+    ] = _DOT,
+    url: Annotated[
+        str | None,
+        typer.Option(
+            "--url", help="POST to a zakcode serve daemon's /say instead of the local inbox."
+        ),
+    ] = None,
     ledger: Annotated[Path | None, typer.Option("--ledger", help="Ledger JSONL path.")] = None,
     operator: Annotated[
         str | None, typer.Option("--operator", help="Provenance label (default user@host).")
     ] = None,
 ) -> None:
-    """Inject one ledgered line into a running cockpit from outside it."""
-    _tmux_bin()
-    if not _has_session(session):
-        notice_error(
-            console,
-            "no cockpit session",
-            f"'{session}' is not running — start one with: zakcode cockpit -s {session}",
-        )
-        raise typer.Exit(code=1)
-    if not _chat_pane_ok(session):
-        notice_error(
-            console,
-            "chat pane is gone",
-            f"recreate the cockpit first: zakcode cockpit -s {session}",
-        )
-        raise typer.Exit(code=1)
+    """Send one ledgered message to a running agent through the say inbox.
+
+    ONE contract everywhere: locally this writes ``<workspace>/.say``; with ``--url``
+    it POSTs the daemon's ``/say`` (bearer token from ``ZAKCODE_AUTH_TOKEN`` if set),
+    which writes the same file on the daemon's side. Whatever consumes the inbox —
+    an interactive chat in say-inbox mode (the cockpit's pane), or the serve
+    driver — receives it as its next message. Single slot: a message already
+    pending refuses this one; send again when the agent has picked it up.
+    """
+    if url:
+        import httpx
+
+        token = os.environ.get("ZAKCODE_AUTH_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        try:
+            resp = httpx.post(
+                f"{url.rstrip('/')}/say", json={"text": text}, headers=headers, timeout=10.0
+            )
+        except httpx.HTTPError as exc:
+            notice_error(console, "daemon unreachable", str(exc))
+            raise typer.Exit(code=1) from None
+        if resp.status_code == 429:
+            notice_error(
+                console, "a message is already pending", "wait for the agent to pick it up"
+            )
+            raise typer.Exit(code=1)
+        if resp.status_code != 200:
+            notice_error(console, f"daemon refused ({resp.status_code})", resp.text[:200])
+            raise typer.Exit(code=1)
+    else:
+        if not write_say(say_path(workspace.resolve()), text):
+            notice_error(
+                console, "a message is already pending", "wait for the agent to pick it up"
+            )
+            raise typer.Exit(code=1)
     ledger_path = ledger if ledger is not None else _default_ledger()
     _append_ledger(ledger_path, text, via="zakcode-say", operator=operator)
-    _send_to_pane(session, text)
-    if _chat_pane_mid_turn(session):
-        notice_info(console, "queued — the agent is mid-turn; your line is in its input buffer")
-    else:
-        notice_info(console, "sent")
+    notice_info(console, "sent")
 
 
 def register_cockpit_commands(app: typer.Typer) -> None:

@@ -1142,3 +1142,46 @@ def test_enable_multiline_paste_is_safe_everywhere(monkeypatch) -> None:
     # Tty: must not raise whether or not this platform has readline/libedit.
     monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True)
     cli_mod._enable_multiline_paste()
+
+
+def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> None:
+    """The converged input path: a message written to <workspace>/.say (the same
+    single-slot file POST /say writes) is consumed exactly like a typed line —
+    it runs a turn, is echoed with provenance, and /exit via the inbox ends the
+    session. Stdin is blocked the whole time, so delivery is proven to be the
+    inbox, not the keyboard."""
+    import threading
+    import time as _time
+
+    from zakcode.session import say_inbox as si
+
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+
+    block = threading.Event()
+
+    def _blocked_prompt(console):  # noqa: ANN001, ANN202
+        # The stdin pump parks here; the 30s ceiling bounds the test if the inbox
+        # path is broken (EOF then ends the REPL instead of hanging CI).
+        block.wait(timeout=30)
+        raise EOFError
+
+    monkeypatch.setattr("zakcode.cli.read_prompt", _blocked_prompt)
+    inbox = si.say_path(tmp_path)
+
+    def _writer() -> None:
+        assert si.write_say(inbox, "hello from the inbox")
+        for _ in range(200):  # wait for exactly-once consumption before the next say
+            if not si.say_pending(inbox):
+                break
+            _time.sleep(0.05)
+        si.write_say(inbox, "/exit")
+
+    writer = threading.Thread(target=_writer, daemon=True)
+    writer.start()
+    result = runner.invoke(app, ["chat", "--say-inbox"], input="")
+    block.set()
+    assert result.exit_code == 0
+    assert "(say) hello from the inbox" in result.output
+    assert CANNED_TEXT in result.output
+    assert "goodbye" in result.output

@@ -42,6 +42,7 @@ import httpx
 
 from zakcode.events import AgentDone, AgentEvent
 from zakcode.server.client import ServerClient
+from zakcode.session.say_inbox import read_say, requeue_say
 
 logger = logging.getLogger(__name__)
 
@@ -340,29 +341,19 @@ class ServeDriver:
     # ── user says (the watch/talk unification message seam) ────────────────────
 
     def _read_say(self) -> str | None:
-        """Consume a pending user say, if any. Reads then DELETES the say file so the
-        message is delivered exactly once (the failed-turn path re-queues via
-        :meth:`_requeue_say`). Fail-open: any read error yields no say."""
+        """Consume a pending user say, if any — the shared exactly-once inbox read
+        (``session.say_inbox``); the failed-turn path re-queues via :meth:`_requeue_say`."""
         if self._say_path is None:
             return None
-        try:
-            text = self._say_path.read_text(encoding="utf-8").strip()
-        except OSError:  # includes FileNotFoundError — no say pending
-            return None
-        with contextlib.suppress(OSError):
-            self._say_path.unlink()
-        return text or None
+        return read_say(self._say_path)
 
     def _requeue_say(self, text: str) -> None:
         """Best-effort re-queue of a consumed say after a failed turn, so a daemon
         hiccup does not eat the user's message. Skipped when a newer say already
         occupies the single slot (the newer message wins)."""
-        if self._say_path is None or self._say_path.exists():
+        if self._say_path is None:
             return
-        with contextlib.suppress(OSError):
-            tmp = self._say_path.with_name(f"{self._say_path.name}.{os.getpid()}.tmp")
-            tmp.write_text(text + "\n", encoding="utf-8")
-            os.replace(tmp, self._say_path)
+        requeue_say(self._say_path, text)
 
     def _compose_message(self, base: str, say: str | None = None) -> str:
         """Assemble the turn's message.
