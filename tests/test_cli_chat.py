@@ -1159,10 +1159,15 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
     monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
 
     block = threading.Event()
+    listening = threading.Event()
 
     def _blocked_prompt(console):  # noqa: ANN001, ANN202
         # The stdin pump parks here; the 30s ceiling bounds the test if the inbox
-        # path is broken (EOF then ends the REPL instead of hanging CI).
+        # path is broken (EOF then ends the REPL instead of hanging CI). Setting
+        # `listening` first tells the writer the session is PAST the pre-session
+        # stale-discard — a message written any earlier is (correctly) discarded,
+        # which is exactly the race that flaked this test on slower interpreters.
+        listening.set()
         block.wait(timeout=30)
         raise EOFError
 
@@ -1170,6 +1175,7 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
     inbox = si.say_path(tmp_path)
 
     def _writer() -> None:
+        assert listening.wait(timeout=15), "chat never started listening"
         assert si.write_say(inbox, "hello from the inbox")
         for _ in range(200):  # wait for exactly-once consumption before the next say
             if not si.say_pending(inbox):
