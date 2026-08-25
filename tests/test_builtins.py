@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -338,3 +339,56 @@ async def test_registry_execute_dispatch(ctx: ToolContext) -> None:
     assert res.output == "data"
     res = await reg.execute("does_not_exist", {}, ctx)
     assert res.is_error
+
+
+# ── 127/126 remedy hints (2026-08-25) ─────────────────────────────────────────
+
+
+async def test_bash_127_names_the_workspace_script(tmp_path) -> None:
+    """A bare script name not on PATH gets a fix naming the real workspace path —
+    one error instead of the model's error -> find -> retry ritual (measured on a
+    mind agent 2026-08-25: dozens of identical 127s on core/scripts names)."""
+    scripts = tmp_path / "core" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "pipeline-read.sh").write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": "pipeline-read.sh --stage active"}, ctx)
+    assert res.is_error
+    assert res.data is not None and res.data["exit_code"] == 127
+    assert res.fix is not None
+    assert "core/scripts/pipeline-read.sh" in res.fix
+    assert "bash core/scripts/pipeline-read.sh" in res.fix
+
+
+async def test_bash_127_unknown_command_gets_no_fix(tmp_path) -> None:
+    """A genuinely nonexistent command stays a plain 127 — no speculative hint."""
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": "definitely-not-a-real-cmd-xyz"}, ctx)
+    assert res.is_error
+    assert res.fix is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="exec-bit / exit-126 semantics are POSIX-only")
+async def test_bash_126_names_the_chmod_escape(tmp_path) -> None:
+    """A non-executable script run directly gets the chmod / `bash path` hint once,
+    instead of the model rediscovering it per file."""
+    script = tmp_path / "doit.sh"
+    script.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+    script.chmod(0o644)
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": "./doit.sh"}, ctx)
+    assert res.is_error
+    assert res.data is not None and res.data["exit_code"] == 126
+    assert res.fix is not None and "chmod +x" in res.fix and "bash ./doit.sh" in res.fix
+
+
+def test_locate_basename_is_bounded_and_prunes(tmp_path) -> None:
+    from zakcode.tools.builtins.bash import _locate_basename
+
+    (tmp_path / "node_modules" / "deep").mkdir(parents=True)
+    (tmp_path / "node_modules" / "deep" / "x.sh").write_text("no", encoding="utf-8")
+    (tmp_path / "core" / "scripts").mkdir(parents=True)
+    (tmp_path / "core" / "scripts" / "x.sh").write_text("yes", encoding="utf-8")
+    assert _locate_basename(tmp_path, "x.sh") == "core/scripts/x.sh"  # pruned dir never wins
+    assert _locate_basename(tmp_path, "missing.sh") is None
+    assert _locate_basename(tmp_path, "core/scripts/x.sh") is None  # basenames only
