@@ -521,6 +521,12 @@ class Agent:
         #: per-turn reset is safe even when skills are disabled.
         self._skill_invocations_this_turn = 0
         self._skill_invocations_total = 0
+        #: Per-turn reload dedup: skill name -> sha1 of the body already injected THIS turn.
+        #: A same-turn use_skill of an unchanged skill returns a short pointer instead of the
+        #: full body (measured 2026-08-25: one turn loaded the same ~1,200-line skill three
+        #: times). Compaction fires only at turn START, so the earlier body is still in
+        #: context for the whole turn; the dict resets with the invocation counter.
+        self._skills_loaded_this_turn: dict[str, str] = {}
         skill_resolver: SkillResolver | None = None
         skills_catalog = ""
         if enable_skills:
@@ -1302,6 +1308,25 @@ class Agent:
             return SkillLoad(found=True, name=skill.name, error=str(exc))
         from zakcode.providers.text_tools import defang_untrusted
 
+        if source == "tool":
+            # Per-turn reload dedup: the SAME unchanged body already injected this turn is
+            # not re-injected — a short pointer back to it is returned instead (args still
+            # surfaced below so a sub-command chain like `tree add` -> `tree read` works).
+            # Costs no invocation budget and fires no selection signal: nothing new loaded.
+            import hashlib
+
+            digest = hashlib.sha1(body.encode("utf-8", errors="replace")).hexdigest()
+            if self._skills_loaded_this_turn.get(skill.name) == digest:
+                pointer = (
+                    f"[already loaded] The full instructions for skill {skill.name!r} are "
+                    "already in your context from an earlier use_skill call THIS turn, "
+                    "unchanged. Follow those instructions; do not reload them."
+                )
+                if args.strip():
+                    pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
+                logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
+                return SkillLoad(found=True, name=skill.name, body=pointer)
+            self._skills_loaded_this_turn[skill.name] = digest
         if source == "tool":  # count only model-driven loads that actually inject a body
             self._skill_invocations_this_turn += 1
             self._skill_invocations_total += 1
@@ -1427,6 +1452,7 @@ class Agent:
         out best-of-N isolated retries and adopt (diff-apply) the first that verifies.
         """
         self._skill_invocations_this_turn = 0  # new top-level turn: refill the skills budget
+        self._skills_loaded_this_turn.clear()
         if self._shared_budget is not None:
             self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         result = await self.loop.arun_turn(user_text)
@@ -1461,6 +1487,7 @@ class Agent:
         is the incremental counterpart to :meth:`run_turn` / :meth:`arun_turn`.
         """
         self._skill_invocations_this_turn = 0  # new top-level turn: refill the skills budget
+        self._skills_loaded_this_turn.clear()
         if self._shared_budget is not None:
             self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         return self.loop.astream_turn(user_text)

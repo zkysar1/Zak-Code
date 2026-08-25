@@ -253,6 +253,12 @@ def launch_cockpit(
             ]
         )
         main_cmd = shlex.join([*zakcode, "cockpit-main", "--workspace", str(workspace)])
+        # Leaving the chat (double ctrl-c / EOF / a crash) closes the WHOLE cockpit:
+        # the pane command tears the tmux session down when zakcode exits, so a dead
+        # chat never strands a headless say box (operator report 2026-08-25 — ctrl-c
+        # closed zakcode but the cockpit session lived on). tmux runs the string via
+        # sh -c, so the trailing kill-session fires on any exit path.
+        main_cmd = f"{main_cmd}; tmux kill-session -t {shlex.quote(session)}"
         # The say box is created FIRST so the session-scoped history-limit is already
         # set when the chat pane (split -b, placed above → index 0) is created — tmux
         # applies history-limit at pane creation, never retroactively.

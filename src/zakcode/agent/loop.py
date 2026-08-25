@@ -938,9 +938,10 @@ class AgentLoop:
         nxt = remaining[0]
         return (
             f"Your plan still has {len(remaining)} open step(s); the next is {nxt.id} "
-            f"({nxt.title}). Finish the remaining steps, or — if this goal is done or no longer "
-            "active — mark them done/cancelled or clear the whole plan with update_plan, then end "
-            "the turn."
+            f"({nxt.title}). Finish the remaining steps; if a step is WAITING on a person or an "
+            "external event, mark it status=blocked with a note saying what it waits on (blocked "
+            "steps do not hold up the turn); if this goal is done or no longer active, mark steps "
+            "done/cancelled or clear the whole plan with update_plan. Then end the turn."
         )
 
     @staticmethod
@@ -1726,6 +1727,7 @@ class AgentLoop:
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
+        plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
@@ -1996,8 +1998,15 @@ class AgentLoop:
                 # the cap the turn completes but is flagged degraded (plan left unresolved).
                 plan_nudge = self._plan_gate_nudge()
                 if plan_nudge is not None:
-                    if plan_nudges < _MAX_PLAN_NUDGES:
+                    # A nudge that produced NO progress (the model answered with text only
+                    # and the plan is byte-identical) ends the nudging: it is legitimately
+                    # waiting on something the harness cannot see, and repeating the nudge
+                    # just makes it restate itself (measured 2026-08-25: two identical
+                    # "still waiting on you" replies to back-to-back nudges).
+                    plan_sig = self.session.task_network.progress_signature()
+                    if plan_nudges < _MAX_PLAN_NUDGES and plan_sig != plan_sig_at_nudge:
                         plan_nudges += 1
+                        plan_sig_at_nudge = plan_sig
                         self.session.add_message(Message.user(_control_rail(plan_nudge)))
                         if not result.text:
                             self._refund_iteration()  # an empty nudged completion did no work
@@ -2387,6 +2396,7 @@ class AgentLoop:
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
+        plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
@@ -2815,8 +2825,13 @@ class AgentLoop:
                     # (degraded) rather than deadlock.
                     plan_nudge = self._plan_gate_nudge()
                     if plan_nudge is not None:
-                        if plan_nudges < _MAX_PLAN_NUDGES:
+                        # No-progress guard — see the buffered path: an unchanged plan after
+                        # a nudge means the model is waiting on something external; stop
+                        # repeating the nudge.
+                        plan_sig = self.session.task_network.progress_signature()
+                        if plan_nudges < _MAX_PLAN_NUDGES and plan_sig != plan_sig_at_nudge:
                             plan_nudges += 1
+                            plan_sig_at_nudge = plan_sig
                             self.session.add_message(Message.user(_control_rail(plan_nudge)))
                             if not assistant_text:
                                 self._refund_iteration()

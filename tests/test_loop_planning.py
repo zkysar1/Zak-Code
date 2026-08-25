@@ -101,10 +101,49 @@ async def test_completion_gate_nudges_then_completes_degraded() -> None:
     loop, _ = _loop(provider)
     result = await loop.arun_turn("two steps")
 
-    # call1 plan; calls 2 & 3 nudged (cap=2); call 4 completes despite the open step.
+    # call1 plan; call 2 is nudged ONCE; call 3 restates with a byte-identical plan, so the
+    # no-progress guard ends the nudging (a model that changed nothing is waiting on
+    # something the harness cannot see) and the turn completes despite the open step.
     assert result.stop_reason == "completed"
     assert result.degraded is True  # finished with an unresolved plan step
-    assert provider.calls == 4
+    assert provider.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_completion_gate_keeps_nudging_while_the_plan_advances() -> None:
+    """The no-progress guard only stops REPEATED nudges: a model that advances its plan
+    between nudges (here: B pending -> in_progress) earns the full nudge cap."""
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}]),
+            _done(),
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "in_progress"}]),
+            _done(),
+            _done(),
+        ]
+    )
+    loop, _ = _loop(provider)
+    result = await loop.arun_turn("two steps")
+    assert result.stop_reason == "completed"
+    assert result.degraded is True
+    assert provider.calls == 5  # plan, nudged done, plan update, nudged done, final done
+
+
+@pytest.mark.asyncio
+async def test_blocked_step_does_not_hold_up_the_turn() -> None:
+    """A step marked status=blocked (waiting on a person / external event) is exempt from
+    the completion gate — the escape hatch the nudge text names."""
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "blocked"}]),
+            _done("waiting on the operator"),
+        ]
+    )
+    loop, _ = _loop(provider)
+    result = await loop.arun_turn("two steps")
+    assert result.stop_reason == "completed"
+    assert result.degraded is False  # no nudge at all: blocked is a legitimate wait state
+    assert provider.calls == 2
 
 
 @pytest.mark.asyncio
