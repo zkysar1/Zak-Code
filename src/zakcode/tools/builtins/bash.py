@@ -71,10 +71,8 @@ def _locate_basename(root: Path, name: str) -> str | None:
     """
     if not name or "/" in name or "\\" in name:
         return None
-    visited = 0
     root = root.resolve()
-    for dirpath, dirnames, filenames in os.walk(root):
-        visited += 1
+    for visited, (dirpath, dirnames, filenames) in enumerate(os.walk(root), start=1):
         rel_depth = len(Path(dirpath).relative_to(root).parts)
         if visited > _FIND_MAX_DIRS or rel_depth >= _FIND_MAX_DEPTH:
             dirnames[:] = []
