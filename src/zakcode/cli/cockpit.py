@@ -40,7 +40,13 @@ from zakcode import __version__
 from zakcode.build_info import version_line
 from zakcode.cli._layout import kv_table, notice_error, notice_info, panel
 from zakcode.cli._theme import ZAK_THEME
-from zakcode.session.say_inbox import say_path, write_say
+from zakcode.session.say_inbox import (
+    interrupt_path,
+    read_say,
+    request_interrupt,
+    say_path,
+    write_say,
+)
 
 console = Console(theme=ZAK_THEME, highlight=False)
 
@@ -52,6 +58,54 @@ _HISTORY_LIMIT = 50000
 _CREATE_SIZE = ("220", "50")
 #: Module-level singleton so a call never appears in an argument default (B008).
 _DOT = Path(".")
+#: Prefix smuggled through the prompt result when Esc sent a stop signal; the
+#: remainder is the operator's half-typed text, restored into the next prompt.
+_INTERRUPT_SENTINEL = "\x00zakcode-interrupt\x00"
+
+
+def _say_box_prompt(inbox: Path, interrupt_fp: Path, default: str = "") -> tuple[str, str]:
+    """Read one say-box message with Esc semantics. Returns ``(kind, text)``.
+
+    Esc means: RECALL if there is something to recall, otherwise STOP —
+    - a message still sitting unconsumed in the say inbox is pulled back into the
+      edit buffer (the user edits and resubmits), and
+    - with nothing to recall, a stop signal is written for the running agent
+      (``kind == "interrupt-sent"``; ``text`` is the preserved half-typed input).
+
+    Uses prompt_toolkit when attached to a real terminal (native bracketed paste,
+    line editing, key bindings); falls back to plain ``input()`` — no Esc handling,
+    everything else identical — on import failure or a non-tty stdin.
+    """
+    try:
+        if not sys.stdin.isatty():
+            raise OSError("say box without a tty")
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.key_binding import KeyBindings
+    except Exception:  # noqa: BLE001 — fall back to the plain reader, never crash the pane
+        return ("line", input("▸ "))
+
+    bindings = KeyBindings()
+
+    @bindings.add("escape", eager=True)
+    def _esc(event) -> None:  # noqa: ANN001
+        recalled = read_say(inbox)
+        if recalled is not None:
+            event.app.current_buffer.insert_text(recalled)
+        else:
+            request_interrupt(interrupt_fp)
+            event.app.exit(result=_INTERRUPT_SENTINEL + event.app.current_buffer.text)
+
+    @bindings.add("enter")
+    def _enter(event) -> None:  # noqa: ANN001
+        # multiline buffer (so a bracketed paste keeps its newlines) with
+        # single-Enter submit — Enter always sends, exactly like before.
+        event.app.current_buffer.validate_and_handle()
+
+    session: PromptSession[str] = PromptSession(key_bindings=bindings, multiline=True)
+    text = session.prompt("▸ ", default=default)
+    if text.startswith(_INTERRUPT_SENTINEL):
+        return ("interrupt-sent", text[len(_INTERRUPT_SENTINEL) :])
+    return ("line", text)
 
 
 def _tmux_bin() -> str:
@@ -198,7 +252,13 @@ def cockpit(
             " · wheel scrolls (q snaps back)"
         )
         _tmux("select-pane", "-t", f"{session}:0.0", "-T", screen_title)
-        _tmux("select-pane", "-t", f"{session}:0.1", "-T", "YOUR MESSAGE — click here, type, Enter")
+        _tmux(
+            "select-pane",
+            "-t",
+            f"{session}:0.1",
+            "-T",
+            "YOUR MESSAGE — type, Enter sends · Esc stops the agent / recalls a pending message",
+        )
         _tmux("select-pane", "-t", f"{session}:0.0")
         notice_info(console, f"cockpit session '{session}' created")
     if attach and sys.stdin.isatty():
@@ -273,25 +333,34 @@ def cockpit_say_box(
     from zakcode.cli import _prepare_interactive_terminal
 
     _prepare_interactive_terminal()
-    inbox = say_path(workspace.resolve())
+    root = workspace.resolve()
+    inbox = say_path(root)
+    interrupt_fp = interrupt_path(root)
     ledger_path = ledger if ledger is not None else _default_ledger()
     last = ""
+    carry = ""  # half-typed text preserved across an Esc-stop
     while True:
         console.clear()
         if last:
             console.print(last, style="notice.dim")
         try:
-            line = input("▸ ")
+            kind, line = _say_box_prompt(inbox, interrupt_fp, default=carry)
         except EOFError:
             time.sleep(1)
             continue
         except KeyboardInterrupt:
             raise typer.Exit(code=0) from None
+        carry = ""
+        stamp = time.strftime("%H:%M")
+        if kind == "interrupt-sent":
+            last = f"⏹ stop signal sent — the agent halts its current turn {stamp}"
+            carry = line
+            continue
         if not line.strip():
             continue
-        stamp = time.strftime("%H:%M")
         if not write_say(inbox, line):
-            last = f"⏳ agent is busy — previous message still pending; try again shortly {stamp}"
+            last = f"⏳ agent is busy — previous message still pending; esc recalls it {stamp}"
+            carry = line
             continue
         _append_ledger(ledger_path, line, via="cockpit-say-box", operator=operator)
         lines = line.count("\n") + 1
@@ -354,8 +423,25 @@ def say(
     notice_info(console, "sent")
 
 
+def interrupt(
+    workspace: Annotated[
+        Path, typer.Option("--workspace", "-w", help="Workspace whose agent to stop.")
+    ] = _DOT,
+) -> None:
+    """Stop the workspace's running agent turn (the file-based twin of Ctrl-C).
+
+    Writes ``<workspace>/.interrupt``; the running chat consumes it within a
+    moment and halts its current turn exactly as a keyboard Ctrl-C would —
+    the transcript keeps everything up to the stop, and the prompt returns.
+    Idempotent; an idle agent clears the signal without acting on it.
+    """
+    request_interrupt(interrupt_path(workspace.resolve()))
+    notice_info(console, "stop signal sent — the agent halts its current turn within a moment")
+
+
 def register_cockpit_commands(app: typer.Typer) -> None:
     app.command()(cockpit)
     app.command()(say)
+    app.command()(interrupt)
     app.command(name="cockpit-main", hidden=True)(cockpit_main)
     app.command(name="cockpit-say-box", hidden=True)(cockpit_say_box)

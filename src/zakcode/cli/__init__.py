@@ -1502,7 +1502,10 @@ def _maybe_render_status_line(console: Console, agent: Agent) -> None:
 
 
 def _run_streamed_turn(
-    console: Console, make_stream: StreamFactory, renderer: StreamRenderer
+    console: Console,
+    make_stream: StreamFactory,
+    renderer: StreamRenderer,
+    interrupt_file: Path | None = None,
 ) -> bool:
     """Run a streamed turn on the session loop; cancellable via Ctrl-C.
 
@@ -1517,9 +1520,35 @@ def _run_streamed_turn(
     if loop is None:  # pragma: no cover — chat()/_run_server_chat always install one
         raise RuntimeError("session loop not initialized")
     task = loop.create_task(_drive_stream(make_stream, renderer))
+    # The interrupt FILE is the transport-level twin of Ctrl-C: written by Esc in
+    # the cockpit say box or `zakcode interrupt` from any terminal. The watcher
+    # consumes the signal and CANCELS the turn task — the same cancellation the
+    # Ctrl-C branch performs — so both stops unwind identically (state persisted
+    # at message boundaries, the "interrupted" notice, back to the prompt).
+    stopped_by_file: list[bool] = []
+    watcher = None
+    if interrupt_file is not None:
+        from zakcode.session.say_inbox import take_interrupt
+
+        async def _watch_interrupt_file() -> None:
+            while True:
+                await asyncio.sleep(0.25)
+                if take_interrupt(interrupt_file):
+                    stopped_by_file.append(True)
+                    task.cancel()
+                    return
+
+        watcher = loop.create_task(_watch_interrupt_file())
     try:
         loop.run_until_complete(task)
         return True
+    except asyncio.CancelledError:
+        if not stopped_by_file:
+            raise  # not our cancellation — propagate
+        if _ACTIVE_WAIT is not None:
+            _ACTIVE_WAIT.stop()
+        notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
+        return False
     except KeyboardInterrupt:
         task.cancel()
         try:
@@ -1535,6 +1564,13 @@ def _run_streamed_turn(
                 _ACTIVE_WAIT.stop()
         notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
         return False
+    finally:
+        # The watcher must not outlive the turn: a leftover task would stack a
+        # duplicate per turn and could fire a stale interrupt into a LATER turn.
+        if watcher is not None:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError, KeyboardInterrupt):
+                loop.run_until_complete(watcher)
 
 
 async def _server_turn_stream(
@@ -1851,9 +1887,11 @@ def chat(
     # it is listening. A message already queued when the session starts — a stale
     # file from a dead session, or a .say shipped inside a cloned repo — is
     # discarded with a visible notice, never executed.
-    from zakcode.session.say_inbox import read_say, say_path
+    from zakcode.session.say_inbox import interrupt_path, read_say, say_path, take_interrupt
 
     inbox_path = say_path(agent.settings.workspace_root)
+    interrupt_fp = interrupt_path(agent.settings.workspace_root)
+    take_interrupt(interrupt_fp)  # a stop signal predating the session has nothing to stop
     stale_say = read_say(inbox_path)
     if stale_say is not None:
         preview = stale_say.splitlines()[0][:80]
@@ -1886,6 +1924,9 @@ def chat(
         try:
             got: tuple[str, str | None] | None = None
             while got is None:
+                # An interrupt arriving while idle has nothing to stop — clear it so
+                # it cannot kill the NEXT turn instead.
+                take_interrupt(interrupt_fp)
                 say_text = read_say(inbox_path)
                 if say_text is not None:
                     got = ("say", say_text)
@@ -2150,7 +2191,12 @@ def chat(
         # renderer per turn keeps the text/usage buffers from leaking across turns.
         renderer = StreamRenderer(console=console)
         try:
-            _run_streamed_turn(console, functools.partial(agent.astream_turn, stripped), renderer)
+            _run_streamed_turn(
+                console,
+                functools.partial(agent.astream_turn, stripped),
+                renderer,
+                interrupt_file=interrupt_fp,
+            )
         except ProviderError as exc:
             notice_error(console, "provider error", str(exc))
             continue
