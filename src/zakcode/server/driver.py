@@ -35,6 +35,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -127,6 +128,9 @@ class ServeDriver:
         recreate_after_failures: int = 3,
         provider_error_escalate_after: int = 5,
         max_turns: int | None = None,
+        max_duration: float | None = None,
+        consolidation_reserve: float = 0.0,
+        consolidation_message: str | None = None,
         nudge_file: str | os.PathLike[str] | None = None,
         nudge_frame: str = _DEFAULT_NUDGE_FRAME,
         say_file: str | os.PathLike[str] | None = ".say",
@@ -147,6 +151,19 @@ class ServeDriver:
         self.recreate_after_failures = recreate_after_failures
         self.provider_error_escalate_after = provider_error_escalate_after
         self.max_turns = max_turns
+        self.max_duration = max_duration
+        self.consolidation_reserve = consolidation_reserve
+        self.consolidation_message = consolidation_message
+        #: Why the last :meth:`run` returned — ``None`` until it does, then one of
+        #: ``stopped`` / ``max_turns`` / ``duration_cap`` / ``never_healthy``. The
+        #: caller needs this to tell a CAP-HIT from a clean stop: only a cap-hit
+        #: spends the consolidation reserve, and only a cap-hit is the case a
+        #: bounded run must still end with its digest.
+        self.stop_reason: str | None = None
+        #: Hard wall-clock deadline for the in-flight run (monotonic), or None.
+        #: Set by :meth:`run`; read by the health wait and the consolidation turn
+        #: so EVERY blocking leg is bounded by it, not just the turn loop.
+        self._deadline: float | None = None
         self.nudge_frame = nudge_frame
         self.say_frame = say_frame
         # A relative nudge path is resolved against the workspace (same root as
@@ -181,14 +198,51 @@ class ServeDriver:
         self._stop.set()
 
     async def run(self) -> None:
-        """Drive turns until stopped (or ``max_turns`` reached, for bounded runs).
+        """Drive turns until stopped, or until a bound is hit.
+
+        Three bounds, any of which may be left unset: the stop event, ``max_turns``
+        (turn count) and ``max_duration`` (wall-clock). On a ``max_duration`` cap the
+        last ``consolidation_reserve`` seconds are held back from new work and spent
+        on one final ``consolidation_message`` turn, so a run that runs out of time
+        still ends deliberately. :attr:`stop_reason` records which bound won.
 
         Returns cleanly when the stop event is set — never raises for an ordinary
         daemon hiccup (those are absorbed by backoff). A programming error inside a
         callback or an unexpected exception type still propagates.
         """
+        # PATIENCE CAP, not a liveness clock (guard-4184): the deadline is stamped
+        # ONCE here and is never re-stamped per turn. Resetting it each turn would
+        # measure time-since-last-turn and could never fire on a busy run — the
+        # opposite of the bound a paid, bounded run needs. It is also HARD: there is
+        # deliberately no extension path, so "auto-extend off" holds by construction
+        # rather than by a default someone can flip.
+        #
+        # The clock starts BEFORE the health wait on purpose: the vessel is costing
+        # host-hours from boot, so a daemon slow to come up spends the run's budget
+        # exactly as turns do — AND is cut off by it. _wait_healthy polls on the stop
+        # event alone, so without the deadline check it wired in below, a daemon that
+        # never came up would run forever with max_duration set: the precise
+        # idle-host-hours failure a bounded run exists to prevent.
+        started = time.monotonic()
+        deadline = None if self.max_duration is None else started + self.max_duration
+        # New work stops at the WORK deadline, earlier than the hard deadline by the
+        # reserve, leaving that reserve for the consolidation turn below.
+        reserve = max(0.0, self.consolidation_reserve)
+        work_deadline = None if deadline is None else deadline - reserve
+        self._deadline = deadline
+        self.stop_reason = None
+
         if not await self._wait_healthy():
-            return  # stopped before the daemon ever came up
+            if self._stop.is_set():
+                self.stop_reason = "stopped"
+            elif deadline is not None and time.monotonic() >= deadline:
+                # Capped before a session ever existed: there is nothing to
+                # consolidate and no sid to consolidate on, so return without
+                # spending the reserve.
+                self.stop_reason = "duration_cap"
+            else:
+                self.stop_reason = "never_healthy"
+            return  # never got a healthy daemon
         sid = await self._new_session()
         message = self.boot_message
         turn = 0
@@ -196,6 +250,10 @@ class ServeDriver:
 
         while not self._stop.is_set():
             if self.max_turns is not None and turn >= self.max_turns:
+                self.stop_reason = "max_turns"
+                break
+            if work_deadline is not None and time.monotonic() >= work_deadline:
+                self.stop_reason = "duration_cap"
                 break
             say = self._read_say()
             # A say re-queued after a failed turn was already surfaced to watchers on
@@ -299,6 +357,57 @@ class ServeDriver:
                 if self.inter_turn_delay > 0:
                     await self._interruptible_sleep(self.inter_turn_delay)
 
+        # Falling out of the while without a reason set means the stop event won.
+        if self.stop_reason is None:
+            self.stop_reason = "stopped"
+        await self._consolidation_turn(sid)
+
+    async def _consolidation_turn(self, sid: str) -> None:
+        """Spend the reserved budget on ONE final turn after a duration cap.
+
+        Fires ONLY on ``duration_cap``. A ``stopped`` exit means the caller asked to
+        get out and must not be handed another turn; ``max_turns`` and
+        ``never_healthy`` runs never consumed the reserve, so there is nothing owed.
+        That narrowness is the point: this is the leg that lets a run which RAN OUT
+        OF TIME still close on its own terms instead of being cut mid-thought.
+
+        Best-effort by contract, like every other turn here: a daemon hiccup during
+        consolidation must not turn :meth:`run` into a raiser.
+        """
+        if self.stop_reason != "duration_cap":
+            return
+        if not self.consolidation_message or self.consolidation_reserve <= 0:
+            return
+        if self._stop.is_set():
+            return  # a stop landed between the cap and here; honor it
+        # The reserve is a BUDGET, not a hope: bound the wrap-up turn by the time
+        # actually left before the hard deadline. Unbounded, a slow mind turns a
+        # "hard cap" into a suggestion (measured: a 0.6s turn against a 0.05s
+        # reserve overran it 12x).
+        remaining = None
+        if self._deadline is not None:
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning("no consolidation budget left; ending without a wrap-up turn")
+                return
+        logger.info(
+            "duration cap reached; spending %.0fs consolidation reserve on a final turn",
+            self.consolidation_reserve,
+        )
+        try:
+            await asyncio.wait_for(
+                self._run_one_turn(sid, self.consolidation_message), timeout=remaining
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "consolidation turn exceeded its %.0fs reserve; cut at the hard deadline",
+                self.consolidation_reserve,
+            )
+        except (httpx.HTTPError, ConnectionError, OSError) as exc:
+            # Logged, not swallowed: a silent suppress here made a real daemon fault
+            # during wrap-up indistinguishable from a clean finish.
+            logger.warning("consolidation turn failed (%s: %s)", type(exc).__name__, exc)
+
     # ── turn execution ───────────────────────────────────────────────────────
 
     async def _run_one_turn(self, sid: str, message: str) -> AgentDone | None:
@@ -398,6 +507,9 @@ class ServeDriver:
         probes; resets the backoff once healthy so a later fault starts fresh.
         """
         while not self._stop.is_set():
+            if self._deadline is not None and time.monotonic() >= self._deadline:
+                logger.warning("duration cap reached while waiting for daemon /health")
+                return False
             try:
                 await self.client.health()
             except (httpx.HTTPError, ConnectionError, OSError) as exc:

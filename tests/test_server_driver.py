@@ -501,3 +501,235 @@ async def test_say_published_exactly_once_across_n_same_session_requeues(
     assert client.created_sids == ["sess-1"]  # never rotated
     assert client.user_message_calls == [{"session_id": "sess-1", "text": "is the say sticky?"}]
     assert not (tmp_path / ".say").exists()  # delivered by the final retry, slot clear
+
+
+# ── bounded runs: wall-clock cap + reserved consolidation budget (g-369-08) ──
+
+
+class _FakeTime:
+    """Stands in for the ``time`` MODULE inside the driver's namespace only.
+
+    Patching ``time.monotonic`` on the stdlib module would also re-time asyncio's own
+    event loop; replacing the driver's module reference leaves everything else alone.
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self._now = start
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def advance(self, dt: float) -> None:
+        self._now += dt
+
+
+def _freeze(monkeypatch: pytest.MonkeyPatch, clock: _FakeTime) -> None:
+    from zakcode.server import driver as driver_mod
+
+    monkeypatch.setattr(driver_mod, "time", clock)
+
+
+async def test_duration_cap_ends_the_run_and_names_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, max_duration=10.0, on_event=lambda _e: clock.advance(4.0))
+    await driver.run()
+    # Turns 1 and 2 land at t=4 and t=8; the third is refused at t=12 >= deadline 1010.
+    assert driver.stop_reason == "duration_cap"
+    assert len(client.turn_calls) == 3
+
+
+async def test_cap_hit_spends_the_reserve_on_a_consolidation_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verification outcome this goal exists for: a CAP-HIT still ends deliberately."""
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = FakeServerClient()
+    driver = _driver(
+        client,
+        tmp_path,
+        max_duration=30.0,  # the reserve is carved OUT of this, so work_deadline == start
+        consolidation_reserve=30.0,
+        consolidation_message="WRAP UP: consolidate and send the digest.",
+    )
+    await driver.run()
+    assert driver.stop_reason == "duration_cap"
+    assert [c["message"] for c in client.turn_calls] == ["WRAP UP: consolidate and send the digest."]
+
+
+async def test_clean_stop_does_not_spend_the_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = FakeServerClient()
+    driver = _driver(
+        client,
+        tmp_path,
+        max_duration=10_000.0,
+        consolidation_reserve=30.0,
+        consolidation_message="WRAP UP",
+        on_event=lambda _e: None,
+    )
+    driver.request_stop()
+    await driver.run()
+    assert driver.stop_reason == "stopped"
+    assert not any(c["message"] == "WRAP UP" for c in client.turn_calls)
+
+
+async def test_max_turns_exit_does_not_spend_the_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = FakeServerClient()
+    driver = _driver(
+        client,
+        tmp_path,
+        max_turns=1,
+        max_duration=10_000.0,
+        consolidation_reserve=30.0,
+        consolidation_message="WRAP UP",
+    )
+    await driver.run()
+    assert driver.stop_reason == "max_turns"
+    assert [c["message"] for c in client.turn_calls] == ["Continue."]
+
+
+async def test_deadline_is_a_patience_cap_not_reset_per_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """guard-4184: the stamp is PRESERVED from run start, never re-stamped per turn.
+
+    A per-turn reset would measure time-since-last-turn and could never fire on a busy
+    run — this pins the difference, which is invisible in any single-turn test.
+    """
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, max_duration=10.0, on_event=lambda _e: clock.advance(3.0))
+    await driver.run()
+    assert driver.stop_reason == "duration_cap"
+    # 10s budget at 3s a turn: 4 turns land (t=3,6,9,12) and the 5th is refused.
+    # Under a per-turn reset the run would never end and this would hang.
+    assert len(client.turn_calls) == 4
+
+
+async def test_no_max_duration_leaves_the_perpetual_run_unbounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = FakeServerClient()
+    driver = _driver(client, tmp_path, max_turns=3, on_event=lambda _e: clock.advance(10_000.0))
+    await driver.run()
+    assert driver.stop_reason == "max_turns"
+    assert len(client.turn_calls) == 3
+
+
+async def test_consolidation_turn_survives_a_daemon_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run() never raises for an ordinary daemon hiccup — including during the reserve."""
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = FakeServerClient(turn_script=[httpx.ConnectError("daemon died")])
+    driver = _driver(
+        client,
+        tmp_path,
+        max_duration=30.0,  # the reserve is carved OUT of this, so work_deadline == start
+        consolidation_reserve=30.0,
+        consolidation_message="WRAP UP",
+    )
+    await driver.run()  # must return, not raise
+    assert driver.stop_reason == "duration_cap"
+
+
+async def test_never_healthy_is_distinguished_from_a_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = FakeServerClient(health_fail_times=2)
+    driver = _driver(client, tmp_path, max_turns=1)
+    driver.request_stop()
+    await driver.run()
+    assert driver.stop_reason == "stopped"
+    assert client.create_calls == 0
+
+
+class _TickingHealth(FakeServerClient):
+    """A daemon that never comes up, with each /health poll costing wall-clock."""
+
+    def __init__(self, clock: "_FakeTime", **kw: object) -> None:
+        super().__init__(health_fail_times=10**6, **kw)  # type: ignore[arg-type]
+        self._clock = clock
+
+    async def health(self) -> dict[str, object]:
+        self._clock.advance(1.0)
+        return await super().health()
+
+
+class _SlowTurn(FakeServerClient):
+    """A mind that takes far longer to wrap up than its reserve allows."""
+
+    async def astream_turn(self, message, session_id=None, model=None):  # type: ignore[override]
+        self.turn_calls.append({"message": message, "session_id": session_id, "model": model})
+        await asyncio.sleep(1.0)  # real seconds, deliberately past the reserve below
+        yield _done("completed")
+
+
+async def test_duration_cap_bounds_the_health_wait_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon that never boots must NOT burn the host forever under a cap.
+
+    Regression: the cap was checked only in the turn loop, so a bounded run whose
+    daemon never came up polled /health for eternity -- the precise idle-host-hours
+    failure a bounded run exists to prevent. wait_for is the assertion: a
+    reintroduced hang fails here as a timeout instead of wedging the suite.
+    """
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = _TickingHealth(clock)
+    driver = _driver(client, tmp_path, max_duration=5.0, consolidation_reserve=1.0)
+
+    await asyncio.wait_for(driver.run(), timeout=10.0)
+
+    assert driver.stop_reason == "duration_cap"
+    assert client.create_calls == 0  # never got far enough to open a session
+    # Capped before a session existed: nothing to consolidate, so no wrap-up turn.
+    assert client.turn_calls == []
+
+
+async def test_consolidation_turn_is_bounded_by_its_own_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reserve is a BUDGET, not a hope -- a slow wrap-up is cut, not awaited.
+
+    Regression: an unbounded consolidation turn made the "hard cap" soft. Measured
+    at 12x overrun (a 0.6s turn against a 0.05s reserve) before this bound existed.
+    """
+    clock = _FakeTime()
+    _freeze(monkeypatch, clock)
+    client = _SlowTurn()
+    driver = _driver(
+        client,
+        tmp_path,
+        max_duration=0.05,
+        consolidation_reserve=0.05,
+        consolidation_message="WRAP UP",
+    )
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await driver.run()
+    elapsed = loop.time() - started
+
+    assert driver.stop_reason == "duration_cap"
+    assert [c["message"] for c in client.turn_calls] == ["WRAP UP"]  # it was attempted
+    assert elapsed < 0.5, f"wrap-up overran its 0.05s reserve: {elapsed:.3f}s"
