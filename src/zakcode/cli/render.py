@@ -104,6 +104,7 @@ _STOP_LABEL = {
     "provider_error": "provider error",
     "doom_loop": "stopped {dash} repeating itself",
     "stuck": "stopped {dash} no progress",
+    "gave_up": "stopped {dash} gave up (no output)",
     "recipe_stalled": "stopped {dash} recipe stalled",
 }
 
@@ -630,6 +631,13 @@ class StreamRenderer:
             else reason.replace("_", " ")
         )
         if reason == "completed":
+            # A degraded completion (the turn engaged failure recovery — a stuck nudge,
+            # a truncation continuation, a plan left unresolved) must not print an
+            # indistinguishable clean "done": the flag was computed and then silently
+            # dropped here, so a nudged give-up looked identical to a good turn
+            # (field incident 2026-08-25).
+            if done.degraded:
+                return f"done {self._g['dash']} struggled", "warn"
             return label, "ok"
         if reason == "provider_error":
             if done.error:

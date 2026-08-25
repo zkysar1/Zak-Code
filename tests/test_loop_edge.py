@@ -19,6 +19,7 @@ import pytest
 from zakcode.agent.loop import (
     _EMPTY_COMPLETION_PLACEHOLDER,
     _MAX_DOOM_RECOVERIES,
+    _MAX_EMPTY_RETRIES,
     DEFAULT_MAX_ITERATIONS,
     DOOM_LOOP_THRESHOLD,
     AgentLoop,
@@ -212,31 +213,104 @@ def _make_loop(
 
 
 @pytest.mark.asyncio
-async def test_empty_completion_completes_cleanly(tmp_path: Path) -> None:
-    # Neither text nor tool calls: must end with stop_reason="completed".
-    provider = ScriptedProvider([LLMResult()])
+async def test_lone_empty_completion_ends_gave_up(tmp_path: Path) -> None:
+    # A turn whose ONLY output is empty completions is a silent give-up, not a clean
+    # finish (contract changed 2026-08-26): the loop nudges _MAX_EMPTY_RETRIES times,
+    # then ends gave_up + degraded instead of masquerading as "completed" (field
+    # incident 2026-08-25: reasoning-burn empty completions read as a clean "done").
+    provider = ScriptedProvider([LLMResult()] * (1 + _MAX_EMPTY_RETRIES))
     loop = _make_loop(provider, tmp_path)
     result = await loop.arun_turn("say nothing")
     assert isinstance(result, TurnResult)
-    assert result.stop_reason == "completed"
-    assert result.iterations == 1
-    # The assistant message carries a PLACEHOLDER block (contract changed 2026-08-22):
+    assert result.stop_reason == "gave_up"
+    assert result.degraded is True
+    assert len(provider.calls) == 1 + _MAX_EMPTY_RETRIES
+    # Every empty completion still lands as a PLACEHOLDER block (2026-08-22 contract):
     # an empty-blocks assistant message poisons the stored history — OpenAI-compat
     # providers reject the whole transcript on every later call.
-    assert len(result.assistant_messages) == 1
     assert result.assistant_messages[-1].blocks
     assert result.assistant_messages[-1].text == _EMPTY_COMPLETION_PLACEHOLDER
 
 
 @pytest.mark.asyncio
-async def test_empty_completion_does_not_loop(tmp_path: Path) -> None:
-    # Even with a generous budget, an empty completion stops after one iteration
-    # (no infinite loop). Only one scripted result is provided on purpose.
-    provider = ScriptedProvider([LLMResult()])
+async def test_empty_completion_gives_up_without_looping(tmp_path: Path) -> None:
+    # Even with a generous iteration budget, a silent model stops after the bounded
+    # nudges (no infinite loop): exactly 1 + _MAX_EMPTY_RETRIES model calls.
+    provider = ScriptedProvider([LLMResult()] * (1 + _MAX_EMPTY_RETRIES))
     loop = _make_loop(provider, tmp_path, max_iterations=50)
     result = await loop.arun_turn("hi")
-    assert result.iterations == 1
-    assert len(provider.calls) == 1  # exactly one model call, no re-querying
+    assert result.stop_reason == "gave_up"
+    assert len(provider.calls) == 1 + _MAX_EMPTY_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_empty_completion_nudge_recovers_an_answer(tmp_path: Path) -> None:
+    # The whole point of the nudge: a model that CAN answer after being told not to
+    # end silently produces a clean completed turn with its text delivered.
+    provider = ScriptedProvider([LLMResult(), LLMResult(text="the answer")])
+    loop = _make_loop(provider, tmp_path)
+    result = await loop.arun_turn("question")
+    assert result.stop_reason == "completed"
+    assert result.degraded is False
+    assert len(provider.calls) == 2
+    assert result.assistant_messages[-1].text == "the answer"
+    # The injected nudge is a user-role control rail in the session history.
+    assert any(
+        m.role == "user" and "without any visible output" in m.text for m in loop.session.messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_empty_completion_after_text_still_completes_cleanly(tmp_path: Path) -> None:
+    # Historical clean-end semantics preserved: once the model has SAID something this
+    # turn, a trailing empty completion is a deliberate "nothing more to say" — no
+    # nudge, no gave_up, exactly two model calls.
+    provider = ScriptedProvider(
+        [
+            LLMResult(
+                text="working on it",
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "hi"})],
+            ),
+            LLMResult(),
+        ]
+    )
+    loop = _make_loop(provider, tmp_path)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    assert result.degraded is False
+    assert len(provider.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_completion_after_stuck_nudge_ends_gave_up(tmp_path: Path) -> None:
+    # The sera shape (2026-08-25): the model produced text early, then ground through
+    # failing tool calls until the stuck ladder nudged it — and answered the nudge
+    # with silence. Prior text normally preserves clean-end semantics, but a stuck
+    # nudge revokes that: silence after "you appear to be stuck" is a give-up.
+    provider = ScriptedProvider(
+        [
+            # Iteration 1 carries text (sets turn_saw_text) plus a failing call.
+            LLMResult(
+                text="let me try",
+                tool_calls=[ToolCall(id="c1", name="boom", arguments={"n": 1})],
+            ),
+            # Three textless all-error iterations with DISTINCT args: the doom guard
+            # (identical batches) never trips, while all-errors + no-progress votes
+            # build the stuck streak to nudge_at=3.
+            LLMResult(tool_calls=[ToolCall(id="c2", name="boom", arguments={"n": 2})]),
+            LLMResult(tool_calls=[ToolCall(id="c3", name="boom", arguments={"n": 3})]),
+            LLMResult(tool_calls=[ToolCall(id="c4", name="boom", arguments={"n": 4})]),
+            # The model answers the stuck nudge — and every empty-retry — with silence.
+            LLMResult(),
+            LLMResult(),
+            LLMResult(),
+        ]
+    )
+    loop = _make_loop(provider, tmp_path)
+    result = await loop.arun_turn("do the thing")
+    assert result.stop_reason == "gave_up"
+    assert result.degraded is True
+    assert len(provider.calls) == 7
 
 
 # ── max_iterations boundary ───────────────────────────────────────────────────

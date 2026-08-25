@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -380,6 +381,33 @@ async def test_bash_126_names_the_chmod_escape(tmp_path) -> None:
     assert res.is_error
     assert res.data is not None and res.data["exit_code"] == 126
     assert res.fix is not None and "chmod +x" in res.fix and "bash ./doit.sh" in res.fix
+
+
+@pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
+async def test_bash_python_inline_parse_error_gets_file_hint(tmp_path) -> None:
+    """A failed inline ``python -c`` program with a Syntax/IndentationError gets the
+    write-a-file hint — the quoting-truncation trap (an apostrophe in a single-quoted
+    program) had a model retry the identical broken command three times (2026-08-26)."""
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": 'python3 -c "x = ("'}, ctx)
+    assert res.is_error
+    assert res.fix is not None
+    assert "write the program to a file" in res.fix
+
+
+def test_python_inline_fix_predicate() -> None:
+    from zakcode.tools.builtins.bash import _python_inline_fix
+
+    err = (
+        'File "<string>", line 50\n    # For simplicity, well\nIndentationError: unexpected indent'
+    )
+    # Fires on python -c / python3 -c / the Windows py-launcher form.
+    assert _python_inline_fix("python3 -c 'import os\nprint(1)'", err) is not None
+    assert _python_inline_fix('py -3 -c "print(1)"', err) is not None
+    # Never fires on script-path invocations, other tools' -c flags, or non-parse errors.
+    assert _python_inline_fix("python3 script.py", err) is None
+    assert _python_inline_fix("grep -c foo bar.py", err) is None
+    assert _python_inline_fix("python3 -c 'print(1)'", "NameError: boom") is None
 
 
 def test_locate_basename_is_bounded_and_prunes(tmp_path) -> None:
