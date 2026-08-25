@@ -19,6 +19,7 @@ Everything here is session-scoped tmux configuration — the operator's global
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import json
 import os
@@ -227,6 +228,15 @@ def launch_cockpit(
     if session is None:
         session = _cockpit_session_name(workspace)
     if not _has_session(session):
+        # The stale-say boundary is HERE, not at chat start: delete any .say that
+        # predates the cockpit (dead-session leftover, or one shipped inside a
+        # cloned repo) BEFORE any pane exists that the operator could type into.
+        # From this moment on, everything in the inbox is live operator input —
+        # a message typed while the agent is still booting is DELIVERED once it
+        # listens, never discarded (2026-08-25 serene report: the first message
+        # typed during boot was eaten and Enter looked dead).
+        with contextlib.suppress(OSError):
+            say_path(workspace).unlink()
         ledger_path = ledger if ledger is not None else _default_ledger()
         zakcode = _self_invocation()
         say_cmd = shlex.join(
@@ -274,7 +284,10 @@ def launch_cockpit(
             "-T",
             "YOUR MESSAGE — type, Enter sends · Esc stops the agent / recalls a pending message",
         )
-        _tmux("select-pane", "-t", f"{session}:0.0")
+        # Focus lands on the MESSAGE BOX — the one place to type. Focusing the
+        # screen pane sent the operator's first keystrokes into the booting chat
+        # (2026-08-25 serene report: "was not able to type anything at first").
+        _tmux("select-pane", "-t", f"{session}:0.1")
         notice_info(console, f"cockpit session '{session}' created")
     if attach and os.environ.get("TMUX"):
         # Already inside a tmux client: nesting an attach is refused by tmux, so

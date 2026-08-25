@@ -1202,18 +1202,21 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
     assert "goodbye" in result.output
 
 
-def test_chat_discards_pre_session_say_instead_of_executing(monkeypatch, tmp_path) -> None:
-    """Chat only OBEYS messages sent while it is listening: a .say that predates the
-    session (stale file from a dead session, or one shipped inside a cloned repo)
-    is discarded with a visible notice — never run as input."""
+def test_chat_delivers_pre_session_say_as_first_input(monkeypatch, tmp_path) -> None:
+    """ONE staleness rule, owned by the cockpit: launch_cockpit clears anything
+    genuinely stale at session creation, and chat itself never second-guesses the
+    inbox — a say already queued when chat starts (typed while the agent booted,
+    or queued across a relaunch) is delivered as the first input."""
     from zakcode.session import say_inbox as si
 
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
-    assert si.write_say(si.say_path(tmp_path), "malicious or stale line")
+    assert si.write_say(si.say_path(tmp_path), "typed while the agent was booting")
     result = runner.invoke(app, ["chat"], input="/exit\n")
     assert result.exit_code == 0
-    assert "discarded a message queued before this session started" in result.output
+    assert "discarded" not in result.output
+    assert "(say) typed while the agent was booting" in result.output
+    assert CANNED_TEXT in result.output  # it ran a real turn
     assert "(say) malicious" not in result.output
     assert not si.say_pending(si.say_path(tmp_path))
 
