@@ -123,6 +123,7 @@ from zakcode.providers.base import (
     StreamThinkingDelta,
     StreamToolCallDelta,
     StreamUsage,
+    TimedOut,
     ToolCall,
 )
 from zakcode.providers.routing import classify_main_turn
@@ -1033,13 +1034,14 @@ class AgentLoop:
                     raise
                 attempt += 1
                 delay = self._retry_delay(exc, attempt)
-                # ModelOutputRejected subclasses RateLimited for its retry semantics;
-                # the log names the real cause (mirrors the streaming path's notice).
-                reason = (
-                    "provider rejected a malformed tool call"
-                    if isinstance(exc, ModelOutputRejected)
-                    else "provider rate-limited"
-                )
+                # ModelOutputRejected and TimedOut subclass RateLimited for their retry
+                # semantics; the log names the real cause (mirrors the streaming notice).
+                if isinstance(exc, ModelOutputRejected):
+                    reason = "provider rejected a malformed tool call"
+                elif isinstance(exc, TimedOut):
+                    reason = "request timed out (ZAKCODE_REQUEST_TIMEOUT)"
+                else:
+                    reason = "provider rate-limited"
                 next_temperature = (
                     self._rejection_retry_temperature(attempt)
                     if isinstance(exc, ModelOutputRejected)
@@ -2569,13 +2571,14 @@ class AgentLoop:
                                 if isinstance(exc, ModelOutputRejected)
                                 else None
                             )
-                            # ModelOutputRejected subclasses RateLimited for its retry
-                            # semantics; the operator-facing notice names the real cause.
-                            reason = (
-                                "provider rejected a malformed tool call"
-                                if isinstance(exc, ModelOutputRejected)
-                                else "rate limited"
-                            )
+                            # ModelOutputRejected and TimedOut subclass RateLimited for
+                            # their retry semantics; the notice names the real cause.
+                            if isinstance(exc, ModelOutputRejected):
+                                reason = "provider rejected a malformed tool call"
+                            elif isinstance(exc, TimedOut):
+                                reason = "request timed out (ZAKCODE_REQUEST_TIMEOUT)"
+                            else:
+                                reason = "rate limited"
                             logger.warning(
                                 "%s; retry %d/%d in %.1fs",
                                 reason,
