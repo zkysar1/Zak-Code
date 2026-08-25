@@ -2180,23 +2180,18 @@ def chat(
     # drawn just-in-time by THIS loop, so mid-turn output never renders inside a
     # dangling frame.
     #
-    # Safety rule that keeps always-on honest: chat only OBEYS messages sent
-    # while it is listening. A message already queued when the session starts —
-    # a stale file from a dead session, or a .say shipped inside a cloned repo —
-    # is discarded with a visible notice, never executed.
-    from zakcode.session.say_inbox import interrupt_path, read_say, say_path, take_interrupt
+    # ONE staleness rule, in ONE place: launch_cockpit deletes any .say that
+    # predates the cockpit (dead-session leftover, repo-shipped file) once at
+    # session creation. From then on the inbox is LIVE operator input — chat
+    # itself never second-guesses it, so a message typed while the agent was
+    # still booting (or queued across a chat relaunch) is delivered, never
+    # eaten (2026-08-25 serene report: the boot-time first message was
+    # discarded as "stale" and Enter looked dead).
+    from zakcode.session.say_inbox import interrupt_path, say_path, take_interrupt
 
     inbox_path = say_path(agent.settings.workspace_root)
     interrupt_fp = interrupt_path(agent.settings.workspace_root)
     take_interrupt(interrupt_fp)  # a stop signal predating the session has nothing to stop
-    stale_say = read_say(inbox_path)
-    if stale_say is not None:
-        preview = stale_say.splitlines()[0][:80]
-        notice_warn(
-            console,
-            f"say inbox: discarded a message queued before this session started "
-            f"({preview!r}) — resend it if still wanted",
-        )
     mux = _InputMux(inbox_path, interrupt_fp)
     repl_mux.append(mux)
 

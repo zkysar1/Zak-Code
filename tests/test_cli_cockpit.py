@@ -492,3 +492,77 @@ def test_bare_zakcode_starts_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     result = CliRunner().invoke(app, [], input="/exit\n")
     assert result.exit_code == 0
     assert "goodbye" in result.output
+
+
+# ── first touch: focus the box; never eat the operator's boot-time message ────────
+# 2026-08-25 serene report, reproduced live on zc-03: focus landed on the screen
+# pane ("couldn't type at first") and the first message typed while the agent
+# booted was discarded by the stale-say guard ("Enter did nothing").
+
+
+def test_launch_cockpit_focuses_the_message_box(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
+    cockpit.launch_cockpit(tmp_path, session="x", attach=False)
+    selects = [c for c in fake_tmux.calls if c[1] == "select-pane" and "-T" not in c]
+    assert selects and selects[-1][-1].endswith(":0.1")  # the box, not the screen
+
+
+def test_launch_cockpit_clears_stale_say_at_creation(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
+    """A .say that predates the cockpit (dead session, repo-shipped) dies at the
+    cockpit boundary — before any pane the operator could have typed into."""
+    from zakcode.session.say_inbox import say_path, write_say
+
+    assert write_say(say_path(tmp_path), "repo-shipped or leftover")
+    cockpit.launch_cockpit(tmp_path, session="x", attach=False)
+    assert not say_path(tmp_path).exists()
+
+
+def test_launch_cockpit_existing_session_keeps_pending_say(
+    fake_tmux: _FakeTmux, tmp_path: Path
+) -> None:
+    """Re-joining a LIVE cockpit must not clear the inbox — a message can be
+    legitimately in flight between the box and the chat."""
+    from zakcode.session.say_inbox import say_path, write_say
+
+    fake_tmux.has_session_rc = 0
+    assert write_say(say_path(tmp_path), "in flight")
+    cockpit.launch_cockpit(tmp_path, session="x", attach=False)
+    assert say_path(tmp_path).exists()
+
+
+def test_chat_delivers_boot_time_say(monkeypatch, tmp_path: Path) -> None:
+    """The box is live from cockpit creation and chat never second-guesses the
+    inbox: a say already queued when chat starts is the operator's boot-time
+    message — delivered as the first input, not discarded."""
+    from typer.testing import CliRunner
+
+    import zakcode
+    from zakcode.cli import app
+    from zakcode.session.say_inbox import say_path, write_say
+
+    class _RecordingAgent(_NoTurnAgent):
+        turns: list[str] = []
+
+        def astream_turn(self, text: str):  # noqa: ANN202
+            _RecordingAgent.turns.append(text)
+            from zakcode.events import AgentDone, AgentTextDelta
+            from zakcode.usage import Usage
+
+            async def _gen():  # noqa: ANN202
+                yield AgentTextDelta(text="ok\n")
+                yield AgentDone(
+                    stop_reason="completed",
+                    iterations=1,
+                    usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+                )
+
+            return _gen()
+
+    _RecordingAgent.turns = []
+    monkeypatch.setattr(zakcode, "Agent", _RecordingAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    assert write_say(say_path(tmp_path), "typed while the agent was booting")
+    result = CliRunner().invoke(app, ["chat"], input="/exit\n")
+    assert result.exit_code == 0
+    assert "discarded" not in result.output
+    assert _RecordingAgent.turns == ["typed while the agent was booting"]
+    assert "(say) typed while the agent was booting" in result.output
