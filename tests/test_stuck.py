@@ -2,9 +2,11 @@
 
 Pure-state tests for :class:`~zakcode.agent.stuck.StuckTracker`, plus loop-integration
 tests proving that a model stuck in ways the exact-repeat doom guard MISSES (varying-arg
-failures, alternating failing calls) is first nudged, then narrowed to read-only tools, and
-finally stopped cleanly as ``stop_reason="stuck"`` — while progressing/transient turns are
-never affected. Everything is hermetic (scripted providers, in-memory tools).
+failures, alternating failing calls) is first nudged, then narrowed to read-only tools,
+then given one step-back reassessment (which resets the streak so discovery probes get
+runway), and finally stopped cleanly as ``stop_reason="stuck"`` — while
+progressing/transient turns are never affected. Everything is hermetic (scripted
+providers, in-memory tools).
 """
 
 from __future__ import annotations
@@ -143,12 +145,51 @@ def _stuck_step(t: StuckTracker, n: int) -> StuckAction:
 
 
 def test_sustained_stuck_escalates_nudge_narrow_stop() -> None:
+    # Custom thresholds where stop_at < step_back_at: the >= stop_at backstop fires first,
+    # so the step-back rung never enters (the pre-step-back ladder shape, preserved).
     t = StuckTracker(nudge_at=1, narrow_at=2, stop_at=3)
     assert _stuck_step(t, 1) is StuckAction.NUDGE  # streak 1
     assert _stuck_step(t, 2) is StuckAction.NARROW  # streak 2
     assert _stuck_step(t, 3) is StuckAction.STOP  # streak 3
     assert t.actions == ["nudge", "narrow", "stop"]
     assert t.took_action is True
+
+
+def test_default_ladder_step_back_fires_once_with_fresh_runway() -> None:
+    # Defaults (nudge 3 / narrow 4 / step-back 5): the first arrival at 5 is the one-shot
+    # STEP_BACK, and it RESETS the streak + per-call failure counts — the reassessment gets
+    # the same runway a fresh approach would (the field recovery's first probe FAILED and
+    # the second found the real path; without the reset that would have tripped the stop).
+    t = StuckTracker()
+    assert _stuck_step(t, 1) is StuckAction.CONTINUE
+    assert _stuck_step(t, 2) is StuckAction.CONTINUE
+    assert _stuck_step(t, 3) is StuckAction.NUDGE
+    assert _stuck_step(t, 4) is StuckAction.NARROW
+    assert _stuck_step(t, 5) is StuckAction.STEP_BACK
+    assert t.streak == 0  # fresh runway
+    assert t.error_signatures() == []  # failure counts cleared with the streak
+    # Second climb: nudge/narrow re-fire on arrival, and the second landing on 5 is STOP.
+    for n in (6, 7):
+        assert _stuck_step(t, n) is StuckAction.CONTINUE
+    assert _stuck_step(t, 8) is StuckAction.NUDGE
+    assert _stuck_step(t, 9) is StuckAction.NARROW
+    assert _stuck_step(t, 10) is StuckAction.STOP
+    assert t.actions == ["nudge", "narrow", "step_back", "nudge", "narrow", "stop"]
+
+
+def test_step_back_survives_a_turn_end_veto_reset() -> None:
+    # reset() (the TURN_END veto path) clears the streak but does NOT restore the one-shot
+    # step-back charge: a turn gets one reassessment total, keeping the ladder bounded.
+    t = StuckTracker()
+    for n in range(1, 6):
+        _stuck_step(t, n)
+    assert t.actions[-1] == "step_back"
+    t.reset()
+    for n in (6, 7):
+        assert _stuck_step(t, n) is StuckAction.CONTINUE
+    assert _stuck_step(t, 8) is StuckAction.NUDGE
+    assert _stuck_step(t, 9) is StuckAction.NARROW
+    assert _stuck_step(t, 10) is StuckAction.STOP  # not a second STEP_BACK
 
 
 def test_streak_resets_on_progress_before_escalation() -> None:
@@ -162,11 +203,23 @@ def test_streak_resets_on_progress_before_escalation() -> None:
     assert t.took_action is False
 
 
-def test_nudge_and_narrow_messages_distinct() -> None:
+def test_ladder_messages_distinct() -> None:
     t = StuckTracker()
     assert "stuck" in t.nudge_message().lower()
     assert "read-only" in t.narrow_message().lower()
-    assert t.nudge_message() != t.narrow_message()
+    assert t.nudge_message() != t.narrow_message() != t.step_back_message()
+
+
+def test_step_back_message_attacks_the_premise() -> None:
+    # The step-back prompt is modeled on the operator intervention that recovered a real
+    # field turn: it must demand (1) a step back, (2) restating the goal, (3) verifying the
+    # shared ASSUMPTION with read-only probes before any retry — not just "try harder".
+    msg = StuckTracker().step_back_message().lower()
+    assert "step back" in msg
+    assert "assumption" in msg
+    assert "what you are trying to accomplish" in msg
+    assert "--help" in msg  # the concrete probe suggestions survive edits
+    assert "know exists" in msg
 
 
 # ── loop integration ────────────────────────────────────────────────────────────
@@ -235,12 +288,14 @@ class _ScriptByCallProvider(Provider):
 
 
 def _loop(provider: Provider, tmp_path: Path, registry: ToolRegistry | None = None) -> AgentLoop:
+    # 15 leaves daylight above the full default ladder (stuck stop lands at iteration 10:
+    # nudge@3, narrow@4, step-back@5 resets, re-climb nudge@8, narrow@9, stop@10).
     return AgentLoop(
         provider,
         registry or _registry(),
         Session(cwd=str(tmp_path), model="test"),
         workspace_root=tmp_path,
-        max_iterations=10,
+        max_iterations=15,
     )
 
 
@@ -254,10 +309,11 @@ def test_loop_stops_on_varying_arg_failures(tmp_path: Path) -> None:
     provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "boom", n=n)]))
     result = asyncio.run(_loop(provider, tmp_path).arun_turn("do the thing"))
     assert result.stop_reason == "stuck"  # not doom_loop, not max_iterations
-    # nudge@3 -> narrow@4 -> stop@5 (defaults), so it ends at iteration 5, far below the cap.
-    assert result.iterations == 5
+    # nudge@3 -> narrow@4 -> step-back@5 (streak resets) -> re-climb nudge@8 narrow@9 ->
+    # stop@10 (defaults): a model that ignores every rung ends at iteration 10, below cap.
+    assert result.iterations == 10
     assert result.degraded is True
-    assert len(result.tool_results) == 5 and all(b.is_error for b in result.tool_results)
+    assert len(result.tool_results) == 10 and all(b.is_error for b in result.tool_results)
 
 
 def test_loop_alternating_failures_are_caught(tmp_path: Path) -> None:
@@ -279,21 +335,65 @@ def test_loop_recovery_ladder_writes_hints(tmp_path: Path) -> None:
     transcript = "\n".join(m.text or "" for m in loop.session.messages)
     assert "appear to be stuck" in transcript  # the nudge
     assert "read-only tools are available" in transcript  # the narrow
+    assert "take a step back" in transcript  # the step-back reassessment
     # rb-204: loop-injected guidance opens with the SAME control-rail marker as tool-result
     # hints, so the model sees one "next action" vocabulary regardless of the source.
     injected = [m.text for m in loop.session.messages if m.text and "stuck" in m.text]
     assert injected and all(t.startswith("Hint:") for t in injected)
 
 
+class _RecoversOnStepBackProvider(Provider):
+    """Fails with fresh-arg boom calls until the step-back rail arrives, then answers.
+
+    The serene field shape: the model iterated on a wrong premise through nudge and narrow,
+    but the operator's "take a step back, and think about what the right path is" message
+    recovered the very next attempt. This provider is that model: only the step-back
+    framing unsticks it.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        self.calls += 1
+        last = messages[-1].text or ""
+        if "take a step back" in last.lower():
+            return LLMResult(text="Stepping back: the real path is elsewhere. Done.")
+        return LLMResult(tool_calls=[_c(f"c{self.calls}", "boom", n=self.calls)])
+
+    def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=8192)
+
+
+def test_loop_step_back_recovers_the_turn(tmp_path: Path) -> None:
+    # The whole point of the rung: a turn that would previously have died as "stuck" at the
+    # old stop threshold instead completes, because the step-back prompt landed. Degraded
+    # stays True — the footer honestly reports the struggle ("done — struggled").
+    provider = _RecoversOnStepBackProvider()
+    result = asyncio.run(_loop(provider, tmp_path).arun_turn("fetch the drive notes"))
+    assert result.stop_reason == "completed"
+    assert result.iterations == 6  # 5 failing iterations, then the recovered answer
+    assert result.degraded is True
+
+
 def test_loop_narrow_restricts_offered_tools(tmp_path: Path) -> None:
     # The NARROW step (streak 4) must restrict the NEXT iteration (the 5th call) to read-only
     # tools — the write-tier 'mutate' is dropped from the offered schema, 'look' remains.
+    # The restriction is single-shot: after the step-back reset the full set returns, and
+    # the second climb's NARROW restricts the 10th call the same way.
     registry = _registry(_LookTool(), _MutateTool())
     provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "mutate", n=n)]))
     result = asyncio.run(_loop(provider, tmp_path, registry).arun_turn("keep failing"))
     assert result.stop_reason == "stuck"
     assert "mutate" in _tool_names(provider.tools_seen[0])  # full set early on
     assert _tool_names(provider.tools_seen[4]) == {"look"}  # 5th call: read-only only
+    assert "mutate" in _tool_names(provider.tools_seen[5])  # restriction lifted after
+    assert _tool_names(provider.tools_seen[9]) == {"look"}  # second climb narrows again
 
 
 def test_loop_narrow_enforces_dispatch_not_just_schema(tmp_path: Path) -> None:
@@ -306,8 +406,10 @@ def test_loop_narrow_enforces_dispatch_not_just_schema(tmp_path: Path) -> None:
     provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "mutate", n=n)]))
     result = asyncio.run(_loop(provider, tmp_path, registry).arun_turn("keep failing"))
     assert result.stop_reason == "stuck"
-    assert result.iterations == 5
-    assert mutate.executed == 4  # ran on iters 1-4; the 5th (narrowed) call was rejected
+    assert result.iterations == 10
+    # Executed on the un-narrowed iterations (1-4 and, post-step-back, 6-9); REJECTED on
+    # both narrowed iterations (5 and 10) — the dispatch gate enforces on every climb.
+    assert mutate.executed == 8
     last = result.tool_results[-1]
     assert last.is_error and isinstance(last.data, dict) and last.data.get("step_restricted")
     # The rejection guides the model toward the read-only tool.
@@ -320,7 +422,7 @@ def test_loop_not_stuck_when_progressing(tmp_path: Path) -> None:
     provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "look", n=n)]))
     result = asyncio.run(_loop(provider, tmp_path).arun_turn("make progress"))
     assert result.stop_reason == "max_iterations"
-    assert result.iterations == 10
+    assert result.iterations == 15
     assert result.degraded is False
 
 
@@ -351,6 +453,7 @@ def test_streaming_stuck_stops_and_emits_status(tmp_path: Path) -> None:
     statuses = [e.message for e in events if isinstance(e, AgentStatus)]
     assert any("nudging" in m for m in statuses)
     assert any("read-only" in m for m in statuses)
+    assert any("stepping back" in m for m in statuses)
     assert any("stopping: stuck" in m for m in statuses)
 
 

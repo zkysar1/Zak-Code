@@ -12,6 +12,14 @@ signals** and, when enough of them fire for enough iterations in a row, drives a
 * **nudge** — inject a corrective hint and let the model try a different approach;
 * **narrow** — restrict the next iteration to read-only tools so the model is forced to
   *investigate* (re-read the file, the error, the directory) before mutating again;
+* **step back** — one last, once-per-turn reassessment prompt: every attempt failing
+  usually means they share a wrong *assumption* (a path that does not exist here, a tool
+  that is not installed, an interface that differs), so the model is told to restate the
+  goal and verify that assumption from the ground up with read-only probes before acting
+  again. Firing it resets the streak, because a model that takes the advice starts with a
+  failing discovery probe or two (verified in the field: the first post-prompt probe
+  failed, the second found the real path) — without the reset those honest probes would
+  trip the stop threshold mid-recovery;
 * **stop** — end the turn cleanly with ``stop_reason="stuck"`` rather than burning the
   whole iteration budget flailing.
 
@@ -77,6 +85,7 @@ class StuckAction(Enum):
     CONTINUE = "continue"  # not stuck (or not yet) — proceed normally
     NUDGE = "nudge"  # inject a corrective hint, keep going
     NARROW = "narrow"  # restrict the next iteration to read-only tools, keep going
+    STEP_BACK = "step_back"  # once per turn: reassess assumptions from scratch, streak resets
     STOP = "stop"  # give up gracefully (stop_reason="stuck")
 
 
@@ -86,8 +95,15 @@ class StuckTracker:
     Each tool-call iteration is scored by how many independent stuck-signals fire
     (:meth:`observe`); ``vote_threshold`` or more makes the iteration "stuck", and a run of
     consecutive stuck iterations escalates the ladder at ``nudge_at`` → ``narrow_at`` →
-    ``stop_at`` (:meth:`next_action`). Streaks reset the moment the model makes progress, so
-    transient trouble never escalates.
+    ``step_back_at`` → ``stop_at`` (:meth:`next_action`). Streaks reset the moment the model
+    makes progress, so transient trouble never escalates.
+
+    The STEP_BACK rung is once per turn and *consumes the streak*: choosing it resets the
+    counter (and the per-call failure counts) so the reassessment gets the same runway a
+    fresh approach would. If the model climbs all the way back, the second arrival at
+    ``step_back_at`` is a STOP. ``stop_at`` (> ``step_back_at``) is a pure backstop for
+    custom threshold layouts where the streak can pass ``step_back_at`` without landing on
+    it; with the defaults the reset makes it unreachable.
     """
 
     def __init__(
@@ -96,12 +112,14 @@ class StuckTracker:
         vote_threshold: int = 2,
         nudge_at: int = 3,
         narrow_at: int = 4,
-        stop_at: int = 5,
+        step_back_at: int = 5,
+        stop_at: int = 6,
         repeated_failure_at: int = 2,
     ) -> None:
         self.vote_threshold = vote_threshold
         self.nudge_at = nudge_at
         self.narrow_at = narrow_at
+        self.step_back_at = step_back_at
         self.stop_at = stop_at
         self.repeated_failure_at = repeated_failure_at
         self._streak = 0  # consecutive stuck (>= vote_threshold signals) iterations
@@ -109,6 +127,7 @@ class StuckTracker:
         self._error_counts: Counter[tuple[str, str]] = Counter()  # per-call failures this turn
         self._last_signals: list[str] = []  # signals fired on the most recent observe
         self._actions: list[str] = []  # ladder actions taken this turn (observability)
+        self._step_back_used = False  # the reassessment rung is once per turn
 
     # ── inspection ───────────────────────────────────────────────────────────
     @property
@@ -187,17 +206,30 @@ class StuckTracker:
         """The ladder step implied by the current streak (call once per :meth:`observe`).
 
         Returns :attr:`StuckAction.NUDGE` / ``NARROW`` exactly once as the streak crosses
-        each threshold, and ``STOP`` once it reaches ``stop_at``; ``CONTINUE`` otherwise.
-        Records the chosen step for :attr:`actions` / :attr:`took_action`.
+        each threshold; the first arrival at ``step_back_at`` is ``STEP_BACK`` (which
+        resets the streak — the reassessment gets fresh runway), the second is ``STOP``;
+        ``stop_at`` is a ``>=`` backstop. ``CONTINUE`` otherwise. Records the chosen step
+        for :attr:`actions` / :attr:`took_action`.
         """
         if self._streak >= self.stop_at:
             action = StuckAction.STOP
+        elif self._streak == self.step_back_at:
+            action = StuckAction.STOP if self._step_back_used else StuckAction.STEP_BACK
         elif self._streak == self.narrow_at:
             action = StuckAction.NARROW
         elif self._streak == self.nudge_at:
             action = StuckAction.NUDGE
         else:
             action = StuckAction.CONTINUE
+        if action is StuckAction.STEP_BACK:
+            # Consume the one-shot rung and give the reassessment the same runway a fresh
+            # approach would get. The field trace that motivated this rung recovered with a
+            # FAILING first probe (List on the assumed path) before the second probe found
+            # the real one — without the reset, that honest probe would trip the stop.
+            self._step_back_used = True
+            self._streak = 0
+            self._prev_sig = None
+            self._error_counts.clear()
         if action is not StuckAction.CONTINUE:
             self._actions.append(action.value)
         return action
@@ -206,7 +238,9 @@ class StuckTracker:
         """Reset streak and signal state after a TURN_END veto continues the loop.
 
         Prevents immediate re-triggering of the stuck ladder when the loop
-        re-enters with an injected continuation prompt.
+        re-enters with an injected continuation prompt. Deliberately does NOT restore the
+        one-shot STEP_BACK charge — a turn gets one reassessment no matter how many veto
+        continuations it earns, so the ladder stays bounded.
         """
         self._streak = 0
         self._prev_sig = None
@@ -228,4 +262,26 @@ class StuckTracker:
             "You are still stuck, so for this step only read-only tools are available. Use "
             "them to investigate first — read the file, the error, or the directory — and "
             "take one focused step to find the real cause before attempting another change."
+        )
+
+    def step_back_message(self) -> str:
+        """The reassessment prompt injected on a :attr:`StuckAction.STEP_BACK`.
+
+        Modeled on the operator intervention that recovered a real stuck-stopped turn in the
+        field ("take a step back, and think about what the right path is, and try again"):
+        it attacks the shared PREMISE of the failed attempts, not the method, and demands
+        cheap read-only verification before any retry.
+        """
+        return (
+            "Stop and take a step back — do not retry anything yet. Several different "
+            "attempts have all failed, which usually means they share one wrong assumption: "
+            "a path that does not exist here, a command or tool that is not available, an "
+            "interface that differs from what you expect. First state in one sentence what "
+            "you are trying to accomplish. Then verify the assumption every failed attempt "
+            "depended on, from the ground up, with read-only probes: list a directory you "
+            "KNOW exists (such as the workspace root) and walk down to find the real path; "
+            "run the command with --help to see its real interface; read the file you "
+            "believe is there. Rebuild your approach from what the probes actually show, "
+            "and only then act. Do not repeat any earlier failing call until a probe has "
+            "confirmed the assumption it depends on."
         )

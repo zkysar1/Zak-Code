@@ -519,3 +519,36 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   killing the run at 6 seconds; fleets desynchronize instead of re-spiking in lockstep; and
   when the horizon is genuinely exhausted the operator is told, truthfully, that nothing
   was lost.
+
+## ADR-0015 — Stuck ladder gets a step-back rung: attack the premise before giving up
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** A field turn (serene) burned 17 iterations trying to add a knowledge-tree
+  node: every attempt varied the METHOD (`tree` as a shell command, `tree.sh`, `tree.py`
+  with guessed flags) while sharing one wrong PREMISE — that `world/knowledge/tree/`
+  existed relative to the cwd (the real tree lived under an external `.mind-data/` root).
+  The ladder nudged, narrowed to read-only, and stopped; the read-only rung even had the
+  right tools in hand and still probed the wrong assumed path. The operator then typed
+  "take a step back, and think about what the right path is, and try again" — and the
+  model recovered in two probes: one failing List on the assumed path, then a List from a
+  root it could verify, walking down to the real location. The intervention worked because
+  it attacked the assumption, not the effort; and notably its first probe FAILED.
+- **Decision:** A fourth rung, `STEP_BACK`, between narrow and stop (defaults now
+  nudge@3 → narrow@4 → step-back@5 → stop; no knobs). Once per turn, the loop injects a
+  reassessment rail modeled on the operator's message: state the goal in one sentence,
+  name the assumption every failed attempt shared, verify it from the ground up with
+  read-only probes (list a directory you KNOW exists and walk down; run the command with
+  `--help`; read the file you believe is there), and only then act. Firing it RESETS the
+  streak and the per-call failure counts — the field recovery's first post-prompt probe
+  failed, and without the reset that honest probe would have tripped the stop mid-recovery.
+  A second climb re-runs nudge and narrow and the second arrival at the rung stops the
+  turn, so a genuinely doomed turn ends at ~10 stuck iterations instead of 5.
+- **Alternatives rejected:** making the rung read-only-restricted (the field intervention
+  was prompt-only and the model probed voluntarily; restriction would block a
+  legitimately-correct immediate action); resetting only partially (any post-reassessment
+  failure would then compound leftover streak and stop before discovery completes);
+  re-arming step-back after a TURN_END veto (unbounded ladders; one reassessment per turn).
+- **Consequences:** turns that die on a wrong premise — wrong path, missing tool, changed
+  interface — now get one explicit chance to re-derive it before stopping; doomed turns
+  cost up to 5 more iterations; every step-back turn reports `degraded` so a recovery is
+  never mistaken for a clean run.
