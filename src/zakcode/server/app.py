@@ -347,8 +347,9 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
     A per-request ``model`` override swaps **only** the model via :meth:`Settings.model_copy`,
     preserving the rest of the posture; rebuilding ``Settings`` from the environment would
     silently drop ``permission_mode`` / ``workspace_root`` and change the security stance of
-    the turn. A ``prompter`` (from the WebSocket bridge) makes ``ask`` mode interactive; with
-    none, ``ask`` fails closed (writes/shell denied) — the safe default for headless REST/SSE.
+    the turn. The ``prompter`` makes ``ask`` mode interactive: WebSocket turns get the WS
+    bridge, REST/driver turns get the :class:`SayInboxPrompter` (answers ride the say
+    contract); with none at all, ``ask`` fails closed (writes/shell denied).
 
     Cross-session memory is NOT a harness concern (see docs/PERSISTENCE-BOUNDARY.md): a served
     MIND attaches its own recall via the generic hook/tool seams; the factory wires none.
@@ -395,6 +396,101 @@ class WebSocketPermissionPrompter:
     async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
         await self._send(WSActionRequired.from_request(request).model_dump(mode="json"))
         return await self._await_approval()
+
+
+#: Live references to background held-say re-queue tasks (a bare ``create_task``
+#: result can be garbage-collected mid-flight; the done-callback discards).
+_REQUEUE_TASKS: set[asyncio.Task[None]] = set()
+
+
+async def _requeue_held_says(
+    inbox: Path, held: list[str], *, poll: float = 0.3, max_wait: float = 600.0
+) -> None:
+    """Give messages held during a permission prompt back to the inbox, in order.
+
+    The slot is single, so each message waits for the previous one to be consumed
+    (the between-turn say consumer frees it). Bounded: if the slot stays occupied
+    past ``max_wait`` the remainder is dropped with a log line — same at-most-once
+    delivery posture the rest of the contract has.
+    """
+    from zakcode.session.say_inbox import say_pending, write_say
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_wait
+    for i, text in enumerate(held):
+        while say_pending(inbox) and loop.time() < deadline:
+            await asyncio.sleep(poll)
+        if loop.time() >= deadline:
+            logger.warning(
+                "dropping %d held say(s) — inbox stayed occupied for %ss", len(held) - i, max_wait
+            )
+            return
+        write_say(inbox, text)
+
+
+class SayInboxPrompter:
+    """Answers permission escalations from the workspace say inbox — the ONE contract.
+
+    Server-run turns (REST ``/chat`` and ``/chat/stream``, which is every turn the
+    autonomous serve driver runs) used to get NO prompter, so ``ask`` mode failed
+    closed with nobody ever asked. Now the escalation is announced on the session's
+    watch bus (the same ``action_required`` frame the WebSocket bridge sends; the
+    kid-facing safe projection still drops it by whitelist) and the workspace say
+    inbox is polled for a parseable y/a/n answer — the same file ``zakcode say``,
+    ``POST /say`` and the cockpit box write, and the same answer grammar
+    (:func:`zakcode.permissions.parse_permission_answer`) the terminal uses.
+
+    Same semantics as the CLI's input mux: a say that is NOT an answer is held and
+    re-queued after the prompt resolves (a real message sent mid-prompt is delivered
+    as input, never burned on the prompt); a pending interrupt file denies. No
+    answer within ``timeout`` denies — fail toward safe, same bound as the
+    WebSocket bridge — so an unattended ask-mode deployment degrades to exactly the
+    old behavior, just ``timeout`` later.
+    """
+
+    def __init__(
+        self,
+        workspace_root: str | os.PathLike[str],
+        *,
+        publish: Callable[[Any], Any] | None = None,
+        timeout: float = APPROVAL_TIMEOUT_SECONDS,
+        poll: float = 0.3,
+    ) -> None:
+        from zakcode.session.say_inbox import interrupt_path, say_path
+
+        self._inbox = say_path(workspace_root)
+        self._interrupt = interrupt_path(workspace_root)
+        self._publish = publish
+        self._timeout = timeout
+        self._poll = poll
+
+    async def confirm(self, request: PermissionRequest) -> PermissionOutcome:
+        from zakcode.permissions import parse_permission_answer
+        from zakcode.session.say_inbox import read_say, take_interrupt
+
+        if self._publish is not None:
+            with contextlib.suppress(Exception):  # observability must never break the turn
+                self._publish(WSActionRequired.from_request(request).model_dump(mode="json"))
+        held: list[str] = []
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self._timeout
+            while loop.time() < deadline:
+                if take_interrupt(self._interrupt):
+                    return PermissionOutcome.DENY_ONCE
+                text = read_say(self._inbox)
+                if text is not None:
+                    decision = parse_permission_answer(text)
+                    if decision is not None:
+                        return decision
+                    held.append(text)
+                await asyncio.sleep(self._poll)
+            return PermissionOutcome.DENY_ONCE  # timeout — fail toward safe
+        finally:
+            if held:
+                task = asyncio.get_running_loop().create_task(_requeue_held_says(self._inbox, held))
+                _REQUEUE_TASKS.add(task)
+                task.add_done_callback(_REQUEUE_TASKS.discard)
 
 
 # ── PEARL knowledge base (§10.4) + viewer nudge (§Layer-4) ────────────────────
@@ -671,6 +767,16 @@ def create_app(
             )
         inflight.add(session.id)
 
+    def _inbox_prompter(session_id: str) -> SayInboxPrompter:
+        # Every server-run turn can have its escalations answered through the ONE
+        # contract (the workspace say inbox) — previously these turns had no
+        # prompter at all, so `ask` mode denied with nobody asked. The request is
+        # announced on the session's watch bus for observers.
+        return SayInboxPrompter(
+            resolved_settings.workspace_root,
+            publish=event_bus_registry.get_or_create(session_id).publish,
+        )
+
     @app.post("/chat")
     async def chat(request: ChatRequest) -> ChatResponse:
         _check_model(request.model)
@@ -678,7 +784,7 @@ def create_app(
         _claim_session(session)
         agent: AgentLike | None = None
         try:
-            agent = resolved_factory(session, request.model, None)
+            agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
             result = await agent.arun_turn(request.message)
             resolved_store.save(agent.session)
             return ChatResponse.from_turn(agent.session.id, result)
@@ -696,7 +802,7 @@ def create_app(
         # and its finally would then never run — permanently stranding the reservation and
         # 409-ing the session until restart. Release it on a build failure. (audit2 #5)
         try:
-            agent = resolved_factory(session, request.model, None)
+            agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
         except BaseException:
             inflight.discard(session.id)
             raise

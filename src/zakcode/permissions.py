@@ -371,6 +371,35 @@ class PermissionOutcome(StrEnum):
     DENY_SESSION = "deny_session"
 
 
+def parse_permission_answer(answer: str) -> PermissionOutcome | None:
+    """Map an operator's permission answer to an outcome, or ``None`` if unrecognized.
+
+    The ONE y/a/n answer grammar for every surface that reads answers off the say
+    contract — the CLI's console/mux prompt and the server's inbox prompter parse
+    identically. Accepts the option numbers (``1`` / ``2`` / ``3``), the single-key
+    hints (``y`` / ``a`` / ``n``), and the spelled-out phrases shown in the prompt
+    (``allow once`` / ``allow for session`` / ``deny``) plus common synonyms, so an
+    operator who types the words they see is understood rather than silently denied.
+    """
+    a = answer.strip().lower()
+    if a in (
+        "2",
+        "a",
+        "always",
+        "session",
+        "allow session",
+        "allow for session",
+        "allow for the session",
+        "allow always",
+    ):
+        return PermissionOutcome.ALLOW_SESSION
+    if a in ("1", "y", "yes", "o", "once", "allow", "allow once"):
+        return PermissionOutcome.ALLOW_ONCE
+    if a in ("3", "n", "no", "d", "deny"):
+        return PermissionOutcome.DENY_ONCE
+    return None
+
+
 @runtime_checkable
 class PermissionPrompter(Protocol):
     """Asks the operator to confirm an escalated tool call.

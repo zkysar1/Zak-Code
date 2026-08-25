@@ -54,7 +54,7 @@ from zakcode.cli._theme import ZAK_THEME
 from zakcode.cli.render import StreamRenderer, display_call
 from zakcode.config import PermissionTier, Settings, env_source, load_settings
 from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
-from zakcode.permissions import PermissionOutcome, PermissionRequest
+from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_permission_answer
 from zakcode.providers.base import ProviderError
 from zakcode.secrets import strip_url_credentials
 from zakcode.workspace_trust import ADOPT_ALWAYS, ADOPT_NEVER, ADOPT_SESSION
@@ -725,32 +725,11 @@ def _abbrev(value: object, *, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def _parse_permission_answer(answer: str) -> PermissionOutcome | None:
-    """Map a typed permission answer to an outcome, or ``None`` if unrecognized.
-
-    Accepts the option numbers (``1`` / ``2`` / ``3``), the single-key hints
-    (``y`` / ``a`` / ``n``), and the spelled-out phrases shown in the prompt
-    (``allow once`` / ``allow for session`` / ``deny``) plus common synonyms, so an
-    operator who types the words they see is understood rather than silently denied
-    (the original cause of this prompt's confusion).
-    """
-    a = answer.strip().lower()
-    if a in (
-        "2",
-        "a",
-        "always",
-        "session",
-        "allow session",
-        "allow for session",
-        "allow for the session",
-        "allow always",
-    ):
-        return PermissionOutcome.ALLOW_SESSION
-    if a in ("1", "y", "yes", "o", "once", "allow", "allow once"):
-        return PermissionOutcome.ALLOW_ONCE
-    if a in ("3", "n", "no", "d", "deny"):
-        return PermissionOutcome.DENY_ONCE
-    return None
+# The y/a/n answer grammar lives in the CORE (zakcode.permissions) so every
+# surface that reads answers off the say contract — this CLI, the server's
+# inbox prompter — parses identically. Kept under the old private name here
+# because it is referenced throughout this module and its tests.
+_parse_permission_answer = parse_permission_answer
 
 
 #: Humanized blast-radius labels (the raw enum name never prints). ``{dash}``
