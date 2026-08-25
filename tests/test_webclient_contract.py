@@ -85,6 +85,15 @@ def test_client_speaks_the_say_contract() -> None:
         assert parsed is not None and parsed.value == outcome_name, (outcome_name, answer)
 
 
+def test_sse_parser_normalizes_crlf_framing() -> None:
+    # sse-starlette's wire default is CRLF line endings (DEFAULT_SEPARATOR), so the
+    # page's frame scan on "\n\n" finds nothing unless the buffer is normalized
+    # first — the parser rendered ZERO frames until it was (fresh-eyes F-1). httpx's
+    # aiter_lines normalizes endings, so only this source-level pin guards the page.
+    html = _html()
+    assert 'buf = buf.replace(/\\r\\n/g, "\\n");' in html
+
+
 def test_client_can_interrupt_a_turn() -> None:
     # The Stop button POSTs /interrupt — the contract's sibling control file.
     html = _html()

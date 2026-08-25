@@ -665,7 +665,16 @@ def create_app(
         sid = _current_session_id()
         if sid is None:
             raise HTTPException(status_code=404, detail="no current session")
-        return SessionInfo.from_session(_load_session_or_404(sid))
+        try:
+            return SessionInfo.from_session(_load_session_or_404(sid))
+        except HTTPException:
+            # A dangling marker (the session it names was deleted) must be healed
+            # HERE, or the page and the say consumer diverge for good: POST /sessions
+            # refuses to overwrite an existing marker, so the page would bind to a
+            # session the consumer never runs (fresh-eyes F-2).
+            with contextlib.suppress(OSError):
+                (_workspace_root / ".current-session").unlink()
+            raise
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str) -> SessionInfo:
@@ -1303,6 +1312,21 @@ def create_app(
                             await t
         except Exception:  # noqa: BLE001 — the consumer loop must survive a failed turn
             logger.exception("say consumer: turn failed for session %s", session.id)
+            # A user_message was already published; without a terminal frame every
+            # watcher sticks on "thinking…" until its next reconnect (fresh-eyes F-3).
+            from zakcode.events import AgentDone
+            from zakcode.usage import Usage
+
+            with contextlib.suppress(Exception):
+                bus.publish(
+                    AgentDone(
+                        stop_reason="provider_error",
+                        iterations=0,
+                        usage=Usage(),
+                        degraded=True,
+                        error="turn failed before completing — see server log",
+                    )
+                )
         finally:
             try:
                 if agent is not None:

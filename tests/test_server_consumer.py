@@ -211,3 +211,65 @@ async def test_web_page_path_say_to_full_watch(tmp_path: Path) -> None:
     assert sum(1 for f in frames if f.get("event") == "user_message") == 1
     assert {"event": "text", "text": "ok"} in frames
     assert frames[-1]["event"] == "done"
+
+
+def test_current_session_heals_a_dangling_marker(tmp_path: Path) -> None:
+    """A marker naming a deleted session must be removed on the 404 (fresh-eyes F-2):
+    POST /sessions refuses to overwrite an existing marker, so without the heal the
+    page binds to a session the consumer never runs."""
+    app, _ = _build(tmp_path)
+    (tmp_path / ".current-session").write_text("deadbeef" * 4 + "\n", encoding="utf-8")
+
+    async def go() -> tuple[int, str]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            missing = await client.get("/sessions/current")
+            assert not (tmp_path / ".current-session").exists()  # marker healed
+            created = await client.post("/sessions", json={})
+            return missing.status_code, created.json()["id"]
+
+    missing_status, created_id = asyncio.run(go())
+    assert missing_status == 404
+    # The follow-up create now adopts the marker, reconverging page and consumer.
+    assert (tmp_path / ".current-session").read_text(encoding="utf-8").strip() == created_id
+
+
+async def test_prestream_failure_publishes_terminal_done(tmp_path: Path) -> None:
+    """A turn that dies before streaming (agent factory raise) must still end with a
+    terminal frame on the bus, or every watcher sticks on 'thinking…' (fresh-eyes F-3)."""
+    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+
+    def raising_factory(session: Session, model: object, prompter: object) -> _FakeAgent:
+        raise RuntimeError("provider misconfigured")
+
+    app = create_app(settings=settings, store=store, agent_factory=raising_factory)
+    with _LiveServer(app) as base_url:
+        timeout = httpx.Timeout(10.0, read=5.0)
+        async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as ac:
+            resp = await ac.post("/say", json={"text": "hello?"})
+            assert resp.status_code in (200, 202)
+            sid = None
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                current = await ac.get("/sessions/current")
+                if current.status_code == 200:
+                    sid = current.json()["id"]
+                    break
+                await asyncio.sleep(0.05)
+            assert sid is not None
+
+            frames: list[dict[str, Any]] = []
+            async with ac.stream("GET", f"/watch/{sid}?full=1") as watch:
+                assert watch.status_code == 200
+                async for line in watch.aiter_lines():
+                    if line.startswith("data:"):
+                        frames.append(json.loads(line[len("data:") :].strip()))
+                        if frames[-1].get("event") == "done":
+                            break
+
+    assert frames[0]["event"] == "user_message"
+    done = frames[-1]
+    assert done["event"] == "done"
+    assert done["stop_reason"] == "provider_error"
+    assert done["degraded"] is True
