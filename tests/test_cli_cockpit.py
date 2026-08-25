@@ -27,6 +27,8 @@ class _FakeTmux:
         self.calls: list[list[str]] = []
         self.has_session_rc = has_session_rc
         self.capture_stdout = capture_stdout
+        self.display_stdout = b"%0"
+        self.display_rc = 0
 
     def __call__(self, argv, **kwargs):  # noqa: ANN001, ANN003, ANN204
         self.calls.append([str(a) for a in argv])
@@ -35,6 +37,10 @@ class _FakeTmux:
             return subprocess.CompletedProcess(argv, self.has_session_rc)
         if sub == "capture-pane":
             return subprocess.CompletedProcess(argv, 0, stdout=self.capture_stdout, stderr=b"")
+        if sub == "display-message":
+            return subprocess.CompletedProcess(
+                argv, self.display_rc, stdout=self.display_stdout, stderr=b""
+            )
         return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
 
     def subcommands(self) -> list[str]:
@@ -44,6 +50,8 @@ class _FakeTmux:
 @pytest.fixture
 def fake_tmux(monkeypatch: pytest.MonkeyPatch) -> _FakeTmux:
     fake = _FakeTmux()
+    # Deterministic regardless of whether the test process itself runs inside tmux.
+    monkeypatch.delenv("TMUX_PANE", raising=False)
     monkeypatch.setattr(
         cockpit.shutil,
         "which",
@@ -241,3 +249,82 @@ def test_say_box_multiline_reports_line_count(
     assert "2 lines" in cockpit.console.export_text()
     subs = fake_tmux.subcommands()
     assert "load-buffer" in subs and "paste-buffer" in subs
+
+
+def test_say_refuses_self_target_pane(
+    fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the chat pane died, the say box got renumbered to 0.0 — never send to self."""
+    fake_tmux.has_session_rc = 0
+    fake_tmux.display_stdout = b"%7\n"
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    ledger = tmp_path / "l.jsonl"
+    with pytest.raises(typer.Exit) as excinfo:
+        cockpit.say(text="hi", session="x", ledger=ledger, operator=None)
+    assert excinfo.value.exit_code == 1
+    assert not ledger.exists()
+    assert "chat pane is gone" in cockpit.console.export_text()
+
+
+def test_say_box_warns_instead_of_self_echo(
+    fake_tmux: _FakeTmux, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_tmux.has_session_rc = 0
+    fake_tmux.display_rc = 1  # chat pane cannot even be resolved
+    lines = iter(["hello"])
+
+    def _next_line(prompt: str = "") -> str:
+        try:
+            return next(lines)
+        except StopIteration:
+            raise KeyboardInterrupt from None
+
+    monkeypatch.setattr("builtins.input", _next_line)
+    ledger = tmp_path / "l.jsonl"
+    with pytest.raises(typer.Exit):
+        cockpit.cockpit_say_box(session="x", ledger=ledger, operator="h@b")
+    assert not ledger.exists()
+    assert not any(c[1] == "send-keys" for c in fake_tmux.calls)
+    assert "NOT sent" in cockpit.console.export_text()
+
+
+def test_cockpit_main_shields_relaunch_loop_from_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """SIGINT is ignored in the wrapper while chat runs (and restored after), and the
+    chat child gets default disposition back via preexec — so Ctrl-C interrupts chat
+    without killing the pane's relaunch loop."""
+    sig_calls: list[tuple[object, object]] = []
+    real_signal = cockpit.signal
+
+    class _SigStub:
+        SIGINT = real_signal.SIGINT
+        SIG_IGN = real_signal.SIG_IGN
+        SIG_DFL = real_signal.SIG_DFL
+
+        @staticmethod
+        def signal(num: object, handler: object) -> object:
+            sig_calls.append((num, handler))
+            return "prev-handler"
+
+    monkeypatch.setattr(cockpit, "signal", _SigStub)
+    runs: list[dict[str, object]] = []
+
+    def _record(argv, **kwargs):  # noqa: ANN001, ANN003, ANN204
+        runs.append({"argv": [str(a) for a in argv], "preexec_fn": kwargs.get("preexec_fn")})
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(cockpit.subprocess, "run", _record)
+    monkeypatch.setattr(
+        cockpit.shutil, "which", lambda name: "/usr/bin/zakcode" if name == "zakcode" else None
+    )
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", _raise_eof)
+    cockpit.cockpit_main(workspace=tmp_path)
+    chat = next(r for r in runs if r["argv"][-1] == "chat")  # type: ignore[index]
+    if os.name == "posix":
+        assert chat["preexec_fn"] is not None
+    # Ignored while chat ran, then restored to whatever was there before.
+    assert (_SigStub.SIGINT, _SigStub.SIG_IGN) in sig_calls
+    assert (_SigStub.SIGINT, "prev-handler") in sig_calls

@@ -22,6 +22,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -124,6 +125,24 @@ def _send_to_pane(session: str, text: str) -> None:
     _tmux("send-keys", "-t", target, "Enter")
 
 
+def _chat_pane_ok(session: str) -> bool:
+    """True when the chat pane exists and is not the CALLING pane itself.
+
+    If the chat pane dies, tmux renumbers the say box to index 0 and every send
+    becomes a self-echo loop. Refusing to send is the honest failure.
+    """
+    out = subprocess.run(
+        [_tmux_bin(), "display-message", "-p", "-t", f"{session}:0.0", "#{pane_id}"],
+        capture_output=True,
+        check=False,
+    )
+    if out.returncode != 0:
+        return False
+    target = out.stdout.decode().strip()
+    own = os.environ.get("TMUX_PANE")
+    return not own or target != own
+
+
 def _chat_pane_mid_turn(session: str) -> bool:
     """True when the chat pane's visible text shows a turn in flight."""
     out = subprocess.run(
@@ -132,6 +151,15 @@ def _chat_pane_mid_turn(session: str) -> bool:
         check=False,
     )
     return _MID_TURN_MARK.encode() in out.stdout
+
+
+def _restore_sigint() -> None:
+    """preexec for the chat child: undo the parent's SIG_IGN so Ctrl-C reaches chat.
+
+    Python only installs its KeyboardInterrupt handler when SIGINT is NOT inherited
+    as ignored, so without this the child could never be interrupted at all.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
 def _banner_hook(workspace: Path) -> Path | None:
@@ -247,7 +275,22 @@ def cockpit_main(
         hook = _banner_hook(workspace)
         if hook is not None:
             subprocess.run([str(hook)], cwd=workspace, check=False)
-        subprocess.run([*_self_invocation(), "chat"], cwd=workspace, env=env, check=False)
+        # Ctrl-C in this pane must reach ONLY chat (which handles it: interrupt a
+        # running reply, double-press to exit). Without this, the same SIGINT also
+        # raises KeyboardInterrupt here, the relaunch loop dies, the pane closes,
+        # and the say box below becomes the sole pane — its own send-keys target
+        # (observed live on zc-03, 2026-08-25).
+        prev = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            subprocess.run(
+                [*_self_invocation(), "chat"],
+                cwd=workspace,
+                env=env,
+                check=False,
+                preexec_fn=_restore_sigint if os.name == "posix" else None,
+            )
+        finally:
+            signal.signal(signal.SIGINT, prev)
         console.print(
             "── chat exited · press Enter to relaunch · Ctrl-C to close this pane ──",
             style="notice.dim",
@@ -289,6 +332,9 @@ def cockpit_say_box(
             raise typer.Exit(code=0) from None
         if not line.strip():
             continue
+        if not _chat_pane_ok(session):
+            last = "⚠ chat pane is gone — recreate with: zakcode cockpit (message NOT sent)"
+            continue
         _append_ledger(ledger_path, line, via="cockpit-say-box", operator=operator)
         _send_to_pane(session, line)
         stamp = time.strftime("%H:%M")
@@ -315,6 +361,13 @@ def say(
             console,
             "no cockpit session",
             f"'{session}' is not running — start one with: zakcode cockpit -s {session}",
+        )
+        raise typer.Exit(code=1)
+    if not _chat_pane_ok(session):
+        notice_error(
+            console,
+            "chat pane is gone",
+            f"recreate the cockpit first: zakcode cockpit -s {session}",
         )
         raise typer.Exit(code=1)
     ledger_path = ledger if ledger is not None else _default_ledger()
