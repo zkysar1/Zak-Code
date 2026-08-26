@@ -719,3 +719,38 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   declares); a secret value or credential-shaped paste cannot leave via a search query
   or a fetch header even by accident; the sanctioned `{{secret:NAME}}` path keeps
   working everywhere.
+
+## ADR-0020 — The anomaly rail: a write over a failed read carries the question
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Field observation (same deployment): a knowledge-tree index said a node
+  existed, the read of its file failed ("File not found"), and the model silently wrote
+  a fresh file and moved on — never noting that two sources of truth had just
+  disagreed. The underlying cause could have been index drift (yesterday's write lost)
+  or a path-resolution split (the framework's scripts resolve a virtual prefix to an
+  external directory; the harness's raw file tools resolve the same string
+  workspace-relative — silently creating a SHADOW tree no script will ever read).
+  Either way the recovery looked clean and the contradiction died unexamined. The
+  general failure: an error that CONTRADICTS prior evidence deserves one diagnostic
+  beat, and models pave over it with the most plausible next action instead.
+- **Decision:** A single, narrow, mechanical tripwire in the shared tool-execution seam
+  (both turn paths funnel through `_execute_tool_call`): the loop remembers, per turn,
+  every path whose `read_file` errored; a later SUCCESSFUL `write_file` to the same
+  path (relative/absolute spellings canonicalized) appends `[harness] a read of this
+  exact path failed earlier this turn…` to the write's result — asking the model to
+  either diagnose the mismatch in one sentence or confirm the create was intentional.
+  Fires once per path per turn; per-turn memory only; zero extra iterations (the note
+  rides the result the model reads anyway, at the exact moment it decides what to
+  build on the new file).
+- **Alternatives rejected:** vetoing the write pending confirmation (create-if-missing
+  is a common LEGITIMATE pattern — read to check, create when absent — and a veto
+  would tax every instance with a round-trip); a plan-gate integration (plan nudges
+  fire at turn end, after the pave-over already happened; the decision moment is the
+  tool result); a generic "diagnose every error" nudge (fires constantly, becomes
+  noise, and the model tunes it out — the value is in flagging the CONTRADICTION
+  shape specifically); tracking every tool pair (read-then-write same path is the
+  measured incident shape; broader pairs invite false positives without evidence).
+- **Consequences:** the pave-over now costs the model one explicit sentence of
+  diagnosis instead of zero; intentional creates lose nothing (the note tells them to
+  carry on); shadow-tree and stale-index bugs surface at creation time instead of
+  weeks later when a script cannot find content the model swears it wrote.
