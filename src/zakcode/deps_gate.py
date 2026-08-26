@@ -567,10 +567,41 @@ def read_declared_packages(workspace_root: str | Path) -> set[str]:
     return {f"{_ECO_PYPI}:{n}" for n in pypi} | {f"{_ECO_NPM}:{n}" for n in npm}
 
 
+def harness_declared_packages() -> set[str]:
+    """The harness's OWN declared dependencies (every extra included), ecosystem-tagged.
+
+    Sibling of :func:`read_declared_packages`, reading zakcode's installed distribution
+    metadata instead of workspace manifests. Why it exists (ADR-0019): when an optional
+    capability's dependency is missing, the tool error tells the model to install it into
+    zakcode's own interpreter (:func:`zakcode._http.pip_install_hint`) — but those packages
+    are declared in ZAKCODE's manifest, not the workspace's, so without this union the
+    dependency gate hard-denies (autonomous) or re-prompts (interactive) the exact remedy
+    the harness itself suggested. Measured in the field 2026-08-26: an agent carried
+    "web search is unavailable (missing ddgs)" as a standing blocker into its plans when
+    the fix was one gate-refused command. A harness-declared package is precisely as
+    vetted as a workspace-declared one — the operator installed zakcode, whose pyproject
+    pins these names. Empty when zakcode runs without distribution metadata (a raw source
+    tree): the gate then simply stays workspace-only.
+    """
+    import importlib.metadata
+
+    try:
+        reqs = importlib.metadata.requires("zakcode") or []
+    except Exception:  # noqa: BLE001 - missing dist-info / odd packaging: keep the status quo
+        return set()
+    out: set[str] = set()
+    for req in reqs:
+        m = re.match(r"\s*([A-Za-z0-9._-]+)", req)
+        if m:
+            out.add(f"{_ECO_PYPI}:{normalize(m.group(1))}")
+    return out
+
+
 __all__ = [
     "installed_specs",
     "undeclared_install_specs",
     "read_declared_packages",
+    "harness_declared_packages",
     "normalize",
     "display_name",
 ]

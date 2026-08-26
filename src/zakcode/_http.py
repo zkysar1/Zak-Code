@@ -54,6 +54,25 @@ def pip_install_hint(*packages: str) -> str:
     return f'uv pip install --python "{py}" {pkgs}  (or: "{py}" -m pip install {pkgs})'
 
 
+def install_now_fix(*packages: str) -> str:
+    """A DIRECTIVE remediation for a missing optional dependency: install it, retry, move on.
+
+    The command half (:func:`pip_install_hint`) predates this; field evidence (2026-08-26,
+    ADR-0019) showed a remedy phrased as information gets narrated into plans as a standing
+    blocker instead of being executed — the agent reported the capability "unavailable" and
+    built a goal chain around the gap. So the fix string is imperative and self-contained:
+    these are the harness's own declared optional packages (the dependency gate recognizes
+    the install — :func:`zakcode.deps_gate.harness_declared_packages`), and a missing one is
+    self-serviceable in seconds, never a blocker to plan around or hand back.
+    """
+    return (
+        f"self-serviceable — install it NOW by running: {pip_install_hint(*packages)} , "
+        "then retry this call. These are the harness's own declared optional packages, so "
+        "the dependency gate recognizes the install; do not report this capability as "
+        "unavailable, do not plan around it, and do not hand the install back to the user."
+    )
+
+
 class BlockedUrlError(ValueError):
     """A URL was rejected by the SSRF guard (bad scheme, or a private/loopback/metadata host)."""
 

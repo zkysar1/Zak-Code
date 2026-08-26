@@ -62,13 +62,16 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(UpdatePlanTool(), aliases=["plan", "todo"])
     registry.register(BashTool(), aliases=["sh", "shell"])
     registry.register(PowerShellTool(), aliases=["pwsh"])
-    registry.register(WebSearchTool(make_search_backend(settings)), aliases=["websearch"])
     web_allowlist = settings.web_allowed_domains if settings else None
     # One provider instance shared by every secrets-aware tool, so web_fetch's
-    # substitution and secret_names' listing can never disagree about the source.
+    # substitution, web_search's query screen, and secret_names' listing can never
+    # disagree about the source.
     secrets = SecretsProvider(
         settings.secrets_file if settings else None,
         usage_path=settings.secrets_usage_file if settings else None,
+    )
+    registry.register(
+        WebSearchTool(make_search_backend(settings), secrets=secrets), aliases=["websearch"]
     )
     registry.register(
         WebFetchTool(allowed_domains=web_allowlist, secrets=secrets),

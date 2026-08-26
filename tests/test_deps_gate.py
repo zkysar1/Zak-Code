@@ -678,3 +678,34 @@ def test_facade_gate_can_be_disabled(tmp_path) -> None:
     agent = zakcode.Agent(workspace_root=tmp_path, permission_mode="allow", dependency_gate=False)
     decision, _ = agent.permission_policy.decide(SHELL, {"command": "pip install evil"})
     assert decision is PermissionDecision.ALLOW
+
+
+# ── 5. harness self-declared packages (ADR-0019) ─────────────────────────────────
+
+
+def test_harness_declared_packages_cover_the_web_extra() -> None:
+    from zakcode.deps_gate import harness_declared_packages
+
+    declared = harness_declared_packages()
+    # zakcode's own [web] extra: the exact packages pip_install_hint tells the model
+    # to install when web search / web fetch is missing its optional dependency.
+    assert {"pypi:ddgs", "pypi:httpx"} <= declared
+
+
+def test_facade_gate_allows_the_harness_self_fix_in_autonomous(tmp_path) -> None:
+    # End-to-end pin for the 2026-08-26 field incident: the EXACT remedy the harness
+    # emits for a missing [web] dep must be ALLOWED by the policy the facade builds.
+    # An empty workspace declares nothing, so before the harness-union this was a hard
+    # DENY — the harness suggested a command its own gate then refused.
+    import zakcode
+    from zakcode._http import pip_install_hint
+
+    agent = zakcode.Agent(workspace_root=tmp_path, permission_mode="autonomous")
+    hint = pip_install_hint("ddgs", "httpx")
+    uv_form, _, pip_form = hint.partition("  (or: ")
+    for cmd in (uv_form, pip_form.rstrip(")")):
+        decision, _ = agent.permission_policy.decide(SHELL, {"command": cmd})
+        assert decision is PermissionDecision.ALLOW, cmd
+    # the union widens nothing else: an unvetted package still hard-denies
+    decision, _ = agent.permission_policy.decide(SHELL, {"command": "pip install evil"})
+    assert decision is PermissionDecision.DENY

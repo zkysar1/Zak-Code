@@ -778,3 +778,121 @@ def test_default_registry_registers_web_tools() -> None:
     assert reg.get("web_search") is not None
     assert reg.get("web_fetch") is not None
     assert reg.get("fetch") is reg.get("web_fetch")  # alias routes
+
+
+def test_default_registry_shares_secrets_provider_with_web_search() -> None:
+    # web_search's query screen and web_fetch's substitution must read the same source.
+    from zakcode.tools.builtins.default_registry import default_registry
+
+    reg = default_registry()
+    assert reg.get("web_search")._secrets is reg.get("web_fetch")._secrets
+
+
+# ── web privacy floors (ADR-0019) ────────────────────────────────────────────────────
+
+
+def _secrets_provider(tmp_path: Path, secrets: dict[str, str]):
+    import json
+
+    from zakcode.tools.builtins._secrets import SecretsProvider
+
+    path = tmp_path / "secrets.json"
+    path.write_text(json.dumps(secrets), encoding="utf-8")
+    return SecretsProvider(path)
+
+
+async def test_web_search_refuses_overlong_query(tmp_path: Path) -> None:
+    # Refused, never truncated — truncation would still send the head of the paste.
+    backend = _FakeBackend([SearchItem(title="t", url="https://e")])
+    res = await WebSearchTool(backend).execute({"query": "x" * 401}, _ctx(tmp_path))
+    assert res.is_error and "too long" in res.output
+    res = await WebSearchTool(backend).execute({"query": "x" * 400}, _ctx(tmp_path))
+    assert not res.is_error  # the cap is a boundary, not a fuzzy zone
+
+
+async def test_web_search_refuses_saved_secret_value(tmp_path: Path) -> None:
+    provider = _secrets_provider(tmp_path, {"MY_KEY": "hunter2secretvalue"})
+    tool = WebSearchTool(_FakeBackend(), secrets=provider)
+    res = await tool.execute({"query": "why does hunter2secretvalue get rejected"}, _ctx(tmp_path))
+    assert res.is_error and "secret" in res.output.lower()
+    # the refusal itself must not echo the value
+    assert "hunter2secretvalue" not in res.output and "hunter2secretvalue" not in (res.fix or "")
+
+
+async def test_web_search_refuses_credential_shaped_query(tmp_path: Path) -> None:
+    res = await WebSearchTool(_FakeBackend()).execute(
+        {"query": "leak sk-abcdefghijklmnopqrstuvwx found in logs"}, _ctx(tmp_path)
+    )
+    assert res.is_error and "credential" in res.output
+
+
+async def test_web_search_allows_placeholder_in_query(tmp_path: Path) -> None:
+    # {{secret:NAME}} is the SAFE form (a name, no value); its 'secret:NAME' spelling must
+    # not trip the credential-shape screen.
+    backend = _FakeBackend([SearchItem(title="t", url="https://e")])
+    res = await WebSearchTool(backend).execute(
+        {"query": "how do I rotate {{secret:WEATHER_API_KEY}}"}, _ctx(tmp_path)
+    )
+    assert not res.is_error
+
+
+async def test_web_search_normal_queries_pass_the_screens(tmp_path: Path) -> None:
+    backend = _FakeBackend([SearchItem(title="t", url="https://e")])
+    for q in (
+        "gemini 2.5 flash repetition loop temperature",
+        "python asyncio to_thread blocking call",
+        "error 429 RESOURCE_EXHAUSTED vertex global endpoint",
+    ):
+        res = await WebSearchTool(backend).execute({"query": q}, _ctx(tmp_path))
+        assert not res.is_error, q
+
+
+def test_web_search_description_carries_privacy_rules() -> None:
+    desc = WebSearchTool(_FakeBackend()).spec.description
+    assert "PRIVACY" in desc and "third-party" in desc
+
+
+async def test_web_fetch_refuses_raw_secret_value_in_url(tmp_path: Path) -> None:
+    provider = _secrets_provider(tmp_path, {"API_KEY": "rawsecretvalue99"})
+    tool = WebFetchTool(secrets=provider)
+    res = await tool.execute({"url": "https://api.example.com/?k=rawsecretvalue99"}, _ctx(tmp_path))
+    assert res.is_error and "{{secret:NAME}}" in (res.fix or "")
+    assert "rawsecretvalue99" not in res.output
+
+
+async def test_web_fetch_refuses_credential_shaped_header(tmp_path: Path) -> None:
+    res = await WebFetchTool().execute(
+        {
+            "url": "https://api.example.com/",
+            "headers": {"Authorization": "Bearer ghp_" + "a" * 24},
+        },
+        _ctx(tmp_path),
+    )
+    assert res.is_error and "credential" in res.output
+
+
+async def test_web_fetch_placeholder_header_passes_the_screens(tmp_path: Path) -> None:
+    # The sanctioned placeholder form must NOT be refused by the raw-secret screens. With
+    # an empty provider the next stop past the screens is unknown-secret resolution — that
+    # error arriving is the proof the screens let the placeholder through.
+    res = await WebFetchTool().execute(
+        {
+            "url": "https://api.example.com/",
+            "headers": {"Authorization": "Bearer {{secret:MY_API_KEY}}"},
+        },
+        _ctx(tmp_path),
+    )
+    assert res.is_error
+    assert "paste" not in res.output  # not the raw-secret refusal
+    assert "secret_names" in (res.fix or "")
+
+
+def test_install_now_fix_is_imperative_and_self_contained() -> None:
+    import sys
+
+    from zakcode._http import install_now_fix
+
+    fix = install_now_fix("ddgs", "httpx")
+    assert "install it NOW" in fix and "retry" in fix
+    assert "do not report this capability as unavailable" in fix
+    assert sys.executable in fix  # rides pip_install_hint: self-targeting

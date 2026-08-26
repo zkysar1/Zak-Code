@@ -675,3 +675,47 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   then ends honestly; operators see "response degenerated into repetition" instead of a
   screen of garbage; every backend runs at its vendor-intended temperature unless the
   operator says otherwise; `zakcode config` renders "(model default)" for the unset case.
+
+## ADR-0019 — A missing optional capability is an executable remedy, not an absence; web egress carries privacy floors
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Field observation (same deployment as ADR-0018): an agent asserted "web
+  search is unavailable (missing ddgs)" from memory, baked the gap into a goal chain as a
+  standing blocker, and never attempted the fix. Two harness facts fed that. (1) The
+  dependency gate reads only WORKSPACE manifests, so the self-fix command
+  `pip_install_hint` emits — targeting zakcode's own interpreter and zakcode's own
+  declared `[web]` packages — was itself hard-DENIED in autonomous mode: the harness
+  suggested a remedy its own gate then refused. (2) The fix strings were informational,
+  and a remedy phrased as information gets narrated into plans instead of executed.
+  Separately, that deployment operates under a strict data boundary, and web queries /
+  fetch requests are the one egress surface where private text can be pasted out with no
+  mechanical check.
+- **Decision:** Two halves, no knobs:
+  1. **Self-serviceable capability.** The dependency gate's declared set unions
+     `harness_declared_packages()` — zakcode's own distribution requirements, every extra
+     — so the exact remedy the harness emits passes its own gate. Every
+     missing-optional-dep fix string is now the DIRECTIVE `install_now_fix()`: install it
+     NOW by running the command, then retry; do not report the capability as unavailable,
+     do not plan around it, do not hand the install back. Web tools stay
+     always-registered — a missing dep surfaces at call time as this remedy, never as
+     tool absence.
+  2. **Web privacy floors.** `web_search` refuses (never truncates) a query over 400
+     chars — a distilled question, not a paste — and refuses a query carrying a saved
+     secret VALUE (the shared `SecretsProvider` scrub is the detector) or
+     credential-SHAPED text (`redact_secrets`, with `{{secret:NAME}}` placeholders
+     stripped first: the safe form must not be the refused form). The semantic half —
+     no proprietary code, client names, personal data, internal hostnames — rides the
+     tool description plus a Safety bullet in the system prompt. `web_fetch` refuses a
+     raw saved-secret value in the url or a header (the placeholder is the sanctioned
+     form) and credential-shape-screens header values (not the url: query strings
+     legitimately match `token=…` assignment shapes).
+- **Alternatives rejected:** hiding web tools when deps are missing (absence teaches
+  "narrate the blocker"; presence-with-remedy teaches "run the fix"); truncating
+  overlong queries (still sends the head of the paste); shape-screening fetch URLs
+  (benign `?page_token=…` params match the assignment shape); a deployment-specific
+  privacy mode (the floors are universal; site policy belongs to the site).
+- **Consequences:** a missing `[web]` dep is a one-command self-fix the gate allows even
+  in autonomous mode; the union widens nothing else (only names zakcode itself
+  declares); a secret value or credential-shaped paste cannot leave via a search query
+  or a fetch header even by accident; the sanctioned `{{secret:NAME}}` path keeps
+  working everywhere.

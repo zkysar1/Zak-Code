@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from zakcode._http import fetch_json_capped, load_httpx, pip_install_hint
+from zakcode._http import fetch_json_capped, install_now_fix, load_httpx
 from zakcode.search.base import (
     BackendNotConfigured,
     BackendUnavailable,
@@ -41,7 +41,7 @@ class TavilyBackend(SearchBackend):
         try:
             httpx = load_httpx()
         except ImportError as exc:
-            raise BackendUnavailable(str(exc), fix=pip_install_hint("httpx")) from exc
+            raise BackendUnavailable(str(exc), fix=install_now_fix("httpx")) from exc
 
         n = max(1, max_results)
         payload = {"api_key": self._api_key, "query": query, "max_results": n}
