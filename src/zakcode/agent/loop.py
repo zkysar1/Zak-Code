@@ -139,6 +139,7 @@ from zakcode.providers.routing import classify_main_turn
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_rubric, weak_dimensions
 from zakcode.session.store import Session, SessionStore
+from zakcode.tasks import Task
 from zakcode.tools.base import (
     ConcurrencyClass,
     Sampler,
@@ -965,6 +966,114 @@ class AgentLoop:
             "smaller sub-steps with update_plan and tackle them one at a time."
         )
 
+    # ── request decomposition: compound asks become plan steps ─────────────────
+
+    def _skill_refs(self, text: str) -> list[str]:
+        """Skill names the user text explicitly references as ``/slash`` tokens, in order.
+
+        Resolved against the discovered skill registry, so prose slashes (``/tmp``,
+        ``a/b``) never match — only names the registry actually knows count.
+        De-duplicated, order-preserving, canonical registry casing. Empty when skills
+        are disabled.
+        """
+        if self._skill_resolver is None:
+            return []
+        known = {n.lower(): n for n in self._skill_resolver.names()}
+        refs: list[str] = []
+        for match in re.finditer(r"(?:^|[\s(\"'`])/([a-z0-9][a-z0-9_-]*)", text.lower()):
+            name = known.get(match.group(1))
+            if name is not None and name not in refs:
+                refs.append(name)
+        return refs
+
+    def _plan_mentions_skill(self, name: str) -> bool:
+        """True when any plan step's title or note names ``/<skill>`` (any status).
+
+        A step in ANY state counts: an open step is the plan gate's job, and a
+        done/cancelled one means the model explicitly addressed the skill — the
+        coverage backstop must not re-litigate a deliberate decision.
+        """
+        token = f"/{name.lower()}"
+
+        def walk(tasks: list[Task]) -> bool:
+            return any(
+                token in t.title.lower() or token in t.note.lower() or walk(t.children)
+                for t in tasks
+            )
+
+        return walk(self.session.task_network.tasks)
+
+    def _seed_plan_from_request(self, user_text: str) -> list[str]:
+        """Seed one plan step per referenced skill when the request names SEVERAL (>=2).
+
+        A compound ask ("do /a and a /b") held only in conversation memory loses parts
+        to mid-turn interjections, session replays, and compaction — measured in the
+        field 2026-08-26: the second of two requested skills was silently dropped and
+        the turn ended "done". The plan is session state, which survives all three, and
+        the existing plan gate then refuses a quiet finish while a seeded step is open.
+        Only the mechanically-certain shape seeds (>=2 registry-resolved ``/skill``
+        tokens); softer compound phrasing is covered by prompt guidance, not a detector.
+        Appends to any existing plan (never replaces); steps the plan already mentions
+        are not duplicated. Returns the skill names actually seeded.
+        """
+        refs = self._skill_refs(user_text)
+        if len(refs) < 2:
+            return []
+        network = self.session.task_network
+        seeded: list[str] = []
+        for name in refs:
+            if self._plan_mentions_skill(name):
+                continue
+            network.tasks.append(
+                Task(
+                    title=f"run /{name}",
+                    kind="primitive",
+                    note=f"the request explicitly asked for /{name} — invoke it via use_skill",
+                )
+            )
+            seeded.append(name)
+        if seeded:
+            network.normalize()
+        return seeded
+
+    @staticmethod
+    def _harvest_skill_invocations(
+        calls: list[ToolCall], results: list[ToolResultBlock], into: set[str]
+    ) -> None:
+        """Record which skills ``use_skill`` successfully loaded this batch (lowercased).
+
+        Feeds the skill-coverage backstop: an errored load (unknown name, skills
+        disabled) is not an invocation.
+        """
+        by_id = {r.tool_use_id: r for r in results}
+        for call in calls:
+            if call.name != "use_skill":
+                continue
+            result = by_id.get(call.id)
+            if result is not None and not result.is_error:
+                name = str(call.arguments.get("name", "")).strip().lower()
+                if name:
+                    into.add(name)
+
+    def _skill_coverage_nudge(self, requested: list[str], invoked: set[str]) -> str | None:
+        """The one-shot completion nudge for requested-but-unaddressed skills, or ``None``.
+
+        A skill the user explicitly named is "addressed" when use_skill loaded it OR the
+        plan mentions it in any state (open steps are the plan gate's business; terminal
+        ones were deliberate). This is the backstop behind plan seeding — it catches a
+        cleared plan, a missed seed, and the single-skill request the seeder ignores.
+        """
+        missing = [
+            n for n in requested if n.lower() not in invoked and not self._plan_mentions_skill(n)
+        ]
+        if not missing:
+            return None
+        names = ", ".join(f"/{n}" for n in missing)
+        return (
+            f"The request also asked for {names} — run it now with use_skill, or say "
+            "explicitly why it should be skipped."
+        )
+
     def _plan_gate_nudge(self) -> str | None:
         """The plan-completion nudge, or ``None`` when the plan permits finishing.
 
@@ -1753,7 +1862,21 @@ class AgentLoop:
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
+        # Compound-ask decomposition: a request naming several skills seeds one plan
+        # step per skill BEFORE the model acts, so no part can be lost to an
+        # interjection, replay, or compaction — the plan gate holds the finish.
+        seeded = self._seed_plan_from_request(user_text)
+        if seeded:
+            self._note(
+                "intervention",
+                "plan seeded from the request: " + ", ".join(f"/{n}" for n in seeded),
+                kind="plan",
+            )
         self._persist()
+        # Skill-coverage backstop state: what the request named vs what use_skill ran.
+        requested_skills = self._skill_refs(user_text)
+        skills_invoked: set[str] = set()
+        coverage_nudged = False
 
         turn_assistant: list[Message] = []
         turn_tool_results: list[ToolResultBlock] = []
@@ -2088,6 +2211,24 @@ class AgentLoop:
                         stuck.reset()
                         continue
                     turn_degraded = True  # finishing with open plan steps after the nudge cap
+                # Skill-coverage backstop: the request explicitly named skills, and each must
+                # be invoked, planned, or explicitly declined before the turn quietly ends.
+                # One nudge only — it exists for the cases plan seeding cannot hold (a plan
+                # the model re-authored away, a single-skill request the seeder ignores).
+                if requested_skills and not coverage_nudged:
+                    coverage = self._skill_coverage_nudge(requested_skills, skills_invoked)
+                    if coverage is not None:
+                        coverage_nudged = True
+                        self._note(
+                            "intervention",
+                            "request named a skill that never ran — asking for it",
+                            kind="skill_coverage",
+                        )
+                        self.session.add_message(Message.user(_control_rail(coverage)))
+                        if not result.text:
+                            self._refund_iteration()
+                        self._persist()
+                        continue
                 # Empty give-up gate: a completion with no text at all, in a turn whose user
                 # has seen NOTHING (or right after a stuck nudge), is a silent give-up — never
                 # a clean finish. Ask for a real answer (bounded by _MAX_EMPTY_RETRIES), then
@@ -2341,6 +2482,7 @@ class AgentLoop:
                 result.tool_calls, ctx, restrict_to=restrict_now
             )
             turn_tool_results.extend(result_blocks)
+            self._harvest_skill_invocations(result.tool_calls, result_blocks, skills_invoked)
             # If the whole batch was denied/vetoed, no work happened — refund the unit.
             if self._batch_did_no_work(result_blocks):
                 self._refund_iteration()
@@ -2484,7 +2626,22 @@ class AgentLoop:
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
+        # Compound-ask decomposition + coverage state — see _run_turn (buffered twin).
+        seeded = self._seed_plan_from_request(user_text)
+        if seeded:
+            self._note(
+                "intervention",
+                "plan seeded from the request: " + ", ".join(f"/{n}" for n in seeded),
+                kind="plan",
+            )
         self._persist()
+        requested_skills = self._skill_refs(user_text)
+        skills_invoked: set[str] = set()
+        coverage_nudged = False
+        if seeded:
+            yield AgentStatus(
+                message="plan seeded from the request: " + ", ".join(f"/{n}" for n in seeded)
+            )
 
         turn_usage = Usage()
         iterations = 0
@@ -3021,6 +3178,25 @@ class AgentLoop:
                             yield AgentStatus(message="plan has open steps; continuing")
                             continue
                         turn_degraded = True
+                    # Skill-coverage backstop (streaming twin) — see _run_turn: the request
+                    # named skills; each must be invoked, planned, or explicitly declined.
+                    if requested_skills and not coverage_nudged:
+                        coverage = self._skill_coverage_nudge(requested_skills, skills_invoked)
+                        if coverage is not None:
+                            coverage_nudged = True
+                            self._note(
+                                "intervention",
+                                "request named a skill that never ran — asking for it",
+                                kind="skill_coverage",
+                            )
+                            self.session.add_message(Message.user(_control_rail(coverage)))
+                            if not assistant_text:
+                                self._refund_iteration()
+                            self._persist()
+                            yield AgentStatus(
+                                message="request named a skill that never ran; asking for it"
+                            )
+                            continue
                     # Empty give-up gate (streaming twin): a completion with no text at all,
                     # in a turn whose user has seen NOTHING (or right after a stuck nudge),
                     # is a silent give-up — nudge for a real answer (bounded), then end
@@ -3277,6 +3453,7 @@ class AgentLoop:
                         data=block.data,
                         artifacts=block.artifacts,
                     )
+                self._harvest_skill_invocations(tool_calls, result_blocks, skills_invoked)
                 if self._batch_did_no_work(result_blocks):
                     self._refund_iteration()
 

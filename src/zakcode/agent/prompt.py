@@ -102,8 +102,13 @@ _PLANNING = (
     "- Keep exactly one step in_progress; as you finish each, call `update_plan` to mark it done "
     "and the next in_progress. Decomposition can be just-in-time: if a step turns out to be "
     "several actions once you reach it, break it down then.\n"
-    "- Skip planning for a single straightforward action or anything done in fewer than three "
-    "steps; the plan is a tool for managing real multi-step work, not ceremony."
+    "- When a request asks for MORE THAN ONE thing — several actions, several skills, parts "
+    "joined by 'and' or 'then' — record each part as its own plan step BEFORE starting, even "
+    "when each part is small: a part held only in your head gets lost to interruptions and "
+    "resumes; a plan step does not. Do not answer or finish until every part is done, "
+    "cancelled, or explicitly declined.\n"
+    "- Skip planning only for a request that asks one straightforward thing; the plan is a "
+    "tool for managing real multi-part work, not ceremony."
 )
 
 _SAFETY = (
