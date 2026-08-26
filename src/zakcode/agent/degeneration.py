@@ -78,3 +78,52 @@ def repeated_tail(text: str) -> str | None:
         if tail[period:] == tail[:-period]:
             return tail[:period]
     return None
+
+
+#: Burst-repetition (tool-argument) thresholds. Unlike :func:`repeated_tail` this scans
+#: for a pathological run ANYWHERE in the text, because degeneration inside tool-call
+#: arguments is buried mid-payload (field incident 2026-08-26: a python -c command carried
+#: ``import json; `` ×28 and ``YOUR_`` ×38 mid-string and executed unjudged — the
+#: completion-text detector explicitly skips tool-call batches). The thresholds convict
+#: only runs no legitimate command contains: ≥150 chars of ONE short unit repeated ≥12×
+#: consecutively. Single-character runs (divider lines, padding, newline floods) and
+#: whitespace units are never convicted — those are everyday formatting.
+_BURST_MIN_RUN_CHARS = 150
+_BURST_MIN_REPEATS = 12
+_BURST_MAX_UNIT_CHARS = 64
+_BURST_SCAN_CAP = 65_536
+#: Probe window / stride: a fully-periodic 128-char window every 32 chars guarantees
+#: detection of any run ≥160 chars (window + stride), at C-speed slice-compare cost.
+_BURST_PROBE_CHARS = 128
+_BURST_STRIDE = 32
+
+
+def burst_repetition(text: str) -> tuple[str, int] | None:
+    """The ``(unit, repeats)`` of a consecutive repetition burst anywhere in ``text``.
+
+    Returns ``None`` when healthy. Scans at most :data:`_BURST_SCAN_CAP` chars.
+    """
+    s = text[:_BURST_SCAN_CAP]
+    n = len(s)
+    if n < _BURST_MIN_RUN_CHARS:
+        return None
+    for i in range(0, n - _BURST_PROBE_CHARS + 1, _BURST_STRIDE):
+        probe = s[i : i + _BURST_PROBE_CHARS]
+        for period in range(2, _BURST_MAX_UNIT_CHARS + 1):
+            if probe[period:] != probe[:-period]:
+                continue
+            unit = probe[:period]
+            if len(set(unit)) < 2 or not unit.strip():
+                break  # single-char/whitespace unit: formatting, never convicted
+            # Measure the true run around the probe: walk whole units left, then right.
+            start = i
+            while start - period >= 0 and s[start - period : start] == unit:
+                start -= period
+            end = start + period
+            while end + period <= n and s[end : end + period] == unit:
+                end += period
+            repeats = (end - start) // period
+            if repeats >= _BURST_MIN_REPEATS and repeats * period >= _BURST_MIN_RUN_CHARS:
+                return unit, repeats
+            break  # smallest period found but the run is short — this probe is done
+    return None

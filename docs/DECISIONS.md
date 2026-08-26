@@ -862,3 +862,47 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   skill body, or grep; big-window models are effectively untouched (150k chars at 200k
   window); the model is always told when it is looking at a partial result and how to
   get the rest.
+
+## ADR-0024: Small-model containment — degenerate tool arguments are vetoed; a completion that announces work is not a completion
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Two failures from one small-model session. (1) A python -c payload whose
+  arguments had collapsed into repetition ("import json; " ×28, "YOUR_" ×38 mid-string)
+  executed unjudged: the ADR-0018 repetition guard judges COMPLETION TEXT and
+  deliberately skips tool-call batches ("a batch calling tools is doing work"), so
+  degeneration inside arguments — where small models actually put it — had no detector.
+  (2) A later turn ENDED on "Now I will use the `create_file` command … I will then use
+  `mv` …" and the loop accepted the completion: the empty-completion gate needs empty
+  text, the plan gate needs an open plan (none existed), the quality gate scores only
+  runnable writes — announced-but-unperformed work fell between every gate. The session
+  then printed the zakpick "no struggle signal" advisory while visibly struggling,
+  because neither failure latched anything.
+- **Decision:** Three pieces, one ADR, because they share a cause (a small model losing
+  the thread) and a consumer (zakpick's struggle latch). (1) `burst_repetition()` in
+  the degeneration module: convicts a run of ONE short unit (2–64 chars, ≥2 distinct
+  characters, non-whitespace) repeated ≥12× consecutively for ≥150 chars, ANYWHERE in
+  the text — thresholds no legitimate command contains; single-char runs (dividers,
+  padding, newline floods) are never convicted. `_execute_tool_call` runs it over the
+  JSON-encoded arguments BEFORE the permission gate (the operator is never prompted to
+  approve garbage) and vetoes with a bare `Fix:` rail naming the fragment and the
+  remedy. (2) The false-done guard: when a turn is about to complete and the completion
+  TAIL announces future work (first-person future + an ACTION verb — "I will use / run /
+  create…", "let me now…"; "I'll let you know" and "I will need you to provide" do not
+  match), one `[harness]` nudge asks for the work or a plain finish. Once per turn; a
+  model that was only describing says so and finishes, so a false positive costs one
+  bounded iteration. (3) Both degeneration strikes and the argument veto latch the
+  per-turn struggle flag, folded into `signal_latched` each iteration — zakpick now
+  escalates on degeneration, and the "cheaper model may keep up" advisory can no longer
+  fire on a session that degenerated.
+- **Alternatives rejected:** scanning tool arguments with `repeated_tail` (tail-anchored
+  by design; argument degeneration is buried mid-payload); regex backreference matching
+  (unpredictable backtracking on adversarial input; the windowed self-overlap scan is
+  bounded C-speed slice compares); killing the turn on a degenerate call (the veto is a
+  recovery rail — the stuck ladder and doom-loop guard already own repeated failure);
+  gating "done" on a todo/plan (the plan gate already does that when a plan exists; this
+  guard covers exactly the planless case); an LLM judge for "is this done?" (a model
+  call per completion to catch a failure mode of small models — the regex is free and
+  surgical).
+- **Consequences:** degenerate arguments never execute and never reach a permission
+  prompt; a turn can no longer end on an announcement with nothing behind it; struggle
+  is visible to model routing the moment it happens, on both turn paths.
