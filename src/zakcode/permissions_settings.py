@@ -95,8 +95,13 @@ class IngestedPermissions:
 
     #: Regex strings for ``extra_dangerous_patterns`` (via ``compile_deny_patterns``).
     denied_command_regexes: list[str] = field(default_factory=list)
-    #: Regex strings for ``extra_protected_paths`` (via ``compile_protected_paths``).
+    #: Regex strings for ``extra_protected_paths`` from ``deny Read(glob)`` gestures — bind
+    #: reads AND writes (via ``compile_protected_paths``).
     protected_path_regexes: list[str] = field(default_factory=list)
+    #: Regex strings from ``deny Edit|Write|MultiEdit(glob)`` gestures — WRITE-sensitive only,
+    #: mirroring CC semantics (an Edit deny does not block reading the path). Compiled with
+    #: ``compile_protected_paths(..., write_only=True)`` so READ_ONLY-tier tools skip them.
+    protected_path_regexes_write_only: list[str] = field(default_factory=list)
     #: ``tool_mode_overrides`` entries — ALLOW gestures only (a whole-tool DENY goes to
     #: ``denied_tools`` so it binds unconditionally, regardless of the tool's tier).
     tool_mode_overrides: dict[str, str] = field(default_factory=dict)
@@ -109,6 +114,7 @@ class IngestedPermissions:
         return not (
             self.denied_command_regexes
             or self.protected_path_regexes
+            or self.protected_path_regexes_write_only
             or self.tool_mode_overrides
             or self.denied_tools
         )
@@ -299,11 +305,17 @@ def _translate_gestures(
             )
             continue
 
-        # decision == "deny" with a concrete pattern.
+        # decision == "deny" with a concrete pattern. The VERB is retained (fresh-eyes finding,
+        # ADR-0030): a ``deny Read(glob)`` binds read-only tools too, but a ``deny
+        # Edit|Write|MultiEdit(glob)`` is a WRITE deny — CC leaves those paths readable, and
+        # collapsing the verbs read-blocked paths a Mind framework requires agents to read
+        # (measured: 36 of 44 real-world deny gestures were Edit/Write-only).
         if tool in _COMMAND_TOOLS:
             out.denied_command_regexes.append(_glob_to_command_regex(pattern))
-        elif tool in _PATH_TOOLS:
+        elif tool == "Read":
             out.protected_path_regexes.append(_glob_to_path_regex(pattern))
+        elif tool in _PATH_TOOLS:
+            out.protected_path_regexes_write_only.append(_glob_to_path_regex(pattern))
         else:
             # A mapped tool that is neither a command nor a path tool (e.g. ``Grep(...)``,
             # ``WebFetch(...)``) — the deny is pattern-scoped but we have no pattern-scoped deny

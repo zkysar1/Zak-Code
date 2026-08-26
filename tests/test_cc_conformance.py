@@ -494,7 +494,7 @@ def test_settings_permissions_deny_path_glob_is_translated_to_a_protected_path(
         json.dumps({"permissions": {"deny": ["Write(*/state/*)", "Bash(git push --force*)"]}}),
     )
     ingested, errors = load_settings_permissions(tmp_path)
-    assert ingested.protected_path_regexes  # the Write path-glob
+    assert ingested.protected_path_regexes_write_only  # the Write path-glob (verb retained)
     assert ingested.denied_command_regexes  # the Bash command-glob
     assert not errors  # both gestures mapped cleanly
 

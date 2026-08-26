@@ -300,7 +300,8 @@ PROTECTED_PATH_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # config — skills, rules, CLAUDE.md, the settings files themselves — is agent-editable by
     # default; a framework that wants any of it protected declares ``deny Edit|Write(glob)``
     # rules in ``.claude/settings.json`` / ``settings.local.json``, which ingest as
-    # ``extra_protected_paths`` (always-on) and bind reads AND writes. The operator's settings
+    # ``extra_protected_paths`` (always-on) — an Edit/Write deny binds writes, a Read deny
+    # binds reads and writes (ADR-0030). The operator's settings
     # are the single authority over the agent's config; the engine hardcodes no opinion.
 ]
 
@@ -322,6 +323,14 @@ _WRITE_ONLY_PROTECTED = frozenset(
         "virtualenv / installed packages",
     }
 )
+
+#: Description suffix marking a COMPILED extra pattern as write-sensitive only (ADR-0030).
+#: Settings-ingested ``deny Edit|Write|MultiEdit(glob)`` gestures compile with
+#: ``compile_protected_paths(..., write_only=True)`` so READ_ONLY-tier tools skip them —
+#: CC semantics: an Edit deny does not block reading the path. ``deny Read(glob)`` gestures
+#: and operator ``ZAKCODE_PROTECTED_PATHS`` regexes (no verb available — strict) never
+#: carry it and bind reads and writes alike (strict — no verb available for env regexes).
+_WRITE_ONLY_MARK = " (write-only)"
 
 logger = logging.getLogger("zakcode.permissions")
 
@@ -347,19 +356,26 @@ def compile_deny_patterns(specs: list[str]) -> list[tuple[re.Pattern[str], str]]
     return compiled
 
 
-def compile_protected_paths(specs: list[str]) -> list[tuple[re.Pattern[str], str]]:
+def compile_protected_paths(
+    specs: list[str], *, write_only: bool = False
+) -> list[tuple[re.Pattern[str], str]]:
     """Compile operator-supplied protected-path regex strings (e.g. ``ZAKCODE_PROTECTED_PATHS``).
 
     Each string is a case-insensitive regex appended to the built-in
     :data:`PROTECTED_PATH_PATTERNS`; it can only ever tighten (a write matching it escalates /
     hard-denies in autonomous, never loosens). An invalid regex is skipped with a warning.
+    With ``write_only=True`` (settings-ingested Edit/Write/MultiEdit denies) the compiled
+    descriptions carry :data:`_WRITE_ONLY_MARK`, so READ_ONLY-tier tools skip them.
     """
+    mark = _WRITE_ONLY_MARK if write_only else ""
     compiled: list[tuple[re.Pattern[str], str]] = []
     for spec in specs:
         if not isinstance(spec, str) or not spec.strip():
             continue
         try:
-            compiled.append((re.compile(spec, re.IGNORECASE), f"operator protected path: {spec}"))
+            compiled.append(
+                (re.compile(spec, re.IGNORECASE), f"operator protected path: {spec}{mark}")
+            )
         except re.error as exc:
             logger.warning("ignoring invalid protected-path pattern %r: %s", spec, exc)
     return compiled
@@ -590,10 +606,12 @@ class PermissionPolicy:
 
         Scans the FILE-PATH args (``path``/``file_path``/…) against
         :data:`PROTECTED_PATH_PATTERNS`. Pure, no I/O. With ``read_only=True`` (the calling
-        tool's tier is READ_ONLY) the write-sensitive built-ins
-        (:data:`_WRITE_ONLY_PROTECTED`) are skipped — reading ``.git/`` or the agent's own
-        ``.claude/`` skills is normal operation — while secrets (``.env``) and every
-        operator/settings-ingested extra still bind. Shell args are deliberately NOT scanned:
+        tool's tier is READ_ONLY) the write-sensitive patterns are skipped — the
+        :data:`_WRITE_ONLY_PROTECTED` built-ins (reading ``.git/`` or the venv is normal
+        operation) and every :data:`_WRITE_ONLY_MARK`-compiled extra (an ingested Edit/Write
+        deny does not block reading, per CC semantics) — while secrets (``.env``),
+        ``deny Read(...)``-ingested extras, and operator env regexes still bind.
+        Shell args are deliberately NOT scanned:
         a path inside an arbitrary command is far more often a READ/EXECUTE (``.venv/bin/python
         x``, ``cat .git/config``) than a write, so matching it over-blocks legitimate commands —
         the same "don't parse shell intent" lesson as the dependency gate. A shell-driven write
@@ -603,7 +621,10 @@ class PermissionPolicy:
             value = arguments.get(key)
             if isinstance(value, str):
                 for pattern, description in self.protected_path_patterns:
-                    if read_only and description in _WRITE_ONLY_PROTECTED:
+                    if read_only and (
+                        description in _WRITE_ONLY_PROTECTED
+                        or description.endswith(_WRITE_ONLY_MARK)
+                    ):
                         continue
                     if pattern.search(value):
                         return description

@@ -264,7 +264,46 @@ def test_settings_local_json_permissions_are_also_ingested(tmp_path: Path) -> No
     _write_permissions(tmp_path, {"deny": ["Write(*/secrets/*)"]}, local=True)
     ingested, _ = load_settings_permissions(tmp_path)
     assert ingested.denied_command_regexes  # from settings.json
-    assert ingested.protected_path_regexes  # from settings.local.json
+    assert ingested.protected_path_regexes_write_only  # from settings.local.json (a Write deny)
+
+
+# ── the verb is retained: an Edit/Write deny binds writes, not reads (ADR-0030) ─
+
+
+def test_write_deny_does_not_block_reading_the_path(tmp_path: Path) -> None:
+    # The Mind-shaped case measured in the fresh-eyes dry-run: deny Edit+Write on a path the
+    # framework REQUIRES agents to read (36 of 44 real gestures were Edit/Write-only). CC leaves
+    # the path readable; so must we. Autonomous mode makes the outcome binary (deny vs allow).
+    _write_permissions(
+        tmp_path,
+        {"deny": ["Edit(*/knowledge/tree/_tree.yaml)", "Write(*/knowledge/tree/_tree.yaml)"]},
+    )
+    agent = _agent(tmp_path, mode="autonomous")
+    read = _spec(agent, "read_file")
+    write = _spec(agent, "write_file")
+    path = "world/knowledge/tree/_tree.yaml"
+
+    rdec, rreason = agent.permission_policy.decide(read, {"path": path})
+    assert rdec is PermissionDecision.ALLOW, rreason  # readable, exactly as CC leaves it
+    wdec, wreason = agent.permission_policy.decide(write, {"path": path, "content": "x"})
+    assert wdec is PermissionDecision.DENY, wreason  # the write deny still binds
+    assert "write to a protected path" in wreason
+
+
+def test_read_deny_blocks_reads_and_writes(tmp_path: Path) -> None:
+    # A deny Read(glob) is the operator saying the CONTENT is sensitive — it binds read-only
+    # tools AND writes (strict pool, no write-only mark).
+    _write_permissions(tmp_path, {"deny": ["Read(*/vault/*)"]})
+    agent = _agent(tmp_path, mode="autonomous")
+    read = _spec(agent, "read_file")
+    write = _spec(agent, "write_file")
+    assert agent.permission_policy.decide(read, {"path": "x/vault/key.txt"})[0] is (
+        PermissionDecision.DENY
+    )
+    assert (
+        agent.permission_policy.decide(write, {"path": "x/vault/key.txt", "content": "x"})[0]
+        is PermissionDecision.DENY
+    )
 
 
 # ── deny beats allow within an ingestion (tighten-only at the gesture level) ────
