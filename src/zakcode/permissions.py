@@ -296,10 +296,12 @@ PROTECTED_PATH_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"(?:^|[\\/\s\"'=>])(?:\.venv|venv|site-packages)[\\/]", re.IGNORECASE),
         "virtualenv / installed packages",
     ),
-    (
-        re.compile(r"(?:^|[\\/\s\"'=>])\.claude[\\/]", re.IGNORECASE),
-        "agent config (.claude/)",
-    ),
+    # ``.claude/`` is deliberately NOT a built-in protected class (ADR-0029). The agent's
+    # config — skills, rules, CLAUDE.md, the settings files themselves — is agent-editable by
+    # default; a framework that wants any of it protected declares ``deny Edit|Write(glob)``
+    # rules in ``.claude/settings.json`` / ``settings.local.json``, which ingest as
+    # ``extra_protected_paths`` (always-on) and bind reads AND writes. The operator's settings
+    # are the single authority over the agent's config; the engine hardcodes no opinion.
 ]
 
 #: Argument keys whose string values are filesystem paths checked against
@@ -308,18 +310,16 @@ PROTECTED_PATH_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 _FILE_ARG_KEYS = ("path", "file_path", "filename", "dest", "destination", "output")
 
 #: Built-in protected classes that are WRITE-sensitive only: reading them is normal operation
-#: (git tooling reads ``.git/``, a skill/rule file under ``.claude/`` is *made* to be read), so
-#: READ_ONLY-tier tools skip them. Field bug (2026-08-26): a ``read_file`` of the agent's own
-#: ``.claude/skills/.../SKILL.md`` was hard-denied as a "write to a protected path", derailing
-#: the turn. ``.env`` is deliberately NOT here — reading a secrets file is itself the leak
-#: (the floor's charter: "read/rewrite secrets"). Operator/settings-ingested extras are also
-#: never here: a CC ``deny Read(glob)`` rule ingests as a protected path, so extras must bind
-#: reads too.
+#: (git tooling reads ``.git/``, the venv is read on every import), so READ_ONLY-tier tools
+#: skip them. Field bug (2026-08-26, ADR-0028): a read was hard-denied as a "write to a
+#: protected path", derailing the turn. ``.env`` is deliberately NOT here — reading a secrets
+#: file is itself the leak (the floor's charter: "read/rewrite secrets"). Operator/settings-
+#: ingested extras are also never here: a CC ``deny Read(glob)`` rule ingests as a protected
+#: path, so extras must bind reads too.
 _WRITE_ONLY_PROTECTED = frozenset(
     {
         "VCS internals (.git/)",
         "virtualenv / installed packages",
-        "agent config (.claude/)",
     }
 )
 
@@ -614,7 +614,7 @@ class PermissionPolicy:
 
         Mirrors :meth:`dangerous_reason` so the loop can re-apply the protected-path floor to a
         PreToolUse-rewritten call (so a hook can't rewrite a benign edit into a write to
-        ``.env`` / ``.git/`` / the venv / the agent's config). File-path args only; pass
+        ``.env`` / ``.git/`` / the venv). File-path args only; pass
         ``read_only=True`` for a READ_ONLY-tier tool so write-sensitive built-ins don't bind.
         """
         return self._protected_path_reason(arguments, read_only=read_only)
@@ -745,10 +745,10 @@ class PermissionPolicy:
             )
 
         # Protected-path floor (self-remediation Step 2). Same tighten-only shape: a write to a
-        # sensitive location (.git/, .env, the venv, the agent's config) never auto-allows — it
+        # sensitive location (.git/, .env, the venv) never auto-allows — it
         # escalates to a (session-grantable) prompt, and is a hard DENY in ``autonomous`` (no
         # prompt; an unattended agent must not silently corrupt the repo, read/rewrite secrets,
-        # tamper with installed deps, or rewrite its own permissions). READ_ONLY-tier tools skip
+        # or tamper with installed deps). READ_ONLY-tier tools skip
         # the write-sensitive built-ins (reading a skill file is what a skill file is for) but
         # still bind on secrets and operator extras. The grant fast-paths in
         # authorize()/auto_allows() re-decide so a blanket grant cannot waive this.

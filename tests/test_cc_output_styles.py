@@ -210,7 +210,7 @@ def test_agent_off_by_default_omits_the_style(tmp_path: Path) -> None:
 
 def test_agent_settings_flag_enables_without_explicit_arg(tmp_path: Path) -> None:
     # The Settings.output_style flag (env ZAKCODE_OUTPUT_STYLE) enables it without an explicit
-    # enable_output_style= arg — mirroring settings_hooks/settings_permissions.
+    # enable_output_style= arg.
     from zakcode import Agent
     from zakcode.evals.harness import ScriptedProvider, reply
 

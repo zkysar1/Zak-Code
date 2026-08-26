@@ -291,7 +291,6 @@ class Agent:
         context_signal_log: str | None = None,
         context_classifier_weights: str | None = None,
         context_signal_judge: bool = False,
-        enable_settings_permissions: bool | None = None,
         enable_status_line: bool | None = None,
         enable_output_style: bool | None = None,
         agent_identity_dir: str | Path | None = None,
@@ -402,23 +401,22 @@ class Agent:
             if self.settings.dependency_gate
             else None
         )
-        # Claude Code permissions.{allow,deny,ask} ingestion (Phase 3; opt-in). When enabled (and no
-        # explicit permission_policy was injected — an injected policy is the caller's full
-        # authority), translate the workspace's CC permission gestures into the SAME tighten-only
-        # seams the operator settings use, and UNION them: ingested deny command/path patterns are
-        # appended to the operator's (the floor only grows), and ingested per-tool modes are laid
-        # down FIRST so the operator's tool_trust_overrides (higher-authority local config) win
-        # on any conflict. The always-on catastrophic + protected-path floor runs before any allow,
-        # so this can never loosen the policy. None defers to Settings.settings_permissions.
+        # Claude Code permissions.{allow,deny,ask} ingestion — UNCONDITIONAL since ADR-0029, the
+        # same "declared config is live" posture as settings hooks (ADR-0025). The workspace's
+        # ``permissions`` block IS the authorization posture: with the built-in agent-config
+        # protected class removed, these ingested rules are the ONLY authority over ``.claude/``
+        # (a framework that wants its config protected declares the denies here). Skipped only
+        # when an explicit permission_policy was injected — an injected policy is the caller's
+        # full authority. Gestures translate into the SAME tighten-only seams the operator
+        # settings use, and UNION them: ingested deny command/path patterns are appended to the
+        # operator's (the floor only grows), and ingested per-tool modes are laid down FIRST so
+        # the operator's tool_trust_overrides (higher-authority local config) win on any
+        # conflict. The always-on catastrophic + protected-path floor runs before any allow.
         denied_command_regexes = list(self.settings.denied_commands)
         protected_path_regexes = list(self.settings.protected_paths)
         ingested_tool_modes: dict[str, str] = {}
         ingested_denied_tools: set[str] = set()
-        if permission_policy is None and (
-            enable_settings_permissions
-            if enable_settings_permissions is not None
-            else self.settings.settings_permissions
-        ):
+        if permission_policy is None:
             from zakcode.permissions_settings import load_settings_permissions
 
             _ingested, _perm_errs = load_settings_permissions(workspace_root)
@@ -558,7 +556,7 @@ class Agent:
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
             # ``None`` defers to Settings.lean_rules (ZAKCODE_LEAN_RULES); an explicit
             # True/False from the host wins — the same deferral shape as
-            # enable_status_line / enable_output_style / settings_permissions above.
+            # enable_status_line / enable_output_style above.
             # Before g-016-86 this was a hard ``False`` default, so the documented env
             # var reached the Agent through server/app.py ONLY: CLI, library and bench
             # constructions silently took the full render, and an A/B driven by the env
