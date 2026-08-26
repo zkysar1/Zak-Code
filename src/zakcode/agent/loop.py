@@ -275,6 +275,22 @@ _DEGEN_FIRST_CHECK = 600
 #: this cadence is O(1) regardless of how long the completion grows.
 _DEGEN_CHECK_EVERY = 256
 
+#: Appended to a successful ``write_file`` result when a READ of the SAME path failed
+#: earlier in the turn (the anomaly rail, ADR-0020). Field incident (2026-08-26): a
+#: knowledge-tree index said a node existed, the read of its file failed, and the model
+#: silently wrote a fresh file — papering over what was either index drift or a
+#: path-resolution split, without ever noting that two sources of truth disagreed. The
+#: harness cannot tell an intentional create-if-missing from a pave-over, so the write
+#: SUCCEEDS and the result carries the question — at the exact moment the model decides
+#: what to build on the new file, for zero extra iterations. Fires once per path per turn.
+_WRITE_AFTER_FAILED_READ_NOTE = (
+    "[harness] a read of this exact path failed earlier this turn. If you expected the "
+    "file to already exist, do not just continue: something disagreed with reality (a "
+    "stale index, a path that resolves differently for you than for a script, a deleted "
+    "file) — diagnose which, state your conclusion in one sentence, and fix the source "
+    "if it is wrong. If you intended to create a brand-new file, carry on."
+)
+
 #: How many times a single turn may auto-continue a length-truncated FINAL answer before
 #: accepting it as-is. Each continuation is a real new iteration (draws iteration + budget),
 #: so it is bounded separately from — and far below — the iteration cap.
@@ -637,6 +653,10 @@ class AgentLoop:
         self.store = store
         self.workspace_root = workspace_root or self.settings.workspace_root
         self.extra_workspace_roots: list[Path] = extra_workspace_roots or []
+        # Anomaly rail (ADR-0020): paths whose read_file errored THIS turn, so a
+        # subsequent successful write_file to the same path carries the
+        # expected-to-exist? question. Cleared at every turn start.
+        self._turn_read_failed: set[str] = set()
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
         # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
         # one unit from the shared pool, and the turn stops with
@@ -1459,6 +1479,21 @@ class AgentLoop:
         # Surface the tool's next-step rail (Hint: on success / Fix: on error) into the
         # model-facing text, and mirror it into the structured data for non-model clients.
         output = _append_rail(output, hint=tool_res.hint, fix=tool_res.fix)
+
+        # Anomaly rail (ADR-0020): remember read failures; question a same-path write.
+        # See _WRITE_AFTER_FAILED_READ_NOTE for why this is a note on success, not a veto.
+        if spec is not None and isinstance(arguments.get("path"), str):
+            key = self._anomaly_path_key(arguments["path"])
+            if spec.name == "read_file" and tool_res.is_error:
+                self._turn_read_failed.add(key)
+            elif (
+                spec.name == "write_file"
+                and not tool_res.is_error
+                and key in self._turn_read_failed
+            ):
+                self._turn_read_failed.discard(key)  # once per path per turn
+                output = f"{output}\n{_WRITE_AFTER_FAILED_READ_NOTE}"
+
         data = tool_res.data
         if tool_res.hint or tool_res.fix:
             rail = {k: v for k, v in (("hint", tool_res.hint), ("fix", tool_res.fix)) if v}
@@ -1471,6 +1506,19 @@ class AgentLoop:
             data=data,
             artifacts=tool_res.artifacts,
         )
+
+    def _anomaly_path_key(self, path: str) -> str:
+        """Canonical key for the write-after-failed-read tripwire (ADR-0020).
+
+        Relative paths anchor at the workspace root (matching the file tools' own
+        resolution); ``normcase`` folds Windows case-insensitivity so two spellings that
+        collide on disk collide here too. Purely lexical on purpose — ``resolve()`` would
+        do I/O per tool call and the model reusing its own path string is the common case.
+        """
+        p = Path(path)
+        if not p.is_absolute():
+            p = Path(self.workspace_root) / p
+        return os.path.normcase(os.path.normpath(str(p)))
 
     def _harness_shell_call(self, command: str, call_id: str) -> ToolCall | None:
         """A synthetic shell ``ToolCall`` for a harness-issued run that won't raise a prompt.
@@ -1958,6 +2006,7 @@ class AgentLoop:
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
+        self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
@@ -2758,6 +2807,7 @@ class AgentLoop:
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
+        self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
