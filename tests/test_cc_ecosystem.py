@@ -59,7 +59,6 @@ def _full_agent(ws: Path) -> Agent:
         ),
         enable_skills=True,
         enable_rules=True,
-        enable_settings_hooks=True,
         enable_settings_permissions=True,
         enable_output_style=True,
     )
