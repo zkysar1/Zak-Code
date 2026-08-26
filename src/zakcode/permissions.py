@@ -307,6 +307,22 @@ PROTECTED_PATH_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 #: scanned so a redirect into a protected path is caught best-effort).
 _FILE_ARG_KEYS = ("path", "file_path", "filename", "dest", "destination", "output")
 
+#: Built-in protected classes that are WRITE-sensitive only: reading them is normal operation
+#: (git tooling reads ``.git/``, a skill/rule file under ``.claude/`` is *made* to be read), so
+#: READ_ONLY-tier tools skip them. Field bug (2026-08-26): a ``read_file`` of the agent's own
+#: ``.claude/skills/.../SKILL.md`` was hard-denied as a "write to a protected path", derailing
+#: the turn. ``.env`` is deliberately NOT here — reading a secrets file is itself the leak
+#: (the floor's charter: "read/rewrite secrets"). Operator/settings-ingested extras are also
+#: never here: a CC ``deny Read(glob)`` rule ingests as a protected path, so extras must bind
+#: reads too.
+_WRITE_ONLY_PROTECTED = frozenset(
+    {
+        "VCS internals (.git/)",
+        "virtualenv / installed packages",
+        "agent config (.claude/)",
+    }
+)
+
 logger = logging.getLogger("zakcode.permissions")
 
 
@@ -569,11 +585,15 @@ class PermissionPolicy:
         """
         return self._dangerous_reason(arguments)
 
-    def _protected_path_reason(self, arguments: dict) -> str | None:
-        """The protected-path floor a write in ``arguments`` matches, or None (Step 2).
+    def _protected_path_reason(self, arguments: dict, *, read_only: bool = False) -> str | None:
+        """The protected-path floor ``arguments`` matches, or None (Step 2).
 
-        Scans the FILE-PATH args (``path``/``file_path``/…) of a write/edit tool against
-        :data:`PROTECTED_PATH_PATTERNS`. Pure, no I/O. Shell args are deliberately NOT scanned:
+        Scans the FILE-PATH args (``path``/``file_path``/…) against
+        :data:`PROTECTED_PATH_PATTERNS`. Pure, no I/O. With ``read_only=True`` (the calling
+        tool's tier is READ_ONLY) the write-sensitive built-ins
+        (:data:`_WRITE_ONLY_PROTECTED`) are skipped — reading ``.git/`` or the agent's own
+        ``.claude/`` skills is normal operation — while secrets (``.env``) and every
+        operator/settings-ingested extra still bind. Shell args are deliberately NOT scanned:
         a path inside an arbitrary command is far more often a READ/EXECUTE (``.venv/bin/python
         x``, ``cat .git/config``) than a write, so matching it over-blocks legitimate commands —
         the same "don't parse shell intent" lesson as the dependency gate. A shell-driven write
@@ -583,18 +603,21 @@ class PermissionPolicy:
             value = arguments.get(key)
             if isinstance(value, str):
                 for pattern, description in self.protected_path_patterns:
+                    if read_only and description in _WRITE_ONLY_PROTECTED:
+                        continue
                     if pattern.search(value):
                         return description
         return None
 
-    def protected_path_reason(self, arguments: dict) -> str | None:
-        """Public: the protected-path reason a write in ``arguments`` matches, or None.
+    def protected_path_reason(self, arguments: dict, *, read_only: bool = False) -> str | None:
+        """Public: the protected-path reason ``arguments`` matches, or None.
 
         Mirrors :meth:`dangerous_reason` so the loop can re-apply the protected-path floor to a
         PreToolUse-rewritten call (so a hook can't rewrite a benign edit into a write to
-        ``.env`` / ``.git/`` / the venv / the agent's config). File-path args only.
+        ``.env`` / ``.git/`` / the venv / the agent's config). File-path args only; pass
+        ``read_only=True`` for a READ_ONLY-tier tool so write-sensitive built-ins don't bind.
         """
-        return self._protected_path_reason(arguments)
+        return self._protected_path_reason(arguments, read_only=read_only)
 
     def _undeclared_install(self, arguments: dict) -> list[str]:
         """Package-install targets in the command that NO project manifest declares.
@@ -725,15 +748,19 @@ class PermissionPolicy:
         # sensitive location (.git/, .env, the venv, the agent's config) never auto-allows — it
         # escalates to a (session-grantable) prompt, and is a hard DENY in ``autonomous`` (no
         # prompt; an unattended agent must not silently corrupt the repo, read/rewrite secrets,
-        # tamper with installed deps, or rewrite its own permissions). The grant fast-paths in
+        # tamper with installed deps, or rewrite its own permissions). READ_ONLY-tier tools skip
+        # the write-sensitive built-ins (reading a skill file is what a skill file is for) but
+        # still bind on secrets and operator extras. The grant fast-paths in
         # authorize()/auto_allows() re-decide so a blanket grant cannot waive this.
-        protected = self._protected_path_reason(arguments)
+        read_only = tier is PermissionTier.READ_ONLY
+        protected = self._protected_path_reason(arguments, read_only=read_only)
         if protected is not None:
+            verb = "read of" if read_only else "write to"
             if PermissionMode.AUTONOMOUS in (mode, self.mode):
-                return (PermissionDecision.DENY, f"blocked write to a protected path: {protected}")
+                return (PermissionDecision.DENY, f"blocked {verb} a protected path: {protected}")
             if mode is PermissionMode.DENY or base is PermissionDecision.DENY:
-                return (PermissionDecision.DENY, f"blocked write to a protected path: {protected}")
-            return (PermissionDecision.ASK, f"write to a protected path: {protected}")
+                return (PermissionDecision.DENY, f"blocked {verb} a protected path: {protected}")
+            return (PermissionDecision.ASK, f"{verb} a protected path: {protected}")
 
         if base is PermissionDecision.ALLOW:
             return (base, "")

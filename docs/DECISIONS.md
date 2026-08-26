@@ -984,3 +984,35 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 - **Consequences:** long skills become checked-off steps instead of recalled prose on
   every model size; skill execution survives compaction and clamping through the plan;
   worst case on a capable model is one short extra hint line.
+
+## ADR-0028: The protected-path floor is tier-aware — reads of the agent's own config are not writes
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** The protected-path floor (ADR self-remediation Step 2, PR #27) scanned the
+  file-path arguments of EVERY tool against the protected patterns without consulting the
+  tool's permission tier. Field incident (2026-08-26, sera on a Mind deployment): a
+  `read_file` of the agent's OWN `.claude/skills/google-drive-access/SKILL.md` was hard-denied
+  in autonomous with "blocked write to a protected path: agent config (.claude/)" — a read,
+  refused by a write gate, with a message describing it as a write. The wrongly-refused first
+  step derailed the model (a small Gemini-class model) into a hallucinated-tool-syntax /
+  repetition collapse that ended in a false "done". The bug was latent for months because
+  models normally read skills via `use_skill` (internal resolver, no permission gate) and read
+  repo files via bash (shell args deliberately unscanned); a direct `read_file` on a
+  `.claude/` path was the one shape that tripped it — and every READ_ONLY file tool
+  (read_file, list_dir, glob, grep, pdf, office, images) was equally affected.
+- **Decision:** `decide()` passes `read_only` (tier is READ_ONLY) into the floor. For
+  READ_ONLY-tier tools the three write-sensitive BUILT-INS — `.git/`, the venv,
+  `.claude/` — do not bind: reading them is normal operation (a skill file is made to be
+  read). Two classes still bind reads: `.env` (reading a secrets file is itself the leak —
+  the floor's charter says "read/rewrite secrets"), and ALL operator/settings-ingested
+  extras (a CC `deny Read(glob)` permission rule ingests as a protected-path regex, so
+  extras must bind reads to honor it). Denial/escalation messages now say "read of" /
+  "write to" accurately. The loop's hook-rewrite re-check passes the same flag. An unknown
+  tool (no spec) stays fail-closed (tier defaults to most-dangerous → no read exemption).
+  The grant fast-paths are unchanged: a read-exempt call falls through to `decide()` and
+  allows; a secrets read still re-decides and can never ride a session grant.
+- **Consequences:** Mind-deployment agents can read their own skills, rules, and settings
+  with file tools again; `.env` reads still hard-deny in autonomous and re-prompt
+  interactively; write behavior is byte-for-byte unchanged. Residual (unchanged, deliberate):
+  autonomous agents still cannot WRITE `.claude/` — deployments whose framework expects
+  self-editing config need an operator decision before that posture changes.
