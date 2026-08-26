@@ -767,6 +767,27 @@ async def test_pinned_permission_interleaving() -> None:
 
 
 @pytest.mark.asyncio
+async def test_footer_surfaces_prompt_cache_share() -> None:
+    # ADR-0021: when the backend reports cache-read tokens, the footer shows what share
+    # of the prompt side was cached — the at-a-glance signal that a big token number was
+    # mostly discounted re-sends (and, at 0%, that caching is NOT hitting). Silent at 0.
+    async def footer_for(usage: Usage) -> str:
+        renderer, buffer = _make_renderer()
+        await renderer.render(
+            _astream([AgentDone(stop_reason="completed", iterations=3, usage=usage)])
+        )
+        return buffer.getvalue()
+
+    cached = Usage(
+        prompt_tokens=1000, completion_tokens=50, total_tokens=1050, cache_read_tokens=750
+    )
+    out = await footer_for(cached)
+    assert "(75% cached)" in out
+    out = await footer_for(_usage(1000, 50))
+    assert "cached" not in out  # zero cache reads -> no annotation, no clutter
+
+
+@pytest.mark.asyncio
 async def test_pinned_footer_states() -> None:
     async def footer_for(done: AgentDone) -> str:
         renderer, buffer = _make_renderer()

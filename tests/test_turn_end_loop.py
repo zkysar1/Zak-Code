@@ -171,10 +171,11 @@ async def test_turn_end_hook_vetoes_completed_once(tmp_path: Path) -> None:
     assert result.stop_reason == "completed"
     assert result.iterations == 2  # re-entered once
     assert len(hook.payloads) == 2
-    # The continuation prompt rides a control-rail user message in the session.
+    # The continuation prompt rides a control-rail user message in the session, carrying
+    # the [harness] provenance tag (ADR-0021) so it can never read as the user speaking.
     injected = [m for m in loop.session.messages if m.role == "user" and "Run the tests" in m.text]
     assert len(injected) == 1
-    assert injected[0].text.startswith("Hint:")
+    assert injected[0].text.startswith("[harness] Hint:")
 
 
 @pytest.mark.asyncio

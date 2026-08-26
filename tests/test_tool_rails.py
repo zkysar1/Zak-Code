@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from zakcode.agent.loop import AgentLoop, _append_rail, _denial_remedy
+from zakcode.agent.loop import AgentLoop, _append_rail, _control_rail, _denial_remedy
 from zakcode.config import PermissionTier
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
@@ -28,6 +28,13 @@ from zakcode.tools.builtins.read_file import ReadFileTool
 from zakcode.usage import Usage
 
 # ── pure helpers ────────────────────────────────────────────────────────────────
+
+
+def test_control_rail_carries_provenance_and_rail_word() -> None:
+    # ADR-0021: a loop-INJECTED directive is a user-role message, so it carries the
+    # [harness] provenance tag + the shared rail word; tool-result rails stay bare
+    # (they ride inside a tool frame, already unambiguous).
+    assert _control_rail("do the thing") == "[harness] Hint: do the thing"
 
 
 def test_append_rail_fix_wins_over_hint() -> None:
