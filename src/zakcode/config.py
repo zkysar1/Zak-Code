@@ -129,7 +129,13 @@ class Settings(BaseSettings):
             "{model, source}, source defaults to 'groq'). Unset categories use Groq defaults."
         ),
     )
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    # None (the default) sends NO temperature, so every backend runs at its own intended
+    # default (Gemini 1.0, Claude 1.0, llama.cpp ~0.8). The old harness-wide 0.0 default
+    # was fake-determinism inherited from local-model habits — and Google explicitly warns
+    # that Gemini 2.5+ below temperature 1.0 falls into repetition loops, which is exactly
+    # what a field deployment hit (2026-08-26, ADR-0018). Set a value only when you truly
+    # need one; it is then sent verbatim to every model.
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     # How tools are offered to the model. ``auto`` (default) uses native
     # function-calling when the model supports it and transparently falls back to a
     # text protocol when it does not (so tool-less local models still work). In

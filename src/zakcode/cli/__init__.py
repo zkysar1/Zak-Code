@@ -203,7 +203,10 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
             ),
         ),
         ("Fallback model", settings.fallback_model or "(none)"),
-        ("Temperature", str(settings.temperature)),
+        (
+            "Temperature",
+            "(model default)" if settings.temperature is None else str(settings.temperature),
+        ),
         ("Ollama base URL", settings.ollama_base_url),
         ("Permission mode", _sourced("ZAKCODE_PERMISSION_MODE", settings.permission_mode)),
         ("Workspace root", str(settings.workspace_root)),
