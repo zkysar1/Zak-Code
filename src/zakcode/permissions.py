@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -463,9 +464,19 @@ class PermissionPolicy:
         protected_path_patterns: list[tuple[re.Pattern[str], str]] | None = None,
         extra_protected_paths: list[tuple[re.Pattern[str], str]] | None = None,
         extra_denied_tools: set[str] | frozenset[str] | None = None,
+        workspace_root: str | os.PathLike[str] | None = None,
     ) -> None:
         self.mode = PermissionMode.parse(mode)
         self.prompter = prompter
+        # The root a RELATIVE file-path argument resolves against for the protected-path scan
+        # (ADR-0031). CC matches path rules against absolute paths (its file tools take
+        # absolute paths), and a framework's ``*/`` -prefixed deny globs need a parent
+        # segment — so the scan tests the workspace-resolved absolute form alongside the raw
+        # argument, or a relative spelling of a denied path walks straight past the rule.
+        # String math only (``normpath``), never a filesystem call: decide() stays pure.
+        self._workspace_root: str | None = (
+            os.path.normpath(os.fspath(workspace_root)) if workspace_root is not None else None
+        )
         # Per-tool trust overrides (audit P0-2b / D12): the named tool is judged under
         # ITS mode instead of the session mode — both directions (loosen or tighten).
         # The dangerous-command floor in an autonomous SESSION is never loosenable.
@@ -532,6 +543,7 @@ class PermissionPolicy:
             declared_packages=self._declared_packages,
             protected_path_patterns=self.protected_path_patterns,
             extra_denied_tools=self._denied_tools,
+            workspace_root=self._workspace_root,
         )
 
     # ── public read accessors (so clients never touch the private sets) ────────
@@ -619,15 +631,20 @@ class PermissionPolicy:
         """
         for key in _FILE_ARG_KEYS:
             value = arguments.get(key)
-            if isinstance(value, str):
-                for pattern, description in self.protected_path_patterns:
-                    if read_only and (
-                        description in _WRITE_ONLY_PROTECTED
-                        or description.endswith(_WRITE_ONLY_MARK)
-                    ):
-                        continue
-                    if pattern.search(value):
-                        return description
+            if not isinstance(value, str):
+                continue
+            # Tighten-only union: the raw argument AND (for a relative path, when a workspace
+            # root is known) its resolved absolute form. Either matching binds.
+            candidates = [value]
+            if self._workspace_root is not None and value and not os.path.isabs(value):
+                candidates.append(os.path.normpath(os.path.join(self._workspace_root, value)))
+            for pattern, description in self.protected_path_patterns:
+                if read_only and (
+                    description in _WRITE_ONLY_PROTECTED or description.endswith(_WRITE_ONLY_MARK)
+                ):
+                    continue
+                if any(pattern.search(candidate) for candidate in candidates):
+                    return description
         return None
 
     def protected_path_reason(self, arguments: dict, *, read_only: bool = False) -> str | None:
