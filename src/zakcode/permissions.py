@@ -631,6 +631,7 @@ class PermissionPolicy:
         """
         for key in _FILE_ARG_KEYS:
             value = arguments.get(key)
+<<<<<<< HEAD
             if not isinstance(value, str):
                 continue
             # Tighten-only union: the raw argument AND (for a relative path, when a workspace
@@ -645,6 +646,17 @@ class PermissionPolicy:
                     continue
                 if any(pattern.search(candidate) for candidate in candidates):
                     return description
+=======
+            if isinstance(value, str):
+                for pattern, description in self.protected_path_patterns:
+                    if read_only and (
+                        description in _WRITE_ONLY_PROTECTED
+                        or description.endswith(_WRITE_ONLY_MARK)
+                    ):
+                        continue
+                    if pattern.search(value):
+                        return description
+>>>>>>> origin/main
         return None
 
     def protected_path_reason(self, arguments: dict, *, read_only: bool = False) -> str | None:
