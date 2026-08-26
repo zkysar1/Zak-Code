@@ -980,7 +980,7 @@ class AgentLoop:
             return []
         known = {n.lower(): n for n in self._skill_resolver.names()}
         refs: list[str] = []
-        for match in re.finditer(r"(?:^|[\s(\"'`])/([a-z0-9][a-z0-9_-]*)", text.lower()):
+        for match in re.finditer(r"(?:^|[\s(\[,;:!\"'`])/([a-z0-9][a-z0-9_-]*)", text.lower()):
             name = known.get(match.group(1))
             if name is not None and name not in refs:
                 refs.append(name)
@@ -991,13 +991,17 @@ class AgentLoop:
 
         A step in ANY state counts: an open step is the plan gate's job, and a
         done/cancelled one means the model explicitly addressed the skill — the
-        coverage backstop must not re-litigate a deliberate decision.
+        coverage backstop must not re-litigate a deliberate decision. The match is
+        boundary-aware: a step naming ``/test-e2e`` does not count as mentioning
+        ``/test``, so prefix-colliding registry names never suppress each other.
         """
-        token = f"/{name.lower()}"
+        token = re.compile(rf"/{re.escape(name.lower())}(?![a-z0-9_-])")
 
         def walk(tasks: list[Task]) -> bool:
             return any(
-                token in t.title.lower() or token in t.note.lower() or walk(t.children)
+                token.search(t.title.lower()) is not None
+                or token.search(t.note.lower()) is not None
+                or walk(t.children)
                 for t in tasks
             )
 
