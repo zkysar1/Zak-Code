@@ -1016,3 +1016,44 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   interactively; write behavior is byte-for-byte unchanged. Residual (unchanged, deliberate):
   autonomous agents still cannot WRITE `.claude/` — deployments whose framework expects
   self-editing config need an operator decision before that posture changes.
+
+## ADR-0029: No built-in agent-config restriction — the settings files are the sole authority over `.claude/`
+
+- **Status:** Accepted (shipped, 2026-08-26). Operator ruling, verbatim intent: "get rid of
+  the restriction 100% and let agents edit what they want, but follow settings file …
+  of course they should be able to edit settings file like claude.md and the actual settings
+  files, as long as the settings allow."
+- **Context:** The protected-path floor hardcoded `agent config (.claude/)` as a built-in
+  class, so an autonomous agent could never write its own skills, rules, or settings — even
+  though frameworks built on this engine (the Mind framework) are DESIGNED around agents
+  evolving their own config, with git as the safety net and a deliberate, narrow
+  constitutional-anchor deny (`settings.local.json` protecting itself) as the only hard line.
+  Meanwhile the mechanism that could express that policy — CC `permissions.{allow,deny,ask}`
+  ingestion from `.claude/settings.json` + `settings.local.json` — sat behind an opt-in flag
+  (`ZAKCODE_SETTINGS_PERMISSIONS`, off by default), the exact tri-state shape ADR-0025
+  eliminated for hooks. Net effect: the engine enforced a blanket opinion the operator never
+  asked for, while ignoring the specific permissioning the operator actually wrote down.
+- **Decision:** Two-fold, and the halves only work together. (1) The
+  `agent config (.claude/)` built-in protected pattern is DELETED — agents read and write
+  their own config, `CLAUDE.md`, and the settings files freely by default. (2) Settings
+  permissions ingestion is UNCONDITIONAL — no setting, no `Agent(enable_settings_permissions)`
+  param (a stale env var is inert via `extra="ignore"`); skipped only when the host injects
+  its own `permission_policy`. The workspace's `permissions` block IS the authorization
+  posture and the ONLY authority over `.claude/`: a framework that wants any of its config
+  protected declares `deny Edit|Write(glob)` (or `Read`) rules there, which ingest as extra
+  protected paths and bind reads AND writes, hard-denying in autonomous. The `.git/`, `.env`,
+  and venv built-ins are unchanged (not named by the ruling; `.env` read-blocking and the
+  catastrophic-command floor remain the never-waivable secrets/safety spine).
+- **Alternatives rejected:** keeping `.claude/` built-in but exempting Mind-style workspaces
+  (special-casing one consumer); a config flag to disable the built-in (a flag — the standing
+  rule is one way of doing things); ingestion-on-only-when-permissions-present (still a
+  divergent path, and indistinguishable from silent non-loading when a file has a typo).
+- **Consequences:** Mind agents self-evolve their skills/rules/settings under zakcode exactly
+  as the framework intends, and Mind's constitutional anchor (the self-referential deny in
+  `settings.local.json`) is now actually ENFORCED by the engine instead of approximated by a
+  blanket block. A workspace with no permissions block leaves `.claude/` fully open — that is
+  the ruling's default, not an oversight. An agent can edit settings files to loosen its own
+  next-session posture unless the settings deny it (settings load at Agent construction, so a
+  self-edit never takes effect mid-session); operators who care pin the anchor deny. Ingested
+  allows still cannot cross the catastrophic or protected floors (unchanged invariant, proven
+  in test_cc_permissions.py).

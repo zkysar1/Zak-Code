@@ -32,7 +32,7 @@ it can loosen a benign call for that tool, but it still runs — before any allo
 decision — the never-waivable catastrophic-command floor and the protected-path floor: a
 catastrophic command (``rm -rf /``) escalates to a confirmation prompt (a hard DENY in an
 ``autonomous`` session, and a fail-closed DENY when no prompter is present), and a write to a
-protected path (``.env`` / ``.git/`` / the venv / the agent's config) does likewise. So an
+protected path (``.env`` / ``.git/`` / the venv) does likewise. So an
 ingested ``allow: ["Bash(*)"]`` can NEVER auto-allow ``rm -rf /`` or a write to ``.env``. The
 floor is enforced by :meth:`PermissionPolicy.decide`, which runs the dangerous-pattern and
 protected-path checks *ahead of* the allow rules; this module only feeds that machinery and
@@ -43,8 +43,11 @@ Discovery mirrors :mod:`zakcode.hooks.settings_loader`: both ``.claude/settings.
 silent no-op; a parse error is recorded in the returned ``errors`` dict, never raised. Any
 gesture with no clean, tightening mapping (an exotic per-arg glob, a CC-only tool such as
 ``AskUserQuestion``) is recorded in ``errors`` with a reason — never silently dropped or
-mis-mapped. This module is OFF by default; the Agent wires it in only behind
-``settings_permissions`` (env ``ZAKCODE_SETTINGS_PERMISSIONS``).
+mis-mapped. Ingestion is UNCONDITIONAL since ADR-0029 (no setting, no flag — the same
+"declared config is live" posture as settings hooks, ADR-0025): a workspace's ``permissions``
+block IS the authorization posture, and with the built-in agent-config class removed it is
+the ONLY authority over ``.claude/`` — a framework that wants its config protected declares
+the denies here, and they always bind.
 """
 
 from __future__ import annotations
@@ -324,9 +327,9 @@ def load_settings_permissions(
 
     Returns ``(ingested, errors)`` where ``ingested`` is the tighten-only
     :class:`IngestedPermissions` to feed the policy and ``errors`` maps a per-gesture (or per-file)
-    key to a human reason a gesture was skipped. The caller wires ``ingested`` into the
-    ``PermissionPolicy`` construction behind
-    the ``settings_permissions`` flag; it can never loosen the policy (see the module docstring).
+    key to a human reason a gesture was skipped. The Agent wires ``ingested`` into the
+    ``PermissionPolicy`` construction unconditionally (ADR-0029); it can never loosen the
+    never-waivable floors (see the module docstring).
     """
     out = IngestedPermissions()
     errors: dict[str, str] = {}

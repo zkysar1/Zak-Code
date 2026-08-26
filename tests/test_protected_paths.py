@@ -1,11 +1,15 @@
 """The protected-path floor (self-remediation Step 2).
 
-A write to a sensitive location (``.git/``, ``.env``, the virtualenv, the agent's own config)
-is never auto-allowed: it escalates to a confirmation prompt — and a hard DENY in
-``autonomous`` — even under ``allow``/``acceptEdits`` mode or a session grant. This closes the
-"a blanket grant (or a loose mode) silently waives a sensitive write" hole, and the
-self-permission-escalation / secret-rewrite / dependency-tamper / repo-corruption vectors an
-unattended agent must not reach. Tighten-only, like the dangerous-command floor.
+A write to a sensitive location (``.git/``, ``.env``, the virtualenv) is never auto-allowed:
+it escalates to a confirmation prompt — and a hard DENY in ``autonomous`` — even under
+``allow``/``acceptEdits`` mode or a session grant. This closes the "a blanket grant (or a
+loose mode) silently waives a sensitive write" hole, and the secret-rewrite /
+dependency-tamper / repo-corruption vectors an unattended agent must not reach. Tighten-only,
+like the dangerous-command floor.
+
+``.claude/`` (the agent's config — skills, rules, the settings files) is NOT a built-in
+protected class (ADR-0029): it is agent-editable by default, and the workspace's own
+``permissions`` deny rules — ingested unconditionally — are the sole authority over it.
 """
 
 from __future__ import annotations
@@ -86,8 +90,6 @@ def _matches(path: str) -> bool:
         "venv/lib/python3.11/x",
         "site-packages/requests/__init__.py",
         ".venv/lib/site-packages/foo",
-        ".claude/settings.json",
-        "x/.claude/agents/self.md",
     ],
 )
 def test_protected_paths_match(path: str) -> None:
@@ -110,6 +112,13 @@ def test_protected_paths_match(path: str) -> None:
         "README.md",
         "docs/.venvnotes.md",  # 'venv' not a path segment here
         "prevent/x.py",
+        # the agent's config is agent-editable — NOT a built-in protected class (ADR-0029);
+        # a workspace re-protects it via its own settings permissions deny rules
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        "x/.claude/agents/self.md",
+        ".claude/skills/google-drive-access/SKILL.md",
+        "CLAUDE.md",
     ],
 )
 def test_lookalike_paths_do_not_match(path: str) -> None:
@@ -135,7 +144,7 @@ def test_protected_write_escalates_in_accept_edits_mode() -> None:
 
 def test_protected_write_hard_denies_in_autonomous() -> None:
     policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
-    for path in (".env", ".git/config", ".venv/bin/pip", ".claude/settings.json"):
+    for path in (".env", ".git/config", ".venv/bin/pip"):
         decision, _ = policy.decide(WRITE, {"path": path})
         assert decision is PermissionDecision.DENY, path
 
@@ -233,17 +242,14 @@ def test_compile_protected_paths_skips_invalid_regex() -> None:
 
 
 # ── 5. READ_ONLY tools: write-sensitive classes are readable, secrets are not ─────
-# Field bug (2026-08-26): a read_file of the agent's own .claude/skills/.../SKILL.md was
-# hard-denied in autonomous as a "blocked write to a protected path" — the floor never
-# consulted the tool's tier. Reading .git/, the venv, or the agent's config is normal
-# operation; reading .env is itself the secret leak and stays blocked.
+# Field bug (2026-08-26, ADR-0028): a read was hard-denied in autonomous as a "blocked
+# write to a protected path" — the floor never consulted the tool's tier. Reading .git/
+# or the venv is normal operation; reading .env is itself the secret leak and stays blocked.
 
 
 def test_read_only_tool_reads_write_sensitive_paths() -> None:
     policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
     for path in (
-        ".claude/skills/google-drive-access/SKILL.md",
-        ".claude/settings.json",
         ".git/config",
         ".venv/lib/python3.11/site-packages/requests/__init__.py",
     ):
@@ -268,7 +274,7 @@ def test_read_only_secrets_escalates_interactive_with_read_wording() -> None:
 
 def test_write_tool_wording_and_behavior_unchanged() -> None:
     policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
-    decision, reason = policy.decide(WRITE, {"path": ".claude/settings.json"})
+    decision, reason = policy.decide(WRITE, {"path": ".git/config"})
     assert decision is PermissionDecision.DENY
     assert "write to a protected path" in reason
 
@@ -285,7 +291,7 @@ def test_operator_extra_binds_reads_too() -> None:
 def test_unknown_spec_stays_fail_closed_on_protected_paths() -> None:
     # No spec → tier defaults to the most dangerous → the read exemption never applies.
     policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
-    assert policy.decide(None, {"path": ".claude/settings.json"})[0] is PermissionDecision.DENY
+    assert policy.decide(None, {"path": ".env"})[0] is PermissionDecision.DENY
 
 
 def test_session_grant_still_cannot_waive_secrets_read() -> None:
@@ -296,8 +302,37 @@ def test_session_grant_still_cannot_waive_secrets_read() -> None:
     assert "protected" in reason.lower()
 
 
-def test_session_grant_read_of_agent_config_allowed() -> None:
-    # The fast-paths leave a non-matching (read-exempt) call to decide(), which allows it.
+# ── 6. the agent's config is agent-editable; the settings files are the authority ─
+# ADR-0029 (operator ruling): no built-in restriction on .claude/ — agents read AND write
+# their own skills, rules, CLAUDE.md, and the settings files themselves. A framework that
+# wants any of it protected declares deny rules in its settings permissions block, which
+# ingest as extra protected paths and bind reads and writes alike.
+
+
+def test_agent_config_is_agent_editable_by_default() -> None:
     policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
-    allowed, _ = _auth(policy, READ, {"path": ".claude/skills/x/SKILL.md"})
-    assert allowed is True
+    for path in (
+        ".claude/skills/google-drive-access/SKILL.md",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        "CLAUDE.md",
+        ".claude/rules/style.md",
+    ):
+        assert policy.decide(WRITE, {"path": path})[0] is PermissionDecision.ALLOW, path
+        assert policy.decide(READ, {"path": path})[0] is PermissionDecision.ALLOW, path
+
+
+def test_settings_deny_rules_reprotect_agent_config() -> None:
+    # The Ayoai constitutional-anchor pattern: a settings.local.json deny over itself. Once
+    # ingested, the extra binds BOTH writes and reads (extras are never read-exempt), and
+    # hard-denies in autonomous.
+    extra = compile_protected_paths([r"\.claude[\\/]settings\.local\.json"])
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS, extra_protected_paths=extra)
+    assert policy.decide(WRITE, {"path": ".claude/settings.local.json"})[0] is (
+        PermissionDecision.DENY
+    )
+    assert policy.decide(READ, {"path": ".claude/settings.local.json"})[0] is (
+        PermissionDecision.DENY
+    )
+    # unlisted config stays editable — the deny is exactly as wide as the operator wrote it
+    assert policy.decide(WRITE, {"path": ".claude/settings.json"})[0] is PermissionDecision.ALLOW

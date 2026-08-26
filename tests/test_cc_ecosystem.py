@@ -59,7 +59,7 @@ def _full_agent(ws: Path) -> Agent:
         ),
         enable_skills=True,
         enable_rules=True,
-        enable_settings_permissions=True,
+        # settings hooks + permissions ingestion are unconditional (ADR-0025 / ADR-0029).
         enable_output_style=True,
     )
 

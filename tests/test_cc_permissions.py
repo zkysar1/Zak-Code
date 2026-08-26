@@ -30,8 +30,8 @@ def _write_permissions(ws: Path, permissions: dict, *, local: bool = False) -> N
     (d / name).write_text(json.dumps({"permissions": permissions}), encoding="utf-8")
 
 
-def _agent(ws: Path, *, mode: str = "ask", ingest: bool = True) -> Agent:
-    """A real offline Agent (scripted provider, no prompter) with permissions ingestion gated.
+def _agent(ws: Path, *, mode: str = "ask") -> Agent:
+    """A real offline Agent (scripted provider, no prompter); ingestion is always-on (ADR-0029).
 
     No prompter is supplied, so an ``ask`` decision FAILS CLOSED (denied) — the safe headless
     default, and exactly the configuration in which the floor-holds proof is strongest.
@@ -42,7 +42,6 @@ def _agent(ws: Path, *, mode: str = "ask", ingest: bool = True) -> Agent:
             workspace_root=ws,
             permission_mode=mode,
         ),
-        enable_settings_permissions=ingest,
     )
 
 
@@ -129,9 +128,12 @@ def test_allow_bare_tool_pre_approves_a_prompting_tool(tmp_path: Path) -> None:
     decision, _ = agent.permission_policy.decide(write, {"path": "notes.txt", "content": "hi"})
     assert decision is PermissionDecision.ALLOW
 
-    # Control: without the allow gesture the same write would PROMPT (ASK), proving the pre-approval
-    # is what changed it.
-    plain = _agent(tmp_path, mode="ask", ingest=False)
+    # Control: in a workspace WITHOUT the allow gesture (ingestion is always-on, so the control
+    # is a clean workspace, not a flag) the same write would PROMPT (ASK), proving the
+    # pre-approval is what changed it.
+    clean = tmp_path / "clean-ws"
+    clean.mkdir()
+    plain = _agent(clean, mode="ask")
     pdec, _ = plain.permission_policy.decide(
         _spec(plain, "write_file"), {"path": "notes.txt", "content": "hi"}
     )
@@ -225,23 +227,24 @@ def test_malformed_gesture_does_not_crash(tmp_path: Path) -> None:
     assert any("bash(unterminated" in k.lower() for k in errors)
 
 
-# ── off by default: no flag ⇒ no ingestion ──────────────────────────────────────
+# ── always on: declared permissions are live, no flag exists (ADR-0029) ─────────
 
 
-def test_off_by_default_no_ingestion(tmp_path: Path) -> None:
-    # With a settings file present but the flag OFF (Settings default), the policy must NOT ingest:
-    # a bare ``deny: ["Bash"]`` does not pin bash off, so bash behaves exactly as the base mode.
+def test_ingestion_is_always_on(tmp_path: Path) -> None:
+    # A workspace's ``permissions`` block binds with NO flag and NO Agent parameter — the same
+    # "declared config is live" posture as settings hooks (ADR-0025). A bare ``deny: ["Bash"]``
+    # in a plain Agent construction denies bash even under 'allow' mode. This matters doubly
+    # since the built-in agent-config protected class was removed: these ingested rules are the
+    # only authority over ``.claude/``, so they must always load.
     _write_permissions(tmp_path, {"deny": ["Bash"]})
     agent = Agent(
         settings=Settings(
             default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
         ),
-        # enable_settings_permissions omitted ⇒ defers to Settings.settings_permissions (False).
     )
-    decision, _ = agent.permission_policy.decide(_spec(agent, "bash"), {"command": "ls"})
-    # Not denied — bash auto-allows under 'allow' mode because nothing was ingested.
-    assert decision is PermissionDecision.ALLOW
-    assert "bash" not in agent.permission_policy.tool_mode_overrides
+    decision, reason = agent.permission_policy.decide(_spec(agent, "bash"), {"command": "ls"})
+    assert decision is PermissionDecision.DENY
+    assert "denied by configuration" in reason
 
 
 def test_no_settings_file_is_a_silent_noop(tmp_path: Path) -> None:

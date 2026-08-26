@@ -511,7 +511,6 @@ async def test_settings_permissions_ingestion_is_tighten_only(tmp_path: Path) ->
         settings=Settings(
             default_model="scripted/test", workspace_root=tmp_path, permission_mode="ask"
         ),
-        enable_settings_permissions=True,
     )
     bash = agent.registry.get("bash")
     assert bash is not None
@@ -519,9 +518,11 @@ async def test_settings_permissions_ingestion_is_tighten_only(tmp_path: Path) ->
     assert allowed is False  # the floor outranks the ingested allow
 
 
-def test_settings_permissions_off_by_default(tmp_path: Path) -> None:
-    # A workspace may carry ANOTHER runtime's permission config; without the opt-in flag a faithful
-    # host must NOT reshape its posture from it. A bare ``deny: ["Bash"]`` is inert when off.
+def test_settings_permissions_always_on(tmp_path: Path) -> None:
+    # ADR-0029: a workspace's declared ``permissions`` block IS the authorization posture — it
+    # binds with no flag and no Agent parameter (the ADR-0025 "declared config is live" posture).
+    # It is also the ONLY authority over .claude/ now that the built-in agent-config protected
+    # class is gone, so silent non-loading would mean silent unprotection.
     _write(
         tmp_path / ".claude" / "settings.json",
         json.dumps({"permissions": {"deny": ["Bash"]}}),
@@ -531,4 +532,8 @@ def test_settings_permissions_off_by_default(tmp_path: Path) -> None:
             default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
         ),
     )
-    assert "bash" not in agent.permission_policy.tool_mode_overrides
+    bash = agent.registry.get("bash")
+    assert bash is not None
+    decision, reason = agent.permission_policy.decide(bash.spec, {"command": "ls"})
+    assert decision.name == "DENY"
+    assert "denied by configuration" in reason
