@@ -281,7 +281,7 @@ def test_write_tool_wording_and_behavior_unchanged() -> None:
 
 def test_operator_extra_binds_reads_too() -> None:
     # A CC ``deny Read(glob)`` permission rule ingests as a protected-path regex, so
-    # operator/settings extras must bind READ_ONLY tools as well — only the three
+    # operator env regexes must bind READ_ONLY tools as well (no verb available) — only the
     # write-sensitive BUILT-INS are read-exempt.
     extra = compile_protected_paths([r"secrets/.*\.key"])
     policy = PermissionPolicy(PermissionMode.AUTONOMOUS, extra_protected_paths=extra)
@@ -306,7 +306,8 @@ def test_session_grant_still_cannot_waive_secrets_read() -> None:
 # ADR-0029 (operator ruling): no built-in restriction on .claude/ — agents read AND write
 # their own skills, rules, CLAUDE.md, and the settings files themselves. A framework that
 # wants any of it protected declares deny rules in its settings permissions block, which
-# ingest as extra protected paths and bind reads and writes alike.
+# ingest as extra protected paths: Edit/Write denies bind writes, Read denies bind both
+# (ADR-0030 — verb retained).
 
 
 def test_agent_config_is_agent_editable_by_default() -> None:
@@ -323,16 +324,24 @@ def test_agent_config_is_agent_editable_by_default() -> None:
 
 
 def test_settings_deny_rules_reprotect_agent_config() -> None:
-    # The Ayoai constitutional-anchor pattern: a settings.local.json deny over itself. Once
-    # ingested, the extra binds BOTH writes and reads (extras are never read-exempt), and
-    # hard-denies in autonomous.
-    extra = compile_protected_paths([r"\.claude[\\/]settings\.local\.json"])
+    # The Ayoai constitutional-anchor pattern: a settings.local.json Edit/Write deny over
+    # itself. Ingested Edit/Write denies compile write-only (ADR-0030): the anchor is
+    # un-editable in autonomous but stays READABLE — exactly the framework's intent (agents
+    # read the anchor to verify it; only editing is forbidden).
+    anchor = [r"\.claude[\\/]settings\.local\.json"]
+    extra = compile_protected_paths(anchor, write_only=True)
     policy = PermissionPolicy(PermissionMode.AUTONOMOUS, extra_protected_paths=extra)
     assert policy.decide(WRITE, {"path": ".claude/settings.local.json"})[0] is (
         PermissionDecision.DENY
     )
     assert policy.decide(READ, {"path": ".claude/settings.local.json"})[0] is (
-        PermissionDecision.DENY
+        PermissionDecision.ALLOW
     )
     # unlisted config stays editable — the deny is exactly as wide as the operator wrote it
     assert policy.decide(WRITE, {"path": ".claude/settings.json"})[0] is PermissionDecision.ALLOW
+    # a Read-deny (or operator env regex — no write_only flag) binds reads too
+    strict = compile_protected_paths(anchor)
+    strict_policy = PermissionPolicy(PermissionMode.AUTONOMOUS, extra_protected_paths=strict)
+    assert strict_policy.decide(READ, {"path": ".claude/settings.local.json"})[0] is (
+        PermissionDecision.DENY
+    )

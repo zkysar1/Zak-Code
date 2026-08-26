@@ -1057,3 +1057,32 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   self-edit never takes effect mid-session); operators who care pin the anchor deny. Ingested
   allows still cannot cross the catastrophic or protected floors (unchanged invariant, proven
   in test_cc_permissions.py).
+
+## ADR-0030: Ingested path denies keep their verb — an Edit/Write deny never blocks a read
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Fresh-eyes review of ADR-0029 (same day, before any deployment updated). CC
+  `deny Read|Edit|Write|MultiEdit(glob)` gestures all ingested into ONE protected-path list,
+  and settings-ingested extras were deliberately never read-exempt (ADR-0028, so a
+  `deny Read(glob)` would bind reads). The two decisions composed into a regression: every
+  Edit/Write-only deny also blocked READS. Measured against the real Ayoai Mind settings pair
+  (the shape sera runs): 36 of 44 deny gestures are Edit/Write-only, so under always-on
+  ingestion `read_file` on `world/knowledge/tree/_tree.yaml`, the `start`/`stop`/`boot`
+  control skills, and `settings.local.json` itself would hard-deny in autonomous — paths the
+  framework REQUIRES agents to read (Tier-1 retrieval reads the tree; the anchor tripwire
+  assumes the anchor is readable). The ADR-0028 bug class (a read refused by a write gate),
+  reintroduced through the settings channel; also a CC-conformance divergence, since a CC
+  Edit deny leaves the path readable.
+- **Decision:** The verb is retained through ingestion. `IngestedPermissions` carries two
+  lists: `protected_path_regexes` (from `Read` denies — strict, bind reads and writes) and
+  `protected_path_regexes_write_only` (from `Edit`/`Write`/`MultiEdit` denies). The Agent
+  compiles the second with `compile_protected_paths(..., write_only=True)`, which suffixes
+  each compiled description with the `" (write-only)"` mark; `_protected_path_reason`
+  skips marked patterns for READ_ONLY-tier tools exactly as it skips the write-sensitive
+  built-ins. Operator `ZAKCODE_PROTECTED_PATHS` regexes have no verb and stay strict.
+- **Consequences:** Verified against the live Mind settings on absolute paths — the tree,
+  control skills, anchor, and validator all read=ALLOW / write=DENY; `.env.local` denied
+  both ways (a `Read` deny plus the built-in). Write behavior is unchanged: every Edit/Write
+  deny binds writes exactly as before. Residual found by the same probe and fixed next
+  (ADR-0031): a RELATIVE path argument bypasses a `*/`-prefixed glob because the decision
+  runs on the raw argument.

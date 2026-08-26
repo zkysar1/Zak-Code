@@ -414,6 +414,7 @@ class Agent:
         # conflict. The always-on catastrophic + protected-path floor runs before any allow.
         denied_command_regexes = list(self.settings.denied_commands)
         protected_path_regexes = list(self.settings.protected_paths)
+        write_only_path_regexes: list[str] = []
         ingested_tool_modes: dict[str, str] = {}
         ingested_denied_tools: set[str] = set()
         if permission_policy is None:
@@ -423,9 +424,12 @@ class Agent:
             for _key, _err in _perm_errs.items():
                 logger.warning("settings.json permission %s: %s", _key, _err)
             # Union, tighten-only: ingested deny patterns extend the operator's; ingested per-tool
-            # modes go under the operator's (operator wins a conflict).
+            # modes go under the operator's (operator wins a conflict). Read-denies join the
+            # operator's strict (read+write) pool; Edit/Write-denies compile write-only below
+            # (ADR-0030 — an ingested Edit deny must not block reading the path).
             denied_command_regexes.extend(_ingested.denied_command_regexes)
             protected_path_regexes.extend(_ingested.protected_path_regexes)
+            write_only_path_regexes = list(_ingested.protected_path_regexes_write_only)
             ingested_tool_modes = dict(_ingested.tool_mode_overrides)
             # Whole-tool deny gestures → a tier-independent unconditional deny (binds read-only
             # tools too, which a mode override cannot). The operator cannot loosen these.
@@ -443,10 +447,13 @@ class Agent:
             # with any ingested CC bare-tool deny/allow gestures (operator wins a conflict).
             tool_mode_overrides=merged_tool_modes,
             declared_packages=declared_packages,
-            # Protected-path floor extras (self-remediation Step 2): operator-added patterns plus
-            # any ingested CC path-deny gestures, appended to the built-in .git/.env/venv/config
-            # floor.
-            extra_protected_paths=compile_protected_paths(protected_path_regexes),
+            # Protected-path floor extras (self-remediation Step 2): operator-added patterns and
+            # ingested Read-denies bind reads AND writes; ingested Edit/Write-denies compile
+            # write-only (ADR-0030), all appended to the built-in .git/.env/venv floor.
+            extra_protected_paths=(
+                compile_protected_paths(protected_path_regexes)
+                + compile_protected_paths(write_only_path_regexes, write_only=True)
+            ),
             # Ingested whole-tool CC deny gestures — denied unconditionally, regardless of tier.
             extra_denied_tools=ingested_denied_tools,
         )
