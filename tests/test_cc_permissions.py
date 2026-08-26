@@ -304,7 +304,6 @@ def test_read_deny_blocks_reads_and_writes(tmp_path: Path) -> None:
         agent.permission_policy.decide(write, {"path": "x/vault/key.txt", "content": "x"})[0]
         is PermissionDecision.DENY
     )
-<<<<<<< HEAD
 
 
 # ── a relative spelling cannot bypass a parent-prefixed glob (ADR-0031) ─────────
@@ -336,8 +335,6 @@ def test_relative_path_argument_binds_parent_prefixed_deny(tmp_path: Path) -> No
         )[0]
         is PermissionDecision.ALLOW
     )
-=======
->>>>>>> origin/main
 
 
 # ── deny beats allow within an ingestion (tighten-only at the gesture level) ────
