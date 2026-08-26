@@ -215,9 +215,7 @@ def test_streaming_context_overflow_compacts_and_retries() -> None:
     assert compactor.compact_calls == 1
     # the compacted-and-retrying status surfaced on the stream, with before → after counts
     statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
-    assert any(
-        "context window exceeded; compacted" in s and "and retrying" in s for s in statuses
-    )
+    assert any("context window exceeded; compacted" in s and "and retrying" in s for s in statuses)
 
 
 def test_streaming_context_overflow_unrecoverable_is_terminal() -> None:
