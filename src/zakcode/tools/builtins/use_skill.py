@@ -27,6 +27,14 @@ from typing import Any
 from zakcode.config import PermissionTier
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 
+#: Bodies at or above this size get the DECOMPOSE hint instead of the plain follow hint
+#: (ADR-0027). A small model cannot hold a wall of instructions as working state — field
+#: incident: a 2,776-line skill body was followed for two steps and then narrated instead
+#: of executed. Decomposing into the plan converts instructions into checked-off steps
+#: that survive compaction AND the seam clamp; the risk asymmetry favors decomposing
+#: (worst case is a few extra plan steps), so the threshold is deliberately low.
+_DECOMPOSE_HINT_MIN_CHARS = 2_000
+
 
 class UseSkillTool(Tool):
     """Load a discovered skill's instructions by name and return them for the model to follow."""
@@ -36,8 +44,9 @@ class UseSkillTool(Tool):
         description=(
             "Load a skill's full step-by-step instructions by name and follow them. Call this "
             "when one of the skills listed in your context fits the task. The skill's body is "
-            "returned as this tool's result — act on it. Skills can chain: if a skill's steps "
-            "tell you to use another skill, call use_skill again with that name."
+            "returned as this tool's result — act on it. For a LONG skill, first decompose its "
+            "steps into your plan with update_plan, then execute the plan. Skills can chain: if "
+            "a skill's steps tell you to use another skill, call use_skill again with that name."
         ),
         parameters={
             "type": "object",
@@ -94,6 +103,22 @@ class UseSkillTool(Tool):
         if load.error or load.body is None:
             return ToolResult.error(
                 f"skill {name!r} could not be loaded: {load.error or 'unreadable'}."
+            )
+        if len(load.body) >= _DECOMPOSE_HINT_MIN_CHARS:
+            # The decompose rail (ADR-0027): a long body is a plan waiting to happen, not
+            # working state to hold in the model's head. Fired at the exact moment the
+            # body arrives — the one point where the model has both the instructions and
+            # its task context in hand.
+            return ToolResult.ok(
+                load.body,
+                data={"skill": load.name, "decompose": True},
+                hint=(
+                    "These instructions are long — do not try to hold them all in your "
+                    "head. FIRST decompose them: with update_plan, record the concrete "
+                    "steps THIS request needs (fold in the context you already have), "
+                    "then execute the steps in order, marking each done as you finish. "
+                    "If a step says to use another skill, call use_skill with that name."
+                ),
             )
         return ToolResult.ok(
             load.body,

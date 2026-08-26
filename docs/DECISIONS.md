@@ -952,3 +952,35 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   running unbounded; parroting is visible to model routing; pasted documentation can no
   longer conscript the coverage backstop or the plan seeder; `[/name]`-bracketed tokens
   no longer count as requests (they read as optional-syntax documentation).
+
+## ADR-0027: Long skill bodies are decomposed into the plan, not held in the model's head
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** The harness already decomposes USER requests (plan seeding for multi-skill
+  asks, the plan gate holding open steps) — but a skill body arrives as one wall of
+  instructions and the model is simply told to follow it. Capable models can; the small
+  models in field testing cannot: a 2,776-line skill body was followed for two steps
+  and then narrated instead of executed, and after a mid-turn compaction or the seam
+  clamp the un-executed remainder of the wall is partially GONE. Operator ruling: the
+  risk asymmetry favors decomposition — the worst case of decomposing is a few extra
+  plan steps, while the worst case of NOT decomposing is silent non-execution.
+- **Decision:** `use_skill` fires a decompose rail whenever a loaded body is ≥2,000
+  chars: the hint tells the model to FIRST record the concrete steps THIS request needs
+  with `update_plan` (folding in the context it already has), then execute them in
+  order, marking each done — and the result data carries `decompose: true` for clients.
+  The tool description teaches the pattern once ("for a LONG skill, first decompose its
+  steps into your plan"). Short bodies keep the plain follow hint, byte-identical. The
+  existing machinery does the rest: the plan gate holds the finish on open steps, plan
+  state survives compaction where instruction recall does not, and ADR-0024's
+  false-done guard catches a narrated-but-unexecuted ending.
+- **Alternatives rejected:** mechanically parsing skill bodies into plan steps (bodies
+  are heterogeneous prose/pseudocode — the MODEL holds the task context and must write
+  the steps, which is exactly the operator's framing); a completion-time backstop
+  nudging when a long skill ran without a plan (nags capable models that legitimately
+  execute without ceremony; the hint fires at the one moment the model has both the
+  instructions and its context in hand, and the false-done guard already covers the
+  failure ending); injecting the body as plan steps via session surgery (violates the
+  tool's "result, not session surgery" contract).
+- **Consequences:** long skills become checked-off steps instead of recalled prose on
+  every model size; skill execution survives compaction and clamping through the plan;
+  worst case on a capable model is one short extra hint line.
