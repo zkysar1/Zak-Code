@@ -832,3 +832,33 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   framework's serialize→restore pair (PreCompact → SessionStart:compact) works under
   this harness exactly as under Claude Code; PreCompact hooks can trust `trigger`; and
   every compaction is visible in the transcript with its before → after counts.
+
+## ADR-0023: Seam-level tool-output clamp — no single result may swamp the window
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** The 131k-pod overflow (ADR-0022's incident) had a root cause upstream of
+  compaction: a `use_skill` call returned a 2,776-line skill body whole, and nothing
+  between a tool and the transcript bounds result size. Per-tool caps exist only where a
+  tool knows its own shape (`read_file`'s 100KB); `bash` output, skill bodies, and grep
+  sweeps are unbounded. Compaction cannot save this case by itself — the newest
+  messages are kept verbatim (`preserve_recent`), so one giant recent result survives
+  every compaction and re-overflows the retry.
+- **Decision:** `_execute_tool_call` — the single seam both turn paths funnel through —
+  clamps each result's model-facing text to a window-proportional ceiling:
+  `context_window × 0.25 × 3 chars/token` (≈25% of the window at code-heavy density;
+  32k assumed when a provider declares no window). Head-heavy head+tail keep (2/3 + 1/3:
+  openings carry structure, endings carry verdicts) with an elision note naming the loss
+  and the remedy ("re-run narrower — filter, page, or slice"). The clamp runs BEFORE
+  hook notes and rails are appended, so appended guidance is never lost to the elision;
+  PostToolUse hooks still see the full output (they are subprocesses, not context).
+- **Alternatives rejected:** per-tool caps on `bash`/`use_skill` (every future tool
+  re-solves it, and none of them knows the model's window — the loop does); a fixed
+  byte cap (wrong on both ends: starves 1M-window models, still kills 8k ones); refusing
+  oversized results as errors (a partial result plus a remedy beats a hard failure —
+  the create-if-missing lesson from ADR-0020 applied to size); token-exact measurement
+  via the provider tokenizer per result (cost on every call; the 3-chars/token floor is
+  conservative in the right direction).
+- **Consequences:** a small-window session can no longer be sunk by one verbose command,
+  skill body, or grep; big-window models are effectively untouched (150k chars at 200k
+  window); the model is always told when it is looking at a partial result and how to
+  get the rest.

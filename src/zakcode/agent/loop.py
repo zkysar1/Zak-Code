@@ -251,6 +251,18 @@ _SUMMARY_CHUNK_FRACTION = 0.5
 #: (id-dense code/markdown measures ~2.5 bytes/token; prose ~4 — 2 never overshoots).
 _SUMMARY_CHARS_PER_TOKEN = 2
 
+#: Context-proportional ceiling on a SINGLE tool result's model-facing text. Tool-level
+#: caps exist where a tool knows its own shape (read_file's 100KB); this seam-level clamp
+#: is the backstop for the tools that cannot know (bash output, a skill body, a grep over a
+#: vendored tree) — measured 2026-08-26: one 2,776-line skill result pushed a 131k-window
+#: session straight past its window mid-turn, and compaction cannot shrink what
+#: ``preserve_recent`` keeps verbatim. ~25% of the window at the ~3-chars/token density of
+#: code-heavy text; head-heavy head+tail keep with an elision note between.
+_CLAMP_WINDOW_FRACTION = 0.25
+_CLAMP_CHARS_PER_TOKEN = 3
+#: Assumed window when a provider declares none (conservative; matches common local models).
+_CLAMP_FALLBACK_WINDOW = 32_768
+
 #: Finish reasons that mean the model's output was cut off at the token cap (parity #5):
 #: OpenAI reports ``length``; litellm maps Anthropic's ``max_tokens`` stop reason similarly.
 _LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
@@ -1558,7 +1570,10 @@ class AgentLoop:
                 is_error=tool_res.is_error,
             )
         )
-        output = tool_res.output
+        # Clamp the tool's own text BEFORE hook notes and rails are appended, so guidance
+        # can never be lost to the elision. Hooks above saw the full output (they are
+        # subprocesses, not context).
+        output = self._clamp_tool_output(tool_res.output)
         if post.message:
             output = f"{output}\n[hook] {post.message}" if output else f"[hook] {post.message}"
         if post.additional_context:
@@ -1594,6 +1609,30 @@ class AgentLoop:
             is_error=tool_res.is_error,
             data=data,
             artifacts=tool_res.artifacts,
+        )
+
+    def _clamp_tool_output(self, text: str) -> str:
+        """Bound one result's model-facing text to a fraction of the provider's window.
+
+        Head-heavy keep (2/3 head, 1/3 tail): openings carry structure (headers, the
+        command echo, the first error) and endings carry verdicts (summaries, exit
+        lines); the middle is the safest cut. The note names the loss and the remedy so
+        the model re-runs narrower instead of trusting a silently partial result.
+        """
+        window = self.provider.capabilities().context_window or _CLAMP_FALLBACK_WINDOW
+        max_chars = int(window * _CLAMP_WINDOW_FRACTION * _CLAMP_CHARS_PER_TOKEN)
+        if len(text) <= max_chars:
+            return text
+        head = max_chars * 2 // 3
+        tail = max_chars - head
+        return (
+            text[:head]
+            + (
+                f"\n\n[output clamped: {len(text):,} chars is too large for the model's "
+                f"context window; kept the first {head:,} and last {tail:,}. Re-run "
+                "narrower — filter, page, or slice — if the elided middle matters.]\n\n"
+            )
+            + text[-tail:]
         )
 
     def _anomaly_path_key(self, path: str) -> str:
