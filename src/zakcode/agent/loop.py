@@ -1643,12 +1643,18 @@ class AgentLoop:
                             "reason": undeclared,
                         },
                     )
-                protected = self.permission_policy.protected_path_reason(arguments)
+                read_only = (
+                    spec is not None and spec.required_permission is PermissionTier.READ_ONLY
+                )
+                protected = self.permission_policy.protected_path_reason(
+                    arguments, read_only=read_only
+                )
                 if protected is not None:
+                    verb = "read of" if read_only else "write to"
                     return ToolResultBlock(
                         tool_use_id=call.id,
                         output=(
-                            f"Blocked: a hook rewrote {call.name!r} into a write to a protected "
+                            f"Blocked: a hook rewrote {call.name!r} into a {verb} a protected "
                             f"path ({protected}); the protected-path floor is never waived by a "
                             "rewrite."
                         ),

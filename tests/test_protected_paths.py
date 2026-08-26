@@ -40,6 +40,7 @@ def _spec(name: str, tier: PermissionTier) -> ToolSpec:
 
 WRITE = _spec("write_file", PermissionTier.WORKSPACE_WRITE)
 SHELL = _spec("bash", PermissionTier.DANGER_FULL_ACCESS)
+READ = _spec("read_file", PermissionTier.READ_ONLY)
 
 
 class _ScriptedPrompter:
@@ -229,3 +230,74 @@ def test_compile_protected_paths_skips_invalid_regex() -> None:
     assert len(compiled) == 1
     assert compiled[0][0].search("validxyz")
     assert all(isinstance(p, re.Pattern) for p, _ in compiled)
+
+
+# ── 5. READ_ONLY tools: write-sensitive classes are readable, secrets are not ─────
+# Field bug (2026-08-26): a read_file of the agent's own .claude/skills/.../SKILL.md was
+# hard-denied in autonomous as a "blocked write to a protected path" — the floor never
+# consulted the tool's tier. Reading .git/, the venv, or the agent's config is normal
+# operation; reading .env is itself the secret leak and stays blocked.
+
+
+def test_read_only_tool_reads_write_sensitive_paths() -> None:
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
+    for path in (
+        ".claude/skills/google-drive-access/SKILL.md",
+        ".claude/settings.json",
+        ".git/config",
+        ".venv/lib/python3.11/site-packages/requests/__init__.py",
+    ):
+        decision, _ = policy.decide(READ, {"path": path})
+        assert decision is PermissionDecision.ALLOW, path
+
+
+def test_read_only_tool_still_blocked_on_secrets_in_autonomous() -> None:
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
+    decision, reason = policy.decide(READ, {"path": ".env"})
+    assert decision is PermissionDecision.DENY
+    assert "read of a protected path" in reason
+    assert ".env" in reason
+
+
+def test_read_only_secrets_escalates_interactive_with_read_wording() -> None:
+    policy = PermissionPolicy(PermissionMode.ALLOW)
+    decision, reason = policy.decide(READ, {"path": ".env.production.local"})
+    assert decision is PermissionDecision.ASK
+    assert "read of a protected path" in reason
+
+
+def test_write_tool_wording_and_behavior_unchanged() -> None:
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
+    decision, reason = policy.decide(WRITE, {"path": ".claude/settings.json"})
+    assert decision is PermissionDecision.DENY
+    assert "write to a protected path" in reason
+
+
+def test_operator_extra_binds_reads_too() -> None:
+    # A CC ``deny Read(glob)`` permission rule ingests as a protected-path regex, so
+    # operator/settings extras must bind READ_ONLY tools as well — only the three
+    # write-sensitive BUILT-INS are read-exempt.
+    extra = compile_protected_paths([r"secrets/.*\.key"])
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS, extra_protected_paths=extra)
+    assert policy.decide(READ, {"path": "secrets/prod.key"})[0] is PermissionDecision.DENY
+
+
+def test_unknown_spec_stays_fail_closed_on_protected_paths() -> None:
+    # No spec → tier defaults to the most dangerous → the read exemption never applies.
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
+    assert policy.decide(None, {"path": ".claude/settings.json"})[0] is PermissionDecision.DENY
+
+
+def test_session_grant_still_cannot_waive_secrets_read() -> None:
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
+    policy._session_allow.add("read_file")
+    allowed, reason = _auth(policy, READ, {"path": ".env"})
+    assert allowed is False
+    assert "protected" in reason.lower()
+
+
+def test_session_grant_read_of_agent_config_allowed() -> None:
+    # The fast-paths leave a non-matching (read-exempt) call to decide(), which allows it.
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS)
+    allowed, _ = _auth(policy, READ, {"path": ".claude/skills/x/SKILL.md"})
+    assert allowed is True
