@@ -589,3 +589,44 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   many times the key is hammered; deliberate exit still takes exactly two presses; a
   crashed turn reports and returns to the prompt; the only way a REPL (and thus a cockpit)
   ends is EOF, `/exit`, or a deliberate double-press.
+
+## ADR-0017 — Compound requests decompose into plan steps; a coverage backstop guards the finish
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Field incident (serene): one message asked for two skills — a
+  /fresh-eyes-code review AND an /encode-session. A mid-turn interjection plus a session
+  replay evicted the first ask from conversation memory, and the turn ended "done" having
+  run only the second. Conversation memory is the wrong home for a multi-part ask: it is
+  exactly what interruptions and resumes destroy. The plan (TaskNetwork) is the right
+  home — it lives in session state, `_reset_stale_or_completed_plan` carries unfinished
+  plans across turns, and the plan gate already refuses to let a turn quietly end with
+  open steps. The gap was purely that nothing SEEDED the plan from the request, and the
+  prompt's old "skip planning under three steps" guidance actively suppressed planning
+  for two-part asks.
+- **Decision:** Two mechanical layers plus one prompt line, no knobs:
+  1. **Arrival-time seeding** (`_seed_plan_from_request`): when a user message names >=2
+     skills that resolve against the live registry (slash tokens only, unknown names and
+     path-like slashes never match), each not-already-planned skill gets one primitive
+     step ("run /<name>") appended at turn entry, in both the buffered and streaming
+     paths. Enforcement is then the EXISTING plan gate's job — no new nag machinery.
+     Deliberately mechanical: no NL decomposition of every message (ceremony on "go
+     ahead", latency, drifting judgment); the model still authors real plans itself.
+  2. **Completion-time coverage backstop** (`_skill_coverage_nudge`): when a turn is
+     about to complete, any skill the request explicitly named that was neither invoked
+     via use_skill (errored loads don't count) nor mentioned by the plan in ANY state
+     gets one nudge naming it ("The request also asked for /x — run it now with
+     use_skill, or say explicitly why it should be skipped"). One-shot per turn; a plan
+     mention in a terminal state is a deliberate decision and is not re-litigated.
+  3. **Prompt guidance:** the planning section now says a request asking for MORE THAN
+     ONE thing records each part as its own step before starting, and the skip line
+     changed from a step-count threshold to "one straightforward thing" — the old
+     "fewer than three steps" wording was WHY two-part asks got no plan.
+- **Alternatives rejected:** decomposing every say via an extra model pass (latency +
+  ceremony + judgment drift — the seeding layer is deterministic and covers the observed
+  failure); a coverage HARD-stop instead of a nudge (a model can have a legitimate reason
+  to decline — the nudge forces it to say so out loud); seeding for N=1 requests (the
+  backstop already covers single-skill drops without adding plan ceremony to every
+  "/encode-session please").
+- **Consequences:** multi-skill asks survive interruptions and replays as open plan
+  steps; a request-named skill can no longer be silently dropped — it either runs or the
+  model explicitly declines it in text; single-part requests stay ceremony-free.
