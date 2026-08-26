@@ -321,6 +321,12 @@ class LiteLLMProvider(Provider):
         #: Traffic smoothing (2026-08-26): monotonic time of the most recent request
         #: START on this instance — see _pace(). Never a knob.
         self._last_request_started = 0.0
+        #: Serializes _pace()'s read-compute-sleep-stamp so concurrent callers on this
+        #: SHARED instance queue instead of all observing the same stamp. Sub-agents
+        #: reuse the parent provider and asyncio.gather runs their calls concurrently,
+        #: so this is the common path, not an edge case. Bound to the running loop on
+        #: first acquire (3.10+), never at construction.
+        self._pace_lock = asyncio.Lock()
         # Per-call wall-clock ceiling: a hung/stuck model call can never block the loop forever.
         # litellm raises Timeout past this, which _map_error turns into a recoverable provider error
         # (the loop's own retry handles it; litellm's num_retries stays 0). Explicit kwarg wins,
@@ -797,11 +803,21 @@ class LiteLLMProvider(Provider):
         Per-instance traffic smoothing for dynamic shared quota: paces only the burst
         edge (instant tool round-trips re-calling the model sub-second); a request
         following a normal-length call never waits.
+
+        The whole read-compute-sleep-stamp runs under ``_pace_lock``. Without it,
+        concurrent callers on a shared instance all read the SAME stamp, compute the
+        same wait, and wake together — pacing degrades into one shared phase delay and
+        the burst fires simultaneously anyway. Holding the lock across the sleep makes
+        each caller compute its wait against the previous caller's ACTUAL start.
+
+        The lock is released before the caller issues its request, so only request
+        STARTS serialize; the requests themselves still overlap.
         """
-        wait = self._last_request_started + _MIN_REQUEST_INTERVAL_S - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        self._last_request_started = time.monotonic()
+        async with self._pace_lock:
+            wait = self._last_request_started + _MIN_REQUEST_INTERVAL_S - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_request_started = time.monotonic()
 
     async def acomplete(
         self,

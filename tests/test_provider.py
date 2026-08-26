@@ -606,3 +606,124 @@ async def test_pace_never_delays_after_a_normal_length_call(monkeypatch) -> None
     await provider._pace()  # first request of the instance: never paced
     provider._last_request_started = _time.monotonic() - 5.0  # a normal-length call ago
     await provider._pace()
+
+
+# ---------------------------------------------------------------------------
+# Traffic smoothing under CONCURRENCY (shared provider instance)
+#
+# Sub-agents reuse the parent provider (subagent.py) and independent subtasks run
+# concurrently via asyncio.gather (task.py), so several _pace() calls are in flight
+# on ONE instance. Unsynchronized, they all read the same _last_request_started,
+# compute the same wait, and wake together — the burst fires simultaneously and the
+# smoothing does nothing in exactly the scenario it exists for.
+#
+# The harness below runs the competing calls in ONE uninterrupted gather with the
+# REAL event-loop clock and the REAL asyncio.sleep: no fake_sleep, no per-call await
+# in the test body, nothing that could serialize the callers for free. The interval
+# is monkeypatched small purely to keep the test fast — the production constant is
+# untouched (no knobs), which test_pace_interval_constant_is_not_configurable pins.
+#
+# _UnlockedPacer reimplements the pre-fix algorithm verbatim and is driven through
+# the SAME harness as the negative control. Without a variant that FAILS, the
+# spacing assertion would only describe the assertion's own shape, not the fix.
+# ---------------------------------------------------------------------------
+_TEST_INTERVAL_S = 0.05
+
+
+class _UnlockedPacer:
+    """The pre-fix _pace(), verbatim: no mutual exclusion. Negative control."""
+
+    def __init__(self) -> None:
+        self._last_request_started = 0.0
+
+    async def _pace(self) -> None:
+        import asyncio as _asyncio
+        import time as _time
+
+        wait = self._last_request_started + _TEST_INTERVAL_S - _time.monotonic()
+        if wait > 0:
+            await _asyncio.sleep(wait)
+        self._last_request_started = _time.monotonic()
+
+
+async def _gather_start_times(pacer: Any, n: int) -> list[float]:
+    """Fire n _pace() calls concurrently; return the instant each one released."""
+    import asyncio as _asyncio
+    import time as _time
+
+    starts: list[float] = []
+
+    async def one() -> None:
+        await pacer._pace()
+        starts.append(_time.monotonic())
+
+    # Seed a just-started request so every caller below is inside the interval.
+    pacer._last_request_started = _time.monotonic()
+    await _asyncio.gather(*(one() for _ in range(n)))
+    return sorted(starts)
+
+
+def _min_gap(starts: list[float]) -> float:
+    return min(b - a for a, b in zip(starts, starts[1:], strict=False))
+
+
+@pytest.mark.asyncio
+async def test_pace_spaces_concurrent_starts_on_a_shared_instance(monkeypatch) -> None:
+    monkeypatch.setattr(lp, "_MIN_REQUEST_INTERVAL_S", _TEST_INTERVAL_S)
+
+    starts = await _gather_start_times(_provider(), 4)
+    gaps = [b - a for a, b in zip(starts, starts[1:], strict=False)]
+
+    # Every consecutive pair is at least one interval apart (10% slack for loop jitter).
+    assert _min_gap(starts) >= _TEST_INTERVAL_S * 0.9, f"concurrent starts collapsed: {gaps=}"
+
+
+@pytest.mark.asyncio
+async def test_unlocked_pacer_collapses_under_the_same_harness() -> None:
+    """NEGATIVE CONTROL for the test above.
+
+    Same harness, same concurrency, same clock — only the lock is missing. If this
+    ever starts passing, the harness has acquired a serialization point of its own
+    and the sibling test above has stopped proving anything.
+    """
+    starts = await _gather_start_times(_UnlockedPacer(), 4)
+
+    assert _min_gap(starts) < _TEST_INTERVAL_S * 0.5, (
+        "the unlocked pacer spaced its starts — the harness is serializing callers "
+        "for free, so the locked test is no longer evidence for the lock"
+    )
+
+
+@pytest.mark.asyncio
+async def test_pace_lock_does_not_serialize_the_requests_themselves(monkeypatch) -> None:
+    """Only request STARTS queue; the in-flight requests still overlap."""
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(lp, "_MIN_REQUEST_INTERVAL_S", _TEST_INTERVAL_S)
+
+    in_flight = 0
+    peak = 0
+
+    async def fake_acompletion(**kwargs: Any) -> _Obj:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await _asyncio.sleep(_TEST_INTERVAL_S * 4)  # a normal-length call
+        in_flight -= 1
+        return _make_response(content="ok", tool_calls=None)
+
+    monkeypatch.setattr(lp.litellm, "acompletion", fake_acompletion)
+
+    provider = _provider()
+    await _asyncio.gather(*(provider.acomplete([Message.user("hi")]) for _ in range(3)))
+
+    assert peak > 1, "the pace lock is being held across the request, not just the start"
+
+
+def test_pace_interval_constant_is_not_configurable() -> None:
+    """No knobs (the smoothing is a constant, never settings-driven)."""
+    assert lp._MIN_REQUEST_INTERVAL_S == 1.0
+    import inspect
+
+    src = inspect.getsource(lp)
+    assert "ZAKCODE_MIN_REQUEST_INTERVAL" not in src
