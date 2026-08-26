@@ -97,11 +97,22 @@ def test_skill_refs_match_punctuation_adjacent_tokens(tmp_path: Path) -> None:
     # nothing seeded, and the missing name was invisible to the coverage backstop).
     loop = _loop(_ScriptByCallProvider(lambda n, m: LLMResult(text="hi")), tmp_path, SKILLS)
     assert loop._skill_refs("do /fresh-eyes-code,/encode-session") == SKILLS
-    assert loop._skill_refs("run [/encode-session] then /fresh-eyes-code") == [
-        "encode-session",
-        "fresh-eyes-code",
-    ]
     assert loop._skill_refs("try /fresh-eyes-code!/encode-session; ok") == SKILLS
+
+
+def test_skill_refs_ignore_documentation_mentions(tmp_path: Path) -> None:
+    # ADR-0026: a pasted prompt whose PROSE discussed eight skills produced a coverage
+    # nudge demanding all eight. Mention shapes never count as requests…
+    loop = _loop(_ScriptByCallProvider(lambda n, m: LLMResult(text="hi")), tmp_path, SKILLS)
+    assert loop._skill_refs("`/fresh-eyes-code` is buggy in assistant mode") == []
+    assert loop._skill_refs("(/encode-session) runs the learning pass") == []
+    assert loop._skill_refs("run [/encode-session] later maybe") == []
+    assert loop._skill_refs('the doc says "/fresh-eyes-code" a lot') == []
+    assert loop._skill_refs("> /fresh-eyes-code output was wrong") == []
+    assert loop._skill_refs("```\nrun /encode-session\n```") == []
+    # …while request shapes still do.
+    assert loop._skill_refs("run /encode-session") == ["encode-session"]
+    assert loop._skill_refs("/fresh-eyes-code please") == ["fresh-eyes-code"]
 
 
 def test_plan_mention_requires_token_boundary(tmp_path: Path) -> None:
