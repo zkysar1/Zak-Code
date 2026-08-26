@@ -606,12 +606,21 @@ class StreamRenderer:
         g = self._g
         label, marker_style = self._stop_label(done)
         sep = f" {g['dot']} "
+        # Prompt-cache visibility (ADR-0021): when the backend reports cache-read tokens,
+        # show what share of the prompt side was served from cache — the at-a-glance
+        # signal that a big token number was mostly discounted re-sends, and (when it
+        # reads 0% on a caching-capable backend) the diagnostic that caching is NOT
+        # hitting. Silent when zero: no annotation, no clutter.
+        tokens_item = _humanize_tokens(usage.total_tokens)
+        if usage.cache_read_tokens and usage.prompt_tokens:
+            share = round(100 * usage.cache_read_tokens / usage.prompt_tokens)
+            tokens_item += f" ({share}% cached)"
         body = Text(
             sep.join(
                 (
                     label,
                     f"{done.iterations} iterations",
-                    _humanize_tokens(usage.total_tokens),
+                    tokens_item,
                     _fmt_cost(usage.cost_usd),
                     _fmt_duration(self._clock() - self._turn_start),
                 )

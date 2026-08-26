@@ -328,8 +328,13 @@ _CTX_SENTINEL_RE = re.compile(r"</?\s*injected_context", re.IGNORECASE)
 # One control-rail vocabulary for "what to do next", used everywhere the harness names the
 # model's next action (rb-204): tool-result success/error rails AND the loop-injected
 # stuck/recipe guidance. Keeping a single marker word means the model learns one cue. (A
-# future flip to e.g. "Next:" is a one-constant change.) Observations — ``[harness]``/``[hook]``/
-# ``[verified]`` — keep a distinct bracket idiom because they report, they don't direct.
+# future flip to e.g. "Next:" is a one-constant change.) The bracket idiom —
+# ``[harness]``/``[hook]``/``[plan]`` — marks PROVENANCE (automated runtime output, not the
+# user): observations carry the bracket alone; a loop-INJECTED directive carries bracket +
+# rail word (``[harness] Hint:``, via _control_rail), because it arrives as a user-role
+# message and field models otherwise attribute it to the human ("I have received your
+# request to continue…", ADR-0021). Tool-result rails stay bare ``Hint:``/``Fix:`` — they
+# ride inside a tool frame, already unambiguous.
 _RAIL_HINT = "Hint:"  # a suggested/required next action
 
 #: Stored in place of an empty assistant completion (no text, no tool calls) so the
@@ -352,13 +357,16 @@ def _append_rail(output: str, *, hint: str | None, fix: str | None) -> str:
 
 
 def _control_rail(text: str) -> str:
-    """Render loop-injected guidance (a stuck nudge / recipe stall) with the shared rail marker.
+    """Render loop-injected guidance (a stuck nudge / recipe stall) with provenance + rail.
 
-    So every harness-issued "next action" — whether it rides a tool result or arrives as an
-    injected message — opens with the same control word the model already learns from tool
-    rails (rb-204: name the next action, one consistent vocabulary).
+    Every harness-issued "next action" opens with the same control word the model already
+    learns from tool rails (rb-204: one consistent vocabulary) — PLUS the ``[harness]``
+    provenance tag, because these arrive as user-role messages and a field model
+    misattributed one to the human ("I have received your request to continue with the
+    plan" — no user had spoken; ADR-0021). The system prompt defines the tag once, so
+    every injected nudge is legible as automation, never as the user.
     """
-    return f"{_RAIL_HINT} {text}"
+    return f"[harness] {_RAIL_HINT} {text}"
 
 
 def _last_assistant_text(turn_assistant: list[Message]) -> str:

@@ -25,6 +25,18 @@ def test_prompt_has_identity_and_boundary(tmp_path: Path) -> None:
     assert DYNAMIC_BOUNDARY in prompt
 
 
+def test_prompt_defines_the_harness_provenance_tags(tmp_path: Path) -> None:
+    # ADR-0021: injected nudges arrive as user-role messages tagged [harness]; the prompt
+    # must define the tag family once so no model attributes them to the human — and must
+    # carry the no-apology instruction that keeps a nudged model acting instead of
+    # apologizing.
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder().build(settings)
+    assert "[harness], [hook], or [plan]" in prompt
+    assert "never attribute them to the user" in prompt
+    assert "do not apologize" in prompt
+
+
 def test_operator_identity_replaces_default(tmp_path: Path) -> None:
     settings = load_settings(workspace_root=tmp_path)
     prompt = SystemPromptBuilder(identity="You are Vinheim, a friendly guide.").build(settings)

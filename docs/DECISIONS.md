@@ -754,3 +754,36 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   diagnosis instead of zero; intentional creates lose nothing (the note tells them to
   carry on); shadow-tree and stale-index bugs surface at creation time instead of
   weeks later when a script cannot find content the model swears it wrote.
+
+## ADR-0021 — Injected nudges carry provenance; the footer shows the prompt-cache share
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Two small field wobbles from the same transcripts. (1) Loop-injected
+  nudges (plan gate, empty-completion, stuck, critic, …) are delivered as USER-ROLE
+  messages opening with a bare "Hint:" — and a field model attributed one to the human:
+  "I have received your request to continue with the plan" when no user had spoken. The
+  same model apologized reflexively after every nudge. The bracket provenance idiom
+  (`[harness]`/`[hook]`/`[plan]`) already existed for observations, but directives
+  lacked it and nothing DEFINED the tags for the model. (2) A 27-iteration turn showed
+  "4861.1k tokens" with no way to see how much of that was discounted cache re-sends —
+  the accounting existed (`Usage.cache_read_tokens`, surfaced only in `/cost`) but the
+  per-turn footer hid it, so a big number read as a big bill and a caching failure
+  (0% on a caching-capable backend) was invisible.
+- **Decision:** (1) `_control_rail` renders every loop-injected directive as
+  `[harness] Hint: …` — one constant, covering every nudge site — and the system
+  prompt's Behavior section defines the tag family once: bracket-tagged output is
+  automated runtime output, never the user; never attribute it to the user, never
+  apologize in response, and more generally state-and-continue instead of apologizing.
+  Tool-result rails stay bare `Hint:`/`Fix:` (they ride inside a tool frame, already
+  unambiguous). (2) The turn footer's token item appends `(N% cached)` — cache-read
+  share of prompt tokens — whenever the backend reports cache reads; silent at zero.
+- **Alternatives rejected:** a wordier per-nudge preamble ("this is an automated
+  message…" — token tax on every nudge; the one-time system-prompt definition + a
+  9-char tag does the same work); renaming the rail word (the model already learns
+  `Hint:` from tool rails — provenance is an orthogonal axis, so it composes as
+  bracket + rail instead of replacing it); a footer cost breakdown (the `/cost`
+  command already itemizes; the footer needs one glanceable share, not a table).
+- **Consequences:** no injected nudge can read as the user speaking, on any model;
+  the apology reflex is addressed at its trigger; prompt-cache health is visible on
+  every turn footer, so "is caching hitting?" is answered at a glance instead of by
+  archaeology.

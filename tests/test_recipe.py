@@ -833,7 +833,11 @@ def test_harness_run_suppressed_when_run_would_prompt(tmp_path: Path) -> None:
     result = asyncio.run(loop.arun_turn("make p.py"))
     assert result.stop_reason == "recipe_stalled"
     transcript = "\n".join(m.text or "" for m in loop.session.messages)
-    assert "[harness]" not in transcript  # the run was never issued (would have prompted)
+    # The run was never issued (it would have prompted). Match the harness-RUN message
+    # specifically — since ADR-0021 every injected nudge also carries the [harness]
+    # provenance tag, so the bare tag no longer discriminates run-happened from nudged.
+    assert "[harness] I ran" not in transcript
+    assert "run it now" in transcript  # the fallback nudge is what the model got instead
 
 
 def test_harness_run_fires_under_allow_policy(tmp_path: Path) -> None:
