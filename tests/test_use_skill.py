@@ -69,6 +69,27 @@ async def test_use_skill_returns_body_as_result(tmp_path: Path) -> None:
     assert res.hint and "use_skill" in res.hint  # nudges the chain
 
 
+async def test_long_skill_body_gets_the_decompose_hint(tmp_path: Path) -> None:
+    # ADR-0027: a wall of instructions is a plan waiting to happen, not working state a
+    # small model can hold in its head. The rail fires the moment the body arrives.
+    body = "Step one: read the tree.\n" * 200  # well past _DECOMPOSE_HINT_MIN_CHARS
+    resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body=body)})
+    res = await UseSkillTool().execute({"name": "alpha"}, _ctx(tmp_path, resolver))
+    assert res.is_error is False
+    assert res.output == body  # the body still rides whole as the result
+    assert res.data == {"skill": "alpha", "decompose": True}
+    assert res.hint is not None
+    assert "decompose" in res.hint and "update_plan" in res.hint
+    assert "use_skill" in res.hint  # the chaining nudge survives
+
+
+async def test_short_skill_body_keeps_the_plain_hint(tmp_path: Path) -> None:
+    resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body="do the thing")})
+    res = await UseSkillTool().execute({"name": "alpha"}, _ctx(tmp_path, resolver))
+    assert res.data == {"skill": "alpha"}
+    assert res.hint is not None and "decompose" not in res.hint
+
+
 async def test_use_skill_unknown_lists_available(tmp_path: Path) -> None:
     resolver = _FakeResolver({}, names=["alpha", "beta"])
     res = await UseSkillTool().execute({"name": "gamma"}, _ctx(tmp_path, resolver))
