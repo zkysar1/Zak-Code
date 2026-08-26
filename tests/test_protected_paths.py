@@ -345,3 +345,54 @@ def test_settings_deny_rules_reprotect_agent_config() -> None:
     assert strict_policy.decide(READ, {"path": ".claude/settings.local.json"})[0] is (
         PermissionDecision.DENY
     )
+
+
+# ── 7. relative arguments resolve against the workspace before the scan (ADR-0031) ─
+# The Mind-shaped glob ``*/.claude/skills/start/*`` needs a parent segment (CC matches
+# absolute paths). Without resolution the relative spelling of the SAME file walked past it.
+
+
+def _parent_prefixed() -> list[tuple[re.Pattern[str], str]]:
+    # what ``deny Edit(*/.claude/skills/start/*)`` ingests to
+    return compile_protected_paths(
+        [r"(?:^|[\\/\s\"'=>])[^/\\]*[/\\]\.claude[/\\]skills[/\\]start[/\\][^/\\]*"],
+        write_only=True,
+    )
+
+
+def test_relative_path_resolves_against_workspace_root() -> None:
+    policy = PermissionPolicy(
+        PermissionMode.AUTONOMOUS, extra_protected_paths=_parent_prefixed(), workspace_root="/ws"
+    )
+    for path in (".claude/skills/start/SKILL.md", "/ws/.claude/skills/start/SKILL.md"):
+        assert policy.decide(WRITE, {"path": path})[0] is PermissionDecision.DENY, path
+        # verb semantics (ADR-0030) unchanged by resolution: the Edit deny leaves it readable
+        assert policy.decide(READ, {"path": path})[0] is PermissionDecision.ALLOW, path
+    # a sibling path is untouched; ``..`` normalizes before matching (no escape via dot-dot)
+    assert policy.decide(WRITE, {"path": ".claude/skills/other/x.md"})[0] is (
+        PermissionDecision.ALLOW
+    )
+    assert policy.decide(WRITE, {"path": "sub/../.claude/skills/start/SKILL.md"})[0] is (
+        PermissionDecision.DENY
+    )
+
+
+def test_no_workspace_root_keeps_raw_only_behavior() -> None:
+    # Library callers that construct a policy without a root behave exactly as before.
+    policy = PermissionPolicy(PermissionMode.AUTONOMOUS, extra_protected_paths=_parent_prefixed())
+    assert policy.decide(WRITE, {"path": ".claude/skills/start/SKILL.md"})[0] is (
+        PermissionDecision.ALLOW
+    )
+    assert policy.decide(WRITE, {"path": "/ws/.claude/skills/start/SKILL.md"})[0] is (
+        PermissionDecision.DENY
+    )
+
+
+def test_child_view_propagates_workspace_root() -> None:
+    policy = PermissionPolicy(
+        PermissionMode.AUTONOMOUS, extra_protected_paths=_parent_prefixed(), workspace_root="/ws"
+    )
+    child = policy.child_view()
+    assert child.decide(WRITE, {"path": ".claude/skills/start/SKILL.md"})[0] is (
+        PermissionDecision.DENY
+    )

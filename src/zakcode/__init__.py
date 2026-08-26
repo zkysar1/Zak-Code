@@ -456,6 +456,9 @@ class Agent:
             ),
             # Ingested whole-tool CC deny gestures — denied unconditionally, regardless of tier.
             extra_denied_tools=ingested_denied_tools,
+            # Relative path arguments resolve against the workspace before the protected-path
+            # scan (ADR-0031) so a ``*/``-prefixed deny glob binds a relative spelling too.
+            workspace_root=workspace_root,
         )
         # Rehydrate operator grants persisted with the session (audit P0-2d / D12 / Q5).
         # Honored only when the active mode is at least as loose as the grant-time mode;

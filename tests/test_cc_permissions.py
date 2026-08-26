@@ -306,6 +306,37 @@ def test_read_deny_blocks_reads_and_writes(tmp_path: Path) -> None:
     )
 
 
+# ── a relative spelling cannot bypass a parent-prefixed glob (ADR-0031) ─────────
+
+
+def test_relative_path_argument_binds_parent_prefixed_deny(tmp_path: Path) -> None:
+    # The Mind-shaped rule ``Edit(*/.claude/skills/start/*)`` needs a parent segment (CC matches
+    # absolute paths). The Agent hands its workspace root to the policy, so the RELATIVE
+    # spelling a model actually emits resolves to the absolute form and binds too.
+    _write_permissions(
+        tmp_path, {"deny": ["Edit(*/.claude/skills/start/*)", "Write(*/.claude/skills/start/*)"]}
+    )
+    agent = _agent(tmp_path, mode="autonomous")
+    write = _spec(agent, "write_file")
+    read = _spec(agent, "read_file")
+    relative = ".claude/skills/start/SKILL.md"
+    absolute = str(tmp_path / relative)
+    for path in (relative, absolute):
+        wdec, wreason = agent.permission_policy.decide(write, {"path": path, "content": "x"})
+        assert wdec is PermissionDecision.DENY, (path, wreason)
+        # verb retained (ADR-0030): the Edit/Write deny leaves the file readable either way
+        assert agent.permission_policy.decide(read, {"path": path})[0] is (
+            PermissionDecision.ALLOW
+        ), path
+    # an unrelated skill stays editable — the deny is exactly as wide as written
+    assert (
+        agent.permission_policy.decide(
+            write, {"path": ".claude/skills/other/SKILL.md", "content": "x"}
+        )[0]
+        is PermissionDecision.ALLOW
+    )
+
+
 # ── deny beats allow within an ingestion (tighten-only at the gesture level) ────
 
 

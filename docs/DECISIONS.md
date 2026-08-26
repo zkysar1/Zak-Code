@@ -1086,3 +1086,30 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   deny binds writes exactly as before. Residual found by the same probe and fixed next
   (ADR-0031): a RELATIVE path argument bypasses a `*/`-prefixed glob because the decision
   runs on the raw argument.
+
+## ADR-0031: The protected-path scan resolves relative arguments against the workspace
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Found by the ADR-0030 verification probe. The permission decision runs on
+  the RAW tool arguments (step 1 of the seam, before the tool resolves anything), while
+  Claude Code matches path rules against absolute paths — its file tools only take absolute
+  paths. A framework's deny globs are written for that world: the Mind's
+  `Edit(*/.claude/skills/start/*)` needs a parent segment. So the same file was denied when
+  spelled `/opt/ayoai-mind/.claude/skills/start/SKILL.md` and ALLOWED when spelled
+  `.claude/skills/start/SKILL.md` — and models spell paths relative to the workspace
+  constantly. Pre-existing, but ADR-0029 made the settings the SOLE authority over
+  `.claude/`, which turned a quirk into a bypass of every `*/`-prefixed rule.
+- **Decision:** `PermissionPolicy` takes an optional `workspace_root` (the Agent passes
+  its workspace; `child_view` propagates it). `_protected_path_reason` scans a tighten-only
+  union of candidates: the raw argument, plus — for a relative path when a root is known —
+  `normpath(join(root, value))`. Either matching binds. String math only, no filesystem
+  call, so `decide()` stays pure; a `..`-laden path normalizes before matching. The
+  read-only exemption applies identically to both forms.
+- **Alternatives rejected:** rewriting the glob translation so a leading `*/` becomes
+  optional (fixes one idiom, silently diverges from CC glob semantics, and leaves absolute
+  patterns like `//C:/...` unreachable from relative spellings); resolving in each file tool
+  (the decision has already been made by then).
+- **Consequences:** Verified against the live Mind settings: the relative spelling of a
+  control-skill file now denies exactly like the absolute one; the verb semantics of
+  ADR-0030 are unchanged (read still ALLOW). A policy constructed without a root (library
+  callers, tests) behaves exactly as before.
