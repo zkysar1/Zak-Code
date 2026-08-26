@@ -100,7 +100,7 @@ from pydantic import BaseModel, Field
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
-from zakcode.agent.degeneration import repeated_tail
+from zakcode.agent.degeneration import burst_repetition, repeated_tail
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
@@ -294,6 +294,43 @@ _DEGENERATION_NUDGE = (
     "was discarded. Do not repeat yourself. Answer the user's request once, plainly and "
     "concisely."
 )
+#: False-done guard (ADR-0024): a completion whose tail ANNOUNCES actions is not a
+#: completion. Field incident 2026-08-26: a small model ended its turn on "Now I will use
+#: the `create_file` command … I will then use `mv` …" and the turn completed with none of
+#: it done — no plan existed, the turn had earlier tool calls, so nothing caught it. The
+#: nudge fires at most once per turn; a model that was only describing can say so and
+#: finish, so a false positive costs one bounded iteration.
+_INTENT_NUDGE = (
+    'You ended your turn announcing actions you have not performed ("I will …" / '
+    '"let me now …"). Words are not work: if those actions are part of this task, '
+    "perform them NOW with real tool calls. If they are already done, or you were only "
+    "describing options, say so plainly and finish without announcing further actions."
+)
+
+#: Future-intent announcements: first-person future forms followed by an ACTION verb, so
+#: "I will need you to provide…" / "I'll let you know" / "I will be here" never match.
+_FUTURE_INTENT_RE = re.compile(
+    r"\b(?:"
+    r"(?:now\s+|next,?\s+|then\s+)?i(?:\s+will|['’]ll)\s+(?:now\s+|then\s+)?"
+    r"(?:use|run|create|write|edit|move|copy|delete|add|update|install|execute|make|"
+    r"start|begin|proceed|apply|open|read|fix|register)"
+    r"|let\s+me\s+now"
+    r"|i\s*['’]?a?m\s+going\s+to\s+(?:use|run|create|write|edit|move|copy|delete|"
+    r"add|update|install|execute|make|start|begin|apply|open|read|fix|register)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _announces_future_work(text: str) -> bool:
+    """True when the TAIL of a final completion announces actions instead of reporting them.
+
+    Only the tail is judged — earlier narration legitimately describes work already done
+    mid-turn; it is the turn ENDING on an announcement that makes it a false done.
+    """
+    return _FUTURE_INTENT_RE.search(text[-800:]) is not None
+
+
 #: Streaming degeneration probe cadence: first check after this many streamed chars…
 _DEGEN_FIRST_CHECK = 600
 #: …then every this-many more. The probe reads a bounded tail, so the per-delta cost of
@@ -682,6 +719,10 @@ class AgentLoop:
         # subsequent successful write_file to the same path carries the
         # expected-to-exist? question. Cleared at every turn start.
         self._turn_read_failed: set[str] = set()
+        # Small-model struggle flag (ADR-0024): set by seams that cannot reach the turn's
+        # ``signal_latched`` local (the degenerate-argument veto in _execute_tool_call);
+        # folded into it each iteration so zakpick latches the deep coder. Per-turn.
+        self._turn_struggle = False
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
         # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
         # one unit from the shared pool, and the turn stops with
@@ -1474,6 +1515,28 @@ class AgentLoop:
                 data={"tool_not_exposed": True, "tool": call.name},
             )
 
+        # 0c. Degenerate-argument veto (ADR-0024): the completion-text repetition guard
+        # deliberately skips tool-call batches ("a batch calling tools is doing work"), so
+        # a small model's arguments degenerating into repetition executed unjudged (field
+        # incident: a python -c payload carrying one fragment ×38). Vetoed BEFORE the
+        # permission gate so the operator is never prompted to approve garbage. Latches
+        # the struggle flag — degenerate output is exactly what zakpick escalates on.
+        burst = burst_repetition(json.dumps(call.arguments, ensure_ascii=False, default=str))
+        if burst is not None:
+            unit, repeats = burst
+            self._turn_struggle = True
+            return ToolResultBlock(
+                tool_use_id=call.id,
+                output=(
+                    f"Fix: these arguments have degenerated into repetition (the fragment "
+                    f"{unit!r} repeats {repeats}× in a row); the call was not executed. "
+                    "Stop. State in ONE sentence what you are trying to do, then issue a "
+                    "minimal, clean call."
+                ),
+                is_error=True,
+                data={"degenerate_arguments": True, "unit": unit, "repeats": repeats},
+            )
+
         # 1. Permission gate (only when a policy is injected; see __init__).
         if self.permission_policy is not None:
             allowed, reason = await self.permission_policy.authorize(spec, call.arguments)
@@ -2135,10 +2198,12 @@ class AgentLoop:
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
+        self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
+        intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -2183,7 +2248,7 @@ class AgentLoop:
             # stable category persists (we never revert it). ``stuck.took_action`` from a prior
             # iteration latches the harder category.
             if self.main_provider_for is not None:
-                signal_latched = signal_latched or stuck.took_action
+                signal_latched = signal_latched or stuck.took_action or self._turn_struggle
                 ctx_frac = self._context_fraction(call_messages)
                 # Judge the request's SCOPE once per turn (not its length): the cheap classifier
                 # catches a terse-but-large task that the length heuristic would mis-route to the
@@ -2307,6 +2372,7 @@ class AgentLoop:
                 degen_unit = repeated_tail(result.text)
                 if degen_unit is not None:
                     turn_degraded = True
+                    self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
                     if degen_retries < _MAX_DEGENERATION_RETRIES:
                         degen_retries += 1
@@ -2583,6 +2649,22 @@ class AgentLoop:
                         repeat_count = 0
                         stuck.reset()
                         continue
+                # False-done guard (ADR-0024): the turn is ending on an ANNOUNCEMENT of
+                # work ("Now I will use …" with no calls behind it). Ask once for the
+                # work or a plain finish; a model that was only describing says so.
+                if result.text and not intent_nudged and _announces_future_work(result.text):
+                    intent_nudged = True
+                    self._note(
+                        "intervention",
+                        "completion announces unperformed actions — asking for the work",
+                        kind="intent_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_INTENT_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
@@ -2940,10 +3022,12 @@ class AgentLoop:
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
+        self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
+        intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -2994,7 +3078,7 @@ class AgentLoop:
                 # generator's model only when the classified category changes, so a failover or
                 # escalation swap of self.provider within a stable category persists.
                 if self.main_provider_for is not None:
-                    signal_latched = signal_latched or stuck.took_action
+                    signal_latched = signal_latched or stuck.took_action or self._turn_struggle
                     ctx_frac = self._context_fraction(call_messages)
                     # SCOPE-judge the turn once (see the buffered path): the cheap classifier
                     # catches a terse-but-large task length alone would mis-route to quick_code.
@@ -3309,6 +3393,7 @@ class AgentLoop:
                     degen_unit = repeated_tail(assistant_text)
                 if degen_unit is not None:
                     turn_degraded = True
+                    self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
                     if degen_retries < _MAX_DEGENERATION_RETRIES:
                         degen_retries += 1
@@ -3615,6 +3700,25 @@ class AgentLoop:
                             stuck.reset()
                             yield AgentStatus(message="scoring for quality")
                             continue
+                    # False-done guard (ADR-0024) — see the buffered twin.
+                    if (
+                        assistant_text
+                        and not intent_nudged
+                        and _announces_future_work(assistant_text)
+                    ):
+                        intent_nudged = True
+                        self._note(
+                            "intervention",
+                            "completion announces unperformed actions — asking for the work",
+                            kind="intent_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_INTENT_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="turn ended on announced work — asking for it")
+                        continue
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
                     prompt = await self._fire_turn_end(
