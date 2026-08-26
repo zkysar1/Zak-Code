@@ -20,7 +20,8 @@ def test_settings_defaults() -> None:
     assert settings.default_model
     assert settings.provider == settings.default_model.split("/", 1)[0]
     assert not hasattr(settings, "max_iterations")  # no knob — unlimited is the only behavior
-    assert 0.0 <= settings.temperature <= 2.0
+    # None = send no temperature; every backend runs at its own default (ADR-0018).
+    assert settings.temperature is None
 
 
 def test_cli_version_command() -> None:

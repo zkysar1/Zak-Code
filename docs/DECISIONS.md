@@ -630,3 +630,48 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 - **Consequences:** multi-skill asks survive interruptions and replays as open plan
   steps; a request-named skill can no longer be silently dropped — it either runs or the
   model explicitly declines it in text; single-part requests stay ceremony-free.
+
+## ADR-0018 — Degeneration is contained: model-default temperature, a per-completion output cap, and a repetition guard
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Field incident (serene, the morning zakpick put Gemini on the quick
+  categories): gemini-2.5-flash-lite fell into the documented Gemini 2.5 repetition
+  attractor — "I will now provide the information you requested." streamed once a second,
+  indefinitely — and only the operator's Ctrl-C ended the turn. Three harness facts made
+  the model's failure OUR incident: the config defaulted `temperature` to 0.0 (Google
+  explicitly warns Gemini 2.5+ below 1.0 loops), no per-completion output cap was sent
+  (Gemini's own cap is ~65k tokens, all billed), and nothing recognized repetition. The
+  empty-completion give-up gate fired correctly first (flash-lite's paired failure mode)
+  — its nudge then prompted the apology spiral.
+- **Decision:** Three pieces, no knobs:
+  1. **Temperature default is None — send nothing.** Every backend runs at its own
+     intended default (Gemini 1.0, Claude 1.0, llama.cpp ~0.8). The harness-wide 0.0 was
+     fake determinism inherited from local-model habits; it second-guessed every model's
+     tuning and is a documented loop trigger on Gemini 2.5+. An explicitly configured
+     value — 0.0 included — is still sent verbatim. (The structured side-call's forced
+     per-call 0.0 for schema extraction is unchanged: short, validated, retried.)
+  2. **Per-completion output cap** (`max_tokens` 8192 on every call, per-call overrides
+     win, `drop_params` drops it where unsupported). Bounds any degeneration — and its
+     bill — to one bounded completion; a legit long answer continues through the loop's
+     existing length-continuation path (capped at 3).
+  3. **Repetition guard** (`agent/degeneration.py` + both turn paths): a pure tail
+     detector (dominant-line branch, mutation-tolerant, 12-of-15 convicts; exact-period
+     branch for no-newline/control-char floods) probed periodically during streaming
+     (cutting a runaway stream within seconds) and on every buffered no-tool-call
+     completion. First conviction: the garbage is discarded BEFORE the transcript (same
+     recovery contract as ModelOutputRejected — the attempt is still billed), one
+     corrective rail, fresh retry. Second: honest `stop_reason="degenerated"` (degraded,
+     non-vetoable like recipe_stalled — re-prompting a twice-collapsed model produces
+     more of the same). Tool-calling completions are never judged: a batch doing work
+     rides along.
+- **Alternatives rejected:** frequency/presence penalties (per-backend support is uneven
+  and Google's own penalty implementations have caused other degeneration); a
+  temperature FLOOR for Gemini only (special-casing one vendor hides the general
+  contract — model defaults are the one honest no-knobs rule); detector-only without the
+  cap (an undetected loop shape would still stream 65k billed tokens); a hard-stop on
+  first conviction (a single bad sample deserves one fresh chance — state is already
+  persisted at message boundaries, so the retry is free).
+- **Consequences:** a degenerating model now costs seconds and at most ~8k tokens, twice,
+  then ends honestly; operators see "response degenerated into repetition" instead of a
+  screen of garbage; every backend runs at its vendor-intended temperature unless the
+  operator says otherwise; `zakcode config` renders "(model default)" for the unset case.

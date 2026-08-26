@@ -116,7 +116,7 @@ class AgentDone(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     #: Thin "this turn struggled" roll-up (mirrors ``TurnResult.degraded``): True when the
     #: turn engaged failure-recovery (a stuck nudge/narrow) or ended non-cleanly
-    #: (stuck / doom_loop / recipe_stalled). False on a clean turn.
+    #: (stuck / doom_loop / degenerated / recipe_stalled). False on a clean turn.
     degraded: bool = False
     #: Mirrors ``TurnResult.error``: the (already secret-redacted) failure detail when
     #: ``stop_reason == "provider_error"``, so a streaming client consuming only the

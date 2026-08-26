@@ -48,6 +48,13 @@ Stop conditions
   Reasoning-heavy local models sometimes burn the whole completion budget in the
   thinking channel and emit nothing; without this reason such turns masqueraded as
   clean completions with zero user-visible output (field incidents 2026-08-25).
+* ``"degenerated"`` — the model collapsed into a repetition loop: one short chunk repeated
+  over and over, the documented low-temperature Gemini 2.5 / small-model attractor (field
+  incident 2026-08-26, ADR-0018). The first such completion is discarded — before it
+  reaches the transcript — and retried once behind a corrective rail; a second ends the
+  turn honestly instead of streaming garbage toward the output cap. Non-vetoable, like
+  ``recipe_stalled``: re-prompting a model that has twice collapsed produces more of the
+  same.
 * ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4).
   A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried with
   ``retry_after``-aware jittered backoff inside a fixed ~5-minute horizon (its
@@ -92,6 +99,7 @@ from pydantic import BaseModel, Field
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
+from zakcode.agent.degeneration import repeated_tail
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
@@ -251,6 +259,22 @@ _EMPTY_COMPLETION_NUDGE = (
     "If you cannot finish, say what you tried, what failed, and what should happen next."
 )
 
+#: How many times a turn may discard a degenerate (repetition-looping) completion and
+#: retry fresh before ending honestly as ``degenerated`` (ADR-0018). One: the first loop
+#: is weather (a low-temperature Gemini, a small local model having a bad sample); a
+#: second consecutive loop is climate — more re-prompting produces more of the same.
+_MAX_DEGENERATION_RETRIES = 1
+_DEGENERATION_NUDGE = (
+    "Your previous response degenerated into repeating the same content over and over; it "
+    "was discarded. Do not repeat yourself. Answer the user's request once, plainly and "
+    "concisely."
+)
+#: Streaming degeneration probe cadence: first check after this many streamed chars…
+_DEGEN_FIRST_CHECK = 600
+#: …then every this-many more. The probe reads a bounded tail, so the per-delta cost of
+#: this cadence is O(1) regardless of how long the completion grows.
+_DEGEN_CHECK_EVERY = 256
+
 #: How many times a single turn may auto-continue a length-truncated FINAL answer before
 #: accepting it as-is. Each continuation is a real new iteration (draws iteration + budget),
 #: so it is bounded separately from — and far below — the iteration cap.
@@ -397,6 +421,7 @@ _DEGRADED_STOP_REASONS = {
     "stuck",
     "doom_loop",
     "gave_up",
+    "degenerated",
     "recipe_stalled",
     "verification_failed",
     "provider_error",
@@ -404,9 +429,10 @@ _DEGRADED_STOP_REASONS = {
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
 #: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` / ``provider_error``
-#: are hard bounds (iteration / spend / infrastructure — a hook must not override them), and
+#: are hard bounds (iteration / spend / infrastructure — a hook must not override them),
 #: ``recipe_stalled`` is the recipe gate's own bounded give-up (re-entering would stall the
-#: same way again).
+#: same way again), and ``degenerated`` is the same shape — re-prompting a model that has
+#: twice collapsed into repetition produces more of the same (ADR-0018).
 _VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck", "gave_up"})
 
 #: The independent completion critic (the bounded completion-review gate). When a code-changing
@@ -495,7 +521,7 @@ class TurnResult(BaseModel):
     #: secret-redacted by the provider's error mapping); empty on every other stop.
     error: str = ""
     #: True when the turn engaged failure-recovery machinery or ended in a non-clean
-    #: terminal (stuck / doom_loop / recipe_stalled, or any stuck-ladder
+    #: terminal (stuck / doom_loop / degenerated / recipe_stalled, or any stuck-ladder
     #: nudge/narrow/step-back fired). A thin "this turn struggled" roll-up; clean turns
     #: leave it False.
     degraded: bool = False
@@ -1892,6 +1918,7 @@ class AgentLoop:
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
         context_recoveries = 0  # ContextWindowExceeded compact-then-retry count (parity #1b)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None): the last
         # category the main provider was selected for (so we only re-select on a CHANGE), and
@@ -2073,45 +2100,80 @@ class AgentLoop:
                 iterations,
                 len(result.tool_calls),
             )
+            # Usage first (per-model /cost attribution; under zakpick self.provider is the
+            # model for the current category this iteration) — folded BEFORE the transcript
+            # write so a degenerate completion discarded below is still billed: the spend
+            # was real even when the text was garbage.
+            self.session.add_usage(result.usage, model=self.provider.model_id())
+            turn_usage = turn_usage + result.usage
+            if self.budget is not None:
+                self.budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
+
+            # Degeneration guard (ADR-0018): a completion whose tail is one short chunk
+            # repeated over and over is the documented low-temperature Gemini 2.5 /
+            # small-model repetition attractor, not an answer. Discard it BEFORE it reaches
+            # the transcript (a known-invalid completion re-issued — the same recovery
+            # contract as ModelOutputRejected), retry once behind a corrective rail, then
+            # end honestly. Scoped to no-tool-call completions: a batch calling tools is
+            # doing work, and its text rides along unjudged.
+            if not result.has_tool_calls and result.text:
+                degen_unit = repeated_tail(result.text)
+                if degen_unit is not None:
+                    turn_degraded = True
+                    self._refund_iteration()  # the discarded completion did no work
+                    if degen_retries < _MAX_DEGENERATION_RETRIES:
+                        degen_retries += 1
+                        self._note(
+                            "intervention",
+                            "response degenerated into repetition — discarded; retrying",
+                            kind="degeneration",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_DEGENERATION_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    stop_reason = "degenerated"
+                    self._note(
+                        "intervention",
+                        "model kept degenerating into repetition — stopping honestly",
+                        kind="degenerated",
+                    )
+                    self._persist()
+                    break
+
             assistant_msg = self._assistant_message(result)
             self.session.add_message(assistant_msg)
-            # Tag the usage with the model that produced it (per-model /cost attribution); under
-            # zakpick self.provider is the model for the current category this iteration.
-            self.session.add_usage(result.usage, model=self.provider.model_id())
             turn_assistant.append(assistant_msg)
-            turn_usage = turn_usage + result.usage
             turn_saw_text = turn_saw_text or bool(result.text)
             self._persist()
 
-            # Cost/token budget stop (parity #4): fold this call's actuals into the shared
-            # budget and stop if a configured ceiling is crossed. Non-vetoable (a TURN_END
-            # hook cannot override a spend cap) by virtue of not being in
+            # Cost/token budget stop (parity #4): the call's actuals were folded into the
+            # shared budget above; stop if a configured ceiling is crossed. Non-vetoable
+            # (a TURN_END hook cannot override a spend cap) by virtue of not being in
             # _VETOABLE_STOP_REASONS — a hard bound like max_iterations.
-            if self.budget is not None:
-                self.budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
-                if self.budget.over_budget():
-                    stop_reason = "budget_exhausted"
-                    self._note(
-                        "intervention", "cost/token budget exhausted", kind="budget_exhausted"
-                    )
-                    logger.info(
-                        "turn stopped: budget exhausted (cost=$%.4f, tokens=%d)",
-                        self.budget.cost_spent,
-                        self.budget.tokens_spent,
-                    )
-                    if result.has_tool_calls:
-                        # The batch will never execute — pair its tool_use blocks
-                        # before ending the turn so the session stays resumable.
-                        self.session.add_message(
-                            _unexecuted_tool_results(
-                                result.tool_calls,
-                                "Not executed: the cost/token budget was exhausted "
-                                "before this tool batch ran.",
-                                "budget_exhausted",
-                            )
+            if self.budget is not None and self.budget.over_budget():
+                stop_reason = "budget_exhausted"
+                self._note("intervention", "cost/token budget exhausted", kind="budget_exhausted")
+                logger.info(
+                    "turn stopped: budget exhausted (cost=$%.4f, tokens=%d)",
+                    self.budget.cost_spent,
+                    self.budget.tokens_spent,
+                )
+                if result.has_tool_calls:
+                    # The batch will never execute — pair its tool_use blocks
+                    # before ending the turn so the session stays resumable.
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            result.tool_calls,
+                            "Not executed: the cost/token budget was exhausted "
+                            "before this tool batch ran.",
+                            "budget_exhausted",
                         )
-                        self._persist()
-                    break
+                    )
+                    self._persist()
+                break
 
             # No tool calls → the turn is finishing (cleanly when the model has said
             # anything this turn; the empty give-up gate below handles total silence).
@@ -2655,6 +2717,7 @@ class AgentLoop:
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
         context_recoveries = 0  # ContextWindowExceeded compact-then-retry count (parity #1b)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None) — see _run_turn.
         main_category: str | None = None
@@ -2793,6 +2856,11 @@ class AgentLoop:
                     attempt_usage = Usage()
                     saw_usage = False
                     attempt_started = time.monotonic()
+                    # Degeneration-probe state (ADR-0018), reset per attempt — a rejection
+                    # retry discards the prior partial stream, so its verdict dies with it.
+                    stream_text_len = 0
+                    degen_next_check = _DEGEN_FIRST_CHECK
+                    degen_unit: str | None = None
                     # A rejection retry resamples at a raised temperature (see the buffered
                     # twin); every other attempt uses the configured temperature.
                     call_kw: dict[str, Any] = (
@@ -2827,7 +2895,18 @@ class AgentLoop:
                             received_any = True
                             if isinstance(ev, StreamTextDelta):
                                 text_parts.append(ev.text)
+                                stream_text_len += len(ev.text)
                                 yield AgentTextDelta(text=ev.text)
+                                # Periodic degeneration probe (ADR-0018): cut a runaway
+                                # repetition loop within seconds instead of streaming it
+                                # to the output cap. Breaking here is the same exit the
+                                # StreamDone branch takes; the post-loop guard below owns
+                                # the verdict's consequences.
+                                if stream_text_len >= degen_next_check:
+                                    degen_next_check = stream_text_len + _DEGEN_CHECK_EVERY
+                                    degen_unit = repeated_tail("".join(text_parts))
+                                    if degen_unit is not None:
+                                        break
                             elif isinstance(ev, StreamToolCallDelta):
                                 accumulator.add(ev)
                             elif isinstance(ev, StreamUsage):
@@ -3026,8 +3105,47 @@ class AgentLoop:
 
                 tool_calls = accumulator.finalize()
                 assistant_text = "".join(text_parts)
-                turn_saw_text = turn_saw_text or bool(assistant_text)
 
+                # Degeneration guard (ADR-0018), streaming twin — see _run_turn. A
+                # mid-stream conviction (degen_unit set by the periodic probe, which broke
+                # the stream) lands here too; any tool-call fragments from such a stream
+                # are unexecutable and are dropped along with the text. A stream that
+                # ended naturally still gets the full-text check — a short loop can finish
+                # under the probe cadence.
+                if degen_unit is None and not tool_calls and assistant_text:
+                    degen_unit = repeated_tail(assistant_text)
+                if degen_unit is not None:
+                    turn_degraded = True
+                    self._refund_iteration()  # the discarded completion did no work
+                    if degen_retries < _MAX_DEGENERATION_RETRIES:
+                        degen_retries += 1
+                        self._note(
+                            "intervention",
+                            "response degenerated into repetition — discarded; retrying",
+                            kind="degeneration",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_DEGENERATION_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="response degenerated into repetition; discarded — retrying"
+                        )
+                        continue
+                    stop_reason = "degenerated"
+                    self._note(
+                        "intervention",
+                        "model kept degenerating into repetition — stopping honestly",
+                        kind="degenerated",
+                    )
+                    self._persist()
+                    yield AgentStatus(
+                        message="stopping: the model keeps degenerating into repetition"
+                    )
+                    break
+
+                turn_saw_text = turn_saw_text or bool(assistant_text)
                 assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
                 self.session.add_message(assistant_msg)
                 turn_assistant.append(assistant_msg)

@@ -226,6 +226,14 @@ def _max_stop_sequences(model: str) -> int | None:
 #: compactor's threshold matches Ollama's real context (no truncate-before-compact).
 _OLLAMA_NUM_CTX_CAP = 16_384
 
+#: Default per-completion output-token cap sent on every call (ADR-0018). Bounds the
+#: blast radius of a degeneration loop — Gemini 2.5's own cap is ~65k tokens, all billed —
+#: while staying far above any legitimate single completion (tool-call batches are small;
+#: a long final answer flows through the agent loop's length-continuation path, itself
+#: bounded). Fixed on purpose: not a knob. Per-call callers (side-calls with tighter
+#: budgets) still override it.
+_MAX_COMPLETION_TOKENS = 8_192
+
 
 #: Minimum seconds between request STARTS on one provider instance (traffic
 #: smoothing). Google's dynamic-shared-quota guidance pairs exponential backoff with
@@ -300,7 +308,11 @@ class LiteLLMProvider(Provider):
             raise ValueError("a model must be provided via settings or the model kwarg")
 
         self.model: str = resolved_model
-        self.temperature: float = resolved_temperature if resolved_temperature is not None else 0.7
+        # None = send no temperature at all — each backend's own default applies (ADR-0018).
+        # There is deliberately no harness-side fallback value here anymore: the old 0.7
+        # (and the Settings default of 0.0 before it) second-guessed every model's tuning,
+        # and Gemini 2.5+ documents repetition loops below temperature 1.0.
+        self.temperature: float | None = resolved_temperature
         self.api_base: str | None = resolved_api_base
         self.api_key: str | None = resolved_api_key
         self.num_retries: int = num_retries if num_retries is not None else 0
@@ -719,12 +731,22 @@ class LiteLLMProvider(Provider):
         call_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": wire_messages,
-            "temperature": self.temperature,
             "drop_params": True,
             "num_retries": self.num_retries,
             "stream": False,
             "timeout": self.request_timeout,
+            # Per-completion output cap (ADR-0018). Without one, a model that degenerates
+            # into a repetition loop streams to ITS OWN cap — 65k tokens on Gemini 2.5,
+            # billed (field incident 2026-08-26). 8k bounds any single completion to
+            # seconds of garbage at worst; a legitimate long answer continues through the
+            # loop's bounded length-continuation path. Callers may override per call
+            # (call_kwargs.update(kw) below wins); litellm maps the name per backend and
+            # drop_params drops it where unsupported.
+            "max_tokens": _MAX_COMPLETION_TOKENS,
         }
+        if self.temperature is not None:
+            # Omitted entirely when unset — the backend's own default temperature applies.
+            call_kwargs["temperature"] = self.temperature
         if tools:
             call_kwargs["tools"] = tools
             call_kwargs["tool_choice"] = "auto"
