@@ -387,16 +387,19 @@ class Agent:
         # from settings.permission_mode (default 'ask'). An interactive client may
         # pass a ``prompter`` so escalations can be approved; with none, 'ask'
         # fails closed (writes/shell denied) — safe for non-interactive use.
-        from zakcode.deps_gate import read_declared_packages
+        from zakcode.deps_gate import harness_declared_packages, read_declared_packages
         from zakcode.permissions import compile_deny_patterns, compile_protected_paths
 
         # Declared-dependency gate (self-remediation Step 1): when enabled, give the policy a
         # lazy reader of the workspace's declared package set. It is invoked only when a command
         # actually names an install, and re-reads each time so a package added mid-session is
         # recognised. ``None`` (gate off) leaves the policy's pure matrix unchanged.
+        # The harness's OWN declared packages are unioned in (ADR-0019) so the self-service
+        # remedy for a missing optional dep — which pip_install_hint aims at zakcode's own
+        # interpreter — is not refused by the very gate that guards the workspace.
         workspace_root = self.settings.workspace_root
         declared_packages = (
-            (lambda: read_declared_packages(workspace_root))
+            (lambda: read_declared_packages(workspace_root) | harness_declared_packages())
             if self.settings.dependency_gate
             else None
         )

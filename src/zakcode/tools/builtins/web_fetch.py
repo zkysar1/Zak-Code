@@ -32,12 +32,13 @@ from urllib.parse import urlsplit
 from zakcode._http import (
     BlockedUrlError,
     host_allowed,
+    install_now_fix,
     load_httpx,
-    pip_install_hint,
     resolve_pinned_url,
 )
 from zakcode.config import PermissionTier
 from zakcode.providers.text_tools import defang_untrusted
+from zakcode.secrets import redact_secrets
 from zakcode.tools.base import (
     ConcurrencyClass,
     Tool,
@@ -46,7 +47,11 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.tools.builtins._html import html_to_text
-from zakcode.tools.builtins._secrets import SecretsProvider, UnknownSecretError
+from zakcode.tools.builtins._secrets import (
+    SECRET_PLACEHOLDER_RE,
+    SecretsProvider,
+    UnknownSecretError,
+)
 
 _DEFAULT_TIMEOUT = 15
 _MAX_BYTES = 2 * 1024 * 1024  # cap bytes downloaded off the wire
@@ -55,7 +60,7 @@ _MAX_CHARS = 50_000  # cap chars returned to the model
 _MAX_REDIRECTS = 5
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 _USER_AGENT = "zakcode-webfetch/0.1 (+https://github.com/zkysar1/Zak-Code)"
-_INSTALL_FIX = f"web_fetch needs the httpx package: {pip_install_hint('httpx')}"
+_INSTALL_FIX = install_now_fix("httpx")
 _MAX_REQ_HEADERS = 16
 _MAX_HEADER_VALUE_CHARS = 2048
 _HEADER_NAME_RE_TEXT = r"^[A-Za-z0-9-]+$"
@@ -192,6 +197,34 @@ class WebFetchTool(Tool):
                     f"header {name!r} value must be a string of at most "
                     f"{_MAX_HEADER_VALUE_CHARS} chars."
                 )
+
+        # RAW-secret screens (ADR-0019). A saved secret VALUE pasted directly into the url
+        # or a header has already leaked into the transcript before any request is made —
+        # the sanctioned form is the {{secret:NAME}} placeholder, resolved outside the
+        # model below. Header values additionally get the credential-SHAPE screen (an
+        # ``Authorization: Bearer <token>`` paste is the classic leak; the shape screen is
+        # NOT applied to the url, whose query strings legitimately match ``token=…``-style
+        # assignment shapes).
+        if self._secrets.scrub(url) != url or any(
+            self._secrets.scrub(v) != v for v in raw_headers.values()
+        ):
+            return ToolResult.error(
+                "a raw saved-secret VALUE appears in the url or a header; never paste "
+                "secret values into requests.",
+                fix="write {{secret:NAME}} instead — the real value is substituted outside "
+                "your context (see the secret_names tool)",
+            )
+        # Placeholders are stripped first: ``{{secret:NAME}}`` is the SAFE form, but its
+        # ``secret:NAME`` spelling matches the redactor's key-value pattern.
+        if any(
+            redact_secrets(SECRET_PLACEHOLDER_RE.sub("", v))[1] > 0 for v in raw_headers.values()
+        ):
+            return ToolResult.error(
+                "a header value contains credential-shaped text; never paste credentials "
+                "into requests.",
+                fix="write {{secret:NAME}} instead — the real value is substituted outside "
+                "your context (see the secret_names tool)",
+            )
 
         # Resolve {{secret:NAME}} OUTSIDE the model: the resolved forms exist only in the
         # outbound request; `url` (the placeholder form) stays the one used in every

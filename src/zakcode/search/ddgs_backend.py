@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 
-from zakcode._http import pip_install_hint
+from zakcode._http import install_now_fix
 from zakcode.search.base import BackendUnavailable, SearchBackend, SearchError, SearchItem
 
-_INSTALL_FIX = f"the 'ddgs' search backend needs the ddgs package: {pip_install_hint('ddgs')}"
+# Both [web] packages at once: search needs ddgs, and the natural next step (web_fetch on a
+# result) needs httpx — one install covers the whole capability instead of failing twice.
+_INSTALL_FIX = install_now_fix("ddgs", "httpx")
 
 
 class DuckDuckGoBackend(SearchBackend):
