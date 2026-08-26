@@ -167,8 +167,9 @@ class LifecyclePayload(BaseModel):
     event: HookEvent
     session_id: str = ""
     cwd: str = ""
-    #: Claude Code's SessionStart ``source`` (``startup`` | ``resume``) — a fresh start vs a resumed
-    #: session — so a framework can branch (prime fresh vs reconcile). Empty for other events.
+    #: Claude Code's SessionStart ``source`` (``startup`` | ``resume`` | ``compact``) — a fresh
+    #: start, a resumed session, or a just-compacted transcript — so a framework can branch
+    #: (prime fresh vs reconcile vs restore post-compact state). Empty for other events.
     source: str = ""
     #: Claude Code's PreCompact ``trigger`` (``auto`` | ``manual``), at the top level (not nested in
     #: ``data``) to match the contract. Empty for other events.

@@ -787,3 +787,48 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   the apology reflex is addressed at its trigger; prompt-cache health is visible on
   every turn footer, so "is caching hitting?" is answered at a glance instead of by
   archaeology.
+
+## ADR-0022: Compaction that survives small windows — chunked summarization, the post-compact hook, honest triggers, visible notices
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** A 131k-window local pod session overflowed mid-turn (an uncapped
+  2,776-line tool result) and the reactive recovery compacted-and-retried. The deep
+  dive found four defects around that one moment. (1) The summarize call carried the
+  ENTIRE old history raw in one request — but the reactive path fires only AFTER an
+  overflow, so its input is oversized by construction: the recovery could throw the
+  very `ContextWindowExceeded` it was recovering from, and `compact_now()` had no
+  exception guard, so that second overflow would have escaped from inside an `except`
+  handler and killed the turn ungracefully. (2) Claude Code fires
+  `SessionStart(source="compact")` after every compaction — the seam frameworks use to
+  restore serialized state — but the loop deliberately folded "compact" into "resume",
+  i.e. the post-compact event NEVER fired mid-session, so a framework's
+  PreCompact-serialized state had no restore moment. (3) The reactive recovery reused
+  `compact_now()` and therefore reported `trigger="manual"` to PreCompact hooks for an
+  automatic recovery. (4) Proactive threshold compaction was silent — a transcript
+  rewrite the operator only discovered as apparent memory loss ("casual auto compact?!").
+- **Decision:** `_summarize_for_compaction` stays raw-single-call while the history fits
+  0.7× the summarizer's window (the common case, byte-identical behavior); above that it
+  renders the history to labeled plain text (tool calls as one compact line, results by
+  their output — no orphan structured tool blocks a provider API could reject), slices
+  at 0.5×window using a conservative 2-chars-per-token floor, summarizes each slice, and
+  folds the part-summaries once if the join is itself oversized. `compact_now(*,
+  trigger)` takes the honest trigger ("auto" from both recovery paths, "manual" from
+  `/compact`) and returns False on summarize failure instead of raising. Every
+  successful compaction — proactive, manual, reactive — now fires
+  `SessionStart(source="compact")` right after the rewrite (Claude Code parity; the
+  LifecyclePayload doc gains the third value). `_maybe_compact` returns a notice string
+  ("context near the window — compacted N → M messages") that the streaming path yields
+  as an AgentStatus and the trace records; the reactive notice now carries the before →
+  after counts.
+- **Alternatives rejected:** a strict "only retry if strictly smaller" recovery guard
+  (rejected once in review #1 — the `_MAX_CONTEXT_RECOVERY` bound already terminates);
+  token-exact chunk splitting via per-slice tokenizer calls (the 2-chars-per-token
+  floor never overshoots and costs nothing); firing a bespoke `PostCompact` event
+  (Claude Code already has a name for this moment — `SessionStart(source="compact")` —
+  and frameworks already branch on `source`, so inventing a second vocabulary would
+  orphan existing hooks); rendering the single-call path to text too (uniform but
+  changes what the summarizer sees for every session; the raw path is proven and stays).
+- **Consequences:** compaction can no longer overflow itself, on any window size; a
+  framework's serialize→restore pair (PreCompact → SessionStart:compact) works under
+  this harness exactly as under Claude Code; PreCompact hooks can trust `trigger`; and
+  every compaction is visible in the transcript with its before → after counts.

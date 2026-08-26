@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import random
@@ -237,6 +238,18 @@ _REJECTION_RETRY_TEMP_STEP = 0.3
 #: ``provider_error`` instead of looping. The recovery does NOT draw an iteration unit —
 #: it is the same logical call, retried on a smaller transcript.
 _MAX_CONTEXT_RECOVERY = 2
+
+#: Send the messages being summarized RAW in one summarize call while they fit this fraction
+#: of the summarizer's window (headroom for the instruction + the summary itself). Above it,
+#: the summarize call would risk the very overflow compaction exists to fix — the reactive
+#: recovery path fires only AFTER an overflow, so its input is oversized BY CONSTRUCTION —
+#: and the history is rendered to text and summarized in bounded slices instead.
+_SUMMARY_SINGLE_CALL_FRACTION = 0.7
+#: Slice budget for the chunked summarize path, as a fraction of the summarizer's window.
+_SUMMARY_CHUNK_FRACTION = 0.5
+#: Conservative chars-per-token floor for slicing rendered text without a tokenizer pass
+#: (id-dense code/markdown measures ~2.5 bytes/token; prose ~4 — 2 never overshoots).
+_SUMMARY_CHARS_PER_TOKEN = 2
 
 #: Finish reasons that mean the model's output was cut off at the token cap (parity #5):
 #: OpenAI reports ``length``; litellm maps Anthropic's ``max_tokens`` stop reason similarly.
@@ -792,8 +805,39 @@ class AgentLoop:
                 await self._egress_proxy.stop()
             self._egress_proxy = None
 
+    @staticmethod
+    def _render_for_summary(messages: list[Message]) -> str:
+        """Flatten messages to labeled plain text for the chunked summarize path.
+
+        Tool calls are rendered as one compact line (name + clipped input) and tool
+        results by their output text, so a slice never carries an orphan structured
+        tool block a provider API would reject.
+        """
+        parts: list[str] = []
+        for message in messages:
+            lines: list[str] = []
+            text = message.text.strip()
+            if text:
+                lines.append(text)
+            for use in message.tool_uses:
+                args = json.dumps(use.input, ensure_ascii=False, default=str)
+                lines.append(f"(called {use.name} with {args[:200]})")
+            for block in message.blocks:
+                if isinstance(block, ToolResultBlock) and block.output:
+                    lines.append(block.output)
+            if lines:
+                parts.append(f"[{message.role}]\n" + "\n".join(lines))
+        return "\n\n".join(parts)
+
     async def _summarize_for_compaction(self, messages: list[Message]) -> str:
-        """Summarize older messages via the model (the compactor's summarize callback)."""
+        """Summarize older messages via the model (the compactor's summarize callback).
+
+        Overflow-proof by construction: the reactive recovery path compacts only AFTER a
+        :class:`ContextWindowExceeded`, so the messages handed here can exceed the
+        summarizer's own window. While they fit :data:`_SUMMARY_SINGLE_CALL_FRACTION` of
+        it they go raw in one call (the common case, unchanged); above that they are
+        rendered to text, summarized in bounded slices, and the part-summaries folded.
+        """
         instruction = (
             "You are compacting a long conversation to fit a context window. Summarize "
             "the exchange below, preserving goals, decisions, key facts, file paths, and "
@@ -801,24 +845,50 @@ class AgentLoop:
             "the summary."
         )
         summarizer = self._summarizer_provider or self.provider
-        result = await summarizer.acomplete(messages, system=instruction)
-        return result.text.strip()
+        window = summarizer.capabilities().context_window or 8192
+        if summarizer.count_tokens(messages) <= int(window * _SUMMARY_SINGLE_CALL_FRACTION):
+            result = await summarizer.acomplete(messages, system=instruction)
+            return result.text.strip()
+        rendered = self._render_for_summary(messages)
+        chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
+        slices = [rendered[i : i + chunk_chars] for i in range(0, len(rendered), chunk_chars)]
+        parts: list[str] = []
+        for i, piece in enumerate(slices, 1):
+            prompt = f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}"
+            result = await summarizer.acomplete([Message.user(prompt)], system=instruction)
+            parts.append(result.text.strip())
+        combined = "\n\n".join(parts)
+        if len(parts) > 1 and len(combined) > chunk_chars:
+            result = await summarizer.acomplete(
+                [
+                    Message.user(
+                        "Fold these part-summaries of one conversation into a single "
+                        "coherent summary:\n\n" + combined
+                    )
+                ],
+                system=instruction,
+            )
+            combined = result.text.strip()
+        return combined
 
-    async def _maybe_compact(self) -> None:
+    async def _maybe_compact(self) -> str | None:
         """Auto-compact the session if a compactor is set and the threshold is exceeded.
 
         Best-effort: summarization failures are swallowed so a turn never dies because
-        compaction couldn't run (the turn just proceeds with the full history).
+        compaction couldn't run (the turn just proceeds with the full history). Returns a
+        short user-facing notice when a compaction actually happened (``None`` otherwise)
+        so the streaming path can surface it — a silent transcript rewrite reads as
+        memory loss to an operator watching the session.
         """
         if self.compactor is None:
-            return
+            return None
         window = self.provider.capabilities().context_window
         if not self.compactor.should_compact(
             self.session.messages,
             context_window=window,
             count_tokens=lambda m: self.provider.count_tokens(m),
         ):
-            return
+            return None
         # Let a host serialize learning/state before the transcript is compacted.
         await self._fire_lifecycle(
             HookEvent.PRE_COMPACT,
@@ -830,6 +900,7 @@ class AgentLoop:
             },
             trigger="auto",
         )
+        before = len(self.session.messages)
         try:
             result = await self.compactor.compact(
                 self.session.messages, summarize=self._summarize_for_compaction
@@ -838,16 +909,28 @@ class AgentLoop:
             logging.getLogger(__name__).warning(
                 "compaction failed; continuing with full history", exc_info=True
             )
-            return
-        if result.compacted:
-            self.session.messages[:] = result.messages
-            self._persist()
+            return None
+        if not result.compacted:
+            return None
+        self.session.messages[:] = result.messages
+        self._persist()
+        # Claude Code parity: SessionStart(source="compact") right after each compaction —
+        # the seam a framework's post-compact state-restore automation plugs into.
+        await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
+        notice = f"context near the window — compacted {before} → {len(result.messages)} messages"
+        self._note("intervention", notice, kind="compaction")
+        return notice
 
-    async def compact_now(self) -> bool:
-        """Force a compaction regardless of threshold (the ``/compact`` command).
+    async def compact_now(self, *, trigger: str = "manual") -> bool:
+        """Force a compaction regardless of threshold.
 
-        Returns True if the transcript was compacted. No-op if no compactor is set or
-        there was nothing old enough to summarize.
+        Two callers: the ``/compact`` command (default ``trigger="manual"``) and the
+        in-turn :class:`ContextWindowExceeded` recovery (``trigger="auto"`` — for a
+        PreCompact hook, an overflow recovery is an automatic compaction, not an operator
+        request). Returns True if the transcript was compacted; False when no compactor
+        is set, nothing was old enough to summarize, or summarization itself failed (the
+        recovery path then degrades to its graceful ``provider_error`` terminal instead
+        of dying on an exception raised inside an ``except`` handler).
         """
         if self.compactor is None:
             return False
@@ -859,14 +942,20 @@ class AgentLoop:
                     "message_count": len(self.session.messages),
                 },
             },
-            trigger="manual",
+            trigger=trigger,
         )
-        result = await self.compactor.compact(
-            self.session.messages, summarize=self._summarize_for_compaction
-        )
+        try:
+            result = await self.compactor.compact(
+                self.session.messages, summarize=self._summarize_for_compaction
+            )
+        except Exception:  # noqa: BLE001 — a failed forced compaction reports False, never raises
+            logging.getLogger(__name__).warning("forced compaction failed", exc_info=True)
+            return False
         if result.compacted:
             self.session.messages[:] = result.messages
             self._persist()
+            # Claude Code parity: SessionStart(source="compact") after each compaction.
+            await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
         return result.compacted
 
     def _grant_iteration(self, iterations_done: int) -> bool:
@@ -1855,8 +1944,8 @@ class AgentLoop:
         # source mirrors Claude Code's SessionStart `source`: a session already carrying prior
         # history at first-turn time was resumed; an empty one is a fresh startup. (Fires before the
         # turn's new user message is added, so messages == prior history.) CC's third value
-        # "compact" (a post-compaction restart) is folded into "resume" — we do not re-fire
-        # SessionStart after compaction.
+        # "compact" fires separately, right after each compaction — see _maybe_compact and
+        # compact_now — never from this once-latch.
         source = "resume" if self.session.messages else "startup"
         await self._fire_lifecycle(HookEvent.SESSION_START, source=source)
 
@@ -2092,7 +2181,9 @@ class AgentLoop:
                     # branch below. Bounded by ``_MAX_CONTEXT_RECOVERY``; if compaction
                     # cannot help (nothing old enough to summarize, or the cap is hit) it
                     # falls through to the same graceful provider_error terminal.
-                    if context_recoveries < _MAX_CONTEXT_RECOVERY and await self.compact_now():
+                    if context_recoveries < _MAX_CONTEXT_RECOVERY and await self.compact_now(
+                        trigger="auto"
+                    ):
                         context_recoveries += 1
                         # Rebuild the message list from the now-compacted session — the
                         # pre-compaction ``call_messages`` is the oversized transcript that
@@ -2746,7 +2837,9 @@ class AgentLoop:
         self._trace = TurnTrace()
         self._turn_count += 1
         await self._fire_session_start_once()
-        await self._maybe_compact()
+        compact_note = await self._maybe_compact()
+        if compact_note:
+            yield AgentStatus(message=compact_note)
         self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
         # Compound-ask decomposition + coverage state — see _run_turn (buffered twin).
@@ -3090,7 +3183,10 @@ class AgentLoop:
                                 _MAX_CONTEXT_RECOVERY,
                             )
                             yield AgentStatus(
-                                message="context window exceeded; compacted and retrying"
+                                message=(
+                                    "context window exceeded; compacted "
+                                    f"{before} → {len(call_messages)} messages and retrying"
+                                )
                             )
                             continue
                         provider_failure = str(exc)
