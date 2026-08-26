@@ -914,3 +914,41 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 - **Decision:** Hooks declared in `<workspace>/.claude/settings.json`, `.claude/settings.local.json`, and `.zakcode/settings.json` ALWAYS load at Agent construction. The `settings_hooks` setting, the `enable_settings_hooks` parameter, the folder-trust prompt, and the whole `workspace_trust` module are deleted. What remains is not a flag but the security floor, unchanged: every hook command is scanned against the catastrophic blocklist (matches hard-denied in autonomous mode, registered-with-warning otherwise), and provider keys are scrubbed from every hook child's environment.
 - **Alternatives rejected:** keeping the prompt but defaulting to "always" (still a flag, still a divergent path, and a dismissed prompt still meant an unprotected session); folding hooks under a broader workspace-trust gate (same silent-failure shape, one level up); auto-enabling only when a Mind-style framework is detected (special-casing one consumer inside a generic engine).
 - **Consequences:** a workspace's committed automation is live the moment zakcode opens it — the Claude Code parity story is now unconditional; opening an unfamiliar repo executes its declared hooks (mitigated by the danger scan and key scrubbing — the same posture Claude Code lands on after one keystroke); the sibling opt-ins (`settings_permissions`, `output_style`, `status_line`) are deliberately untouched — they reshape permission posture and voice rather than run declared automation, and each needs its own decision.
+
+## ADR-0026: The broken-record guard, and skill references must be request-shaped
+
+- **Status:** Accepted (shipped, 2026-08-26).
+- **Context:** Two more small-model transcripts. (1) A Mind loop session re-sent ONE
+  closing paragraph ("The plan shows all 3 steps are complete … No further action is
+  needed") five times: the framework's Stop hook correctly vetoed each finish, the veto
+  re-prompt went out, and the model answered it by re-emitting its previous message
+  verbatim — an unbounded veto↔parrot cycle, each lap billing a full context. Nothing
+  watched for it: the degeneration guard judges repetition INSIDE one completion, the
+  doom-loop guard watches tool batches, and text-only completions repeat across
+  iterations without tripping either. (2) The skill-coverage backstop fired "request
+  named a skill that never ran" demanding EIGHT skills after a turn whose pasted prompt
+  merely DISCUSSED them — `_skill_refs` accepted backticks, quotes, parens, brackets,
+  and colons as token prefixes, so documentation mentions counted as invocation
+  requests (and plan seeding would seed them as steps).
+- **Decision:** (1) Broken-record guard: each no-tool-call completion ≥80 chars is
+  counted per turn by its whitespace-normalized text; a re-send gets one escalating
+  `[harness]` rail ("you have already said exactly this — take the next CONCRETE
+  action, or state in one sentence of NEW information what is blocking"; sharper from
+  the third occurrence), checked FIRST in the completion branch so a parrot never
+  re-buys the completion critic or the quality gate, and latching the ADR-0024 struggle
+  flag so zakpick escalates. (2) `_skill_refs` counts only request-shaped tokens:
+  fenced blocks and `>`-quoted lines are stripped, and the prefix class narrows to
+  start-of-text/whitespace/`,;!` — backticked, quoted, parenthesized, bracketed, and
+  colon-glued tokens are mentions. Both the coverage backstop and plan seeding
+  inherit the precision.
+- **Alternatives rejected:** ending the turn after N parrots (under a framework Stop
+  hook the turn ending IS the failure — the loop dies until an operator returns; the
+  guard's job is to change the stimulus, and the budget remains the hard bound);
+  fuzzy/similarity matching for repeats (verbatim normalization catches the attractor
+  that exists; similarity thresholds invite false positives on legitimately incremental
+  status lines); NLU-grade request detection for skill refs (the mention shapes are
+  structural — code spans, quotes, parens — and structure is enough).
+- **Consequences:** a veto↔parrot cycle now breaks on its first repeat instead of
+  running unbounded; parroting is visible to model routing; pasted documentation can no
+  longer conscript the coverage backstop or the plan seeder; `[/name]`-bracketed tokens
+  no longer count as requests (they read as optional-syntax documentation).

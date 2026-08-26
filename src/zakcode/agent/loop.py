@@ -307,6 +307,29 @@ _INTENT_NUDGE = (
     "describing options, say so plainly and finish without announcing further actions."
 )
 
+#: Broken-record guard (ADR-0026): a completion RE-SENT verbatim within one turn is the
+#: parroting attractor — a turn_end veto (or any gate nudge) re-prompts, and a small model
+#: re-emits its previous message word for word, forever. Field incident 2026-08-26: one
+#: closing paragraph ("The plan shows all 3 steps are complete … No further action is
+#: needed") sent five times through five veto cycles, each cycle billing a full context.
+#: Below this floor repeats are conversation ("Done." twice), not parroting.
+_BROKEN_RECORD_MIN_CHARS = 80
+
+
+def _broken_record_nudge(count: int) -> str:
+    """The escalating anti-parrot rail (sharper from the third occurrence on)."""
+    if count <= 2:
+        return (
+            "You have already said exactly this earlier in this turn. Repeating it does "
+            "not advance anything. Take the next CONCRETE action with a tool call — or "
+            "state, in one sentence of NEW information, what is genuinely blocking."
+        )
+    return (
+        f"This is occurrence {count} of the SAME message this turn. Do not send it again. "
+        "Act with a tool call now, or reply with only what is NEW."
+    )
+
+
 #: Future-intent announcements: first-person future forms followed by an ACTION verb, so
 #: "I will need you to provide…" / "I'll let you know" / "I will be here" never match.
 _FUTURE_INTENT_RE = re.compile(
@@ -1165,18 +1188,33 @@ class AgentLoop:
     # ── request decomposition: compound asks become plan steps ─────────────────
 
     def _skill_refs(self, text: str) -> list[str]:
-        """Skill names the user text explicitly references as ``/slash`` tokens, in order.
+        """Skill names the user text references as invocation-shaped ``/slash`` tokens.
 
         Resolved against the discovered skill registry, so prose slashes (``/tmp``,
         ``a/b``) never match — only names the registry actually knows count.
         De-duplicated, order-preserving, canonical registry casing. Empty when skills
         are disabled.
+
+        Precision (ADR-0026): only a REQUEST-shaped token counts. Mentions inside
+        fenced code blocks, quoted lines (``>``), inline code (`` `/name` ``), quotes,
+        and directly-parenthesized/bracketed tokens (``(/name)``, ``[/name]``) are
+        documentation, not asks — a pasted prompt whose prose discussed eight skills
+        once produced a coverage nudge demanding all eight, and plan seeding would
+        have seeded them as steps.
         """
         if self._skill_resolver is None:
             return []
         known = {n.lower(): n for n in self._skill_resolver.names()}
+        # Pasted documentation first: drop fenced blocks and markdown-quoted lines.
+        cleaned = re.sub(r"```.*?(?:```|\Z)", " ", text, flags=re.S)
+        cleaned = "\n".join(
+            line for line in cleaned.splitlines() if not line.lstrip().startswith(">")
+        )
         refs: list[str] = []
-        for match in re.finditer(r"(?:^|[\s(\[,;:!\"'`])/([a-z0-9][a-z0-9_-]*)", text.lower()):
+        # Request prefix class: start-of-text, whitespace, or run-on punctuation
+        # (``,;!`` — the "/a,/b" shorthand). Backticks, quotes, parens, brackets,
+        # and colons mark mentions and deliberately do NOT admit a match.
+        for match in re.finditer(r"(?:^|[\s,;!])/([a-z0-9][a-z0-9_-]*)", cleaned.lower()):
             name = known.get(match.group(1))
             if name is not None and name not in refs:
                 refs.append(name)
@@ -2204,6 +2242,7 @@ class AgentLoop:
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
+        completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -2593,6 +2632,30 @@ class AgentLoop:
                     )
                     self._refund_iteration()
                     break
+                # Broken-record guard (ADR-0026): the same completion re-sent within one
+                # turn is the parroting attractor (a veto or gate nudge re-prompts and a
+                # small model re-emits its previous message verbatim, forever). Checked
+                # FIRST so a parrot never re-buys the critic or the quality gate.
+                if result.text and len(result.text) >= _BROKEN_RECORD_MIN_CHARS:
+                    record_key = " ".join(result.text.split()).lower()
+                    completion_counts[record_key] = completion_counts.get(record_key, 0) + 1
+                    if completion_counts[record_key] >= 2:
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            "completion repeats an earlier one verbatim — asking for new action",
+                            kind="broken_record",
+                        )
+                        self.session.add_message(
+                            Message.user(
+                                _control_rail(_broken_record_nudge(completion_counts[record_key]))
+                            )
+                        )
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
                 # Completion-review gate (bounded): a turn that CHANGED code is reviewed by an
                 # INDEPENDENT, fresh-context critic before it may finish — the critic sees only the
                 # request and the claimed result and flags requirements that were silently dropped
@@ -3028,6 +3091,7 @@ class AgentLoop:
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
+        completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -3644,6 +3708,33 @@ class AgentLoop:
                         self._refund_iteration()
                         yield AgentStatus(message="stopping: the model went silent (no output)")
                         break
+                    # Broken-record guard (ADR-0026) — see the buffered twin.
+                    if assistant_text and len(assistant_text) >= _BROKEN_RECORD_MIN_CHARS:
+                        record_key = " ".join(assistant_text.split()).lower()
+                        completion_counts[record_key] = completion_counts.get(record_key, 0) + 1
+                        if completion_counts[record_key] >= 2:
+                            self._turn_struggle = True
+                            self._note(
+                                "intervention",
+                                "completion repeats an earlier one verbatim — asking for "
+                                "new action",
+                                kind="broken_record",
+                            )
+                            self.session.add_message(
+                                Message.user(
+                                    _control_rail(
+                                        _broken_record_nudge(completion_counts[record_key])
+                                    )
+                                )
+                            )
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            yield AgentStatus(
+                                message="repeated the same message — asking for new action"
+                            )
+                            continue
                     # Completion-review gate (streaming twin): see the buffered path. An
                     # independent fresh-context critic reviews the finishing turn; only a flagged
                     # gap re-enters (and only then is a "reviewing" status worth surfacing).

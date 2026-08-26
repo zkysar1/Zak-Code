@@ -252,3 +252,73 @@ def test_streaming_completion_announcing_work_is_nudged(tmp_path: Path) -> None:
     assert provider.calls == 2
     statuses = [ev.message for ev in events if isinstance(ev, AgentStatus)]
     assert any("asking for it" in s for s in statuses)
+
+
+# ── the broken-record guard (ADR-0026) ───────────────────────────────────────
+
+
+def _veto_once_hook() -> Any:
+    """A Stop-hook stand-in: veto the first turn end, allow after (the Mind loop shape)."""
+    from zakcode.hooks import TurnEndResult
+
+    vetoes = [0]
+
+    def hook(payload: Any) -> TurnEndResult | None:
+        if vetoes[0] < 1:
+            vetoes[0] += 1
+            return TurnEndResult(vetoed=True, continuation_prompt="continue with the work")
+        return None
+
+    return hook
+
+
+def test_parroted_completion_gets_the_broken_record_rail(tmp_path: Path) -> None:
+    stale = (
+        "The plan shows all steps are complete and the loop is active. "
+        "No further action is needed - the perpetual learning loop is running."
+    )
+    loop = _loop(
+        [
+            LLMResult(text=stale),
+            LLMResult(text=stale),  # verbatim re-send after the veto re-prompt
+            LLMResult(text="New information: claimed goal g-1 and started execution."),
+        ],
+        tmp_path,
+    )
+    loop.turn_end_vetoable = True  # the Mind loop runs with a vetoable Stop seam
+    loop.hook_manager.register_turn_end(_veto_once_hook())
+    result = asyncio.run(loop.arun_turn("keep the loop going"))
+    assert result.stop_reason == "completed"
+    assert loop.provider.calls == 3  # type: ignore[attr-defined]
+    rails = [
+        m
+        for m in loop.session.messages
+        if m.role == "user" and "already said exactly this" in m.text
+    ]
+    assert len(rails) == 1
+    assert rails[0].text.startswith("[harness] Hint:")
+    assert loop._turn_struggle is True  # parroting is a struggle signal
+
+
+def test_distinct_completions_are_not_parroting(tmp_path: Path) -> None:
+    loop = _loop(
+        [
+            LLMResult(text="Precheck finished: fourteen goals scored and ranked for selection."),
+            LLMResult(text="Selection finished: claimed goal g-1; execution starts next cycle."),
+        ],
+        tmp_path,
+    )
+    loop.turn_end_vetoable = True  # the Mind loop runs with a vetoable Stop seam
+    loop.hook_manager.register_turn_end(_veto_once_hook())
+    result = asyncio.run(loop.arun_turn("keep the loop going"))
+    assert result.stop_reason == "completed"
+    assert not any("already said exactly this" in m.text for m in loop.session.messages)
+
+
+def test_short_repeats_stay_below_the_floor(tmp_path: Path) -> None:
+    loop = _loop([LLMResult(text="Done."), LLMResult(text="Done.")], tmp_path)
+    loop.turn_end_vetoable = True  # the Mind loop runs with a vetoable Stop seam
+    loop.hook_manager.register_turn_end(_veto_once_hook())
+    result = asyncio.run(loop.arun_turn("quick check"))
+    assert result.stop_reason == "completed"
+    assert not any("already said exactly this" in m.text for m in loop.session.messages)
