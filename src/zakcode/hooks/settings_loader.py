@@ -80,7 +80,7 @@ def _is_dangerous(command_str: str) -> str | None:
 
 
 def _settings_candidates(workspace_root: Path) -> list[Path]:
-    """The settings files hooks are read from, in read order (shared by load + summarize)."""
+    """The settings files hooks are read from, in read order."""
     return [
         workspace_root / ".claude" / "settings.json",
         # Per-machine local overrides (Claude Code's settings.local.json), read AFTER the shared
@@ -88,50 +88,6 @@ def _settings_candidates(workspace_root: Path) -> list[Path]:
         workspace_root / ".claude" / "settings.local.json",
         workspace_root / ".zakcode" / "settings.json",
     ]
-
-
-def summarize_settings_hooks(workspace_root: Path) -> dict[str, int]:
-    """Count the LOADABLE command hooks a workspace declares, per Claude-Code event name.
-
-    The detection half of folder-trust adoption (``zakcode.workspace_trust``): a host that has
-    hooks DISABLED calls this to learn whether the workspace carries a hooks block it is
-    ignoring — the answer to "should I ask the operator?". Counts only events in the event map
-    (a workspace whose hooks all sit under unimplemented events would load zero specs, so it
-    must not trigger the question) and only well-formed ``type: "command"`` entries. Pure read:
-    no danger scan, no registration, no side effects. Returns ``{}`` when there is nothing —
-    including on parse errors (adoption fails open to "nothing to adopt"; the real load path
-    reports errors properly).
-    """
-    counts: dict[str, int] = {}
-    for settings_path in _settings_candidates(workspace_root):
-        if not settings_path.is_file():
-            continue
-        try:
-            data = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        hooks_block = data.get("hooks")
-        if not isinstance(hooks_block, dict):
-            continue
-        for event_name, entries in hooks_block.items():
-            if event_name not in _EVENT_MAP or not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
-                    continue
-                for hook_def in entry["hooks"]:
-                    if (
-                        isinstance(hook_def, dict)
-                        and hook_def.get("type") == "command"
-                        and isinstance(hook_def.get("command"), str)
-                        and hook_def["command"].strip()
-                    ):
-                        counts[event_name] = counts.get(event_name, 0) + 1
-    # Stable, spec-shaped order (the _EVENT_MAP declaration order) so rendered summaries and
-    # tests never depend on per-file key order.
-    return {name: counts[name] for name in _EVENT_MAP if name in counts}
 
 
 def load_settings_hooks(

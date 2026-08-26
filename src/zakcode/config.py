@@ -621,22 +621,11 @@ class Settings(BaseSettings):
             )
         return value
 
-    # ── Workspace settings.json hook ingestion (PR-T5; opt-in, tri-state) ────
-    settings_hooks: bool | None = Field(
-        default=None,
-        description=(
-            "Load shell hooks from <workspace>/.claude/settings.json, "
-            ".claude/settings.local.json, and .zakcode/settings.json "
-            "(ZAKCODE_SETTINGS_HOOKS=true/false). UNSET (None) means: off for the "
-            "library and server (a workspace carrying another runtime's hooks never "
-            "half-fires here by surprise), while the INTERACTIVE CLI treats it as "
-            "'ask the operator once per workspace and remember' — Claude Code "
-            "folder-trust semantics, decided in zakcode.workspace_trust. An explicit "
-            "true/false (env or .env) is the operator's global answer and is never "
-            "second-guessed. Hosts can force the behavior per-Agent via "
-            "Agent(enable_settings_hooks=True/False)."
-        ),
-    )
+    # ── Workspace settings.json hook ingestion (PR-T5) ──────────────────────
+    # UNCONDITIONAL since ADR-0025 — no setting exists. Shell hooks declared in
+    # <workspace>/.claude/settings.json, .claude/settings.local.json, and
+    # .zakcode/settings.json ALWAYS load (danger-scanned; provider keys scrubbed).
+    # A framework whose protections ride on hooks must never silently run without them.
 
     # ── Claude Code statusLine support (cosmetic; opt-in) ────────────────────
     # Read the ``statusLine`` command from <workspace>/.claude/settings.json (+
@@ -662,7 +651,7 @@ class Settings(BaseSettings):
     # Read/Edit/Write path-glob → a protected path; a bare-tool deny/allow → a per-tool mode
     # override). Tighten-only: the always-on catastrophic + protected-path floor runs BEFORE any
     # ingested allow, so a CC ``allow: ["Bash(*)"]`` can never auto-run ``rm -rf /`` or write
-    # ``.env``. Off by default (like settings_hooks) so a workspace carrying ANOTHER runtime's
+    # ``.env``. Off by default so a workspace carrying ANOTHER runtime's
     # permission config doesn't silently reshape this engine's posture. See
     # zakcode.permissions_settings.
     settings_permissions: bool = Field(
@@ -680,7 +669,7 @@ class Settings(BaseSettings):
     # Read the active ``outputStyle`` name from <workspace>/.claude/settings.json (+
     # settings.local.json), load its body from .claude/output-styles/<name>.md, and fold that
     # body into the stable (cacheable) system-prompt tier — the SAME seam always-on rules use —
-    # so it shapes how the assistant writes. Off by default (like settings_hooks) so a workspace
+    # so it shapes how the assistant writes. Off by default so a workspace
     # carrying another runtime's output-style config doesn't silently reshape this engine's voice;
     # when off, the system prompt is byte-identical to today. Fully defensive: a missing/unknown
     # style name or file injects nothing and never raises. Hosts can force the behavior per-Agent

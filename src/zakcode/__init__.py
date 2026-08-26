@@ -291,7 +291,6 @@ class Agent:
         context_signal_log: str | None = None,
         context_classifier_weights: str | None = None,
         context_signal_judge: bool = False,
-        enable_settings_hooks: bool | None = None,
         enable_settings_permissions: bool | None = None,
         enable_status_line: bool | None = None,
         enable_output_style: bool | None = None,
@@ -458,33 +457,25 @@ class Agent:
         # a fresh session carries no grants, so this is a no-op there.
         self.permission_policy.restore_grants(self.session.permission_grants)
         self.hook_manager = hook_manager or HookManager()
-        # settings.json hook ingestion (PR-T5).  TE-R3(3): when a caller passes
-        # BOTH enable_settings_hooks=True AND a programmatic hook_manager, the
-        # settings.json specs are APPENDED to the existing manager's shell_hooks.
-        # None defers to Settings.settings_hooks (ZAKCODE_SETTINGS_HOOKS); an explicit
-        # True/False from the host wins either way. Settings.settings_hooks is itself
-        # tri-state: an UNSET value (None) is falsy here — off — which is what lets an
-        # interactive host resolve it via folder trust (zakcode.workspace_trust) and pass
-        # the answer in as enable_settings_hooks BEFORE construction.
-        if (
-            enable_settings_hooks
-            if enable_settings_hooks is not None
-            else self.settings.settings_hooks
-        ):
-            from zakcode.hooks.settings_loader import load_settings_hooks
+        # settings.json hook ingestion (PR-T5; UNCONDITIONAL since ADR-0025). A workspace's
+        # declared hooks always load — no adoption flag, no folder-trust prompt, no env
+        # toggle. Hooks are the workspace's own committed automation, and a framework whose
+        # protections ride on them must never silently run unprotected (field incident: a
+        # Mind deployment ran with ZERO of its 43 gates because the adoption ask was never
+        # answered). The security floor is not a flag and is unchanged: every command is
+        # danger-scanned (hard-denied in autonomous mode) and provider keys are scrubbed
+        # from hook children. TE-R3(3): with a programmatic hook_manager, the settings.json
+        # specs are APPENDED to its shell_hooks.
+        from zakcode.hooks.settings_loader import load_settings_hooks
 
-            _specs, _errs = load_settings_hooks(
-                self.settings.workspace_root,
-                permission_mode=str(self.settings.permission_mode),
-            )
-            for _key, _err in _errs.items():
-                logger.warning("settings.json hook %s: %s", _key, _err)
-            if _specs:
-                if hook_manager is not None:
-                    # TE-R3(3): append, don't replace.
-                    self.hook_manager.shell_hooks.extend(_specs)
-                else:
-                    self.hook_manager = HookManager(shell_hooks=_specs)
+        _specs, _errs = load_settings_hooks(
+            self.settings.workspace_root,
+            permission_mode=str(self.settings.permission_mode),
+        )
+        for _key, _err in _errs.items():
+            logger.warning("settings.json hook %s: %s", _key, _err)
+        if _specs:
+            self.hook_manager.shell_hooks.extend(_specs)
         # Claude Code statusLine support (cosmetic; opt-in). When on, load the configured
         # statusLine command from settings.json now (one read at construction, danger-scanned
         # + provider-key-scrubbed like a hook) and stash it for a client (the CLI) to render
