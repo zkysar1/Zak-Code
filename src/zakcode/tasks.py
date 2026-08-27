@@ -121,10 +121,35 @@ class TaskNetwork(BaseModel):
         advisories: list[str] = []
         self._assign_ids(self.tasks, prefix="")
         self._sanitize_dependencies(advisories)
+        self._flag_duplicate_siblings(advisories)
         self._enforce_single_focus(advisories)
         for task in self.tasks:
             self._derive_status(task, advisories)
         return advisories
+
+    def _flag_duplicate_siblings(self, advisories: list[str]) -> None:
+        """Advise on same-titled sibling steps (ADR-0050 — the duplicate-subtask check).
+
+        The ayoai-processor's ``HTNPlanner.check_subtasks`` DROPPED a duplicate task key at
+        one decomposition level as a loop indicator (``moveTo → moveTo → moveTo``); the
+        open-domain analog is an identical title among siblings. Dropping a model-authored
+        step would violate fail-open authoring, so it is advised, never dropped.
+        """
+
+        def visit(siblings: list[Task]) -> None:
+            seen: dict[str, str] = {}
+            for task in siblings:
+                key = " ".join(task.title.lower().split())
+                if key and key in seen:
+                    advisories.append(
+                        f"steps {seen[key]} and {task.id} have the same title ({task.title!r}) "
+                        "— possible duplicated or looping step; merge or differentiate them."
+                    )
+                else:
+                    seen[key] = task.id
+                visit(task.children)
+
+        visit(self.tasks)
 
     @staticmethod
     def _assign_ids(tasks: list[Task], *, prefix: str) -> None:
@@ -307,6 +332,66 @@ class TaskNetwork(BaseModel):
         a tuple list avoids delimiter-collision ambiguity and is only ever compared for equality.
         """
         return repr([(t.id, t.status, t.title) for t in self._iter()])
+
+    def structure_signature(self) -> str:
+        """A stable ``(id, kind, title)`` snapshot — the plan's SHAPE, statuses excluded.
+
+        Two networks with equal structure signatures decompose the goal identically: only
+        adding, removing, retitling, or re-nesting steps changes it, while marking steps
+        done / in_progress does not. The judged-plan critique (ADR-0050) compares this
+        across an ``update_plan`` call so status ticks never re-trigger judgment.
+        """
+        return repr([(t.id, t.kind, t.title) for t in self._iter()])
+
+    # ── structural quality (ADR-0050 — the ayoai-processor evaluate_candidate port) ─────
+
+    def quality(self) -> tuple[float, list[str]]:
+        """Deterministic structural quality of the plan in ``[0, 1]``, with named deficiencies.
+
+        A port of the ayoai-processor's ``HTNPlanner.evaluate_candidate`` — the production
+        HTN planner whose decomposition discipline this substrate mirrors — re-grounded for
+        the open domain with the same three terms and weights (0.5 / 0.3 / 0.2):
+
+        * **completeness** — there, ``1 - unresolved/total``; here the unresolved node is
+          the compound with no children (a declared goal nobody broke down).
+        * **verifiability** (the *feasibility* analog) — there, a primitive was feasible
+          when the closed task VOCABULARY knew it; an open workspace has no vocabulary, so
+          the evidence a step is executable-and-checkable is its ``note`` done-condition.
+        * **granularity** (the *efficiency* analog) — a mild penalty past 10 primitives.
+          The processor penalized from the first primitive, right for NPC micro-plans and
+          wrong for code plans, so the curve is shifted rather than copied.
+
+        Pure and free — no model call; the judged rubric (:mod:`zakcode.quality.plan`) is
+        the semantic complement, scoring what structure alone cannot see. An empty plan
+        scores 1.0 (nothing to fault). Deficiencies name the offending step ids so the
+        surfaced line is actionable, not a bare number.
+        """
+        nodes = self._iter()
+        if not nodes:
+            return 1.0, []
+        deficiencies: list[str] = []
+        undecomposed = [t for t in nodes if t.kind == "compound" and not t.children]
+        completeness = 1.0 - (len(undecomposed) / len(nodes))
+        if undecomposed:
+            ids = ", ".join(t.id for t in undecomposed[:3])
+            deficiencies.append(f"{len(undecomposed)} step(s) not yet decomposed ({ids})")
+        primitives = [t for t in self.leaves() if t.kind == "primitive"]
+        noted = sum(1 for t in primitives if t.note)
+        verifiability = (noted / len(primitives)) if primitives else 0.0
+        missing = [t for t in primitives if not t.note]
+        if missing:
+            ids = ", ".join(t.id for t in missing[:3])
+            deficiencies.append(
+                f"{len(missing)} step(s) lack a done-condition note ({ids}) — say how each "
+                "step is verified"
+            )
+        granularity = 1.0 / (1.0 + 0.1 * max(0, len(primitives) - 10))
+        if len(primitives) > 10:
+            deficiencies.append(
+                f"{len(primitives)} primitive steps — merge trivial ones so each is one focused run"
+            )
+        score = 0.5 * completeness + 0.3 * verifiability + 0.2 * granularity
+        return round(score, 3), deficiencies
 
     # ── rendering (the live plan folded back into context) ────────────────────────
 

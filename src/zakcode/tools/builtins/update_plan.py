@@ -173,15 +173,22 @@ class UpdatePlanTool(Tool):
 
         rendered = network.render()
         finished, total = network.progress()
+        quality, deficiencies = network.quality()
         output = rendered
         if advisories:
             output += "\n\nNotes:\n" + "\n".join(f"- {a}" for a in advisories)
+        if deficiencies:
+            # Structural quality (ADR-0050): the evaluate_candidate port scores every edit
+            # for free; the named deficiencies make the number actionable.
+            output += f"\n\nPlan quality {round(quality * 100)}%: " + "; ".join(deficiencies[:3])
         return ToolResult.ok(
             output,
             data={
                 "task_count": total,
                 "finished": finished,
                 "advisories": advisories,
+                "quality": quality,
+                "deficiencies": deficiencies,
                 "complete": network.is_complete(),
             },
             hint=None if network.is_complete() else _PLANNED_HINT,

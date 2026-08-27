@@ -1781,3 +1781,50 @@ messages now differ by `created_at`; that is what event time means. Pinned by
 `test_explicit_timestamp_still_pins_every_line`,
 `test_message_without_event_time_falls_back_to_render_time`,
 `test_new_messages_are_stamped_at_construction`.
+
+## ADR-0050: Judged decomposition — every plan edit is scored, and a weak plan is critiqued against the goal
+
+**Context.** Coach (a Mind deployment driving Zak-Code with a 27B local model) plans
+shallowly: flat step lists, no done-conditions, compounds never decomposed. The operator
+already owns a proven decomposition engine — Ayoai-Environment-Processor's
+`htn_planner.py` — whose shape is exactly what update_plan lacks: candidate
+decompositions are *scored* (`evaluate_candidate`: 0.5 completeness / 0.3 feasibility /
+0.2 granularity), *validated* (`check_subtasks`: duplicate-in-level detection), and the
+dual-planner *judges* the result before committing. Meanwhile Zak-Code's own
+`quality/plan.py` (`PLAN_RUBRIC`, `score_plan` — ADR-0026's plan judge) had ZERO
+production callers: the judge was built and never wired. The operator's directive:
+accuracy and well-thought-out answers over token cost.
+
+**Decision.** Port the processor's shape into the task network, in two halves — one
+deterministic and free, one judged and always-on.
+
+*Deterministic* (`TaskNetwork.quality()`, the `evaluate_candidate` port): weights kept
+verbatim — 0.5·completeness (1 − undecomposed compounds / total nodes) +
+0.3·verifiability (share of primitives carrying a done-condition `note`; the open domain
+has no closed task vocabulary, so the processor's feasibility-against-Tasks.jsonl
+re-grounds as "is each step checkable") + 0.2·granularity (1/(1+0.1·max(0,
+primitives−10))). Deficiencies are *named* ("3 steps lack a done-condition note (2, 4,
+5)"), and surface in the update_plan tool result, the `[plan]` reminder (when quality
+< 0.8), and `AgentTaskUpdate.quality` for clients. `normalize()` gains the
+`check_subtasks` port: duplicate sibling titles are ADVISED, never dropped (fail-open —
+the processor drops; a harness must not eat the model's plan).
+
+*Judged* (wires the orphaned `score_plan`): in `_execute_tool_call`, a successful
+`update_plan` whose `structure_signature()` (ids/kinds/titles — statuses excluded, so
+ticking a step done never re-judges) differs from before triggers one `score_plan`
+call against the turn's user text, once per turn. `overall >= 0.8` or empty scores →
+silent; below → the tool result gains `[plan critique] … N% against the goal (weakest:
+dim X%; dim Y%) — notes. Refine the plan with update_plan … or proceed if it is
+deliberately shaped this way.` Judge failure is fail-open; judge usage is accounted to
+session + budget. Always-on, no knobs (one way of doing things).
+
+**Non-ports, deliberate.** A* cost ordering (no cost model exists in an open domain);
+the closed Tasks.jsonl vocabulary; per-task rule methods — in both codebases' philosophy
+the *method* for decomposing a kind of work is domain knowledge and lives in skills.
+
+**Consequences.** Every structural plan edit costs one judge call (the operator accepted
+the tokens explicitly); status ticks cost nothing. The critique lands in the tool-result
+channel the model already reads, so a weak decomposition is challenged at the moment it
+is authored — not after the work ran. Pinned by the `test_tasks.py` quality /
+signature / duplicate-sibling set and the `test_loop_planning.py` judge set (weak
+critique appended, strong silent, once-per-turn latch, status-tick inert, fail-open).

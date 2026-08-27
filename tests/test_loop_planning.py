@@ -62,6 +62,20 @@ def _plan_call(tasks: list[dict]) -> LLMResult:
     )
 
 
+def _judge_ok() -> LLMResult:
+    """A strong scorecard for the always-on decomposition judge (ADR-0050): the judge fires
+    once per turn on the first structural plan authoring, so every fixture that authors a
+    plan feeds it one canned verdict — strong, so the critique stays silent."""
+    import json as _json
+
+    return LLMResult(
+        text=_json.dumps(
+            {"scores": {"coverage": 0.9, "granularity": 0.9, "ordering": 0.9, "soundness": 0.9}}
+        ),
+        usage=Usage(total_tokens=2),
+    )
+
+
 def _done(text: str = "all done") -> LLMResult:
     return LLMResult(text=text, tool_calls=[], usage=Usage(total_tokens=1))
 
@@ -74,7 +88,9 @@ def _loop(provider: Provider) -> tuple[AgentLoop, Session]:
 
 @pytest.mark.asyncio
 async def test_plan_is_persisted_and_reinjected_into_later_calls() -> None:
-    provider = _Scripted([_plan_call([{"title": "A", "status": "in_progress"}, {"title": "B"}])])
+    provider = _Scripted(
+        [_plan_call([{"title": "A", "status": "in_progress"}, {"title": "B"}]), _judge_ok()]
+    )
     loop, session = _loop(provider)
     # Provider only ever asks for the plan, then keeps "finishing"; the gate will run.
     provider._results.append(_done())
@@ -85,8 +101,9 @@ async def test_plan_is_persisted_and_reinjected_into_later_calls() -> None:
     assert session.task_network.tasks[0].id == "1"
 
     # A provider call AFTER the update_plan saw the live plan re-injected (ephemeral tail),
-    # but it was NOT persisted into the durable message history.
-    later = provider.seen[1]
+    # but it was NOT persisted into the durable message history. seen[1] is the judge's own
+    # scoring prompt (ADR-0050); seen[2] is the next real completion.
+    later = provider.seen[2]
     assert any("[plan]" in m.text and "Current plan" in m.text for m in later)
     assert not any("[plan]" in m.text for m in session.messages)
 
@@ -95,18 +112,22 @@ async def test_plan_is_persisted_and_reinjected_into_later_calls() -> None:
 async def test_completion_gate_nudges_then_completes_degraded() -> None:
     # Lay out a plan with an open step, then keep trying to finish without resolving it.
     provider = _Scripted(
-        [_plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}])]
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}]),
+            _judge_ok(),
+        ]
         + [_done()] * 6
     )
     loop, _ = _loop(provider)
     result = await loop.arun_turn("two steps")
 
-    # call1 plan; call 2 is nudged ONCE; call 3 restates with a byte-identical plan, so the
-    # no-progress guard ends the nudging (a model that changed nothing is waiting on
-    # something the harness cannot see) and the turn completes despite the open step.
+    # call1 plan; call2 the decomposition judge (ADR-0050, silent); call 3 is nudged ONCE;
+    # call 4 restates with a byte-identical plan, so the no-progress guard ends the nudging
+    # (a model that changed nothing is waiting on something the harness cannot see) and the
+    # turn completes despite the open step.
     assert result.stop_reason == "completed"
     assert result.degraded is True  # finished with an unresolved plan step
-    assert provider.calls == 3
+    assert provider.calls == 4
 
 
 @pytest.mark.asyncio
@@ -116,6 +137,7 @@ async def test_completion_gate_keeps_nudging_while_the_plan_advances() -> None:
     provider = _Scripted(
         [
             _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}]),
+            _judge_ok(),
             _done(),
             _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "in_progress"}]),
             _done(),
@@ -126,7 +148,7 @@ async def test_completion_gate_keeps_nudging_while_the_plan_advances() -> None:
     result = await loop.arun_turn("two steps")
     assert result.stop_reason == "completed"
     assert result.degraded is True
-    assert provider.calls == 5  # plan, nudged done, plan update, nudged done, final done
+    assert provider.calls == 6  # plan, judge, nudged done, plan update, nudged done, final done
 
 
 @pytest.mark.asyncio
@@ -136,6 +158,7 @@ async def test_blocked_step_does_not_hold_up_the_turn() -> None:
     provider = _Scripted(
         [
             _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "blocked"}]),
+            _judge_ok(),
             _done("waiting on the operator"),
         ]
     )
@@ -143,20 +166,24 @@ async def test_blocked_step_does_not_hold_up_the_turn() -> None:
     result = await loop.arun_turn("two steps")
     assert result.stop_reason == "completed"
     assert result.degraded is False  # no nudge at all: blocked is a legitimate wait state
-    assert provider.calls == 2
+    assert provider.calls == 3  # plan, judge (ADR-0050), done
 
 
 @pytest.mark.asyncio
 async def test_completion_gate_is_inert_when_plan_is_complete() -> None:
     provider = _Scripted(
-        [_plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "done"}]), _done()]
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "done"}]),
+            _judge_ok(),
+            _done(),
+        ]
     )
     loop, session = _loop(provider)
     result = await loop.arun_turn("two steps")
 
     assert result.stop_reason == "completed"
     assert result.degraded is False  # nothing left open -> no nudge, clean finish
-    assert provider.calls == 2
+    assert provider.calls == 3  # plan, judge (ADR-0050), done
     assert session.task_network.is_complete()
 
 
@@ -177,6 +204,7 @@ async def test_completed_plan_is_reset_at_next_turn_start() -> None:
     provider = _Scripted(
         [
             _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "done"}]),
+            _judge_ok(),
             _done("turn one finished"),
             _done("turn two answer"),
         ]
@@ -195,7 +223,10 @@ async def test_completed_plan_is_reset_at_next_turn_start() -> None:
 async def test_incomplete_plan_persists_across_turns() -> None:
     # An UNFINISHED plan carries forward and is re-injected on the next turn (multi-turn work).
     provider = _Scripted(
-        [_plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}])]
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}]),
+            _judge_ok(),
+        ]
         + [_done()] * 8
     )
     loop, session = _loop(provider)
@@ -221,7 +252,7 @@ async def test_update_plan_rejects_all_malformed_without_wiping_existing_plan() 
 @pytest.mark.asyncio
 async def test_streaming_emits_task_update_event() -> None:
     plan = _plan_call([{"title": "A", "status": "in_progress"}, {"title": "B"}])
-    provider = _Scripted([plan] + [_done()] * 5)
+    provider = _Scripted([plan, _judge_ok()] + [_done()] * 5)
     loop, _ = _loop(provider)
     events = [ev async for ev in loop.astream_turn("two steps")]
     updates = [ev for ev in events if isinstance(ev, AgentTaskUpdate)]
@@ -295,7 +326,13 @@ async def test_plan_first_withholds_a_mutation_until_a_plan_exists() -> None:
     write = _FakeWrite()
     # write (withheld) -> plan -> write (now allowed) -> done
     provider = _Scripted(
-        [_write_call(), _plan_call([{"title": "a"}, {"title": "b"}]), _write_call(), _done()]
+        [
+            _write_call(),
+            _plan_call([{"title": "a"}, {"title": "b"}]),
+            _judge_ok(),
+            _write_call(),
+            _done(),
+        ]
     )
     loop, _ = _plan_first_loop(provider, write)
     result = await loop.arun_turn("edit something")
@@ -387,7 +424,10 @@ async def test_abandoned_plan_stops_haunting_across_real_turns() -> None:
     # Integration (buffered): a plan left incomplete and untouched is dropped within a bounded
     # number of real turns instead of re-injecting + nudging + degrading forever.
     provider = _Scripted(
-        [_plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}])]
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}]),
+            _judge_ok(),
+        ]
         + [_done()] * 80
     )
     loop, session = _loop(provider)
@@ -411,7 +451,10 @@ async def test_abandoned_plan_auto_clear_holds_on_streaming_path() -> None:
     # Parity: the same staleness guard fires on astream_turn (the reset runs at turn start on
     # both the buffered and streaming paths).
     provider = _Scripted(
-        [_plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}])]
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}]),
+            _judge_ok(),
+        ]
         + [_done()] * 80
     )
     loop, session = _loop(provider)
@@ -427,3 +470,118 @@ async def test_abandoned_plan_auto_clear_holds_on_streaming_path() -> None:
             cleared = True
             break
     assert cleared, "abandoned plan kept haunting on the streaming path"
+
+
+# ── judged decomposition (ADR-0050): score_plan wired at plan authoring ───────
+
+
+def _judge(scores: dict[str, float], notes: str = "") -> LLMResult:
+    import json as _json
+
+    return LLMResult(
+        text=_json.dumps({"scores": scores, "notes": notes}), usage=Usage(total_tokens=2)
+    )
+
+
+_JUDGE_WEAK = {"coverage": 0.4, "granularity": 0.9, "ordering": 0.8, "soundness": 0.6}
+_JUDGE_STRONG = {"coverage": 0.9, "granularity": 0.9, "ordering": 0.9, "soundness": 0.9}
+
+
+def _plan_result_outputs(session: Session) -> list[str]:
+    from zakcode.messages import ToolResultBlock
+
+    return [b.output for m in session.messages for b in m.blocks if isinstance(b, ToolResultBlock)]
+
+
+@pytest.mark.asyncio
+async def test_weak_plan_gets_the_judged_critique_inside_the_tool_result() -> None:
+    provider = _Scripted(
+        [
+            _plan_call(
+                [{"title": "A", "status": "in_progress", "note": "x"}, {"title": "B", "note": "y"}]
+            ),
+            _judge(_JUDGE_WEAK, "misses the deploy half"),
+            _done(),
+        ]
+    )
+    loop, session = _loop(provider)
+    result = await loop.arun_turn("build and deploy the thing")
+    assert result.stop_reason == "completed"
+    outputs = _plan_result_outputs(session)
+    critiqued = [o for o in outputs if "[plan critique]" in o]
+    assert len(critiqued) == 1
+    body = critiqued[0]
+    assert "% against the goal" in body
+    assert "coverage 40%" in body and "soundness 60%" in body  # the two weakest, named
+    assert "misses the deploy half" in body
+
+
+@pytest.mark.asyncio
+async def test_strong_plan_judge_stays_silent() -> None:
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "done", "note": "x"}]),
+            _judge(_JUDGE_STRONG),
+            _done(),
+        ]
+    )
+    loop, session = _loop(provider)
+    await loop.arun_turn("small thing")
+    assert not any("[plan critique]" in o for o in _plan_result_outputs(session))
+    assert provider.calls == 3  # plan, judge, done — the judge ran, silently
+
+
+@pytest.mark.asyncio
+async def test_judge_runs_once_per_turn_even_across_structural_edits() -> None:
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "in_progress", "note": "x"}]),
+            _judge(_JUDGE_WEAK),
+            # Second structural edit (adds B) that also finishes the plan, so the
+            # completion gate stays out of the call count.
+            _plan_call(
+                [
+                    {"title": "A", "status": "done", "note": "x"},
+                    {"title": "B", "status": "done", "note": "y"},
+                ]
+            ),
+            _done(),
+        ]
+    )
+    loop, session = _loop(provider)
+    await loop.arun_turn("two structural edits")
+    critiqued = [o for o in _plan_result_outputs(session) if "[plan critique]" in o]
+    assert len(critiqued) == 1  # second structural edit did NOT re-judge
+    assert provider.calls == 4  # plan, judge, plan, done — no second judge call
+
+
+@pytest.mark.asyncio
+async def test_status_tick_never_triggers_the_judge() -> None:
+    step = {"title": "A", "note": "x"}
+    provider = _Scripted(
+        [
+            _plan_call([dict(step, status="in_progress")]),
+            _judge(_JUDGE_STRONG),
+            _plan_call([dict(step, status="done")]),  # same shape, new status
+            _done(),
+        ]
+    )
+    loop, session = _loop(provider)
+    await loop.arun_turn("tick")
+    assert provider.calls == 4  # plan, judge (first authoring), plan tick, done
+    assert not any("[plan critique]" in o for o in _plan_result_outputs(session))
+
+
+@pytest.mark.asyncio
+async def test_judge_failure_is_fail_open() -> None:
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "in_progress"}]),
+            _done("not json at all"),  # the judge cannot parse this -> empty scores -> silent
+            _done(),
+        ]
+    )
+    loop, session = _loop(provider)
+    result = await loop.arun_turn("thing")
+    assert result.stop_reason == "completed"
+    assert not any("[plan critique]" in o for o in _plan_result_outputs(session))

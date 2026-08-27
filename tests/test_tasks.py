@@ -239,3 +239,62 @@ def test_progress_signature_equal_when_untouched_changes_on_any_edit() -> None:
     assert _net(Task(title="A"), Task(title="reworded")).progress_signature() != sig0
     # An empty network has a stable, distinct signature.
     assert TaskNetwork().progress_signature() == repr([])
+
+
+# ── structural quality (ADR-0050 — the evaluate_candidate port) ───────────────
+
+
+def test_quality_perfect_plan_scores_full() -> None:
+    net = _net(Task(title="A", note="tests pass"), Task(title="B", note="file exists"))
+    net.normalize()
+    quality, deficiencies = net.quality()
+    assert quality == 1.0
+    assert deficiencies == []
+
+
+def test_quality_flags_steps_without_done_conditions() -> None:
+    net = _net(Task(title="A"), Task(title="B", note="ok"))
+    net.normalize()
+    quality, deficiencies = net.quality()
+    assert quality < 1.0
+    assert any("done-condition" in d and "1" in d for d in deficiencies)
+
+
+def test_quality_penalizes_undecomposed_compounds_hardest() -> None:
+    net = _net(Task(title="Goal", kind="compound"))
+    net.normalize()
+    quality, deficiencies = net.quality()
+    # completeness 0, verifiability 0 (no primitives), granularity 1.0 -> 0.2
+    assert quality == 0.2
+    assert any("not yet decomposed" in d for d in deficiencies)
+
+
+def test_quality_granularity_penalty_past_ten_primitives() -> None:
+    net = _net(*[Task(title=f"S{i}", note="ok") for i in range(14)])
+    net.normalize()
+    quality, deficiencies = net.quality()
+    assert quality < 1.0
+    assert any("primitive steps" in d for d in deficiencies)
+
+
+def test_quality_empty_plan_is_silent() -> None:
+    assert TaskNetwork().quality() == (1.0, [])
+
+
+def test_duplicate_sibling_titles_are_advised_never_dropped() -> None:
+    net = _net(Task(title="grep the log"), Task(title="Grep the log"))
+    advisories = net.normalize()
+    assert len(net.tasks) == 2  # fail-open: advised, not dropped (the processor DROPPED)
+    assert any("same title" in a for a in advisories)
+
+
+def test_structure_signature_ignores_status_ticks_but_not_shape_edits() -> None:
+    net = _net(Task(title="A"), Task(title="B"))
+    net.normalize()
+    signature = net.structure_signature()
+    net.tasks[0].status = "done"
+    net.normalize()
+    assert net.structure_signature() == signature  # a tick is not a new decomposition
+    net.tasks.append(Task(title="C"))
+    net.normalize()
+    assert net.structure_signature() != signature  # a shape edit is
