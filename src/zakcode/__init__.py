@@ -986,7 +986,25 @@ class Agent:
             # Completion-review gate: 0 (the default) disables it; when >0, a code-changing turn
             # is sent back that many times to verify it satisfied the request before finishing.
             completion_review_attempts=self.settings.completion_review_attempts,
+            # A Stop-hook veto opens a fresh turn for per-turn skill state (ADR-0048): the
+            # loop calls this the moment a TURN_END hook vetoes, so the veto's mandated
+            # re-entry (a skill loaded earlier in the same turn) gets its body again.
+            turn_end_veto_reset=self._begin_skill_turn,
         )
+
+    def _begin_skill_turn(self) -> None:
+        """Open a fresh turn for per-turn skill state.
+
+        Refills the use_skill invocation budget and forgets which bodies are "already
+        loaded" (the reload dedup). Called at every top-level turn start and — ADR-0048 —
+        on every TURN_END veto: a vetoed stop re-enters the loop INSIDE the same turn while
+        the hook is telling the model to do new work, and a perpetual-loop framework runs
+        its whole autonomous session that way (one ``/start``, then vetoes without end).
+        Its mandated re-entry is a skill the model already loaded; a pointer instead of
+        the body is a dead loop (measured 2026-08-26: four vetoes, four pointers, ~29h dark).
+        """
+        self._skill_invocations_this_turn = 0
+        self._skills_loaded_this_turn.clear()
 
     def _assert_local_only(self) -> None:
         """Refuse to start when ``local_only`` is set but a configured model is metered.
@@ -1530,8 +1548,7 @@ class Agent:
         Seam B: when the turn STALLS and ``best_of_attempts > 1`` with a ``verify_command`` set, fan
         out best-of-N isolated retries and adopt (diff-apply) the first that verifies.
         """
-        self._skill_invocations_this_turn = 0  # new top-level turn: refill the skills budget
-        self._skills_loaded_this_turn.clear()
+        self._begin_skill_turn()  # new top-level turn: refill the skills budget, forget loads
         if self._shared_budget is not None:
             self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         result = await self.loop.arun_turn(user_text)
@@ -1565,8 +1582,7 @@ class Agent:
         it), so callers can ``async for event in agent.astream_turn(text)``. This
         is the incremental counterpart to :meth:`run_turn` / :meth:`arun_turn`.
         """
-        self._skill_invocations_this_turn = 0  # new top-level turn: refill the skills budget
-        self._skills_loaded_this_turn.clear()
+        self._begin_skill_turn()  # new top-level turn: refill the skills budget, forget loads
         if self._shared_budget is not None:
             self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         return self.loop.astream_turn(user_text)

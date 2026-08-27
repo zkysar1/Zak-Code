@@ -18,8 +18,8 @@ from zakcode import Agent
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.subagent import GENERAL_PURPOSE, SubAgentResult, SubAgentRunner
 from zakcode.config import Settings
-from zakcode.hooks import HookEvent, LifecyclePayload
-from zakcode.messages import Message
+from zakcode.hooks import HookEvent, LifecyclePayload, TurnEndPayload, TurnEndResult
+from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import (
     Capabilities,
     LLMResult,
@@ -565,3 +565,126 @@ async def test_new_turn_loads_in_full_again(tmp_path: Path) -> None:
     agent._skills_loaded_this_turn.clear()  # what arun_turn/astream_turn do at turn start
     again = await agent.loop._skill_resolver.load("greeter")
     assert "greet warmly" in (again.body or "").lower()
+
+
+# ── ADR-0048: a Stop-hook veto opens a fresh skill turn ───────────────────────
+
+
+class _ReplayProvider(Provider):
+    """Replays a fixed list of :class:`LLMResult`s, one per completion."""
+
+    def __init__(self, results: list[LLMResult]) -> None:
+        self._results = list(results)
+        self.calls = 0
+
+    async def acomplete(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> LLMResult:
+        self.calls += 1
+        if not self._results:
+            raise AssertionError("provider ran out of scripted results")
+        return self._results.pop(0)
+
+    async def astream(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        result = await self.acomplete(messages, tools=tools, system=system)
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        yield StreamDone()
+
+    def count_tokens(self, messages: list, *, system: str | None = None) -> int:
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities()
+
+    def model_id(self) -> str:
+        return "scripted/test"
+
+
+class _VetoOnce:
+    """A TURN_END hook that blocks the first stop with a continuation, then allows."""
+
+    def __init__(self, prompt: str) -> None:
+        self._prompt: str | None = prompt
+
+    def __call__(self, payload: TurnEndPayload) -> TurnEndResult | None:
+        if self._prompt is None:
+            return None
+        prompt, self._prompt = self._prompt, None
+        return TurnEndResult(vetoed=True, continuation_prompt=prompt)
+
+
+def _use(name: str, call_id: str) -> LLMResult:
+    return LLMResult(
+        tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": name})],
+        usage=Usage(total_tokens=1),
+    )
+
+
+async def test_a_stop_hook_veto_opens_a_fresh_skill_turn(tmp_path: Path) -> None:
+    """The re-entry a Stop-hook BLOCK mandates gets the skill BODY, not a pointer.
+
+    Measured 2026-08-26 on a live Mind (coach, zc-03): the model ended an iteration on a
+    summary, the Stop hook vetoed with "call Skill('aspirations') with args='loop'", the
+    model complied, and use_skill answered "[already loaded]" — four times, then the loop
+    died. A veto is a turn boundary for per-turn skill state (ADR-0048): the reload dedup
+    forgets, the invocation budget refills, and the body comes back.
+    """
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+        provider=_ReplayProvider(
+            [
+                _use("greeter", "t1"),
+                LLMResult(text="done", usage=Usage(total_tokens=1)),
+                _use("greeter", "t2"),
+                LLMResult(text="done again", usage=Usage(total_tokens=1)),
+            ]
+        ),
+    )
+    agent.hook_manager.register_turn_end(_VetoOnce("Not done: load greeter again and finish."))
+
+    result = await agent.arun_turn("greet")
+
+    assert result.stop_reason == "completed"
+    outputs = [
+        block.output
+        for message in agent.session.messages
+        for block in message.blocks
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert len(outputs) == 2
+    assert all("greet warmly" in (out or "").lower() for out in outputs)
+    assert not any("[already loaded]" in (out or "") for out in outputs)
+    assert agent._skill_invocations_this_turn == 1  # refilled at the veto, then one real load
+
+
+async def test_no_veto_keeps_the_same_turn_dedup(tmp_path: Path) -> None:
+    """Within an unvetoed turn the dedup still does its job: the second load of an
+    unchanged body is the short pointer."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+        provider=_ReplayProvider(
+            [
+                _use("greeter", "t1"),
+                _use("greeter", "t2"),
+                LLMResult(text="done", usage=Usage(total_tokens=1)),
+            ]
+        ),
+    )
+    result = await agent.arun_turn("greet")
+    assert result.stop_reason == "completed"
+    outputs = [
+        block.output
+        for message in agent.session.messages
+        for block in message.blocks
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert len(outputs) == 2
+    assert "greet warmly" in (outputs[0] or "").lower()
+    assert "[already loaded]" in (outputs[1] or "")

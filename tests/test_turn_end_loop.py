@@ -353,3 +353,53 @@ def test_no_max_iterations_setting(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ZAKCODE_MAX_ITERATIONS", "200")
     settings = load_settings(workspace_root=tmp_path)
     assert not hasattr(settings, "max_iterations")
+
+
+# ── ADR-0048: a veto is a turn boundary for per-turn skill state ──────────────
+
+
+@pytest.mark.asyncio
+async def test_turn_end_veto_calls_the_turn_reset(tmp_path: Path) -> None:
+    """The reset the Agent wires in fires once per veto — before the continuation prompt
+    lands — and never on an allowed stop."""
+    resets: list[int] = []
+    hook = RecordingHook([_veto("keep going"), None])
+    provider = ScriptedProvider([_TEXT_DONE, _TEXT_DONE])
+    session = Session(cwd=str(tmp_path), model="test/model")
+    loop = AgentLoop(
+        provider,
+        _registry(),
+        session,
+        settings=load_settings(workspace_root=tmp_path),
+        max_iterations=10,
+        turn_end_vetoable=True,
+        turn_end_veto_reset=lambda: resets.append(len(session.messages)),
+    )
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    assert len(hook.payloads) == 2  # one veto, one allow
+    assert len(resets) == 1  # the veto fired it; the allow did not
+    hint_index = next(
+        i for i, m in enumerate(session.messages) if m.role == "user" and "keep going" in m.text
+    )
+    assert resets[0] <= hint_index  # reset landed before the continuation prompt
+
+
+@pytest.mark.asyncio
+async def test_turn_end_allow_never_calls_the_turn_reset(tmp_path: Path) -> None:
+    resets: list[None] = []
+    hook = RecordingHook([None])
+    loop = AgentLoop(
+        ScriptedProvider([_TEXT_DONE]),
+        _registry(),
+        Session(cwd=str(tmp_path), model="test/model"),
+        settings=load_settings(workspace_root=tmp_path),
+        max_iterations=10,
+        turn_end_vetoable=True,
+        turn_end_veto_reset=lambda: resets.append(None),
+    )
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    assert resets == []
