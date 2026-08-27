@@ -1,4 +1,4 @@
-"""Server-side slash dispatch (ADR-0036) — every server door runs a leading-slash message
+"""Server-side slash dispatch (ADR-0037) — every server door runs a leading-slash message
 through ``Agent.compose_skill_turn`` exactly like the CLI: the say consumer, ``POST /chat``
 and ``POST /chat/stream``.
 
