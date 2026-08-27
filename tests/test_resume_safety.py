@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from zakcode.agent.loop import AgentLoop
-from zakcode.build_info import build_commit
+from zakcode.build_info import running_build
 from zakcode.messages import Message
 from zakcode.providers.base import (
     Capabilities,
@@ -121,7 +121,7 @@ def test_buffered_turn_stamps_build_and_stop_reason(tmp_path: Path) -> None:
     assert result.stop_reason == "completed"
     loaded = store.load(loop.session.id)
     assert loaded.last_stop_reason == "completed"
-    assert loaded.build == (build_commit() or "")
+    assert loaded.build == running_build()
 
 
 def test_streaming_turn_stamps_build_and_stop_reason(tmp_path: Path) -> None:
@@ -135,4 +135,4 @@ def test_streaming_turn_stamps_build_and_stop_reason(tmp_path: Path) -> None:
     asyncio.run(_drain())
     loaded = store.load(loop.session.id)
     assert loaded.last_stop_reason == "completed"
-    assert loaded.build == (build_commit() or "")
+    assert loaded.build == running_build()

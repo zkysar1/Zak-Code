@@ -107,7 +107,7 @@ from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_c
 from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate
-from zakcode.build_info import build_commit
+from zakcode.build_info import running_build
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -897,7 +897,9 @@ class AgentLoop:
                 self.session.permission_grants = self.permission_policy.export_grants()
             # Stamp the build that wrote this document (resume safety, ADR-0033): a later
             # /resume on a different build compacts the transcript instead of continuing it.
-            self.session.build = build_commit() or ""
+            # ``running_build`` is the identity frozen at import (ADR-0034), so a reinstall
+            # that lands mid-session can never re-label a document this process wrote.
+            self.session.build = running_build()
             self.store.save(self.session)
 
     def _scrub_env_names(self) -> list[str]:
