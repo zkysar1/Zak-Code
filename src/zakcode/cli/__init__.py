@@ -1428,12 +1428,24 @@ _REPL_COMMANDS = (
 )
 
 
-def _unknown_command(console: Console, command: str, skill_suggestions: tuple[str, ...]) -> None:
+def _unknown_command(
+    console: Console,
+    command: str,
+    skill_suggestions: tuple[str, ...],
+    *,
+    agent: object | None = None,
+) -> None:
     """Name what a mistyped slash is closest to, from the REPL's commands and the catalog.
 
     ``/enocde-session is not yet supported`` told the operator nothing while the prose
     "encode the session" routed to the skill through the classifier (2026-08-27) — the
     strict path must not be dumber than the fuzzy one.
+
+    And when the catalog is EMPTY, say so, with the workspace: an operator typing a
+    project skill (``/start``) in a chat rooted outside the project gets zero matches
+    and zero suggestions, and "unknown command" reads as "the update broke slash
+    commands" (measured on a live deployment, 2026-08-27 — the chat was simply not
+    launched from the project root, so ``.claude/skills`` was never discovered).
     """
     import difflib
 
@@ -1441,8 +1453,25 @@ def _unknown_command(console: Console, command: str, skill_suggestions: tuple[st
     options.extend(f"/{name}" for name in skill_suggestions if f"/{name}" not in options)
     if options:
         _dim(console, f"unknown command {command} — did you mean {' or '.join(options[:3])}?")
-    else:
-        _dim(console, f"unknown command {command}. /help lists commands; /skills lists skills.")
+        return
+    workspace = getattr(getattr(agent, "settings", None), "workspace_root", None)
+    if workspace is not None:
+        # Mirrors the project tiers of skills.default_skill_dirs (bundled/user tiers exist
+        # regardless of the workspace, so "registry empty" is never the tell — the tell is
+        # that THIS workspace contributes no skills at all).
+        project_dirs = (
+            Path(workspace) / ".zakcode" / "skills",
+            Path(workspace) / ".claude" / "skills",
+        )
+        if not any(d.is_dir() and any(d.glob("*/SKILL.md")) for d in project_dirs):
+            _dim(
+                console,
+                f"unknown command {command} — and this workspace ({workspace}) has no "
+                f"project skills (.claude/skills or .zakcode/skills). If {command} is a "
+                "project skill, relaunch from the project root or pass -w <project-root>.",
+            )
+            return
+    _dim(console, f"unknown command {command}. /help lists commands; /skills lists skills.")
 
 
 def _skill_command_turn(
@@ -2643,7 +2672,7 @@ def chat(
                     continue  # denied / unreadable — the notice already rendered
                 stripped = skill.turn_text  # the skill body is the turn; stream it below
             else:
-                _unknown_command(console, command, skill.suggestions)
+                _unknown_command(console, command, skill.suggestions, agent=agent)
                 continue
 
         # Stream the model response token by token through the renderer. A fresh

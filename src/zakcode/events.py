@@ -98,6 +98,9 @@ class AgentTaskUpdate(BaseModel):
     finished: int = 0
     total: int = 0
     complete: bool = False
+    #: Deterministic structural quality of the plan in [0, 1] (ADR-0050 —
+    #: :meth:`zakcode.tasks.TaskNetwork.quality`); 1.0 for an empty or faultless plan.
+    quality: float = 1.0
 
 
 class AgentUsage(BaseModel):

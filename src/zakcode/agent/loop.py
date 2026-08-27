@@ -147,7 +147,7 @@ from zakcode.providers.base import (
 )
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn
 from zakcode.providers.text_tools import defang_untrusted
-from zakcode.quality import binary_judge, score_rubric, weak_dimensions
+from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import Task
 from zakcode.tools.base import (
@@ -706,6 +706,12 @@ _MAX_PLAN_NUDGES = 2
 #: is never auto-cleared; only a genuinely static one is, and the model can always re-plan.
 _MAX_PLAN_IDLE_TURNS = 3
 
+#: Judged decomposition (ADR-0050): a freshly-(re)structured plan scoring at or above this
+#: on the PLAN_RUBRIC is sound — the critique stays silent. Below it, the two weakest
+#: dimensions are handed back with the tool result. A constant, not a knob: the silence
+#: line is part of the rail's meaning, like the gates' one-nudge-per-turn bounds.
+_PLAN_JUDGE_SILENCE = 0.8
+
 #: How many times the plan-first gate (R5, opt-in) may withhold a mutating batch to demand a plan
 #: before letting it through anyway (fail-open). Bounded so ``require_plan`` can never deadlock.
 _MAX_PLAN_FIRST_NUDGES = 2
@@ -1063,6 +1069,10 @@ class AgentLoop:
         # subsequent successful write_file to the same path carries the
         # expected-to-exist? question. Cleared at every turn start.
         self._turn_read_failed: set[str] = set()
+        # Judged decomposition (ADR-0050): the turn's goal text (what the plan is judged
+        # against) and whether the once-per-turn judge already ran. Set at every turn start.
+        self._turn_user_text = ""
+        self._turn_plan_judged = False
         # Small-model struggle flag (ADR-0024): set by seams that cannot reach the turn's
         # ``signal_latched`` local (the degenerate-argument veto in _execute_tool_call);
         # folded into it each iteration so zakpick latches the deep coder. Per-turn.
@@ -1526,6 +1536,11 @@ class AgentLoop:
                 f"\n\nNote: {titles} are compound goals with no sub-steps yet — decompose them "
                 "into primitive steps before working on them."
             )
+        quality, deficiencies = network.quality()
+        extra = [d for d in deficiencies if "not yet decomposed" not in d]
+        if extra and quality < _PLAN_JUDGE_SILENCE:
+            # Structural quality (ADR-0050), minus the undecomposed item already noted above.
+            body += f"\n\nPlan quality {round(quality * 100)}%: " + "; ".join(extra[:2]) + "."
         return Message.user(body)
 
     def _task_update_event(self) -> AgentTaskUpdate | None:
@@ -1535,12 +1550,14 @@ class AgentLoop:
         if not rendered:
             return None
         finished, total = network.progress()
+        quality, _ = network.quality()
         return AgentTaskUpdate(
             plan=rendered,
             tasks=[t.model_dump() for t in network.tasks],
             finished=finished,
             total=total,
             complete=network.is_complete(),
+            quality=quality,
         )
 
     def _decompose_hint(self) -> str:
@@ -1897,6 +1914,9 @@ class AgentLoop:
         error block through here, so the blocker-without-evidence guard sees ONE truth: did
         anything the model tried actually fail this turn.
         """
+        plan_shape = (
+            self.session.task_network.structure_signature() if call.name == "update_plan" else None
+        )
         block = await self._execute_tool_call_gated(call, ctx, restrict_to=restrict_to)
         if block.is_error:
             self._turn_tool_errors += 1
@@ -1904,6 +1924,20 @@ class AgentLoop:
             self._turn_search_calls += 1  # a content search ran (ADR-0040), whatever it found
         if call.name in _LOOKUP_TOOLS:
             self._turn_lookup_calls += 1  # the model looked at something (ADR-0044)
+        if (
+            plan_shape is not None
+            and not block.is_error
+            and not self._turn_plan_judged
+            and self.session.task_network.structure_signature() != plan_shape
+        ):
+            # Judged decomposition (ADR-0050): the plan's SHAPE changed — judge the new
+            # decomposition against the turn's goal, once per turn, and hand any critique
+            # back inside the tool result (the next completion reads it beside the plan).
+            # Status ticks never re-trigger; a pure re-send of the same shape never triggers.
+            self._turn_plan_judged = True
+            critique = await self._judged_plan_critique()
+            if critique:
+                block.output = f"{block.output}\n\n{critique}"
         return block
 
     async def _execute_tool_call_gated(
@@ -2445,6 +2479,45 @@ class AgentLoop:
         like the critic). Routing ``model_roles['judge']`` to a small model is the next seam."""
         return self.provider
 
+    async def _judged_plan_critique(self) -> str:
+        """Judge a freshly-(re)structured plan against the turn's goal; ``""`` when it holds up.
+
+        Wires the quality engine's judged decomposition (:func:`zakcode.quality.score_plan` —
+        built in increment 5, never called from the loop until now) into the moment the
+        ayoai-processor's dual planner proved judgment matters: right after a candidate
+        decomposition is produced, before work proceeds on it. The deterministic structural
+        score (:meth:`~zakcode.tasks.TaskNetwork.quality`, the ``evaluate_candidate`` port)
+        rides every edit for free; this is its semantic complement — coverage / granularity /
+        ordering / soundness need the GOAL text, which structure cannot see. At most once per
+        turn, only on a structural change, silent at or above :data:`_PLAN_JUDGE_SILENCE`,
+        and FAIL-OPEN on any judge error: an advisory the model reads, never a gate.
+        """
+        network = self.session.task_network
+        rendered = network.render()
+        goal = self._turn_user_text
+        if not rendered or not goal:
+            return ""
+        try:
+            card, usage = await score_plan(self._judge_provider(), goal=goal, plan=rendered)
+        except Exception:  # noqa: BLE001 — an unreachable judge must never break the tool result
+            logger.warning("judged plan critique failed; skipping", exc_info=True)
+            return ""
+        with contextlib.suppress(Exception):  # accounting must never break the tool result
+            self.session.add_usage(usage, model=self._judge_provider().model_id())
+            if self.budget is not None:
+                self.budget.add_usage(usage.cost_usd, usage.total_tokens)
+        if not card.scores or card.overall >= _PLAN_JUDGE_SILENCE:
+            return ""  # empty scores = could not judge (fail-open); high overall = sound plan
+        weakest = sorted(card.scores.items(), key=lambda kv: kv[1])[:2]
+        weak_line = "; ".join(f"{name} {round(value * 100)}%" for name, value in weakest)
+        note = f" — {card.notes}" if card.notes else ""
+        return (
+            f"[plan critique] A decomposition judge scored this plan "
+            f"{round(card.overall * 100)}% against the goal (weakest: {weak_line}){note}. "
+            "Refine the plan with update_plan — cover what is missing, right-size or reorder "
+            "steps — or proceed if it is deliberately shaped this way."
+        )
+
     async def _quality_gate(
         self, request: str, claimed_result: str, written_paths: list[str]
     ) -> tuple[bool, str]:
@@ -2733,6 +2806,8 @@ class AgentLoop:
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
+        self._turn_user_text = user_text  # judged decomposition (ADR-0050): the goal judged against
+        self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -3794,6 +3869,8 @@ class AgentLoop:
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
+        self._turn_user_text = user_text  # judged decomposition (ADR-0050): the goal judged against
+        self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written

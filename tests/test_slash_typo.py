@@ -99,3 +99,27 @@ def test_unknown_command_names_builtins_and_skills_but_runs_nothing() -> None:
     console, buf = _console()
     _unknown_command(console, "/qqqqqq", ())
     assert "unknown command /qqqqqq" in buf.getvalue() and "/help" in buf.getvalue()
+
+
+def test_unknown_command_in_a_skill_less_workspace_names_the_workspace(tmp_path: Path) -> None:
+    """Empty catalog + no close builtin: the notice says NO skills are discovered and where
+    the chat is rooted (measured 2026-08-27: `/start` in a chat launched outside the
+    project read as "the update broke slash commands")."""
+    console, buf = _console()
+    agent = _agent(tmp_path)  # no project skills written (bundled tier still discovers)
+    _unknown_command(console, "/start", (), agent=agent)
+    # The console wraps the long notice; glue the wrap back before asserting.
+    out = " ".join(buf.getvalue().split())
+    assert "has no project skills" in out
+    assert str(tmp_path) in "".join(out.split())
+    assert "-w <project-root>" in out
+
+
+def test_unknown_command_with_a_populated_catalog_keeps_the_short_notice(tmp_path: Path) -> None:
+    """A discovered catalog means the workspace is fine — the hint would be noise."""
+    _write_skill(tmp_path, "encode-session")
+    console, buf = _console()
+    _unknown_command(console, "/qqqqqq", (), agent=_agent(tmp_path))
+    out = " ".join(buf.getvalue().split())
+    assert "has no project skills" not in out
+    assert "/help lists commands" in out
