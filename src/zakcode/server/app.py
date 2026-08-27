@@ -42,7 +42,8 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Callable
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -105,6 +106,11 @@ from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
 
 logger = logging.getLogger("zakcode.server")
+
+#: Consumer beat spacing. Idle is also the worst-case latency for the loop to
+#: NOTICE a graceful stop, which is why the stop grace below is built from it.
+_ACTIVE_BEAT_SECONDS = 0.1
+_IDLE_BEAT_SECONDS = 0.5
 
 #: How long a permission prompt waits for an operator's answer before failing
 #: closed (deny-once). Bounds an unattended ask-mode deployment from hanging a turn.
@@ -561,6 +567,7 @@ def create_app(
     agent_factory: AgentFactory | None = None,
     provider_factory: ProviderFactory | None = None,
     tool_registry: ToolRegistry | None = None,
+    on_run_end: Callable[[str], Awaitable[None]] | None = None,
 ) -> FastAPI:
     """Construct the Zak Code HTTP app.
 
@@ -569,6 +576,12 @@ def create_app(
     ADR-0032, so a served mind's conversations outlive the host) + agent factory +
     provider factory (the latter drives ``/complete``, a raw schema-valid completion that
     bypasses the agent loop).
+
+    ``on_run_end`` is the BOUNDED-RUN seam (ADR-0039): awaited once with the stop reason
+    (``"duration_cap"`` / ``"stopped"``) after the run's final digest turn. The app owns
+    WHEN a run ends; the caller owns what that means — ``zakcode serve`` uses it to bring
+    the server down so the vessel stops billing. Omitted, the run is unbounded and this is
+    inert, which is the in-process/embedded default.
     """
     resolved_settings = settings or load_settings()
     resolved_store = store or SessionStore.for_workspace(resolved_settings.workspace_root)
@@ -1459,8 +1472,122 @@ def create_app(
         await _run_turn_for_say(text)
         return True
 
+    # ── bounded runs ─────────────────────────────────────────────────────────────
+    # A RUN is one served process. `run_deadline` caps the whole run; `turn_deadline`
+    # is that cap MINUS the consolidation reserve, so the loop stops taking NEW turns
+    # early enough that the reserve is still on the clock when the mind is asked for
+    # its digest. A cap-hit therefore ends in a receipt rather than a severed stream.
+    #
+    # BOTH ARE ANCHORED ONCE, AT RUN START, AND ARE NEVER RE-STAMPED PER BEAT. This is
+    # the whole safety property and it inverts silently if you get it wrong: a stamp
+    # rewritten each cycle measures TIME SINCE LAST EVENT (a liveness clock), while a
+    # stamp preserved from the first measures TOTAL ELAPSED DURATION (a patience cap).
+    # They carry the same units and answer different questions. Re-arming per beat
+    # would turn a paid run's ceiling into a bound that can never fire — and the
+    # customer would only discover it on the invoice.
+    run_stop_reason: str | None = None
+    run_deadline: float | None = None
+    turn_deadline: float | None = None
+    #: The reserve actually in force, CLAMPED to the cap. Resolved once at arm time and
+    #: used everywhere after, because the reserve is also the FLOOR on the digest budget
+    #: below: leaving the raw value there would let a reserve larger than the cap push
+    #: the run past its own ceiling, and a cap that a misconfiguration can exceed is not
+    #: a hard cap. Clamped, the digest simply gets the whole remaining window.
+    effective_reserve = 0.0
+    run_stopping = asyncio.Event()
+    run_ended = asyncio.Event()
+
+    def _arm_run_deadlines() -> None:
+        nonlocal run_deadline, turn_deadline, effective_reserve
+        cap = resolved_settings.run_max_duration
+        if cap is None:
+            run_deadline = turn_deadline = None
+            effective_reserve = resolved_settings.run_consolidation_reserve
+            return
+        started = time.monotonic()
+        run_deadline = started + cap
+        # Never negative: a reserve >= the cap would put the turn deadline BEFORE the
+        # start, so the run would take zero turns while still billing for the vessel.
+        effective_reserve = min(resolved_settings.run_consolidation_reserve, cap)
+        turn_deadline = started + (cap - effective_reserve)
+
+    async def _consolidate_run() -> None:
+        """Spend the reserved budget on one final turn, so the run ends in a digest.
+
+        Runs on EVERY graceful end, not only a cap-hit: an explicit stop is
+        ``finish the in-flight turn -> consolidate -> digest`` too, so a customer who
+        stops early gets the same receipt as one who runs out the clock.
+
+        MECHANISM, NOT POLICY. This owns WHEN the digest turn fires and how long it may
+        take; the operator supplies WHAT it says via ``run_consolidation_message``. No
+        message configured means no final turn, so an unconfigured server stays exactly
+        the plain turn-runner it was.
+
+        The digest turn is deliberately VISIBLE in the transcript (it rides the same
+        say path a typed message does). A receipt that appeared from nowhere, with no
+        prompt anyone could point at, would read as the machine talking to itself.
+
+        Fail-open, deliberately: a digest that errors or overruns must not propagate.
+        A missing receipt is a bad ending; an exception here would strand the vessel
+        and turn a bad ending into an unbounded host bill.
+        """
+        message = resolved_settings.run_consolidation_message
+        if not message:
+            return
+        reserve = effective_reserve
+        budget: float | None
+        if run_deadline is None:
+            # UNBOUNDED run: no cap to spend down, so the reserve is a plain timeout
+            # when one was given. Do NOT fall through to the `budget <= 0` skip below —
+            # the default (unbounded, reserve 0) would then silently drop the digest on
+            # exactly the configuration most runs use.
+            budget = reserve if reserve > 0 else None
+        else:
+            # Whatever is actually left of the cap. An early stop means the reserve was
+            # never the binding constraint, so the full remaining run budget is free.
+            budget = max(max(0.0, run_deadline - time.monotonic()), reserve)
+            if budget <= 0:
+                logger.warning("consolidation skipped: no budget left (reason=%s)", run_stop_reason)
+                return
+        logger.info(
+            "consolidating within %s (reason=%s)",
+            "unbounded" if budget is None else f"{budget:.0f}s",
+            run_stop_reason,
+        )
+        try:
+            await asyncio.wait_for(_run_turn_for_say(message), timeout=budget)
+        except TimeoutError:
+            logger.warning("consolidation turn exceeded its %.0fs reserve", budget)
+        except Exception as exc:  # noqa: BLE001 — fail-open; see the docstring
+            logger.warning("consolidation turn failed (%s: %s)", type(exc).__name__, exc)
+
+    async def _end_run() -> None:
+        """Digest, then hand the run's ending to the caller. Idempotent."""
+        if run_ended.is_set():
+            return
+        run_ended.set()
+        await _consolidate_run()
+        if on_run_end is not None:
+            try:
+                await on_run_end(run_stop_reason or "stopped")
+            # A caller's shutdown hook must not take the run down with it.
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("on_run_end failed (%s: %s)", type(exc).__name__, exc)
+
     async def _consume_say_loop() -> None:
-        while True:
+        nonlocal run_stop_reason
+        _arm_run_deadlines()
+        while not run_stopping.is_set():
+            # Read the CLOCK, never a remembered timestamp, and read it on this
+            # process's own monotonic base so a wall-clock adjustment mid-run can
+            # neither shorten nor extend a paid run.
+            #
+            # The check sits BETWEEN beats, never mid-turn: a turn already in flight
+            # always finishes. Killing one at its midpoint would leave exactly the
+            # half-done work that has nobody coming back to resume it.
+            if turn_deadline is not None and time.monotonic() >= turn_deadline:
+                run_stop_reason = "duration_cap"
+                break
             try:
                 ran = await _consume_one_say()
             except asyncio.CancelledError:
@@ -1468,15 +1595,49 @@ def create_app(
             except Exception:  # noqa: BLE001 — a bad beat must not kill the runner
                 logger.exception("say consumer: beat failed")
                 ran = False
-            await asyncio.sleep(0.1 if ran else 0.5)
+            await asyncio.sleep(_ACTIVE_BEAT_SECONDS if ran else _IDLE_BEAT_SECONDS)
+        if run_stop_reason is None:
+            # Fell out of the `while` guard rather than the `break`: an explicit stop.
+            # A human ending the run is a DIFFERENT story from the clock running out,
+            # and the digest is written from this.
+            run_stop_reason = "stopped"
+        await _end_run()
 
     consumer_tasks: list[asyncio.Task[None]] = []
 
     async def _start_consumer() -> None:
         consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
 
+    def _graceful_stop_budget() -> float:
+        """Seconds a graceful stop may take, or 0 when there is nothing to wind down.
+
+        Zero on the default path keeps shutdown as immediate as it was before bounded
+        runs existed: an unconfigured server has no digest to write and no ending to
+        report, so there is nothing to wait for.
+        """
+        if not resolved_settings.run_consolidation_message and on_run_end is None:
+            return 0.0
+        reserve = (
+            resolved_settings.run_consolidation_reserve
+            if resolved_settings.run_consolidation_message
+            else 0.0
+        )
+        return _IDLE_BEAT_SECONDS + reserve
+
     async def _stop_consumer() -> None:
+        """Ask the loop to stop, allow it the reserve to sign off, then cancel.
+
+        The wait is BOUNDED because this runs inside lifespan shutdown: a digest that
+        hangs must not hold the vessel open, which is the host-bill failure the whole
+        feature exists to prevent. Cancellation stays the backstop, so shutdown is
+        never at the mercy of a turn that will not end.
+        """
+        run_stopping.set()
+        budget = _graceful_stop_budget()
         for task in consumer_tasks:
+            if budget > 0 and not task.done():
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(asyncio.shield(task), timeout=budget)
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -1484,8 +1645,13 @@ def create_app(
 
     # (The lifespan defined above app construction starts/stops the consumer.)
     # Test seam: exercise one consumer beat without running the background loop
-    # (httpx's ASGITransport does not run lifespan events).
+    # (httpx's ASGITransport does not run lifespan events). `consume_say_loop` and
+    # `stop_consumer` are the bounded-run seams — a test drives a whole capped run
+    # without a server, and reads the ending through the `on_run_end` callback.
     app.state.consume_one_say = _consume_one_say
+    app.state.consume_say_loop = _consume_say_loop
+    app.state.start_consumer = _start_consumer
+    app.state.stop_consumer = _stop_consumer
 
     return app
 

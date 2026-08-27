@@ -233,3 +233,10 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 | --- | --- | --- | --- |
 | `auth_token` | `ZAKCODE_AUTH_TOKEN` | unset | Bearer token required on every route except `/health` when set; unset = loopback-only dev (non-loopback bind needs `--insecure`). Excluded from every `model_dump()`. |
 | `allowed_models` | `ZAKCODE_ALLOWED_MODELS` | `[]` | When non-empty, the only model strings a request may override to. |
+| `run_max_duration` | `ZAKCODE_RUN_MAX_DURATION` | _(unset)_ | Wall-clock ceiling in seconds for the WHOLE run (one `zakcode serve` process). At the cap the turn loop stops, the digest turn runs, and the server shuts itself down so a hosted vessel stops billing. Unset = unbounded. Distinct from `request_timeout` (caps one model call) and `max_cost_usd` (caps spend) — neither can end a run that is merely idling. |
+| `run_consolidation_reserve` | `ZAKCODE_RUN_CONSOLIDATION_RESERVE` | `0.0` | Seconds carved **out of** `run_max_duration` (never added to it) for the final digest turn: the loop stops taking new turns at `run_max_duration - run_consolidation_reserve`, so the reserve is still on the clock when the mind is asked to wrap up. Clamped to the cap. That is the difference between a receipt and a severed stream. |
+| `run_consolidation_message` | `ZAKCODE_RUN_CONSOLIDATION_MESSAGE` | _(unset)_ | Prompt for the final digest turn, run on every graceful ending (cap-hit **and** explicit stop). Unset = no digest turn, so an unconfigured server stays exactly the plain turn-runner it was. The turn is visible in the transcript, like any other say. |
+
+There is deliberately **no auto-extend knob.** A bounded run is a price agreed up front;
+a run that can quietly extend itself is a bill-shock machine, and the failure is silent —
+you learn the cap did not hold when the invoice arrives. See ADR-0039.
