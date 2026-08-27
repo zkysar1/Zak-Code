@@ -991,6 +991,7 @@ class AgentLoop:
         completion_review_attempts: int = 0,
         fire_session_start: bool = True,
         trace_label: str | None = None,
+        turn_end_veto_reset: Callable[[], None] | None = None,
     ) -> None:
         self.provider = provider
         # Deliberation seam: a Sampler for tools that make their own model calls (deep_think's
@@ -1034,6 +1035,14 @@ class AgentLoop:
         # return to the parent — a Stop hook must not resurrect them). A registered hook
         # IS a live hook; vetoes are unbounded and the cost budget is the real bound.
         self.turn_end_vetoable = turn_end_vetoable
+        # A veto is a TURN BOUNDARY for per-turn skill state (ADR-0048): the Agent wires its
+        # skill-turn reset here (reload-dedup map + invocation budget) and _fire_turn_end
+        # calls it the moment a hook vetoes. A perpetual-loop framework runs its whole
+        # autonomous session as ONE turn (one /start, then vetoes without end), and the
+        # veto's mandated re-entry is a skill the model already loaded this turn — answered
+        # with an "[already loaded]" pointer, that re-entry is a dead loop. ``None`` (bare
+        # loop, sub-agents) = nothing to reset.
+        self._turn_end_veto_reset = turn_end_veto_reset
         # Completion-review gate (bounded): when a code-changing turn tries to finish, an
         # INDEPENDENT fresh-context critic (_completion_critic) judges whether the claimed result
         # covers the whole request; only a flagged gap sends the agent back, at most this many
@@ -2619,6 +2628,13 @@ class AgentLoop:
             stop_reason,
             veto_count + 1,
         )
+        # A veto opens a NEW turn for per-turn skill state (ADR-0048): the hook that vetoed
+        # is telling the model to do more work, and that work may be a skill it already
+        # loaded — a perpetual-loop framework's mandated re-entry is exactly that. Reset
+        # BEFORE the continuation prompt lands, so the next use_skill delivers a body, not
+        # an "[already loaded]" pointer (four of which killed a live loop, 2026-08-26).
+        if self._turn_end_veto_reset is not None:
+            self._turn_end_veto_reset()
         return result.continuation_prompt or "Continue."
 
     async def _run_turn(self, user_text: str) -> TurnResult:

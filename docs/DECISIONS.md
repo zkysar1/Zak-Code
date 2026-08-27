@@ -1721,3 +1721,35 @@ the env-server's budget meter now asks the sidecar to stop, waits for it to exit
 grace), and only then tears the vessel down. A reason is a token so platform scripts can
 branch on it (`budget_exhausted` maps to "ran out of budget" in the receipt). Pinned by
 `test_run_stop_route_ends_the_run_with_its_digest`.
+
+## ADR-0048: A Stop-hook veto opens a fresh turn for per-turn skill state
+
+**Context.** The `Stop` → `TURN_END` seam (ADR-0025, T2) re-enters the loop INSIDE the
+same turn when a hook vetoes, and a perpetual-loop framework runs its whole autonomous
+session that way: one `/start`, then vetoes without end. The `use_skill` reload dedup
+(2026-08-25) is keyed on that turn — the SAME unchanged body loaded earlier in the turn
+is answered with an `[already loaded]` pointer — and so is `skill_invocation_budget`.
+The two collided on a live Mind (coach, zc-03, session `2fc9870…`, 2026-08-26
+19:07–19:09): the model ended an iteration on a text summary; the Stop hook vetoed with
+"Your FIRST action MUST be: Skill('aspirations') with args='loop'"; the model complied;
+`use_skill` returned the pointer; the model, holding no fresh instructions, produced the
+same summary. Four vetoes, four pointers, then the run ended and the agent stayed dark
+~29 hours (the operator found it `IDLE`/`autonomous` the next day). Claude Code never
+dedups a Skill call — the framework's own PreToolUse gate does, and it exempts its
+orchestrator skills (`aspirations|aspirations-*|worker-loop`) for exactly this reason.
+
+**Decision.** A TURN_END veto is a turn boundary for per-turn skill state. `AgentLoop`
+takes `turn_end_veto_reset`; the `Agent` wires `_begin_skill_turn` — the reset
+`arun_turn` / `astream_turn` already perform at a top-level turn start (clear the
+reload-dedup map, refill the invocation budget) — and `_fire_turn_end` calls it the
+moment a hook vetoes, BEFORE the continuation prompt is injected. Nothing is keyed on a
+skill's name: the engine stays framework-agnostic, and the hook that vetoed is the
+authority that a new turn began. No flag.
+
+**Consequences.** After a veto, the next `use_skill` of an already-loaded skill
+re-delivers its body (the ~55 KB orchestrator SKILL.md once per iteration — the price
+Claude Code pays too; ADR-0043's compaction bounds it). Within an unvetoed turn the
+dedup still saves the repeat loads it was built for. Pinned by
+`test_a_stop_hook_veto_opens_a_fresh_skill_turn` + `test_no_veto_keeps_the_same_turn_dedup`
+(Agent wiring) and `test_turn_end_veto_calls_the_turn_reset` +
+`test_turn_end_allow_never_calls_the_turn_reset` (loop seam).
