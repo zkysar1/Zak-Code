@@ -148,6 +148,7 @@ from zakcode.providers.base import (
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
+from zakcode.session.say_inbox import read_say, say_path
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import Task
 from zakcode.tools.base import (
@@ -485,6 +486,18 @@ _CHALLENGE_RAIL = (
     "quote its fresh output, and state plainly whether the earlier answer stands or what the "
     "correct figure is. If the earlier answer was never measured, say so in one sentence and "
     "measure it now. One tool call or one evidenced answer; nothing else."
+)
+
+#: Mid-turn say delivery (ADR-0051): the frame around a user message consumed from the
+#: workspace say inbox at an iteration boundary. The say contract's original consumers sit
+#: BETWEEN turns (the REPL's idle wait, the serve driver) — but an autonomous deployment's
+#: whole session is ONE turn (one /start, then Stop-hook vetoes without end), so a message
+#: waiting on a turn boundary starves forever (measured 2026-08-27: an operator directive
+#: sat unconsumed in a live Mind's inbox for 3 days while the loop worked on). Delivering
+#: at the iteration boundary is what the reference harness does with input typed mid-turn.
+_MIDTURN_SAY_FRAME = (
+    "[user message — arrived mid-task]\n{text}\n"
+    "(Address it as part of the current work; abandon or reorder the task only if it says to.)"
 )
 
 #: Apology spiral (ADR-0040): a no-tool-call completion that is mostly apology and
@@ -998,6 +1011,7 @@ class AgentLoop:
         fire_session_start: bool = True,
         trace_label: str | None = None,
         turn_end_veto_reset: Callable[[], None] | None = None,
+        consume_say_inbox: bool = False,
     ) -> None:
         self.provider = provider
         # Deliberation seam: a Sampler for tools that make their own model calls (deep_think's
@@ -1049,6 +1063,13 @@ class AgentLoop:
         # with an "[already loaded]" pointer, that re-entry is a dead loop. ``None`` (bare
         # loop, sub-agents) = nothing to reset.
         self._turn_end_veto_reset = turn_end_veto_reset
+        # Mid-turn say delivery (ADR-0051): when True — the MAIN loop only, wired by the
+        # Agent — every iteration boundary polls the workspace say inbox and folds a
+        # pending message into the conversation as a user message, so input reaches the
+        # model even when the turn never ends (a perpetual-loop deployment). Sub-agents
+        # must never set this: they would steal the user's message into a child
+        # conversation. Consumption is exactly-once (read_say deletes).
+        self._consume_say_inbox = consume_say_inbox
         # Completion-review gate (bounded): when a code-changing turn tries to finish, an
         # INDEPENDENT fresh-context critic (_completion_critic) judges whether the claimed result
         # covers the whole request; only a flagged gap sends the agent back, at most this many
@@ -2710,6 +2731,25 @@ class AgentLoop:
             self._turn_end_veto_reset()
         return result.continuation_prompt or "Continue."
 
+    def _deliver_midturn_say(self) -> str | None:
+        """Consume a pending say into the conversation at an iteration boundary (ADR-0051).
+
+        Returns the delivered text (already appended as a framed user message and
+        persisted) or ``None``. Only the main loop polls (``consume_say_inbox``); the
+        single-slot inbox makes this at most one message per iteration. Fail-open by
+        inheritance: :func:`read_say` yields ``None`` on any OS error.
+        """
+        if not self._consume_say_inbox:
+            return None
+        text = read_say(say_path(self.workspace_root))
+        if text is None:
+            return None
+        self.session.add_message(Message.user(_MIDTURN_SAY_FRAME.format(text=text)))
+        self._persist()
+        self._note("intervention", "user message delivered mid-turn from the say inbox", kind="say")
+        logger.info("say inbox: delivered a user message mid-turn (%d chars)", len(text))
+        return text
+
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
@@ -2832,6 +2872,11 @@ class AgentLoop:
                 stop_reason = "max_iterations"
                 break
             iterations += 1
+            # Mid-turn say delivery (ADR-0051): a message written to the workspace inbox
+            # while the turn runs is folded in at this boundary, so the NEXT provider call
+            # sees it. Vital for perpetual-loop deployments whose turn never ends; inert
+            # (consume_say_inbox=False) on sub-agents and bare loops.
+            self._deliver_midturn_say()
             # Recompute exposed tools each iteration so a tool activated mid-turn
             # (e.g. via tool_search) is offered in the same turn. During a stuck-recovery
             # NARROW step this iteration is limited to read-only tools: the schema, the
@@ -3895,6 +3940,14 @@ class AgentLoop:
                     stop_reason = "max_iterations"
                     break
                 iterations += 1
+                # Mid-turn say delivery (ADR-0051, streaming twin): announced so a watching
+                # client shows the operator their message was taken into the running turn.
+                delivered_say = self._deliver_midturn_say()
+                if delivered_say is not None:
+                    shown = (
+                        delivered_say if len(delivered_say) <= 200 else delivered_say[:200] + "…"
+                    )
+                    yield AgentStatus(message=f"user message delivered mid-turn: {shown}")
                 # Recompute exposed tools each iteration (see _run_turn) so mid-turn tool
                 # activations are offered in the same turn; a stuck NARROW step limits this
                 # iteration to read-only tools across the schema, the system-prompt summary,
