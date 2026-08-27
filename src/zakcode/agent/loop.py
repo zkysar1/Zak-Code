@@ -4219,8 +4219,14 @@ class AgentLoop:
                     # Empty give-up gate (streaming twin): a completion with no text at all,
                     # in a turn whose user has seen NOTHING (or right after a stuck nudge),
                     # is a silent give-up — nudge for a real answer (bounded), then end
-                    # honestly as gave_up (degraded, vetoable) instead of "done".
-                    if not assistant_text and (not turn_saw_text or stuck.took_action):
+                    # honestly as gave_up (degraded, vetoable) instead of "done". A composed
+                    # /<skill> turn is a SEQUENCE, so its silence is never a clean finish even
+                    # after prior text (ADR-0042) — THIS path is the one `zakcode serve` runs
+                    # (say consumer + /chat/stream); #244 rail'd only arun_turn, measured on
+                    # the served /start of 2026-08-27 boot D (generic nudge, not the skill one).
+                    if not assistant_text and (
+                        not turn_saw_text or stuck.took_action or composed_skill is not None
+                    ):
                         if empty_retries < _MAX_EMPTY_RETRIES:
                             empty_retries += 1
                             self._note(
@@ -4229,7 +4235,13 @@ class AgentLoop:
                                 kind="empty_completion",
                             )
                             self.session.add_message(
-                                Message.user(_control_rail(_EMPTY_COMPLETION_NUDGE))
+                                Message.user(
+                                    _control_rail(
+                                        _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
+                                        if composed_skill is not None
+                                        else _EMPTY_COMPLETION_NUDGE
+                                    )
+                                )
                             )
                             self._refund_iteration()  # an empty completion did no work
                             self._persist()

@@ -1554,6 +1554,15 @@ produced nothing. A skill whose every step is genuinely done can say so in one
 sentence and end cleanly. The deployment-side belt (re-issuing a ceremony whose turn
 ended without its effects) stays with the deployment; this is the loop's half.
 
+**Addendum (2026-08-27, streaming path).** #244 applied the rule to `arun_turn` only. The served
+daemon's say consumer and `/chat/stream` run `astream_turn`, whose twin gate kept the
+pre-ADR condition — measured on the served `/start` of Vinheim boot D: the silence was
+caught only because no text had been seen yet, and the nudge that landed was the generic
+one. Both paths now carry the same gate and the same skill-naming nudge, pinned by the
+streaming twins in `tests/test_loop_edge.py`. Lesson (guard-1622 class): a rule that
+lives in two loop bodies must be applied to both, and the test that pins it must drive
+the path production uses.
+
 ## ADR-0043: The served agent compacts
 
 **Context.** `zakcode serve` builds a feature-reduced agent — skills + rules — and left
