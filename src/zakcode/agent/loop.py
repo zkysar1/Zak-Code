@@ -511,6 +511,60 @@ _APOLOGY_NUDGE = (
 )
 
 
+#: Evidence gates (ADR-0044). Two claim shapes a small model states from memory of its own
+#: writing rather than from a tool call, and nothing caught either: (1) an IDENTITY claim —
+#: "google-drive-list is a python script, not a skill" (2026-08-27; it was a skill directory
+#: the model had never listed); (2) an UNSOURCED FIGURE — "the tree has 10,892 nodes …
+#: directly reported by the tree stats command" in a one-iteration, no-tool-call turn (the
+#: number appears in no tool output of the session; the real count was 1,510). Each fires at
+#: most once per turn and only on a completion that makes no tool call.
+_LOOKUP_TOOLS = frozenset({"read_file", "list_dir", "glob", "grep", "use_skill"})
+_IDENTITY_CLAIM_RE = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]*[-_.][\w.-]*)|(?:[\w./-]*/[\w./-]*))"
+    r"\s+(?:is|was|isn['’]t|is\s+not|was\s+not)\s+(?:actually\s+|just\s+|only\s+)?(?:a|an)\s+"
+    r"(?:python\s+|shell\s+|bash\s+|node\s+|plain\s+)?"
+    r"(?:skill|script|file|module|directory|folder|package|executable)\b",
+    re.IGNORECASE,
+)
+_IDENTITY_NUDGE = (
+    "You stated what something in the workspace IS (or is not) — a skill, a script, a file — "
+    "without reading it this turn. Identity claims need evidence: list_dir the directory, "
+    "read_file the path, or glob/grep the name (use_skill for a skill), quote what you find, "
+    "then answer. If you did not look, say so instead of asserting."
+)
+_FIGURE_RE = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+|\d{4,})(?![\w.,%-])")
+
+
+def _claims_identity(text: str) -> bool:
+    """True when the completion asserts what a named path/skill is or is not."""
+    for match in _IDENTITY_CLAIM_RE.finditer(text[-1200:]):
+        subject = match.group(1)
+        if len(subject) >= 3 and any(ch.isalpha() for ch in subject):
+            return True
+    return False
+
+
+def _figures(text: str) -> set[str]:
+    """Comma-grouped or ≥4-digit figures in ``text`` (years excluded), digits only."""
+    out: set[str] = set()
+    for raw in _FIGURE_RE.findall(text):
+        digits = raw.replace(",", "")
+        if len(digits) == 4 and digits[:2] in ("19", "20"):
+            continue  # a year, not a measurement
+        out.add(digits)
+    return out
+
+
+def _figure_nudge(figures: list[str]) -> str:
+    listed = ", ".join(figures)
+    return (
+        f"The figure(s) {listed} appear in no tool output this session. Do not state "
+        "measurements you have not taken: run the tool that produces the number and quote its "
+        "output — or say plainly where the figure comes from (an estimate, arithmetic on "
+        "quoted values) — then answer."
+    )
+
+
 def _claims_missing(text: str) -> bool:
     """True when the completion's tail concludes something could not be found."""
     return _MISSING_CLAIM_RE.search(text[-800:]) is not None
@@ -985,6 +1039,8 @@ class AgentLoop:
         # Missing-conclusion gate (ADR-0040): content-search calls this turn. A completion
         # that concludes "could not find" with this at zero has not looked.
         self._turn_search_calls = 0
+        # Evidence gates (ADR-0044): lookup calls (read/list/glob/grep/use_skill) this turn.
+        self._turn_lookup_calls = 0
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
         # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
         # one unit from the shared pool, and the turn stops with
@@ -1772,6 +1828,8 @@ class AgentLoop:
             self._turn_tool_errors += 1
         if call.name in _SEARCH_TOOLS:
             self._turn_search_calls += 1  # a content search ran (ADR-0040), whatever it found
+        if call.name in _LOOKUP_TOOLS:
+            self._turn_lookup_calls += 1  # the model looked at something (ADR-0044)
         return block
 
     async def _execute_tool_call_gated(
@@ -2243,6 +2301,26 @@ class AgentLoop:
             for b in blocks
         )
 
+    def _unsourced_figures(self, text: str) -> list[str]:
+        """Figures in ``text`` that appear in no tool output and no user message this session.
+
+        Evidence gate (ADR-0044): a measurement the model never took. Assistant text is
+        deliberately NOT a source — that is exactly how an invented number survives ("as
+        reported earlier").
+        """
+        wanted = _figures(text)
+        if not wanted:
+            return []
+        sourced: set[str] = set()
+        for message in self.session.messages:
+            if message.role == "assistant":
+                continue
+            for block in message.blocks:
+                raw = getattr(block, "output", None) or getattr(block, "text", None)
+                if isinstance(raw, str) and raw:
+                    sourced |= _figures(raw)
+        return sorted(wanted - sourced)
+
     def _previous_assistant_text(self) -> str:
         """The most recent assistant text BEFORE this turn's user message, or ''.
 
@@ -2564,12 +2642,15 @@ class AgentLoop:
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
+        identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
+        figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
+        self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -3175,6 +3256,51 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # Evidence gate, identity claims (ADR-0044): "X is a python script, not a
+                # skill" with nothing read, listed or searched this turn is memory of the
+                # model's own writing, not a fact about the workspace. Ask once for the look.
+                if (
+                    result.text
+                    and not identity_nudged
+                    and self._turn_lookup_calls == 0
+                    and _claims_identity(result.text)
+                ):
+                    identity_nudged = True
+                    self._turn_struggle = True
+                    self._note(
+                        "intervention",
+                        "completion asserts what a path or skill is without looking — asking "
+                        "for the evidence",
+                        kind="identity_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_IDENTITY_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
+                # Evidence gate, unsourced figures (ADR-0044): a number that appears in no
+                # tool output of the session is a measurement never taken. Ask once for the
+                # tool or the provenance.
+                if result.text and not figure_nudged:
+                    unsourced = self._unsourced_figures(result.text)
+                    if unsourced:
+                        figure_nudged = True
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            "completion states figure(s) no tool output carries — asking for "
+                            f"the measurement: {', '.join(unsourced)}",
+                            kind="figure_gate",
+                        )
+                        self.session.add_message(
+                            Message.user(_control_rail(_figure_nudge(unsourced)))
+                        )
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
                 # False-done guard (ADR-0024): the turn is ending on an ANNOUNCEMENT of
                 # work ("Now I will use …" with no calls behind it). Ask once for the
                 # work or a plain finish; a model that was only describing says so.
@@ -3575,12 +3701,15 @@ class AgentLoop:
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
+        identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
+        figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
+        self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -4435,6 +4564,55 @@ class AgentLoop:
                             "content search — asking for the grep"
                         )
                         continue
+                    # Evidence gate, identity claims (ADR-0044) — see the buffered twin.
+                    if (
+                        assistant_text
+                        and not identity_nudged
+                        and self._turn_lookup_calls == 0
+                        and _claims_identity(assistant_text)
+                    ):
+                        identity_nudged = True
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            "completion asserts what a path or skill is without looking — "
+                            "asking for the evidence",
+                            kind="identity_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_IDENTITY_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="completion asserts what a path or skill is without "
+                            "looking — asking for the evidence"
+                        )
+                        continue
+                    # Evidence gate, unsourced figures (ADR-0044) — see the buffered twin.
+                    if assistant_text and not figure_nudged:
+                        unsourced = self._unsourced_figures(assistant_text)
+                        if unsourced:
+                            figure_nudged = True
+                            self._turn_struggle = True
+                            self._note(
+                                "intervention",
+                                "completion states figure(s) no tool output carries — asking "
+                                f"for the measurement: {', '.join(unsourced)}",
+                                kind="figure_gate",
+                            )
+                            self.session.add_message(
+                                Message.user(_control_rail(_figure_nudge(unsourced)))
+                            )
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            yield AgentStatus(
+                                message="completion states figure(s) no tool output carries — "
+                                "asking for the measurement"
+                            )
+                            continue
                     # False-done guard (ADR-0024) — see the buffered twin.
                     if (
                         assistant_text

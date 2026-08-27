@@ -1593,3 +1593,46 @@ trade the CLI already makes, and strictly better than a conversation that can no
 be spoken to. A session already past the window is not rescued retroactively (the
 summarize call would overflow too); it needs a fresh session, which the Talk surface
 provides.
+## ADR-0044: A claim about what something IS, or how many there are, needs a tool call behind it
+
+- **Status:** Accepted (shipped, 2026-08-27). Two field answers from the same afternoon, each
+  produced in ONE iteration with no tool call. (a) Asked whether `google-drive-list` was a
+  skill, the model said it was "a python file, not a skill" — it was a skill directory whose
+  SKILL.md the model had itself loaded through `use_skill`, and whose directory it had
+  never listed; the SKILL.md said "run python3 …", and that sentence became the identity.
+  (b) "The knowledge tree has 10,892 nodes … directly reported by the tree stats command" —
+  in a 5.7-second turn where no tool ran; the figure appears in no tool output of the
+  session, and the real count was 1,510. Both answers were confident, both were false, and
+  neither tripped a rail: they were not "could not find" (ADR-0040), not a done-announcement
+  (ADR-0024), not a blocker (ADR-0036).
+- **Context:** the model's own writing is the most available context it has, and a small
+  model reads it back as fact. `use_skill` returned the body and nothing about the
+  directory the body lives in, so the one moment the model held the skill had no evidence
+  that a skill IS a directory. A number the model states is indistinguishable, in the
+  transcript, from a number a tool reported — unless something compares the two.
+- **Decision:** (1) `use_skill` appends a `[skill directory] <dir>: <siblings>` footer to
+  every loaded body — the directory path and what sits beside the SKILL.md (files, `dir/`,
+  capped at twelve, "(only SKILL.md)" when alone) — so "what is this skill" is answered by
+  the load itself. `SkillLoad` carries the SKILL.md `path` for it. (2) Identity gate: a
+  no-tool-call completion asserting that a named path or skill (a token carrying `-`, `_`,
+  `.` or `/`) "is / was / is not / isn't (a|an) [python|shell|bash|node|plain] skill |
+  script | file | module | directory | folder | package | executable", with no `read_file`,
+  `list_dir`, `glob`, `grep` or `use_skill` call this turn, is asked once for the look.
+  (3) Figure gate: a no-tool-call completion carrying a comma-grouped or ≥4-digit number
+  (years 1900–2099, dates and version strings excluded) that appears in NO tool output and
+  NO user message of the session is asked once to run the tool that produces it or to say
+  where it comes from. Assistant text is deliberately not a source — "as reported earlier"
+  is exactly how an invented number survives. Both gates latch the struggle flag and run in
+  both loop paths, after the missing-conclusion gate and before the false-done guard.
+- **Alternatives rejected:** a system-prompt sentence ("only state numbers you measured") —
+  the field model had that vocabulary and still narrated; per-claim fact-checking against
+  the filesystem inside the loop (the loop would be re-implementing the tools); treating
+  any assistant-stated number as sourced once stated (the failure mode itself); listing the
+  skill directory inside the SKILL.md body (a body is untrusted text; the footer is the
+  tool's own observation, outside the defanged body).
+- **Consequences:** one extra iteration when a model asserts an identity or a figure from
+  memory; none when it looked, or when the number came from a tool or the user. A `port
+  8080`-style well-known number stated without a tool costs that one iteration too — the
+  gate asks for provenance, and "a default" is an acceptable answer. Residual: identity
+  claims phrased without a separator-bearing subject ("it is a python file") are not
+  caught; a number smaller than 1,000 and not comma-grouped is not checked.
