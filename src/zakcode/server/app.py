@@ -313,7 +313,7 @@ class SlashDispatch:
 
 
 async def dispatch_slash(agent: Any, text: str) -> SlashDispatch:
-    """Resolve a leading-slash message through the agent's skill registry (ADR-0036).
+    """Resolve a leading-slash message through the agent's skill registry (ADR-0037).
 
     ONE input rule, EVERY door: the say consumer, ``POST /chat`` and ``POST /chat/stream``
     feed their message through here first, so ``/start tricks --mode assistant`` written into
@@ -577,7 +577,7 @@ def create_app(
     provider factory (the latter drives ``/complete``, a raw schema-valid completion that
     bypasses the agent loop).
 
-    ``on_run_end`` is the BOUNDED-RUN seam (ADR-0037): awaited once with the stop reason
+    ``on_run_end`` is the BOUNDED-RUN seam (ADR-0039): awaited once with the stop reason
     (``"duration_cap"`` / ``"stopped"``) after the run's final digest turn. The app owns
     WHEN a run ends; the caller owns what that means — ``zakcode serve`` uses it to bring
     the server down so the vessel stops billing. Omitted, the run is unbounded and this is

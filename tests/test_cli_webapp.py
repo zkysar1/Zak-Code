@@ -36,7 +36,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
         """Stands in for uvicorn's Server: records itself, never binds a port.
 
         ``serve`` constructs a Server rather than calling ``uvicorn.run`` so a bounded
-        run can ask it to exit (ADR-0037), so THIS is the seam the tests must stub —
+        run can ask it to exit (ADR-0039), so THIS is the seam the tests must stub —
         patching ``uvicorn.run`` would no longer intercept anything and the test would
         really serve.
         """
@@ -114,7 +114,7 @@ def test_webapp_non_loopback_allowed_with_auth_token(monkeypatch: pytest.MonkeyP
     assert "settings" in captured
 
 
-# ── bounded runs: the callback has to actually stop the server (ADR-0037) ──────────
+# ── bounded runs: the callback has to actually stop the server (ADR-0039) ──────────
 
 
 def test_run_end_callback_asks_the_server_to_exit(

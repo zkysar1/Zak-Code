@@ -348,7 +348,7 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-call wall-clock ceiling (seconds) for one model call.",
     )
-    # ── bounded runs (a run is one `zakcode serve` process; ADR-0037) ──────────────
+    # ── bounded runs (a run is one `zakcode serve` process; ADR-0039) ──────────────
     # A hosted vessel bills for wall-clock, so an unbounded run is a bill-shock machine:
     # the customer only learns the cap did not hold when the invoice arrives. These three
     # bound the WHOLE run, not a turn — `request_timeout` above caps one model call and

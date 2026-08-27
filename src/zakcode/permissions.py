@@ -200,6 +200,31 @@ DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "destructive git (force push / hard reset)",
     ),
     (re.compile(r"\bgit\s+clean\s+-[a-z]*f"), "git clean -f (deletes untracked files)"),
+    # VCS-internals destruction (ADR-0038). Field incident 2026-08-27: an unattended small
+    # model, chasing a phantom "stale ref", ran ``rm -f .git/objects/pack/*``, ``rm -rf
+    # .git/refs/mind`` and finally re-cloned the repository — none of it matched the
+    # recursive-root ``rm`` check (relative paths are exempt) or the destructive-git entry.
+    # There is no agent task that needs to delete or move ``.git`` itself; ``git`` plumbing
+    # (``update-ref -d``, ``fetch``, ``gc`` without ``--prune=now``) stays available.
+    (
+        re.compile(
+            r"\bgit\s+(?:gc\b[^;&|\n]*--prune=now|prune\b(?!-packed)"
+            r"|reflog\s+expire\b[^;&|\n]*--expire(?:-unreachable)?=now)"
+        ),
+        "destructive git maintenance (permanently discards unreachable history)",
+    ),
+    (
+        re.compile(
+            r"\b(?:rm|rmdir|mv|shred|unlink|truncate)\b[^;&|\n]*"
+            r"(?:^|[\s\"'=])(?:[^\s\"';&|]*[\\/])?\.git(?=[\\/\s\"']|$)",
+            re.IGNORECASE,
+        ),
+        "destruction of VCS internals (.git)",
+    ),
+    (
+        re.compile(r">{1,2}\s*(?:[^\s;&|]*[\\/])?\.git[\\/]"),
+        "shell write into VCS internals (.git/)",
+    ),
     (
         re.compile(r"\bcurl\b.*\|\s*(sudo\s+)?(ba)?sh\b|\bwget\b.*\|\s*(ba)?sh\b"),
         "pipe-to-shell of remote content",

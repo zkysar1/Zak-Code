@@ -276,7 +276,7 @@ async def test_prestream_failure_publishes_terminal_done(tmp_path: Path) -> None
     assert done["degraded"] is True
 
 
-# ── bounded runs (ADR-0037) ──────────────────────────────────────────────────
+# ── bounded runs (ADR-0039) ──────────────────────────────────────────────────
 # A run is one served process. The cap stops the turn loop; the reserve is carved
 # OUT of the cap so the digest turn still has clock left; `on_run_end` reports how
 # the run ended so the caller can bring the vessel down. These drive the loop

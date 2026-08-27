@@ -239,4 +239,4 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 
 There is deliberately **no auto-extend knob.** A bounded run is a price agreed up front;
 a run that can quietly extend itself is a bill-shock machine, and the failure is silent —
-you learn the cap did not hold when the invoice arrives. See ADR-0037.
+you learn the cap did not hold when the invoice arrives. See ADR-0039.
