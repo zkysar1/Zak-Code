@@ -1670,3 +1670,31 @@ prompt cache misses once at the message that changed. A document already past th
 is still not rescued (ADR-0043's caveat stands). Pinned by
 `test_skill_turn_body_is_elided_once_the_turn_ends` + its streaming twin and
 `test_prior_skill_frames_are_elided_at_turn_start`.
+
+## ADR-0046: The run's ending leaves the process through one operator command
+
+**Context.** ADR-0039 gave a bounded run its receipt: the digest turn runs on every
+graceful ending and `on_run_end` tells `zakcode serve` to bring the process down. The
+digest then sat in the session store on a vessel that was about to be terminated. The
+bounded-run design (Ayoai-Mind g-369-08, pearl node C1) needs that digest DELIVERED —
+a first-person email from the agent to its owner — and the transport is a platform
+matter (which mail path, which identity, which recipient resolver) that Zak Code must not
+know about: it is vendor-agnostic and the receipt is the operator's policy.
+
+**Decision.** One setting, `run_end_command` (`ZAKCODE_RUN_END_COMMAND`). When set, the
+server runs it ONCE per run, after the digest turn and BEFORE `on_run_end`, feeding
+`{"event": "run_end", "reason", "digest", "session_id", "cwd"}` on stdin. The digest is
+the assistant's answer to `run_consolidation_message`, read back from the session store
+(scan from the end; the digest prompt bounds the scan so an earlier answer is never passed
+off as the receipt); empty when no digest turn ran. The command is parsed and
+catastrophe-scanned by the hook loader's own `_split_command` / `_is_dangerous`, exec'd
+never shelled, given the same provider-key-scrubbed env every child gets, bounded by a
+fixed 60s (`RUN_END_COMMAND_TIMEOUT_S` — not a knob), and fail-open on every path. The
+`on_run_end` seam is unchanged.
+
+**Consequences.** A platform recipe can turn the receipt into anything with a script and
+no Zak Code change; the ordering guarantees the script runs while the process — and the
+vessel — still exists. A command that hangs costs at most a minute of the reserve-side
+budget before the shutdown proceeds. Pinned by
+`test_run_end_command_receives_reason_and_digest_before_the_vessel_goes_down`,
+`test_run_end_command_failures_are_fail_open`, `test_run_end_command_runs_without_a_digest_turn`.

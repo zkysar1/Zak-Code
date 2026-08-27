@@ -376,6 +376,16 @@ class Settings(BaseSettings):
         default=None,
         description="Prompt for the final digest turn; None = no consolidation turn.",
     )
+    # The ending is handed OUT of the process (ADR-0046): one command, run once after the
+    # digest turn, fed the ending as JSON on stdin — the operator decides what a receipt
+    # becomes (an email, a webhook, a file). Mechanism here, policy in the command.
+    run_end_command: str | None = Field(
+        default=None,
+        description=(
+            "Command run once when the run ends, after the digest turn, with the ending "
+            "(reason + digest text) as JSON on stdin; None = nothing runs."
+        ),
+    )
     # There is deliberately NO turn-end veto budget (removed 2026-08-25, no-knobs
     # ruling): the TURN_END seam (Claude Code's Stop hook) is structurally ALWAYS ON
     # for the main Agent loop when the workspace's adopted hooks register one, and

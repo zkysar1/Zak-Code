@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import json
 import socket
+import sys
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -306,6 +307,7 @@ def _build_bounded(
     max_duration: float | None = None,
     reserve: float = 0.0,
     message: str | None = None,
+    run_end_command: str | None = None,
 ) -> tuple[Any, list[tuple[str, float]], list[str], float]:
     """An app whose run is bounded; returns (app, turns_seen, endings, t0)."""
     t0 = time.monotonic()
@@ -317,6 +319,7 @@ def _build_bounded(
         run_max_duration=max_duration,
         run_consolidation_reserve=reserve,
         run_consolidation_message=message,
+        run_end_command=run_end_command,
     )
 
     async def _on_run_end(reason: str) -> None:
@@ -475,3 +478,63 @@ def test_a_reserve_larger_than_the_cap_cannot_overrun_the_cap(tmp_path: Path) ->
 
     assert seen == ["digest"]  # the digest was still attempted
     assert elapsed < digest_time, f"run took {elapsed:.2f}s — the reserve escaped the cap"
+
+
+# ── run_end_command: the ending leaves the process (ADR-0046) ─────────────────
+
+
+def _sink_command(tmp_path: Path) -> tuple[str, Path]:
+    """A command that writes its stdin to a file; returns (command, that file)."""
+    sink = tmp_path / "sink.py"
+    sink.write_text(
+        "import pathlib, sys\npathlib.Path(sys.argv[1]).write_bytes(sys.stdin.buffer.read())\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "ending.json"
+    return f"{sys.executable} {sink} {out}", out
+
+
+def test_run_end_command_receives_reason_and_digest_before_the_vessel_goes_down(
+    tmp_path: Path,
+) -> None:
+    """THE delivery seam: after the digest turn, the ending — reason + digest text — is
+    handed to the operator's command on stdin, and only then does on_run_end fire."""
+    command, out = _sink_command(tmp_path)
+    app, seen, endings, _t0 = _build_bounded(
+        tmp_path, max_duration=0.4, reserve=0.2, message="wrap up", run_end_command=command
+    )
+
+    asyncio.run(app.state.consume_say_loop())
+
+    ending = json.loads(out.read_text(encoding="utf-8"))
+    assert ending["event"] == "run_end"
+    assert ending["reason"] == "duration_cap"
+    assert ending["digest"] == "ok"  # what _TimingAgent answered the digest prompt with
+    assert ending["cwd"] == str(tmp_path)
+    assert seen[-1][0] == "wrap up"  # the digest turn ran first ...
+    assert endings == ["duration_cap"]  # ... and the caller was told last
+
+
+def test_run_end_command_failures_are_fail_open(tmp_path: Path) -> None:
+    """A command that exits non-zero, or cannot start at all, never strands the ending."""
+    boom = tmp_path / "boom.py"
+    boom.write_text("import sys\nsys.stdin.read()\nraise SystemExit(3)\n", encoding="utf-8")
+    for command in (f"{sys.executable} {boom}", str(tmp_path / "no-such-command")):
+        app, _seen, endings, _t0 = _build_bounded(
+            tmp_path, max_duration=0.3, message="wrap up", run_end_command=command
+        )
+        asyncio.run(app.state.consume_say_loop())
+        assert endings == ["duration_cap"]
+
+
+def test_run_end_command_runs_without_a_digest_turn(tmp_path: Path) -> None:
+    """No consolidation message = no digest turn, but the ENDING is still reported."""
+    command, out = _sink_command(tmp_path)
+    app, seen, endings, _t0 = _build_bounded(tmp_path, max_duration=0.3, run_end_command=command)
+
+    asyncio.run(app.state.consume_say_loop())
+
+    ending = json.loads(out.read_text(encoding="utf-8"))
+    assert ending["reason"] == "duration_cap" and ending["digest"] == ""
+    assert seen == []
+    assert endings == ["duration_cap"]
