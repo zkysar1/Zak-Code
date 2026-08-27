@@ -1340,3 +1340,38 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   nudge names the fix (probe it). A genuine blocker still ends the turn on the second
   completion. A request that describes a skill in unrelated words ("do the thing that
   files work into the queue") no longer gets the skill seeded; that is the accepted price.
+
+## ADR-0037: A run is bounded by wall-clock, and the reserve is carved out of the cap so it ends in a receipt
+
+- **Status:** Accepted (shipped, 2026-08-27).
+- **Context:** A hosted vessel bills for wall-clock, so an unbounded run is a bill-shock
+  machine: nothing in the server could end a run that was simply idling. `request_timeout`
+  caps one model call and `max_cost_usd` caps spend; neither bounds the run. An earlier
+  implementation of this lived on `ServeDriver` (`src/zakcode/server/driver.py`), which was
+  deleted with the say-contract convergence — the turn loop is now `_consume_say_loop`
+  inside `create_app`, an unbounded `while True` with no wall-clock bound, no stop reason
+  and no wrap-up turn.
+- **Decision:** Three settings and one seam. `run_max_duration` caps the whole run;
+  `run_consolidation_reserve` is carved **out** of that cap, so the loop stops taking new
+  turns at `cap - reserve` and the digest turn still has clock left;
+  `run_consolidation_message` is what the digest turn says. `create_app(on_run_end=...)` is
+  awaited once with the stop reason (`"duration_cap"` / `"stopped"`) after the digest, and
+  `zakcode serve` uses it to set `uvicorn.Server.should_exit` so the vessel actually stops.
+  Both deadlines are anchored **once, at run start**, and never re-stamped per beat: a stamp
+  rewritten each cycle measures time-since-last-event (a liveness clock) while a stamp
+  preserved from the first measures total elapsed duration (a patience cap). They carry the
+  same units and answer different questions, and re-arming per beat would turn a paid run's
+  ceiling into a bound that can never fire. The deadline is checked BETWEEN turns, never
+  mid-turn, so a turn in flight always finishes.
+- **Alternatives rejected:** an auto-extend knob (a bounded run is a price agreed up front;
+  a disabled knob is still a knob, and this repo's no-knobs ruling already removed one);
+  killing the in-flight turn at the cap (leaves half-done work on the one path where nobody
+  is coming back to resume it); `os.kill` on the serving process (skips the lifespan
+  shutdown that persists sessions); letting the cap stop only the turn loop (uvicorn keeps
+  serving, the vessel keeps billing — the cap would buy nothing).
+- **Consequences:** A run that runs out the clock delivers a digest instead of a severed
+  stream, and an explicit stop gets the same receipt with a different reason. An
+  unconfigured server is byte-for-byte unchanged: no cap, no digest, no ending, and
+  shutdown stays immediate. The digest turn is visible in the transcript, deliberately — a
+  receipt that appeared with no prompt anyone could point at would read as the machine
+  talking to itself.

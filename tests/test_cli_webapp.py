@@ -1,7 +1,8 @@
 """Tests for the `zakcode webapp` CLI command (workspace pointer wiring).
 
-Hermetic: uvicorn.run and create_app are monkeypatched so nothing binds a port or builds a
-real app — the test only asserts that --workspace threads the workspace root into create_app.
+Hermetic: ``uvicorn.Server`` and ``create_app`` are monkeypatched so nothing binds a port
+or builds a real app — the test only asserts that --workspace threads the workspace root
+into create_app, and that the bounded-run callback can bring the server down.
 """
 
 from __future__ import annotations
@@ -26,12 +27,30 @@ def _patch(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
 
     import zakcode.server.app as server_app
 
-    def fake_create_app(*, settings: Any = None, **_kw: Any) -> object:
+    def fake_create_app(*, settings: Any = None, **kw: Any) -> object:
         captured["settings"] = settings
-        return object()  # dummy ASGI app; uvicorn.run is mocked so it is never served
+        captured["on_run_end"] = kw.get("on_run_end")
+        return object()  # dummy ASGI app; the server is stubbed so it is never served
+
+    class _FakeServer:
+        """Stands in for uvicorn's Server: records itself, never binds a port.
+
+        ``serve`` constructs a Server rather than calling ``uvicorn.run`` so a bounded
+        run can ask it to exit (ADR-0037), so THIS is the seam the tests must stub —
+        patching ``uvicorn.run`` would no longer intercept anything and the test would
+        really serve.
+        """
+
+        def __init__(self, config: Any) -> None:
+            self.config = config
+            self.should_exit = False
+            captured["server"] = self
+
+        def run(self) -> None:
+            captured["ran"] = True
 
     monkeypatch.setattr(server_app, "create_app", fake_create_app)
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+    monkeypatch.setattr(uvicorn, "Server", _FakeServer)
 
 
 def test_webapp_workspace_threads_workspace_root(
@@ -93,3 +112,33 @@ def test_webapp_non_loopback_allowed_with_auth_token(monkeypatch: pytest.MonkeyP
 
     assert result.exit_code == 0, result.stdout
     assert "settings" in captured
+
+
+# ── bounded runs: the callback has to actually stop the server (ADR-0037) ──────────
+
+
+def test_run_end_callback_asks_the_server_to_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap only saves money if the vessel STOPS.
+
+    Stopping the turn loop while uvicorn keeps serving leaves the host idle and still
+    billing — the cap would buy nothing. This pins the wiring end to end: serve hands
+    create_app an ``on_run_end``, and awaiting it sets ``should_exit`` on the very
+    server that was started.
+    """
+    import asyncio
+
+    captured: dict[str, Any] = {}
+    _patch(monkeypatch, captured)
+
+    result = runner.invoke(app, ["webapp", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0, result.stdout
+    assert captured["ran"] is True
+
+    on_run_end = captured["on_run_end"]
+    assert on_run_end is not None, "serve must hand create_app a run-end callback"
+    assert captured["server"].should_exit is False  # control: not stopped by merely serving
+
+    asyncio.run(on_run_end("duration_cap"))
+    assert captured["server"].should_exit is True

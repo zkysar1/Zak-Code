@@ -2784,13 +2784,38 @@ def serve(
         )
         raise typer.Exit(code=1)
 
-    fastapi_app = create_app(settings=resolved_settings) if workspace is not None else create_app()
+    # A bounded run has to be able to END the process, or the cap buys nothing: stopping
+    # the turn loop while uvicorn keeps serving leaves the vessel idle and still billing,
+    # which is the whole failure ZAKCODE_RUN_MAX_DURATION exists to prevent. So the server
+    # is constructed rather than `uvicorn.run(...)`-ed, and the app is handed a callback
+    # that asks it to exit. The holder breaks the cycle app -> callback -> server -> app.
+    server_holder: dict[str, Any] = {}
+
+    async def _on_run_end(reason: str) -> None:
+        console.print(f"[bold]Zak Code[/bold] run ended ({reason}) — shutting down.")
+        server = server_holder.get("server")
+        if server is not None:
+            # uvicorn's documented cooperative stop: it finishes in-flight requests and
+            # runs lifespan shutdown. Never os.kill ourselves — that would skip the very
+            # shutdown path that persists sessions.
+            server.should_exit = True
+
+    fastapi_app = (
+        create_app(settings=resolved_settings, on_run_end=_on_run_end)
+        if workspace is not None
+        else create_app(on_run_end=_on_run_end)
+    )
     auth_note = " [auth: on]" if resolved_settings.auth_token else ""
     where = f" (mind workspace: {workspace})" if workspace is not None else ""
+    cap = resolved_settings.run_max_duration
+    bound_note = f" [run cap: {cap:.0f}s]" if cap is not None else ""
     console.print(
-        f"[bold]Zak Code[/bold] {__version__} — serving on http://{host}:{port}{where}{auth_note}"
+        f"[bold]Zak Code[/bold] {__version__} — serving on "
+        f"http://{host}:{port}{where}{auth_note}{bound_note}"
     )
-    uvicorn.run(fastapi_app, host=host, port=port)
+    server = uvicorn.Server(uvicorn.Config(fastapi_app, host=host, port=port))
+    server_holder["server"] = server
+    server.run()
 
 
 # Registered at the bottom so cockpit's lazy imports back into this module (banner

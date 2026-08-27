@@ -348,6 +348,34 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-call wall-clock ceiling (seconds) for one model call.",
     )
+    # ── bounded runs (a run is one `zakcode serve` process; ADR-0037) ──────────────
+    # A hosted vessel bills for wall-clock, so an unbounded run is a bill-shock machine:
+    # the customer only learns the cap did not hold when the invoice arrives. These three
+    # bound the WHOLE run, not a turn — `request_timeout` above caps one model call and
+    # `max_cost_usd` caps spend; neither can end a run that is simply idling.
+    #
+    # The reserve is carved OUT of the cap, never added to it: the turn loop stops taking
+    # NEW turns at `run_max_duration - run_consolidation_reserve`, so the reserve is still
+    # on the clock when the mind is asked to consolidate. That is the difference between a
+    # receipt and a cut-off — a cap-hit ends in a real digest instead of a severed stream.
+    #
+    # There is deliberately NO auto-extend knob (the no-knobs ruling above, and outcome 3
+    # of g-369-08): a bounded run is a PRICE the customer agreed to up front. A disabled
+    # knob is still a knob, and the failure it invites is silent.
+    run_max_duration: float | None = Field(
+        default=None,
+        gt=0,
+        description="Wall-clock ceiling (seconds) for the whole run; None = unbounded.",
+    )
+    run_consolidation_reserve: float = Field(
+        default=0.0,
+        ge=0,
+        description="Seconds carved OUT of run_max_duration to spend on the final digest turn.",
+    )
+    run_consolidation_message: str | None = Field(
+        default=None,
+        description="Prompt for the final digest turn; None = no consolidation turn.",
+    )
     # There is deliberately NO turn-end veto budget (removed 2026-08-25, no-knobs
     # ruling): the TURN_END seam (Claude Code's Stop hook) is structurally ALWAYS ON
     # for the main Agent loop when the workspace's adopted hooks register one, and

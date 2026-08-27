@@ -21,6 +21,7 @@ test_server_watch.py.)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import socket
 import threading
@@ -273,3 +274,204 @@ async def test_prestream_failure_publishes_terminal_done(tmp_path: Path) -> None
     assert done["event"] == "done"
     assert done["stop_reason"] == "provider_error"
     assert done["degraded"] is True
+
+
+# ── bounded runs (ADR-0037) ──────────────────────────────────────────────────
+# A run is one served process. The cap stops the turn loop; the reserve is carved
+# OUT of the cap so the digest turn still has clock left; `on_run_end` reports how
+# the run ended so the caller can bring the vessel down. These drive the loop
+# directly through the `consume_say_loop` / `start_consumer` / `stop_consumer`
+# seams — no server, no lifespan, real (small) durations.
+
+
+class _TimingAgent:
+    """Scripted turn that records what it was asked and how far into the run."""
+
+    def __init__(self, session: Session, seen: list[tuple[str, float]], t0: float) -> None:
+        self.session = session
+        self._seen = seen
+        self._t0 = t0
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self._seen.append((user_text, time.monotonic() - self._t0))
+        self.session.add_message(Message.user(user_text))
+        self.session.add_message(Message.assistant_text("ok"))
+        yield AgentTextDelta(text="ok")
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+
+def _build_bounded(
+    tmp_path: Path,
+    *,
+    max_duration: float | None = None,
+    reserve: float = 0.0,
+    message: str | None = None,
+) -> tuple[Any, list[tuple[str, float]], list[str], float]:
+    """An app whose run is bounded; returns (app, turns_seen, endings, t0)."""
+    t0 = time.monotonic()
+    seen: list[tuple[str, float]] = []
+    endings: list[str] = []
+    settings = Settings(
+        default_model="scripted/test",
+        workspace_root=tmp_path,
+        run_max_duration=max_duration,
+        run_consolidation_reserve=reserve,
+        run_consolidation_message=message,
+    )
+
+    async def _on_run_end(reason: str) -> None:
+        endings.append(reason)
+
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _TimingAgent(session, seen, t0),
+        on_run_end=_on_run_end,
+    )
+    return app, seen, endings, t0
+
+
+def test_duration_cap_ends_the_run_and_names_the_reason(tmp_path: Path) -> None:
+    """The cap fires on its own — no say, no stop, nobody watching."""
+    app, _seen, endings, _t0 = _build_bounded(tmp_path, max_duration=0.3)
+
+    asyncio.run(app.state.consume_say_loop())  # returns only because the cap fired
+
+    assert endings == ["duration_cap"]
+
+
+def test_cap_hit_still_consolidates(tmp_path: Path) -> None:
+    """THE cap-hit path: a run that runs out the clock still delivers its digest.
+
+    The failure this pins is a run that ends by simply stopping — the customer pays
+    for the whole window and gets a severed stream instead of a receipt.
+    """
+    app, seen, endings, _t0 = _build_bounded(
+        tmp_path, max_duration=0.4, reserve=0.3, message="wrap up: what did we do?"
+    )
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert [text for text, _ in seen] == ["wrap up: what did we do?"]
+    assert endings == ["duration_cap"]
+
+
+def test_reserve_is_carved_out_of_the_cap_not_added_to_it(tmp_path: Path) -> None:
+    """The digest starts BEFORE the cap, because the reserve came out of it.
+
+    Discriminates the three ways this goes wrong: a reserve ADDED to the cap (digest
+    starts after `cap`), a reserve IGNORED (digest starts at ~`cap`), and the correct
+    carve-out (digest starts at ~`cap - reserve`).
+    """
+    cap, reserve = 1.2, 0.9
+    app, seen, _endings, _t0 = _build_bounded(
+        tmp_path, max_duration=cap, reserve=reserve, message="digest"
+    )
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert len(seen) == 1
+    _text, started_at = seen[0]
+    assert started_at < cap * 0.75, f"digest started at {started_at:.2f}s of a {cap}s cap"
+
+
+def test_reserve_larger_than_the_cap_still_consolidates(tmp_path: Path) -> None:
+    """A reserve >= the cap takes zero turns rather than a NEGATIVE deadline.
+
+    The turn loop must not run (its deadline is the run start), and the digest must
+    still fire — otherwise the run bills for the vessel and returns nothing at all.
+    """
+    app, seen, endings, _t0 = _build_bounded(
+        tmp_path, max_duration=0.2, reserve=5.0, message="digest"
+    )
+    assert write_say(say_path(tmp_path), "this should never become a turn")
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert [text for text, _ in seen] == ["digest"]
+    assert endings == ["duration_cap"]
+
+
+def test_explicit_stop_consolidates_and_reads_as_stopped(tmp_path: Path) -> None:
+    """A human ending the run gets the same receipt as the clock running out — and a
+    DIFFERENT reason, because those are different stories to tell."""
+    app, seen, endings, _t0 = _build_bounded(tmp_path, reserve=2.0, message="digest")
+
+    async def go() -> None:
+        await app.state.start_consumer()
+        await asyncio.sleep(0.05)
+        await app.state.stop_consumer()
+
+    asyncio.run(go())
+
+    assert [text for text, _ in seen] == ["digest"]
+    assert endings == ["stopped"]
+
+
+def test_an_unbounded_run_never_ends_itself(tmp_path: Path) -> None:
+    """The default is unchanged: no cap, no digest, no ending — the loop just runs.
+
+    The positive control for every test above. Without it a bug that ended EVERY run
+    immediately would leave them all green.
+    """
+    app, seen, endings, _t0 = _build_bounded(tmp_path)
+
+    async def go() -> bool:
+        task = asyncio.create_task(app.state.consume_say_loop())
+        await asyncio.sleep(0.9)  # well past the cap the other tests use
+        still_running = not task.done()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return still_running
+
+    assert asyncio.run(go()) is True
+    assert seen == []
+    assert endings == []
+
+
+class _SlowAgent:
+    """A turn that takes real time — needed to test a BUDGET, which is a ceiling."""
+
+    def __init__(self, session: Session, seen: list[str], delay: float) -> None:
+        self.session = session
+        self._seen = seen
+        self._delay = delay
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self._seen.append(user_text)
+        await asyncio.sleep(self._delay)
+        self.session.add_message(Message.assistant_text("ok"))
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+
+def test_a_reserve_larger_than_the_cap_cannot_overrun_the_cap(tmp_path: Path) -> None:
+    """The clamp: `run_consolidation_reserve` is a FLOOR on the digest budget, so an
+    unclamped reserve larger than the cap would push the run past its own ceiling —
+    and a cap a misconfiguration can exceed is not a hard cap.
+
+    An instant agent cannot detect this (a budget is a ceiling, not a sleep), so the
+    digest here deliberately takes longer than the cap: clamped, it is cut off at the
+    cap; unclamped, it would run the full 1.5s.
+    """
+    cap, raw_reserve, digest_time = 0.3, 5.0, 1.5
+    seen: list[str] = []
+    settings = Settings(
+        default_model="scripted/test",
+        workspace_root=tmp_path,
+        run_max_duration=cap,
+        run_consolidation_reserve=raw_reserve,
+        run_consolidation_message="digest",
+    )
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _SlowAgent(session, seen, digest_time),
+    )
+
+    started = time.monotonic()
+    asyncio.run(app.state.consume_say_loop())
+    elapsed = time.monotonic() - started
+
+    assert seen == ["digest"]  # the digest was still attempted
+    assert elapsed < digest_time, f"run took {elapsed:.2f}s — the reserve escaped the cap"
