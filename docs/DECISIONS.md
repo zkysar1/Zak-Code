@@ -1262,6 +1262,41 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   harness owns, and the web client's resume notice is the same residual — tracked, not
   hidden. The probe costs one metadata read every 5 s of idle time.
 
+## ADR-0036: Every server door dispatches a leading slash like the CLI
+
+- **Status:** Accepted (shipped, 2026-08-27). Field finding 2026-08-27 (Vinheim, bravo): a
+  served Mind could never be STARTED. Its framework's boot command (`/start <agent> --mode
+  assistant`) is a user-invocable-only skill, and the server's three doors — the say consumer,
+  `POST /chat`, `POST /chat/stream` — passed raw text to the turn, so the model either refused
+  its own boot command as self-invocation or free-associated over the slash line. A headless
+  deployment (systemd `mind-serve@`, a provisioning recipe, no terminal) has ONLY those doors.
+- **Context:** the 2026-08-19 CLI work gave a typed slash Claude Code semantics through
+  `Agent.compose_skill_turn` — the command-expansion frame at the very START of the user
+  message is how a user-invocable-only skill learns a human typed it. The REPL,
+  `chat --say-inbox` and `-p` (#148) all ride it, and the docs already called the inbox "one
+  input rule, two doors, ONE reader" — but the served surface never joined; it was a third
+  door with a different rule.
+- **Decision:** `dispatch_slash` in the server, called first by all three doors. The first
+  whitespace token (lower-cased, slash stripped) is the skill and the remainder its args,
+  exactly the one-shot parse. Invoked → the framed `turn_text` IS the turn; a queued nudge is
+  left queued rather than folded in front of the frame (the frame's position is the signal).
+  Denied / unreadable → NO turn: `/chat` answers 403 / 500 with the reason; `/chat/stream` and
+  the say consumer publish `status` + `done(stop_reason="skill_refused", degraded, error)` so
+  no watcher hangs. Unknown `/token`, or a thin `AgentLike` without `compose_skill_turn` →
+  prose, unchanged. The watch `user_message` marker keeps the TYPED text, not the skill body.
+  No flag — it is the CLI's existing rule applied to the doors that lacked it.
+- **Alternatives rejected:** auto-`/start` on session create inside the server (the boot
+  command belongs to the deployment; zakcode stays framework-agnostic); a dedicated
+  `POST /skill` endpoint (a second input contract beside the say inbox — the inbox IS the
+  contract, and a recipe writes a file, not HTTP); letting a refused slash fall through as
+  prose (the CLI already decided a scripted boot fails loudly, never silently).
+- **Consequences:** a recipe can end provisioning by writing `/start tricks --mode assistant`
+  into `.say`, and the Mind boots itself; the operator sees the typed command on the watch
+  page and the framework's own "Assistant mode active" reply. The inbox is now a COMMAND
+  lane: any surface that forwards untrusted user text to `/say` must neutralize a leading
+  slash at ITS trust boundary (Vinheim: the gateway's `sanitizeSay`). Open: no telemetry
+  distinguishes a served slash from a typed one (same gap the CLI has).
+
 ## ADR-0035: The classify side-call also names the skill a request implies
 
 - **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-26 (serene): "finish
