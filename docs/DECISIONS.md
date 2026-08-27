@@ -1261,3 +1261,40 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   web server (`zakcode serve`) does not yet restart itself: it has no idle boundary the
   harness owns, and the web client's resume notice is the same residual — tracked, not
   hidden. The probe costs one metadata read every 5 s of idle time.
+
+## ADR-0035: The classify side-call also names the skill a request implies
+
+- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-26 (serene): "finish
+  forging this skill" — the skill-forging skill was the whole task, but the request carried no
+  `/slash` token, so the harness never knew: no plan step was seeded, the coverage backstop
+  stayed unarmed, and the model collapsed without ever reading the skill.
+- **Context:** ADR-0026 deliberately made skill references REQUEST-shaped (`/name` tokens
+  only) so pasted documentation could not conscript the plan seeder and the backstop; the
+  cost was that a request naming its skill in prose gets none of that scaffolding. A regex
+  over prose would re-open the false-positive door ADR-0026 closed. But the harness already
+  spends ONE cheap classify-model call per ambiguous turn to judge scope
+  (`should_consult_classifier`); the same call can be asked to name the catalogued skill
+  the request is unmistakably asking to run.
+- **Decision:** `DIFFICULTY_SCHEMA` gains an optional `skill` (string or null; `difficulty`
+  stays the only required field, so a classifier that omits it is still valid). The prompt,
+  when the workspace has a skill catalog, lists it (name: description, capped at 60 entries
+  / 100 chars) with the rule *by name, or by an unmistakable description of what that skill
+  does — otherwise null; never guess*. `parse_skill` accepts only an exact (case-insensitive,
+  leading-slash-tolerant) match against the catalog, so a guessed name is dropped rather
+  than seeded. The side-call returns a `DifficultyVerdict(category, skill)`; the loop feeds
+  `category` to `classify_main_turn` as before and, for a named skill, `_adopt_implied_skill`
+  arms the coverage backstop and seeds the same `run /<skill>` plan step a typed `/name`
+  gets, then rebuilds the call so the model sees the step on that very iteration (the
+  streaming path also says so in a status line). No flag: the classifier already ran; it
+  now answers one more question.
+- **Alternatives rejected:** a prose regex over the request (the ADR-0026 false-positive
+  class — a pasted prompt discussing eight skills demanded all eight); a second, dedicated
+  side-call (double the spend for the same judgment); trusting the classifier's name without
+  the catalog match (a hallucinated skill would seed a step `use_skill` cannot load).
+- **Consequences:** "finish forging this skill" on a workspace whose catalog carries the
+  forging skill now runs with a seeded `run /forge-skill` step and an armed backstop — a
+  text-only finish is nudged to run it or say why not. Detection rides the side-call, so it
+  reaches exactly the turns the classifier judges (short request, small context, zakpick
+  on, not latched); a long request or a single-model install gets no skill detection, as
+  before. A wrong-but-catalogued name costs one plan step the model can cancel with a
+  sentence. Each prompt grows by the catalog text (bounded).

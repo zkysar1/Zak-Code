@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
@@ -33,6 +33,7 @@ from zakcode.messages import Message
 from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedModel
+from zakcode.providers.routing import DifficultyVerdict
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools.base import SkillLoad, SkillResolver
 from zakcode.tools.builtins.default_registry import default_registry
@@ -1173,25 +1174,28 @@ class Agent:
         self._active_model = model
         return provider
 
-    async def _classify_difficulty(
-        self, user_text: str, context_frac: float
-    ) -> Literal["quick_code", "deep_code"]:
+    async def _classify_difficulty(self, user_text: str, context_frac: float) -> DifficultyVerdict:
         """zakpick base-difficulty router (the activated ``classify`` category): judge the
         request's SCOPE with a cheap classify-model call, not its LENGTH — a terse "build a pdf
-        reader and maker" is a deep task no character count reveals. Returns ``"quick_code"`` or
-        ``"deep_code"``.
+        reader and maker" is a deep task no character count reveals. Returns a
+        :class:`~zakcode.providers.routing.DifficultyVerdict`: ``"quick_code"`` or
+        ``"deep_code"``, plus (ADR-0035) the catalogued skill the request is asking to RUN when
+        the workspace has skills — the loop seeds a plan step and arms the coverage backstop
+        for it, so a request that names its skill in prose ("finish forging this skill") is
+        held to it exactly like one that typed the ``/slash``.
 
         Only the AMBIGUOUS short case (where the length heuristic would say quick) consults the
         model; a long request or an already-large context fast-paths to ``deep_code`` with NO
         call. Any failure — provider error, or output that never validated — FAILS UP to
-        ``deep_code``, so Zak Code never guesses "quick" from length. The cheap call's spend is
-        accounted on the session + shared budget like any other model call (tagged to the classify
-        model), so it is visible in ``/cost`` and bounded by the turn-tree budget — never hidden.
+        ``deep_code`` (and no skill), so Zak Code never guesses "quick" from length. The cheap
+        call's spend is accounted on the session + shared budget like any other model call
+        (tagged to the classify model), so it is visible in ``/cost`` and bounded by the
+        turn-tree budget — never hidden.
         """
         from zakcode.providers.routing import (
             DIFFICULTY_SCHEMA,
             difficulty_system_prompt,
-            parse_difficulty,
+            parse_verdict,
             should_consult_classifier,
         )
         from zakcode.providers.structured import (
@@ -1201,8 +1205,9 @@ class Agent:
         )
 
         if not should_consult_classifier(user_text, context_frac):
-            return "deep_code"  # long / large-context -> capable coder, no model call
+            return DifficultyVerdict("deep_code")  # long / large-context -> capable coder, no call
         provider, model = self._resolve_task_provider("classify")
+        skills = self.skill_registry.catalog() if self.skill_registry is not None else []
         try:
             # json_OBJECT mode (native JSON), NOT json_schema: litellm implements a json_schema
             # response_format on Groq via FUNCTION CALLING, and Groq's open models (incl. the
@@ -1212,12 +1217,12 @@ class Agent:
             # locally against DIFFICULTY_SCHEMA below.
             result = await provider.acomplete(
                 [Message.user(user_text)],
-                system=difficulty_system_prompt(),
+                system=difficulty_system_prompt(skills),
                 response_format=make_response_format(None),
                 temperature=0.0,
             )
         except ProviderError:
-            return "deep_code"  # classifier unavailable -> fail UP to the reliable coder
+            return DifficultyVerdict("deep_code")  # classifier unavailable -> fail UP
         with contextlib.suppress(Exception):  # accounting must never break routing
             self.session.add_usage(result.usage, model=model)
             if self._shared_budget is not None:
@@ -1225,8 +1230,8 @@ class Agent:
         try:
             data = coerce_structured(result.text, schema=DIFFICULTY_SCHEMA)
         except StructuredValidationError:
-            return "deep_code"  # output was not schema-valid JSON -> fail UP
-        return parse_difficulty(data)
+            return DifficultyVerdict("deep_code")  # output was not schema-valid JSON -> fail UP
+        return parse_verdict(data, known=[name for name, _desc in skills])
 
     async def _deep_think_sample(
         self, prompt: str, *, system: str | None = None, temperature: float = 0.0

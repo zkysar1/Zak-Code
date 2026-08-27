@@ -145,7 +145,7 @@ from zakcode.providers.base import (
     TimedOut,
     ToolCall,
 )
-from zakcode.providers.routing import classify_main_turn
+from zakcode.providers.routing import DifficultyVerdict, classify_main_turn
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_rubric, weak_dimensions
 from zakcode.session.store import Session, SessionStore
@@ -173,9 +173,11 @@ MainProviderFor = Callable[[str], Provider]
 #: The zakpick base-difficulty router (``Agent._classify_difficulty``): judge a turn's SCOPE
 #: (quick_code vs deep_code) with a cheap ``classify``-model call instead of message length.
 #: Async (it may make a model call); the loop calls it at most ONCE per turn and feeds the
-#: verdict to :func:`~zakcode.providers.routing.classify_main_turn` as ``difficulty_hint``.
+#: verdict's category to :func:`~zakcode.providers.routing.classify_main_turn` as
+#: ``difficulty_hint``; a verdict that also names a catalogued skill (ADR-0035) seeds a plan
+#: step and arms the coverage backstop for it, exactly as a typed ``/slash`` would.
 #: ``None`` (a bare/legacy loop) keeps the pure length heuristic — byte-identical to before.
-DifficultyClassifier = Callable[[str, float], Awaitable[Literal["quick_code", "deep_code"]]]
+DifficultyClassifier = Callable[[str, float], Awaitable[DifficultyVerdict]]
 
 #: Fallback iteration budget when neither an explicit value nor settings provide one.
 DEFAULT_MAX_ITERATIONS = 0  # 0 = unlimited (the doom-loop + cost budget are the real guards)
@@ -1320,22 +1322,40 @@ class AgentLoop:
         refs = self._skill_refs(user_text)
         if len(refs) < 2:
             return []
+        return self._seed_skill_steps(refs, reason="the request explicitly asked for")
+
+    def _seed_skill_steps(self, names: list[str], *, reason: str) -> list[str]:
+        """Append one ``run /<skill>`` plan step per name the plan does not already mention.
+
+        Shared by the compound-request seeder above and the classifier-implied skill
+        (ADR-0035). Appends to any existing plan (never replaces). Returns the names seeded.
+        """
         network = self.session.task_network
         seeded: list[str] = []
-        for name in refs:
+        for name in names:
             if self._plan_mentions_skill(name):
                 continue
             network.tasks.append(
                 Task(
                     title=f"run /{name}",
                     kind="primitive",
-                    note=f"the request explicitly asked for /{name} — invoke it via use_skill",
+                    note=f"{reason} /{name} — invoke it via use_skill",
                 )
             )
             seeded.append(name)
         if seeded:
             network.normalize()
         return seeded
+
+    def _adopt_implied_skill(self, name: str, requested: list[str]) -> bool:
+        """Hold the turn to a skill the request IMPLIES (ADR-0035) — named by the classify
+        side-call rather than a ``/slash`` token: arm the coverage backstop (``requested``)
+        and seed a plan step, exactly what a typed ``/name`` gets. Returns True when the
+        plan gained a step (False when it already mentioned the skill).
+        """
+        if name not in requested:
+            requested.append(name)
+        return bool(self._seed_skill_steps([name], reason="the request implies (classified)"))
 
     @staticmethod
     def _harvest_skill_invocations(
@@ -2375,7 +2395,21 @@ class AgentLoop:
                     and not signal_latched
                     and self.difficulty_classifier is not None
                 ):
-                    base_difficulty = await self.difficulty_classifier(user_text, ctx_frac)
+                    verdict = await self.difficulty_classifier(user_text, ctx_frac)
+                    base_difficulty = verdict.category
+                    # Skill intent (ADR-0035): the request names its skill in prose — hold
+                    # the turn to it like a typed /slash, and rebuild the call so the model
+                    # sees the seeded step on THIS iteration.
+                    if verdict.skill is not None and self._adopt_implied_skill(
+                        verdict.skill, requested_skills
+                    ):
+                        self._note(
+                            "intervention",
+                            f"plan seeded: the request implies /{verdict.skill}",
+                            kind="plan",
+                        )
+                        self._persist()
+                        call_messages = await self._messages_for_call(user_text, iterations)
                 category = classify_main_turn(
                     last_user_len=len(user_text),
                     context_frac=ctx_frac,
@@ -3277,7 +3311,22 @@ class AgentLoop:
                         and not signal_latched
                         and self.difficulty_classifier is not None
                     ):
-                        base_difficulty = await self.difficulty_classifier(user_text, ctx_frac)
+                        verdict = await self.difficulty_classifier(user_text, ctx_frac)
+                        base_difficulty = verdict.category
+                        # Skill intent (ADR-0035) — see the buffered twin.
+                        if verdict.skill is not None and self._adopt_implied_skill(
+                            verdict.skill, requested_skills
+                        ):
+                            self._note(
+                                "intervention",
+                                f"plan seeded: the request implies /{verdict.skill}",
+                                kind="plan",
+                            )
+                            self._persist()
+                            call_messages = await self._messages_for_call(user_text, iterations)
+                            yield AgentStatus(
+                                message=f"request implies /{verdict.skill} — seeded as a plan step"
+                            )
                     category = classify_main_turn(
                         last_user_len=len(user_text),
                         context_frac=ctx_frac,

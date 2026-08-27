@@ -27,7 +27,8 @@ hardcoded vendor *sort*.
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Iterable, Sequence
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel
 
@@ -265,14 +266,39 @@ def classify_main_turn(
 # Agent (it needs a provider); these helpers are the pure policy it uses, kept here next to the
 # thresholds. Failure of that call FAILS UP to ``deep_code`` — never a length-based guess.
 
-#: JSON schema for the difficulty side-call: a single enum, so even a small/fast model can
-#: emit it reliably (it is a plain JSON gate, no tools — the path Groq's open models handle).
+#: JSON schema for the difficulty side-call: one enum plus an OPTIONAL skill name, so even a
+#: small/fast model can emit it reliably (it is a plain JSON gate, no tools — the path Groq's
+#: open models handle). ``skill`` (ADR-0035) is the catalogued skill the request is asking
+#: to RUN, or null; a verdict that omits it is still valid (only ``difficulty`` is required).
 DIFFICULTY_SCHEMA: dict[str, object] = {
     "type": "object",
-    "properties": {"difficulty": {"type": "string", "enum": ["quick", "deep"]}},
+    "properties": {
+        "difficulty": {"type": "string", "enum": ["quick", "deep"]},
+        "skill": {"type": ["string", "null"]},
+    },
     "required": ["difficulty"],
     "additionalProperties": False,
 }
+
+
+class DifficultyVerdict(NamedTuple):
+    """The classify side-call's verdict (ADR-0035): the routing category plus, when the
+    request is unmistakably an ask to RUN one catalogued skill, that skill's exact name.
+
+    Field incident 2026-08-26 (serene): "finish forging this skill" carried no ``/slash``
+    token, so nothing in the harness knew the skill-forging skill WAS the task — no plan
+    step was seeded, the coverage backstop stayed unarmed, and the model never read the
+    skill before collapsing. The same cheap call that judges scope can name the skill.
+    """
+
+    category: Literal["quick_code", "deep_code"]
+    skill: str | None = None
+
+
+#: Bounds on the catalog shown to the classifier: enough for any real workspace, small
+#: enough that the side-call stays cheap.
+_SKILL_CATALOG_CAP = 60
+_SKILL_DESC_CAP = 100
 
 
 def should_consult_classifier(user_text: str, context_frac: float) -> bool:
@@ -286,9 +312,14 @@ def should_consult_classifier(user_text: str, context_frac: float) -> bool:
     return len(user_text) < _QUICK_MAX_USER_CHARS and context_frac < _QUICK_MAX_CONTEXT_FRAC
 
 
-def difficulty_system_prompt() -> str:
-    """System prompt for the one-shot difficulty classifier (cheap model, JSON out)."""
-    return (
+def difficulty_system_prompt(skills: Sequence[tuple[str, str]] = ()) -> str:
+    """System prompt for the one-shot difficulty classifier (cheap model, JSON out).
+
+    ``skills`` — the workspace's ``(name, description)`` catalog — adds the skill-intent half
+    (ADR-0035): the classifier also names the ONE catalogued skill the request is asking to
+    run, or null. Without a catalog the prompt is the plain scope judgment.
+    """
+    base = (
         "You are a fast router for a coding agent. Classify the user's request by the SCOPE of "
         "work it implies, NOT by how long the message is.\n"
         '- "quick": a small, bounded change a capable coder finishes in a few steps — a typo or '
@@ -298,7 +329,23 @@ def difficulty_system_prompt() -> str:
         "multi-file changes, design or refactoring, or anything ambiguous or ambitious.\n"
         'A request can be SHORT yet "deep" — e.g. "build a pdf reader and maker" or "add auth" '
         'are deep. When unsure, answer "deep".\n'
-        'Reply with ONLY a JSON object: {"difficulty": "quick"} or {"difficulty": "deep"}.'
+    )
+    if not skills:
+        return base + (
+            'Reply with ONLY a JSON object: {"difficulty": "quick"} or {"difficulty": "deep"}.'
+        )
+    catalog = "\n".join(
+        f"- {name}: {desc[:_SKILL_DESC_CAP]}" if desc else f"- {name}"
+        for name, desc in skills[:_SKILL_CATALOG_CAP]
+    )
+    return base + (
+        "The agent also has these skills (name: what it does):\n"
+        f"{catalog}\n"
+        "If the request is asking to RUN one of these skills — by name, or by an unmistakable "
+        'description of what that skill does — add "skill": "<exact name>"; otherwise '
+        '"skill": null. Never guess: a request that merely touches the same topic is null.\n'
+        'Reply with ONLY a JSON object, e.g. {"difficulty": "quick", "skill": null} or '
+        '{"difficulty": "deep", "skill": "<exact name>"}.'
     )
 
 
@@ -312,6 +359,30 @@ def parse_difficulty(data: object) -> Literal["quick_code", "deep_code"]:
     if isinstance(data, dict) and data.get("difficulty") == "quick":
         return "quick_code"
     return "deep_code"
+
+
+def parse_skill(data: object, known: Iterable[str]) -> str | None:
+    """The catalogued skill a validated verdict names — in the catalog's casing — or ``None``.
+
+    Only an exact (case-insensitive, leading-slash-tolerant) match against ``known`` counts:
+    a name the catalog does not carry is a guess and is dropped, so the loop never seeds a
+    plan step for a skill ``use_skill`` could not load.
+    """
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("skill")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    wanted = raw.strip().lstrip("/").lower()
+    for name in known:
+        if name.lower() == wanted:
+            return name
+    return None
+
+
+def parse_verdict(data: object, known: Iterable[str] = ()) -> DifficultyVerdict:
+    """Both halves of a validated classifier result (ADR-0035); each fails safe on its own."""
+    return DifficultyVerdict(parse_difficulty(data), parse_skill(data, known))
 
 
 def describe_zakpick(settings: object) -> str:
@@ -341,8 +412,11 @@ __all__ = [
     "model_for_category",
     "classify_main_turn",
     "DIFFICULTY_SCHEMA",
+    "DifficultyVerdict",
     "should_consult_classifier",
     "difficulty_system_prompt",
     "parse_difficulty",
+    "parse_skill",
+    "parse_verdict",
     "describe_zakpick",
 ]
