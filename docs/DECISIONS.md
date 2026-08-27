@@ -1527,3 +1527,29 @@ The two are not stitched by the server: a turn in flight at join time is in neit
 after loading the transcript may see the most recent turns twice — consumers that
 care dedupe or open the stream with `?since` after the transcript. The endpoint is
 read-only and bearer-gated like every route; it creates no agent and no turn.
+
+## ADR-0042: A typed skill turn does not end on silence
+
+**Context.** The empty give-up gate (ADR-0033 family) treats an empty completion as a
+silent give-up only when the user has seen nothing this turn; once the model has said
+something, a trailing empty completion is a deliberate "nothing more to say". That is
+right for a request and wrong for a SEQUENCE. A typed or served `/<skill>` turn
+(ADR-0037: the command frame at the start of the user message) carries a procedure the
+model is executing step by step. Measured 2026-08-27 on a served Mind (Vinheim, boot B
+of the g-369-02 verify): `/start tricks --mode assistant` ran four steps, narrated two
+lines, then went silent — the turn ended `completed` with the agent half-started (its
+persona never set), and the product's ready gate then waited on a ceremony that would
+never resume, because nothing on the box re-issues a finished turn.
+
+**Decision.** When the turn is a composed skill turn, an empty completion is never a
+clean finish: the loop nudges — naming the skill ("the /start sequence you are running
+is not finished; reply with the tool call for its next step, or one sentence stating
+every step is complete") — under the same `_MAX_EMPTY_RETRIES` bound as the generic
+gate, and ends `gave_up` (degraded, vetoable) past it. Prior text does not preserve
+clean-end semantics for a skill turn; for every other turn nothing changes.
+
+**Consequences.** A small model that drops a skill mid-sequence gets asked, at most
+twice, to continue — the same rail the generic gate already provides for a turn that
+produced nothing. A skill whose every step is genuinely done can say so in one
+sentence and end cleanly. The deployment-side belt (re-issuing a ceremony whose turn
+ended without its effects) stays with the deployment; this is the loop's half.
