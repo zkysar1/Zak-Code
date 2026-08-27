@@ -35,7 +35,13 @@ from rich.table import Table
 from rich.text import Text
 
 from zakcode import __version__
-from zakcode.build_info import build_commit, build_dir, build_url, version_line
+from zakcode.build_info import (
+    build_commit,
+    build_dir,
+    build_url,
+    install_changed,
+    version_line,
+)
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
     close_input_frame,
@@ -370,8 +376,9 @@ def update(
     when the version string is unchanged (measured 2026-08-21), and a uv tool
     environment carries no pip, so the reinstall leg goes through ``uv tool install
     --force --reinstall`` whenever uv owns this install (extras recovered from uv's
-    receipt). Prints old → new build identity; running chat sessions keep the old
-    code until restarted.
+    receipt). Prints old → new build identity. Running chat sessions notice the new
+    install at their next idle prompt and restart themselves into it, resuming their
+    session (ADR-0034) — no operator action needed.
     """
     old = version_line(__version__)
     url = build_url()
@@ -433,7 +440,7 @@ def update(
     )
     if new == old != "(unreadable)":
         _dim(console, "same commit — you were already current")
-    _dim(console, "running chat sessions keep the old build until restarted")
+    _dim(console, "running chat sessions restart into the new build at their next idle prompt")
 
 
 @app.command()
@@ -759,6 +766,68 @@ def _announce_resume(console: Console, agent: Any) -> None:
     )
 
 
+def _restart_args(argv: list[str], session_id: str) -> list[str]:
+    """``argv`` (this process's arguments, program name excluded) with ``--session`` pinned
+    to ``session_id`` — any ``-s``/``--session`` already present is replaced — so the fresh
+    process resumes exactly this conversation with every other option intact.
+
+    A bare ``zakcode`` (the root callback) takes no chat options, so the ``chat`` command is
+    named explicitly whenever the original invocation did not name a command.
+    """
+    out: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+            continue
+        if arg in ("-s", "--session"):
+            skip = True
+            continue
+        if arg.startswith("--session="):
+            continue
+        out.append(arg)
+    if not out or out[0].startswith("-"):
+        out.insert(0, "chat")
+    return [*out, "--session", session_id]
+
+
+def _restart_into_new_build(console: Console, agent: Any) -> None:
+    """Replace this process with one running the newly installed build (ADR-0034).
+
+    Called at an idle boundary only (nothing in flight). The session document is
+    stamped with the build that will read it FIRST, so the resumed session is not
+    compacted as a cross-build resume (ADR-0033) — this restart is an upgrade, not a
+    collapse. The ``exec`` keeps the terminal, the cwd, and every original argument;
+    only ``--session`` is pinned. If the exec itself fails the REPL keeps serving on
+    the old build and says so.
+    """
+    changed = install_changed()
+    if changed is None:
+        return
+    old, new = changed
+    what = (
+        f"build {new} reinstalled"
+        if new and new == old
+        else f"{old or 'previous build'} → {new or 'new build'}"
+    )
+    notice_info(
+        console,
+        f"update installed ({what}) {GLYPHS['dash']} restarting to apply; this session resumes",
+    )
+    with contextlib.suppress(Exception):  # a failed stamp costs one compaction, never the restart
+        agent.session.build = new
+        store = getattr(agent.loop, "store", None)
+        if store is not None:
+            store.save(agent.session)
+    args = _restart_args(sys.argv[1:], agent.session.id)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(sys.executable, [sys.executable, "-m", "zakcode", *args])
+    except OSError as exc:
+        notice_error(console, "restart failed — still on the previous build", str(exc))
+
+
 def _render_transcript(
     console: Console, session: object, *, limit: int = _REPLAY_MESSAGE_LIMIT
 ) -> None:
@@ -858,13 +927,29 @@ class _InputMux:
     permission prompt re-asked into a broken screen.
     """
 
-    def __init__(self, inbox: Path, interrupt_fp: Path, *, keyboard: bool = True) -> None:
+    def __init__(
+        self,
+        inbox: Path,
+        interrupt_fp: Path,
+        *,
+        keyboard: bool = True,
+        idle_probe: Callable[[], bool] | None = None,
+    ) -> None:
         from zakcode.session.say_inbox import read_say, take_interrupt
 
         self._read_say = read_say
         self._take_interrupt = take_interrupt
         self.inbox = inbox
         self.interrupt_fp = interrupt_fp
+        #: Polled while the REPL is truly idle (ADR-0034): a True verdict ends the wait
+        #: with ``("restart", None)`` so the REPL can hand the session to a fresh process.
+        #: Never consulted mid-turn (a permission prompt is not an idle boundary).
+        self._idle_probe = idle_probe
+        self._idle_probe_every = 5.0
+        # First probe one interval in, not on the first idle poll: a restart at the very
+        # first prompt would race whatever is still settling around a fresh process (and
+        # a suite that drives the real REPL must never be able to exec itself away).
+        self._idle_probe_at = time.monotonic()
         self.queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
         #: Says consumed during a permission prompt that were NOT answers to it —
         #: held here and delivered as ordinary input once the REPL is idle again,
@@ -924,6 +1009,12 @@ class _InputMux:
             except queue.Empty:
                 if self._eof:
                     return ("eof", None)
+                if idle and self._idle_probe is not None:
+                    now = time.monotonic()
+                    if now - self._idle_probe_at >= self._idle_probe_every:
+                        self._idle_probe_at = now
+                        if self._idle_probe():
+                            return ("restart", None)
                 continue
             if got[0] == "eof":
                 self._eof = True
@@ -2215,6 +2306,9 @@ def chat(
         inbox_path,
         interrupt_fp,
         keyboard=os.environ.get("ZAKCODE_COCKPIT_PANE") != "1",
+        # ADR-0034: a `zakcode update` that lands while this REPL sits idle restarts it
+        # into the new build (resuming this session) instead of leaving it on stale code.
+        idle_probe=lambda: install_changed() is not None,
     )
     repl_mux.append(mux)
 
@@ -2239,6 +2333,11 @@ def chat(
         if kind == "eof":
             notice_info(console, f"session closed {GLYPHS['dash']} goodbye")
             break
+        if kind == "restart":
+            # A newer build is installed (ADR-0034): at this idle boundary nothing is in
+            # flight, so hand the session to a fresh process and resume it there.
+            _restart_into_new_build(console, agent)
+            continue  # reached only when the exec itself failed — keep serving
         if kind == "interrupt":
             # A single Ctrl-C at the prompt must NOT kill the session — terminal
             # muscle memory sends it constantly (aborting a copy, clearing a

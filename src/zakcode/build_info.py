@@ -17,14 +17,24 @@ to ``None`` for a PyPI or plain-path install, where there is no commit to report
 from __future__ import annotations
 
 import json
+import subprocess
 from functools import lru_cache
+from pathlib import Path
 
-__all__ = ["build_commit", "build_dir", "build_source", "build_url", "version_line"]
+__all__ = [
+    "build_commit",
+    "build_dir",
+    "build_source",
+    "build_url",
+    "install_changed",
+    "install_identity",
+    "running_build",
+    "version_line",
+]
 
 
-@lru_cache(maxsize=1)
-def _direct_url() -> dict[str, object]:
-    """PEP 610 install metadata, or ``{}`` when absent/unreadable."""
+def _read_direct_url() -> dict[str, object]:
+    """PEP 610 install metadata read FRESH from disk, or ``{}`` when absent/unreadable."""
     try:
         from importlib.metadata import distribution
 
@@ -40,9 +50,14 @@ def _direct_url() -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def build_commit(short: bool = True) -> str | None:
-    """The commit this build was installed from, or ``None`` if not a VCS install."""
-    vcs = _direct_url().get("vcs_info")
+@lru_cache(maxsize=1)
+def _direct_url() -> dict[str, object]:
+    """PEP 610 install metadata as it was when this process first asked (cached)."""
+    return _read_direct_url()
+
+
+def _commit_of(info: dict[str, object], short: bool = True) -> str | None:
+    vcs = info.get("vcs_info")
     if not isinstance(vcs, dict):
         return None
     commit = vcs.get("commit_id")
@@ -50,6 +65,105 @@ def build_commit(short: bool = True) -> str | None:
         return None
     commit = commit.strip()
     return commit[:12] if short else commit
+
+
+def _dir_of(info: dict[str, object]) -> str | None:
+    if not isinstance(info.get("dir_info"), dict):
+        return None
+    url = info.get("url")
+    if not isinstance(url, str) or not url.startswith("file://"):
+        return None
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    path = url2pathname(urlparse(url).path)
+    return path if path.strip() else None
+
+
+def build_commit(short: bool = True) -> str | None:
+    """The commit this build was installed from, or ``None`` if not a VCS install."""
+    return _commit_of(_direct_url(), short)
+
+
+def _install_marker() -> float | None:
+    """Mtime of the install's own ``direct_url.json`` — rewritten by every (re)install.
+
+    The one signal that says "the package on disk is not the one this process loaded"
+    for EVERY install shape: a git-URL install (whose commit may change), a local-checkout
+    install (whose metadata carries no commit at all), and a no-op reinstall of the same
+    commit. ``None`` when there is no installed distribution (running from a bare source
+    tree), so nothing downstream ever fires there.
+    """
+    try:
+        from importlib.metadata import distribution
+
+        dist = distribution("zakcode")
+        for entry in dist.files or []:
+            if entry.name == "direct_url.json" and ".dist-info" in str(entry):
+                return Path(entry.locate()).stat().st_mtime
+        path = getattr(dist, "_path", None)  # PathDistribution: the dist-info directory
+        if path is not None:
+            return (path / "direct_url.json").stat().st_mtime
+    except Exception:  # noqa: BLE001 — a probe, never a failure
+        return None
+    return None
+
+
+def _checkout_head(directory: str) -> str | None:
+    """Short HEAD sha of the checkout a local-path install came from, or ``None``."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--short=12", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001 — no git, no checkout, or a hung probe: unlabelled
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and sha else None
+
+
+def install_identity() -> tuple[str, float | None]:
+    """``(label, marker)`` of the zakcode install on disk RIGHT NOW (ADR-0034).
+
+    ``label`` is the human-facing build identity — the recorded commit for a git-URL
+    install, the checkout's HEAD for a local-path install, ``""`` when there is none — and
+    ``marker`` is :func:`_install_marker`. Read fresh every call; :func:`running_build` is
+    the same reading frozen at import, which is what makes :func:`install_changed` a
+    comparison between "what I loaded" and "what is on disk".
+    """
+    info = _read_direct_url()
+    label = _commit_of(info)
+    if label is None:
+        directory = _dir_of(info)
+        label = _checkout_head(directory) if directory is not None else None
+    return (label or "", _install_marker())
+
+
+#: The install this PROCESS loaded, frozen at import — before any update can move the disk.
+_RUNNING_IDENTITY: tuple[str, float | None] = install_identity()
+
+
+def running_build() -> str:
+    """The build identity of the code this process is running (``""`` when unknown)."""
+    return _RUNNING_IDENTITY[0]
+
+
+def install_changed() -> tuple[str, str] | None:
+    """``(running_label, installed_label)`` when the install on disk is no longer the one
+    this process loaded — i.e. a ``zakcode update`` (or any reinstall) landed while the
+    process was running — else ``None``. Keyed on the install marker, not the label, so a
+    dev checkout whose HEAD moves without a reinstall never trips it.
+    """
+    running_label, running_marker = _RUNNING_IDENTITY
+    if running_marker is None:
+        return None  # no installed distribution to compare against
+    installed_label, installed_marker = install_identity()
+    if installed_marker is None or installed_marker == running_marker:
+        return None
+    return (running_label, installed_label)
 
 
 def build_url() -> str | None:
@@ -71,17 +185,7 @@ def build_dir() -> str | None:
     local checkout (``uv tool install 'zakcode @ file:///path/to/clone'``) — the shape
     ``zakcode update`` refreshes with a git pull before reinstalling.
     """
-    info = _direct_url()
-    if not isinstance(info.get("dir_info"), dict):
-        return None
-    url = info.get("url")
-    if not isinstance(url, str) or not url.startswith("file://"):
-        return None
-    from urllib.parse import urlparse
-    from urllib.request import url2pathname
-
-    path = url2pathname(urlparse(url).path)
-    return path if path.strip() else None
+    return _dir_of(_direct_url())
 
 
 def build_source() -> str | None:

@@ -1217,4 +1217,47 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   client's resume (`server/app.py` load sites) does not yet run the notice, and
   `zakcode update` still tells the operator to restart running sessions — both belong to
   the in-place update change (PR-C), which retires the restart line by restarting the
-  process itself.
+  process itself (the terminal half shipped as ADR-0034).
+
+## ADR-0034: A running chat restarts itself into a newly installed build at its next idle prompt
+
+- **Status:** Accepted (shipped, 2026-08-27). Resolves the ADR-0033 residual for the
+  terminal client. Field incident 2026-08-26 (serene): `zakcode update` printed
+  `c4edaa4 → 0c28c8b` and "running chat sessions keep the old build until restarted"; the
+  chat was not restarted, and the next turn collapsed on code that had already been fixed.
+- **Context:** A Python process runs the modules it imported; a reinstall changes the disk,
+  not the process. Claude Code's answer is a passive banner ("Update installed · Restart to
+  apply") that the human acts on — which is exactly the step that was skipped. The harness
+  already persists the whole conversation every turn (`SessionStore`) and resumes it by id,
+  so a restart costs the human nothing but a banner; the only thing missing was a process
+  that notices the new install and performs the restart itself. The one moment that is
+  safe is the idle prompt: no turn in flight, no tool running, no permission prompt open.
+- **Decision:** (1) `build_info.install_identity()` reads the install FRESH — the recorded
+  commit for a git-URL install, the checkout's HEAD for a local-path install — plus an
+  **install marker**, the mtime of the install's own `direct_url.json`, which every
+  (re)install rewrites regardless of shape. `running_build()` is that reading frozen at
+  import; `install_changed()` compares markers (never labels, so a dev checkout whose HEAD
+  moves without a reinstall never trips it). (2) The input mux polls an `idle_probe` every
+  5 s while — and only while — the REPL is truly idle (`next_input(idle=True)`); a mid-turn
+  wait such as a permission prompt never consults it. A True verdict surfaces as a new
+  input kind, `restart`. (3) The REPL handles `restart` by stamping the session document
+  with the build that will read it (so the resumed session is an upgrade, not an ADR-0033
+  cross-build compaction), flushing, and `os.execv(sys.executable, ["-m", "zakcode", …])`
+  with the original arguments and `--session <id>` pinned (`chat` named explicitly when
+  the original invocation was the bare command, whose root callback takes no chat
+  options). A failed exec is reported and the old process keeps serving. (4) `zakcode
+  update` says so instead of asking for a restart. `_persist` stamps `Session.build` from
+  `running_build()`, so a reinstall landing mid-session can never re-label a document the
+  old process wrote.
+- **Alternatives rejected:** hot-reloading modules (mixed old/new objects in one process —
+  the class of bug no test catches); a passive "restart to apply" banner (the incident);
+  restarting mid-turn on a timer (a tool or prompt could be in flight); keying the probe on
+  the commit label (a local-path install records none, and a dev HEAD moves without a
+  reinstall); a `--no-auto-restart` flag (one way of doing things — the idle restart is
+  invisible when nothing changed and one banner when it did).
+- **Consequences:** After `zakcode update`, an idle chat restarts within ~5 s and resumes
+  the same session with a one-line banner; a busy chat restarts at its next idle prompt. A
+  no-op reinstall of the same commit also restarts once (the marker moved) — harmless. The
+  web server (`zakcode serve`) does not yet restart itself: it has no idle boundary the
+  harness owns, and the web client's resume notice is the same residual — tracked, not
+  hidden. The probe costs one metadata read every 5 s of idle time.
