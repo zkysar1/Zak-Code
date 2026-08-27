@@ -1298,3 +1298,45 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   on, not latched); a long request or a single-model install gets no skill detection, as
   before. A wrong-but-catalogued name costs one plan step the model can cancel with a
   sentence. Each prompt grows by the catalog text (bounded).
+
+## ADR-0036: A typed /skill is not a request to parse; a blocker is not a finding until a tool call fails
+
+- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-27 (serene, first
+  typed `/start sera` on a build carrying ADR-0026's compound-request seeder): the harness
+  seeded `run /start, /stop, /boot, /prime` from the start skill's own prose — a plan telling
+  the model to STOP the agent it was starting — and the coverage backstop made it re-load
+  the 1,200-line skill through `use_skill` (492k tokens in 7 iterations). The model then read
+  a hook's source, declared the session id it injects "not available in this execution
+  environment", and ended three turns on that sentence without ever running the skill's own
+  one-line check (which passes). A follow-up "then make one" was classified as implying
+  `/create-aspiration` — a guess. And every status line read `route: … →
+  TextToolCallingProvider`, naming the adapter, not the model.
+- **Context:** `Agent.compose_skill_turn` (Claude Code slash semantics) makes the typed
+  skill's WHOLE BODY the user message, behind a command-expansion frame at the very start.
+  ADR-0026's seeder and backstop read the user message for request-shaped `/name` tokens;
+  a skill body is documentation, and the framework's skills mention each other constantly.
+  Separately, the harness's sanctioned finish shapes include "one sentence stating what is
+  blocking you" (ADR-0033) with no requirement that anything demonstrated the block.
+- **Decision:** Four rules, no flags. (1) A message that begins with the command frame is a
+  composed skill turn (`_composed_skill_name`): it is never seeded from, and its
+  `requested_skills` are empty — the body IS the invocation, so no second load is demanded.
+  A frame anywhere else is just text (the seeder still works on pastes). (2) Blocker-
+  without-evidence guard: `_execute_tool_call` counts failed calls per turn; a completion
+  whose tail declares the model blocked in the first person ("I am blocked", "I cannot
+  proceed", "I cannot … without", "please provide") while that count is zero gets ONE
+  directive nudge — run the check that would fail and show it, or continue — and latches
+  the struggle flag. Answers that mention absence ("two fields are missing") are not
+  claims. (3) The classifier's implied skill must share a content word (4-char stem, small
+  stopword list, name or description) with the request or it is dropped, category kept —
+  the deterministic floor under "never guess". (4) `_provider_label` unwraps `.inner`
+  chains so the route status names the model.
+- **Alternatives rejected:** teaching `_skill_refs` to skip prose (it cannot know a body
+  from a paste; the frame can); blocking every blocker claim (a demonstrated one is the
+  right finish); asking the classifier for a confidence (a guessing model reports high
+  confidence); a per-skill "may be implied" flag (the user forbids flags; the anchor is one
+  rule for all).
+- **Consequences:** `/start sera` runs the start skill with an empty plan and the body loaded
+  once. A hallucinated environment blocker costs one nudge instead of a dead turn — and the
+  nudge names the fix (probe it). A genuine blocker still ends the turn on the second
+  completion. A request that describes a skill in unrelated words ("do the thing that
+  files work into the queue") no longer gets the skill seeded; that is the accepted price.

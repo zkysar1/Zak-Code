@@ -27,6 +27,7 @@ hardcoded vendor *sort*.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Sequence
 from typing import Literal, NamedTuple
 
@@ -385,6 +386,109 @@ def parse_verdict(data: object, known: Iterable[str] = ()) -> DifficultyVerdict:
     return DifficultyVerdict(parse_difficulty(data), parse_skill(data, known))
 
 
+#: Function words that carry no skill-identifying content (>=4 chars only — shorter tokens
+#: never anchor). Kept small on purpose: an over-eager list would strip real anchors.
+_ANCHOR_STOPWORDS = frozenset(
+    [
+        "this",
+        "that",
+        "with",
+        "from",
+        "your",
+        "into",
+        "then",
+        "than",
+        "when",
+        "what",
+        "will",
+        "also",
+        "have",
+        "does",
+        "done",
+        "just",
+        "some",
+        "them",
+        "they",
+        "only",
+        "over",
+        "here",
+        "there",
+        "please",
+        "should",
+        "would",
+        "could",
+        "about",
+        "after",
+        "before",
+        "again",
+        "need",
+        "want",
+        "like",
+        "make",
+        "take",
+        "help",
+        "thing",
+        "things",
+        "each",
+        "every",
+        "very",
+        "much",
+        "more",
+        "most",
+        "such",
+        "same",
+        "other",
+        "another",
+        "which",
+        "where",
+        "while",
+        "whose",
+        "been",
+        "being",
+        "were",
+        "their",
+        "these",
+        "those",
+        "using",
+        "used",
+        "uses",
+        "runs",
+        "running",
+        "skill",
+        "skills",
+        "tool",
+        "tools",
+    ]
+)
+_ANCHOR_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _anchor_stems(text: str) -> set[str]:
+    """4-char stems of the content words in ``text`` (``forging``/``forge`` → ``forg``)."""
+    return {
+        tok[:4]
+        for tok in _ANCHOR_TOKEN_RE.findall(text.lower().replace("-", " ").replace("_", " "))
+        if len(tok) >= 4 and tok not in _ANCHOR_STOPWORDS
+    }
+
+
+def implied_skill_anchored(request: str, name: str, description: str = "") -> bool:
+    """True when the request shares at least one content word with the skill's name or
+    description (ADR-0036) — the deterministic floor under the classifier's "never guess".
+
+    A model told "never guess" still guessed in the field: "then make one" came back as
+    ``create-aspiration`` (make ≈ create). A skill the request is genuinely asking to RUN is
+    named or described in the request's own words — "finish forging this skill" carries
+    ``forg`` for ``forge-skill``; a request with no such word is a topic match at best, and the
+    skill is dropped rather than seeded. Stems are 4-char prefixes so inflection
+    (forging/forge, aspirations/aspiration) still anchors.
+    """
+    wanted = _anchor_stems(f"{name} {description}")
+    if not wanted:
+        return False
+    return bool(_anchor_stems(request) & wanted)
+
+
 def describe_zakpick(settings: object) -> str:
     """One-line, friendly summary of the live per-category routing for the info panel / ``/model``.
 
@@ -417,6 +521,7 @@ __all__ = [
     "difficulty_system_prompt",
     "parse_difficulty",
     "parse_skill",
+    "implied_skill_anchored",
     "parse_verdict",
     "describe_zakpick",
 ]
