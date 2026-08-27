@@ -187,6 +187,11 @@ class SkillLoad(BaseModel):
     #: skill-invocation budget (a runaway-chain guard). Distinct from ``error`` (a file that could
     #: not be read) so the tool can report "budget exhausted" rather than "unreadable".
     denied_reason: str | None = None
+    #: The loaded SKILL.md's path on success (ADR-0044). A skill is a DIRECTORY — its scripts
+    #: and data sit beside the SKILL.md — and the model that never sees that directory later
+    #: describes the skill from memory of its own writing ("it is a python file, not a skill").
+    #: ``use_skill`` lists the siblings from this path so the answer is in the tool result.
+    path: str | None = None
 
 
 @runtime_checkable

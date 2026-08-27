@@ -87,6 +87,30 @@ class _Grep(Tool):
         return ToolResult.ok("(no matches)")
 
 
+class _Stats(Tool):
+    """A measurement tool whose successive outputs the test scripts (ADR-0044 figure gate:
+    a figure the model states must have come from a tool, so the re-measure IS a call)."""
+
+    outputs: list[str] = []
+
+    spec = ToolSpec(
+        name="tree_stats",
+        description="stats",
+        required_permission=PermissionTier.READ_ONLY,
+        concurrency=ConcurrencyClass.READ_ONLY_SAFE,
+    )
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        outputs = type(self).outputs
+        return ToolResult.ok(outputs.pop(0) if len(outputs) > 1 else outputs[0])
+
+
+def _call(name: str) -> LLMResult:
+    return LLMResult(
+        tool_calls=[ToolCall(id="c1", name=name, arguments={})], finish_reason="tool_calls"
+    )
+
+
 class _Sequence(Provider):
     """Plays back scripted completions in order; repeats the last one forever."""
 
@@ -114,6 +138,7 @@ def _text(text: str) -> LLMResult:
 def _loop(tmp_path: Path, provider: Provider) -> AgentLoop:
     registry = ToolRegistry()
     registry.register(_Grep())
+    registry.register(_Stats())
     return AgentLoop(
         provider,
         registry,
@@ -191,15 +216,21 @@ def test_first_turn_challenge_has_nothing_to_contest(tmp_path: Path) -> None:
 def test_an_apology_spiral_is_discarded_once_and_the_measurement_demanded(
     tmp_path: Path,
 ) -> None:
+    # Both figures come from the measurement tool: the first turn reads a (wrong) 10,892
+    # from it, the re-measure after the challenge reads 1,510 — so neither trips the
+    # unsourced-figure gate (ADR-0044) and the apology discard is the only rail in play.
+    _Stats.outputs = ["nodes: 10,892", "nodes: 1,510"]
     provider = _Sequence(
+        _call("tree_stats"),
         _text("The knowledge tree has 10,892 nodes."),
         _text(APOLOGY),
+        _call("tree_stats"),
         _text("Re-measured: 1,510 nodes."),
     )
     loop = _loop(tmp_path, provider)
     asyncio.run(loop.arun_turn("how big is the tree?"))
     result = asyncio.run(loop.arun_turn("there is no way it is this big"))
-    assert provider.calls == 3
+    assert provider.calls == 5  # stats, answer | apology (discarded), stats, answer
     assert result.stop_reason == "completed"
     assistant_texts = [m.text for m in loop.session.messages if m.role == "assistant" and m.text]
     assert APOLOGY not in assistant_texts  # discarded, never transcribed

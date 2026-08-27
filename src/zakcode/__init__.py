@@ -1382,7 +1382,7 @@ class Agent:
             # command-expansion frame instead, and the two shapes staying DISTINCT is what lets
             # the model tell a user-typed slash from a model-chained load (provenance).
             rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
-        return SkillLoad(found=True, name=skill.name, body=rendered)
+        return SkillLoad(found=True, name=skill.name, body=rendered, path=str(skill.path))
 
     async def compose_skill_turn(
         self, name: str, args: str = "", *, fuzzy: bool = True
