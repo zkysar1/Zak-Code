@@ -482,11 +482,19 @@ def implied_skill_anchored(request: str, name: str, description: str = "") -> bo
     ``forg`` for ``forge-skill``; a request with no such word is a topic match at best, and the
     skill is dropped rather than seeded. Stems are 4-char prefixes so inflection
     (forging/forge, aspirations/aspiration) still anchors.
+
+    The NAME anchors on one shared stem. A DESCRIPTION is prose, and one shared word with
+    prose is a topic overlap, not a request to run the skill: "go actually try to FETCH some
+    of those" seeded ``/research`` off a description's "fetch" (2026-08-27), and the turn
+    that followed never touched a tool. Two distinct description stems are required
+    (ADR-0040) — "send the operator a message" still anchors a skill described that way.
     """
-    wanted = _anchor_stems(f"{name} {description}")
-    if not wanted:
+    asked = _anchor_stems(request)
+    if not asked:
         return False
-    return bool(_anchor_stems(request) & wanted)
+    if asked & _anchor_stems(name):
+        return True
+    return len(asked & _anchor_stems(description)) >= 2
 
 
 def describe_zakpick(settings: object) -> str:

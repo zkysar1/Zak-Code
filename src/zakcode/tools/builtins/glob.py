@@ -14,6 +14,7 @@ from zakcode.tools.base import (
 )
 from zakcode.tools.builtins._ignore import load_ignore
 from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
+from zakcode.tools.builtins._suggest import literal_stem, not_found_fix, render, suggest
 
 # Maximum number of matches to return.
 _MAX_RESULTS = 1000
@@ -121,7 +122,25 @@ class GlobTool(Tool):
                 matches = matches[:_MAX_RESULTS]
 
             if not matches:
-                return ToolResult.ok("(no matches)", data={"count": 0, "matches": []})
+                # An empty glob for a NAMED thing (ADR-0040): the pattern's literal segment is
+                # what the model was after — say where that name does occur, by path and by
+                # content, so "no matches" is not read as "does not exist".
+                stem = literal_stem(pattern)
+                by_name, by_content = (
+                    suggest(stem, ctx.workspace_root, ctx.extra_workspace_roots, soft=soft)
+                    if len(stem) >= 3
+                    else ([], [])
+                )
+                extra = render(stem, by_name, by_content)
+                return ToolResult.ok(
+                    "(no matches)" + (f"\n{extra}" if extra else ""),
+                    data={
+                        "count": 0,
+                        "matches": [],
+                        "suggestions": {"by_name": by_name, "by_content": by_content},
+                    },
+                    hint=not_found_fix(stem, bool(by_name or by_content)) if stem else None,
+                )
 
             output = "\n".join(matches)
             if truncated:

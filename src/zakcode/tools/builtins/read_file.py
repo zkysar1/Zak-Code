@@ -11,6 +11,7 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
+from zakcode.tools.builtins._suggest import not_found_fix, render, suggest
 
 # Maximum number of bytes we will read before truncating.
 _MAX_BYTES = 100 * 1024
@@ -78,10 +79,15 @@ class ReadFileTool(Tool):
 
         try:
             if not resolved.exists():
+                # A not-found answer is about ONE path (ADR-0040): say what the workspace
+                # DOES have under that name, so the model reads the right file instead of
+                # asking the operator for a path a single grep would have found.
+                by_name, by_content = suggest(path, ctx.workspace_root, ctx.extra_workspace_roots)
+                extra = render(path, by_name, by_content)
                 return ToolResult.error(
-                    f"File not found: {path}",
-                    fix="check the path -- use list_dir or glob to find it; paths resolve "
-                    "relative to the workspace root.",
+                    f"File not found: {path}" + (f"\n{extra}" if extra else ""),
+                    fix=not_found_fix(path, bool(by_name or by_content)),
+                    data={"suggestions": {"by_name": by_name, "by_content": by_content}},
                 )
             if resolved.is_dir():
                 return ToolResult.error(f"Path is a directory, not a file: {path}")

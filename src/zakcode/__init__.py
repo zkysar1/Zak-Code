@@ -194,6 +194,13 @@ class SkillInvocation:
     #: ``user-invocable: false`` skill typed as a human ``/<name>`` command (it runs internally,
     #: reached only by another skill chaining to it). Distinct from ``error`` (a load failure).
     denied_reason: str | None = None
+    #: Typo tolerance (ADR-0040). ``corrected_from`` is the token the operator actually typed
+    #: when the catalog held exactly one near-identical skill name and the harness ran that
+    #: skill instead (``/enocde-session`` → ``encode-session``); the caller renders it so
+    #: the correction is visible. ``suggestions`` carries the near names when NOTHING ran —
+    #: an ambiguous or weak match is a did-you-mean, never a guess on the operator's behalf.
+    corrected_from: str | None = None
+    suggestions: tuple[str, ...] = ()
     #: The composed turn text when the load succeeded: Claude Code's command-expansion
     #: frame (``<command-message>``/``<command-name>``, plus ``<command-args>`` when trailing
     #: text was given) followed by the body. The frame is the INVOCATION-PROVENANCE signal —
@@ -203,6 +210,15 @@ class SkillInvocation:
     #: THIS turn's user message (Claude Code slash semantics); :meth:`Agent.invoke_skill`
     #: has already folded it into the session when this is set.
     turn_text: str | None = None
+
+
+#: Typo tolerance thresholds (ADR-0040), difflib ratios over the skill catalog's names. A
+#: name below SUGGEST is noise, not a neighbour; a UNIQUE neighbour at or above AUTOCORRECT
+#: runs (``enocde-session`` scores 0.93 against ``encode-session``); two neighbours, or one
+#: between the two lines, are offered back as did-you-mean. Only skills are ever corrected —
+#: the REPL's own commands are suggestion-only, because a typo must not run ``/clear``.
+_SKILL_SUGGEST_RATIO = 0.72
+_SKILL_AUTOCORRECT_RATIO = 0.8
 
 
 class _SkillToolResolver:
@@ -1368,7 +1384,9 @@ class Agent:
             rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
         return SkillLoad(found=True, name=skill.name, body=rendered)
 
-    async def compose_skill_turn(self, name: str, args: str = "") -> SkillInvocation:
+    async def compose_skill_turn(
+        self, name: str, args: str = "", *, fuzzy: bool = True
+    ) -> SkillInvocation:
         """Resolve a skill for the human ``/<name>`` path and return the turn text to run.
 
         Claude Code slash semantics: typing ``/<skill> [args]`` RUNS the skill now — the
@@ -1383,14 +1401,34 @@ class Agent:
         identically. Never raises: a missing/unreadable skill file is a UX result, not a crash.
         """
         load = await self._load_skill_body(name, source="command", args=args)
+        corrected_from: str | None = None
         if not load.found:
-            return SkillInvocation(invoked=False)
+            # Typo tolerance (ADR-0040): ``/enocde-session`` is not "unsupported" when the
+            # catalog holds exactly one near-identical name — run it, and say so. Anything
+            # less certain (two neighbours, a weak match) is handed back as a did-you-mean;
+            # the harness never guesses a command on the operator's behalf. ``fuzzy=False``
+            # is the exact-only probe a caller uses before trying its own command tables.
+            candidates = self.closest_skill_names(name) if fuzzy else []
+            if len(candidates) == 1 and candidates[0][1] >= _SKILL_AUTOCORRECT_RATIO:
+                corrected_from = name.lstrip("/").strip()
+                load = await self._load_skill_body(candidates[0][0], source="command", args=args)
+            if not load.found:
+                return SkillInvocation(
+                    invoked=False, name=name, suggestions=tuple(c for c, _ in candidates)
+                )
         if load.denied_reason:
             # Discovered but refused (e.g. user-invocable: false typed as /<name>): handled, but
             # not loaded — surfaced to the operator with the session left untouched.
-            return SkillInvocation(invoked=True, name=load.name, denied_reason=load.denied_reason)
+            return SkillInvocation(
+                invoked=True,
+                name=load.name,
+                denied_reason=load.denied_reason,
+                corrected_from=corrected_from,
+            )
         if load.error or load.body is None:
-            return SkillInvocation(invoked=True, name=load.name, error=load.error)
+            return SkillInvocation(
+                invoked=True, name=load.name, error=load.error, corrected_from=corrected_from
+            )
         from zakcode.providers.text_tools import defang_untrusted
 
         # Claude Code's command-expansion frame — the INVOCATION-PROVENANCE signal. A skill
@@ -1404,7 +1442,9 @@ class Agent:
         # (:meth:`zakcode.skills.SkillRegistry.render_catalog`). Only a frame at the very
         # START of a user message carries this meaning — a body-embedded lookalike is just
         # text. use_skill loads stay `[arguments: …]`-framed; the asymmetry IS the signal.
-        typed = name.lstrip("/").strip() or load.name
+        # …unless the harness corrected a typo: then the frame carries the skill the operator
+        # MEANT, because the mistyped token is not a command and must not reach the model as one.
+        typed = load.name if corrected_from else (name.lstrip("/").strip() or load.name)
         frame = [
             f"<command-message>{typed} is running</command-message>",
             f"<command-name>/{typed}</command-name>",
@@ -1412,8 +1452,31 @@ class Agent:
         if args.strip():
             frame.append(f"<command-args>{defang_untrusted(args.strip())}</command-args>")
         return SkillInvocation(
-            invoked=True, name=load.name, turn_text="\n".join(frame) + f"\n\n{load.body}"
+            invoked=True,
+            name=load.name,
+            turn_text="\n".join(frame) + f"\n\n{load.body}",
+            corrected_from=corrected_from,
         )
+
+    def closest_skill_names(self, token: str, *, limit: int = 3) -> list[tuple[str, float]]:
+        """Skill names near ``token`` (a mistyped ``/<name>``), best first, with similarity.
+
+        difflib over the catalog's names; below :data:`_SKILL_SUGGEST_RATIO` a name is noise,
+        not a neighbour (ADR-0040). Never raises — an agent without a registry has none.
+        """
+        import difflib
+
+        registry = getattr(self, "skill_registry", None)
+        needle = token.lstrip("/").strip().lower()
+        if registry is None or not needle:
+            return []
+        scored: list[tuple[str, float]] = []
+        for candidate in registry.names():
+            ratio = difflib.SequenceMatcher(None, needle, candidate.lower()).ratio()
+            if ratio >= _SKILL_SUGGEST_RATIO:
+                scored.append((candidate, ratio))
+        scored.sort(key=lambda item: (-item[1], item[0]))
+        return scored[:limit]
 
     async def invoke_skill(self, name: str, args: str = "") -> SkillInvocation:
         """Load a discovered skill's body into the session and emit the selection signal.

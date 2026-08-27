@@ -1449,3 +1449,54 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   shutdown stays immediate. The digest turn is visible in the transcript, deliberately — a
   receipt that appeared with no prompt anyone could point at would read as the machine
   talking to itself.
+## ADR-0040: A miss is a fact about one path; a challenge is a request to re-measure; a typo is not an unknown command
+
+- **Status:** Accepted (shipped, 2026-08-27). Three field transcripts from one afternoon on
+  small models (serene, `gemini-2.5-flash` / `-flash-lite`): (a) "the script
+  `google-drive-list` could not be found in the workspace … could you please provide the
+  correct path" — twice, `done — struggled`, without one content search; the operator typed
+  "you can't grep it?" and the first search returned seven hits. (b) `/enocde-session` →
+  "is not yet supported", while the prose "encode the session" routed to `/encode-session`
+  through the classifier — the strict path was dumber than the fuzzy one. (c) "there is no
+  way it is this big already, go actually try to fetch some of those" → "You're absolutely
+  right, my apologies …" nine times, then "I am a large language model" forty times
+  (discarded by the degeneration guard), a retry into another apology, `done — struggled`.
+  Nothing was re-measured; the plan had been seeded with `/research` off the single word
+  "fetch" in that skill's description.
+- **Context:** the not-found errors said "check the path — use list_dir or glob", which the
+  model had already tried; the blocker gate (ADR-0036) requires ZERO tool errors and a
+  failed read IS a tool error, so it stayed silent; no rail existed for a disputed answer;
+  an apology spiral is text-only, so it rides the text-only stall (two completions) and
+  never reaches a tool call; a typed slash resolved by exact name or trigger only.
+- **Decision:** (1) Every file tool's not-found answer carries the closest paths by NAME and
+  the files whose CONTENT mentions the name (one ignore-aware, symlink-safe walk, capped at
+  40k entries / 2 s), plus a `fix` that says the miss is about one path, not the workspace.
+  (2) Missing-conclusion gate: a completion concluding "could not find / not found / does
+  not exist" with no `grep` this turn is asked once for the search. (3) Contested-claim
+  rail: a user message that disputes the previous answer (`no way`, `are you sure`,
+  `actually check`, `can't be right`, `prove it`, …) opens the turn with a rail demanding a
+  re-measurement — the same tool call, its fresh output, whether the answer stands — never
+  an apology; an ordinary "go check the logs" is not a challenge, and a first turn has
+  nothing to contest. (4) An apology spiral (three or more apology/retraction markers, no
+  tool call) is discarded once, like a degenerate completion, iteration refunded, behind a
+  rail that demands the measurement; a second one rides the text-only stall. (5) A typed
+  `/<name>` matching nothing exactly runs the UNIQUE catalog neighbour at difflib ≥ 0.8 —
+  visibly: "running skill encode-session (you typed /enocde-session)" — offers ≥ 0.72
+  neighbours back as did-you-mean otherwise, and never auto-corrects a REPL builtin
+  (`/claer` suggests `/clear`; it does not run it). REPL order: exact skill → plugin
+  command → fuzzy skill → "unknown command /x — did you mean /y?". (6) A description-only
+  anchor for an implied skill needs two distinct stems; one shared word with prose is a
+  topic, not a request. The name still anchors on one.
+- **Alternatives rejected:** a "search first" sentence in the system prompt (the field
+  model had the tools listed and did not reach for them; a rail at the moment of the miss
+  is what a small model follows); auto-running grep inside `read_file` and returning its
+  content (the model never asked for that content — suggestions name paths, the model
+  reads them); auto-correcting any close command (`/claer` → `/clear` would wipe the
+  session on a typo); a repetition penalty on the degeneration retry (provider-specific,
+  and the transcript's second try was a coherent apology, not a sampler loop).
+- **Consequences:** a miss costs one bounded walk and hands the model the answer inside the
+  failure; a model that still concludes "missing" without searching is told to search,
+  once. A disputed figure is re-measured instead of retracted. A typo runs the skill the
+  operator meant and says so. Residual: a challenge phrased outside the disbelief
+  vocabulary gets no opening rail (the apology discard still catches the spiral); the path
+  walk is capped, so a very large workspace can return partial suggestions.
