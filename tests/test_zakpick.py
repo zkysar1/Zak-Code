@@ -380,7 +380,9 @@ async def test_loop_difficulty_classifier_routes_short_but_deep(tmp_path: Path) 
         return cheap if category == "quick_code" else strong
 
     async def classifier(user_text: str, context_frac: float):
-        return "deep_code"
+        from zakcode.providers.routing import DifficultyVerdict
+
+        return DifficultyVerdict("deep_code")
 
     loop = AgentLoop(
         cheap,
@@ -409,7 +411,9 @@ async def test_loop_difficulty_classifier_quick_routes_cheap(tmp_path: Path) -> 
     strong = _ScriptedText("strong answered")
 
     async def classifier(user_text: str, context_frac: float):
-        return "quick_code"
+        from zakcode.providers.routing import DifficultyVerdict
+
+        return DifficultyVerdict("quick_code")
 
     loop = AgentLoop(
         strong,
@@ -436,12 +440,14 @@ async def test_agent_classify_difficulty_judges_scope(
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
     deep = _classify_stub('{"difficulty": "deep"}')
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (deep, "classify/m"))
-    assert await agent._classify_difficulty("add pdf support", 0.0) == "deep_code"
+    assert (await agent._classify_difficulty("add pdf support", 0.0)).category == "deep_code"
     assert deep.calls == 1  # the cheap classify model was consulted exactly once
 
     quick = _classify_stub('{"difficulty": "quick"}')
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (quick, "classify/m"))
-    assert await agent._classify_difficulty("fix the typo on line 5", 0.0) == "quick_code"
+    verdict = await agent._classify_difficulty("fix the typo on line 5", 0.0)
+    assert verdict.category == "quick_code"
+    assert verdict.skill is None  # no catalog, no skill
 
 
 async def test_agent_classify_difficulty_long_skips_the_call(
@@ -451,7 +457,7 @@ async def test_agent_classify_difficulty_long_skips_the_call(
     stub = _classify_stub('{"difficulty": "quick"}')
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (stub, "classify/m"))
     # A long request fast-paths to deep_code with NO model call (length only escalates UP).
-    assert await agent._classify_difficulty("x" * 2000, 0.0) == "deep_code"
+    assert (await agent._classify_difficulty("x" * 2000, 0.0)).category == "deep_code"
     assert stub.calls == 0
 
 
@@ -476,7 +482,7 @@ async def test_agent_classify_difficulty_fails_up_on_error(
 
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (_Raises(), "classify/m"))
     # A provider error during classification FAILS UP to the reliable coder, never crashes.
-    assert await agent._classify_difficulty("add pdf support", 0.0) == "deep_code"
+    assert (await agent._classify_difficulty("add pdf support", 0.0)).category == "deep_code"
 
 
 async def test_agent_classify_difficulty_fails_up_on_garbage(
@@ -486,7 +492,7 @@ async def test_agent_classify_difficulty_fails_up_on_garbage(
     garbage = _classify_stub("I think this is a deep task, but here is prose, not JSON.")
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (garbage, "classify/m"))
     # Output that never validates as the schema also fails up to deep_code.
-    assert await agent._classify_difficulty("add pdf support", 0.0) == "deep_code"
+    assert (await agent._classify_difficulty("add pdf support", 0.0)).category == "deep_code"
 
 
 # ── Phase 1: per-model cost attribution ──────────────────────────────────────────
