@@ -255,6 +255,27 @@ class SessionInfo(BaseModel):
         )
 
 
+class TranscriptMessage(BaseModel):
+    """One spoken turn of a session, projected for a viewer (ADR-0041)."""
+
+    role: Literal["user", "assistant"]
+    text: str
+
+
+class SessionTranscript(BaseModel):
+    """``GET /sessions/{id}/transcript`` — the conversation as a reader would see it.
+
+    User and assistant TEXT only: tool calls, tool results, thinking and system frames
+    are not part of what was said, and the text is passed through the same secret
+    redaction the watch stream applies. ``message_count`` is the session's full length
+    (every stored message), so a consumer can tell "short transcript" from "short
+    session"."""
+
+    session_id: str
+    messages: list[TranscriptMessage] = Field(default_factory=list)
+    message_count: int = 0
+
+
 class ToolInfo(BaseModel):
     """A registered tool's public description (``GET /tools``)."""
 

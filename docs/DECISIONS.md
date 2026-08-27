@@ -1500,3 +1500,30 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   operator meant and says so. Residual: a challenge phrased outside the disbelief
   vocabulary gets no opening rail (the apology discard still catches the spiral); the path
   walk is capped, so a very large workspace can return partial suggestions.
+
+## ADR-0041: A session has a readable transcript, separate from its watch stream
+
+**Context.** ADR-0032 made the served mind's conversations part of the mind: one
+versioned document per session under the workspace, resumed and grown across
+vessels (verified live 2026-08-27 — the same session id carried two boots). But the
+only way to SEE a conversation was the watch stream, and its retained buffer begins
+empty on every daemon start. A viewer joining a resumed session — the served web
+page after a restart, a gateway building a chat surface — saw nothing of a session
+that held pages, and the raw session document is not a public shape (tool inputs,
+thinking, unredacted text).
+
+**Decision.** `GET /sessions/{id}/transcript` returns the conversation as a reader
+would see it: `{session_id, messages: [{role, text}], message_count}` — user and
+assistant TEXT only, every text passed through the same secret redaction the watch
+projection applies, tool calls/results/thinking/system frames omitted (they are not
+what was said), `?limit=N` keeping the last N spoken turns, and the literal `current`
+resolved through the `.current-session` marker exactly as `/watch/current` is.
+`message_count` is the session's full stored length so a consumer can tell a short
+transcript from a short session.
+
+**Consequences.** A viewer joins with the transcript, then tails the watch stream.
+The two are not stitched by the server: a turn in flight at join time is in neither
+(the document is written at turn end), and a viewer that replays the retained buffer
+after loading the transcript may see the most recent turns twice — consumers that
+care dedupe or open the stream with `?since` after the transcript. The endpoint is
+read-only and bearer-gated like every route; it creates no agent and no turn.

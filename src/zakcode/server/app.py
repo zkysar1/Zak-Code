@@ -79,7 +79,9 @@ from zakcode.server.wire import (
     NudgeRequest,
     SayRequest,
     SessionInfo,
+    SessionTranscript,
     ToolInfo,
+    TranscriptMessage,
     UploadRequest,
     UploadResponse,
     WatchMarkerRequest,
@@ -779,6 +781,39 @@ def create_app(
     @app.get("/sessions/{session_id}/artifacts")
     def list_session_artifacts(session_id: str) -> list[ArtifactRef]:
         return _session_artifacts(_load_session_or_404(session_id))
+
+    @app.get("/sessions/{session_id}/transcript")
+    def session_transcript(session_id: str, limit: int | None = None) -> SessionTranscript:
+        """The conversation as a reader sees it — user/assistant text only, redacted (ADR-0041).
+
+        A session document persists every turn (ADR-0032), but until this route the only
+        way to SEE a resumed conversation was the watch bus, whose retained buffer starts
+        empty on every daemon start — a viewer joining after a restart saw nothing of a
+        session that held pages. Tool calls, tool results, thinking and system frames
+        are omitted (they are not what was said); each text passes through the same
+        secret redaction as the watch stream. ``limit`` keeps the LAST N spoken turns.
+        The literal id ``current`` resolves to the workspace's current conversation
+        (404 when there is none), like ``/watch/current``.
+        """
+        if session_id == "current":
+            resolved = _current_session_id()
+            if resolved is None:
+                raise HTTPException(status_code=404, detail="no current session")
+            session_id = resolved
+        session = _load_session_or_404(session_id)
+        spoken: list[TranscriptMessage] = []
+        for message in session.messages:
+            if message.role not in ("user", "assistant"):
+                continue
+            text = message.text
+            if not text.strip():
+                continue  # a tool-only or empty turn is not a spoken one
+            spoken.append(TranscriptMessage(role=message.role, text=safe_projection.redact(text)))
+        if limit is not None and limit >= 0:
+            spoken = spoken[-limit:] if limit else []
+        return SessionTranscript(
+            session_id=session.id, messages=spoken, message_count=len(session.messages)
+        )
 
     @app.post("/sessions/{session_id}/uploads", status_code=201)
     def upload_session_file(session_id: str, request: UploadRequest) -> UploadResponse:
