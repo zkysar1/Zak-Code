@@ -538,3 +538,34 @@ def test_run_end_command_runs_without_a_digest_turn(tmp_path: Path) -> None:
     assert ending["reason"] == "duration_cap" and ending["digest"] == ""
     assert seen == []
     assert endings == ["duration_cap"]
+
+
+# ── POST /run/stop: a bound outside the process ends the run WITH its receipt (ADR-0047) ──
+
+
+def test_run_stop_route_ends_the_run_with_its_digest(tmp_path: Path) -> None:
+    """A money cap (or an operator) that lives outside the process ends the run the way a
+    cap-hit does: digest turn, then run_end_command, then on_run_end — reason preserved."""
+    command, out = _sink_command(tmp_path)
+    app, seen, endings, _t0 = _build_bounded(tmp_path, message="wrap up", run_end_command=command)
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await asyncio.sleep(0.2)  # idling, unbounded — nothing would ever end this run
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            bad = await client.post("/run/stop", json={"reason": "Not A Token!"})
+            assert bad.status_code == 400
+            first = await client.post("/run/stop", json={"reason": "budget_exhausted"})
+            assert first.status_code == 200
+            assert first.json() == {"stopping": True, "reason": "budget_exhausted"}
+            again = await client.post("/run/stop", json={"reason": "stopped"})
+            assert again.json() == {"stopping": True, "reason": "budget_exhausted"}  # first wins
+            await asyncio.wait_for(loop_task, timeout=5)
+            after = await client.post("/run/stop")
+            assert after.json() == {"stopping": False, "ended": True, "reason": "budget_exhausted"}
+
+    asyncio.run(scenario())
+    assert seen[-1][0] == "wrap up"  # the digest turn ran
+    assert json.loads(out.read_text(encoding="utf-8"))["reason"] == "budget_exhausted"
+    assert endings == ["budget_exhausted"]

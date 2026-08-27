@@ -97,6 +97,14 @@ class NudgeRequest(BaseModel):
     text: str
 
 
+class RunStopRequest(BaseModel):
+    """Body of ``POST /run/stop`` — ask the RUN (not a turn) to end gracefully
+    (ADR-0047). ``reason`` is recorded as the run's stop reason: a short lowercase
+    token such as ``budget_exhausted``; omitted = ``stopped``."""
+
+    reason: str | None = None
+
+
 class SayRequest(BaseModel):
     """Body of ``POST /say`` — a user message the driver delivers as the next turn's
     MESSAGE (the watch/talk unification: talking is just the driven session's next

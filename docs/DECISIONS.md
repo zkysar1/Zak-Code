@@ -1698,3 +1698,26 @@ vessel — still exists. A command that hangs costs at most a minute of the rese
 budget before the shutdown proceeds. Pinned by
 `test_run_end_command_receives_reason_and_digest_before_the_vessel_goes_down`,
 `test_run_end_command_failures_are_fail_open`, `test_run_end_command_runs_without_a_digest_turn`.
+
+## ADR-0047: A run can be asked to end — `POST /run/stop`
+
+**Context.** ADR-0039 bounds a run by wall-clock and ADR-0046 delivers its receipt, but
+the ONLY ways a run ended were its own cap or process shutdown. The bounded-run design
+(Ayoai-Mind g-369-08, pearl node C1) has a fourth bound that lives outside the process:
+the platform's money cap, which on exhaustion tears the vessel down — severing the run
+with no digest, the one ending a paying customer never got a receipt for. Nothing in the
+say contract (`/say`, `/interrupt`, `/nudge`) speaks about the RUN.
+
+**Decision.** `POST /run/stop` with an optional `{"reason": "<token>"}`
+(`[a-z][a-z0-9_]{0,31}`, default `stopped`). It records the reason as the run's stop
+reason and trips the consumer's stop flag; the consumer finishes the turn in flight and
+takes the SAME ending path a cap-hit takes — digest turn, `run_end_command`,
+`on_run_end`. Idempotent (`{"stopping": true}` while ending, `{"stopping": false,
+"ended": true}` after; the first reason wins). Bearer-gated by the middleware like every
+route. It is deliberately not `/interrupt`: that stops a TURN and leaves the run alive.
+
+**Consequences.** A platform bound can end a run with its receipt instead of around it:
+the env-server's budget meter now asks the sidecar to stop, waits for it to exit (bounded
+grace), and only then tears the vessel down. A reason is a token so platform scripts can
+branch on it (`budget_exhausted` maps to "ran out of budget" in the receipt). Pinned by
+`test_run_stop_route_ends_the_run_with_its_digest`.
