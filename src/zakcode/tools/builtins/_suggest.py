@@ -39,10 +39,13 @@ def _tokens(stem: str) -> list[str]:
 
 
 def _display(path: Path, workspace_root: Path) -> str:
+    """Workspace-relative when possible, always with forward slashes — the same text on
+    every platform (Windows CI rendered ``.zakcode\\skills\\…``; a model-facing path with
+    ``/`` works on Windows Python too, and a stable form is what tests and readers key on)."""
     try:
-        return str(path.relative_to(workspace_root))
+        return path.relative_to(workspace_root).as_posix()
     except ValueError:
-        return str(path)
+        return path.as_posix()
 
 
 def suggest(
