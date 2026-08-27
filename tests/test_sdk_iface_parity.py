@@ -273,8 +273,10 @@ SCENARIOS: list[Scenario] = [
                 "r1",
                 True,
                 "File not found: missing.txt\n"
-                "Fix: check the path -- use list_dir or glob to find it; "
-                "paths resolve relative to the workspace root.",
+                'Fix: search before concluding it is missing: grep(pattern="missing\\.txt") '
+                "from the workspace root searches every file by content, and list_dir shows "
+                "what a directory actually holds. Only when both come back empty is the file "
+                "genuinely absent.",
             ),
             ("text", "Could not read it."),
             ("usage",),

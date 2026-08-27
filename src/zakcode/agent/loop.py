@@ -421,6 +421,97 @@ _BLOCKER_NUDGE = (
 )
 
 
+#: Missing-conclusion gate (ADR-0040): a completion that concludes something could not be
+#: FOUND while no content search ran this turn. A not-found is a fact about the paths the
+#: model tried, not about the workspace — field transcript 2026-08-27: "could not be found in
+#: the workspace", step marked blocked, the operator asked for the path twice; "you can't
+#: grep it?" → seven hits on the first search. The first move on a miss is grep, never the
+#: user. One nudge per turn; a model that already searched is never nudged.
+_MISSING_CLAIM_RE = re.compile(
+    r"\b(?:could\s+not|couldn['’]t|cannot|can['’]t|unable\s+to|not\s+able\s+to|failed\s+to"
+    r"|did\s+not|didn['’]t)\s+(?:find|locate)\b"
+    r"|\b(?:is|was|are|were)\s+not\s+found\b|\bnot\s+found\s+(?:in|anywhere\s+in)\s+the\b"
+    r"|\b(?:could|can|cannot|can['’]t)\s*(?:not)?\s+be\s+found\b"
+    r"|\bdoes\s+not\s+(?:exist|appear\s+to\s+exist)\b|\bdoesn['’]t\s+exist\b"
+    r"|\bno\s+such\s+(?:file|directory|script|path)\b",
+    re.IGNORECASE,
+)
+_SEARCH_TOOLS = frozenset({"grep"})
+_MISSING_NUDGE = (
+    "You concluded that something could not be found, but no content search ran this turn. "
+    "A not-found answer is about the ONE path you tried, not the workspace. Run "
+    'grep(pattern="<the name>") from the workspace root — it searches every file by content '
+    '— and glob(pattern="**/*<the name>*") for every path, then read what they find. Do not '
+    "ask the user for a path you have not searched for."
+)
+
+#: Contested-claim rail (ADR-0040): the operator is disputing the previous answer. A small
+#: model's reflex under a challenge is the apology spiral — retract, apologize, repeat until
+#: the sampler collapses ("I am a large language model" ×40, 2026-08-27, "10,892 nodes").
+#: The only useful reply to "no way, go actually check" is a re-measurement, so the turn
+#: opens by asking for exactly that. Phrases are disbelief and re-check demands; an ordinary
+#: "go check the logs" is not a challenge and gets no rail.
+_CHALLENGE_RE = re.compile(
+    r"\bno\s+way\b|\bare\s+you\s+sure\b"
+    r"|\byou(?:['’]re|\s+are)\s+(?:wrong|mistaken|making\s+(?:that|this|it)\s+up)\b"
+    r"|\b(?:that|this|it)(?:['’]s|\s+is)?\s+(?:can(?:no|['’])t\s+be|cannot\s+be|isn['’]t|is\s+not"
+    r"|not)\s+(?:right|correct|true|possible)\b"
+    r"|\b(?:doesn['’]t|does\s+not|can['’]t|cannot|couldn['’]t)\s+be\s+(?:right|correct|true)\b"
+    r"|\bprove\s+it\b|\bdouble[-\s]check\b"
+    r"|\bi\s+don['’]t\s+(?:believe|buy|think)\s+(?:it|that|this|so)\b"
+    r"|\bactually\s+(?:try|check|run|measure|look|fetch|count|verify|test|read)\b"
+    r"|\b(?:that|this|it)\s+(?:seems|looks|sounds)\s+(?:wrong|off|too\s+(?:high|low|big|small"
+    r"|many|few))\b"
+    r"|\bis\s+(?:that|this)\s+(?:real|true|right|correct)\b",
+    re.IGNORECASE,
+)
+_CHALLENGE_RAIL = (
+    "The user is questioning your previous answer. Do not apologize, and do not retract it "
+    "without evidence. Re-run the measurement that produced it — the same tool call, now — "
+    "quote its fresh output, and state plainly whether the earlier answer stands or what the "
+    "correct figure is. If the earlier answer was never measured, say so in one sentence and "
+    "measure it now. One tool call or one evidenced answer; nothing else."
+)
+
+#: Apology spiral (ADR-0040): a no-tool-call completion that is mostly apology and
+#: retraction. The sycophantic twin of the repetition loop — it does no work either, and it
+#: seeds the sampler with the very phrases it then repeats. Discarded once, like a degenerate
+#: completion, behind a rail that demands the measurement; a second one falls through to the
+#: text-only stall like any other wordy completion. Three markers is the line: one apology is
+#: manners, three in one reply is the spiral starting.
+_APOLOGY_RE = re.compile(
+    r"\bmy\s+apologies\b|\bi\s+apologi[sz]e\b|\bi(?:['’]m|\s+am)\s+(?:so\s+|very\s+)?sorry\b"
+    r"|\byou(?:['’]re|\s+are)\s+(?:absolutely\s+|completely\s+|totally\s+)?(?:right|correct)\b"
+    r"|\bi\s+am\s+still\s+(?:learning|under\s+development)\b|\bplease\s+disregard\b"
+    r"|\bi\s+will\s+(?:do\s+better|be\s+more\s+careful)\b|\bi\s+made\s+(?:a|an)\s+(?:mistake"
+    r"|error|incorrect\s+assumption)\b",
+    re.IGNORECASE,
+)
+_APOLOGY_MARKERS = 3
+_MAX_APOLOGY_RETRIES = 1
+_APOLOGY_NUDGE = (
+    "Your response was an apology loop and was discarded. Apologies are not work. Reply with "
+    "exactly ONE of: the tool call that re-measures or re-does the contested thing; the "
+    "answer with its evidence; or ONE sentence stating what is blocking you. No apologies, "
+    "no retractions without evidence."
+)
+
+
+def _claims_missing(text: str) -> bool:
+    """True when the completion's tail concludes something could not be found."""
+    return _MISSING_CLAIM_RE.search(text[-800:]) is not None
+
+
+def _contests_prior_claim(user_text: str) -> bool:
+    """True when the user's message disputes the previous answer (disbelief / re-check)."""
+    return _CHALLENGE_RE.search(user_text) is not None
+
+
+def _apology_spiral(text: str) -> bool:
+    """True when a completion carries :data:`_APOLOGY_MARKERS`+ apology/retraction phrases."""
+    return len(_APOLOGY_RE.findall(text)) >= _APOLOGY_MARKERS
+
+
 def _claims_blocker(text: str) -> bool:
     """True when the TAIL of a final completion declares the model blocked or asks the user
     for something (first-person blocker framing only)."""
@@ -877,6 +968,9 @@ class AgentLoop:
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
         # as re-measuring while probe → probe → probe with nothing changed does. Per-turn.
         self._turn_edit_calls = 0
+        # Missing-conclusion gate (ADR-0040): content-search calls this turn. A completion
+        # that concludes "could not find" with this at zero has not looked.
+        self._turn_search_calls = 0
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
         # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
         # one unit from the shared pool, and the turn stops with
@@ -1662,6 +1756,8 @@ class AgentLoop:
         block = await self._execute_tool_call_gated(call, ctx, restrict_to=restrict_to)
         if block.is_error:
             self._turn_tool_errors += 1
+        if call.name in _SEARCH_TOOLS:
+            self._turn_search_calls += 1  # a content search ran (ADR-0040), whatever it found
         return block
 
     async def _execute_tool_call_gated(
@@ -2133,6 +2229,20 @@ class AgentLoop:
             for b in blocks
         )
 
+    def _previous_assistant_text(self) -> str:
+        """The most recent assistant text BEFORE this turn's user message, or ''.
+
+        The contested-claim rail (ADR-0040) only makes sense when there is a previous
+        answer to contest; the just-added user message is skipped.
+        """
+        messages = self.session.messages
+        for message in reversed(messages[:-1] if messages else []):
+            if message.role == "assistant" and message.text:
+                return message.text
+            if message.role == "user" and message.text:
+                return ""  # the previous user turn — nothing answered since; not a contest
+        return ""
+
     def _refund_iteration(self) -> None:
         """Return one iteration to the shared budget (no-op without a shared budget)."""
         if self.budget is not None:
@@ -2359,6 +2469,15 @@ class AgentLoop:
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
+        # Contested-claim rail (ADR-0040): the operator disputes the previous answer — ask for
+        # the re-measurement up front, before the apology reflex gets a first token.
+        if _contests_prior_claim(user_text) and self._previous_assistant_text():
+            self._note(
+                "intervention",
+                "user contests the previous answer — asking for a re-measurement",
+                kind="challenge",
+            )
+            self.session.add_message(Message.user(_control_rail(_CHALLENGE_RAIL)))
         # A typed /<skill> turn carries the skill's body as the message (ADR-0036): the
         # body is documentation — never seed from it, never demand its re-load.
         composed_skill = _composed_skill_name(user_text)
@@ -2430,10 +2549,13 @@ class AgentLoop:
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
+        missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
+        apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
+        self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -2639,6 +2761,31 @@ class AgentLoop:
                     )
                     self._persist()
                     break
+
+            # Apology spiral (ADR-0040): mostly apology and retraction, no tool call — the
+            # sycophantic twin of the repetition loop. Discard once behind a rail that
+            # demands the measurement; a second one rides the text-only stall below.
+            if (
+                not result.has_tool_calls
+                and result.text
+                and apology_retries < _MAX_APOLOGY_RETRIES
+                and _apology_spiral(result.text)
+            ):
+                apology_retries += 1
+                turn_degraded = True
+                self._turn_struggle = True
+                self._refund_iteration()  # the discarded completion did no work
+                self._note(
+                    "intervention",
+                    "response was an apology spiral — discarded; asking for the measurement",
+                    kind="apology_spiral",
+                )
+                self.session.add_message(Message.user(_control_rail(_APOLOGY_NUDGE)))
+                self._persist()
+                last_signature = None
+                repeat_count = 0
+                stuck.reset()
+                continue
 
             assistant_msg = self._assistant_message(result)
             self.session.add_message(assistant_msg)
@@ -2983,6 +3130,29 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # Missing-conclusion gate (ADR-0040): "could not find X" with no content
+                # search this turn is a conclusion about the paths tried, not the workspace.
+                # Ask once for the grep; a model that already searched is never asked.
+                if (
+                    result.text
+                    and not missing_nudged
+                    and self._turn_search_calls == 0
+                    and _claims_missing(result.text)
+                ):
+                    missing_nudged = True
+                    self._turn_struggle = True
+                    self._note(
+                        "intervention",
+                        "completion concludes something is missing without a content search "
+                        "— asking for the grep",
+                        kind="missing_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_MISSING_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 # False-done guard (ADR-0024): the turn is ending on an ANNOUNCEMENT of
                 # work ("Now I will use …" with no calls behind it). Ask once for the
                 # work or a plain finish; a model that was only describing says so.
@@ -3305,6 +3475,14 @@ class AgentLoop:
             yield AgentStatus(message=compact_note)
         self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
+        # Contested-claim rail (ADR-0040) — see _run_turn (buffered twin).
+        if _contests_prior_claim(user_text) and self._previous_assistant_text():
+            self._note(
+                "intervention",
+                "user contests the previous answer — asking for a re-measurement",
+                kind="challenge",
+            )
+            self.session.add_message(Message.user(_control_rail(_CHALLENGE_RAIL)))
         # Compound-ask decomposition + coverage state — see _run_turn (buffered twin).
         composed_skill = _composed_skill_name(user_text)
         seeded = [] if composed_skill else self._seed_plan_from_request(user_text)
@@ -3374,10 +3552,13 @@ class AgentLoop:
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
+        missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
+        apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
+        self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -3794,6 +3975,33 @@ class AgentLoop:
                     )
                     break
 
+                # Apology spiral (ADR-0040), streaming twin — see _run_turn.
+                if (
+                    not tool_calls
+                    and assistant_text
+                    and apology_retries < _MAX_APOLOGY_RETRIES
+                    and _apology_spiral(assistant_text)
+                ):
+                    apology_retries += 1
+                    turn_degraded = True
+                    self._turn_struggle = True
+                    self._refund_iteration()  # the discarded completion did no work
+                    self._note(
+                        "intervention",
+                        "response was an apology spiral — discarded; asking for the measurement",
+                        kind="apology_spiral",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_APOLOGY_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    yield AgentStatus(
+                        message="response was an apology spiral; discarded — asking for the "
+                        "measurement"
+                    )
+                    continue
+
                 turn_saw_text = turn_saw_text or bool(assistant_text)
                 assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
                 self.session.add_message(assistant_msg)
@@ -4166,6 +4374,31 @@ class AgentLoop:
                         yield AgentStatus(
                             message="completion declares a blocker no tool call demonstrated — "
                             "asking for the probe"
+                        )
+                        continue
+                    # Missing-conclusion gate (ADR-0040) — see the buffered twin.
+                    if (
+                        assistant_text
+                        and not missing_nudged
+                        and self._turn_search_calls == 0
+                        and _claims_missing(assistant_text)
+                    ):
+                        missing_nudged = True
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            "completion concludes something is missing without a content "
+                            "search — asking for the grep",
+                            kind="missing_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_MISSING_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="completion concludes something is missing without a "
+                            "content search — asking for the grep"
                         )
                         continue
                     # False-done guard (ADR-0024) — see the buffered twin.

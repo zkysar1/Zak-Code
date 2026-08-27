@@ -1404,10 +1404,49 @@ class _SkillCommandOutcome(NamedTuple):
 
     handled: bool  # True → the token matched a discovered skill; stop command fallthrough
     turn_text: str | None  # set → run this text as the current turn's user message
+    suggestions: tuple[str, ...] = ()  # not handled → skill names the token is close to
+
+
+#: The REPL's own commands — the did-you-mean pool for a mistyped slash (ADR-0040). Never
+#: auto-corrected: a typo must not run ``/clear`` or ``/exit`` on the operator's behalf.
+_REPL_COMMANDS = (
+    "/help",
+    "/model",
+    "/permissions",
+    "/hooks",
+    "/clear",
+    "/resume",
+    "/cost",
+    "/agents",
+    "/plan",
+    "/mcp",
+    "/plugins",
+    "/skills",
+    "/compact",
+    "/exit",
+    "/quit",
+)
+
+
+def _unknown_command(console: Console, command: str, skill_suggestions: tuple[str, ...]) -> None:
+    """Name what a mistyped slash is closest to, from the REPL's commands and the catalog.
+
+    ``/enocde-session is not yet supported`` told the operator nothing while the prose
+    "encode the session" routed to the skill through the classifier (2026-08-27) — the
+    strict path must not be dumber than the fuzzy one.
+    """
+    import difflib
+
+    options = list(difflib.get_close_matches(command.lower(), _REPL_COMMANDS, n=2, cutoff=0.72))
+    options.extend(f"/{name}" for name in skill_suggestions if f"/{name}" not in options)
+    if options:
+        _dim(console, f"unknown command {command} — did you mean {' or '.join(options[:3])}?")
+    else:
+        _dim(console, f"unknown command {command}. /help lists commands; /skills lists skills.")
 
 
 def _skill_command_turn(
-    console: Console, agent: Agent, name: str, args: str = ""
+    console: Console, agent: Agent, name: str, args: str = "", *, fuzzy: bool = True
 ) -> _SkillCommandOutcome:
     """If ``name`` is a skill, compose its body as THIS turn's input (Claude Code semantics).
 
@@ -1422,9 +1461,15 @@ def _skill_command_turn(
     compose = getattr(agent, "compose_skill_turn", None)
     if compose is None:
         return _SkillCommandOutcome(False, None)
-    result = _run_async(compose(name, args))
+    import inspect
+
+    # An AgentLike whose compose_skill_turn predates typo tolerance (no ``fuzzy`` kwarg) is
+    # exact-only: both REPL probes resolve the same way and a miss stays a miss.
+    accepts_fuzzy = "fuzzy" in inspect.signature(compose).parameters
+    result = _run_async(compose(name, args, fuzzy=fuzzy) if accepts_fuzzy else compose(name, args))
     if not result.invoked:
-        return _SkillCommandOutcome(False, None)  # not a skill — try other command paths
+        # Not a skill — try other command paths; carry the near names for the did-you-mean.
+        return _SkillCommandOutcome(False, None, tuple(getattr(result, "suggestions", ()) or ()))
     if result.error:
         # The file may have changed/vanished since discovery; report, don't crash the REPL.
         notice_error(console, "could not load skill", f"{result.name}: {result.error}")
@@ -1433,11 +1478,13 @@ def _skill_command_turn(
         # A policy refusal (e.g. user-invocable: false), not a failure — a friendly notice.
         notice_info(console, result.denied_reason)
         return _SkillCommandOutcome(True, None)
+    corrected_from = getattr(result, "corrected_from", None)
     console.print(
         margin(
             Text.assemble(
                 ("running skill ", "notice.dim"),
                 (result.name, "bold"),
+                ((f" (you typed /{corrected_from})" if corrected_from else ""), "notice.dim"),
                 ((f" {GLYPHS['dot']} {args}" if args else ""), "notice.dim"),
             )
         )
@@ -2566,13 +2613,11 @@ def chat(
             # through to the shared streaming path below. No second "describe your task"
             # message needed — and the frame tells the model a HUMAN typed the slash.
             skill_args = stripped[len(command) :].strip()
-            skill = _skill_command_turn(console, agent, command.lstrip("/"), args=skill_args)
-            if skill.handled:
-                if skill.turn_text is None:
-                    continue  # denied / unreadable — the notice already rendered
-                stripped = skill.turn_text  # the skill body is the turn; stream it below
-            else:
-                # Fall through to plugin-registered commands before giving up. ``getattr``
+            skill = _skill_command_turn(
+                console, agent, command.lstrip("/"), args=skill_args, fuzzy=False
+            )
+            if not skill.handled:
+                # Fall through to plugin-registered commands before typo tolerance. ``getattr``
                 # because the live agent may be any AgentLike (a thin/remote one without a
                 # command registry); a missing registry just means no plugin commands.
                 registry = getattr(agent, "command_registry", None)
@@ -2588,7 +2633,17 @@ def chat(
                         margin(Text(cmd_result.output, style="err" if cmd_result.is_error else ""))
                     )
                     continue
-                _dim(console, f"{command} is not yet supported.")
+                # Nothing exact anywhere: a mistyped skill name runs when the catalog holds
+                # exactly one near-identical name (ADR-0040); otherwise say what it is close to.
+                skill = _skill_command_turn(
+                    console, agent, command.lstrip("/"), args=skill_args, fuzzy=True
+                )
+            if skill.handled:
+                if skill.turn_text is None:
+                    continue  # denied / unreadable — the notice already rendered
+                stripped = skill.turn_text  # the skill body is the turn; stream it below
+            else:
+                _unknown_command(console, command, skill.suggestions)
                 continue
 
         # Stream the model response token by token through the renderer. A fresh

@@ -17,6 +17,7 @@ from zakcode.tools.base import (
 )
 from zakcode.tools.builtins._ignore import load_ignore
 from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
+from zakcode.tools.builtins._suggest import not_found_fix, render, suggest
 
 # Maximum number of matching lines to return.
 _MAX_MATCHES = 1000
@@ -102,7 +103,16 @@ class GrepTool(Tool):
 
         try:
             if not resolved.exists():
-                return ToolResult.error(f"Path not found: {base}")
+                # Closest-path suggestions (ADR-0040) — see read_file's not-found branch.
+                by_name, by_content = suggest(
+                    base, ctx.workspace_root, ctx.extra_workspace_roots, soft=soft
+                )
+                extra = render(base, by_name, by_content)
+                return ToolResult.error(
+                    f"Path not found: {base}" + (f"\n{extra}" if extra else ""),
+                    fix=not_found_fix(base, bool(by_name or by_content)),
+                    data={"suggestions": {"by_name": by_name, "by_content": by_content}},
+                )
 
             ignore = load_ignore(Path(ctx.workspace_root))
             ignore_root = Path(ctx.workspace_root).resolve()

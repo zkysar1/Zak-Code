@@ -130,7 +130,7 @@ def test_chat_unknown_slash_is_friendly(monkeypatch) -> None:
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     result = runner.invoke(app, ["cli"], input="/bananas\n/exit\n")
     assert result.exit_code == 0
-    assert "not yet" in result.stdout
+    assert "unknown command /bananas" in result.stdout
 
 
 def test_chat_cost_reports_usage(monkeypatch) -> None:

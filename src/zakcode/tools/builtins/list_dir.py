@@ -14,6 +14,7 @@ from zakcode.tools.base import (
 )
 from zakcode.tools.builtins._ignore import load_ignore
 from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
+from zakcode.tools.builtins._suggest import not_found_fix, render, suggest
 
 #: Soft cap on entries rendered into the model-facing output; beyond this an explicit marker
 #: points the model at glob. ``data["entries"]`` still carries the full list for clients.
@@ -71,7 +72,16 @@ class ListDirTool(Tool):
 
         try:
             if not resolved.exists():
-                return ToolResult.error(f"Directory not found: {target}")
+                # Closest-path suggestions (ADR-0040) — see read_file's not-found branch.
+                by_name, by_content = suggest(
+                    target, ctx.workspace_root, ctx.extra_workspace_roots, soft=soft
+                )
+                extra = render(target, by_name, by_content)
+                return ToolResult.error(
+                    f"Directory not found: {target}" + (f"\n{extra}" if extra else ""),
+                    fix=not_found_fix(target, bool(by_name or by_content)),
+                    data={"suggestions": {"by_name": by_name, "by_content": by_content}},
+                )
             if not resolved.is_dir():
                 return ToolResult.error(f"Path is not a directory: {target}")
 
