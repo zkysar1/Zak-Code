@@ -1553,3 +1553,34 @@ twice, to continue — the same rail the generic gate already provides for a tur
 produced nothing. A skill whose every step is genuinely done can say so in one
 sentence and end cleanly. The deployment-side belt (re-issuing a ceremony whose turn
 ended without its effects) stays with the deployment; this is the loop's half.
+
+## ADR-0043: The served agent compacts
+
+**Context.** `zakcode serve` builds a feature-reduced agent — skills + rules — and left
+compaction with sub-agents / MCP / plugins as "a separate posture decision" (the
+`_default_agent_factory` docstring; pinned by `tests/test_sdk_iface_config_parity.py`).
+That was a fine default for a connection substrate whose sessions were ephemeral. They
+are not any more: ADR-0032 resumes and grows the SAME session across vessels, and
+ADR-0037 opens every boot with a served `/start` whose composed frame is the skill's
+whole body (~91KB, ~23k tokens) persisted as a user message. Measured 2026-08-27 on a
+served Mind (Vinheim, boot C of the g-369-02 verify): 40k prompt tokens on boot A, 105k
+on boot B, 128,666 on boot C against a 131,072 window — then the ceremony turn ended
+`provider_error` before a single step ran, the product's ready gate never opened, and
+the deployment's re-issue watchdog appended two more frames to a transcript the model
+could already not read. Nothing in the served posture could shrink the conversation.
+
+**Decision.** The served factory passes `enable_compaction=True`. The compactor is the
+CLI's (M8): once the transcript exceeds 80% of the provider's declared window, the
+older messages are summarized in one model call and the recent tail is kept verbatim,
+before the turn runs; the streaming path already surfaces the notice as a status event.
+Sub-agents / MCP / plugins stay server-off; the parity test's documented asymmetry
+shrinks by exactly this one flag.
+
+**Consequences.** A persistent served conversation stays inside its window by
+construction: on the measured trajectory compaction would have fired at boot B's second
+turn (105k > 104,857) and boot C would have started near 20k. A summary replaces old
+turns, so a member's earlier words survive as a summary rather than verbatim — the same
+trade the CLI already makes, and strictly better than a conversation that can no longer
+be spoken to. A session already past the window is not rescued retroactively (the
+summarize call would overflow too); it needs a fresh session, which the Talk surface
+provides.

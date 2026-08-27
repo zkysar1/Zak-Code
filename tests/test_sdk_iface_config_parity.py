@@ -9,9 +9,10 @@ the documented, intentional set — nothing accidentally added or dropped.
 THE DELIBERATE ASYMMETRY (not a bug to converge)
 ------------------------------------------------
 ``zakcode serve`` (:func:`~zakcode.server.app._default_agent_factory`) builds a
-FEATURE-REDUCED agent — **skills + rules only** — because sub-agents / MCP /
-plugins / compaction are a separate posture decision, out of scope for the
-connection substrate (see ``app.py``). The CLI
+FEATURE-REDUCED agent — **skills + rules + compaction** — because sub-agents /
+MCP / plugins are a separate posture decision, out of scope for the connection
+substrate (see ``app.py``); compaction joined the shared set in ADR-0043, because a
+served conversation is persistent and must fit its window. The CLI
 (:func:`~zakcode.cli._build_chat_agent`) builds the FULL interactive agent. This
 test makes that split EXPLICIT and regression-proof: if someone flips
 ``enable_mcp`` on in the server factory, drops ``enable_compaction`` from the
@@ -78,7 +79,7 @@ _SERVER_EXPECTED: dict[str, bool] = {
     "enable_subagents": False,
     "enable_mcp": False,
     "enable_plugins": False,
-    "enable_compaction": False,
+    "enable_compaction": True,
 }
 _CLI_EXPECTED: dict[str, bool] = dict.fromkeys(_FEATURE_FLAGS, True)
 
@@ -88,9 +89,8 @@ _INTENDED_CLI_ONLY: set[str] = {
     "enable_subagents",
     "enable_mcp",
     "enable_plugins",
-    "enable_compaction",
 }
-_SHARED_ENABLED: set[str] = {"enable_skills", "enable_rules"}
+_SHARED_ENABLED: set[str] = {"enable_skills", "enable_rules", "enable_compaction"}
 
 
 # ── capture + posture helpers ─────────────────────────────────────────────────────

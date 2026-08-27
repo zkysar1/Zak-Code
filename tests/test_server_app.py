@@ -176,6 +176,23 @@ def test_default_factory_loads_a_mind(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "You are Vinheim, the guide." in a2.loop._build_system()
 
 
+def test_default_factory_agent_compacts(tmp_path: Path) -> None:
+    # ADR-0043: a served conversation is persistent (resumed across vessels, a ~23k-token skill
+    # frame per boot), so the factory's agent MUST carry the compactor the CLI agent gets —
+    # measured 2026-08-27: 128,666 prompt tokens on the third boot against a 131,072 window,
+    # then every turn provider_error. The parity test pins the FLAG; this pins the EFFECT.
+    from zakcode.server.app import _default_agent_factory
+
+    settings = Settings(
+        default_model="scripted/test", permission_mode="allow", workspace_root=tmp_path
+    )
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    agent = _default_agent_factory(settings, store)(
+        Session(cwd=str(tmp_path), model="scripted/test"), None, None
+    )
+    assert agent.loop.compactor is not None
+
+
 def test_tools_lists_builtins(client: TestClient) -> None:
     resp = client.get("/tools")
     assert resp.status_code == 200
