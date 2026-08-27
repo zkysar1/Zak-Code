@@ -408,8 +408,14 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
     Each request's agent loads the env's MIND from ``settings.workspace_root`` — the operator
     identity (``self.md``), always-on rules, and skills — so ``zakcode serve`` behaves like the
     CLI. The topology is one container per customer env, selected by the workspace root;
-    sub-agents / MCP / plugins / compaction are deliberately NOT enabled here (a separate posture
-    decision, out of scope for the connection substrate).
+    sub-agents / MCP / plugins are deliberately NOT enabled here (a separate posture decision,
+    out of scope for the connection substrate). Compaction IS enabled (ADR-0043): a served
+    conversation is PERSISTENT — the same session is resumed and grown across vessels
+    (ADR-0032) and receives a ~23k-token skill frame every boot (ADR-0037's ``/start``
+    ceremony) — so without the CLI's compactor it walks off the model's context window in
+    a few boots and every later turn dies ``provider_error`` before a step runs. Measured
+    2026-08-27 on a served Mind: 40k prompt tokens on boot A, 105k on boot B, 128,666 on
+    boot C against a 131,072 window, then nothing but refusals.
 
     Bound to ``settings`` so every agent shares the operator's configured posture (model,
     permission mode, workspace root, …) and to ``store`` so a turn persists incrementally at
@@ -441,6 +447,7 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
             prompter=prompter,
             enable_skills=True,
             enable_rules=True,
+            enable_compaction=True,
             lean_rules=agent_settings.lean_rules,
         )
 
