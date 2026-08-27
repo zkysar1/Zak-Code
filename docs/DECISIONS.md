@@ -1113,3 +1113,43 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   control-skill file now denies exactly like the absolute one; the verb semantics of
   ADR-0030 are unchanged (read still ALLOW). A policy constructed without a root (library
   callers, tests) behaves exactly as before.
+
+## ADR-0032: The served mind's session store lives under the workspace — conversations travel with the mind, not the host
+
+- **Status:** Accepted (shipped, 2026-08-27). Found live by the Vinheim presence work
+  (g-369-15): a served mind's conversations vanished with the host that served it.
+- **Context:** `SessionStore()` defaulted to the per-user home (`~/.zakcode/sessions`),
+  which is right for the terminal client — one human, one machine, many projects — and
+  wrong for `zakcode webapp`, whose topology is one container per served workspace. A
+  served workspace IS one mind's home: its identity (`self.md`), rules, skills, the
+  `.say` inbox, the `.current-session` marker and its uploads already live there. Only the
+  transcripts those things point at lived somewhere else, on the serving host's disk. So
+  the marker (workspace-scoped, durable) and its target (host-scoped, ephemeral) were on
+  different lifetimes: recycle the host and every conversation is gone while the
+  workspace still names one — the dangling-marker case `GET /sessions/current` heals, but
+  healing an amnesia is not the same as not having it. There is one way of doing things
+  here, so this is a decision about where the store IS, not a knob for where it may be.
+- **Decision:** `SessionStore.for_workspace(root)` re-roots the user store's layout at
+  `<workspace>/.zakcode/sessions` — the same directory family as the project-level
+  `.zakcode/settings.json`, one JSON document per session, unchanged format. `create_app()`
+  uses it whenever no store is injected. The terminal client (`zakcode`, the cockpit,
+  `-s` resume) keeps `~/.zakcode/sessions` untouched. The workspace store writes a
+  self-ignoring `.gitignore` (`*`) once, so a workspace that is also a git checkout never
+  commits its transcripts. No flag, no env var.
+- **Alternatives rejected:** a `--sessions-dir` flag / `ZAKCODE_SESSIONS_DIR` env (a knob for
+  a question with one right answer, and every deployment would have to remember to set
+  it); repointing `ZAKCODE_HOME` at the workspace (`zakcode_home()` is a config home only
+  and must never be treated as a workspace — D20 — and it would drag `.env` along with
+  it); a host-side symlink from `~/.zakcode/sessions` into the workspace (leaves the
+  lifetime split in place and, with several minds served from one host user, makes every
+  daemon share one store).
+- **Consequences:** Conversations survive the host: stop the container, start another
+  against the same workspace, `/sessions` lists the same transcripts and
+  `/sessions/current` resolves. Two served workspaces are isolated by construction. A
+  local `zakcode webapp` run without `--workspace` now stores under `<cwd>/.zakcode/sessions`
+  rather than the home dir — sessions created by the old default are not migrated (the
+  format is identical; copy the files if they matter). The mind's own file tools can see
+  its transcripts, since `.zakcode/` is not in the default ignore set — deliberate (a mind
+  may read its own history); `.zakcodeignore` hides it where that is unwanted. Markers
+  written before this ADR point at ids the new store does not have and self-heal through
+  `/sessions/current` exactly as any dangling marker does.

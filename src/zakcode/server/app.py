@@ -484,11 +484,13 @@ def create_app(
     """Construct the Zak Code HTTP app.
 
     All collaborators are injectable for testing; production callers pass nothing
-    and get a real store + agent factory + provider factory (the latter drives ``/complete``,
-    a raw schema-valid completion that bypasses the agent loop).
+    and get the workspace's own session store (``<workspace>/.zakcode/sessions`` —
+    ADR-0032, so a served mind's conversations outlive the host) + agent factory +
+    provider factory (the latter drives ``/complete``, a raw schema-valid completion that
+    bypasses the agent loop).
     """
     resolved_settings = settings or load_settings()
-    resolved_store = store or SessionStore()
+    resolved_store = store or SessionStore.for_workspace(resolved_settings.workspace_root)
     resolved_factory = agent_factory or _default_agent_factory(resolved_settings, resolved_store)
     resolved_provider_factory = provider_factory or _default_provider_factory(resolved_settings)
     resolved_registry = tool_registry or default_registry()

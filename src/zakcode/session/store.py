@@ -198,17 +198,39 @@ class SessionStore:
     """Reads and writes :class:`Session` documents on disk.
 
     Each session is stored as ``<base_dir>/<id>.json``. ``base_dir`` defaults to
-    ``~/.zakcode/sessions`` and is created on construction. Session ids are validated as
+    ``~/.zakcode/sessions`` (the terminal client's store; a served workspace uses
+    :meth:`for_workspace`) and is created on construction. Session ids are validated as
     safe single filename components (:func:`_is_safe_session_id`) on save/load/delete, so a
     request-supplied id can never traverse out of ``base_dir`` — load/delete treat an unsafe
     id as not-found, and save rejects it.
     """
+
+    #: Where a SERVED workspace keeps its conversations (ADR-0032): the user store's layout
+    #: re-rooted at the workspace, beside the project-level ``.zakcode/settings.json``.
+    WORKSPACE_SUBDIR = Path(".zakcode") / "sessions"
 
     def __init__(self, base_dir: str | os.PathLike[str] | None = None) -> None:
         if base_dir is None:
             base_dir = Path.home() / ".zakcode" / "sessions"
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def for_workspace(cls, workspace_root: str | os.PathLike[str]) -> SessionStore:
+        """The store of a SERVED mind: ``<workspace>/.zakcode/sessions`` (ADR-0032).
+
+        A served workspace is one mind's home — identity, rules, skills, the say inbox and
+        the current-session marker already live there — so its conversations live there
+        too, and survive the host that happens to be serving it. The directory carries a
+        self-ignoring ``.gitignore`` (written once, never overwritten) so a workspace that
+        is also a git checkout does not commit its transcripts.
+        """
+        store = cls(Path(workspace_root).resolve() / cls.WORKSPACE_SUBDIR)
+        ignore = store.base_dir / ".gitignore"
+        if not ignore.exists():
+            with contextlib.suppress(OSError):
+                ignore.write_text("*\n", encoding="utf-8")
+        return store
 
     def _path_for(self, session_id: str) -> Path:
         """Return the JSON file path for ``session_id``."""
