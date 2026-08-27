@@ -1153,3 +1153,68 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   may read its own history); `.zakcodeignore` hides it where that is unwanted. Markers
   written before this ADR point at ids the new store does not have and self-heal through
   `/sessions/current` exactly as any dangling marker does.
+
+## ADR-0033: Small-model containment II — fuzzy repetition, claim-vs-action, directive nudges, text-only stall, resume safety
+
+- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-26 (serene:
+  gemini-2.5-flash-lite on `quick_code`, a `/resume`d transcript, on a process still
+  running the pre-`zakcode update` build): "finish forging this skill" produced a 20-line
+  "Let's try again. I will try to create the skill correctly." spiral, then "I have updated
+  world/forged-skills.yaml … I have registered the skill" with nothing written — and the
+  turn completed. No plan, no skill read, no visible reason.
+- **Context:** Every rail from ADR-0018 / 0024 / 0026 was on and none fired, each for a
+  measurable reason. (1) The degeneration guard convicts 12 of 15 IDENTICAL lines; the
+  spiral mutated a word per line ("add" → "create", "this again" → "again") and topped out
+  at 3, while 10–11 of those 15 lines shared ≥ 60% of their words with one sentence. (2) The
+  false-done regex required the action verb to follow "will" directly — "I will *try to*
+  create" never matched. (3) Nothing compared a completion's CLAIM of a change against the
+  tool calls that ran. (4) The critic was scoped off `quick_code` turns entirely. (5) The
+  empty-completion nudge invited narration ("say what you tried, what failed, and what
+  should happen next") and the model obliged with apologies. (6) zakpick's only
+  escalation paths were the guards that stayed silent, so five text-only completions ran on
+  the cheap model. (7) The route was a trace-only note, invisible at the terminal. (8) The
+  resumed transcript carried the old build's collapse into the new session, and nothing
+  recorded which build had written it or how its last turn ended.
+- **Decision:** one change, no flags, both turn paths:
+  1. `repeated_tail` gains a **near-duplicate branch**: ≥ 8 of the last 15 lines at ≥ 0.6
+     word-Jaccard to one short line, with ≥ 3 distinct variants (an identical-only window
+     stays the exact branch's call at its 12-line bar — a fuzzier branch must not undercut
+     it) and fewer than half of the similar lines introducing a token seen nowhere else in
+     the window (a listing adds vocabulary on every line; a spiral recycles a closed
+     vocabulary). Same discard-retry-then-`degenerated` contract as ADR-0018.
+  2. `_FUTURE_INTENT_RE` admits `try to / attempt to / go ahead and / proceed to` between
+     the future form and the verb.
+  3. **Claim-vs-action guard**: a completion whose tail reports a change (first-person
+     past/perfect change verb tied to a file-ish object in the same sentence) in a turn
+     with zero executed non-`READ_ONLY` tool calls gets one `_CLAIM_NUDGE` per turn and
+     latches the struggle flag. The critic also runs on a `quick_code` turn whose
+     completion claims a change.
+  4. `_EMPTY_COMPLETION_NUDGE` is a directive: one tool call, the answer, or one blocking
+     sentence — nothing else.
+  5. **Text-only stall**: the second no-tool-call completion in a turn (necessarily after a
+     nudge or veto) with no open plan latches the struggle flag; a tool batch resets the
+     count.
+  6. **Transparency**: `route: <category> → <model>` on every route change and
+     `text-only completion #N (no tool calls)` as status lines (streaming path; the CLI
+     renders them as dim `·` lines).
+  7. **Resume safety**: `Session.build` (stamped at every save from `build_commit()`) and
+     `Session.last_stop_reason` (stamped at turn end). `-s <id>` and `/resume` print why and
+     run `compact_now(trigger="resume")` when the build differs — an unstamped document
+     counts as older — or the last turn ended `gave_up` / `degenerated` / `doom_loop`.
+- **Alternatives rejected:** lowering the exact branch's bar or swapping it for a
+  similarity threshold alone (a numbered listing scores the same as the spiral — the
+  vocabulary predicate is what separates them); a `--strict-done` flag or per-model gating
+  (one way of doing things); refusing `/resume` across builds outright (the transcript is
+  still the human's context — compaction keeps its summary); ending the turn on an
+  unbacked claim (a nudge is bounded, and a model that did the work in an EARLIER turn can
+  say so and finish).
+- **Consequences:** the real wall convicts at the mid-stream probe, not at the end of the
+  turn; a numbered listing, a file listing, code, a checklist and eleven identical lines
+  stay legal (all pinned). "I have added some context below" is conversation, not a claim
+  (no file-ish object); "I have not updated" and "you have updated" never match. The claim
+  nudge costs one bounded iteration on a text-only turn. Sessions saved by this build carry
+  the stamp; every older transcript compacts once on its first resume. Residual: the web
+  client's resume (`server/app.py` load sites) does not yet run the notice, and
+  `zakcode update` still tells the operator to restart running sessions — both belong to
+  the in-place update change (PR-C), which retires the restart line by restarting the
+  process itself.

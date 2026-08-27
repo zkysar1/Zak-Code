@@ -35,7 +35,7 @@ from rich.table import Table
 from rich.text import Text
 
 from zakcode import __version__
-from zakcode.build_info import build_dir, build_url, version_line
+from zakcode.build_info import build_commit, build_dir, build_url, version_line
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
     close_input_frame,
@@ -736,6 +736,27 @@ def _age_str(seconds: float) -> str:
 #: Replay caps for a resumed transcript: last N visible messages, chars per message.
 _REPLAY_MESSAGE_LIMIT = 12
 _REPLAY_CHAR_LIMIT = 2000
+
+
+def _announce_resume(console: Console, agent: Any) -> None:
+    """Resume safety (ADR-0033): compact a transcript that is unsafe to continue verbatim.
+
+    A document last saved by another build, or whose last turn collapsed (gave_up /
+    degenerated / doom_loop), is compacted before the first prompt so neither the stale
+    build's behavior nor the failure spiral carries over into the resumed session — the
+    2026-08-26 serene collapse resumed an old-build transcript on a process that was itself
+    still the old build. The human is told why in one line. Must run on the session event
+    loop (the compaction is a provider call that shares the loop every later turn uses).
+    """
+    notice = agent.session.resume_notice(running_build=build_commit())
+    if notice is None:
+        return
+    notice_warn(console, notice)
+    compacted = _run_async(agent.loop.compact_now(trigger="resume"))
+    notice_info(
+        console,
+        "context compacted before resuming" if compacted else "nothing old enough to compact",
+    )
 
 
 def _render_transcript(
@@ -2131,6 +2152,10 @@ def chat(
     global _SESSION_LOOP
     _SESSION_LOOP = loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    if session is not None:
+        # Resume safety (ADR-0033) — after the session loop exists, so the compaction's
+        # provider call runs on the loop every later turn uses, never a throwaway one.
+        _announce_resume(console, agent)
 
     # Headless one-shot (`-p/--prompt`): run a single task, no REPL, and exit with a code that
     # reflects the outcome (0 = completed cleanly, non-zero otherwise) so it composes in scripts.
@@ -2358,6 +2383,7 @@ def chat(
                     f"resumed session {sid} ({len(agent.session.messages)} messages)",
                 )
                 _render_transcript(console, agent.session)
+                _announce_resume(console, agent)  # resume safety (ADR-0033)
                 continue
             if command == "/cost":
                 usage = agent.session.cumulative_usage()

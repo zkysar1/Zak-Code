@@ -256,7 +256,7 @@ async def test_empty_completion_nudge_recovers_an_answer(tmp_path: Path) -> None
     assert result.assistant_messages[-1].text == "the answer"
     # The injected nudge is a user-role control rail in the session history.
     assert any(
-        m.role == "user" and "without any visible output" in m.text for m in loop.session.messages
+        m.role == "user" and "Your response was empty" in m.text for m in loop.session.messages
     )
 
 

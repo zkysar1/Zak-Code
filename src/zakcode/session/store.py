@@ -50,6 +50,11 @@ from zakcode.usage import Usage
 #: Highest on-disk schema version this build can write and fully understand.
 CURRENT_SCHEMA_VERSION = 1
 
+#: Stop reasons after which a transcript must not be continued verbatim on resume
+#: (ADR-0033): the loop ended the last turn by giving up, degenerating, or doom-looping,
+#: and the messages that produced that end are exactly what would be re-fed to the model.
+RESUME_COMPACT_STOP_REASONS = frozenset({"gave_up", "degenerated", "doom_loop"})
+
 #: Suffix marking an in-progress temp file written during an atomic save.
 _TMP_SUFFIX = ".tmp"
 
@@ -160,10 +165,42 @@ class Session(BaseModel):
     #: the pre-#32 behavior).
     plan_signature: str = ""
     plan_idle_turns: int = 0
+    #: Resume safety (ADR-0033): the build (``build_info.build_commit()``) that last SAVED this
+    #: document, and how its last turn ended (the ``stop_reason``). A resume reads both: a
+    #: transcript written by another build — or one whose last turn collapsed (gave_up /
+    #: degenerated / doom_loop) — is compacted before it continues, so neither the stale
+    #: build's behavior nor the failure carries over verbatim. Schema v1 stays append-only:
+    #: an OLDER build drops both on load and only loses the notice; an unstamped document
+    #: reads as "an older build" and is compacted (fails SAFE).
+    build: str = ""
+    last_stop_reason: str = ""
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""
         self.messages.append(msg)
+
+    def resume_notice(self, *, running_build: str | None) -> str | None:
+        """Why this transcript must be compacted before it continues, or ``None`` (ADR-0033).
+
+        Pure — the caller (the CLI's ``-s <id>`` and in-REPL ``/resume``) prints the text and
+        runs the compaction. An unstamped document reads as "an older build": every
+        pre-ADR-0033 transcript is one, and the 2026-08-26 serene collapse was exactly a stale
+        transcript resumed on a process that had not been restarted after ``zakcode update``.
+        """
+        running = running_build or ""
+        if self.build != running:
+            saved = f"build {self.build}" if self.build else "an older build (unstamped)"
+            current = f"build {running}" if running else "an unstamped build"
+            return (
+                f"this transcript was last saved by {saved}; this process runs {current} — "
+                "compacting the old context so stale behavior does not carry over"
+            )
+        if self.last_stop_reason in RESUME_COMPACT_STOP_REASONS:
+            return (
+                f"the previous turn ended {self.last_stop_reason!r} — compacting the old "
+                "context so the failure does not carry over"
+            )
+        return None
 
     def add_usage(self, usage: Usage, model: str = "") -> None:
         """Record a single LLM-call ``usage`` entry, tagged with the ``model`` that produced it.

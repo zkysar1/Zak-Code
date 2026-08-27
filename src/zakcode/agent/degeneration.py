@@ -13,12 +13,17 @@ Design rules (mirroring :mod:`zakcode.agent.stuck`):
 * **Pure.** No provider, no I/O — one function over a string, shared by both turn paths.
 * **Bounded work.** Only a fixed-size tail is examined, so periodic streaming checks stay
   cheap no matter how long the completion grows.
-* **Two branches, each convicting only pathological shapes.**
+* **Three branches, each convicting only pathological shapes.**
 
   - *Line branch*: the last :data:`_TAIL_LINES` non-empty lines are dominated
     (>= :data:`_LINE_REPEATS`) by ONE short normalized line. A super-majority — not
     unanimity — convicts, because real loops mutate occasionally at the token level
     ("the information *I* requested").
+  - *Near-duplicate branch* (ADR-0033): the same window is dominated by lines that share
+    most of their WORDS with one short line without being identical — the apology spiral
+    ("Let's try this again. I will try to add the skill correctly." / "Let's try again. I
+    will try to create the skill correctly." / "I will try to create the skill correctly."),
+    which mutates a word or two per line so the exact branch never reaches its bar.
   - *Period branch*: the raw tail is exactly periodic with a short period repeated many
     times — catches no-newline loops ("abc abc abc"), control-character floods, and
     single-character runs that have no line structure at all.
@@ -38,6 +43,7 @@ guard exists to stop (the per-completion output cap bounds that one instead).
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 #: Window of trailing non-empty lines the line branch examines.
@@ -53,6 +59,60 @@ _PERIOD_WINDOW = 400
 #: Full repetitions of the period inside that window required to convict.
 _PERIOD_REPEATS = 8
 
+#: Near-duplicate branch (ADR-0033) — measured on the 2026-08-26 serene transcript, where
+#: the exact branch topped out at 3 identical lines of 15 while 10–11 of those 15 shared
+#: >= 60% of their words with ONE short sentence. Two healthy look-alikes score just as
+#: high on word overlap and are acquitted by the two extra predicates:
+#:
+#: * a template LISTING ("Line 5: a distinct observation about file number 5." ×15) —
+#:   every line introduces a token seen nowhere else in the window, whereas a spiral
+#:   recycles a closed vocabulary (``_NEAR_DUP_MAX_NOVEL_FRAC``);
+#: * an IDENTICAL-line fixture below the exact branch's bar — no mutation at all, which is
+#:   that branch's jurisdiction, and a fuzzier branch must not undercut its 12-of-15 verdict
+#:   (``_NEAR_DUP_MIN_VARIANTS``).
+_NEAR_DUP_LINES = 8
+_NEAR_DUP_SIMILARITY = 0.6
+_NEAR_DUP_MIN_VARIANTS = 3
+_NEAR_DUP_MIN_TOKENS = 4
+_NEAR_DUP_MAX_NOVEL_FRAC = 0.5
+_TOKEN_RE = re.compile(r"[a-z0-9']+")
+
+
+def _near_duplicate_unit(lines: list[str]) -> str | None:
+    """The short line most of the tail ``lines`` are near-duplicates of, or ``None``.
+
+    ``lines`` are normalized (lowercased, whitespace-collapsed, non-empty); only the last
+    :data:`_TAIL_LINES` are judged. Similarity is word-set Jaccard, so token-level mutation
+    ("add" → "create", "this again" → "again") does not acquit the way it does for the exact
+    branch.
+    """
+    window = lines[-_TAIL_LINES:]
+    if len(window) < _NEAR_DUP_LINES:
+        return None
+    tokens = [set(_TOKEN_RE.findall(line)) for line in window]
+    # How many window lines each token occurs in: a line whose every token recurs
+    # elsewhere adds no vocabulary — the signature of a spiral, never of a listing.
+    line_counts: Counter[str] = Counter(tok for toks in tokens for tok in toks)
+    best: tuple[int, str] | None = None
+    for unit, unit_tokens in zip(window, tokens, strict=True):
+        if len(unit) > _MAX_UNIT_CHARS or len(unit_tokens) < _NEAR_DUP_MIN_TOKENS:
+            continue
+        similar = [
+            j
+            for j, other in enumerate(tokens)
+            if len(unit_tokens & other) / len(unit_tokens | other) >= _NEAR_DUP_SIMILARITY
+        ]
+        if len(similar) < _NEAR_DUP_LINES:
+            continue
+        if len({window[j] for j in similar}) < _NEAR_DUP_MIN_VARIANTS:
+            continue  # exact repeats only: the exact branch's jurisdiction, and its bar
+        novel = sum(1 for j in similar if any(line_counts[t] == 1 for t in tokens[j]))
+        if novel >= len(similar) * _NEAR_DUP_MAX_NOVEL_FRAC:
+            continue  # the similar lines keep bringing new words: a listing, not a spiral
+        if best is None or len(similar) > best[0]:
+            best = (len(similar), unit)
+    return best[1] if best is not None else None
+
 
 def repeated_tail(text: str) -> str | None:
     """The unit the tail of ``text`` is stuck repeating, or ``None`` when healthy."""
@@ -66,6 +126,10 @@ def repeated_tail(text: str) -> str | None:
         unit, count = Counter(lines[-_TAIL_LINES:]).most_common(1)[0]
         if count >= _LINE_REPEATS and len(unit) <= _MAX_UNIT_CHARS:
             return unit
+    # Near-duplicate branch: the same window, judged on shared words instead of equality.
+    near = _near_duplicate_unit(lines)
+    if near is not None:
+        return near
     # Period branch: the ENTIRE raw tail is periodic with a short period — detected by
     # self-overlap (``t`` has period ``p`` iff ``t[p:] == t[:-p]``; partial final unit
     # included, and unlike the string-doubling rotation trick this holds when ``p`` does
