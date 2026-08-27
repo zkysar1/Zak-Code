@@ -16,8 +16,9 @@ Lowest → highest precedence; closer to the invocation wins, explicit env alway
 
 The user config home is `~/.zakcode` (`%USERPROFILE%\.zakcode` on Windows); the
 `ZAKCODE_HOME` env var overrides the directory (tests / portable installs). It is a
-**config home only** — it is never treated as a workspace root. v1 contents: a
-single `.env` file.
+**config home only** — it is never treated as a workspace root. Contents: `.env`, and the
+terminal client's `sessions/`. A served workspace (`zakcode webapp`) keeps its sessions
+under its own `<workspace>/.zakcode/sessions/` instead (ADR-0032).
 
 Provider API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`,
 `TAVILY_API_KEY`) are deliberately **not** settings — litellm reads them from the
