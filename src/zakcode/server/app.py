@@ -54,6 +54,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from zakcode import __version__
+from zakcode._subprocess import new_group_kwargs, terminate_process_tree
 from zakcode.agent.loop import TurnResult
 from zakcode.artifacts import (
     ArtifactChangedError,
@@ -68,7 +69,7 @@ from zakcode.knowledge import okf_bundle, read_knowledge_bundle
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.structured import complete_structured, schema_error
-from zakcode.secrets import strip_url_credentials
+from zakcode.secrets import provider_key_env_names, strip_url_credentials
 from zakcode.server.event_bus import EventBusRegistry
 from zakcode.server.safe_projection import SafeEventProjection
 from zakcode.server.wire import (
@@ -567,6 +568,12 @@ NUDGE_FRAME = (
 #: Larger than a nudge — a say is a real conversational message, not a suggestion —
 #: but still bounded; the gateway is the real sanitization + ownership boundary.
 SAY_MAX_CHARS = 2000
+
+
+#: Wall-clock bound on ``run_end_command`` (ADR-0046). Not a knob: a receipt handoff that
+#: needs more than a minute is broken, and an unbounded one would hold the vessel — and
+#: its bill — open past the cap the whole bounded-run design exists to enforce.
+RUN_END_COMMAND_TIMEOUT_S = 60.0
 
 
 def create_app(
@@ -1553,8 +1560,11 @@ def create_app(
         effective_reserve = min(resolved_settings.run_consolidation_reserve, cap)
         turn_deadline = started + (cap - effective_reserve)
 
-    async def _consolidate_run() -> None:
+    async def _consolidate_run() -> str:
         """Spend the reserved budget on one final turn, so the run ends in a digest.
+
+        Returns the digest — the assistant's answer to ``run_consolidation_message`` —
+        or ``""`` when no digest turn ran or it produced no text (ADR-0046).
 
         Runs on EVERY graceful end, not only a cap-hit: an explicit stop is
         ``finish the in-flight turn -> consolidate -> digest`` too, so a customer who
@@ -1575,7 +1585,7 @@ def create_app(
         """
         message = resolved_settings.run_consolidation_message
         if not message:
-            return
+            return ""
         reserve = effective_reserve
         budget: float | None
         if run_deadline is None:
@@ -1590,7 +1600,7 @@ def create_app(
             budget = max(max(0.0, run_deadline - time.monotonic()), reserve)
             if budget <= 0:
                 logger.warning("consolidation skipped: no budget left (reason=%s)", run_stop_reason)
-                return
+                return ""
         logger.info(
             "consolidating within %s (reason=%s)",
             "unbounded" if budget is None else f"{budget:.0f}s",
@@ -1602,13 +1612,107 @@ def create_app(
             logger.warning("consolidation turn exceeded its %.0fs reserve", budget)
         except Exception as exc:  # noqa: BLE001 — fail-open; see the docstring
             logger.warning("consolidation turn failed (%s: %s)", type(exc).__name__, exc)
+        return _digest_text(message)
+
+    def _digest_text(prompt: str) -> str:
+        """The assistant's answer to the digest prompt, read back from the session store.
+
+        Scans the current session from the end: the first assistant message with text
+        is the digest; reaching the digest PROMPT (the user message that started that
+        turn) without one means the turn produced nothing, and an earlier answer must
+        not be passed off as the receipt.
+        """
+        sid = _current_session_id()
+        if sid is None:
+            return ""
+        try:
+            session = resolved_store.load(sid)
+        except (SessionNotFound, SessionCorruptError, SessionVersionError):
+            return ""
+        for message in reversed(session.messages):
+            if message.role == "assistant" and message.text.strip():
+                return message.text.strip()
+            if message.role == "user" and message.text == prompt:
+                break
+        return ""
+
+    async def _run_run_end_command(reason: str, digest: str) -> None:
+        """Hand the ending to the operator's ``run_end_command`` (ADR-0046).
+
+        One process, once per run, AFTER the digest turn and BEFORE ``on_run_end``
+        brings the vessel down — so whatever the command does (mail the receipt, post
+        it, file it) happens while the process still exists to do it. Fed
+        ``{"event": "run_end", "reason", "digest", "session_id", "cwd"}`` on stdin;
+        exec'd, never shelled; provider keys scrubbed from its env like every other
+        child; bounded by ``RUN_END_COMMAND_TIMEOUT_S``; fail-open on every path —
+        a receipt that could not be delivered must not strand the vessel.
+        """
+        command = resolved_settings.run_end_command
+        if not command:
+            return
+        # The hook loader's parser + catastrophe scan, so the two never drift.
+        from zakcode.hooks import _hook_env
+        from zakcode.hooks.settings_loader import _is_dangerous, _split_command
+
+        why = _is_dangerous(command)
+        if why:
+            logger.warning("run_end_command refused (%s): %r", why, command)
+            return
+        argv = _split_command(command)
+        if not argv:
+            return
+        cwd = str(resolved_settings.workspace_root)
+        scrub = (
+            [] if resolved_settings.subprocess_inherit_provider_keys else provider_key_env_names()
+        )
+        stdin_bytes = json.dumps(
+            {
+                "event": "run_end",
+                "reason": reason,
+                "digest": digest,
+                "session_id": _current_session_id(),
+                "cwd": cwd,
+            }
+        ).encode("utf-8")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=_hook_env(scrub, cwd),
+                **new_group_kwargs(),
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("run_end_command failed to start: %s", exc)
+            return
+        try:
+            _stdout, stderr = await asyncio.wait_for(
+                proc.communicate(stdin_bytes), timeout=RUN_END_COMMAND_TIMEOUT_S
+            )
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            await terminate_process_tree(proc)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            logger.warning("run_end_command timed out after %ss", RUN_END_COMMAND_TIMEOUT_S)
+            return
+        except Exception as exc:  # noqa: BLE001 — fail-open; see the docstring
+            logger.warning("run_end_command errored (%s: %s)", type(exc).__name__, exc)
+            return
+        if proc.returncode == 0:
+            logger.info("run_end_command delivered the ending (reason=%s)", reason)
+        else:
+            tail = (stderr or b"").decode("utf-8", errors="replace").strip()[-400:]
+            logger.warning("run_end_command exited %s: %s", proc.returncode, tail)
 
     async def _end_run() -> None:
-        """Digest, then hand the run's ending to the caller. Idempotent."""
+        """Digest, hand the ending to the operator's command, then to the caller. Idempotent."""
         if run_ended.is_set():
             return
         run_ended.set()
-        await _consolidate_run()
+        digest = await _consolidate_run()
+        await _run_run_end_command(run_stop_reason or "stopped", digest)
         if on_run_end is not None:
             try:
                 await on_run_end(run_stop_reason or "stopped")
