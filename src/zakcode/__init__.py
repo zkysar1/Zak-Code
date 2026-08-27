@@ -990,6 +990,12 @@ class Agent:
             # loop calls this the moment a TURN_END hook vetoes, so the veto's mandated
             # re-entry (a skill loaded earlier in the same turn) gets its body again.
             turn_end_veto_reset=self._begin_skill_turn,
+            # Mid-turn say delivery (ADR-0051): the MAIN loop polls the workspace say
+            # inbox at every iteration boundary, so a message sent while a turn runs
+            # reaches the model without waiting for a turn boundary that a
+            # perpetual-loop deployment never produces. Sub-agent loops never set this
+            # (they would steal the user's message into a child conversation). No knob.
+            consume_say_inbox=True,
         )
 
     def _begin_skill_turn(self) -> None:

@@ -1828,3 +1828,36 @@ channel the model already reads, so a weak decomposition is challenged at the mo
 is authored — not after the work ran. Pinned by the `test_tasks.py` quality /
 signature / duplicate-sibling set and the `test_loop_planning.py` judge set (weak
 critique appended, strong silent, once-per-turn latch, status-tick inert, fail-open).
+
+## ADR-0051: Mid-turn say delivery — the inbox reaches a running turn
+
+**Context.** Every consumer of the say contract sat BETWEEN turns: the REPL's idle wait,
+the serve driver's consumer beat (`if inflight: return False`), and `zakcode chat`'s
+inbox mode. A permission prompt consumes mid-turn, but only as prompt answers. That
+architecture assumes turns end. A perpetual-loop deployment's whole session is ONE turn
+— one `/start`, then Stop-hook vetoes without end (the ADR-0048 shape) — so its inbox is
+polled exactly never. Measured 2026-08-27 (coach, zc-03): an operator directive written
+with `zakcode say` sat unconsumed in `<workspace>/.say` for 3 days while the loop worked
+on beside it. The reference harness delivers input typed mid-turn between iterations;
+Zak-Code silently dropped that property.
+
+**Decision.** The loop owns the fix: `AgentLoop(consume_say_inbox=...)` — set True by
+the Agent for the MAIN loop only, never by sub-agent construction (a child loop would
+steal the user's message into a conversation the user never sees). At every iteration
+boundary (both paths, immediately after the iteration is granted) the loop polls
+`read_say(say_path(workspace_root))`; a pending message is appended to the session as a
+framed user message (`[user message — arrived mid-task] …`) and persisted, so the NEXT
+provider call sees it and it survives restarts. The streaming path also announces it
+(`AgentStatus`) so a watching client shows the operator their message was taken.
+Exactly-once stays the file contract's (read-then-delete); fail-open by inheritance
+(`read_say` yields None on any OS error). No knob.
+
+**Non-races, by construction.** The REPL/driver consume only while NO turn is in
+flight; the permission prompter consumes only while the loop is blocked inside a tool
+call — neither moment is an iteration boundary. One process, disjoint moments.
+
+**Consequences.** A directive sent to a busy agent lands within one iteration instead
+of one turn (∞ for a perpetual loop). A say arriving during a Stop-hook veto is
+delivered on the continued iteration — the exact coach scenario. Sub-agents and bare
+loops are byte-identical. Pinned by tests/test_loop_say.py (mid-turn reach, exactly-once,
+sub-agent isolation, veto-continuation pickup, streaming announcement).
