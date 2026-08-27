@@ -1636,3 +1636,37 @@ provides.
   gate asks for provenance, and "a default" is an acceptable answer. Residual: identity
   claims phrased without a separator-bearing subject ("it is a python file") are not
   caught; a number smaller than 1,000 and not comma-grouped is not checked.
+
+## ADR-0045: A composed skill turn keeps its frame and drops its body once the turn ends
+
+**Context.** ADR-0037 made every served door run a leading slash as the CLI does: the
+turn's user message is the command-expansion frame plus the skill's WHOLE body, and
+ADR-0032 persists that message and resumes the same session across vessels. The body is
+documentation for the turn that runs it — nothing reads it afterwards — yet it was stored
+verbatim and re-fed on every later turn. Measured 2026-08-27 on a served Mind (Vinheim,
+g-369-02 boot C, session c02e3062): six `/start` frames (~91KB, ~23k tokens each) in one
+document; `usages[].prompt_tokens` 40k → 105k → 128,666 against a 131,072 window; the
+ceremony ended `provider_error` before a step ran. ADR-0043 compacts at 80% of the window,
+which bounds the growth at the price of a summarize call per crossing — and a fresh Talk
+session still opened at ~57k tokens after its own ceremony.
+
+**Decision.** The loop elides the body of every composed skill turn whose turn has ENDED:
+the stored user message becomes the frame (`<command-message>` / `<command-name>` /
+`<command-args>`) followed by `<command-body elided="true" chars="N">…</command-body>`.
+The frame keeps its leading position, so invocation provenance — and every reader keyed on
+it: `_composed_skill_name`, the transcript, the watch projection — is unchanged. The sweep
+runs at turn START (before the compactor measures the history, so a document written
+before this rule shrinks the first time it is continued, and a turn that died before its
+own end is caught on the next) and at turn END for the turn that just ran. Idempotent;
+only a single-text-block user message qualifies (the only shape `compose_skill_turn`
+produces). No flag.
+
+**Consequences.** A boot costs its ~23k tokens once, during the turn that runs it, and a
+few hundred bytes thereafter; on the measured trajectory boot C starts near 40k instead
+of 128k, and ADR-0043's compaction becomes a backstop rather than the mechanism. A LATER
+turn cannot re-read the skill text from history — it never could usefully (a body
+mid-history is "just text", ADR-0037), and `use_skill` reloads it on demand. A provider
+prompt cache misses once at the message that changed. A document already past the window
+is still not rescued (ADR-0043's caveat stands). Pinned by
+`test_skill_turn_body_is_elided_once_the_turn_ends` + its streaming twin and
+`test_prior_skill_frames_are_elided_at_turn_start`.

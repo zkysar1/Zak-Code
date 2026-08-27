@@ -24,6 +24,8 @@ from zakcode.agent.loop import (
     DOOM_LOOP_THRESHOLD,
     AgentLoop,
     TurnResult,
+    _composed_skill_name,
+    _elide_skill_body,
 )
 from zakcode.config import load_settings
 from zakcode.messages import Message, ToolUseBlock
@@ -735,3 +737,97 @@ async def test_assistant_message_carries_tool_use_blocks(tmp_path: Path) -> None
     assert len(tool_uses) == 1
     assert tool_uses[0].name == "echo"
     assert tool_uses[0].input == {"text": "hi"}
+
+
+# ── composed skill turn: body elided once the turn ends (ADR-0045) ───────────
+
+
+_START_FRAME = (
+    "<command-message>start is running</command-message>\n"
+    "<command-name>/start</command-name>\n"
+    "<command-args>tricks --mode assistant</command-args>\n\n"
+)
+_START_BODY = "# /start\n\n" + "Step: read the state, set the mode, prime.\n" * 300
+
+
+def test_elide_skill_body_keeps_the_frame_and_is_idempotent() -> None:
+    compact = _elide_skill_body(_START_FRAME + _START_BODY)
+    assert compact is not None
+    assert compact.startswith(_START_FRAME + '<command-body elided="true" chars="')
+    assert compact.endswith("</command-body>")
+    assert "Step:" not in compact and len(compact) < 400
+    assert _composed_skill_name(compact) == "start"  # provenance survives the elision
+    assert _elide_skill_body(compact) is None  # already compact: a sweep is idempotent
+    assert _elide_skill_body(_START_FRAME.rstrip("\n")) is None  # a frame with no body
+    assert _elide_skill_body("please /start the agent\n\n" + _START_BODY) is None  # prose
+
+
+@pytest.mark.asyncio
+async def test_skill_turn_body_is_elided_once_the_turn_ends(tmp_path: Path) -> None:
+    # Measured 2026-08-27 (Vinheim, g-369-02 boot C): six persisted /start frames of ~23k
+    # tokens each took a served session to 128,666 prompt tokens and a provider_error.
+    # The body is documentation for the turn that runs it: the model sees it DURING the
+    # turn, and the store keeps only the frame AFTER it (ADR-0045).
+    frame = _START_FRAME + _START_BODY
+    provider = ScriptedProvider(
+        [
+            LLMResult(
+                text="Agent is IDLE.",
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "step-1"})],
+            ),
+            LLMResult(text="Assistant mode active."),
+        ]
+    )
+    store = SessionStore(tmp_path / "sessions")
+    loop = _make_loop(provider, tmp_path, store=store)
+    result = await loop.arun_turn(frame)
+    assert result.stop_reason == "completed"
+    # During the turn every model call carried the whole body ...
+    assert all(any(m.role == "user" and m.text == frame for m in call) for call in provider.calls)
+    # ... and once it ended, the stored message kept the frame and dropped the body.
+    stored = next(m for m in loop.session.messages if m.role == "user")
+    assert stored.text.startswith(_START_FRAME + '<command-body elided="true"')
+    assert "Step:" not in stored.text
+    assert _composed_skill_name(stored.text) == "start"
+    # What the store persisted — the shape a resume reads — is the compact one.
+    reloaded = store.load(loop.session.id)
+    assert next(m for m in reloaded.messages if m.role == "user").text == stored.text
+
+
+@pytest.mark.asyncio
+async def test_stream_skill_turn_body_is_elided_once_the_turn_ends(tmp_path: Path) -> None:
+    # The STREAMING twin — the path `zakcode webapp` runs (say consumer, /chat/stream).
+    frame = _START_FRAME + _START_BODY
+    provider = ScriptedProvider([LLMResult(text="Assistant mode active.")])
+    loop = _make_loop(provider, tmp_path)
+    events = [event async for event in loop.astream_turn(frame)]
+    assert getattr(events[-1], "stop_reason", None) == "completed"
+    stored = next(m for m in loop.session.messages if m.role == "user")
+    assert stored.text.startswith(_START_FRAME + '<command-body elided="true"')
+    assert "Step:" not in stored.text
+
+
+@pytest.mark.asyncio
+async def test_prior_skill_frames_are_elided_at_turn_start(tmp_path: Path) -> None:
+    # A document written before this rule — or a skill turn that died before its own end
+    # (provider_error at the window, the measured case) — shrinks the first time the
+    # session is continued, BEFORE the compactor measures it and the model is called.
+    session = _session(tmp_path)
+    for _ in range(3):
+        session.add_message(Message.user(_START_FRAME + _START_BODY))
+        session.add_message(Message.assistant_text("Assistant mode active."))
+    before = sum(len(m.text) for m in session.messages)
+    provider = ScriptedProvider([LLMResult(text="hello")])
+    loop = _make_loop(provider, tmp_path, session=session)
+    result = await loop.arun_turn("hi there")
+    assert result.stop_reason == "completed"
+    frames = [
+        m
+        for m in loop.session.messages
+        if m.role == "user" and m.text.startswith("<command-message>")
+    ]
+    assert len(frames) == 3 and all("Step:" not in m.text for m in frames)
+    assert sum(len(m.text) for m in loop.session.messages) < before // 10
+    # The model never saw the bodies on this turn, and the plain request is untouched.
+    assert all("Step:" not in m.text for m in provider.calls[0])
+    assert any(m.role == "user" and m.text == "hi there" for m in loop.session.messages)

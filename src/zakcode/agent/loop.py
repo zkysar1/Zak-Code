@@ -606,6 +606,39 @@ def _composed_skill_name(user_text: str) -> str | None:
     return match.group(1) if match else None
 
 
+#: The whole command-expansion frame of a composed skill turn, INCLUDING the blank line that
+#: separates it from the skill body — everything :meth:`Agent.compose_skill_turn` emits before
+#: ``load.body``. ``<command-args>`` may span lines (a multi-line argument is defanged, never
+#: flattened), hence the lazy DOTALL group.
+_COMMAND_FRAME_FULL_RE = re.compile(
+    r"\A<command-message>[^\n]*</command-message>\n<command-name>/[^<\s]+</command-name>"
+    r"(?:\n<command-args>.*?</command-args>)?\n\n",
+    re.DOTALL,
+)
+
+#: What stands in for a composed skill turn's body once the turn has ENDED (ADR-0045). The
+#: frame stays in its leading position — it is invocation provenance, and every reader keyed
+#: on it (:func:`_composed_skill_name`, the transcript, the watch projection) keeps seeing the
+#: same shape — only the body, which was documentation for the turn that ran it, is dropped.
+_ELIDED_SKILL_BODY = (
+    '<command-body elided="true" chars="{chars}">the skill body was this message while the '
+    "turn ran; the turn has ended and the body is not re-read</command-body>"
+)
+
+
+def _elide_skill_body(text: str) -> str | None:
+    """The compact persisted form of a composed skill turn's user message (ADR-0045), or
+    ``None`` when ``text`` is not one, carries no body, or is already compact — idempotent,
+    so a sweep may pass over the same history any number of times."""
+    match = _COMMAND_FRAME_FULL_RE.match(text)
+    if match is None:
+        return None
+    body = text[match.end() :]
+    if not body.strip() or body.startswith("<command-body "):
+        return None
+    return text[: match.end()] + _ELIDED_SKILL_BODY.format(chars=len(body))
+
+
 #: Text-only stall (ADR-0033): a turn whose model answers a nudge or veto with ANOTHER
 #: no-tool-call completion — no plan open — is stalled in words. Two in a row latch the
 #: struggle flag so zakpick hands the turn to the deep coder; the serene spiral produced
@@ -1138,6 +1171,38 @@ class AgentLoop:
             # that lands mid-session can never re-label a document this process wrote.
             self.session.build = running_build()
             self.store.save(self.session)
+
+    def _elide_ended_skill_bodies(self) -> int:
+        """Drop the skill body from every composed ``/<skill>`` user message whose turn has
+        ended, keeping its command-expansion frame (ADR-0045). Returns how many were elided.
+
+        The body is documentation for the turn that ran it — ~23k tokens for a framework's
+        boot skill — and nothing reads it afterwards, yet it was persisted verbatim and
+        re-fed to the model on every later turn: a served mind whose boot was re-issued six
+        times reached 128,666 prompt tokens and could no longer be spoken to (ADR-0043 bounds
+        that growth by compacting; this removes its cause). Runs at turn START, before the
+        compactor measures the history — so a document written before this rule shrinks the
+        first time it is continued, and a turn that died before reaching its own end is
+        caught on the next one — and at turn END for the turn that just ran. Only a
+        single-text-block user message qualifies (the only shape
+        :meth:`Agent.compose_skill_turn` produces); the frame's leading position, and so
+        its provenance meaning, is preserved. Idempotent.
+        """
+        elided = 0
+        for index, message in enumerate(self.session.messages):
+            if message.role != "user" or len(message.blocks) != 1:
+                continue
+            block = message.blocks[0]
+            if not isinstance(block, TextBlock):
+                continue
+            compact = _elide_skill_body(block.text)
+            if compact is None:
+                continue
+            self.session.messages[index] = Message.user(compact)
+            elided += 1
+        if elided:
+            logger.info("elided the body of %d ended skill turn(s) from the session", elided)
+        return elided
 
     def _scrub_env_names(self) -> list[str]:
         """Provider-key env vars to scrub from subprocess children (RISKS/GUARDRAILS §6).
@@ -2558,6 +2623,7 @@ class AgentLoop:
 
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
+        self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
@@ -3560,6 +3626,7 @@ class AgentLoop:
             iterations=iterations,
             escalated=routed_escalated,
         )
+        self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
         self._persist()
         self._dump_trace()
@@ -3618,6 +3685,7 @@ class AgentLoop:
         self._trace = TurnTrace()
         self._turn_count += 1
         await self._fire_session_start_once()
+        self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
         compact_note = await self._maybe_compact()
         if compact_note:
             yield AgentStatus(message=compact_note)
@@ -4887,6 +4955,7 @@ class AgentLoop:
             iterations=iterations,
             escalated=routed_escalated,
         )
+        self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
         self._persist()
         self._dump_trace()
