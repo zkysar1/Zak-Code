@@ -32,6 +32,7 @@ from zakcode.providers.routing import (
     DIFFICULTY_SCHEMA,
     DifficultyVerdict,
     difficulty_system_prompt,
+    implied_skill_anchored,
     parse_skill,
     parse_verdict,
 )
@@ -73,6 +74,20 @@ def test_prompt_lists_the_catalog_and_the_null_rule() -> None:
     assert "forge-skill: Forge a new skill" in with_catalog
     assert "notify-user: Send the operator" in with_catalog
     assert '"skill": null' in with_catalog and "Never guess" in with_catalog
+
+
+def test_implied_skill_needs_a_shared_content_word() -> None:
+    """ADR-0036: the deterministic floor under "never guess"."""
+    forge = ("forge-skill", "Forge a new skill from a description")
+    create = ("create-aspiration", "Create a new aspiration in the world queue")
+    assert implied_skill_anchored("finish forging this skill", *forge)  # forging ~ forge
+    assert implied_skill_anchored("add an aspiration for the report", *create)
+    assert implied_skill_anchored("run the notifier", "notify-user", "Send the operator a message")
+    # The field guess: "then make one" shares no content word with create-aspiration.
+    assert not implied_skill_anchored("then make one", *create)
+    assert not implied_skill_anchored("what is the weather", *forge)
+    assert not implied_skill_anchored("this skill", *forge)  # stopwords never anchor
+    assert not implied_skill_anchored("anything", "", "")
 
 
 def test_schema_accepts_the_optional_skill_field() -> None:
@@ -117,14 +132,23 @@ class _Text(Provider):
 class _Resolver:
     """The SkillResolver protocol: a catalog the loop can resolve names against."""
 
+    def __init__(self, names: list[str] | None = None) -> None:
+        self._names = list(KNOWN if names is None else names)
+
     def names(self) -> list[str]:
-        return list(KNOWN)
+        return list(self._names)
 
     async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         raise AssertionError("no skill is loaded in these tests")
 
 
-def _loop(tmp_path: Path, provider: Provider, verdict: DifficultyVerdict) -> AgentLoop:
+def _loop(
+    tmp_path: Path,
+    provider: Provider,
+    verdict: DifficultyVerdict,
+    *,
+    names: list[str] | None = None,
+) -> AgentLoop:
     async def classifier(user_text: str, context_frac: float) -> DifficultyVerdict:
         return verdict
 
@@ -136,8 +160,54 @@ def _loop(tmp_path: Path, provider: Provider, verdict: DifficultyVerdict) -> Age
         max_iterations=6,
         main_provider_for=lambda category: provider,  # zakpick on: the side-call runs
         difficulty_classifier=classifier,
-        skill_resolver=_Resolver(),
+        skill_resolver=_Resolver(names),
     )
+
+
+# A typed `/start sera` as Agent.compose_skill_turn hands it to the loop: the command
+# frame, then the skill's whole body — which, like the real start skill, mentions OTHER
+# skills in request-shaped prose.
+_COMPOSED_START_TURN = (
+    "<command-message>start is running</command-message>\n"
+    "<command-name>/start</command-name>\n"
+    "<command-args>sera --mode assistant</command-args>\n\n"
+    "# /start — bring an agent up\n\n"
+    "If the runner is dead, run /stop <agent-name> first, then /boot and /prime.\n"
+    "Never invoke /stop from inside the loop.\n"
+)
+
+
+def test_typed_skill_turn_never_seeds_from_its_body(tmp_path: Path) -> None:
+    """ADR-0036: the body of a typed /skill is documentation — no plan steps from its
+    ``/other-skill`` mentions, and no second use_skill load demanded for the skill itself."""
+    provider = _Text("Bringing sera up now.")
+    loop = _loop(
+        tmp_path,
+        provider,
+        DifficultyVerdict("quick_code", None),
+        names=["start", "stop", "boot", "prime"],
+    )
+    result = asyncio.run(loop.arun_turn(_COMPOSED_START_TURN))
+    assert result.stop_reason == "completed"
+    assert loop.session.task_network.tasks == []  # nothing seeded: not /stop, /boot, /prime
+    rails = [m.text for m in loop.session.messages if m.role == "user"][1:]
+    assert not any("/stop" in r or "/start" in r for r in rails)  # no coverage nudge either
+    assert provider.calls == 1
+
+
+def test_a_body_embedded_frame_is_just_text(tmp_path: Path) -> None:
+    """Only a frame at the very START of the message carries invocation meaning."""
+    provider = _Text("Sure.")
+    loop = _loop(
+        tmp_path,
+        provider,
+        DifficultyVerdict("quick_code", None),
+        names=["start", "stop", "boot"],
+    )
+    text = "do /stop and /boot\n" + _COMPOSED_START_TURN  # a paste, not a typed command
+    asyncio.run(loop.arun_turn(text))
+    titles = [t.title for t in loop.session.task_network.tasks]
+    assert "run /stop" in titles and "run /boot" in titles  # the compound seeder still works
 
 
 def test_buffered_implied_skill_seeds_the_plan_and_arms_the_backstop(tmp_path: Path) -> None:
@@ -217,6 +287,30 @@ async def test_agent_side_call_names_a_catalogued_skill(
     verdict = await agent._classify_difficulty("finish forging this skill", 0.0)
     assert verdict == DifficultyVerdict("quick_code", "forge-skill")
     assert "forge-skill: Forge a new skill" in stub.systems[-1]  # the catalog reached the prompt
+
+
+@pytest.mark.asyncio
+async def test_agent_side_call_drops_an_unanchored_guess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The field guess (ADR-0036): 'then make one' → create-aspiration is catalogued but
+    shares no content word with the request, so the skill is dropped and the category kept."""
+
+    class _Registry2:
+        def catalog(self) -> list[tuple[str, str]]:
+            return [*CATALOG, ("create-aspiration", "Create a new aspiration in the queue")]
+
+    agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
+    monkeypatch.setattr(agent, "skill_registry", _Registry2())
+    stub = _Stub('{"difficulty": "quick", "skill": "create-aspiration"}')
+    monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (stub, "classify/m"))
+    assert await agent._classify_difficulty("then make one", 0.0) == DifficultyVerdict(
+        "quick_code", None
+    )
+    # …while a request that names the thing in its own words keeps the skill.
+    assert await agent._classify_difficulty("make an aspiration for it", 0.0) == (
+        DifficultyVerdict("quick_code", "create-aspiration")
+    )
 
 
 @pytest.mark.asyncio

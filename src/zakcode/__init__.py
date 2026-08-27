@@ -1195,6 +1195,7 @@ class Agent:
         from zakcode.providers.routing import (
             DIFFICULTY_SCHEMA,
             difficulty_system_prompt,
+            implied_skill_anchored,
             parse_verdict,
             should_consult_classifier,
         )
@@ -1231,7 +1232,15 @@ class Agent:
             data = coerce_structured(result.text, schema=DIFFICULTY_SCHEMA)
         except StructuredValidationError:
             return DifficultyVerdict("deep_code")  # output was not schema-valid JSON -> fail UP
-        return parse_verdict(data, known=[name for name, _desc in skills])
+        verdict = parse_verdict(data, known=[name for name, _desc in skills])
+        if verdict.skill is not None:
+            # ADR-0036: the deterministic floor under "never guess" — a skill the request is
+            # asking to RUN is named or described in the request's own words; no shared
+            # content word means a topic match, and the skill is dropped (category kept).
+            description = next((d for n, d in skills if n == verdict.skill), "")
+            if not implied_skill_anchored(user_text, verdict.skill, description):
+                return DifficultyVerdict(verdict.category)
+        return verdict
 
     async def _deep_think_sample(
         self, prompt: str, *, system: str | None = None, temperature: float = 0.0

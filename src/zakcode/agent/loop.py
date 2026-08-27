@@ -397,6 +397,56 @@ def _claims_file_work(text: str) -> bool:
     return _WORK_CLAIM_RE.search(text[-800:]) is not None
 
 
+#: Blocker-without-evidence guard (ADR-0036): a completion that declares itself BLOCKED
+#: ("I am blocked because … is not available", "I cannot proceed without …", "please
+#: provide …") in a turn where NO tool call failed is a conclusion the model reasoned its
+#: way to, not one it measured. Field incident 2026-08-27 (serene): the model read a hook's
+#: source, decided the session id it injects "is not available in this execution
+#: environment", and ended three turns on that sentence — the skill's own one-line check
+#: (`if [ -z "$SID" ] …`) was never run, and would have passed. First-person framing only,
+#: so an ANSWER that happens to say "two fields are missing" is not a blocker claim.
+_BLOCKER_CLAIM_RE = re.compile(
+    r"\bi(?:['’]m|\s+am)\s+(?:blocked|stuck|unable\s+to\s+(?:proceed|continue))\b"
+    r"|\b(?:i\s+)?can(?:['’]t|not)\s+(?:proceed|continue)\b"
+    r"|\bi\s+(?:can(?:['’]t|not)|am\s+unable\s+to)\s+(?:\w+\s+){1,5}without\b"
+    r"|\bplease\s+(?:provide|supply|set|give\s+me)\b",
+    re.IGNORECASE,
+)
+_BLOCKER_NUDGE = (
+    "You reported a blocker, but no tool call in this turn failed — nothing has demonstrated "
+    "it. Do not conclude a blocker from reading code or instructions. Either run the command "
+    "that would fail (the check the instructions themselves prescribe, or a direct probe such "
+    "as printing the variable or reading the file) and show its output, or continue with the "
+    "next step. Do not restate the blocker."
+)
+
+
+def _claims_blocker(text: str) -> bool:
+    """True when the TAIL of a final completion declares the model blocked or asks the user
+    for something (first-person blocker framing only)."""
+    return _BLOCKER_CLAIM_RE.search(text[-800:]) is not None
+
+
+#: A typed ``/<skill>`` turn (Claude Code slash semantics — :meth:`Agent.compose_skill_turn`)
+#: starts with the command-expansion frame and carries the skill's WHOLE BODY as the user
+#: message. That body is documentation, not a request: the compound-ask seeder must not read
+#: its ``/other-skill`` mentions as asks, and the coverage backstop must not demand a second
+#: ``use_skill`` load of the skill that IS the turn. Field incident 2026-08-27 (serene):
+#: ``/start sera`` seeded ``run /start, /stop, /boot, /prime`` from the start skill's prose —
+#: a plan telling the model to STOP the agent it was starting — and re-loaded the 1,200-line
+#: skill through ``use_skill`` to satisfy the backstop. Only a frame at the very START of the
+#: message carries invocation meaning (a body-embedded lookalike is just text).
+_COMMAND_FRAME_RE = re.compile(
+    r"\A<command-message>[^\n]*</command-message>\n<command-name>/([^<\s]+)</command-name>"
+)
+
+
+def _composed_skill_name(user_text: str) -> str | None:
+    """The skill a typed ``/<skill>`` turn is running (from its leading frame), else ``None``."""
+    match = _COMMAND_FRAME_RE.match(user_text)
+    return match.group(1) if match else None
+
+
 #: Text-only stall (ADR-0033): a turn whose model answers a nudge or veto with ANOTHER
 #: no-tool-call completion — no plan open — is stalled in words. Two in a row latch the
 #: struggle flag so zakpick hands the turn to the deep coder; the serene spiral produced
@@ -405,9 +455,23 @@ _TEXT_ONLY_STALL = 2
 
 
 def _provider_label(provider: object) -> str:
-    """The model a provider serves, for human-facing status lines (class name if unnamed)."""
-    model = getattr(provider, "model", None)
-    return model if isinstance(model, str) and model else type(provider).__name__
+    """The model a provider serves, for human-facing status lines (class name if unnamed).
+
+    Wrappers (``TextToolCallingProvider`` and kin) expose the real provider as ``.inner``;
+    the label unwraps that chain so the status names the MODEL on the route, not the
+    adapter class — ``route: quick_code → TextToolCallingProvider`` told the operator
+    nothing about which model was repeating itself.
+    """
+    current: object = provider
+    for _ in range(4):
+        model = getattr(current, "model", None)
+        if isinstance(model, str) and model:
+            return model
+        inner = getattr(current, "inner", None)
+        if inner is None or inner is current:
+            break
+        current = inner
+    return type(provider).__name__
 
 
 #: Streaming degeneration probe cadence: first check after this many streamed chars…
@@ -806,6 +870,9 @@ class AgentLoop:
         # turn (any executed, non-error call whose tier is not READ_ONLY). A completion that
         # reports a change while this is zero is a fabricated done. Per-turn.
         self._turn_write_calls = 0
+        # Blocker-without-evidence guard (ADR-0036): tool calls that FAILED this turn. A
+        # completion declaring a blocker while this is zero measured nothing. Per-turn.
+        self._turn_tool_errors = 0
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
         # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
         # one unit from the shared pool, and the turn stops with
@@ -1582,6 +1649,20 @@ class AgentLoop:
     async def _execute_tool_call(
         self, call: ToolCall, ctx: ToolContext, *, restrict_to: set[str] | None = None
     ) -> ToolResultBlock:
+        """Run one tool call through the full gate and count a failure (ADR-0036).
+
+        Every path — denial, restriction, hook veto, or a real execution error — returns an
+        error block through here, so the blocker-without-evidence guard sees ONE truth: did
+        anything the model tried actually fail this turn.
+        """
+        block = await self._execute_tool_call_gated(call, ctx, restrict_to=restrict_to)
+        if block.is_error:
+            self._turn_tool_errors += 1
+        return block
+
+    async def _execute_tool_call_gated(
+        self, call: ToolCall, ctx: ToolContext, *, restrict_to: set[str] | None = None
+    ) -> ToolResultBlock:
         """Run one tool call through the full gate, returning its result block.
 
         The single seam both the buffered (:meth:`_run_turn`) and streaming
@@ -2272,10 +2353,13 @@ class AgentLoop:
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
+        # A typed /<skill> turn carries the skill's body as the message (ADR-0036): the
+        # body is documentation — never seed from it, never demand its re-load.
+        composed_skill = _composed_skill_name(user_text)
         # Compound-ask decomposition: a request naming several skills seeds one plan
         # step per skill BEFORE the model acts, so no part can be lost to an
         # interjection, replay, or compaction — the plan gate holds the finish.
-        seeded = self._seed_plan_from_request(user_text)
+        seeded = [] if composed_skill else self._seed_plan_from_request(user_text)
         if seeded:
             self._note(
                 "intervention",
@@ -2284,7 +2368,7 @@ class AgentLoop:
             )
         self._persist()
         # Skill-coverage backstop state: what the request named vs what use_skill ran.
-        requested_skills = self._skill_refs(user_text)
+        requested_skills = [] if composed_skill else self._skill_refs(user_text)
         skills_invoked: set[str] = set()
         coverage_nudged = False
 
@@ -2339,8 +2423,10 @@ class AgentLoop:
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
+        blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
+        self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -2866,6 +2952,30 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # Blocker-without-evidence guard (ADR-0036): the completion declares the
+                # model BLOCKED, yet no tool call failed this turn — a conclusion reasoned
+                # from reading, not measured. Ask once for the failing probe or the next
+                # step; an unmeasured blocker is a struggle signal like a fabricated done.
+                if (
+                    result.text
+                    and not blocker_nudged
+                    and self._turn_tool_errors == 0
+                    and _claims_blocker(result.text)
+                ):
+                    blocker_nudged = True
+                    self._turn_struggle = True
+                    self._note(
+                        "intervention",
+                        "completion declares a blocker no tool call demonstrated — asking "
+                        "for the probe",
+                        kind="blocker_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_BLOCKER_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 # False-done guard (ADR-0024): the turn is ending on an ANNOUNCEMENT of
                 # work ("Now I will use …" with no calls behind it). Ask once for the
                 # work or a plain finish; a model that was only describing says so.
@@ -3184,7 +3294,8 @@ class AgentLoop:
         self._reset_stale_or_completed_plan()
         self.session.add_message(Message.user(user_text))
         # Compound-ask decomposition + coverage state — see _run_turn (buffered twin).
-        seeded = self._seed_plan_from_request(user_text)
+        composed_skill = _composed_skill_name(user_text)
+        seeded = [] if composed_skill else self._seed_plan_from_request(user_text)
         if seeded:
             self._note(
                 "intervention",
@@ -3192,7 +3303,7 @@ class AgentLoop:
                 kind="plan",
             )
         self._persist()
-        requested_skills = self._skill_refs(user_text)
+        requested_skills = [] if composed_skill else self._skill_refs(user_text)
         skills_invoked: set[str] = set()
         coverage_nudged = False
         if seeded:
@@ -3250,8 +3361,10 @@ class AgentLoop:
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
+        blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
+        self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -4015,6 +4128,31 @@ class AgentLoop:
                         yield AgentStatus(
                             message="completion reports a change no tool call made — asking "
                             "for the work"
+                        )
+                        continue
+                    # Blocker-without-evidence guard (ADR-0036) — see the buffered twin.
+                    if (
+                        assistant_text
+                        and not blocker_nudged
+                        and self._turn_tool_errors == 0
+                        and _claims_blocker(assistant_text)
+                    ):
+                        blocker_nudged = True
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            "completion declares a blocker no tool call demonstrated — asking "
+                            "for the probe",
+                            kind="blocker_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_BLOCKER_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="completion declares a blocker no tool call demonstrated — "
+                            "asking for the probe"
                         )
                         continue
                     # False-done guard (ADR-0024) — see the buffered twin.
