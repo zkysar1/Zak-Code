@@ -334,6 +334,56 @@ async def test_skill_turn_silence_past_the_bound_still_gives_up(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_stream_skill_turn_empty_completion_after_text_is_nudged(tmp_path: Path) -> None:
+    # The STREAMING twin of the ADR-0042 case — the path `zakcode serve` actually runs (say
+    # consumer + /chat/stream). #244 rail'd only arun_turn; measured 2026-08-27 (Vinheim boot
+    # D): the served /start went silent and got the GENERIC nudge (via not turn_saw_text) —
+    # after prior text it would have ended "completed" half-run, exactly the boot-B shape.
+    frame = (
+        "<command-message>start is running</command-message>\n"
+        "<command-name>/start</command-name>\n"
+        "<command-args>tricks --mode assistant</command-args>\n\n# /start\n\nSteps..."
+    )
+    provider = ScriptedProvider(
+        [
+            LLMResult(
+                text="Agent is IDLE. Proceeding.",
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "step-1"})],
+            ),
+            LLMResult(),
+            LLMResult(text="Assistant mode active."),
+        ]
+    )
+    loop = _make_loop(provider, tmp_path)
+    events = [ev async for ev in loop.astream_turn(frame)]
+    assert events
+    assert len(provider.calls) == 3
+    nudges = [m.text for m in loop.session.messages if m.role == "user" and "sequence" in m.text]
+    assert nudges and "/start" in nudges[-1] and "not finished" in nudges[-1]
+    assert loop.session.messages[-1].text == "Assistant mode active."
+
+
+@pytest.mark.asyncio
+async def test_stream_skill_turn_silence_past_the_bound_still_gives_up(tmp_path: Path) -> None:
+    frame = "<command-message>x</command-message>\n<command-name>/prime</command-name>\n\nbody"
+    provider = ScriptedProvider(
+        [
+            LLMResult(
+                text="Priming.",
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "a"})],
+            )
+        ]
+        + [LLMResult()] * (1 + _MAX_EMPTY_RETRIES)
+    )
+    loop = _make_loop(provider, tmp_path, max_iterations=50)
+    events = [ev async for ev in loop.astream_turn(frame)]
+    assert events
+    assert len(provider.calls) == 2 + _MAX_EMPTY_RETRIES
+    done = [ev for ev in events if getattr(ev, "stop_reason", None) is not None]
+    assert done and done[-1].stop_reason == "gave_up"
+
+
+@pytest.mark.asyncio
 async def test_empty_completion_after_stuck_nudge_ends_gave_up(tmp_path: Path) -> None:
     # The sera shape (2026-08-25): the model produced text early, then ground through
     # failing tool calls until the stuck ladder nudged it — and answered the nudge
