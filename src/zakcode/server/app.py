@@ -44,6 +44,7 @@ import os
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -289,6 +290,86 @@ async def _release_agent(agent: Any) -> None:
     if aclose is not None:
         with contextlib.suppress(Exception):
             await aclose()
+
+
+@dataclass(frozen=True)
+class SlashDispatch:
+    """Outcome of :func:`dispatch_slash` — the SERVER twin of the CLI's ``_skill_command_turn``.
+
+    ``handled`` is True iff the text named a discovered skill; non-slash text and an unknown
+    ``/token`` are NOT handled and run as prose, exactly like ``chat -p`` / the REPL. When
+    handled, ``turn_text`` is the composed, provenance-framed turn to run — or ``None`` when
+    the skill was refused (``user-invocable: false``) or unreadable, with ``refusal`` naming
+    which (``"denied"`` / ``"error"``) and ``notice`` the human-facing reason. A refused skill
+    runs NO turn: a framework's own control commands (``/start <agent> --mode …``) must fail
+    loudly on every door, never be handed to the model as prose (the CLI exits 1 for the same).
+    """
+
+    handled: bool
+    turn_text: str | None = None
+    name: str = ""
+    refusal: str = ""
+    notice: str = ""
+
+
+async def dispatch_slash(agent: Any, text: str) -> SlashDispatch:
+    """Resolve a leading-slash message through the agent's skill registry (ADR-0036).
+
+    ONE input rule, EVERY door: the say consumer, ``POST /chat`` and ``POST /chat/stream``
+    feed their message through here first, so ``/start tricks --mode assistant`` written into
+    the inbox by a deployment's provisioning recipe (or POSTed by an operator) dispatches the
+    skill with the same command-expansion frame the CLI gives a typed slash
+    (:meth:`zakcode.Agent.compose_skill_turn`). Before this the served doors passed raw text
+    to the turn, so a framework whose control skills are user-invocable-only could never be
+    started through its served surface — the model refused its own boot command as
+    self-invocation. Parsing mirrors the CLI one-shot path: the first whitespace token
+    (lower-cased, slash stripped) is the skill, the remainder its args. A thin/remote
+    ``AgentLike`` with no ``compose_skill_turn`` behaves as before (prose). Never raises for
+    a UX outcome.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return SlashDispatch(handled=False)
+    compose = getattr(agent, "compose_skill_turn", None)
+    if compose is None:
+        return SlashDispatch(handled=False)
+    token = stripped.split(maxsplit=1)[0].lower()
+    args = stripped[len(token) :].strip()
+    result = await compose(token.lstrip("/"), args)
+    if not result.invoked:
+        return SlashDispatch(handled=False)  # unknown /token — plain text, as before
+    if result.error:
+        return SlashDispatch(
+            handled=True,
+            name=result.name,
+            refusal="error",
+            notice=f"could not load skill {result.name}: {result.error}",
+        )
+    if result.denied_reason:
+        return SlashDispatch(
+            handled=True, name=result.name, refusal="denied", notice=result.denied_reason
+        )
+    return SlashDispatch(handled=True, name=result.name, turn_text=result.turn_text)
+
+
+def refusal_events(slash: SlashDispatch) -> list[AgentEvent]:
+    """The terminal frames a refused slash publishes INSTEAD of a turn: a ``status`` carrying
+    the reason and a ``done`` so no watcher sticks on "thinking…" (the say consumer's F-3
+    rule). ``stop_reason="skill_refused"`` + ``degraded`` + ``error`` let a client consuming
+    only the terminal event tell a refused control command from a completed turn."""
+    from zakcode.events import AgentDone, AgentStatus
+    from zakcode.usage import Usage
+
+    return [
+        AgentStatus(message=slash.notice),
+        AgentDone(
+            stop_reason="skill_refused",
+            iterations=0,
+            usage=Usage(),
+            degraded=True,
+            error=slash.notice,
+        ),
+    ]
 
 
 #: How the server builds an agent for a given session, optional model override, and
@@ -808,7 +889,15 @@ def create_app(
         agent: AgentLike | None = None
         try:
             agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
-            result = await agent.arun_turn(request.message)
+            slash = await dispatch_slash(agent, request.message)
+            if slash.refusal:
+                # A refused control skill is an HTTP outcome, not a turn (the CLI exits 1):
+                # policy refusal → 403, an unreadable skill file → 500. The finally below
+                # still releases the reservation.
+                raise HTTPException(
+                    status_code=403 if slash.refusal == "denied" else 500, detail=slash.notice
+                )
+            result = await agent.arun_turn(slash.turn_text or request.message)
             resolved_store.save(agent.session)
             return ChatResponse.from_turn(agent.session.id, result)
         finally:
@@ -832,7 +921,16 @@ def create_app(
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             try:
-                async for event in agent.astream_turn(request.message):
+                slash = await dispatch_slash(agent, request.message)
+                if slash.refusal:
+                    # No turn: the refusal's terminal frames ARE the stream (and reach the
+                    # watch bus too), so every consumer sees a `done` — never a hang.
+                    for refused in refusal_events(slash):
+                        with contextlib.suppress(Exception):
+                            event_bus_registry.get_or_create(session.id).publish(refused)
+                        yield {"data": json.dumps(event_to_dict(refused))}
+                    return
+                async for event in agent.astream_turn(slash.turn_text or request.message):
                     # Tee into the watch bus (P0-3) BEFORE yielding to the turn-driver. suppress:
                     # the read-only fan-out must NEVER break the turn stream. get_or_create
                     # returns an OPEN bus (a closed one is replaced), so publish cannot raise in
@@ -1289,7 +1387,20 @@ def create_app(
         take_interrupt(interrupt_fp)  # a signal predating this turn has nothing to stop
         try:
             agent = resolved_factory(session, None, _inbox_prompter(session.id))
-            message = _take_nudge() + text
+            slash = await dispatch_slash(agent, text)
+            if slash.refusal:
+                # No turn. The user_message marker is already on the bus; publish the
+                # refusal's terminal frames so watchers learn WHY instead of sticking on
+                # "thinking…", then fall through to the finally (save + release) as any turn.
+                for refused in refusal_events(slash):
+                    with contextlib.suppress(Exception):
+                        bus.publish(refused)
+                return
+            # A dispatched skill turn keeps its provenance frame at the very START of the
+            # message — that position IS the signal (see Agent.compose_skill_turn) — so a
+            # queued nudge is NOT folded in front of it; it stays queued for the next prose
+            # turn. Prose turns fold the nudge exactly as before.
+            message = slash.turn_text if slash.turn_text is not None else _take_nudge() + text
 
             async def _run() -> None:
                 assert agent is not None
