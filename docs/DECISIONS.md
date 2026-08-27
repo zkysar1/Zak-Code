@@ -1753,3 +1753,31 @@ dedup still saves the repeat loads it was built for. Pinned by
 `test_a_stop_hook_veto_opens_a_fresh_skill_turn` + `test_no_veto_keeps_the_same_turn_dedup`
 (Agent wiring) and `test_turn_end_veto_calls_the_turn_reset` +
 `test_turn_end_allow_never_calls_the_turn_reset` (loop seam).
+
+## ADR-0049: Transcript lines carry the message's event time, not the render's
+
+**Context.** The CC transcript projection (`hooks/transcript.py`) stamped every line
+with the time of the RENDER, so an entire history carried one timestamp. Measured
+2026-08-27 on a live Mind (coach, zc-03): a 270-record session showed 270 identical
+timestamps; the moment the 08-26 loop died (ADR-0048's incident) was unrecoverable from
+the agent's own transcript and had to be dug out of the framework's stop-hook log. The
+projection is what every CC-shaped hook and audit reads — a transcript that cannot date
+its own events blinds all of them.
+
+**Decision.** `Message` gains `created_at` (UTC ISO-8601, stamped at construction via a
+`default_factory`), and the projection stamps each line with its message's event time.
+The explicit `timestamp=` parameter (a caller that owns the clock — deterministic
+renders, tests) still pins every line verbatim; a message with no usable stamp (a
+document persisted by an older build degrades to an empty/absent field) falls back to
+render time, the pre-ADR behavior, so windowed readers keep the line. Schema v1 stays
+append-only: an OLDER build simply drops the field on load (fails SAFE — it never read
+event time anyway).
+
+**Consequences.** Hooks, audits, and humans can read WHEN each turn happened from the
+transcript itself — the four-veto death spiral in ADR-0048's incident is legible as
+19:07→19:09 instead of one flat instant. Separately-constructed but otherwise identical
+messages now differ by `created_at`; that is what event time means. Pinned by
+`test_each_line_carries_its_messages_event_time`,
+`test_explicit_timestamp_still_pins_every_line`,
+`test_message_without_event_time_falls_back_to_render_time`,
+`test_new_messages_are_stamped_at_construction`.

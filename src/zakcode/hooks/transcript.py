@@ -159,12 +159,18 @@ def render_claude_code_transcript(
     never broken by it. ``system`` messages and thinking blocks are intentionally omitted
     because the transcript consumers do not read them.
     """
-    # Every line carries the same timestamp: an explicit one (deterministic — for a caller that
-    # owns the clock, e.g. tests) or the current UTC time, so a reader that filters by a recent
-    # window (an audit dropping events older than N hours) keeps the freshly-projected lines.
-    ts = _iso_z(timestamp if timestamp is not None else datetime.now(UTC))
+    # Each line carries its message's EVENT time (``Message.created_at``, ADR-0049) — before
+    # this, every line got render time and a whole history carried one timestamp, so a reader
+    # could not date anything from the transcript. An explicit ``timestamp`` (deterministic —
+    # for a caller that owns the clock, e.g. tests) still pins every line verbatim; a message
+    # with no usable stamp falls back to the current UTC time, so a reader that filters by a
+    # recent window (an audit dropping events older than N hours) keeps the projected line.
+    pinned = _iso_z(timestamp) if timestamp is not None else None
+    fallback = _iso_z(datetime.now(UTC))
     lines: list[str] = []
     for message in messages:
+        created = getattr(message, "created_at", None)
+        ts = pinned or (created.replace("+00:00", "Z") if created else fallback)
         try:
             line = _line_for(message, session_id=session_id, cwd=cwd, timestamp=ts)
         except Exception:  # noqa: BLE001 — a projection must never break its caller.

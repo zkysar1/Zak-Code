@@ -13,6 +13,7 @@ Content is modeled as a discriminated union of typed blocks so tool calls keep s
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
@@ -20,6 +21,11 @@ from pydantic import BaseModel, Field
 from zakcode.artifacts import ArtifactRef
 
 Role = Literal["system", "user", "assistant", "tool"]
+
+
+def _now_iso() -> str:
+    """Current UTC time, ISO-8601 — the event-time stamp every new message carries."""
+    return datetime.now(UTC).isoformat()
 
 
 class TextBlock(BaseModel):
@@ -80,6 +86,15 @@ class Message(BaseModel):
 
     role: Role
     blocks: list[ContentBlock] = Field(default_factory=list)
+    #: Event time (UTC ISO-8601), stamped when the message is CREATED — not when a
+    #: projection renders it (ADR-0049). Before this, the CC transcript stamped every
+    #: line with render time, so a 270-record history carried ONE timestamp and a dead
+    #: loop could not be dated from its own transcript (coach, zc-03, 2026-08-26 — the
+    #: Mind's stop-hook log was the only clock). A document persisted by an older build
+    #: loads with a load-time stamp (no worse than the render-time it had); equality of
+    #: separately-constructed messages differs by this field, which is what event time
+    #: means.
+    created_at: str = Field(default_factory=_now_iso)
 
     # ── ergonomic constructors ──────────────────────────────────────────────
     @classmethod

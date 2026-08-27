@@ -198,3 +198,49 @@ def test_explicit_timestamp_is_used_verbatim() -> None:
     fixed = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
     transcript = render_claude_code_transcript([Message.user("hi")], timestamp=fixed)
     assert _lines(transcript)[0]["timestamp"] == "2030-01-02T03:04:05Z"
+
+
+def test_each_line_carries_its_messages_event_time() -> None:
+    """ADR-0049: lines are stamped with the message's ``created_at``, not render time.
+
+    Before this, a 270-record live transcript carried ONE timestamp (the render), so the
+    moment a loop died could not be read from its own transcript.
+    """
+    first = Message.user("hi")
+    second = Message.assistant_text("hello")
+    first.created_at = "2026-08-26T19:07:55.000000+00:00"
+    second.created_at = "2026-08-26T19:09:32.000000+00:00"
+    lines = _lines(render_claude_code_transcript([first, second]))
+    assert lines[0]["timestamp"] == "2026-08-26T19:07:55.000000Z"
+    assert lines[1]["timestamp"] == "2026-08-26T19:09:32.000000Z"
+
+
+def test_explicit_timestamp_still_pins_every_line() -> None:
+    """The deterministic override outranks per-message event time (existing contract)."""
+    from datetime import UTC, datetime
+
+    msg = Message.user("hi")
+    msg.created_at = "2020-01-01T00:00:00+00:00"
+    fixed = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
+    lines = _lines(render_claude_code_transcript([msg], timestamp=fixed))
+    assert lines[0]["timestamp"] == "2030-01-02T03:04:05Z"
+
+
+def test_message_without_event_time_falls_back_to_render_time() -> None:
+    """A document persisted before ADR-0049 (or a defensive empty stamp) keeps the old
+    behavior: a recent render-time stamp, so windowed readers keep the line."""
+    from datetime import UTC, datetime, timedelta
+
+    msg = Message.user("hi")
+    msg.created_at = ""  # what a pre-ADR-0049 reader shape degrades to
+    lines = _lines(render_claude_code_transcript([msg]))
+    ts = datetime.fromisoformat(lines[0]["timestamp"].replace("Z", "+00:00"))
+    assert ts > datetime.now(UTC) - timedelta(hours=1)
+
+
+def test_new_messages_are_stamped_at_construction() -> None:
+    """Two messages built moments apart carry their own (ordered) event times."""
+    first = Message.user("one")
+    second = Message.user("two")
+    assert first.created_at and second.created_at
+    assert first.created_at <= second.created_at
