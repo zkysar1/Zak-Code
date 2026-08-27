@@ -291,6 +291,20 @@ _EMPTY_COMPLETION_NUDGE = (
     "blocking you. Nothing else — no apologies, no restated plans, no announcements of what "
     "you will do next."
 )
+#: A typed/served ``/<skill>`` turn (the command frame at the start of the user message)
+#: is a SEQUENCE the model is executing, so an empty completion mid-way is never a clean
+#: finish — even after it has said something. Measured 2026-08-27 (Vinheim, boot B of the
+#: g-369-02 verify): ``/start tricks --mode assistant`` ran four steps, emitted two lines
+#: of narration, then went silent; ``turn_saw_text`` read the silence as "nothing more to
+#: say" and the turn ended ``completed`` with the agent half-started (persona never set),
+#: and the product's ready gate then waited on a ceremony that would never resume. The
+#: nudge names the sequence and asks for its next step; the bound and the gave_up ending
+#: are the same as the generic gate's (ADR-0042).
+_SKILL_EMPTY_COMPLETION_NUDGE = (
+    "Your response was empty, and the /{skill} sequence you are running is not finished. "
+    "Reply with exactly ONE of: the tool call for its next step; or ONE sentence stating that "
+    "every step of /{skill} is complete. Nothing else — no apologies, no restated plans."
+)
 
 #: How many times a turn may discard a degenerate (repetition-looping) completion and
 #: retry fresh before ending honestly as ``degenerated`` (ADR-0018). One: the first loop
@@ -2960,7 +2974,9 @@ class AgentLoop:
                 # a clean finish. Ask for a real answer (bounded by _MAX_EMPTY_RETRIES), then
                 # end honestly as gave_up (degraded, vetoable) instead of "done". Runs after
                 # the recipe/verify/plan gates so their more specific nudges take precedence.
-                if not result.text and (not turn_saw_text or stuck.took_action):
+                if not result.text and (
+                    not turn_saw_text or stuck.took_action or composed_skill is not None
+                ):
                     if empty_retries < _MAX_EMPTY_RETRIES:
                         empty_retries += 1
                         self._note(
@@ -2969,7 +2985,13 @@ class AgentLoop:
                             kind="empty_completion",
                         )
                         self.session.add_message(
-                            Message.user(_control_rail(_EMPTY_COMPLETION_NUDGE))
+                            Message.user(
+                                _control_rail(
+                                    _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
+                                    if composed_skill is not None
+                                    else _EMPTY_COMPLETION_NUDGE
+                                )
+                            )
                         )
                         self._refund_iteration()  # an empty completion did no work
                         self._persist()
