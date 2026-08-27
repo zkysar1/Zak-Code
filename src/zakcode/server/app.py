@@ -307,7 +307,7 @@ class SlashDispatch:
 
 
 async def dispatch_slash(agent: Any, text: str) -> SlashDispatch:
-    """Resolve a leading-slash message through the agent's skill registry (ADR-0036).
+    """Resolve a leading-slash message through the agent's skill registry (ADR-0037).
 
     ONE input rule, EVERY door: the say consumer, ``POST /chat`` and ``POST /chat/stream``
     feed their message through here first, so ``/start tricks --mode assistant`` written into

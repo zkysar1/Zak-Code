@@ -873,6 +873,10 @@ class AgentLoop:
         # Blocker-without-evidence guard (ADR-0036): tool calls that FAILED this turn. A
         # completion declaring a blocker while this is zero measured nothing. Per-turn.
         self._turn_tool_errors = 0
+        # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
+        # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
+        # as re-measuring while probe → probe → probe with nothing changed does. Per-turn.
+        self._turn_edit_calls = 0
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
         # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
         # one unit from the shared pool, and the turn stops with
@@ -1834,6 +1838,8 @@ class AgentLoop:
             and spec.required_permission is not PermissionTier.READ_ONLY
         ):
             self._turn_write_calls += 1  # a real change ran (claim-vs-action guard, ADR-0033)
+            if spec.required_permission is PermissionTier.WORKSPACE_WRITE:
+                self._turn_edit_calls += 1  # a file edit: new repeated-outcome epoch (ADR-0038)
 
         # 4. PostToolUse hooks (observe-only; their notes are appended as feedback).
         post = await self.hook_manager.run(
@@ -2427,6 +2433,7 @@ class AgentLoop:
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
+        self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -3167,7 +3174,12 @@ class AgentLoop:
             # (exact-repeat) doom guard above to the many ways a weak model stalls; fires
             # only on a sustained multi-signal streak, so capable models and transient
             # single errors are unaffected.
-            stuck.observe(result.tool_calls, result_blocks, assistant_text=assistant_msg.text)
+            stuck.observe(
+                result.tool_calls,
+                result_blocks,
+                assistant_text=assistant_msg.text,
+                epoch=self._turn_edit_calls,
+            )
             action = stuck.next_action()
             if action is StuckAction.STOP:
                 prompt = await self._fire_turn_end(
@@ -3365,6 +3377,7 @@ class AgentLoop:
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
+        self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -4346,7 +4359,12 @@ class AgentLoop:
 
                 # Stuck detection + recovery ladder (see _run_turn); surfaced live as
                 # AgentStatus notes so a client can show the recovery happening.
-                stuck.observe(tool_calls, result_blocks, assistant_text=assistant_text)
+                stuck.observe(
+                    tool_calls,
+                    result_blocks,
+                    assistant_text=assistant_text,
+                    epoch=self._turn_edit_calls,
+                )
                 action = stuck.next_action()
                 if action is StuckAction.STOP:
                     prompt = await self._fire_turn_end(

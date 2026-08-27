@@ -37,6 +37,7 @@ provider/transport knowledge.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from enum import Enum
 
@@ -77,6 +78,39 @@ SIG_REPEATED_FAILURE = "repeated-failure"
 #: A non-empty batch produced no successful result AND the model emitted no reasoning text:
 #: it is neither acting successfully nor thinking out loud.
 SIG_NO_PROGRESS = "no-progress"
+#: The same tool produced the SAME output it already produced ``outcome_repeat_at`` times this
+#: turn with no file edit in between (ADR-0038). Every other signal keys on an ERROR; a model
+#: that re-measures the same thing with slightly different commands, each exiting 0, fires
+#: none of them — field incident 2026-08-27: 135 iterations, 103 minutes, the same 5-line
+#: probe output observed ~15 times, every command wrapped in ``|| echo`` so nothing ever
+#: errored. Re-observing a known result is not progress; this signal is STRONG (it counts as
+#: stuck on its own) and it drives the ladder by the repeat count, not by a consecutive streak,
+#: because the re-measurements were interleaved with other probes.
+SIG_REPEATED_OUTCOME = "repeated-outcome"
+
+#: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``
+#: style acknowledgements repeat legitimately.
+_OUTCOME_MIN_CHARS = 24
+#: Only the head of a long output is hashed — enough to identify it, bounded cost.
+_OUTCOME_HEAD_CHARS = 4000
+#: Volatile fragments masked before comparing: timestamps, pids, ports, hashes, durations.
+_VOLATILE_RE = re.compile(
+    r"\d{4,}|\d{1,2}:\d{2}(?::\d{2})?|0x[0-9a-f]{6,}|\b[0-9a-f]{12,}\b|\d+\.\d+s\b",
+    re.IGNORECASE,
+)
+
+
+def outcome_signature(name: str, output: str, epoch: int = 0) -> str | None:
+    """A stable identity for a tool OUTCOME, or ``None`` when it is too short to mean anything.
+
+    ``epoch`` is the loop's count of successful FILE-EDIT calls so far this turn: the same
+    output after an edit is a fresh measurement of a changed world (edit → test → edit → test
+    is progress, not a loop) and must not compare equal to the one before the edit.
+    """
+    normalized = _VOLATILE_RE.sub("#", " ".join((output or "").split()))
+    if len(normalized) < _OUTCOME_MIN_CHARS:
+        return None
+    return f"{name}\x00{epoch}\x00{normalized[:_OUTCOME_HEAD_CHARS]}"
 
 
 class StuckAction(Enum):
@@ -115,6 +149,7 @@ class StuckTracker:
         step_back_at: int = 5,
         stop_at: int = 6,
         repeated_failure_at: int = 2,
+        outcome_repeat_at: int = 3,
     ) -> None:
         self.vote_threshold = vote_threshold
         self.nudge_at = nudge_at
@@ -122,9 +157,12 @@ class StuckTracker:
         self.step_back_at = step_back_at
         self.stop_at = stop_at
         self.repeated_failure_at = repeated_failure_at
+        self.outcome_repeat_at = outcome_repeat_at
         self._streak = 0  # consecutive stuck (>= vote_threshold signals) iterations
         self._prev_sig: tuple[tuple[str, str], ...] | None = None
         self._error_counts: Counter[tuple[str, str]] = Counter()  # per-call failures this turn
+        self._outcome_counts: Counter[str] = Counter()  # identical outcomes this turn (ADR-0038)
+        self._last_outcome_repeats = 0  # the worst repeat count seen on the most recent observe
         self._last_signals: list[str] = []  # signals fired on the most recent observe
         self._actions: list[str] = []  # ladder actions taken this turn (observability)
         self._step_back_used = False  # the reassessment rung is once per turn
@@ -165,13 +203,19 @@ class StuckTracker:
 
     # ── core ─────────────────────────────────────────────────────────────────
     def observe(
-        self, calls: list[ToolCall], results: list[ToolResultBlock], *, assistant_text: str = ""
+        self,
+        calls: list[ToolCall],
+        results: list[ToolResultBlock],
+        *,
+        assistant_text: str = "",
+        epoch: int = 0,
     ) -> None:
         """Score one tool-call iteration, updating the stuck streak.
 
         Call once per iteration that requested tool calls, after the batch has executed.
         Iterations with no tool calls (a text/empty completion) are not stuck by definition
-        and should not be passed here.
+        and should not be passed here. ``epoch`` is the turn's successful file-edit count
+        (see :func:`outcome_signature`).
         """
         sig = batch_signature(calls)
         by_id = {r.tool_use_id: r for r in results}
@@ -195,11 +239,33 @@ class StuckTracker:
         if calls and not produced_success and not assistant_text.strip():
             signals.append(SIG_NO_PROGRESS)
 
+        # Repeated outcome (ADR-0038): count identical (tool, epoch, output) observations
+        # across the whole turn — NOT consecutively — and read the worst count this batch.
+        worst = 0
+        for call in calls:
+            result = by_id.get(call.id)
+            if result is None:
+                continue
+            osig = outcome_signature(call.name, result.output or "", epoch)
+            if osig is None:
+                continue
+            self._outcome_counts[osig] += 1
+            worst = max(worst, self._outcome_counts[osig])
+        self._last_outcome_repeats = worst
+        if worst >= self.outcome_repeat_at:
+            signals.append(SIG_REPEATED_OUTCOME)
+
         self._last_signals = signals
         if len(signals) >= self.vote_threshold:
             self._streak += 1
         else:
             self._streak = 0
+        if worst >= self.outcome_repeat_at:
+            # A strong signal: the Nth identical observation lands on rung N of the ladder
+            # (3 → nudge, 4 → narrow, 5 → step back, 6 → stop with the defaults) regardless
+            # of what the interleaved iterations did — the field loop alternated probes, so a
+            # consecutive streak never formed while the same result came back fifteen times.
+            self._streak = max(self._streak, self.nudge_at + (worst - self.outcome_repeat_at))
         self._prev_sig = sig
 
     def next_action(self) -> StuckAction:
@@ -249,6 +315,15 @@ class StuckTracker:
     # ── recovery messages ────────────────────────────────────────────────────
     def nudge_message(self) -> str:
         """The corrective hint injected on a :attr:`StuckAction.NUDGE`."""
+        if SIG_REPEATED_OUTCOME in self._last_signals:
+            return (
+                f"You have now observed the SAME tool result {self._last_outcome_repeats} "
+                "times this turn without changing anything in between. Re-measuring a known "
+                "result is not progress. Act on what you already know: either change the "
+                "question (a different probe that could FALSIFY your current hypothesis), make "
+                "the change the evidence supports, or stop and report what you found — and "
+                "read the error text you already have before forming a new theory."
+            )
         return (
             "You appear to be stuck: the last few steps made no progress (a repeated or "
             "all-failing tool call). Stop and reconsider — re-read the relevant file or the "

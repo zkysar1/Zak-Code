@@ -1262,7 +1262,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   harness owns, and the web client's resume notice is the same residual — tracked, not
   hidden. The probe costs one metadata read every 5 s of idle time.
 
-## ADR-0036: Every server door dispatches a leading slash like the CLI
+## ADR-0037: Every server door dispatches a leading slash like the CLI
 
 - **Status:** Accepted (shipped, 2026-08-27). Field finding 2026-08-27 (Vinheim, bravo): a
   served Mind could never be STARTED. Its framework's boot command (`/start <agent> --mode
@@ -1375,3 +1375,42 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   nudge names the fix (probe it). A genuine blocker still ends the turn on the second
   completion. A request that describes a skill in unrelated words ("do the thing that
   files work into the queue") no longer gets the skill seeded; that is the accepted price.
+
+## ADR-0038: Re-observing a known result is not progress; `.git` is not the model's to destroy
+
+- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-27 (coach on zc-03,
+  unattended, free local models): 135 iterations, 103 minutes, 10.5M tokens on one turn.
+  A runner-claim acquire kept answering HELD (a Mind-side auth failure misreported as a
+  held claim — fixed there). The model re-ran the same probe with a different comment each
+  time, wrapped every command in `|| echo` so nothing exited non-zero, observed the same
+  5-line output ~15 times, misread `rev-parse --verify -q` printing nothing as "refs exist
+  but point to invalid objects", and on that theory ran `rm -f .git/objects/pack/*`,
+  `rm -rf .git/refs/mind`, `git gc --prune=now` and finally re-cloned the repository.
+- **Context:** `DEFAULT_MAX_ITERATIONS` is unlimited because "the doom loop and the cost
+  budget are the real guards" — and with free models the cost budget is inert. The doom
+  guard needs byte-identical consecutive batches. Every stuck signal (repeated batch, all
+  errors, repeated failure, no progress) keys on an ERROR result, so a model that
+  re-measures successfully forever fires none of them. The never-waivable blocklist knew
+  `rm -rf /`, force-push and hard-reset; `.git` destruction through a relative path was
+  auto-allowed.
+- **Decision:** (1) A fifth stuck signal, `repeated-outcome`: the same tool producing the
+  same normalized output (volatile fragments masked; ≥24 chars) with no file edit in
+  between. It counts across the whole turn, not consecutively, and it is STRONG — the Nth
+  identical observation lands on rung N of the existing ladder: 3 → nudge (naming the
+  count), 4 → read-only, 5 → step back, 6 → the turn ends `stuck`. The epoch is the
+  turn's successful file-edit count, so edit → test → edit → test is never a repeat.
+  (2) `.git` destruction joins the never-waivable blocklist: `rm/rmdir/mv/shred/unlink/
+  truncate` of a `.git` path, shell redirects into `.git/`, `git gc --prune=now`,
+  `git prune`, `git reflog expire --expire=now`. Plumbing (`update-ref -d`, `fetch`,
+  `for-each-ref`, plain `gc`, `prune-packed`) and `.gitignore`/`.github` stay allowed.
+- **Alternatives rejected:** a finite default iteration cap (a legitimate long task would
+  hit it; the loop's own progress signals are the honest guard); a wall-clock cap (same);
+  counting identical OUTCOMES consecutively like the doom guard (the field loop
+  interleaved probes — a streak never formed); scanning shell commands against the
+  protected-path floor (over-blocks `cat .git/config`; ADR-0028's lesson).
+- **Consequences:** a model that keeps asking the same question gets told the count at the
+  third answer and loses the turn at the sixth — bounded by observations, not by tokens
+  or dollars. A model cannot delete the object store or the ref namespace under any
+  permission mode. Residual: outputs that differ only in a trailing verdict line (the
+  HELD line appeared in ~45 of 135 outputs inside otherwise-different probes) are not
+  caught; the identical-probe case that preceded the destruction is.
