@@ -107,6 +107,7 @@ from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_c
 from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate
+from zakcode.build_info import build_commit
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -278,10 +279,15 @@ _LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
 #: completion AFTER the model already produced text this turn keeps the historical
 #: clean-end semantics — that shape is a deliberate "nothing more to say".
 _MAX_EMPTY_RETRIES = 2
+#: Worded as a DIRECTIVE, not an invitation (ADR-0033): the earlier "say what you tried,
+#: what failed, and what should happen next" handed a struggling small model a licence to
+#: apologize and narrate, and the 2026-08-26 serene transcript answered it with exactly that
+#: — an apology spiral. One tool call, the answer, or one blocking sentence; nothing else.
 _EMPTY_COMPLETION_NUDGE = (
-    "You ended your response without any visible output. Do not end your turn silently. "
-    "If the task is done, state the outcome and answer the user's request in plain text. "
-    "If you cannot finish, say what you tried, what failed, and what should happen next."
+    "Your response was empty. Reply with exactly ONE of: a tool call that advances the "
+    "task; the answer itself, plainly, if the task is done; or ONE sentence stating what is "
+    "blocking you. Nothing else — no apologies, no restated plans, no announcements of what "
+    "you will do next."
 )
 
 #: How many times a turn may discard a degenerate (repetition-looping) completion and
@@ -331,14 +337,20 @@ def _broken_record_nudge(count: int) -> str:
 
 
 #: Future-intent announcements: first-person future forms followed by an ACTION verb, so
-#: "I will need you to provide…" / "I'll let you know" / "I will be here" never match.
+#: "I will need you to provide…" / "I'll let you know" / "I will be here" never match. A
+#: HEDGE between the future form and the verb ("I will try to create", "I'll attempt to
+#: add", "I will go ahead and write", "I will proceed to register") is still an announcement
+#: — the 2026-08-26 serene spiral was "I will try to create the skill correctly." ×20 and
+#: never matched because the verb had to follow "will" directly (ADR-0033).
 _FUTURE_INTENT_RE = re.compile(
     r"\b(?:"
     r"(?:now\s+|next,?\s+|then\s+)?i(?:\s+will|['’]ll)\s+(?:now\s+|then\s+)?"
+    r"(?:try\s+to\s+|attempt\s+to\s+|go\s+ahead\s+and\s+|proceed\s+to\s+)?"
     r"(?:use|run|create|write|edit|move|copy|delete|add|update|install|execute|make|"
     r"start|begin|proceed|apply|open|read|fix|register)"
     r"|let\s+me\s+now"
-    r"|i\s*['’]?a?m\s+going\s+to\s+(?:use|run|create|write|edit|move|copy|delete|"
+    r"|i\s*['’]?a?m\s+going\s+to\s+(?:try\s+to\s+|attempt\s+to\s+|go\s+ahead\s+and\s+)?"
+    r"(?:use|run|create|write|edit|move|copy|delete|"
     r"add|update|install|execute|make|start|begin|apply|open|read|fix|register)"
     r")\b",
     re.IGNORECASE,
@@ -352,6 +364,48 @@ def _announces_future_work(text: str) -> bool:
     mid-turn; it is the turn ENDING on an announcement that makes it a false done.
     """
     return _FUTURE_INTENT_RE.search(text[-800:]) is not None
+
+
+#: Claim-vs-action guard (ADR-0033): a completion that REPORTS a change to a file, skill,
+#: script or directory ("I have updated world/forged-skills.yaml … I have registered the
+#: skill") in a turn that ran no file-changing tool call is a fabricated done — the
+#: 2026-08-26 serene transcript ended on exactly that sentence with nothing written. Judged
+#: on the tail like the false-done guard; one nudge per turn; a model reporting work from an
+#: EARLIER turn can say so and finish. The lookahead ties the verb to a file-ish object in
+#: the same sentence, so "I have added some context below" is conversation, not a claim.
+_WORK_CLAIM_RE = re.compile(
+    r"\bi(?:\s+have|['’]ve)?\s+(?:(?:just|now|also|already|successfully)\s+)?"
+    r"(?:updated|created|written|wrote|registered|added|edited|modified|saved|deleted|"
+    r"removed|installed|applied|implemented|moved|renamed|copied|configured|fixed)\b"
+    r"(?=[^.\n]{0,120}(?:\bfiles?\b|\bskills?\b|\bscripts?\b|\bconfig|\bdirector(?:y|ies)\b|"
+    r"\bfolders?\b|\bmodules?\b|\bentr(?:y|ies)\b|\btests?\b|\bcode\b|\bfunctions?\b|"
+    r"\bclass(?:es)?\b|\byaml\b|\bjson\b|\bmarkdown\b|\.[a-z]{1,4}\b|/))",
+    re.IGNORECASE,
+)
+_CLAIM_NUDGE = (
+    'You reported a change as done ("I have updated / created / registered …"), but no '
+    "file-changing tool call ran this turn, so nothing on disk changed. Do not report work "
+    "that did not happen. If the change is still needed, make it NOW with a real tool call. "
+    "If it was made in an EARLIER turn, say so in one sentence and finish."
+)
+
+
+def _claims_file_work(text: str) -> bool:
+    """True when the TAIL of a final completion reports a file change as already done."""
+    return _WORK_CLAIM_RE.search(text[-800:]) is not None
+
+
+#: Text-only stall (ADR-0033): a turn whose model answers a nudge or veto with ANOTHER
+#: no-tool-call completion — no plan open — is stalled in words. Two in a row latch the
+#: struggle flag so zakpick hands the turn to the deep coder; the serene spiral produced
+#: five such completions on the cheap model with nothing in the harness escalating.
+_TEXT_ONLY_STALL = 2
+
+
+def _provider_label(provider: object) -> str:
+    """The model a provider serves, for human-facing status lines (class name if unnamed)."""
+    model = getattr(provider, "model", None)
+    return model if isinstance(model, str) and model else type(provider).__name__
 
 
 #: Streaming degeneration probe cadence: first check after this many streamed chars…
@@ -746,6 +800,10 @@ class AgentLoop:
         # ``signal_latched`` local (the degenerate-argument veto in _execute_tool_call);
         # folded into it each iteration so zakpick latches the deep coder. Per-turn.
         self._turn_struggle = False
+        # Claim-vs-action guard (ADR-0033): file-changing tool calls that actually ran this
+        # turn (any executed, non-error call whose tier is not READ_ONLY). A completion that
+        # reports a change while this is zero is a fabricated done. Per-turn.
+        self._turn_write_calls = 0
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
         # bound on top of the per-turn ``max_iterations`` cap: each iteration draws
         # one unit from the shared pool, and the turn stops with
@@ -837,6 +895,9 @@ class AgentLoop:
             # restart (audit P0-2d / D12) — same boundary as message persistence.
             if self.permission_policy is not None:
                 self.session.permission_grants = self.permission_policy.export_grants()
+            # Stamp the build that wrote this document (resume safety, ADR-0033): a later
+            # /resume on a different build compacts the transcript instead of continuing it.
+            self.session.build = build_commit() or ""
             self.store.save(self.session)
 
     def _scrub_env_names(self) -> list[str]:
@@ -1664,6 +1725,12 @@ class AgentLoop:
 
         # 3. Execute (registry.execute wraps any failure into an error ToolResult).
         tool_res = await self.registry.execute(call.name, arguments, ctx)
+        if (
+            not tool_res.is_error
+            and spec is not None
+            and spec.required_permission is not PermissionTier.READ_ONLY
+        ):
+            self._turn_write_calls += 1  # a real change ran (claim-vs-action guard, ADR-0033)
 
         # 4. PostToolUse hooks (observe-only; their notes are appended as feedback).
         post = await self.hook_manager.run(
@@ -2249,6 +2316,9 @@ class AgentLoop:
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
+        claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
+        text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
+        self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -2476,6 +2546,22 @@ class AgentLoop:
             # No tool calls → the turn is finishing (cleanly when the model has said
             # anything this turn; the empty give-up gate below handles total silence).
             if not result.has_tool_calls:
+                # Text-only stall (ADR-0033): a second no-tool-call completion in one turn
+                # can only follow a nudge or veto; on a planless turn that is a model stuck
+                # in words. Latch the struggle flag so the next iteration runs on the deep
+                # coder (zakpick) instead of re-prompting the model that is failing.
+                text_only_completions += 1
+                if (
+                    text_only_completions >= _TEXT_ONLY_STALL
+                    and self.session.task_network.is_empty()
+                    and not self._turn_struggle
+                ):
+                    self._turn_struggle = True
+                    self._note(
+                        "intervention",
+                        f"text-only completion #{text_only_completions} — struggle latched",
+                        kind="text_only_stall",
+                    )
                 # Length-truncation continuation (parity #5): a final answer cut off at the
                 # output cap must not be reported as a clean "completed". Continue it (a new
                 # iteration, bounded) and flag the turn degraded. Runs BEFORE the TURN_END
@@ -2669,13 +2755,15 @@ class AgentLoop:
                 # against what is ACTUALLY on disk and finish anything missing); a clean verdict
                 # finishes immediately, so an already-correct turn pays one cheap side-call, not a
                 # wasted self-review iteration. Scoped to COMPLEX (non-quick_code) turns — it would
-                # over-work a one-line fix, and the payoff is on hard tasks. Fail-OPEN (see
+                # over-work a one-line fix, and the payoff is on hard tasks — plus any quick turn
+                # whose completion CLAIMS a change (ADR-0033: a cheap model's "I have updated …"
+                # is exactly the claim an independent reviewer exists to check). Fail-OPEN (see
                 # _completion_critic) so a flaky critic can never trap a turn. Bounded by
                 # ``completion_review_attempts`` so it converges; off unless that is set.
                 if (
                     self.completion_review_attempts > 0
                     and cursor.wrote_runnable
-                    and main_category != "quick_code"
+                    and (main_category != "quick_code" or _claims_file_work(result.text or ""))
                     and completion_reviews < self.completion_review_attempts
                 ):
                     completion_reviews += 1
@@ -2718,6 +2806,30 @@ class AgentLoop:
                         repeat_count = 0
                         stuck.reset()
                         continue
+                # Claim-vs-action guard (ADR-0033): the completion REPORTS a file change
+                # ("I have updated … I have registered …") but no file-changing tool call
+                # ran this turn, so nothing on disk changed. Ask once for the work or an
+                # honest "done earlier"; a fabricated done never passes as completed, and
+                # it is a struggle signal (the deep coder takes the next iteration).
+                if (
+                    result.text
+                    and not claim_nudged
+                    and self._turn_write_calls == 0
+                    and _claims_file_work(result.text)
+                ):
+                    claim_nudged = True
+                    self._turn_struggle = True
+                    self._note(
+                        "intervention",
+                        "completion reports a change no tool call made — asking for the work",
+                        kind="claim_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_CLAIM_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 # False-done guard (ADR-0024): the turn is ending on an ANNOUNCEMENT of
                 # work ("Now I will use …" with no calls behind it). Ask once for the
                 # work or a plain finish; a model that was only describing says so.
@@ -2763,6 +2875,7 @@ class AgentLoop:
             # still iteration budget left to save. If the threshold coincides with
             # the final allowed iteration, the loop would have stopped anyway, so
             # "max_iterations" stays the accurate (and outer-bound) stop reason.
+            text_only_completions = 0  # a tool batch breaks a text-only stall (ADR-0033)
             signature = batch_signature(result.tool_calls)
             if signature == last_signature:
                 repeat_count += 1
@@ -2971,6 +3084,8 @@ class AgentLoop:
             iterations=iterations,
             escalated=routed_escalated,
         )
+        self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
+        self._persist()
         self._dump_trace()
         return TurnResult(
             assistant_messages=turn_assistant,
@@ -3098,6 +3213,9 @@ class AgentLoop:
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
+        claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
+        text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
+        self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -3168,6 +3286,12 @@ class AgentLoop:
                         self.provider = self.main_provider_for(category)
                         main_category = category
                         self._note("route", category, category=category)
+                        # Transparency (ADR-0033): the route was a trace-only note, so an
+                        # operator watching a small model flail could not see which model
+                        # was flailing. One dim line per route change.
+                        yield AgentStatus(
+                            message=f"route: {category} → {_provider_label(self.provider)}"
+                        )
 
                 provider_failure: str | None = None
                 retry_attempts = 0
@@ -3529,6 +3653,24 @@ class AgentLoop:
 
                 # No tool calls → the turn is complete.
                 if not tool_calls:
+                    # Text-only stall (ADR-0033) — see the buffered twin. The count is also
+                    # surfaced as a status line so the operator can see words piling up.
+                    text_only_completions += 1
+                    if text_only_completions >= _TEXT_ONLY_STALL:
+                        yield AgentStatus(
+                            message=f"text-only completion #{text_only_completions} (no tool calls)"
+                        )
+                    if (
+                        text_only_completions >= _TEXT_ONLY_STALL
+                        and self.session.task_network.is_empty()
+                        and not self._turn_struggle
+                    ):
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            f"text-only completion #{text_only_completions} — struggle latched",
+                            kind="text_only_stall",
+                        )
                     # Length-truncation continuation (parity #5), streaming twin. See the
                     # buffered path for the rationale and the no-tool-calls scoping.
                     if (
@@ -3747,7 +3889,10 @@ class AgentLoop:
                     if (
                         self.completion_review_attempts > 0
                         and cursor.wrote_runnable
-                        and main_category != "quick_code"
+                        and (
+                            main_category != "quick_code"
+                            or _claims_file_work(assistant_text or "")  # ADR-0033
+                        )
                         and completion_reviews < self.completion_review_attempts
                     ):
                         completion_reviews += 1
@@ -3797,6 +3942,30 @@ class AgentLoop:
                             stuck.reset()
                             yield AgentStatus(message="scoring for quality")
                             continue
+                    # Claim-vs-action guard (ADR-0033) — see the buffered twin.
+                    if (
+                        assistant_text
+                        and not claim_nudged
+                        and self._turn_write_calls == 0
+                        and _claims_file_work(assistant_text)
+                    ):
+                        claim_nudged = True
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            "completion reports a change no tool call made — asking for the work",
+                            kind="claim_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_CLAIM_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="completion reports a change no tool call made — asking "
+                            "for the work"
+                        )
+                        continue
                     # False-done guard (ADR-0024) — see the buffered twin.
                     if (
                         assistant_text
@@ -3838,6 +4007,7 @@ class AgentLoop:
                     break
 
                 # Doom-loop guard — identical to the buffered path.
+                text_only_completions = 0  # a tool batch breaks a text-only stall (ADR-0033)
                 signature = batch_signature(tool_calls)
                 if signature == last_signature:
                     repeat_count += 1
@@ -4065,6 +4235,8 @@ class AgentLoop:
             iterations=iterations,
             escalated=routed_escalated,
         )
+        self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
+        self._persist()
         self._dump_trace()
         yield AgentDone(
             stop_reason=stop_reason,

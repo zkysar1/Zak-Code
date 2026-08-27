@@ -86,6 +86,86 @@ def test_long_repeated_paragraphs_are_not_convicted() -> None:
     assert repeated_tail(paragraph * 10) is None
 
 
+# ── the near-duplicate branch (ADR-0033) ──────────────────────────────────────────
+
+#: Verbatim tail of the 2026-08-26 serene collapse (gemini-2.5-flash-lite on quick_code):
+#: never the same line twelve times — the exact branch measured 3 of 15 — while 10–11 of
+#: the last 15 lines share most of their words with one short sentence.
+SERENE_WALL = """Let's retry this, focusing on the core task of adding the skill.
+
+I will restart from the last successful step, which was the previous successful command execution.
+
+Let's try this again. I will try to follow the instructions and be more precise.
+Let's try this again. I will try to add the skill correctly.
+Let's try this again. I will try to add the skill correctly.
+Let's try this again. I will try to add the skill correctly.
+
+Let's try again. I will try to create the skill correctly.
+Let's try again. I will try to create the skill correctly.
+Let's try this again. I will try to create the skill correctly.
+
+I apologize for the error. I will try to create the skill correctly.
+
+I will try to make this happen. I will try to create the skill correctly.
+I will try to do it again. I will try to create the skill correctly.
+Let's try this again. I will try to create the skill correctly.
+I will try to create the skill correctly.
+I will try to create the skill correctly.
+
+I will try to create the skill again.I apologize for the repeated issues. It seems I am \
+still struggling with the correct command.
+
+Let me try again. I will use the update_plan command to explicitly update the plan, and \
+then I will try to create the skill.
+
+Let's try again. Let's try to add the skill with the correct syntax.The previous attempt \
+failed. I will try to create the skill again.
+
+I will try to create the skill again. I will try to create the skill correctly.
+
+I have updated the world/forged-skills.yaml with the google-drive-access skill. I have \
+registered the skill and it should now be available.
+"""
+
+
+def test_convicts_the_mutating_apology_spiral() -> None:
+    # The full wall AND the point the streaming probe would have reached mid-spiral.
+    unit = repeated_tail(SERENE_WALL)
+    assert unit is not None and "the skill correctly" in unit
+    mid_stream = SERENE_WALL[: SERENE_WALL.index("I will try to create the skill again.I")]
+    unit = repeated_tail(mid_stream)
+    assert unit is not None and "the skill correctly" in unit
+
+
+def test_a_numbered_listing_is_not_a_spiral() -> None:
+    # Every line shares most of its words with its neighbours (7 of 9) — and every line
+    # brings a token seen nowhere else. A listing adds vocabulary; a spiral recycles it.
+    files = "\n".join(
+        f"- src/module_{i}.py — {i * 3} lines, {i} functions, last touched in commit {i:04x}"
+        for i in range(20)
+    )
+    assert repeated_tail(files) is None
+
+
+def test_identical_lines_below_the_exact_bar_stay_the_exact_branch_s_call() -> None:
+    # No mutation at all: eleven identical short sentences sit under the exact branch's
+    # 12-line bar, and the fuzzier branch must not undercut that verdict.
+    prefix = "\n".join(f"prelude line {i} with distinct content padding it out" for i in range(12))
+    body = "the same short sentence about the skill, repeated as it stands\n" * 11
+    assert repeated_tail(prefix + "\n" + body) is None
+
+
+def test_a_checklist_is_not_a_spiral() -> None:
+    steps = [("read", "config"), ("edit", "config"), ("write", "output"), ("test", "output")]
+    steps += [("lint", "source"), ("format", "source"), ("commit", "source"), ("push", "source")]
+    steps += [("tag", "release"), ("deploy", "release"), ("verify", "release")]
+    text = "\n".join(
+        f"- [ ] Step {i}: {verb} the {obj} file" for i, (verb, obj) in enumerate(steps)
+    )
+    prefix = "\n".join(f"prelude line {i} with distinct content padding it out" for i in range(6))
+    assert repeated_tail(prefix + "\n" + text) is None
+
+
 # ── buffered path ─────────────────────────────────────────────────────────────────
 
 
