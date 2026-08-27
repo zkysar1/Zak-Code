@@ -78,6 +78,7 @@ from zakcode.server.wire import (
     CompleteRequest,
     CompleteResponse,
     NudgeRequest,
+    RunStopRequest,
     SayRequest,
     SessionInfo,
     SessionTranscript,
@@ -574,6 +575,11 @@ SAY_MAX_CHARS = 2000
 #: needs more than a minute is broken, and an unbounded one would hold the vessel — and
 #: its bill — open past the cap the whole bounded-run design exists to enforce.
 RUN_END_COMMAND_TIMEOUT_S = 60.0
+
+#: A ``POST /run/stop`` reason (ADR-0047) is a token, not prose: it lands in the ending
+#: handed to ``run_end_command`` and in ``on_run_end``, where a platform script branches
+#: on it (``duration_cap`` / ``stopped`` / ``budget_exhausted`` …).
+_RUN_STOP_REASON_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
 def create_app(
@@ -1788,6 +1794,28 @@ def create_app(
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         consumer_tasks.clear()
+
+    @app.post("/run/stop")
+    async def run_stop(request: RunStopRequest | None = None) -> dict[str, Any]:
+        """Ask the RUN — not a turn — to end gracefully (ADR-0047).
+
+        The say consumer stops taking turns after the one in flight, writes its digest,
+        hands the ending to ``run_end_command`` and then to ``on_run_end`` — the SAME
+        ending a cap-hit gets. So a bound that lives OUTSIDE this process (a money cap, an
+        operator, a scheduler) can end a run WITH its receipt instead of severing it.
+        ``reason`` becomes the run's stop reason. Idempotent; bearer-gated by the server
+        middleware like every other route.
+        """
+        nonlocal run_stop_reason
+        reason = (request.reason if request is not None else None) or "stopped"
+        if not _RUN_STOP_REASON_RE.fullmatch(reason):
+            raise HTTPException(status_code=400, detail="reason must match [a-z][a-z0-9_]{0,31}")
+        if run_ended.is_set():
+            return {"stopping": False, "ended": True, "reason": run_stop_reason}
+        if not run_stopping.is_set():
+            run_stop_reason = reason
+            run_stopping.set()
+        return {"stopping": True, "reason": run_stop_reason}
 
     # (The lifespan defined above app construction starts/stops the consumer.)
     # Test seam: exercise one consumer beat without running the background loop
