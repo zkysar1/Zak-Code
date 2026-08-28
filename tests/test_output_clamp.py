@@ -134,3 +134,67 @@ def test_a_verbatim_result_is_never_clamped(tmp_path: Path) -> None:
     assert "[output clamped:" not in block.output
     assert "## Step 5: THE-MIDDLE" in block.output
     assert block.output.rstrip().endswith("Hint: follow it")
+
+
+class _CountingProvider(_ScriptProvider):
+    """A provider whose tokenizer is real enough to measure a body: 4 chars per token."""
+
+    def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
+        chars = len(system or "")
+        for message in messages:
+            for block in message.blocks:
+                chars += len(getattr(block, "text", "") or "")
+        return chars // 4
+
+
+def test_a_body_that_cannot_fit_ends_the_turn_loudly(tmp_path: Path) -> None:
+    # ADR-0066: 60,000 chars ≈ 15,000 tokens against an 8,192 window. Nothing the model does
+    # next changes that arithmetic, so the turn ends as skill_too_large — the model sees an
+    # error result naming the numbers, and the scripted "done" completion is never asked for.
+    registry = ToolRegistry()
+    registry.register(_VerbatimDumpTool("## Step 0\n" + "A" * 60_000))
+    provider = _CountingProvider(
+        [
+            LLMResult(tool_calls=[ToolCall(id="c1", name="bigdump", arguments={})]),
+            LLMResult(text="done"),
+        ],
+        window=8192,
+    )
+    loop = AgentLoop(
+        provider,
+        registry,
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        max_iterations=4,
+    )
+    result = asyncio.run(loop.arun_turn("load it"))
+    assert result.stop_reason == "skill_too_large"
+    assert provider.calls == 1
+    blocks = [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolResultBlock)]
+    assert len(blocks) == 1 and blocks[0].is_error is True
+    assert "cannot be loaded on this model" in blocks[0].output
+    assert "8,192" in blocks[0].output  # the window it was measured against
+
+
+def test_a_body_that_fits_with_room_to_answer_loads(tmp_path: Path) -> None:
+    # 8,000 chars ≈ 2,000 tokens: beside the loop's real system prompt and the 4,096-token
+    # answer reserve it fits a 32k window whole — the same sum, the other verdict.
+    registry = ToolRegistry()
+    registry.register(_VerbatimDumpTool("## Step 0\n" + "A" * 8_000))
+    provider = _CountingProvider(
+        [
+            LLMResult(tool_calls=[ToolCall(id="c1", name="bigdump", arguments={})]),
+            LLMResult(text="done"),
+        ],
+        window=32_768,
+    )
+    loop = AgentLoop(
+        provider,
+        registry,
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        max_iterations=4,
+    )
+    result = asyncio.run(loop.arun_turn("load it"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 2

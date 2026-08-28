@@ -30,7 +30,12 @@ def _write_skill(workspace: Path, name: str, text: str = _SKILL) -> None:
 
 
 def _agent(tmp_path: Path, **kw: object) -> Agent:
-    return Agent(settings=Settings(default_model="scripted/test", workspace_root=tmp_path), **kw)
+    return Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
+        **kw,
+    )
 
 
 def _console() -> tuple[Console, StringIO]:
@@ -203,7 +208,9 @@ async def test_composed_skill_turn_runs_like_any_turn(tmp_path: Path) -> None:
 
     _write_skill(tmp_path, "g")
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         provider=ScriptedProvider([reply("hello, friend!")]),
         enable_skills=True,
     )

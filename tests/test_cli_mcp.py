@@ -40,7 +40,11 @@ def _console() -> tuple[Console, StringIO]:
 
 
 def _agent(tmp_path: Path) -> Agent:
-    return Agent(settings=Settings(default_model="scripted/test", workspace_root=tmp_path))
+    return Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        )
+    )
 
 
 def test_render_mcp_not_enabled(tmp_path: Path) -> None:

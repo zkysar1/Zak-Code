@@ -20,7 +20,7 @@ class _Stub(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 def _runner() -> SubAgentRunner:

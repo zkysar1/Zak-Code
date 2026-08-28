@@ -35,7 +35,7 @@ class _FakeClient:
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(default_model="scripted/test", workspace_root=tmp_path)
+    return Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
 
 
 # ── build_extension_manager (pure: constructs transports, never spawns) ───────────

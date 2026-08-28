@@ -56,7 +56,7 @@ class _Provider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
     def model_id(self) -> str:
         return "classify/test"
@@ -254,7 +254,10 @@ async def test_default_gatherer_with_model_classifier(tmp_path) -> None:
 # --- agent wiring (the opt-in flags) ---------------------------------------
 def test_agent_flag_registers_gatherer(tmp_path) -> None:
     settings = Settings(
-        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        permission_mode="allow",
     )
     on = Agent(settings=settings, enable_context_gathering=True)
     off = Agent(settings=settings)
@@ -263,7 +266,10 @@ def test_agent_flag_registers_gatherer(tmp_path) -> None:
 
 def test_agent_model_classifier_flag(tmp_path) -> None:
     settings = Settings(
-        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        permission_mode="allow",
     )
     agent = Agent(settings=settings, enable_context_gathering=True, context_classifier="model")
     assert len(agent.hook_manager.context_hooks) == 1
@@ -314,7 +320,10 @@ async def test_signal_logger_skips_when_no_offer(tmp_path) -> None:
 
 def test_agent_signal_log_registers_observer(tmp_path) -> None:
     settings = Settings(
-        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        permission_mode="allow",
     )
     log = str(tmp_path / "sig.jsonl")
     on = Agent(settings=settings, enable_context_gathering=True, context_signal_log=log)
@@ -365,7 +374,10 @@ def test_relevance_model_save_load(tmp_path) -> None:
 
 def test_agent_classifier_weights_wires_trained(tmp_path) -> None:
     settings = Settings(
-        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        permission_mode="allow",
     )
     weights = tmp_path / "w.json"
     RelevanceModel(weights=[0.0, 1.0, 0.5]).save(weights)
@@ -377,7 +389,10 @@ def test_agent_classifier_weights_wires_trained(tmp_path) -> None:
 
 def test_agent_bad_weights_falls_back(tmp_path) -> None:
     settings = Settings(
-        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        permission_mode="allow",
     )
     # A missing weights file must not crash construction -- fail-soft to the heuristic gatherer.
     agent = Agent(
@@ -464,7 +479,10 @@ async def test_signal_logger_judge_labels_in_context_use(tmp_path) -> None:
 
 def test_agent_signal_judge_wires_observer(tmp_path) -> None:
     settings = Settings(
-        default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        permission_mode="allow",
     )
     agent = Agent(
         settings=settings,

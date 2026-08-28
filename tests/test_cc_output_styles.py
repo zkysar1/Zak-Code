@@ -178,6 +178,7 @@ def _agent(workspace: Path, **kwargs: object) -> object:
     return Agent(
         provider=ScriptedProvider(script=[reply("ok")]),
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(workspace),
         **kwargs,  # type: ignore[arg-type]
     )
@@ -219,7 +220,10 @@ def test_agent_settings_flag_enables_without_explicit_arg(tmp_path: Path) -> Non
     agent = Agent(
         provider=ScriptedProvider(script=[reply("ok")]),
         settings=Settings(
-            default_model="scripted/test", workspace_root=tmp_path, output_style=True
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            output_style=True,
         ),
     )
     prompt = agent.loop.prompt_builder.build(agent.settings)

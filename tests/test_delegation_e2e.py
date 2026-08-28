@@ -69,7 +69,7 @@ class _DelegatingProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 async def test_parent_delegates_to_child_end_to_end(
@@ -79,7 +79,10 @@ async def test_parent_delegates_to_child_end_to_end(
     budget = IterationBudget(50)
     agent = Agent(
         settings=Settings(
-            default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            permission_mode="allow",
         ),
         enable_subagents=True,
         budget=budget,
@@ -97,7 +100,7 @@ async def test_parent_delegates_to_child_end_to_end(
 
 
 def test_enable_subagents_exposes_task_tool(tmp_path: Path) -> None:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     on = Agent(settings=settings, enable_subagents=True)
     off = Agent(settings=settings)
     assert "task" in on.registry.names()
@@ -152,7 +155,7 @@ class _CallCaptureProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 async def test_subagent_child_tools_see_no_spawner(tmp_path: Path) -> None:
@@ -164,7 +167,9 @@ async def test_subagent_child_tools_see_no_spawner(tmp_path: Path) -> None:
     runner = SubAgentRunner(
         provider=_CallCaptureProvider(),
         registry=registry,
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
     )
@@ -176,7 +181,9 @@ def test_facade_child_registry_excludes_task(tmp_path: Path) -> None:
     # The facade gives children a task-free registry, a second layer of nesting
     # protection on top of the absent spawner.
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         enable_subagents=True,
     )
     manager = agent.loop.spawner

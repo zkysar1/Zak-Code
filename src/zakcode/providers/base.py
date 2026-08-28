@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
@@ -58,6 +59,47 @@ class LLMResult(BaseModel):
         return bool(self.tool_calls)
 
 
+class UnknownContextWindow(ValueError):
+    """A model whose context window nobody knows (ADR-0066).
+
+    Raised at startup (naming every offender) and at provider construction — never
+    swallowed into a stand-in number. The message names the model, what was checked, and
+    the value the server declares when its ``/v1/models`` listing has one, so the operator
+    pastes it into the model's config entry once. A configuration error, not a provider
+    failure: it must not be retried, failed over, or reported as ``provider_error``.
+    """
+
+
+@dataclass(frozen=True)
+class WindowResolution:
+    """Where a model's context window came from (ADR-0066) — and what the server says.
+
+    ``window`` is the number every window-keyed limit runs on; ``source`` names it:
+    ``config`` (the model's own entry), ``registry`` (the checked-in table or litellm's
+    metadata), ``sentinel`` (a routing name, no model yet), or ``unknown`` (nobody knows
+    — the provider refuses to exist). ``served`` is what the server's ``/models`` listing
+    declares when it was consulted and had a figure; it is a CHECK, never the source.
+    """
+
+    window: int | None
+    source: str
+    served: int | None = None
+
+    @property
+    def mismatch(self) -> bool:
+        """The server declares a different window than the one in force."""
+        return self.window is not None and self.served is not None and self.served != self.window
+
+    def describe(self) -> str:
+        """``131,072 (config)`` / ``128,000 (registry)`` / ``unknown`` — for info panels."""
+        if self.window is None:
+            return "unknown" if self.source == "unknown" else f"({self.source})"
+        text = f"{self.window:,} ({self.source})"
+        if self.served is not None:
+            text += f" — server declares {self.served:,}" if self.mismatch else ", server agrees"
+        return text
+
+
 class Capabilities(BaseModel):
     """Static facts about a model, used for routing and context budgeting."""
 
@@ -77,7 +119,12 @@ class Capabilities(BaseModel):
     decommissioned: bool = False
     supports_vision: bool = False
     supports_caching: bool = False
-    context_window: int = 8192
+    #: The model's context window in tokens. ``None`` means UNKNOWN — a first-class state,
+    #: never a stand-in number (ADR-0066). The loop refuses to run on an unknown window, and
+    #: the litellm provider refuses to be built on one, because every window-keyed limit
+    #: (the seam clamp, the compaction threshold, overflow recovery) inherits it: the old
+    #: 8,192 default silently cut every skill body on a 131k pod to 6 KB (coach, 2026-08-28).
+    context_window: int | None = None
     max_output: int | None = None
     #: Maximum number of ``stop`` sequences the backend accepts in one request (e.g. the
     #: OpenAI Chat Completions API rejects more than 4). ``None`` means unbounded / unknown;
@@ -329,4 +376,6 @@ __all__ = [
     "RateLimited",
     "RequestFailed",
     "Provider",
+    "UnknownContextWindow",
+    "WindowResolution",
 ]

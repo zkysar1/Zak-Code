@@ -170,7 +170,7 @@ class _Script(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 def _loop(workspace: Path, provider: Provider, tool: Tool, *, consume: bool) -> AgentLoop:
@@ -262,7 +262,7 @@ class _FakeAgent:
 
 
 def test_serve_consumer_beat_yields_to_another_process_turn(tmp_path: Path) -> None:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(
         settings=settings,

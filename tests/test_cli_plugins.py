@@ -42,7 +42,12 @@ def _write_plugin(workspace: Path, name: str, *, body: str = _PLUGIN_BODY) -> No
 
 
 def _agent(tmp_path: Path, **kw: object) -> Agent:
-    return Agent(settings=Settings(default_model="scripted/test", workspace_root=tmp_path), **kw)
+    return Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
+        **kw,
+    )
 
 
 def test_render_plugins_not_enabled(tmp_path: Path) -> None:

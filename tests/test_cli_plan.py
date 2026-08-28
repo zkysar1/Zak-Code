@@ -23,7 +23,9 @@ def _console() -> tuple[Console, StringIO]:
 
 def _agent(tmp_path: Path, *, subagents: bool) -> Agent:
     return Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         enable_subagents=subagents,
     )
 

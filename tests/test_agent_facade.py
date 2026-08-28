@@ -37,7 +37,7 @@ class _ScriptedStream(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 def test_agent_exposes_the_full_turn_surface() -> None:

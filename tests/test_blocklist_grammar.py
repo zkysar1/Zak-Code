@@ -63,6 +63,7 @@ def test_facade_denied_commands_are_applied(tmp_path: Path) -> None:
         permission_mode="allow",
         denied_commands=["forbidden-binary"],
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     decision, _reason = agent.permission_policy.decide(_SHELL, {"command": "forbidden-binary --go"})

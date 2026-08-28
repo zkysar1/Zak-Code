@@ -49,7 +49,7 @@ def test_capabilities_defaults() -> None:
     assert caps.supports_tools is True
     assert caps.supports_vision is False
     assert caps.supports_caching is False
-    assert caps.context_window == 8192
+    assert caps.context_window is None  # UNKNOWN is the default, never a number (ADR-0066)
     assert caps.max_output is None
 
 

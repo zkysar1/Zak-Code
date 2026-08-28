@@ -60,7 +60,7 @@ from zakcode.cli.render import StreamRenderer, display_call
 from zakcode.config import PermissionTier, Settings, env_source, load_settings
 from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_permission_answer
-from zakcode.providers.base import ProviderError
+from zakcode.providers.base import ProviderError, UnknownContextWindow
 from zakcode.secrets import strip_url_credentials
 
 if TYPE_CHECKING:
@@ -237,8 +237,45 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
             )
         )
     rows.extend(_cost_rows(settings))
+    rows.extend(_window_rows(settings))
     for name, source in _provider_key_status().items():
         rows.append((name, "not set" if source == "not set" else f"set ({source})"))
+    return rows
+
+
+def _window_rows(settings: Settings) -> list[tuple[str, str]]:
+    """One ``Context window`` row per effective model (ADR-0066): the number in force,
+    where it came from (the model's config entry or the registry), and whether the server's
+    ``/models`` listing agrees — or ``unknown``, which is the value that refuses to run.
+    Same enumeration and resolver as the Agent's startup assertion, so ``info`` shows
+    exactly what ``cli`` would refuse on. Read-only probes; never raises."""
+    from zakcode.providers.litellm_provider import resolve_context_window
+    from zakcode.providers.routing import effective_model_entries
+
+    zakpick = settings.default_model == "zakpick"
+    listing_cache: dict[str, Any] = {}
+    rows: list[tuple[str, str]] = []
+    for label, model, declared in effective_model_entries(settings, zakpick=zakpick):
+        if model in ("auto", "zakpick"):
+            continue  # a routing name, not a model; its categories are listed below it
+        try:
+            resolution = resolve_context_window(
+                model,
+                declared,
+                api_base=settings.api_base,
+                api_key=settings.api_key,
+                local_only=settings.local_only,
+                local_api_bases=list(getattr(settings, "local_api_bases", []) or []),
+                verify=True,
+                listing_cache=listing_cache,
+            )
+        except Exception:  # noqa: BLE001 — an info panel must never crash on a probe
+            rows.append((f"Context window ({label})", f"{model}: (could not resolve)"))
+            continue
+        text = f"{model}: {resolution.describe()}"
+        if resolution.window is None and resolution.source == "unknown":
+            text += " — REFUSES TO RUN; declare context_window in this model's entry"
+        rows.append((f"Context window ({label})", text))
     return rows
 
 
@@ -1559,6 +1596,31 @@ def _welcome_panel(console: Console, rows: list[tuple[str, str]], hint: Text) ->
     return panel(console, "", body, border_style="banner.border")
 
 
+def _window_notice_lines(agent: Agent) -> list[str]:
+    """The startup half of the loud block (ADR-0066), as printable lines.
+
+    Server/config window disagreements first (the Agent collected them at startup), then
+    the skill-fit report against the smallest effective window: ``too_large`` skills
+    cannot load on this model at all; ``large`` ones load only with the transcript
+    compacted. Nothing is printed when everything fits — silence means fit.
+    """
+    from zakcode.skills.fit import flagged
+
+    lines = list(getattr(agent, "window_warnings", None) or [])
+    try:
+        report = agent.skill_fit_report()
+    except Exception:  # noqa: BLE001 — advisory; never keep the banner from printing
+        return lines
+    fits = flagged(report)
+    if fits:
+        lines.append(
+            f"skill fit against the {fits[0].window:,}-token window "
+            f"({len(fits)} of {len(report)} skills flagged):"
+        )
+        lines.extend("  " + fit.describe() for fit in fits)
+    return lines
+
+
 def _print_banner(console: Console, agent: Agent) -> None:
     """Print the one-shot welcome box (model, workspace, perms, session) + tip."""
     settings = agent.settings
@@ -1593,6 +1655,11 @@ def _print_banner(console: Console, agent: Agent) -> None:
                 (0, 0, 0, 2),
             )
         )
+    # Loud at start (ADR-0066): a server that disagrees with the configured window, and
+    # every skill that cannot load on this model or would crowd out the work. Red, not a
+    # footnote — a skill flagged here would end a turn as skill_too_large later.
+    for line in _window_notice_lines(agent):
+        console.print(Padding(Text(line, style="err"), (0, 0, 0, 2)))
     # The daily tip: date-ordinal rotation (deterministic within a day) and only on a
     # real terminal — hermetic StringIO tests never see it.
     if console.is_terminal:
@@ -2332,6 +2399,11 @@ def chat(
         # The loud startup failure for default_model='auto' with nothing viable:
         # the diagnosis (per-source reasons + key provenance) IS the message.
         notice_error(console, "no model available", str(exc))
+        raise typer.Exit(code=1) from exc
+    except UnknownContextWindow as exc:
+        # ADR-0066: a model with no known context window does not run. The message names
+        # every offender and the number the server declares, so the fix is one paste.
+        notice_error(console, "no context window for a configured model", str(exc))
         raise typer.Exit(code=1) from exc
     except SessionError as exc:
         # A bad/missing/corrupt --session id: name the id, don't dump a traceback.

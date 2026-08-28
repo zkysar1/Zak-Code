@@ -240,7 +240,9 @@ def _scripted_agent(workspace: Path) -> Agent:
     # A real Agent on the offline scripted provider: exercises the actual skill-loading path with
     # no network and no model call. enable_skills wires the resolver + the use_skill tool.
     return Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=workspace),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=workspace
+        ),
         enable_skills=True,
     )
 
@@ -469,7 +471,9 @@ def test_output_style_is_off_by_default(tmp_path: Path) -> None:
     _write(tmp_path / ".claude" / "settings.json", json.dumps({"outputStyle": "terse"}))
     _write(tmp_path / ".claude" / "output-styles" / "terse.md", "OFF_DEFAULT_MARKER")
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
     )
     prompt = agent.loop.prompt_builder.build(agent.settings)
     assert "OFF_DEFAULT_MARKER" not in prompt
@@ -509,7 +513,10 @@ async def test_settings_permissions_ingestion_is_tighten_only(tmp_path: Path) ->
     )
     agent = Agent(
         settings=Settings(
-            default_model="scripted/test", workspace_root=tmp_path, permission_mode="ask"
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            permission_mode="ask",
         ),
     )
     bash = agent.registry.get("bash")
@@ -529,7 +536,10 @@ def test_settings_permissions_always_on(tmp_path: Path) -> None:
     )
     agent = Agent(
         settings=Settings(
-            default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            permission_mode="allow",
         ),
     )
     bash = agent.registry.get("bash")

@@ -75,6 +75,21 @@ class Settings(BaseSettings):
             "runtime failover uses it (once per turn) before re-running auto resolution."
         ),
     )
+    # The context window is a fact about a MODEL, so it lives with the model: this field
+    # for a concrete default_model the capability registry does not know, and
+    # ``ZakpickModel.context_window`` per category under zakpick. There is deliberately no
+    # default anywhere — an unknown window refuses to run (ADR-0066): a guessed 8,192 once
+    # sized every window-keyed limit for a 131k pod and cut every skill body to 6 KB.
+    context_window: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Context window (tokens) of default_model when it is a concrete model the "
+            "capability registry does not know (self-hosted aliases). Under zakpick each "
+            "category's entry carries its own context_window instead. A model with no known "
+            "window refuses to run; the startup error names the value the server declares."
+        ),
+    )
     # External-provider order the 'auto' resolver tries after local (D19). Names map to
     # known sources in zakcode.providers.resolve. Comma/space/JSON list from the env.
     auto_model_preference: Annotated[list[str], NoDecode] = Field(

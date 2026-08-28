@@ -65,7 +65,7 @@ class _ScriptedAgent:
 
 
 def _app_client(tmp_path: Path) -> httpx.AsyncClient:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(
         settings=settings, store=store, agent_factory=lambda s, m, p: _ScriptedAgent(s)

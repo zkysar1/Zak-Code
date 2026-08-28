@@ -168,7 +168,9 @@ async def test_discover_no_budget_exposes_all() -> None:
 
 async def test_facade_mcp_budget_hides_overflow_then_tool_search_surfaces(tmp_path: Path) -> None:
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         enable_mcp=True,
         mcp_tool_budget=DEFAULT_TOOL_BUDGET,
     )

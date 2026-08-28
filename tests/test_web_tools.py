@@ -708,7 +708,7 @@ def test_agent_wires_web_fetch_confirm_into_the_gate(tmp_path: Path) -> None:
             return 0
 
         def capabilities(self) -> Capabilities:
-            return Capabilities()
+            return Capabilities(context_window=8192)
 
     settings = Settings(default_model="x/y", workspace_root=tmp_path, web_fetch_confirm=True)
     agent = zakcode.Agent(provider=_Stub(), settings=settings)

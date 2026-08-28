@@ -564,7 +564,7 @@ def test_registry_unknown_model_safe_default(monkeypatch: pytest.MonkeyPatch) ->
     # Force the dynamic litellm lookup to contribute nothing.
     monkeypatch.setattr("zakcode.providers.registry._from_litellm", lambda _model: None)
     caps = get_capabilities("totally-made-up-model-xyz")
-    assert caps.context_window == 8192
+    assert caps.context_window is None  # unknown, never a stand-in number (ADR-0066)
     assert caps.supports_tools is True
 
 
@@ -580,13 +580,13 @@ def test_registry_prefixed_known_model() -> None:
 
 
 def test_registry_empty_and_blank_model() -> None:
-    assert get_capabilities("").context_window == 8192
-    assert get_capabilities("   ").context_window == 8192
+    assert get_capabilities("").context_window is None
+    assert get_capabilities("   ").context_window is None
 
 
 def test_registry_non_string_model_does_not_raise() -> None:
     caps = get_capabilities(None)  # type: ignore[arg-type]
-    assert caps.context_window == 8192
+    assert caps.context_window is None
 
 
 def test_registry_lookup_exception_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -595,7 +595,7 @@ def test_registry_lookup_exception_falls_back(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr("zakcode.providers.registry._lookup_static", _boom)
     caps = get_capabilities("anything")
-    assert caps.context_window == 8192
+    assert caps.context_window is None
 
 
 def test_litellm_logging_worker_cancellation_noise_is_filtered() -> None:

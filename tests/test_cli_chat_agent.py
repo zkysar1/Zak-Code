@@ -32,7 +32,11 @@ def _write_plugin(workspace: Path, name: str) -> None:
 
 
 def _overrides(tmp_path: Path) -> dict[str, object]:
-    return {"default_model": "scripted/test", "workspace_root": str(tmp_path)}
+    return {
+        "default_model": "scripted/test",
+        "context_window": 8192,
+        "workspace_root": str(tmp_path),
+    }
 
 
 def test_builder_enables_features(tmp_path: Path) -> None:
@@ -108,7 +112,7 @@ def test_resumed_session_cwd_realigns_to_workspace(
 
     agent = _build_chat_agent(
         ConsolePermissionPrompter(Console()),
-        {"default_model": "scripted/test", "workspace_root": str(new_dir)},
+        {"default_model": "scripted/test", "context_window": 8192, "workspace_root": str(new_dir)},
         session_id="movers",
     )
     assert agent.session.id == "movers"  # the session was resumed

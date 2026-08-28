@@ -229,7 +229,10 @@ def test_cloud_call_still_omits_api_key_so_litellm_reads_the_environment():
     # because nothing ever forwards a key: the generic-endpoint case the explicit
     # api_key exists for STILL forwards it.
     generic = LiteLLMProvider(
-        model="openai/local-model", api_base="http://127.0.0.1:8080/v1", api_key="explicit-key"
+        model="openai/local-model",
+        api_base="http://127.0.0.1:8080/v1",
+        api_key="explicit-key",
+        context_window=8192,
     )
     assert generic._build_kwargs(msgs, None).get("api_key") == "explicit-key"
 

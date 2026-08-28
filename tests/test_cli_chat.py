@@ -673,7 +673,9 @@ def test_print_banner_left_truncates_long_values() -> None:
 
     agent = FakeAgent()
     long_root = "C:\\very\\" + "deep\\" * 30 + "workspace-tail"
-    agent.settings = Settings(default_model="scripted/test", workspace_root=long_root)
+    agent.settings = Settings(
+        default_model="scripted/test", context_window=8192, workspace_root=long_root
+    )
     console, buf = _buffer_console()
     _print_banner(console, agent)
     out = buf.getvalue()

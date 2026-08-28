@@ -72,7 +72,7 @@ class _ScriptedProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 async def test_default_astream_emits_text_then_usage_then_done() -> None:

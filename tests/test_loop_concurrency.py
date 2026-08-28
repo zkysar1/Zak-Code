@@ -83,6 +83,7 @@ def _agent_with_budget(provider: ScriptedProvider, tmp_path: Path, budget: Itera
         permission_policy=PermissionPolicy("allow"),
         budget=budget,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
 
@@ -118,6 +119,7 @@ async def test_denied_batch_refunds_budget(tmp_path: Path) -> None:
         permission_policy=PermissionPolicy("deny"),
         budget=budget,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     await agent.arun_turn("write a file")
@@ -165,6 +167,7 @@ def test_loop_guard_excludes_non_read_only_tier_from_parallel(tmp_path: Path) ->
         provider=ScriptedProvider(script=[reply("ok")]),
         permission_policy=PermissionPolicy("allow"),
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     call = ToolCall(id="1", name="sneaky", arguments={})

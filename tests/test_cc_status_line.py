@@ -294,7 +294,11 @@ def test_agent_does_not_load_status_line_when_off(tmp_path: Path) -> None:
     from zakcode import Agent
 
     _settings_with_status_line(tmp_path, "bash my-status.sh")
-    agent = Agent(settings=Settings(default_model="scripted/test", workspace_root=tmp_path))
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        )
+    )
     assert agent.status_line_enabled is False
     assert agent.status_line_spec is None
 
@@ -306,7 +310,9 @@ def test_agent_loads_status_line_when_enabled(tmp_path: Path) -> None:
 
     _settings_with_status_line(tmp_path, "bash my-status.sh")
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         enable_status_line=True,
     )
     assert agent.status_line_enabled is True
@@ -320,7 +326,12 @@ def test_agent_status_line_enabled_via_settings_flag(tmp_path: Path) -> None:
 
     _settings_with_status_line(tmp_path, "bash my-status.sh")
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path, status_line=True),
+        settings=Settings(
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            status_line=True,
+        ),
     )
     assert agent.status_line_enabled is True
     assert agent.status_line_spec is not None

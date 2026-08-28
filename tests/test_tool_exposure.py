@@ -169,7 +169,7 @@ class _OneToolThenDone(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 def _loop(tmp_path: Path, provider: Provider, registry: ToolRegistry) -> AgentLoop:

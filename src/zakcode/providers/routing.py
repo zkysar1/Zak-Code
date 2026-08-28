@@ -91,6 +91,14 @@ class ZakpickModel(BaseModel):
     #: on reasoning and returned an EMPTY answer, which is the failure mode this knob exists
     #: to avoid: thinking tokens are billed against ``max_tokens``.)
     thinking: bool | None = None
+    #: The model's context window in tokens — a fact about the MODEL, so it lives in the
+    #: model's entry (ADR-0066). Required for a model the capability registry does not know
+    #: (every self-hosted alias): with no window from here or the registry the provider
+    #: refuses to run, and the startup error names the value the server's ``/v1/models``
+    #: listing declares so it can be pasted once. The listing is a CHECK, never a source —
+    #: a mismatch (config says 131,072, server says 43,690) is reported loudly, and the
+    #: config wins, because a per-engine figure can overstate the per-request window (rb-8892).
+    context_window: int | None = None
 
     @property
     def litellm_string(self) -> str:
@@ -185,6 +193,35 @@ CATEGORY_LABEL: dict[str, str] = {
     "delegate": "delegated work",
     "classify": "classification",
 }
+
+
+def effective_model_entries(
+    settings: object, *, zakpick: bool
+) -> list[tuple[str, str, int | None]]:
+    """Every model this configuration can actually call, as ``(label, model, declared_window)``.
+
+    EFFECTIVE models, not configured ones: under zakpick a category the operator never
+    overrode still routes to its built-in default, so it is listed too. The declared window
+    is the model's own entry (``ZakpickModel.context_window``) or, for the default model,
+    ``Settings.context_window``; ``None`` means "ask the registry". Shared by the Agent's
+    startup assertion and ``zakcode info`` so the two can never enumerate differently.
+    Blank models are dropped; sentinels are kept (their resolution says ``sentinel``).
+    """
+    entries: list[tuple[str, str, int | None]] = []
+    default_model = getattr(settings, "default_model", None)
+    if default_model:
+        entries.append(("default_model", default_model, getattr(settings, "context_window", None)))
+    fallback = getattr(settings, "fallback_model", None)
+    if fallback:
+        entries.append(("fallback_model", fallback, None))
+    if zakpick:
+        for category in sorted(ZAKPICK_CATEGORIES):
+            spec = model_spec_for_category(category, settings)
+            entries.append((f"zakpick '{category}'", spec.litellm_string, spec.context_window))
+    for role, role_model in sorted((getattr(settings, "model_roles", None) or {}).items()):
+        if role_model:
+            entries.append((f"model_roles['{role}']", role_model, None))
+    return entries
 
 
 def model_spec_for_category(category: str, settings: object) -> ZakpickModel:

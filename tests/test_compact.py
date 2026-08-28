@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from zakcode.agent.compact import (
     CONTINUATION_NOTE,
     SUMMARY_MARKER,
@@ -39,11 +41,14 @@ def test_should_compact_over_threshold() -> None:
     assert c.should_compact(msgs, context_window=1000, count_tokens=lambda m: 800) is False
 
 
-def test_should_compact_uses_fallback_window_when_none() -> None:
-    c = Compactor(CompactionConfig(threshold_fraction=0.5, fallback_context_window=100))
-    # threshold = 50; 60 > 50 -> compact even though provider reports no window.
-    assert c.should_compact(_convo(2), context_window=None, count_tokens=lambda m: 60) is True
-    assert c.should_compact(_convo(2), context_window=None, count_tokens=lambda m: 40) is False
+def test_should_compact_refuses_an_unknown_window() -> None:
+    # ADR-0066: there is no fallback window. A compactor asked to size a threshold for a
+    # model nobody knows the window of must say so, not run on a stand-in number.
+    c = Compactor(CompactionConfig(threshold_fraction=0.5))
+    with pytest.raises(ValueError, match="context window"):
+        c.should_compact(_convo(2), context_window=None, count_tokens=lambda m: 60)
+    with pytest.raises(ValueError, match="context window"):
+        c.should_compact(_convo(2), context_window=0, count_tokens=lambda m: 60)
 
 
 # ── compact: basic behavior ─────────────────────────────────────────────────────

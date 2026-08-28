@@ -95,7 +95,7 @@ class _RecordingProvider(Provider):
         return len(messages) + (1 if system else 0)
 
     def capabilities(self) -> Capabilities:
-        return Capabilities(supports_tools=self._supports_tools)
+        return Capabilities(supports_tools=self._supports_tools, context_window=8192)
 
 
 # ── render_tool_protocol ─────────────────────────────────────────────────────
@@ -661,7 +661,7 @@ async def test_text_mode_stop_list_capped_to_backend_limit() -> None:
     # highest-value sentinels (</tool_call>, <tool_result>).
     class _Capped(_RecordingProvider):
         def capabilities(self) -> Capabilities:
-            return Capabilities(supports_tools=False, max_stop_sequences=4)
+            return Capabilities(supports_tools=False, max_stop_sequences=4, context_window=8192)
 
     inner = _Capped(reply("done"), supports_tools=False)
     wrap = TextToolCallingProvider(inner, mode="text", single_tool_per_turn=True)

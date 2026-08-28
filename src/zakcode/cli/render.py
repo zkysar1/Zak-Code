@@ -106,6 +106,7 @@ _STOP_LABEL = {
     "stuck": "stopped {dash} no progress",
     "gave_up": "stopped {dash} gave up (no output)",
     "recipe_stalled": "stopped {dash} recipe stalled",
+    "skill_too_large": "stopped {dash} skill too large for this model's window",
 }
 
 
@@ -648,7 +649,7 @@ class StreamRenderer:
             if done.degraded:
                 return f"done {self._g['dash']} struggled", "warn"
             return label, "ok"
-        if reason == "provider_error":
+        if reason in ("provider_error", "skill_too_large"):
             if done.error:
                 label += f" {self._g['dash']} {done.error.splitlines()[0]}"
             return label, "err"

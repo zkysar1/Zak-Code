@@ -60,7 +60,7 @@ class _FakeAgent:
 
 
 def _build(tmp_path: Path, gate: asyncio.Event | None = None) -> tuple[Any, SessionStore]:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(
         settings=settings,
@@ -239,7 +239,7 @@ def test_current_session_heals_a_dangling_marker(tmp_path: Path) -> None:
 async def test_prestream_failure_publishes_terminal_done(tmp_path: Path) -> None:
     """A turn that dies before streaming (agent factory raise) must still end with a
     terminal frame on the bus, or every watcher sticks on 'thinking…' (fresh-eyes F-3)."""
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
 
     def raising_factory(session: Session, model: object, prompter: object) -> _FakeAgent:
@@ -315,6 +315,7 @@ def _build_bounded(
     endings: list[str] = []
     settings = Settings(
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=tmp_path,
         run_max_duration=max_duration,
         run_consolidation_reserve=reserve,
@@ -487,6 +488,7 @@ def test_a_reserve_larger_than_the_cap_cannot_overrun_the_cap(tmp_path: Path) ->
     seen: list[str] = []
     settings = Settings(
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=tmp_path,
         run_max_duration=cap,
         run_consolidation_reserve=raw_reserve,

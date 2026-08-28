@@ -142,7 +142,12 @@ async def test_use_skill_without_args_forwards_empty(tmp_path: Path) -> None:
 
 
 def _agent(tmp_path: Path, **kw: object) -> Agent:
-    return Agent(settings=Settings(default_model="scripted/test", workspace_root=tmp_path), **kw)
+    return Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
+        **kw,
+    )
 
 
 def _write_skill(workspace: Path, name: str, body: str = "Do the thing.") -> None:
@@ -274,7 +279,7 @@ class _ToolThenTextProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
     def model_id(self) -> str:
         return "scripted/test"
@@ -312,7 +317,7 @@ class _SequenceProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
     def model_id(self) -> str:
         return "scripted/test"
@@ -345,7 +350,9 @@ async def test_skills_chain_across_invocations_in_one_turn(tmp_path: Path) -> No
     runner = SubAgentRunner(
         provider=_SequenceProvider(chain),
         registry=registry,
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
         skill_resolver=resolver,
@@ -374,7 +381,9 @@ async def test_subagent_can_invoke_a_skill_through_the_wired_resolver(tmp_path: 
     runner = SubAgentRunner(
         provider=_ToolThenTextProvider("use_skill", {"name": "greeter"}),
         registry=registry,
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
         skill_resolver=resolver,
@@ -399,7 +408,9 @@ async def test_subagent_attributes_the_signal_to_the_child_prompt(tmp_path: Path
     runner = SubAgentRunner(
         provider=_ToolThenTextProvider("use_skill", {"name": "greeter"}),
         registry=registry,
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
         hook_manager=parent.hook_manager,
@@ -440,7 +451,10 @@ async def test_budget_denies_after_the_cap(tmp_path: Path) -> None:
         _write_skill(tmp_path, name)
     agent = Agent(
         settings=Settings(
-            default_model="scripted/test", workspace_root=tmp_path, skill_invocation_budget=2
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            skill_invocation_budget=2,
         ),
         enable_skills=True,
     )
@@ -470,7 +484,10 @@ async def test_command_source_is_never_throttled(tmp_path: Path) -> None:
     _write_skill(tmp_path, "greeter")
     agent = Agent(
         settings=Settings(
-            default_model="scripted/test", workspace_root=tmp_path, skill_invocation_budget=1
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            skill_invocation_budget=1,
         ),
         enable_skills=True,
     )
@@ -484,7 +501,10 @@ async def test_use_skill_tool_surfaces_a_budget_denial(tmp_path: Path) -> None:
     _write_skill(tmp_path, "greeter")
     agent = Agent(
         settings=Settings(
-            default_model="scripted/test", workspace_root=tmp_path, skill_invocation_budget=1
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            skill_invocation_budget=1,
         ),
         enable_skills=True,
     )
@@ -597,7 +617,7 @@ class _ReplayProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
     def model_id(self) -> str:
         return "scripted/test"

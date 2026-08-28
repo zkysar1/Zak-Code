@@ -54,7 +54,7 @@ class _Recording(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 class _SayWhileRunning(Tool):

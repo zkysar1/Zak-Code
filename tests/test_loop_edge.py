@@ -65,7 +65,7 @@ class ScriptedProvider(Provider):
         return sum(len(m.text) for m in messages)
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 class LoopingProvider(Provider):
@@ -104,7 +104,7 @@ class LoopingProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 class CancelOnNthCallProvider(Provider):
@@ -142,7 +142,7 @@ class CancelOnNthCallProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 # ── tools ────────────────────────────────────────────────────────────────────
