@@ -2817,7 +2817,8 @@ class AgentLoop:
             # Sibling of the store's own directory, so the projection shares the conversation's
             # lifetime and isolation instead of the serving host's (ADR-0061). No store injected
             # (a bare AgentLoop) keeps the historical per-user home.
-            root = self.store.base_dir.parent if self.store is not None else Path.home() / ".zakcode"
+            store = self.store
+            root = store.base_dir.parent if store is not None else Path.home() / ".zakcode"
             directory = root / "transcripts"
             directory.mkdir(parents=True, exist_ok=True)
             ignore = directory / ".gitignore"
