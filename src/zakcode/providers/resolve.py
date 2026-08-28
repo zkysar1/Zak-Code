@@ -287,6 +287,79 @@ class AvailabilityResolver:
         )
 
 
+#: Provider-key variable names this module can source from the member's vault, derived
+#: from :data:`_EXTERNAL_SOURCES` so a newly added provider is covered without a second
+#: list to keep in sync.
+VAULT_PROVIDER_KEY_NAMES: frozenset[str] = frozenset(
+    src.key_env for src in _EXTERNAL_SOURCES.values()
+)
+
+#: The deployment's OWN provider keys, captured the first time each name is seen — before
+#: any overlay has replaced it. Restoring from here is what makes a vault entry's REMOVAL
+#: take effect: without it the first overlay would pin the member's key into the process
+#: for its whole life and deleting the secret would appear to do nothing until a restart.
+_PLATFORM_KEY_BASELINE: dict[str, str | None] = {}
+
+
+def apply_vault_provider_keys(settings: object) -> list[str]:
+    """Overlay member-supplied provider keys from the per-env vault into ``os.environ``.
+
+    BYOK (g-369-11 outcome 3). A member saves e.g. ``ANTHROPIC_API_KEY`` in the vault they
+    already have; inference for that environment then bills to their provider account and
+    the meter's thinking line goes to ~0. Returns the names taken from the vault, sorted —
+    NAMES only, never values, so the return is safe to log.
+
+    WHY ``os.environ`` AND NOT AN EXPLICIT ``api_key``. For a bare cloud model
+    ``LiteLLMProvider`` deliberately omits ``api_key`` from the call so litellm reads the
+    standard variable itself — a stale explicit key used to shadow it and raise a spurious
+    AuthError (audit3 #6). Passing one here would re-create exactly that. The environment
+    is the seam litellm already reads, and writing to it so litellm can is an established
+    pattern in that module (``OLLAMA_API_BASE``).
+
+    WHY IT RUNS PER CONSTRUCTION RATHER THAN ONCE AT IMPORT. A long-lived process freezes
+    its environment at exec time, so a member who saves a key after the runtime started
+    would see nothing happen. The vault file is re-read on every call (its loader is
+    re-read-per-access by contract, bounded by a 64 KiB cap), which is what lets a freshly
+    saved key work without a restart — the property the vault was built for.
+
+    FEATURE-OFF IS TOTAL: no ``secrets_file``, no vault entry under a recognised name, or
+    an unreadable/malformed file all leave the environment exactly as found. Every
+    deployment without a vault is byte-identical to before this function existed.
+    """
+    secrets_file = getattr(settings, "secrets_file", None)
+
+    held: dict[str, str] = {}
+    if secrets_file is not None:
+        try:
+            from zakcode.tools.builtins._secrets import SecretsProvider
+
+            held = SecretsProvider(secrets_file).values_for(VAULT_PROVIDER_KEY_NAMES)
+        except Exception:  # noqa: BLE001 — BYOK must never be able to stop a session starting
+            logger.warning("vault provider-key overlay skipped (vault unreadable)")
+            return []
+
+    applied: list[str] = []
+    for name in sorted(VAULT_PROVIDER_KEY_NAMES):
+        if name not in _PLATFORM_KEY_BASELINE:
+            _PLATFORM_KEY_BASELINE[name] = os.environ.get(name)
+        value = held.get(name)
+        if value:
+            os.environ[name] = value
+            applied.append(name)
+        else:
+            baseline = _PLATFORM_KEY_BASELINE[name]
+            if baseline is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = baseline
+    if applied:
+        # Names only. A value must never reach a log line (GUARDRAILS §6).
+        logger.info(
+            "BYOK: provider key(s) sourced from the environment vault: %s", ", ".join(applied)
+        )
+    return applied
+
+
 def resolver_for(settings: object, *, use_cache: bool = True) -> AvailabilityResolver:
     """Build the v1 resolver from Settings (typed loosely to avoid an import cycle)."""
     return AvailabilityResolver(

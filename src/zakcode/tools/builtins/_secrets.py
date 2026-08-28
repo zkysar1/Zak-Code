@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -103,6 +104,28 @@ class SecretsProvider:
             and value
             and SECRET_NAME_RE.match(name)
         }
+
+    def values_for(self, names: Iterable[str]) -> dict[str, str]:
+        """The values held for ``names`` — the ONLY value-returning accessor.
+
+        Deliberately name-driven rather than a ``dict`` dump: a caller must say which
+        secrets it wants, so no code path can enumerate the vault's values by accident.
+        Names absent from the file are simply omitted (no ``UnknownSecretError``) —
+        callers here are asking "does the member happen to have saved this?", which is
+        a legitimate no.
+
+        Added for BYOK (g-369-11): provider-key overlay needs the VALUE of a specific
+        well-known name, and every other reader of this file wants placeholders. Routing
+        it through the same validated loader keeps the size cap, the name grammar and
+        the malformed-file behaviour identical for both — a second reader with its own
+        ``json.loads`` would drift from those three the first time any changed.
+
+        Values returned here are NOT model-facing and must never be placed in a prompt,
+        a tool result, or a log. The module contract (names in context, values in
+        requests) is unchanged: this feeds an outbound Authorization header.
+        """
+        secrets = self._load()
+        return {n: secrets[n] for n in names if n in secrets}
 
     def names(self) -> list[str]:
         """The names the model may reference, sorted. Never the values."""

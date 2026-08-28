@@ -314,6 +314,15 @@ class Agent:
         **setting_overrides: Any,
     ) -> None:
         self.settings = settings or load_settings(**setting_overrides)
+        # BYOK (g-369-11): a member's own provider key, saved in this environment's vault,
+        # overlays the deployment's before anything reads a key. Placed HERE, immediately
+        # after settings resolve and before model resolution / provider build, because the
+        # availability resolver runs ONLY for default_model == "auto" — wiring it there
+        # would have made BYOK silently inert for zakpick and for an explicit model.
+        # No-op without a vault (see apply_vault_provider_keys).
+        from zakcode.providers.resolve import apply_vault_provider_keys
+
+        apply_vault_provider_keys(self.settings)
         # SDK-only per-turn iteration bound (see the kwarg comment); normalized so 0 and
         # None both mean unlimited everywhere downstream (loop + shared budget).
         self._max_iterations = max_iterations or 0
