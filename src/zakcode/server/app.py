@@ -1189,6 +1189,48 @@ def create_app(
             return None
         return value or None
 
+    def _record_run_stop_reason(reason: str) -> None:
+        """Record this run's ending beside the session it belongs to (g-369-28).
+
+        The env-server's BudgetMeterVerticle polls ``/sidecar/health`` on a timer it
+        already runs; carrying the ending on that payload lets it end the ENVIRONMENT
+        when a bounded run finishes, instead of leaving the Java server idling until the
+        generic idle-monitor reaps it and marks the run failed (~9.5min, measured).
+
+        SESSION-SCOPED ON PURPOSE. A bare reason marker is write-once and never false —
+        until the NEXT run, when a stale ``duration_cap`` would still be sitting here and
+        would terminate a fresh run at birth (rb-5759: a write-once marker is not
+        liveness). Pairing the reason with the session that produced it makes the marker
+        self-invalidating: the reader below returns it only while that session is still
+        the current one, so no clear-on-start hook is needed and a missed clear cannot
+        strand the next run.
+
+        Never raises — an unwritable marker must not break a run that has ALREADY ended.
+        """
+        try:
+            (_workspace_root / ".run-stop-reason").write_text(
+                f"{_current_session_id() or ''}\n{reason}", encoding="utf-8"
+            )
+        except OSError:
+            logger.warning("could not record run stop reason (%s)", reason)
+
+    def _current_run_stop_reason() -> str | None:
+        """This run's ending, or None if absent, unreadable, or from a PRIOR session."""
+        try:
+            raw = (_workspace_root / ".run-stop-reason").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            return None
+        marker_session, _, reason = raw.partition("\n")
+        reason = reason.strip()
+        if not reason:
+            return None
+        # Stale-marker fence: an ending only describes the session that produced it.
+        if (marker_session.strip() or None) != _current_session_id():
+            return None
+        return reason
+
     def _count_findings() -> int:
         """Count entries in the agent's research findings list (spec sec 10.2).
 
@@ -1251,7 +1293,13 @@ def create_app(
         auth-required and reports the active loop session id from ``.current-session``
         (None before the first loop turn) so the gateway can discover which session to watch.
         """
-        return {"status": "ok", "active_session_id": _current_session_id()}
+        return {
+            "status": "ok",
+            "active_session_id": _current_session_id(),
+            # None until this session's run ends; consumed by the env-server to end
+            # the environment on a bounded-run completion (g-369-28).
+            "last_run_stop_reason": _current_run_stop_reason(),
+        }
 
     # ── PEARL viewer nudge (§Layer-4) ─────────────────────────────────────────────
     # Backs the env-server /sidecar/nudge proxy → gateway /nudge → Vinheim NudgeInput.
@@ -1719,6 +1767,10 @@ def create_app(
         run_ended.set()
         digest = await _consolidate_run()
         await _run_run_end_command(run_stop_reason or "stopped", digest)
+        # AFTER the receipt, never before: this marker is what tells the env-server it
+        # may end the environment, and a terminate landing mid-digest would cost the
+        # receipt — the one part of the bounded run that already works (g-369-28).
+        _record_run_stop_reason(run_stop_reason or "stopped")
         if on_run_end is not None:
             try:
                 await on_run_end(run_stop_reason or "stopped")
