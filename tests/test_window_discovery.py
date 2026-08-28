@@ -131,6 +131,20 @@ def test_no_api_base_means_no_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     assert fetch.calls == []
 
 
+def test_a_routing_sentinel_is_never_probed_and_never_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # classify_destination refuses a sentinel loudly; the probe must swallow that, not
+    # propagate it into every capabilities() caller (the clamp, the compactor).
+    fetch = _Fetch(ZDS)
+    monkeypatch.setattr(lp, "_fetch_models", fetch)
+    sentinel = LiteLLMProvider(
+        model="zakpick", api_base=POD, local_only=True, local_api_bases=[POD]
+    )
+    assert sentinel.capabilities().context_window == 8192
+    assert fetch.calls == []
+
+
 def test_local_only_never_probes_an_unlisted_base(monkeypatch: pytest.MonkeyPatch) -> None:
     fetch = _Fetch(ZDS)
     monkeypatch.setattr(lp, "_fetch_models", fetch)
