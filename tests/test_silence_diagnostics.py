@@ -17,6 +17,7 @@ from zakcode.agent.loop import AgentLoop, _raw_message_excerpt, _silent_detail
 from zakcode.config import load_settings
 from zakcode.evals.harness import ScriptedProvider, reply
 from zakcode.providers.base import LLMResult
+from zakcode.providers.text_tools import TextToolCallingProvider
 from zakcode.session.store import Session
 from zakcode.tools import ToolRegistry
 from zakcode.usage import Usage
@@ -90,3 +91,22 @@ def test_streaming_empty_completion_note_carries_the_stream_sample(tmp_path: Pat
     assert note["stream"] == _SamplingProvider.last_stream_sample
     statuses = [getattr(ev, "message", "") for ev in events]
     assert any("334 tokens generated, none delivered" in s for s in statuses)
+
+
+def test_the_sample_is_found_through_the_provider_wrapper(tmp_path: Path) -> None:
+    # The CLI hands the loop TextToolCallingProvider(LiteLLMProvider(...)); the sample lives
+    # on the inner provider. Measured 2026-08-28 (coach, build 92c9a06): every silence's note
+    # read ``stream: null`` because only the wrapper was asked.
+    silent = LLMResult(
+        finish_reason="stop",
+        usage=Usage(prompt_tokens=10, completion_tokens=856, total_tokens=866),
+    )
+    wrapped = TextToolCallingProvider(_SamplingProvider([silent, reply("here is the answer")]))
+    loop = _loop(tmp_path, wrapped)
+
+    async def run() -> list[Any]:
+        return [ev async for ev in loop.astream_turn("hi")]
+
+    asyncio.run(run())
+    (note,) = _empty_notes(loop)
+    assert note["stream"] == _SamplingProvider.last_stream_sample
