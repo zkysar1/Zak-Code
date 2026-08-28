@@ -2682,3 +2682,37 @@ the transcript); and sections a plan dropped while still open are put back, in o
 after the last kept section (`_restore_dropped_sections`, trace note
 `skill_sections_restored`, the page's rail says which came back). Sections the plan moved
 past stay out — that is the model's call, and the skipped count records it.
+
+## ADR-0068: A skill typed as text is the invocation — and a runner's trace lands every iteration
+
+**Context.** The served `/start` on coach (zc-03, build 99bab59, 2026-08-28) finished its
+last step and the model's next completion was the single line `/boot`. To the loop that was
+a text-only completion: the turn-end hook vetoed the stop, the plan gate pushed on, and the
+model called `use_skill("aspirations")` — prime, hypothesis review and the status report
+never ran. The model had asked for the skill in the only spelling a human uses; the
+harness accepted the spelling from a human (the typed door) and from a tool call, never
+from the model's own text. A second, quieter gap surfaced the same hour: the decision trace
+is written at turn end, and a runner's turn does not end — its `/start` turn IS the loop —
+so the silence diagnostics of #276 could never reach disk for the one session that needed
+them.
+
+**Decision.** (1) A completion with no tool calls whose whole text is one `/<skill> [args]`
+line naming a discovered skill is routed through `use_skill` (`_route_slash_text`, both
+twins) before the assistant message is stored, so the transcript carries a well-formed
+`use_skill` call paired with its result, the skill's sections seed the plan, and paging
+runs as for any load. Strict by design — one line, nothing but the invocation (a trailing
+period or wrapping backticks tolerated); prose that mentions a skill is an answer. Trace
+note `slash_text_routed`; streaming status "'/boot' typed as text — running it as a skill".
+(2) `_dump_trace` also runs after every tool batch (a checkpoint), so `turn_<n>.jsonl`
+reflects the turn so far; the turn-end dump is unchanged.
+
+**Alternatives rejected.** Nudging the model to "use the use_skill tool" (a second door
+and a wasted iteration on every occurrence); treating any `/name` mention in prose as an
+invocation (ADR-0026's precision lesson — a pasted prompt discussing eight skills would
+run eight); dumping the trace on a timer (an extra thread for a file write the batch
+boundary already offers).
+
+**Consequences.** A served Mind whose skills tell the model to "invoke /boot" now boots
+whether the model calls the tool or types the line. Trace files are rewritten per
+iteration (small, best-effort). Pinned by tests/test_slash_text.py (both twins, args,
+prose and unknown names left alone, the checkpoint).
