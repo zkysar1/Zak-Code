@@ -10,6 +10,7 @@ scripted providers + a stub compactor, no network.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -27,9 +28,12 @@ from zakcode.providers.base import (
     RequestFailed,
     StreamDone,
     StreamTextDelta,
+    StreamToolCallDelta,
+    ToolCall,
 )
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
+from zakcode.tools.builtins.update_plan import UpdatePlanTool
 
 
 class OverflowProvider(Provider):
@@ -304,6 +308,155 @@ def test_streaming_non_context_provider_error_still_fails_over() -> None:
     # verify the failover status surfaced on the stream
     statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
     assert any("switching model" in s for s in statuses)
+
+
+# ── the bound is per CALL, and compaction is checked per call (ADR-0074) ─────────────
+
+
+class PlanningProvider(Provider):
+    """Answers a plan-tool call for the first ``steps`` calls, then text — a multi-iteration
+    turn. With ``overflow`` set, every call's FIRST attempt overflows and the retry answers:
+    each recovered overflow buys one more iteration, the shape a runner's single long turn
+    takes, where a per-TURN bound of two ended the session on the third overflow (coach,
+    2026-08-28)."""
+
+    def __init__(self, steps: int, *, overflow: bool = False) -> None:
+        self._steps = steps
+        self._overflow = overflow
+        self._answered = 0
+        self._pending_overflow = overflow
+        self.calls = 0
+        self.overflows = 0
+
+    def _answer(self, tools: list[dict[str, Any]] | None) -> LLMResult:
+        if not tools:
+            # A side call (the plan-quality judge shares the provider, tools=None): answer
+            # blandly and leave the scripted main-loop sequence alone.
+            return LLMResult(text="")
+        self.calls += 1
+        if self._pending_overflow:
+            self._pending_overflow = False
+            self.overflows += 1
+            raise ContextWindowExceeded("prompt is too long")
+        self._pending_overflow = self._overflow
+        self._answered += 1
+        if self._answered <= self._steps:
+            tasks = [{"title": f"step {self._answered}", "status": "done"}]
+            return LLMResult(
+                tool_calls=[
+                    ToolCall(
+                        id=f"p{self._answered}", name="update_plan", arguments={"tasks": tasks}
+                    )
+                ]
+            )
+        return LLMResult(text="finished")
+
+    async def acomplete(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kw: Any,
+    ) -> LLMResult:
+        return self._answer(tools)
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kw: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        result = self._answer(tools)
+        for call in result.tool_calls:
+            yield StreamToolCallDelta(
+                index=0, id=call.id, name=call.name, arguments_delta=json.dumps(call.arguments)
+            )
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        yield StreamDone(finish_reason="tool_calls" if result.tool_calls else "stop")
+
+    def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=8192)
+
+
+class ThresholdCompactor:
+    """Compacts once the transcript holds ``limit`` or more messages — the real trigger's
+    shape (a count against a window), consulted wherever the loop asks."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self.checks = 0
+        self.compact_calls = 0
+
+    def should_compact(self, messages: list[Message], **kw: Any) -> bool:
+        self.checks += 1
+        return len(messages) >= self._limit
+
+    async def compact(self, messages: list[Message], *, summarize: Any) -> Any:
+        from types import SimpleNamespace
+
+        self.compact_calls += 1
+        return SimpleNamespace(compacted=True, messages=list(messages[-2:]))
+
+
+def _planning_loop(provider: Provider, compactor: Any) -> AgentLoop:
+    settings = load_settings(workspace_root=Path.cwd())
+    registry = ToolRegistry()
+    registry.register(UpdatePlanTool())
+    session = Session(cwd="/tmp/work", model="test/model")
+    return AgentLoop(provider, registry, session, settings=settings, compactor=compactor)
+
+
+def test_context_overflow_bound_is_per_call_not_per_turn() -> None:
+    """More recoveries than _MAX_CONTEXT_RECOVERY in ONE turn — one per iteration, each
+    on its own call — and the turn completes."""
+    provider = PlanningProvider(steps=_MAX_CONTEXT_RECOVERY, overflow=True)
+    compactor = StubCompactor(succeeds=True)
+    result = asyncio.run(_planning_loop(provider, compactor).arun_turn("plan it"))
+    assert result.stop_reason == "completed", result.error
+    assert provider.overflows == _MAX_CONTEXT_RECOVERY + 1
+    assert compactor.compact_calls == provider.overflows
+    assert provider.calls == 2 * provider.overflows  # every overflow retried once, in place
+    assert result.iterations == _MAX_CONTEXT_RECOVERY + 1
+
+
+def test_streaming_context_overflow_bound_is_per_call_not_per_turn() -> None:
+    provider = PlanningProvider(steps=_MAX_CONTEXT_RECOVERY, overflow=True)
+    compactor = StubCompactor(succeeds=True)
+    done = asyncio.run(_collect(_planning_loop(provider, compactor), "plan it"))[-1]
+    assert done.stop_reason == "completed", done.error
+    assert provider.overflows == _MAX_CONTEXT_RECOVERY + 1
+    assert compactor.compact_calls == provider.overflows
+    assert done.iterations == _MAX_CONTEXT_RECOVERY + 1
+
+
+def test_auto_compaction_is_checked_before_every_call_not_only_at_turn_start() -> None:
+    """A turn that crosses the threshold mid-way is compacted mid-way. The turn-start
+    check alone saw an empty transcript and never looked again."""
+    provider = PlanningProvider(steps=4)
+    compactor = ThresholdCompactor(limit=5)  # user + two (assistant, tool) pairs
+    loop = _planning_loop(provider, compactor)
+    result = asyncio.run(loop.arun_turn("plan it"))
+    assert result.stop_reason == "completed", result.error
+    assert compactor.checks >= 5  # turn start + one per call
+    assert compactor.compact_calls >= 1
+    assert len(loop.session.messages) < 11  # the full transcript would be 1 + 2 * 5
+
+
+def test_streaming_auto_compaction_is_checked_before_every_call() -> None:
+    provider = PlanningProvider(steps=4)
+    compactor = ThresholdCompactor(limit=5)
+    events = asyncio.run(_collect(_planning_loop(provider, compactor), "plan it"))
+    assert events[-1].stop_reason == "completed", events[-1].error
+    assert compactor.compact_calls >= 1
+    statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
+    assert any("context near the window — compacted" in s for s in statuses)
 
 
 def test_module_constant_is_sane() -> None:

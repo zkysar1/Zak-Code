@@ -61,9 +61,11 @@ Stop conditions
   the limit lands MID-STREAM, after text already reached the client: the partial is
   discarded and re-generated (ADR-0070) — (its
   timeout/rejection subclasses: a fixed :data:`_MAX_INTERRUPT_RETRIES` attempts);
-  a :class:`~zakcode.providers.base.ContextWindowExceeded` is recovered up to
-  ``_MAX_CONTEXT_RECOVERY`` times by force-compacting and retrying the same call in
-  place (parity #1b); any other :class:`~zakcode.providers.base.ProviderError` is
+  a :class:`~zakcode.providers.base.ContextWindowExceeded` is recovered by
+  force-compacting and retrying the same call in place, up to ``_MAX_CONTEXT_RECOVERY``
+  consecutive times per CALL (parity #1b; ADR-0074 — the bound was per turn, and a
+  runner's 131-iteration turn spent it); any other
+  :class:`~zakcode.providers.base.ProviderError` is
   terminal immediately (after any one-shot model failover). Either way the TURN ends
   gracefully — session persisted at a message boundary, ``TurnResult.error`` carrying
   the (already secret-redacted) detail — instead of unwinding an unattended session.
@@ -249,11 +251,14 @@ _MAX_INTERRUPT_RETRIES = 3
 _REJECTION_RETRY_TEMP_FLOOR = 0.5
 _REJECTION_RETRY_TEMP_STEP = 0.3
 
-#: How many times a single turn may recover from a :class:`ContextWindowExceeded` by
-#: force-compacting and retrying the same call in place (parity #1b/#9). Bounded so an
-#: un-compactable session (nothing old enough to summarize) fails gracefully as
-#: ``provider_error`` instead of looping. The recovery does NOT draw an iteration unit —
-#: it is the same logical call, retried on a smaller transcript.
+#: How many times ONE provider call may recover from a :class:`ContextWindowExceeded` by
+#: force-compacting and retrying in place (parity #1b/#9). Bounded so an un-compactable
+#: session (nothing old enough to summarize) fails gracefully as ``provider_error``
+#: instead of looping. The recovery does NOT draw an iteration unit — it is the same
+#: logical call, retried on a smaller transcript. Per CALL, not per turn (ADR-0074): a
+#: runner's whole session is one turn, and two recoveries that each bought thirty more
+#: iterations are not a loop — measured 2026-08-28 (coach, 131k window): the third
+#: overflow of a 142-minute turn found the per-turn count spent and ended the session.
 _MAX_CONTEXT_RECOVERY = 2
 
 #: Send the messages being summarized RAW in one summarize call while they fit this fraction
@@ -286,6 +291,15 @@ _CLAMP_CHARS_PER_TOKEN = 3
 #: verbatim body that cannot sit beside the system prompt and still leave this much is too
 #: large for the model, full stop — no compaction changes that.
 _MIN_ANSWER_ROOM = 4_096
+
+#: How many times per turn a paged skill's dropped sections are put back into the plan
+#: (ADR-0075). Each restore tells the model how to close a section it means to skip; a
+#: plan rewritten without them a third time is the model's decision and stays as written
+#: — its pages are still handed over as the plan reaches them. Measured 2026-08-28
+#: (coach, /aspirations-precheck): a 46-step plan collapsed to 10 was silently restored
+#: eight times in a row, the model narrating the same collapse each time, until the
+#: window overflowed.
+_MAX_SECTION_RESTORES = 2
 
 #: Finish reasons that mean the model's output was cut off at the token cap (parity #5):
 #: OpenAI reports ``length``; litellm maps Anthropic's ``max_tokens`` stop reason similarly.
@@ -935,6 +949,19 @@ def _append_rail(output: str, *, hint: str | None, fix: str | None) -> str:
     return f"{output}\n{line}" if output else line
 
 
+def _restored_rail(skill: str, restored: list[Task]) -> str:
+    """The rail that explains a put-back (ADR-0075): which sections came back, and that a
+    section is skipped by closing it, never by deleting it."""
+    titles = ", ".join(f"{step.title!r}" for step in restored[:3])
+    more = f" and {len(restored) - 3} more" if len(restored) > 3 else ""
+    return (
+        f"Your plan dropped {len(restored)} of /{skill}'s sections that were never carried "
+        f"out ({titles}{more}); they are back in the plan, in order. Deleting a section "
+        "from the plan does not close it — it comes back. To skip one on purpose, keep it "
+        "and mark it done or cancelled with a note saying why."
+    )
+
+
 def _control_rail(text: str) -> str:
     """Render loop-injected guidance (a stuck nudge / recipe stall) with provenance + rail.
 
@@ -1281,6 +1308,9 @@ class AgentLoop:
         # skill body, and a plan that tracks a ceremony by phase is never judged against it.
         self._turn_skill: str | None = None
         self._turn_plan_judged = False
+        # Dropped-section restores per paged skill this turn (ADR-0075): bounded by
+        # ``_MAX_SECTION_RESTORES``, after which a drop is the model's decision. Per-turn.
+        self._turn_section_restores: dict[str, int] = {}
         # Small-model struggle flag (ADR-0024): set by seams that cannot reach the turn's
         # ``signal_latched`` local (the degenerate-argument veto in _execute_tool_call);
         # folded into it each iteration so zakpick latches the deep coder. Per-turn.
@@ -2278,6 +2308,19 @@ class AgentLoop:
         ]
         if not missing:
             return []
+        restores = self._turn_section_restores.get(name.lower(), 0)
+        if restores >= _MAX_SECTION_RESTORES:
+            # Dropped again after coming back — and being explained — twice: the model
+            # has decided (ADR-0075). The pages still arrive as the plan reaches them.
+            self._note(
+                "intervention",
+                f"/{name}: {len(missing)} sections dropped again; left out this time",
+                kind="skill_sections_dropped",
+                skill=name,
+                pages=[page.index for page in missing],
+            )
+            return []
+        self._turn_section_restores[name.lower()] = restores + 1
         body = self._skill_body(name)
         skeleton = skill_skeleton(body, skill=name) if body else []
         if len(skeleton) != pages.count:
@@ -2367,16 +2410,21 @@ class AgentLoop:
             restored = self._restore_dropped_sections(name, pages)
             current = self._current_page(name)
             if current is None or current in delivered:
+                if restored:
+                    # No new page to carry the explanation: say it on its own (ADR-0075).
+                    # A silent restore reads as a plan edit that did not take, and the
+                    # model re-issues the same collapse until the window overflows.
+                    self.session.add_message(
+                        Message.user(_control_rail(_restored_rail(name, restored)))
+                    )
+                    self._persist()
                 continue
             text = pages.render(current)
             if restored:
-                titles = ", ".join(f"{step.title!r}" for step in restored[:3])
-                more = f" and {len(restored) - 3} more" if len(restored) > 3 else ""
                 text = (
-                    f"Your plan dropped {len(restored)} of /{name}'s sections that were "
-                    f"never carried out ({titles}{more}); they are back in the plan, in "
-                    "order. Sections are delivered one at a time as you mark each done — "
-                    "here is the one that is current now.\n\n" + text
+                    _restored_rail(name, restored)
+                    + " Sections are delivered one at a time as you mark each done — here "
+                    "is the one that is current now.\n\n" + text
                 )
             too_large = self._verbatim_overflow(text, what=f"section {current} of skill {name!r}")
             if too_large is not None:
@@ -3845,7 +3893,6 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
-        context_recoveries = 0  # ContextWindowExceeded compact-then-retry count (parity #1b)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
@@ -3901,6 +3948,7 @@ class AgentLoop:
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
+        self._turn_section_restores = {}  # dropped-section restores (ADR-0075): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
@@ -3953,6 +4001,10 @@ class AgentLoop:
             else:
                 restrict_now = None
                 tool_defs = self.registry.definitions()
+            # Auto-compaction is checked before EVERY call, not only at turn start
+            # (ADR-0074): a runner's whole session is one turn, and the reactive overflow
+            # recovery below is the backstop, not the mechanism.
+            await self._maybe_compact()
             system = self._build_system(restrict_now)
             call_messages = await self._messages_for_call(user_text, iterations)
             # zakpick: pick the main generator's model by classified difficulty. Re-select only
@@ -4002,6 +4054,7 @@ class AgentLoop:
             call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
             thinking_off_next_call = False
             result: LLMResult | None = None
+            context_recoveries = 0  # compact-then-retry attempts on THIS call (ADR-0074)
             while result is None:
                 try:
                     result = await self._call_provider(
@@ -5005,7 +5058,6 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
-        context_recoveries = 0  # ContextWindowExceeded compact-then-retry count (parity #1b)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
@@ -5062,6 +5114,7 @@ class AgentLoop:
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
+        self._turn_section_restores = {}  # dropped-section restores (ADR-0075): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
@@ -5116,6 +5169,9 @@ class AgentLoop:
                 else:
                     restrict_now = None
                     tool_defs = self.registry.definitions()
+                compact_note = await self._maybe_compact()  # every call, not turn start (ADR-0074)
+                if compact_note:
+                    yield AgentStatus(message=compact_note)
                 system = self._build_system(restrict_now)
                 call_messages = await self._messages_for_call(user_text, iterations)
 
@@ -5197,6 +5253,7 @@ class AgentLoop:
                 # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off.
                 call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
                 thinking_off_next_call = False
+                context_recoveries = 0  # compact-then-retry attempts on THIS call (ADR-0074)
                 while True:
                     text_parts: list[str] = []
                     accumulator = ToolCallAccumulator()
