@@ -2226,3 +2226,48 @@ exactly as before.
 noise; nothing else changes. Pinned in tests/test_loop_planning.py (a composed `/skill`
 turn's plan is never judged — the provider sees plan then done, no judge call, no
 critique — beside the existing weak/strong/once-per-turn/fail-open cases).
+
+## ADR-0060: The turn in flight owns the say inbox — the busy marker
+
+**Status.** Accepted (2026-08-28).
+
+**Context.** The say inbox is one slot per workspace, and its docstring said "run at most
+ONE consumer" — two race for the slot and one silently wins. Coach's morning was that
+race, measured. The runner's whole night is one turn, so it polls the inbox once per
+iteration, minutes apart (ADR-0051); the cockpit chat pane the operator had opened polls
+every 0.3 s between ITS turns. Every say of the morning — the research directives, the
+review, `continue` — landed in the pane; none reached the runner they were steering. One
+of them was `/start coach --mode assistant`, which the pane executed as an
+observer-session command: it rewrote the agent's shared mode file from under the RUNNING
+runner, and the runner spent the next hour idle-ticking and misdiagnosing itself.
+
+**Decision.** A turn in flight owns the inbox.
+
+- `<workspace>/.busy` (`say_inbox.py`): a main-loop turn claims the marker for its
+  length — `BusyLease`: claim, refresh every 30 s from a background task so a
+  twenty-minute model call keeps it fresh, release in the turn's `finally`; both twins.
+  Only loops that consume the inbox (`consume_say_inbox=True`) claim; sub-agents and
+  bare loops never do. A turn that finds another process's fresh marker runs without
+  a claim of its own.
+- Idle consumers stand back while a fresh marker names another process: the REPL mux
+  between turns (`next_input(idle=True)`, `try_input`) and the serve consumer beat. The
+  holder's own consumers — its ADR-0051 boundary poll, its permission prompt — read as
+  before, so a say written while the runner works lands in the runner.
+- Staleness, not pid liveness, decides: a marker older than 120 s names nobody. A pid
+  probe is not portable (`os.kill(pid, 0)` TERMINATES the target on Windows), and a
+  crashed holder's marker simply ages out.
+- The cockpit say box says where a message will land: `✓ sent → the running turn`.
+
+**What this does not do.** It does not address a say. With a runner busy, the cockpit
+pane is a viewer of the workspace, not a second correspondent; a side conversation
+while a runner runs is a plain `zakcode cli` with its own keyboard. The control command
+that flipped coach's mode was delivered to an idle observer session BY this race; the
+Mind-side refusal for that command is filed separately (g-115-8154).
+
+**Consequences.** A steering say reaches the agent doing the work; between turns nothing
+changes (whoever polls first wins, as before). Pinned by tests/test_busy_marker.py
+(claim/refresh/release; a fresh foreign marker owns the inbox and is never touched; a
+stale one names nobody; garbage is fail-open; the lease's scope and idempotence; the
+main loop holds it for the turn in both twins while a bare loop never claims; the holder
+still takes a say written mid-turn; the idle REPL mux and the serve consumer beat stand
+back and resume once the marker is stale or gone).

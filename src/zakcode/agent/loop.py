@@ -148,7 +148,7 @@ from zakcode.providers.base import (
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
-from zakcode.session.say_inbox import read_say, say_path, say_pending
+from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import Task
 from zakcode.tools.base import (
@@ -2867,6 +2867,9 @@ class AgentLoop:
         # Reset the per-turn decision trace before any work (this turn's events only).
         self._trace = TurnTrace()
         self._turn_count += 1
+        lease = self._busy_lease()
+        if lease is not None:
+            await lease.acquire()
         try:
             return await self._run_turn(user_text)
         except asyncio.CancelledError:
@@ -2878,6 +2881,9 @@ class AgentLoop:
             with contextlib.suppress(Exception):
                 self._persist()
             raise
+        finally:
+            if lease is not None:
+                await lease.release()  # the busy marker lives exactly one turn (ADR-0060)
 
     async def _fire_turn_end(
         self,
@@ -2944,6 +2950,18 @@ class AgentLoop:
         if self._turn_end_veto_reset is not None:
             self._turn_end_veto_reset()
         return result.continuation_prompt or "Continue."
+
+    def _busy_lease(self) -> BusyLease | None:
+        """The busy marker for this turn (ADR-0060) — main loops only.
+
+        Only a loop that consumes the say inbox claims it: while this turn runs, idle
+        consumers on the workspace stand back, so a say lands HERE at the next iteration
+        boundary (ADR-0051) instead of in whichever REPL polled first. Sub-agents and bare
+        loops never claim; a turn that finds another process's fresh marker runs without one.
+        """
+        if not self._consume_say_inbox:
+            return None
+        return BusyLease(busy_path(self.workspace_root), self.session.id)
 
     def _deliver_midturn_say(self) -> str | None:
         """Consume a pending say into the conversation at an iteration boundary (ADR-0051).
@@ -4117,6 +4135,9 @@ class AgentLoop:
         # Reset the per-turn decision trace before any work (streaming twin of arun_turn).
         self._trace = TurnTrace()
         self._turn_count += 1
+        lease = self._busy_lease()
+        if lease is not None:
+            await lease.acquire()
         await self._fire_session_start_once()
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
         compact_note = await self._maybe_compact()
@@ -5441,6 +5462,9 @@ class AgentLoop:
             with contextlib.suppress(Exception):
                 self._persist()
             raise
+        finally:
+            if lease is not None:
+                await lease.release()  # the busy marker lives exactly one turn (ADR-0060)
 
         logger.info(
             "turn ended: stop_reason=%s iterations=%d tokens=%d",
