@@ -319,6 +319,35 @@ def test_per_category_thinking_merges_over_the_global_extra_body() -> None:
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+def test_per_call_extra_body_merges_over_the_instance_body() -> None:
+    """The reasoning-overflow retry (ADR-0056) sends the thinking switch for ONE request;
+    it must compose with the instance's body (a category knob, a global seed), not replace
+    it, and its absence must leave the request shape unchanged."""
+    from zakcode.providers.routing import thinking_extra_body
+
+    provider = LiteLLMProvider(
+        Settings(
+            default_model="openai/zds-qwen3.8-27b",
+            api_base=POD,
+            extra_body={"chat_template_kwargs": {"enable_thinking": True}, "seed": 42},
+            _env_file=None,
+        )
+    )
+    msgs = [{"role": "user", "content": "hi"}]
+    assert provider._build_kwargs(msgs, None)["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": True},
+        "seed": 42,
+    }
+    merged = provider._build_kwargs(msgs, None, extra_body=thinking_extra_body(False))
+    assert merged["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False},
+        "seed": 42,
+    }
+    bare = LiteLLMProvider(Settings(default_model="openai/gpt-4o", _env_file=None))
+    only = bare._build_kwargs(msgs, None, extra_body=thinking_extra_body(False))
+    assert only["extra_body"] == thinking_extra_body(False)
+
+
 # ---- extra_headers: one config line, N distinguishable terminals ----
 def test_extra_headers_expand_hostname_and_pid_per_process():
     """The property that makes fleet attribution work without per-terminal provisioning."""

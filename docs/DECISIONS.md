@@ -2027,3 +2027,66 @@ the two modes are twins with opposite fail directions, documented side by side i
 enum. Pinned by tests/test_bypass_permissions.py (never prompts with or without a
 prompter; dependency/protected/confirm waivers; catastrophic and config denies survive;
 tighten override honored; parse spellings, bare "bypass" fails safe).
+
+## ADR-0056: Reasoning overflow is not silence — a consecutive empty budget and a thinking-off retry
+
+**Status.** Accepted (2026-08-28).
+
+**Context.** The coach field night, again: the first `/start` on the new bypass build got
+through crash recovery and then ended `gave_up` — "the model went silent" — 12 iterations
+in. The trace said otherwise. The fatal "empty" completion carried 8,192 completion
+tokens, exactly `_MAX_COMPLETION_TOKENS`, with empty `content` and a `reasoning_content`
+still mid-sentence; an earlier one had thought for 2,139 tokens and stopped without
+answering. A direct probe of the pod confirmed the shape (`finish_reason: length`,
+`content: ''`, `reasoning_content: "Here's a thinking process: …"`). Qwen3.8-27B behind a
+reasoning parser was not silent — it was thinking, and the cap (or its own stop) landed
+before any answer. Two defects compounded. The empty gate's rail said "Your response was
+empty. Reply with…" — an instruction a template-enforced thinking model cannot obey,
+since its chat template opens a thinking block on every turn regardless. And
+`empty_retries` was a per-TURN cumulative count: two nudges early in the ceremony, eight
+successful tool calls, then the third empty of the turn ended it. A Mind runner's whole
+night is one composed `/start` turn, so under that count a third thinking blow-out
+anywhere in the night was fatal. The length-continuation rail (parity #5) could not catch
+it either: it needs visible text to continue from.
+
+**Decision.** Three changes, one mechanism each. (1) The empty budget is CONSECUTIVE: any
+visible output — text or a tool call — resets `empty_retries`; the bound is for a model
+that STAYS silent. (2) An empty completion that carried reasoning (`LLMResult.thinking`
+on the buffered twin; a `StreamThinkingDelta` on the streaming twin) or ended on a length
+finish is a REASONING OVERFLOW, never a deliberate finish: it is retried even after prior
+text, with its own rail ("Your previous response was reasoning only — no answer or tool
+call came out of it… Do not deliberate again…"), an honest `reasoning_overflow` trace kind
+and status line, `degraded` set like any truncation recovery, and the retry sent with
+thinking DISABLED for that ONE request — `chat_template_kwargs.enable_thinking=false`, the
+same fragment the zakpick per-category knob emits, now built by one shared
+`thinking_extra_body()` and passed per call (`_call_provider(extra_body=…)`; the streaming
+twin's `call_kw`). The provider merges a per-call `extra_body` OVER the instance's so a
+category knob and the one-shot override compose. A server without the key ignores it, so
+the retry degrades to the rail alone. (3) The default `Provider.astream` forwards
+`result.thinking` as a `StreamThinkingDelta`, so the streaming twin sees from a
+non-streaming provider the same signal the real one emits. Overflows share the
+consecutive bound: a model that overflows even with thinking off is stuck, and `gave_up`
+stays the honest ending.
+
+**Why thinking off, not a bigger budget.** The obvious alternative — retry with
+`max_tokens` raised toward Qwen's recommended 32k thinking budget — was rejected for this
+path on measured grounds. Thinking tokens are billed against `max_tokens`, and on the 27B
+pod an 8,192-token completion already cost minutes; a 32k retry is tens of minutes for a
+single step of an autonomous loop, and the fleet's own measurement of this model (at 8,000
+tokens the correct answer was reached ~400 characters into the trace and the rest was
+spent hedging) says a bigger budget does not reliably end the hedging. The first attempt
+keeps full thinking; only the retry of a request that has already failed to answer runs
+without it — the per-request opt-out the fleet's guidance itself prescribes over any
+server-side switch. An operator who wants max-reasoning answers at any latency is asking
+for a different product than a bounded loop; that is a cap decision (ADR-0018), not a
+retry decision.
+
+**Consequences.** A thinking blow-out costs one bounded retry instead of a third of the
+turn's life; the trace names what happened; the served `/start` on a reasoning model
+survives the shape that killed it. Measured 2026-08-28: "model went silent" fired eight
+times across one night's logs on the same pod — every one a candidate for this path.
+Pinned by tests/test_reasoning_overflow.py (both twins: overflow retried once with
+thinking off, one-shot, after prior text, thought-then-stopped and length-only shapes,
+plain silence unchanged, consecutive budget, consecutive overflows still give up, default
+astream forwards thinking) and tests/test_local_only.py (a per-call body merges over the
+instance body).

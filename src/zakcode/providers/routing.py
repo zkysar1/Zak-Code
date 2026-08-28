@@ -46,6 +46,16 @@ ZAKPICK_CATEGORIES: frozenset[str] = frozenset(
 )
 
 
+def thinking_extra_body(enabled: bool) -> dict[str, object]:
+    """The request-body fragment that switches a reasoning model's thinking on or off.
+
+    The llama.cpp / vLLM ``chat_template_kwargs`` form; a server that does not understand
+    the key ignores it. ONE spelling, shared by the per-category knob below and the loop's
+    reasoning-overflow retry (ADR-0056), which sends it for a single request.
+    """
+    return {"chat_template_kwargs": {"enable_thinking": enabled}}
+
+
 class ZakpickModel(BaseModel):
     """A ``(model, source)`` assignment for one category.
 
@@ -96,7 +106,7 @@ class ZakpickModel(BaseModel):
         """The ``extra_body`` fragment this assignment contributes, or ``{}`` for none."""
         if self.thinking is None:
             return {}
-        return {"chat_template_kwargs": {"enable_thinking": self.thinking}}
+        return thinking_extra_body(self.thinking)
 
 
 def _g(model: str) -> ZakpickModel:

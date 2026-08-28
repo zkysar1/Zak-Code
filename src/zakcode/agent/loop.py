@@ -145,7 +145,7 @@ from zakcode.providers.base import (
     TimedOut,
     ToolCall,
 )
-from zakcode.providers.routing import DifficultyVerdict, classify_main_turn
+from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
 from zakcode.session.say_inbox import read_say, say_path, say_pending
@@ -277,10 +277,15 @@ _LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
 #: completion in the thinking channel and emit nothing (measured 2026-08-25, twice: a
 #: /start ceremony died 9 iterations in, and a stuck-nudged turn ended silently; both
 #: footers read a clean "done" over zero user-visible output). The model is asked for a
-#: real answer up to ``_MAX_EMPTY_RETRIES`` times; if it stays silent the turn ends
-#: ``gave_up`` (degraded, vetoable) instead of masquerading as completed. An empty
-#: completion AFTER the model already produced text this turn keeps the historical
-#: clean-end semantics — that shape is a deliberate "nothing more to say".
+#: real answer up to ``_MAX_EMPTY_RETRIES`` times IN A ROW; any visible output (text or a
+#: tool call) resets the count, because the bound is for a model that STAYS silent, not
+#: one that stumbles three times across a long autonomous turn — measured 2026-08-28
+#: (coach, Qwen3.8-27B): a /start ceremony died on its THIRD empty completion of the turn,
+#: eight successful tool calls after the second, under a per-turn cumulative count. If it
+#: stays silent the turn ends ``gave_up`` (degraded, vetoable) instead of masquerading as
+#: completed. An empty completion AFTER the model already produced text this turn keeps
+#: the historical clean-end semantics — that shape is a deliberate "nothing more to say" —
+#: unless it was a reasoning overflow (below), which is never deliberate.
 _MAX_EMPTY_RETRIES = 2
 #: Worded as a DIRECTIVE, not an invitation (ADR-0033): the earlier "say what you tried,
 #: what failed, and what should happen next" handed a struggling small model a licence to
@@ -310,6 +315,35 @@ _SKILL_EMPTY_COMPLETION_NUDGE = (
     "2. ONE sentence stating that every step of /{skill} is complete.\n"
     "Nothing else — no apologies, no restated plans."
 )
+#: Reasoning overflow (ADR-0056): an empty completion that was NOT silence. The model
+#: reasoned — a thinking channel arrived, or the output cap cut it off mid-thought — and
+#: delivered nothing visible. Measured 2026-08-28 on the coach pod (Qwen3.8-27B behind a
+#: reasoning parser): the fatal completion carried 8,192 completion tokens, exactly the
+#: cap, with empty ``content`` and a ``reasoning_content`` still mid-sentence; an earlier
+#: one thought for 2,139 tokens and stopped without answering. "Your response was empty"
+#: is the wrong instruction for that model — its chat template opens a thinking block on
+#: every turn, so it cannot obey "don't think"; the retry is sent with thinking DISABLED
+#: for that one request instead (the per-call form of the zakpick knob, inert on servers
+#: without it), the rail says what actually happened, and the trace records it as
+#: ``reasoning_overflow`` rather than silence. Shares the consecutive empty bound: a model
+#: that overflows even with thinking off is stuck, and gave_up stays the honest ending.
+_REASONING_OVERFLOW_NUDGE = (
+    "Your previous response was reasoning only — no answer or tool call came out of it"
+    "{sequence}. Do not deliberate again. Reply with exactly ONE of these:\n"
+    "1. The tool call for the next step.\n"
+    "2. The answer itself, plainly, if the task is done.\n"
+    "3. ONE sentence stating what is blocking you.\n"
+    "Nothing else — no apologies, no restated plans."
+)
+
+
+def _reasoning_overflow_nudge(skill: str | None) -> str:
+    """The overflow rail, naming the unfinished ``/<skill>`` sequence when there is one."""
+    sequence = (
+        "" if skill is None else f", and the /{skill} sequence you are running is not finished"
+    )
+    return _REASONING_OVERFLOW_NUDGE.format(sequence=sequence)
+
 
 #: How many times a turn may discard a degenerate (repetition-looping) completion and
 #: retry fresh before ending honestly as ``degenerated`` (ADR-0018). One: the first loop
@@ -1837,8 +1871,12 @@ class AgentLoop:
         *,
         system: str,
         tools: list[dict[str, Any]] | None,
+        extra_body: dict[str, object] | None = None,
     ) -> LLMResult:
         """One buffered completion with bounded ``RateLimited`` retry (audit P0-4).
+
+        ``extra_body`` is a per-call request-body override (the reasoning-overflow retry's
+        thinking switch, ADR-0056), applied to every attempt of this one logical call.
 
         Only ``RateLimited`` is retried, ``retry_after``-aware, because a 429 is the
         one failure class where waiting is the documented remedy: a PURE rate limit
@@ -1862,6 +1900,8 @@ class AgentLoop:
             call_kw: dict[str, Any] = (
                 {} if next_temperature is None else {"temperature": next_temperature}
             )
+            if extra_body:
+                call_kw["extra_body"] = extra_body
             try:
                 call_started = time.monotonic()
                 result = await self.provider.acomplete(
@@ -2870,7 +2910,8 @@ class AgentLoop:
         # The cheap SCOPE verdict (quick_code/deep_code), computed once per turn; None until then.
         base_difficulty: Literal["quick_code", "deep_code"] | None = None
         signal_latched = False
-        empty_retries = 0  # empty-completion "say something" nudges spent this turn
+        empty_retries = 0  # consecutive empty-completion nudges; any visible output resets
+        thinking_off_next_call = False  # reasoning-overflow retry: ONE call without thinking
         turn_saw_text = False  # whether ANY completion this turn carried visible text
 
         # Doom-loop tracking: the signature of the previous iteration's tool-call
@@ -3002,11 +3043,18 @@ class AgentLoop:
                     main_category = category
                     self._note("route", category, category=category)
 
+            # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off;
+            # computed before the retry loop so a compaction retry keeps the override.
+            call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
+            thinking_off_next_call = False
             result: LLMResult | None = None
             while result is None:
                 try:
                     result = await self._call_provider(
-                        call_messages, system=system, tools=tool_defs or None
+                        call_messages,
+                        system=system,
+                        tools=tool_defs or None,
+                        extra_body=call_extra_body,
                     )
                 except ContextWindowExceeded as exc:
                     # The request overflowed the model's window. Force a compaction and
@@ -3157,6 +3205,8 @@ class AgentLoop:
             self.session.add_message(assistant_msg)
             turn_assistant.append(assistant_msg)
             turn_saw_text = turn_saw_text or bool(result.text)
+            if result.text or result.has_tool_calls:
+                empty_retries = 0  # visible output: the silence, if any, is over
             self._persist()
 
             # Cost/token budget stop (parity #4): the call's actuals were folded into the
@@ -3326,25 +3376,36 @@ class AgentLoop:
                 # a clean finish. Ask for a real answer (bounded by _MAX_EMPTY_RETRIES), then
                 # end honestly as gave_up (degraded, vetoable) instead of "done". Runs after
                 # the recipe/verify/plan gates so their more specific nudges take precedence.
+                # A reasoning overflow (ADR-0056) — the model thought and delivered nothing,
+                # or the cap cut it off mid-thought — is never a deliberate finish, so it is
+                # retried even after prior text, with thinking off for that one call.
+                overflow = result.finish_reason in _LENGTH_FINISH_REASONS or bool(result.thinking)
                 if not result.text and (
-                    not turn_saw_text or stuck.took_action or composed_skill is not None
+                    not turn_saw_text or stuck.took_action or composed_skill is not None or overflow
                 ):
                     if empty_retries < _MAX_EMPTY_RETRIES:
                         empty_retries += 1
-                        self._note(
-                            "intervention",
-                            "empty completion — asking for a real answer",
-                            kind="empty_completion",
-                        )
-                        self.session.add_message(
-                            Message.user(
-                                _control_rail(
-                                    _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
-                                    if composed_skill is not None
-                                    else _EMPTY_COMPLETION_NUDGE
-                                )
+                        if overflow:
+                            thinking_off_next_call = True
+                            turn_degraded = True
+                            self._note(
+                                "intervention",
+                                "reasoning overflow — retrying with thinking off",
+                                kind="reasoning_overflow",
                             )
-                        )
+                            rail = _reasoning_overflow_nudge(composed_skill)
+                        else:
+                            self._note(
+                                "intervention",
+                                "empty completion — asking for a real answer",
+                                kind="empty_completion",
+                            )
+                            rail = (
+                                _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
+                                if composed_skill is not None
+                                else _EMPTY_COMPLETION_NUDGE
+                            )
+                        self.session.add_message(Message.user(_control_rail(rail)))
                         self._refund_iteration()  # an empty completion did no work
                         self._persist()
                         last_signature = None
@@ -3937,7 +3998,8 @@ class AgentLoop:
         # cheap SCOPE verdict, computed once per turn
         base_difficulty: Literal["quick_code", "deep_code"] | None = None
         signal_latched = False
-        empty_retries = 0  # empty-completion "say something" nudges spent this turn
+        empty_retries = 0  # consecutive empty-completion nudges; any visible output resets
+        thinking_off_next_call = False  # reasoning-overflow retry: ONE call without thinking
         turn_saw_text = False  # whether ANY completion this turn carried visible text
         # This turn's assistant messages — kept only for the TURN_END payload's
         # ``last_assistant_message`` (the buffered path reuses its result list).
@@ -4106,6 +4168,9 @@ class AgentLoop:
                 # The accumulators are rebuilt per attempt so a retried call can never
                 # inherit partial state (defense in depth on top of the no-event gate).
                 stream_finish_reason: str | None = None
+                # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off.
+                call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
+                thinking_off_next_call = False
                 while True:
                     text_parts: list[str] = []
                     accumulator = ToolCallAccumulator()
@@ -4128,6 +4193,9 @@ class AgentLoop:
                     call_kw: dict[str, Any] = (
                         {} if next_temperature is None else {"temperature": next_temperature}
                     )
+                    if call_extra_body:
+                        call_kw["extra_body"] = call_extra_body
+                    saw_thinking = False  # a reasoning channel arrived on THIS attempt
                     try:
                         async for ev in self.provider.astream(
                             call_messages,
@@ -4136,6 +4204,7 @@ class AgentLoop:
                             **call_kw,
                         ):
                             if isinstance(ev, StreamThinkingDelta):
+                                saw_thinking = True
                                 # NOT folded into ``text_parts`` — reasoning is the
                                 # model's scratchpad, never its answer, and mixing the
                                 # two would corrupt the transcript. Its own event type
@@ -4439,6 +4508,8 @@ class AgentLoop:
                     continue
 
                 turn_saw_text = turn_saw_text or bool(assistant_text)
+                if assistant_text or tool_calls:
+                    empty_retries = 0  # visible output: the silence, if any, is over
                 assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
                 self.session.add_message(assistant_msg)
                 turn_assistant.append(assistant_msg)
@@ -4638,31 +4709,45 @@ class AgentLoop:
                     # after prior text (ADR-0042) — THIS path is the one `zakcode serve` runs
                     # (say consumer + /chat/stream); #244 rail'd only arun_turn, measured on
                     # the served /start of 2026-08-27 boot D (generic nudge, not the skill one).
+                    # Reasoning overflow (ADR-0056), streaming twin — see _run_turn.
+                    overflow = stream_finish_reason in _LENGTH_FINISH_REASONS or saw_thinking
                     if not assistant_text and (
-                        not turn_saw_text or stuck.took_action or composed_skill is not None
+                        not turn_saw_text
+                        or stuck.took_action
+                        or composed_skill is not None
+                        or overflow
                     ):
                         if empty_retries < _MAX_EMPTY_RETRIES:
                             empty_retries += 1
-                            self._note(
-                                "intervention",
-                                "empty completion — asking for a real answer",
-                                kind="empty_completion",
-                            )
-                            self.session.add_message(
-                                Message.user(
-                                    _control_rail(
-                                        _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
-                                        if composed_skill is not None
-                                        else _EMPTY_COMPLETION_NUDGE
-                                    )
+                            if overflow:
+                                thinking_off_next_call = True
+                                turn_degraded = True
+                                self._note(
+                                    "intervention",
+                                    "reasoning overflow — retrying with thinking off",
+                                    kind="reasoning_overflow",
                                 )
-                            )
+                                rail = _reasoning_overflow_nudge(composed_skill)
+                                status = "reasoning overflow; retrying with thinking off"
+                            else:
+                                self._note(
+                                    "intervention",
+                                    "empty completion — asking for a real answer",
+                                    kind="empty_completion",
+                                )
+                                rail = (
+                                    _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
+                                    if composed_skill is not None
+                                    else _EMPTY_COMPLETION_NUDGE
+                                )
+                                status = "model went silent; asking for a real answer"
+                            self.session.add_message(Message.user(_control_rail(rail)))
                             self._refund_iteration()  # an empty completion did no work
                             self._persist()
                             last_signature = None
                             repeat_count = 0
                             stuck.reset()
-                            yield AgentStatus(message="model went silent; asking for a real answer")
+                            yield AgentStatus(message=status)
                             continue
                         prompt = await self._fire_turn_end(
                             "gave_up",
