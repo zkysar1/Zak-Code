@@ -507,6 +507,24 @@ def test_bare_zakcode_starts_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "goodbye" in result.output
 
 
+def test_root_dispatch_covers_every_chat_option() -> None:
+    """Bare `zakcode` dispatches as a DIRECT call `chat(**defaults)` — any chat option
+    missing from _root's defaults dict binds to its raw typer.Option sentinel, which is
+    TRUTHY. Measured 2026-08-28: --dangerously-skip-permissions was added to chat but not
+    to the dict, so every bare launch silently exported
+    ZAKCODE_PERMISSION_MODE=bypassPermissions (caught 30 files later as env pollution)."""
+    import inspect
+
+    from zakcode.cli import _root, chat
+
+    src = inspect.getsource(_root)
+    for name in inspect.signature(chat).parameters:
+        assert f'"{name}"' in src, (
+            f"_root's defaults dict is missing chat option {name!r} — a direct "
+            "chat(**defaults) call would bind it to its truthy typer.Option sentinel"
+        )
+
+
 # ── first touch: focus the box; never eat the operator's boot-time message ────────
 # 2026-08-25 serene report, reproduced live on zc-03: focus landed on the screen
 # pane ("couldn't type at first") and the first message typed while the agent
