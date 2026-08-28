@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.config import PermissionTier
-from zakcode.tasks import skill_skeleton
+from zakcode.tasks import skill_pages, skill_skeleton
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 from zakcode.tools.builtins._suggest import _display
 
@@ -142,6 +142,39 @@ class UseSkillTool(Tool):
                 f"skill {name!r} could not be loaded: {load.error or 'unreadable'}."
             )
         footer = skill_directory_line(load.path, ctx.workspace_root)
+        if load.body.startswith("[already loaded]"):
+            # The per-turn reload pointer (ADR-0063) — or, for a paged skill, the current
+            # section again (ADR-0067). Nothing new to seed or decompose; hand it over as is.
+            return ToolResult.ok(
+                load.body, data={"skill": load.name, "pointer": True}, verbatim=True
+            )
+        pages = skill_pages(load.body, skill=load.name)
+        if pages is not None:
+            # Page the skill through the plan (ADR-0067): the model gets the front matter and
+            # section 1 now; the loop hands over each next section when update_plan marks
+            # the previous one done. Context is bounded by the largest section, so a 32k
+            # model can run a 184 KB skill one lane at a time. The loop seeds the skeleton
+            # from the WHOLE body (through the resolver), not from this page.
+            first = pages.first()
+            return ToolResult.ok(
+                f"{first}\n\n{footer}" if footer else first,
+                data={
+                    "skill": load.name,
+                    "decompose": True,
+                    "sections": pages.count,
+                    "paged": True,
+                    "page": 1,
+                },
+                hint=(
+                    f"Its {pages.count} numbered sections are now steps in your plan, and this "
+                    "result holds SECTION 1's instructions only — the others are delivered one "
+                    "at a time. Carry out section 1 now; when it is done, mark its step done "
+                    "with update_plan (send the whole plan) and section 2 arrives in the next "
+                    "message. Split any step that is several actions. If a step says to use "
+                    "another skill, call use_skill with that name."
+                ),
+                verbatim=True,
+            )
         output = f"{load.body}\n\n{footer}" if footer else load.body
         sections = len(skill_skeleton(load.body, skill=load.name))
         if sections:

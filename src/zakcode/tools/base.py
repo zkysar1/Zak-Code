@@ -220,6 +220,13 @@ class SkillResolver(Protocol):
         (sub-agents) must pass a non-empty ``query`` (the loop stamps ``caller_query`` for this)."""
         ...
 
+    def body(self, name: str) -> str | None:
+        """The skill's whole (defanged) body with none of the load ceremony — no budget, no
+        selection signal, no dedup (ADR-0067). The loop reads it to seed a skeleton and to
+        page sections from a load that delivered only page 1. ``None`` when ``name`` is
+        unknown or unreadable."""
+        ...
+
 
 class ToolContext(BaseModel):
     """Ambient state handed to a tool at execution time.

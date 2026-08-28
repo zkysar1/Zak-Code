@@ -198,6 +198,9 @@ class _Resolver:
     def names(self) -> list[str]:
         return list(self._bodies)
 
+    def body(self, name: str) -> str | None:
+        return self._bodies.get(name)
+
     async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         if name in self._bodies:
             return SkillLoad(found=True, name=name, body=self._bodies[name])
@@ -406,6 +409,7 @@ async def test_use_skill_names_the_seeded_sections_in_its_hint(tmp_path: Path) -
     ctx = ToolContext(workspace_root=tmp_path, skill_resolver=_Resolver({"e": ENCODE}))  # type: ignore[arg-type]
     res = await UseSkillTool().execute({"name": "e"}, ctx)
     assert res.is_error is False
-    assert res.data == {"skill": "e", "decompose": True, "sections": 5}
+    # Five sections: paged (ADR-0067) — the result carries section 1 and says so.
+    assert res.data == {"skill": "e", "decompose": True, "sections": 5, "paged": True, "page": 1}
     assert res.hint and "5 numbered sections are now steps in your plan" in res.hint
     assert "use_skill" in res.hint  # the chaining nudge survives

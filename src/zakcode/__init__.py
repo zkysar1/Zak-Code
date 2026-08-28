@@ -244,6 +244,21 @@ class _SkillToolResolver:
         # signal is attributed to the actual caller even though the resolver is the parent's.
         return await self._agent._load_skill_body(name, source="tool", query=query, args=args)
 
+    def body(self, name: str) -> str | None:
+        # The whole body, defanged like a load but with none of the ceremony (ADR-0067): the
+        # loop seeds a skeleton and pages sections from it after a load delivered page 1 only.
+        registry = self._agent.skill_registry
+        skill = registry.resolve(name) if registry is not None else None
+        if skill is None:
+            return None
+        try:
+            text = skill.body()
+        except Exception:  # noqa: BLE001 — an unreadable skill is the load's problem to report
+            return None
+        from zakcode.providers.text_tools import defang_untrusted
+
+        return defang_untrusted(text)
+
 
 #: Turn stop-reasons that count as a STALL — the agent didn't cleanly finish. Seam B's best-of-N
 #: retry fires only on these (never on ``completed`` / ``budget_exhausted``).
@@ -1199,17 +1214,38 @@ class Agent:
         except Exception:  # noqa: BLE001 — a fit report is advisory; never block startup on it
             system_tokens = 0
         reserve = self.provider.capabilities().max_output or _MIN_ANSWER_ROOM
-        skills = [
-            (skill.name, skill.body())
-            for skill in (self.skill_registry.get(n) for n in self.skill_registry.names())
-            if skill is not None
-        ]
+        from zakcode.tasks import skill_pages
+
+        def count(text: str) -> int:
+            return self.provider.count_tokens([Message.user(text)])
+
+        # What the model holds at once: a paged skill's largest page (ADR-0067), else the body.
+        skills: list[tuple[str, str]] = []
+        paged: set[str] = set()
+        for skill in (self.skill_registry.get(n) for n in self.skill_registry.names()):
+            if skill is None:
+                continue
+            try:
+                body = skill.body()
+            except Exception:  # noqa: BLE001 — an unreadable skill is not a fit finding
+                continue
+            pages = skill_pages(body, skill=skill.name)
+            if pages is None:
+                skills.append((skill.name, body))
+                continue
+            paged.add(skill.name)
+            units = [pages.first(), *(pages.render(i) for i in range(2, pages.count + 1))]
+            try:
+                skills.append((skill.name, max(units, key=count)))
+            except Exception:  # noqa: BLE001 — measured below by the same counter; skip here
+                continue
         return measure_skill_fit(
             skills,
-            count_tokens=lambda text: self.provider.count_tokens([Message.user(text)]),
+            count_tokens=count,
             window=min(windows),
             system_tokens=system_tokens,
             reserve=reserve,
+            paged=paged,
         )
 
     def _build_provider(
@@ -1541,12 +1577,24 @@ class Agent:
 
             digest = hashlib.sha1(body.encode("utf-8", errors="replace")).hexdigest()
             if self._skills_loaded_this_turn.get(skill.name) == digest:
-                pointer = (
-                    f"[already loaded] The full instructions for skill {skill.name!r} are "
-                    "already in your context THIS turn — the /command you were given, or an "
-                    "earlier use_skill call — unchanged. Continue those instructions from "
-                    "where you are; do not reload them."
-                )
+                # A paged skill (ADR-0067) is re-delivered at its CURRENT section — the one
+                # recovery a model that lost the page (compaction, a long detour) needs —
+                # instead of a bare pointer to text that may no longer be in context.
+                loop = getattr(self, "loop", None)
+                page = loop.current_skill_page(skill.name) if loop is not None else None
+                if page is not None:
+                    pointer = (
+                        f"[already loaded] Skill {skill.name!r} is running this turn, delivered "
+                        "one section at a time; here is the CURRENT section again. Continue "
+                        f"from where you are in it.\n\n{page}"
+                    )
+                else:
+                    pointer = (
+                        f"[already loaded] The full instructions for skill {skill.name!r} are "
+                        "already in your context THIS turn — the /command you were given, or "
+                        "an earlier use_skill call — unchanged. Continue those instructions "
+                        "from where you are; do not reload them."
+                    )
                 if args.strip():
                     pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
                 logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
@@ -1644,10 +1692,18 @@ class Agent:
         ]
         if args.strip():
             frame.append(f"<command-args>{defang_untrusted(args.strip())}</command-args>")
+        # A sectioned skill is paged through the plan (ADR-0067): the turn text carries the
+        # front matter and section 1; the loop seeds every section from the whole body and
+        # hands over the next one as update_plan marks the previous done — the same delivery
+        # the use_skill door gets, so both doors run a long skill one section at a time.
+        from zakcode.tasks import skill_pages
+
+        pages = skill_pages(load.body, skill=load.name)
+        body_text = pages.first() if pages is not None else load.body
         return SkillInvocation(
             invoked=True,
             name=load.name,
-            turn_text="\n".join(frame) + f"\n\n{load.body}",
+            turn_text="\n".join(frame) + f"\n\n{body_text}",
             corrected_from=corrected_from,
         )
 

@@ -1,0 +1,457 @@
+"""ADR-0067: a sectioned skill is paged through the plan — one section in context at a time.
+
+ADR-0062 made a skill's sections the plan; ADR-0066 made a skill that cannot fit the window
+refuse loudly. This closes the gap between them: the harness hands the model the skeleton
+plus ONE section's body, and turns the page when ``update_plan`` moves the plan past it —
+so context is bounded by the largest section, not the largest skill, and a 32k model can
+run a 184 KB skill one lane at a time. Both doors (a ``use_skill`` load and a typed
+``/<skill>`` turn) page the same way. Hermetic: scripted providers, fake resolvers.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+from zakcode.agent.loop import AgentLoop
+from zakcode.events import AgentEvent, AgentStatus
+from zakcode.messages import Message, ToolResultBlock
+from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
+from zakcode.session.store import Session
+from zakcode.skills.fit import measure_skill_fit
+from zakcode.tasks import SkillPage, skill_pages, skill_skeleton
+from zakcode.tools.base import SkillLoad, ToolRegistry
+from zakcode.tools.builtins.update_plan import UpdatePlanTool
+from zakcode.tools.builtins.use_skill import UseSkillTool
+
+DEMO = """# /demo — a paged skill
+
+Intro prose the sections rely on.
+
+## Rules
+
+Always be brief.
+
+## Step 1: First
+
+Do the first thing.
+
+### 1.1 A sub-step
+
+Stays inside page 1.
+
+## Step 2: Second
+
+Do the second thing.
+
+## Step 3: Third
+
+Do the third thing.
+
+## Return Protocol
+
+End with a tool call.
+"""
+
+FRAME = "<command-message>demo is running</command-message>\n<command-name>/demo</command-name>\n\n"
+MARK = "from /demo; done when this section has been carried out"
+
+
+# ── the pure splitter ─────────────────────────────────────────────────────────────
+
+
+def test_pages_are_the_top_level_step_sections() -> None:
+    pages = skill_pages(DEMO, skill="demo")
+    assert pages is not None and pages.count == 3
+    assert [p.title for p in pages.pages] == ["Step 1: First", "Step 2: Second", "Step 3: Third"]
+    assert [p.marker for p in pages.pages] == ["step 1", "step 2", "step 3"]
+    # The preamble and every documentation section travel up front; a sub-step stays in its page.
+    assert "Intro prose" in pages.front and "## Rules" in pages.front
+    assert "## Return Protocol" in pages.front
+    assert "### 1.1 A sub-step" in pages.pages[0].text
+    assert "Do the second thing." not in pages.pages[0].text
+    # Page k is skeleton step k.
+    assert [t.title for t in skill_skeleton(DEMO, skill="demo")] == [p.title for p in pages.pages]
+
+
+def test_delivery_carries_the_header_and_the_paging_contract() -> None:
+    pages = skill_pages(DEMO, skill="demo")
+    assert pages is not None
+    first = pages.first()
+    assert first.startswith("# /demo — a paged skill")
+    assert "[/demo — page 1 of 3: Step 1: First]" in first
+    assert "Do the first thing." in first and "Do the second thing." not in first
+    assert "section 2 of 3 arrives in the next message" in first
+    assert pages.render(3).endswith("This is the last section.")
+
+
+def test_fewer_than_two_sections_is_delivered_whole() -> None:
+    assert skill_pages("# x\n\n## Step 1: Only\n\ntext\n", skill="x") is None
+    assert (
+        skill_pages("# x\n\n**Step 1**: bold only.\n\n**Step 2**: still bold.\n", skill="x") is None
+    )
+    assert skill_pages("# x\n\n## Syntax\n\n## Chaining\n", skill="x") is None
+
+
+def test_fenced_headings_never_split_a_page() -> None:
+    body = "## Step 1: A\n\n```\n## Step 2: inside a fence\n```\n\n## Step 2: B\n\nreal\n"
+    pages = skill_pages(body, skill="x")
+    assert pages is not None and pages.count == 2
+    assert "inside a fence" in pages.pages[0].text
+
+
+def test_pages_fold_past_the_skeleton_cap_exactly_like_the_skeleton() -> None:
+    body = "\n".join(f"## Step {i}: S{i}\n\nbody {i}\n" for i in range(1, 46))
+    pages = skill_pages(body, skill="big")
+    steps = skill_skeleton(body, skill="big")
+    assert pages is not None and pages.count == len(steps) == 40
+    assert pages.pages[-1].title == steps[-1].title == "Remaining sections of /big (6 more)"
+    assert "## Step 45: S45" in pages.pages[-1].text
+
+
+def test_a_page_finds_its_step_after_the_model_rewrote_the_title() -> None:
+    page = SkillPage(index=2, title="Step 2: Second", marker="step 2", text="")
+    assert page.matches("Step 2: Second")
+    assert page.matches("step 2 + 3: second and third, merged")
+    assert not page.matches("Step 20: something else")
+    assert not page.matches("Step 2.1: a sub-step")
+    assert not SkillPage(index=1, title="Only title", marker="", text="").matches("other")
+
+
+# ── the loop turns the page ───────────────────────────────────────────────────────
+
+
+class _Resolver:
+    def __init__(self, bodies: dict[str, str]) -> None:
+        self._bodies = bodies
+
+    def names(self) -> list[str]:
+        return list(self._bodies)
+
+    def body(self, name: str) -> str | None:
+        return self._bodies.get(name)
+
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
+        if name in self._bodies:
+            return SkillLoad(found=True, name=name, body=self._bodies[name])
+        return SkillLoad(found=False, name=name)
+
+
+class _ScriptByCall(Provider):
+    def __init__(self, factory: Any) -> None:
+        self._factory = factory
+        self.calls = 0
+        self.seen: list[list[Message]] = []
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        self.calls += 1
+        self.seen.append(list(messages))
+        return self._factory(self.calls, messages)
+
+    def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
+        chars = len(system or "")
+        for message in messages:
+            for block in message.blocks:
+                chars += len(getattr(block, "text", "") or "")
+        return chars // 4
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=32_768)
+
+
+def _loop(provider: Provider, tmp_path: Path, session: Session | None = None) -> AgentLoop:
+    registry = ToolRegistry()
+    registry.register(UseSkillTool())
+    registry.register(UpdatePlanTool())
+    return AgentLoop(
+        provider,
+        registry,
+        session or Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        max_iterations=10,
+        skill_resolver=_Resolver({"demo": DEMO}),
+    )
+
+
+def _use(call_id: str = "t1") -> LLMResult:
+    return LLMResult(
+        tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": "demo"})]
+    )
+
+
+def _plan(tasks: list[dict[str, Any]], call_id: str = "p1") -> LLMResult:
+    return LLMResult(
+        tool_calls=[ToolCall(id=call_id, name="update_plan", arguments={"tasks": tasks})]
+    )
+
+
+def _seeded(*statuses: str) -> list[dict[str, Any]]:
+    """The seeded skeleton with the given statuses (notes intact — the common shape)."""
+    titles = ["Step 1: First", "Step 2: Second", "Step 3: Third"]
+    return [{"title": t, "status": s, "note": MARK} for t, s in zip(titles, statuses, strict=True)]
+
+
+def _user_texts(messages: list[Message]) -> list[str]:
+    return [m.text or "" for m in messages if m.role == "user"]
+
+
+def _notes(loop: AgentLoop, kind: str) -> list[dict[str, Any]]:
+    return [e.data for e in loop._trace.events if e.data.get("kind") == kind]
+
+
+def _page_after_plan(provider: _ScriptByCall, header: str) -> tuple[str, list[list[Message]]]:
+    """The page text as the model first saw it (a user message directly after a tool-result
+    message) and every message list the provider saw before that call."""
+    for i, msgs in enumerate(provider.seen):
+        for j, m in enumerate(msgs):
+            if m.role == "user" and header in (m.text or ""):
+                assert msgs[j - 1].role == "tool", "the page must follow the update_plan result"
+                return m.text or "", provider.seen[:i]
+    raise AssertionError(f"{header} never reached the model")
+
+
+def test_use_skill_delivers_page_one_and_seeds_every_section(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        return _use() if n == 1 else LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    block = next(
+        b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolResultBlock)
+    )
+    assert "[/demo — page 1 of 3: Step 1: First]" in block.output
+    assert "Do the first thing." in block.output and "Do the second thing." not in block.output
+    # The skeleton names EVERY section — seeded from the whole body, not from page 1.
+    assert [t.title for t in loop.session.task_network.tasks] == [
+        "Step 1: First",
+        "Step 2: Second",
+        "Step 3: Third",
+    ]
+    rail = next(t for t in _user_texts(provider.seen[1]) if "I added the 3 sections" in t)
+    assert "You hold section 1's instructions now" in rail
+    assert loop._skill_page_delivered["demo"] == 1
+
+
+def test_marking_a_section_done_turns_the_page(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "in_progress", "pending"))
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    result = asyncio.run(loop.arun_turn("run /demo"))
+    assert result.stop_reason == "completed"
+    # Page 2 arrived as a user message right after the update_plan result — the next call
+    # the model made saw it there. (Side calls such as the plan-quality check share the
+    # provider, so the transcript is searched, not indexed.)
+    page, before = _page_after_plan(provider, "[/demo — page 2 of 3: Step 2: Second]")
+    assert "Do the second thing." in page and "Do the third thing." not in page
+    assert "section 3 of 3 arrives" in page
+    # Page 2 was never in context before the plan reached it.
+    assert not any("Do the second thing." in t for msgs in before for t in _user_texts(msgs))
+    # The effectiveness signal: one page note, and the turn summary.
+    (note,) = _notes(loop, "skill_page")
+    assert (note["skill"], note["page"], note["of"], note["skipped"]) == ("demo", 2, 3, 0)
+    assert note["tokens"] > 0
+    (summary,) = _notes(loop, "skill_paging")
+    assert (summary["pages"], summary["delivered"], summary["closed"]) == (3, 2, 1)
+    assert summary["delivered_tokens"] > 0 and summary["body_tokens"] > 0
+
+
+def test_the_plan_pulls_pages_in_order_and_never_twice(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "in_progress", "pending"))
+        if n == 3:
+            return _plan(_seeded("done", "in_progress", "pending"), call_id="p2")  # no change
+        if n == 4:
+            return _plan(_seeded("done", "done", "in_progress"), call_id="p3")
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    pages = [n["page"] for n in _notes(loop, "skill_page")]
+    assert pages == [2, 3]
+    assert loop._skill_page_delivered["demo"] == 3
+    assert loop.current_skill_page("demo") is not None  # section 3 is still open
+    assert "[/demo — page 3 of 3" in (loop.current_skill_page("demo") or "")
+
+
+def test_a_merged_step_finishes_both_pages_and_counts_the_skip(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            # The model rewrote the plan without notes and merged two sections.
+            return _plan(
+                [
+                    {"title": "Step 1 + 2: First and second, together", "status": "done"},
+                    {"title": "Step 3: Third", "status": "in_progress"},
+                ]
+            )
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    (note,) = _notes(loop, "skill_page")
+    assert (note["page"], note["skipped"]) == (3, 1)
+    assert any("[/demo — page 3 of 3" in t for msgs in provider.seen for t in _user_texts(msgs))
+    assert not any("Do the second thing." in t for msgs in provider.seen for t in _user_texts(msgs))
+
+
+def test_every_section_closed_means_no_page(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "cancelled", "done"))
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert _notes(loop, "skill_page") == []
+    assert loop.current_skill_page("demo") is None
+
+
+def test_the_typed_door_carries_page_one_and_seeds_the_rest(tmp_path: Path) -> None:
+    pages = skill_pages(DEMO, skill="demo")
+    assert pages is not None
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _plan(_seeded("done", "in_progress", "pending"))
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn(FRAME + pages.first()))
+    assert [t.title for t in loop.session.task_network.tasks][:3] == [
+        "Step 1: First",
+        "Step 2: Second",
+        "Step 3: Third",
+    ]
+    assert loop._skill_page_delivered["demo"] == 1 or loop._skill_page_delivered["demo"] == 2
+    assert any("[/demo — page 2 of 3" in t for t in _user_texts(provider.seen[1]))
+
+
+def test_a_restart_reads_how_far_it_was_paged_from_the_transcript(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "in_progress", "pending"))
+        return LLMResult(text="done")
+
+    first = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(first.arun_turn("run /demo"))
+    # A new loop over the same session (a restart) forgets nothing the transcript kept.
+    second = _loop(_ScriptByCall(lambda n, m: LLMResult(text="x")), tmp_path, first.session)
+    assert second._pages_in_transcript("demo") == 2
+    assert second._ensure_skill_pages("demo") is not None
+    assert second._skill_page_delivered["demo"] == 2
+
+
+def test_streaming_twin_announces_the_page(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "in_progress", "pending"))
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+
+    async def run() -> list[AgentEvent]:
+        return [ev async for ev in loop.astream_turn("run /demo")]
+
+    events = asyncio.run(run())
+    assert any(
+        isinstance(ev, AgentStatus) and ev.message == "page 2/3 of /demo: Step 2: Second"
+        for ev in events
+    )
+
+
+def test_a_page_that_cannot_fit_ends_the_turn_loudly(tmp_path: Path) -> None:
+    huge = DEMO.replace("Do the second thing.", "Do the second thing. " + "x" * 200_000)
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "in_progress", "pending"))
+        return LLMResult(text="done")
+
+    registry = ToolRegistry()
+    registry.register(UseSkillTool())
+    registry.register(UpdatePlanTool())
+    provider = _ScriptByCall(script)
+    loop = AgentLoop(
+        provider,
+        registry,
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        max_iterations=10,
+        skill_resolver=_Resolver({"demo": huge}),
+    )
+    result = asyncio.run(loop.arun_turn("run /demo"))
+    assert result.stop_reason == "skill_too_large"
+    # Page 1 loaded fine; page 2 was never handed over, in any form, and the model was
+    # not asked to continue without it.
+    assert not any("Do the second thing." in t for msgs in provider.seen for t in _user_texts(msgs))
+    assert not any(
+        m.role == "assistant" and m.text == "done" for msgs in provider.seen for m in msgs
+    )
+    (note,) = [e for e in loop._trace.events if e.data.get("kind") == "skill_too_large"]
+    assert "section 2 of skill 'demo'" in note.detail
+
+
+def test_fit_report_names_the_largest_section() -> None:
+    fits = measure_skill_fit(
+        [("demo", "x" * 400)], count_tokens=lambda t: len(t) // 4, window=1000, paged={"demo"}
+    )
+    assert fits[0].paged is True
+    assert "largest section" in fits[0].describe()
+
+
+def test_a_paged_load_without_a_whole_body_is_named_not_hidden(tmp_path: Path) -> None:
+    """A resolver that delivers page 1 but cannot hand the loop the whole body would leave a
+    one-step plan and a skill that never turns a page — the loop says so in the trace."""
+    pages = skill_pages(DEMO, skill="demo")
+    assert pages is not None
+
+    class _PageOnlyResolver(_Resolver):
+        def body(self, name: str) -> str | None:
+            return None
+
+        async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
+            return SkillLoad(found=True, name=name, body=pages.first())
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        return _use() if n == 1 else LLMResult(text="done")
+
+    registry = ToolRegistry()
+    registry.register(UseSkillTool())
+    registry.register(UpdatePlanTool())
+    loop = AgentLoop(
+        _ScriptByCall(script),
+        registry,
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        max_iterations=10,
+        skill_resolver=_PageOnlyResolver({}),
+    )
+    asyncio.run(loop.arun_turn("run /demo"))
+    (note,) = _notes(loop, "skill_page_body_missing")
+    assert note["skill"] == "demo"
+    assert [t.title for t in loop.session.task_network.tasks] == ["Step 1: First"]

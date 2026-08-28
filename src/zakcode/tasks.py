@@ -32,6 +32,7 @@ Design rules (mirroring :mod:`zakcode.agent.recipe` / :mod:`zakcode.agent.stuck`
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -586,4 +587,144 @@ def skill_skeleton(body: str, *, skill: str) -> list[Task]:
     return top
 
 
-__all__ = ["Task", "TaskNetwork", "TaskStatus", "TaskKind", "skill_skeleton"]
+# ── skill pages: a sectioned skill delivered one section at a time (ADR-0067) ──────────
+#: The leading ordered-work token of a section title — ``Step 0.7``, ``Phase -3``, ``Lane 1``,
+#: ``3.`` — the part a model keeps when it rewrites the step ("Step 0.5 + 0.6: …"), so a page
+#: can still find its step after the plan has been reshaped.
+_SECTION_MARKER_RE = re.compile(
+    r"^(?:(phase|step|lane|stage|part|task)\s+(-?\d[\w.]*)|(\d+)[.)])", re.I
+)
+#: The header every delivered page opens with — and the marker the loop reads back from the
+#: transcript to learn how far a skill was paged before a restart.
+PAGE_HEADER_RE = re.compile(r"\[/(?P<skill>[^\s\]]+) — page (?P<page>\d+) of (?P<count>\d+):")
+
+
+def _section_marker(heading: str) -> str:
+    text = _heading_title(heading).lower()
+    match = _SECTION_MARKER_RE.match(text)
+    if match is None:
+        return ""
+    if match.group(1):
+        return f"{match.group(1)} {match.group(2).rstrip('.:')}"
+    return match.group(3)
+
+
+@dataclass(frozen=True)
+class SkillPage:
+    """One top-level section of a skill: the page the loop hands over when the plan reaches it."""
+
+    index: int
+    title: str
+    marker: str
+    text: str
+
+    def matches(self, step_title: str) -> bool:
+        """Whether a plan step (possibly rewritten by the model) is this section's step: the
+        seeded title verbatim, or the section's marker token as a whole word in the title."""
+        norm = " ".join(step_title.lower().split())
+        if norm == " ".join(self.title.lower().split()):
+            return True
+        if not self.marker:
+            return False
+        return re.search(rf"(?<![\w.]){re.escape(self.marker)}(?![\w.])", norm) is not None
+
+
+@dataclass(frozen=True)
+class SkillPages:
+    """A sectioned skill split for paging (ADR-0067): ``front`` (the preamble and every
+    non-step ``##`` section — the definitions and rules a section relies on) travels with
+    page 1; every top-level step section is a page, in order, one per skeleton step."""
+
+    skill: str
+    front: str
+    pages: tuple[SkillPage, ...]
+
+    @property
+    def count(self) -> int:
+        return len(self.pages)
+
+    def header(self, index: int) -> str:
+        page = self.pages[index - 1]
+        return f"[/{self.skill} — page {index} of {self.count}: {page.title}]"
+
+    def render(self, index: int) -> str:
+        """Page ``index`` as delivered: header, the section, and what to do when it is done."""
+        page = self.pages[index - 1]
+        after = (
+            "This is the last section."
+            if index == self.count
+            else (
+                f"When this section is done, mark its step done with update_plan (send the "
+                f"whole plan) and section {index + 1} of {self.count} arrives in the next message."
+            )
+        )
+        return f"{self.header(index)}\n{page.text.rstrip()}\n\n{after}"
+
+    def first(self) -> str:
+        """What a load delivers: the front matter and page 1, with the paging contract."""
+        parts = [self.front.rstrip(), self.render(1)]
+        return "\n\n".join(p for p in parts if p)
+
+
+def skill_pages(body: str, *, skill: str) -> SkillPages | None:
+    """Split a skill body into pages by its top-level step sections (ADR-0067), or ``None``
+    when it has fewer than two — such a body is delivered whole, as before.
+
+    The same walk as :func:`skill_skeleton` (outside fenced code; a step-like ``##`` heading
+    opens a section; a non-step ``##`` heading is documentation and goes to ``front``), folded
+    past :data:`_MAX_SKELETON_STEPS` exactly as the skeleton folds, so page ``k`` is always
+    skeleton step ``k``. Pure: no model, no I/O.
+    """
+    lines = body.splitlines()
+    boundaries: list[tuple[int, bool]] = []  # (line index, is a step section)
+    fenced = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced or not line.startswith("## "):
+            continue
+        match = _STEP_HEADING_RE.match(line)
+        boundaries.append((i, match is not None and len(match.group(1)) == 2))
+    if sum(1 for _, is_step in boundaries if is_step) < 2:
+        return None
+    front: list[str] = []
+    sections: list[tuple[str, str, str]] = []
+    preamble = "\n".join(lines[: boundaries[0][0]]).strip()
+    if preamble:
+        front.append(preamble)
+    for j, (start, is_step) in enumerate(boundaries):
+        end = boundaries[j + 1][0] if j + 1 < len(boundaries) else len(lines)
+        chunk = "\n".join(lines[start:end]).rstrip()
+        if is_step:
+            sections.append((_heading_title(lines[start]), _section_marker(lines[start]), chunk))
+        else:
+            front.append(chunk)
+    if len(sections) > _MAX_SKELETON_STEPS:
+        keep = _MAX_SKELETON_STEPS - 1
+        rest = sections[keep:]
+        sections = sections[:keep] + [
+            (
+                f"Remaining sections of /{skill} ({len(rest)} more)",
+                "",
+                "\n\n".join(text for _, _, text in rest),
+            )
+        ]
+    pages = tuple(
+        SkillPage(index=i + 1, title=title, marker=marker, text=text)
+        for i, (title, marker, text) in enumerate(sections)
+    )
+    return SkillPages(skill=skill, front="\n\n".join(front), pages=pages)
+
+
+__all__ = [
+    "PAGE_HEADER_RE",
+    "SkillPage",
+    "SkillPages",
+    "Task",
+    "TaskNetwork",
+    "TaskStatus",
+    "TaskKind",
+    "skill_pages",
+    "skill_skeleton",
+]

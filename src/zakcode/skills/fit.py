@@ -12,7 +12,7 @@ so the verdicts are unit-testable and the same for every caller.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 
 #: Share of the window past which a skill is flagged: it loads, but crowds out the work.
@@ -28,6 +28,9 @@ class SkillFit:
     window: int
     #: ``ok`` | ``large`` (over half the window) | ``too_large`` (cannot load at all).
     verdict: str
+    #: The skill is paged (ADR-0067): ``tokens`` is its LARGEST page, the most that is ever
+    #: in context at once, not the whole body.
+    paged: bool = False
 
     @property
     def share(self) -> float:
@@ -37,7 +40,8 @@ class SkillFit:
     def describe(self) -> str:
         """``/aspirations-precheck 49.7k tokens (152%) — cannot load on this model``."""
         size = f"{self.tokens / 1000:.1f}k" if self.tokens >= 1000 else str(self.tokens)
-        line = f"/{self.name} {size} tokens ({self.share:.0%} of the window)"
+        unit = "tokens, largest section" if self.paged else "tokens"
+        line = f"/{self.name} {size} {unit} ({self.share:.0%} of the window)"
         if self.verdict == "too_large":
             return line + " — cannot load on this model"
         if self.verdict == "large":
@@ -52,13 +56,15 @@ def measure_skill_fit(
     window: int,
     system_tokens: int = 0,
     reserve: int = 0,
+    paged: Collection[str] = (),
 ) -> list[SkillFit]:
-    """Measure every ``(name, body)`` against ``window``; worst first, then by name.
+    """Measure every ``(name, text)`` against ``window``; worst first, then by name.
 
-    ``too_large`` when ``tokens + system_tokens + reserve > window`` — the loop's own
-    in-turn test, so start and turn never disagree; ``large`` when the body alone is over
-    :data:`FLAG_FRACTION` of the window; else ``ok``. A body that cannot be counted is
-    skipped rather than guessed at.
+    ``text`` is what the model holds at once: the whole body, or for a skill named in
+    ``paged`` its largest page (ADR-0067). ``too_large`` when ``tokens + system_tokens +
+    reserve > window`` — the loop's own in-turn test, so start and turn never disagree;
+    ``large`` when the text alone is over :data:`FLAG_FRACTION` of the window; else ``ok``.
+    A body that cannot be counted is skipped rather than guessed at.
     """
     fits: list[SkillFit] = []
     for name, body in skills:
@@ -72,7 +78,9 @@ def measure_skill_fit(
             verdict = "large"
         else:
             verdict = "ok"
-        fits.append(SkillFit(name=name, tokens=tokens, window=window, verdict=verdict))
+        fits.append(
+            SkillFit(name=name, tokens=tokens, window=window, verdict=verdict, paged=name in paged)
+        )
     rank = {"too_large": 0, "large": 1, "ok": 2}
     fits.sort(key=lambda f: (rank[f.verdict], -f.tokens, f.name))
     return fits
