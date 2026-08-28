@@ -2786,12 +2786,23 @@ class AgentLoop:
         error (or an unsafe session id) so a hook fire is never broken. The SessionStore stays the
         source of truth — this is a read-only edge projection (:mod:`zakcode.hooks.transcript`).
 
-        Written under a per-USER ``~/.zakcode/transcripts`` directory (0700) as a 0600 file, NOT a
-        world-readable predictable temp path — the transcript carries the full conversation (maybe
-        secrets). The session id is validated as a safe filename component first (the same trust
-        boundary the SessionStore enforces). Re-rendered on each fire that needs it (O(messages) per
-        fire): accepted, because the projection must reflect the LIVE history — compaction rewrites
-        it, so an append-only cache would go stale — and the cost is small next to a model call.
+        Written BESIDE the session store, in a ``transcripts`` directory that is the sibling of
+        its ``sessions`` one (ADR-0061, mirroring ADR-0032). The terminal client's store is
+        ``~/.zakcode/sessions``, so this stays ``~/.zakcode/transcripts`` — unchanged. A SERVED
+        workspace's store is ``<workspace>/.zakcode/sessions``, so the projection of that mind's
+        conversation stays inside that mind's home. It followed ``Path.home()`` until then, which
+        pooled the FULL conversation text of every mind served by one host user into one shared
+        directory keyed only by session id — the cross-workspace leak ADR-0032 closed for the
+        store itself while its projection went on bypassing it.
+
+        The directory is 0700 and the file 0600, NOT a world-readable predictable temp path — the
+        transcript carries the full conversation (maybe secrets) — and it carries the same
+        self-ignoring ``.gitignore`` ``for_workspace`` writes, so a served workspace that is also
+        a git checkout never commits one. The session id is validated as a safe filename component
+        first (the same trust boundary the SessionStore enforces). Re-rendered on each fire that
+        needs it (O(messages) per fire): accepted, because the projection must reflect the LIVE
+        history — compaction rewrites it, so an append-only cache would go stale — and the cost is
+        small next to a model call.
         """
         from zakcode.hooks.transcript import render_claude_code_transcript
         from zakcode.session.store import _is_safe_session_id
@@ -2803,8 +2814,17 @@ class AgentLoop:
             text = render_claude_code_transcript(
                 self.session.messages, session_id=sid, cwd=self.session.cwd
             )
-            directory = Path.home() / ".zakcode" / "transcripts"
+            # Sibling of the store's own directory, so the projection shares the conversation's
+            # lifetime and isolation instead of the serving host's (ADR-0061). No store injected
+            # (a bare AgentLoop) keeps the historical per-user home.
+            store = self.store
+            root = store.base_dir.parent if store is not None else Path.home() / ".zakcode"
+            directory = root / "transcripts"
             directory.mkdir(parents=True, exist_ok=True)
+            ignore = directory / ".gitignore"
+            if not ignore.exists():  # never overwritten — the workspace may have its own
+                with contextlib.suppress(OSError):
+                    ignore.write_text("*\n", encoding="utf-8")
             path = directory / f"{sid}.jsonl"
             path.write_text(text, encoding="utf-8")
             with contextlib.suppress(OSError):  # POSIX perms; harmless where unsupported

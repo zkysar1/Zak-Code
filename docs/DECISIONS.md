@@ -2278,3 +2278,48 @@ stale one names nobody; garbage is fail-open; the lease's scope and idempotence;
 main loop holds it for the turn in both twins while a bare loop never claims; the holder
 still takes a say written mid-turn; the idle REPL mux and the serve consumer beat stand
 back and resume once the marker is stale or gone).
+
+## ADR-0061: The hook-transcript projection follows the store — it is the conversation, so it lives where the conversation lives
+
+**Status.** Accepted (shipped, 2026-08-28).
+
+**Context.** `AgentLoop._cc_transcript_path()` renders a Claude-Code-shaped `.jsonl` of the
+FULL conversation for hooks that read `transcript_path`, and wrote it under
+`Path.home() / ".zakcode" / "transcripts"`. Found on a served box during the g-369-15
+verify (env `pearl-verify-0827b`): after the first `say`, the only session document was the
+workspace one — ADR-0032 holding — but a 783 B 0600 `~/.zakcode/transcripts/<sid>.jsonl`
+had appeared beside it.
+
+This is not a durability defect: nothing resumes from the projection, the SessionStore is
+the source of truth, and both call sites already skip it when no hook consumer is
+registered (`has_lifecycle_hooks`, `observe or vetoable`). The defect is **isolation**.
+ADR-0032 settled that a served workspace IS one mind's home and that two served workspaces
+are "isolated by construction" — and rejected a host-side symlink precisely because "with
+several minds served from one host user, makes every daemon share one store". The
+projection re-created that shared store for the same bytes: `~/.zakcode/transcripts` is one
+directory per host USER, keyed only by session id, holding the full conversation text —
+maybe secrets — of every mind that host serves. A served workspace's hooks are not rare
+either: settings.json hooks load UNCONDITIONALLY (ADR-0025), so a workspace whose framework
+declares lifecycle hooks materializes this on essentially every turn.
+
+**Decision.** The projection is a sibling of the store's own directory:
+`store.base_dir.parent / "transcripts"`. One rule, no knob, mirroring ADR-0032.
+
+- Terminal client — store is `~/.zakcode/sessions`, so the path stays `~/.zakcode/transcripts`,
+  byte-for-byte what it always was. A loop with no store injected keeps that too.
+- Served workspace — store is `<workspace>/.zakcode/sessions`, so the projection is
+  `<workspace>/.zakcode/transcripts`, inside the mind whose conversation it is.
+- The directory carries the same self-ignoring `.gitignore` (`*`) `for_workspace` writes,
+  never overwritten, so a served workspace that is also a git checkout cannot commit one.
+  Perms are unchanged: 0700 directory, 0600 file.
+
+**Alternatives rejected.** *Leave as-is* — its premise was that served minds rarely fire
+hooks, and ADR-0025 falsifies it. *Skip the projection when nothing reads it* — already
+true at the gate level, and it cannot be tightened further: a shell hook receives
+`transcript_path` in its payload and the host cannot know whether the external command
+reads it. Neither addresses the isolation gap, which is the actual finding.
+
+**Consequences.** A mind's conversation has one lifetime and one blast radius again: stop
+the container and the projection goes with the host that no longer holds the only copy;
+two served workspaces share no transcript directory. Hooks are unaffected — they read the
+path they are handed. A host user's home stops accumulating other minds' conversations.

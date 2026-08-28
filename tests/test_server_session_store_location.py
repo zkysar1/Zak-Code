@@ -85,3 +85,103 @@ def test_two_served_workspaces_are_isolated(fake_home: Path, tmp_path: Path) -> 
 
 def test_terminal_client_default_is_still_the_user_home(fake_home: Path) -> None:
     assert SessionStore().base_dir == fake_home / ".zakcode" / "sessions"
+
+
+# ===========================================================================
+# The hook-transcript projection follows the store (ADR-0061)
+# ===========================================================================
+#
+# `_cc_transcript_path()` renders the FULL conversation for hooks that read
+# `transcript_path`. It rooted at `Path.home()`, so every mind served by one host user
+# pooled its conversation text into one shared directory — the cross-workspace leak
+# ADR-0032 closed for the store itself while its projection went on bypassing it. These
+# assert the projection now shares the store's lifetime and isolation, and that the
+# terminal client's path is byte-for-byte what it always was.
+
+
+def _agent_on(workspace: Path, store: SessionStore | None):
+    from zakcode import Agent
+
+    return Agent(
+        settings=Settings(default_model="scripted/test", workspace_root=workspace),
+        session_store=store,
+    )
+
+
+def _spoken(agent) -> None:
+    from zakcode.messages import Message
+
+    agent.session.add_message(Message.user("remember: the pearl holds"))
+    agent.session.add_message(Message.assistant_text("held"))
+
+
+def test_served_transcript_projection_lands_under_the_workspace(
+    fake_home: Path, tmp_path: Path
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    agent = _agent_on(ws, SessionStore.for_workspace(ws))
+    _spoken(agent)
+
+    path = Path(agent.loop._cc_transcript_path())
+
+    assert path.parent == ws.resolve() / ".zakcode" / "transcripts"
+    assert path.read_text(encoding="utf-8").strip()
+    # The host user's home holds no copy of this mind's conversation.
+    assert not (fake_home / ".zakcode" / "transcripts").exists()
+
+
+def test_two_served_workspaces_do_not_share_a_transcript_directory(
+    fake_home: Path, tmp_path: Path
+) -> None:
+    # The isolation ADR-0032 gives the store, for the projection of the same conversation.
+    first, second = tmp_path / "a", tmp_path / "b"
+    for ws in (first, second):
+        ws.mkdir()
+    one = Path(_agent_on(first, SessionStore.for_workspace(first)).loop._cc_transcript_path())
+    two = Path(_agent_on(second, SessionStore.for_workspace(second)).loop._cc_transcript_path())
+
+    assert one.parent != two.parent
+    assert one.parent == first.resolve() / ".zakcode" / "transcripts"
+    assert two.parent == second.resolve() / ".zakcode" / "transcripts"
+
+
+def test_served_transcript_directory_ignores_itself(fake_home: Path, tmp_path: Path) -> None:
+    # A served workspace is often a git checkout; the conversation must never be committable.
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    path = Path(_agent_on(ws, SessionStore.for_workspace(ws)).loop._cc_transcript_path())
+
+    assert (path.parent / ".gitignore").read_text(encoding="utf-8") == "*\n"
+
+
+def test_transcript_projection_never_clobbers_an_existing_ignore(
+    fake_home: Path, tmp_path: Path
+) -> None:
+    ws = tmp_path / "ws"
+    (ws / ".zakcode" / "transcripts").mkdir(parents=True)
+    (ws / ".zakcode" / "transcripts" / ".gitignore").write_text("mine\n", encoding="utf-8")
+
+    _agent_on(ws, SessionStore.for_workspace(ws)).loop._cc_transcript_path()
+
+    ignore = ws / ".zakcode" / "transcripts" / ".gitignore"
+    assert ignore.read_text(encoding="utf-8") == "mine\n"
+
+
+def test_terminal_client_transcript_path_is_unchanged(fake_home: Path, tmp_path: Path) -> None:
+    # The terminal client's store is ~/.zakcode/sessions, so its sibling is the historical
+    # ~/.zakcode/transcripts. This is the regression that would break every terminal hook.
+    ws = tmp_path / "project"
+    ws.mkdir()
+    path = Path(_agent_on(ws, SessionStore()).loop._cc_transcript_path())
+
+    assert path.parent == fake_home / ".zakcode" / "transcripts"
+
+
+def test_storeless_loop_keeps_the_user_home(fake_home: Path, tmp_path: Path) -> None:
+    # A bare Agent injects no store; nothing about that path changes.
+    ws = tmp_path / "project"
+    ws.mkdir()
+    path = Path(_agent_on(ws, None).loop._cc_transcript_path())
+
+    assert path.parent == fake_home / ".zakcode" / "transcripts"
