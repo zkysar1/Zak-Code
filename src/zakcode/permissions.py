@@ -70,6 +70,18 @@ class PermissionMode(StrEnum):
       adapt to, identical with or without a prompter, which is what makes the mode
       testable and safe headless. Contrast ``allow``, where a present operator may
       interactively approve a catastrophic command; ``autonomous`` never can.
+    * ``bypassPermissions`` — the dangerously-skip posture (the Claude Code
+      ``--dangerously-skip-permissions`` analog, field-driven 2026-08-28: an
+      unattended Mind runner stalled forever on an interactive y/a/n prompt).
+      NOTHING ever prompts, and everything the other modes would ESCALATE is
+      ALLOWED instead: undeclared package installs, protected-path writes, and
+      confirm-on-use tools all pass. Only two refusals survive, both as
+      recoverable errors: the catastrophic-command blocklist (uniform in every
+      mode, never waived anywhere) and explicit whole-tool config denies. Where
+      ``autonomous`` is never-prompt-fail-CLOSED, this is never-prompt-fail-OPEN —
+      for deployments whose own stack (hooks, gates, guardrails) is the guardrail
+      layer. An explicit per-tool tighten (``tool_trust_overrides``) is still
+      honored: the operator who writes both has asked for that tool to prompt.
     """
 
     DENY = "deny"
@@ -77,6 +89,7 @@ class PermissionMode(StrEnum):
     ACCEPT_EDITS = "acceptEdits"
     ALLOW = "allow"
     AUTONOMOUS = "autonomous"
+    BYPASS = "bypassPermissions"
 
     @classmethod
     def parse(cls, value: str | PermissionMode | None) -> PermissionMode:
@@ -113,6 +126,7 @@ _MODE_CEILING: dict[PermissionMode, PermissionTier] = {
     PermissionMode.ACCEPT_EDITS: PermissionTier.WORKSPACE_WRITE,
     PermissionMode.ALLOW: PermissionTier.DANGER_FULL_ACCESS,
     PermissionMode.AUTONOMOUS: PermissionTier.DANGER_FULL_ACCESS,
+    PermissionMode.BYPASS: PermissionTier.DANGER_FULL_ACCESS,
 }
 
 #: What a tier *above* the ceiling resolves to, per mode. ``deny`` blocks outright;
@@ -124,6 +138,7 @@ _ABOVE_CEILING: dict[PermissionMode, PermissionDecision] = {
     PermissionMode.ACCEPT_EDITS: PermissionDecision.ASK,
     PermissionMode.ALLOW: PermissionDecision.ASK,
     PermissionMode.AUTONOMOUS: PermissionDecision.DENY,
+    PermissionMode.BYPASS: PermissionDecision.ALLOW,  # unreachable (ceiling is max); totality
 }
 
 #: Looseness rank for grant-restore filtering (D12): a persisted grant recorded under
@@ -135,6 +150,7 @@ _MODE_LOOSENESS: dict[PermissionMode, int] = {
     PermissionMode.ACCEPT_EDITS: 2,
     PermissionMode.ALLOW: 3,
     PermissionMode.AUTONOMOUS: 4,
+    PermissionMode.BYPASS: 5,
 }
 
 
@@ -679,7 +695,11 @@ class PermissionPolicy:
         PreToolUse-rewritten call (so a hook can't rewrite a benign edit into a write to
         ``.env`` / ``.git/`` / the venv). File-path args only; pass
         ``read_only=True`` for a READ_ONLY-tier tool so write-sensitive built-ins don't bind.
+        ``None`` unconditionally under session-wide ``bypassPermissions`` — that mode waives
+        the protected-path floor everywhere, the loop's rewrite re-check included.
         """
+        if self.mode is PermissionMode.BYPASS:
+            return None
         return self._protected_path_reason(arguments, read_only=read_only)
 
     def _undeclared_install(self, arguments: dict) -> list[str]:
@@ -693,6 +713,10 @@ class PermissionPolicy:
         (so every named package counts as undeclared → escalate), never a crash.
         """
         if self._declared_packages is None:
+            return []
+        if self.mode is PermissionMode.BYPASS:
+            # Bypass runs with the dependency gate OFF — one switch read by decide(), the
+            # grant fast-path, and the loop's post-rewrite re-check alike.
             return []
         specs: list[str] = []
         seen: set[str] = set()
@@ -767,7 +791,13 @@ class PermissionPolicy:
         # to a (session-grantable) prompt. Never loosens an existing ASK/DENY. ``autonomous``
         # never prompts, so a required confirmation there fails closed deterministically.
         confirm_escalated = False
-        if tool_name in self._confirm_tools and base is PermissionDecision.ALLOW:
+        if (
+            tool_name in self._confirm_tools
+            and base is PermissionDecision.ALLOW
+            # ``bypassPermissions`` waives per-call confirmations outright (its whole point
+            # is that nothing prompts and nothing fails closed for lack of a prompter).
+            and PermissionMode.BYPASS not in (mode, self.mode)
+        ):
             if mode is PermissionMode.DENY:
                 return (PermissionDecision.DENY, f"'{tool_name}' is blocked in 'deny' mode")
             if PermissionMode.AUTONOMOUS in (mode, self.mode):
@@ -781,9 +811,11 @@ class PermissionPolicy:
 
         danger = self._dangerous_reason(arguments)
         if danger is not None:
-            # D12: in autonomous (session-wide or per-tool), a catastrophic match is a
-            # deterministic hard DENY — never a prompt, attended or headless.
-            if PermissionMode.AUTONOMOUS in (mode, self.mode):
+            # D12: in autonomous OR bypass (session-wide or per-tool), a catastrophic match
+            # is a deterministic hard DENY — never a prompt, attended or headless. Bypass
+            # waives prompts and gates, never the catastrophic floor: that floor is uniform
+            # in every mode, which is what keeps it one rule with no exceptions.
+            if {PermissionMode.AUTONOMOUS, PermissionMode.BYPASS} & {mode, self.mode}:
                 return (PermissionDecision.DENY, f"blocked dangerous command: {danger}")
             if mode is PermissionMode.DENY or base is PermissionDecision.DENY:
                 return (PermissionDecision.DENY, f"blocked dangerous command: {danger}")
@@ -799,7 +831,10 @@ class PermissionPolicy:
         # a (session-grantable) prompt. Declared installs and lockfile/local installs pass
         # through untouched. The gate is OFF unless a provider was injected (default).
         undeclared = self._undeclared_install(arguments)
-        if undeclared:
+        # ``bypassPermissions`` runs with the dependency gate off (session-wide bypass
+        # already short-circuits inside _undeclared_install; this also covers a per-tool
+        # bypass override under a stricter session mode).
+        if undeclared and PermissionMode.BYPASS not in (mode, self.mode):
             targets = ", ".join(undeclared)
             if PermissionMode.AUTONOMOUS in (mode, self.mode):
                 return (
@@ -826,7 +861,13 @@ class PermissionPolicy:
         # still bind on secrets and operator extras. The grant fast-paths in
         # authorize()/auto_allows() re-decide so a blanket grant cannot waive this.
         read_only = tier is PermissionTier.READ_ONLY
-        protected = self._protected_path_reason(arguments, read_only=read_only)
+        # ``bypassPermissions`` waives the protected-path floor too — dangerously, by name:
+        # the operator has declared the surrounding stack the guardrail layer.
+        protected = (
+            None
+            if PermissionMode.BYPASS in (mode, self.mode)
+            else self._protected_path_reason(arguments, read_only=read_only)
+        )
         if protected is not None:
             verb = "read of" if read_only else "write to"
             if PermissionMode.AUTONOMOUS in (mode, self.mode):

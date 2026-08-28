@@ -410,7 +410,12 @@ class Settings(BaseSettings):
     )
     permission_mode: str = Field(
         default="ask",
-        description="One of: ask | acceptEdits | allow | autonomous | deny.",
+        description="One of: ask | acceptEdits | allow | autonomous | bypassPermissions | deny. "
+        "'autonomous' never prompts and fails CLOSED (escalations become recoverable denies); "
+        "'bypassPermissions' never prompts and fails OPEN (escalations are allowed; only the "
+        "catastrophic blocklist and explicit tool denies refuse) — the "
+        "--dangerously-skip-permissions posture for deployments whose own stack is the "
+        "guardrail layer.",
     )
     # Per-tool trust overrides (audit P0-2b / D12): judge the NAMED tool under a
     # different permission mode than the session's — both directions (loosen bash to
@@ -621,7 +626,7 @@ class Settings(BaseSettings):
         as literals (not imported from zakcode.permissions) to avoid a config↔
         permissions import cycle; PermissionMode.parse accepts the same spellings.
         """
-        recognized = {"deny", "ask", "acceptedits", "allow", "autonomous"}
+        recognized = {"deny", "ask", "acceptedits", "allow", "autonomous", "bypasspermissions"}
         for tool, mode in value.items():
             normalized = str(mode).strip().lower().replace("-", "").replace("_", "")
             if normalized not in recognized:

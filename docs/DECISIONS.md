@@ -1986,3 +1986,44 @@ runner's CLI can opt into autonomous permission mode, where ASK degrades to a
 deterministic, recoverable DENY. Pinned by test_deps_gate.py (redirection forms;
 constraints still parse) and test_loop_gate.py (approved install survives an
 env-prepend rewrite; the smuggle rewrite still blocks).
+
+## ADR-0055: bypassPermissions — the never-prompt-fail-OPEN mode and its --dangerously-skip-permissions flag
+
+**Status.** Accepted (2026-08-28).
+
+**Context.** The coach field night (ADR-0054's incident) exposed the posture gap:
+`autonomous` never prompts but fails CLOSED — undeclared installs, protected paths, and
+confirm-tools become hard denies — while every attended mode can raise an interactive
+y/a/n prompt. An unattended runner in an attended mode therefore blocks forever on a
+prompt nobody can answer (the deadman can't help: the turn is alive, waiting on stdin).
+Operators coming from Claude Code reach for `--dangerously-skip-permissions`; Zak Code
+had no equivalent.
+
+**Decision.** A sixth mode completes the lattice: `bypassPermissions` (setting value
+matches Claude Code's; CLI flag `--dangerously-skip-permissions` on `zakcode cli` and
+`zakcode webapp`). NOTHING prompts, and everything the other modes would ESCALATE is
+ALLOWED: undeclared package installs (the dependency gate is off — one switch inside
+`_undeclared_install`, read by decide(), the grant fast-path, and the loop's
+post-rewrite re-check alike), protected-path reads/writes, and confirm-on-use tools.
+Exactly two refusals survive, both as recoverable tool errors: the catastrophic-command
+blocklist (uniform in every mode — bypass waives prompts and gates, never that floor)
+and explicit whole-tool config denies. An explicit per-tool TIGHTEN override is still
+honored: the operator who wrote both has asked for that tool to prompt. The flag
+exports `ZAKCODE_PERMISSION_MODE=bypassPermissions` so every launch path — inline REPL,
+`-p` runs, the elevated cockpit's children, a served mind — inherits one mechanism, and
+prints a warning line at startup. SDK/programmatic use is the same single knob:
+`Settings(permission_mode="bypassPermissions")` or the env var.
+
+**The trap the rollout found.** Bare `zakcode` dispatches as a DIRECT call
+`chat(**defaults)`; a chat option missing from that defaults dict binds to its raw
+`typer.Option` sentinel — which is truthy — so the new flag's env export fired on every
+bare launch until the dict was extended. Pinned two ways: the defaults entry, and a
+signature-parity test that fails the moment any future chat option is added without one.
+
+**Consequences.** The Mind runner deployment launches with the flag and can never stall
+on a prompt; the attended cockpit keeps prompting. `autonomous` remains the right
+unattended mode when the surrounding stack is NOT trusted to be the guardrail layer —
+the two modes are twins with opposite fail directions, documented side by side in the
+enum. Pinned by tests/test_bypass_permissions.py (never prompts with or without a
+prompter; dependency/protected/confirm waivers; catastrophic and config denies survive;
+tighten override honored; parse spellings, bare "bypass" fails safe).

@@ -96,6 +96,7 @@ def _root(ctx: typer.Context) -> None:
             "skill_dir": None,
             "extra_root": None,
             "trace": False,
+            "dangerously_skip_permissions": False,
         }
         chat(**defaults)
 
@@ -2189,6 +2190,17 @@ def chat(
         ".zakcode/traces/ in the workspace: routing, gate firings, tool calls, and why each turn "
         "ended. For a custom location, set ZAKCODE_TRACE_DIR instead.",
     ),
+    dangerously_skip_permissions: bool = typer.Option(
+        False,
+        "--dangerously-skip-permissions",
+        help="Never prompt for permission: everything auto-allows, including undeclared "
+        "package installs, protected-path writes, and confirm-on-use tools. Only the "
+        "catastrophic-command blocklist and explicit tool denies still refuse (as "
+        "recoverable errors). For unattended deployments whose own stack is the guardrail "
+        "layer — an interactive prompt there is an infinite stall. Equivalent to "
+        "ZAKCODE_PERMISSION_MODE=bypassPermissions (exported, so an elevated cockpit "
+        "inherits it).",
+    ),
 ) -> None:
     """Start an interactive agent session.
 
@@ -2199,6 +2211,16 @@ def chat(
     use the WebSocket channel for interactive approval.)
     """
     _prepare_interactive_terminal()
+    if dangerously_skip_permissions:
+        # One mechanism for every launch path — the inline REPL, a -p run, and the elevated
+        # cockpit's child processes (which inherit this environment): export the canonical
+        # setting and let every load_settings() downstream read it.
+        os.environ["ZAKCODE_PERMISSION_MODE"] = "bypassPermissions"
+        notice_warn(
+            console,
+            "permissions bypassed (--dangerously-skip-permissions): nothing prompts; only "
+            "the catastrophic blocklist and explicit tool denies refuse",
+        )
     if server:
         ignored = [
             flag
@@ -2823,6 +2845,13 @@ def serve(
         "--insecure",
         help="Allow binding a non-loopback host with NO auth token (unauthenticated exposure).",
     ),
+    dangerously_skip_permissions: bool = typer.Option(
+        False,
+        "--dangerously-skip-permissions",
+        help="Never prompt for permission in the served mind: everything auto-allows; only "
+        "the catastrophic-command blocklist and explicit tool denies still refuse. "
+        "Equivalent to ZAKCODE_PERMISSION_MODE=bypassPermissions.",
+    ),
 ) -> None:
     """Serve the web app: the browser chat page + HTTP API, over the same core.
 
@@ -2854,6 +2883,14 @@ def serve(
         )
         raise typer.Exit(code=1) from exc
 
+    if dangerously_skip_permissions:
+        # Same single mechanism as `zakcode cli`: export the canonical setting before any
+        # load_settings() so the served mind (and anything it spawns) inherits it.
+        os.environ["ZAKCODE_PERMISSION_MODE"] = "bypassPermissions"
+        console.print(
+            "[yellow]permissions bypassed (--dangerously-skip-permissions): nothing prompts; "
+            "only the catastrophic blocklist and explicit tool denies refuse[/yellow]"
+        )
     # Resolve settings once (also drives the bind guard); only PASS them to create_app when a
     # workspace was given, so --workspace stays a pointer and the no-workspace path resolves
     # settings inside the server from env (unchanged contract).
