@@ -32,8 +32,10 @@ def test_prompt_defines_the_harness_provenance_tags(tmp_path: Path) -> None:
     # apologizing.
     settings = load_settings(workspace_root=tmp_path)
     prompt = SystemPromptBuilder().build(settings)
-    assert "[harness], [hook], or [plan]" in prompt
+    assert "[harness], [hook], [plan], [plan critique], [verified], or" in prompt
+    assert "[unverified]" in prompt
     assert "never attribute them to the user" in prompt
+    assert "[user message — arrived mid-task]" in prompt  # ADR-0051: the one user-authored tag
     assert "do not apologize" in prompt
 
 

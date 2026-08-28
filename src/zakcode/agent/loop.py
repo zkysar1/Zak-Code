@@ -287,10 +287,12 @@ _MAX_EMPTY_RETRIES = 2
 #: apologize and narrate, and the 2026-08-26 serene transcript answered it with exactly that
 #: — an apology spiral. One tool call, the answer, or one blocking sentence; nothing else.
 _EMPTY_COMPLETION_NUDGE = (
-    "Your response was empty. Reply with exactly ONE of: a tool call that advances the "
-    "task; the answer itself, plainly, if the task is done; or ONE sentence stating what is "
-    "blocking you. Nothing else — no apologies, no restated plans, no announcements of what "
-    "you will do next."
+    "Your response was empty. Reply with exactly ONE of these:\n"
+    "1. A tool call that advances the task.\n"
+    "2. The answer itself, plainly, if the task is done.\n"
+    "3. ONE sentence stating what is blocking you.\n"
+    "Nothing else — no apologies, no restated plans, no announcements of what you will "
+    "do next."
 )
 #: A typed/served ``/<skill>`` turn (the command frame at the start of the user message)
 #: is a SEQUENCE the model is executing, so an empty completion mid-way is never a clean
@@ -303,8 +305,10 @@ _EMPTY_COMPLETION_NUDGE = (
 #: are the same as the generic gate's (ADR-0042).
 _SKILL_EMPTY_COMPLETION_NUDGE = (
     "Your response was empty, and the /{skill} sequence you are running is not finished. "
-    "Reply with exactly ONE of: the tool call for its next step; or ONE sentence stating that "
-    "every step of /{skill} is complete. Nothing else — no apologies, no restated plans."
+    "Reply with exactly ONE of these:\n"
+    "1. The tool call for the sequence's next step.\n"
+    "2. ONE sentence stating that every step of /{skill} is complete.\n"
+    "Nothing else — no apologies, no restated plans."
 )
 
 #: How many times a turn may discard a degenerate (repetition-looping) completion and
@@ -313,9 +317,8 @@ _SKILL_EMPTY_COMPLETION_NUDGE = (
 #: second consecutive loop is climate — more re-prompting produces more of the same.
 _MAX_DEGENERATION_RETRIES = 1
 _DEGENERATION_NUDGE = (
-    "Your previous response degenerated into repeating the same content over and over; it "
-    "was discarded. Do not repeat yourself. Answer the user's request once, plainly and "
-    "concisely."
+    "Your previous response was discarded because it repeated the same content over and "
+    "over. Start fresh: answer the user's request once, in a few plain sentences, then stop."
 )
 #: False-done guard (ADR-0024): a completion whose tail ANNOUNCES actions is not a
 #: completion. Field incident 2026-08-26: a small model ended its turn on "Now I will use
@@ -325,9 +328,10 @@ _DEGENERATION_NUDGE = (
 #: finish, so a false positive costs one bounded iteration.
 _INTENT_NUDGE = (
     'You ended your turn announcing actions you have not performed ("I will …" / '
-    '"let me now …"). Words are not work: if those actions are part of this task, '
-    "perform them NOW with real tool calls. If they are already done, or you were only "
-    "describing options, say so plainly and finish without announcing further actions."
+    '"let me now …"). Words are not work. Do ONE of these:\n'
+    "1. If those actions are part of this task, perform them NOW with real tool calls.\n"
+    "2. If they are already done, or you were only describing options, say so plainly "
+    "and finish without announcing further actions."
 )
 
 #: Broken-record guard (ADR-0026): a completion RE-SENT verbatim within one turn is the
@@ -401,9 +405,11 @@ _WORK_CLAIM_RE = re.compile(
 )
 _CLAIM_NUDGE = (
     'You reported a change as done ("I have updated / created / registered …"), but no '
-    "file-changing tool call ran this turn, so nothing on disk changed. Do not report work "
-    "that did not happen. If the change is still needed, make it NOW with a real tool call. "
-    "If it was made in an EARLIER turn, say so in one sentence and finish."
+    "edit or write_file tool ran this turn. If you made the change another way (for "
+    "example with a shell command), verify it NOW: read the file back and confirm the "
+    "content is there. If the change has not been made, make it NOW with a real tool "
+    "call. If it was made in an EARLIER turn, say so in one sentence and finish. Never "
+    "report work you have not verified."
 )
 
 
@@ -497,7 +503,8 @@ _CHALLENGE_RAIL = (
 #: at the iteration boundary is what the reference harness does with input typed mid-turn.
 _MIDTURN_SAY_FRAME = (
     "[user message — arrived mid-task]\n{text}\n"
-    "(Address it as part of the current work; abandon or reorder the task only if it says to.)"
+    "(Address the message as part of the current work; abandon or reorder the task only "
+    "if the message says to.)"
 )
 
 #: Task-boundary say hold (ADR-0052): while a plan step is in flight, a pending say waits
@@ -641,8 +648,9 @@ _COMMAND_FRAME_FULL_RE = re.compile(
 #: on it (:func:`_composed_skill_name`, the transcript, the watch projection) keeps seeing the
 #: same shape — only the body, which was documentation for the turn that ran it, is dropped.
 _ELIDED_SKILL_BODY = (
-    '<command-body elided="true" chars="{chars}">the skill body was this message while the '
-    "turn ran; the turn has ended and the body is not re-read</command-body>"
+    '<command-body elided="true" chars="{chars}">this message held the skill instructions '
+    "while their turn ran; that turn is over, so they were removed. Do not act on this "
+    "marker — if the skill is needed again, load it with use_skill</command-body>"
 )
 
 
@@ -1768,10 +1776,13 @@ class AgentLoop:
         nxt = remaining[0]
         return (
             f"Your plan still has {len(remaining)} open step(s); the next is {nxt.id} "
-            f"({nxt.title}). Finish the remaining steps; if a step is WAITING on a person or an "
-            "external event, mark it status=blocked with a note saying what it waits on (blocked "
-            "steps do not hold up the turn); if this goal is done or no longer active, mark steps "
-            "done/cancelled or clear the whole plan with update_plan. Then end the turn."
+            f"({nxt.title}). Do ONE of these, then end the turn:\n"
+            "1. Finish the remaining steps, marking each done as you go.\n"
+            "2. If a step is WAITING on a person or an external event, mark it "
+            "status=blocked with a note saying what it waits on (blocked steps do not "
+            "hold up the turn).\n"
+            "3. If this goal is done or no longer active, mark the steps done/cancelled "
+            "or clear the whole plan with update_plan."
         )
 
     @staticmethod
