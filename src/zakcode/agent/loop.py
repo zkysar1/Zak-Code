@@ -1177,6 +1177,7 @@ class AgentLoop:
         trace_session: str | None = None,
         turn_end_veto_reset: Callable[[], None] | None = None,
         consume_say_inbox: bool = False,
+        compose_skill: Callable[[str, str], Any] | None = None,
     ) -> None:
         self.provider = provider
         # A loop cannot run on a model whose window nobody knows (ADR-0066): every
@@ -1242,6 +1243,12 @@ class AgentLoop:
         # must never set this: they would steal the user's message into a child
         # conversation. Consumption is exactly-once (read_say deletes).
         self._consume_say_inbox = consume_say_inbox
+        # Typed-skill says (ADR-0073): ``(name, args) -> awaitable SkillInvocation`` — the
+        # Agent wires its ``compose_skill_turn``, the SAME composition the REPL runs for a
+        # typed ``/<skill>``, so a slash say delivered mid-turn runs the skill (command
+        # frame + page 1, skeleton seeded) instead of reaching the model as prose. ``None``
+        # (bare loop, sub-agents) delivers every say as text.
+        self._compose_skill = compose_skill
         # Task-boundary say hold (ADR-0052): boundaries a pending say has waited, and the
         # finished-step count at the previous boundary (a rise means a step just completed
         # — the seam a held message lands on). Reset per turn.
@@ -3684,13 +3691,14 @@ class AgentLoop:
             return None
         return BusyLease(busy_path(self.workspace_root), self.session.id)
 
-    def _deliver_midturn_say(self) -> str | None:
+    async def _deliver_midturn_say(self) -> str | None:
         """Consume a pending say into the conversation at an iteration boundary (ADR-0051).
 
-        Returns the delivered text (already appended as a framed user message and
-        persisted) or ``None``. Only the main loop polls (``consume_say_inbox``); the
-        single-slot inbox makes this at most one message per iteration. Fail-open by
-        inheritance: :func:`read_say` yields ``None`` on any OS error.
+        Returns a one-line account of what was delivered (the text of a plain message; the
+        ``/<skill> args`` of a typed skill, ADR-0073) or ``None``. Only the main loop polls
+        (``consume_say_inbox``); the single-slot inbox makes this at most one message per
+        iteration. Fail-open by inheritance: :func:`read_say` yields ``None`` on any OS
+        error.
 
         Task-boundary hold (ADR-0052): while a plan step is in flight and no step just
         completed, the message WAITS — left in the inbox file, so exactly-once and
@@ -3724,11 +3732,67 @@ class AgentLoop:
         self._say_waited = 0
         if text is None:
             return None
+        if text.startswith("/") and self._compose_skill is not None:
+            return await self._deliver_midturn_skill(text)
         self.session.add_message(Message.user(_MIDTURN_SAY_FRAME.format(text=text)))
         self._persist()
         self._note("intervention", "user message delivered mid-turn from the say inbox", kind="say")
         logger.info("say inbox: delivered a user message mid-turn (%d chars)", len(text))
         return text
+
+    async def _deliver_midturn_skill(self, text: str) -> str | None:
+        """A say that is a typed ``/<skill> [args]`` RUNS the skill (ADR-0073).
+
+        The message is what the REPL composes for a typed slash — the command-expansion
+        frame (invocation provenance: a HUMAN typed it) plus the body's first page — and
+        it is seeded into the plan the same way a turn-opening skill is, so an operator's
+        ``/stop`` reaches a runner whose turn never ends. A slash that is not a skill is an
+        ordinary message; a skill this path may not run (``user-invocable: false``, an
+        unreadable body) is refused with a note, never handed to the model as prose — the
+        REPL shows the operator a notice for the same case and the model never sees it.
+        """
+        head, _, rest = text.partition("\n")
+        parts = head.strip().split(None, 1)
+        name = parts[0][1:]
+        args = parts[1].strip() if len(parts) > 1 else ""
+        if rest.strip():
+            args = f"{args}\n{rest.strip()}" if args else rest.strip()
+        result = await self._compose_skill(name, args)  # type: ignore[misc]
+        if not getattr(result, "invoked", False):
+            self.session.add_message(Message.user(_MIDTURN_SAY_FRAME.format(text=text)))
+            self._persist()
+            self._note(
+                "intervention", "user message delivered mid-turn from the say inbox", kind="say"
+            )
+            return text
+        refused = getattr(result, "denied_reason", None) or getattr(result, "error", None)
+        turn_text = getattr(result, "turn_text", None)
+        if refused or not turn_text:
+            reason = str(refused or "the skill produced no turn text")
+            self._note(
+                "intervention",
+                f"/{name} typed mid-turn was not run: {reason}",
+                kind="say",
+                skill=name,
+                refused=True,
+            )
+            logger.info("say inbox: /%s typed mid-turn was not run: %s", name, reason)
+            return f"/{name} not run: {reason}"
+        skill = str(getattr(result, "name", name) or name)
+        self.session.add_message(Message.user(str(turn_text)))
+        self._persist()
+        # The typed skill's sections become plan steps (ADR-0062) and page 1 counts as
+        # delivered (ADR-0067) — exactly the turn-opening path.
+        self._seed_skill_skeleton(skill, _composed_skill_body(str(turn_text)), set())
+        self._register_skill_load(skill)
+        self._note(
+            "intervention",
+            f"/{skill} delivered mid-turn from the say inbox",
+            kind="say",
+            skill=skill,
+        )
+        logger.info("say inbox: delivered /%s mid-turn", skill)
+        return f"/{skill} {args}".strip()
 
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
@@ -3875,7 +3939,7 @@ class AgentLoop:
             # while the turn runs is folded in at this boundary, so the NEXT provider call
             # sees it. Vital for perpetual-loop deployments whose turn never ends; inert
             # (consume_say_inbox=False) on sub-agents and bare loops.
-            self._deliver_midturn_say()
+            await self._deliver_midturn_say()
             # Recompute exposed tools each iteration so a tool activated mid-turn
             # (e.g. via tool_search) is offered in the same turn. During a stuck-recovery
             # NARROW step this iteration is limited to read-only tools: the schema, the
@@ -5034,7 +5098,7 @@ class AgentLoop:
                 iterations += 1
                 # Mid-turn say delivery (ADR-0051, streaming twin): announced so a watching
                 # client shows the operator their message was taken into the running turn.
-                delivered_say = self._deliver_midturn_say()
+                delivered_say = await self._deliver_midturn_say()
                 if delivered_say is not None:
                     shown = (
                         delivered_say if len(delivered_say) <= 200 else delivered_say[:200] + "…"

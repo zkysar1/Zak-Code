@@ -973,13 +973,26 @@ class _InputMux:
         keyboard: bool = True,
         idle_probe: Callable[[], bool] | None = None,
     ) -> None:
-        from zakcode.session.say_inbox import busy_elsewhere, busy_path, read_say, take_interrupt
+        from zakcode.session.say_inbox import (
+            busy_elsewhere,
+            busy_path,
+            read_say,
+            take_interrupt,
+            write_say,
+        )
 
         self._read_say = read_say
+        self._write_say = write_say
         self._take_interrupt = take_interrupt
         self._busy_elsewhere = busy_elsewhere
         self.inbox = inbox
         self.interrupt_fp = interrupt_fp
+        #: True while a turn runs in THIS process (the REPL sets it around each turn). A
+        #: line typed then is a message for the running agent, so it goes through the say
+        #: inbox — the one contract the loop polls at every iteration boundary (ADR-0051)
+        #: — instead of waiting in the queue for a turn end that a runner never reaches
+        #: (ADR-0073: an operator's ``/stop`` sat unread in a live runner's queue).
+        self.turn_active = False
         #: The workspace's busy marker (ADR-0060): while a turn runs in ANOTHER process,
         #: this idle REPL leaves the inbox to it — a say is for the agent doing the work.
         self._busy_marker = busy_path(inbox.parent)
@@ -1004,18 +1017,50 @@ class _InputMux:
         if keyboard:
             threading.Thread(target=self._pump, daemon=True, name="stdin-pump").start()
 
+    #: How long a line typed mid-turn waits for the single say slot to free before falling
+    #: back to the queue. The loop consumes the slot at its next iteration boundary (one
+    #: tool batch away); a bounded wait keeps the pump reading stdin whatever happens.
+    _INBOX_WAIT_SECONDS = 10.0
+
     def _pump(self) -> None:
         while True:
             try:
-                self.queue.put(("line", _read_stdin_line()))
+                line = _read_stdin_line()
             except EOFError:
                 self.queue.put(("eof", None))
                 return
             except KeyboardInterrupt:
                 self.queue.put(("interrupt", None))
+                continue
             except BaseException:  # noqa: BLE001 — a dying pump must not kill chat
                 self.queue.put(("eof", None))
                 return
+            self._route_typed(line)
+
+    def _route_typed(self, line: str) -> None:
+        """Hand a typed line to whoever can act on it now (ADR-0073).
+
+        Idle REPL, an empty line, or a REPL command (``/help``, ``/exit`` …): the queue,
+        read at the prompt. A turn running in this process: the say inbox, which the loop
+        folds into the conversation at its next iteration boundary — a typed ``/stop`` on a
+        runner whose turn never ends therefore RUNS instead of waiting for the prompt that
+        never comes. A slot still busy after the wait falls back to the queue, so no line
+        is ever lost; a turn that ends meanwhile releases the line to the prompt at once.
+        """
+        if not self.turn_active or not line.strip() or _is_repl_command(line):
+            self.queue.put(("line", line))
+            return
+        deadline = time.monotonic() + self._INBOX_WAIT_SECONDS
+        while self.turn_active:
+            try:
+                if self._write_say(self.inbox, line):
+                    return
+            except OSError:
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.25)
+        self.queue.put(("line", line))
 
     def next_input(
         self, *, idle: bool, stop: threading.Event | None = None
@@ -1472,6 +1517,13 @@ _REPL_COMMANDS = (
     "/exit",
     "/quit",
 )
+
+
+def _is_repl_command(line: str) -> bool:
+    """True for a line the REPL itself answers (``/help``, ``/exit`` …): never a message for
+    the agent, so it waits for the prompt even while a turn runs (ADR-0073)."""
+    head = line.strip().split(None, 1)
+    return bool(head) and head[0].lower() in _REPL_COMMANDS
 
 
 def _unknown_command(
@@ -2780,6 +2832,7 @@ def chat(
         # Stream the model response token by token through the renderer. A fresh
         # renderer per turn keeps the text/usage buffers from leaking across turns.
         renderer = StreamRenderer(console=console)
+        mux.turn_active = True  # typed lines now reach the running turn (ADR-0073)
         try:
             _run_streamed_turn(
                 console,
@@ -2806,6 +2859,8 @@ def chat(
             # persisted at message boundaries: report it and keep the prompt.
             notice_error(console, "turn failed", str(exc))
             continue
+        finally:
+            mux.turn_active = False
 
     _shutdown_session_loop(loop)
 

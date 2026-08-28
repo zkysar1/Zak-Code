@@ -294,3 +294,111 @@ async def test_say_patience_cap_delivers_even_when_the_step_never_ends(tmp_path:
     for i in (3, 4, 5):
         assert all("are you stuck?" not in m.text for m in provider.seen[i] if m.role == "user")
     assert any("are you stuck?" in m.text for m in provider.seen[6] if m.role == "user")
+
+
+# ── ADR-0073: a typed /<skill> say runs the skill mid-turn ──────────────────────
+
+
+class _Composed:
+    def __init__(self, **kw: Any) -> None:
+        self.invoked = kw.get("invoked", True)
+        self.name = kw.get("name", "")
+        self.turn_text = kw.get("turn_text")
+        self.denied_reason = kw.get("denied_reason")
+        self.error = kw.get("error")
+
+
+_PROBE_BODY = (
+    "<command-message>probe is running</command-message>\n"
+    "<command-name>/probe</command-name>\n"
+    "<command-args>coach</command-args>\n\n"
+    "# Probe\n\n## Phase 1: Look\n\nlook around\n\n## Phase 2: Leap\n\nleap\n"
+)
+
+
+def _compose_fake(calls: list[tuple[str, str]]):
+    async def compose(name: str, args: str = "", *, fuzzy: bool = True) -> _Composed:
+        calls.append((name, args))
+        if name == "probe":
+            return _Composed(name="probe", turn_text=_PROBE_BODY)
+        if name == "internal":
+            return _Composed(name="internal", denied_reason="internal is user-invocable: false")
+        return _Composed(invoked=False)
+
+    return compose
+
+
+def _skill_loop(provider: Provider, tmp_path: Path, calls: list, tools: list[Tool]):
+    registry = ToolRegistry()
+    registry.register(UpdatePlanTool())
+    for t in tools:
+        registry.register(t)
+    session = Session(cwd=str(tmp_path), model="test/model")
+    loop = AgentLoop(
+        provider,
+        registry,
+        session,
+        settings=load_settings(workspace_root=tmp_path),
+        max_iterations=10,
+        consume_say_inbox=True,
+        compose_skill=_compose_fake(calls),
+    )
+    return loop, session
+
+
+@pytest.mark.asyncio
+async def test_a_typed_skill_say_runs_the_skill_mid_turn(tmp_path: Path) -> None:
+    inbox = say_path(tmp_path)
+    calls: list[tuple[str, str]] = []
+    provider = _Recording([_tool_call("poke"), _DONE])
+    loop, session = _skill_loop(
+        provider, tmp_path, calls, [_SayWhileRunning(inbox, "/probe coach")]
+    )
+    events = [e async for e in loop.astream_turn("do the thing")]
+
+    assert calls == [("probe", "coach")]  # the REPL's own composition, same arguments
+    assert not say_pending(inbox)
+    # The composed turn text lands as-is: the command frame leads (invocation provenance),
+    # with no mid-task prose wrapped around it.
+    composed = [
+        m for m in session.messages if m.role == "user" and m.text.startswith("<command-message>")
+    ]
+    assert len(composed) == 1
+    assert "arrived mid-task" not in composed[0].text
+    # …and the provider call after the tool iteration saw it.
+    assert any(m.text.startswith("<command-message>") for m in provider.seen[1] if m.role == "user")
+    # The skill's sections were seeded into the plan, like a turn-opening skill.
+    titles = [t.title for t in session.task_network.tasks]
+    assert any("Look" in t for t in titles) and any("Leap" in t for t in titles)
+    statuses = [e.message for e in events if isinstance(e, AgentStatus)]
+    assert any("delivered mid-turn" in s and "/probe coach" in s for s in statuses)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_skill_say_is_not_handed_to_the_model(tmp_path: Path) -> None:
+    inbox = say_path(tmp_path)
+    calls: list[tuple[str, str]] = []
+    provider = _Recording([_tool_call("poke"), _DONE])
+    loop, session = _skill_loop(provider, tmp_path, calls, [_SayWhileRunning(inbox, "/internal")])
+    events = [e async for e in loop.astream_turn("do the thing")]
+
+    assert calls == [("internal", "")]
+    assert not say_pending(inbox)  # consumed (exactly-once), refused, not delivered
+    assert not any("internal" in m.text for m in session.messages if m.role == "user")
+    statuses = [e.message for e in events if isinstance(e, AgentStatus)]
+    assert any("/internal not run" in s and "user-invocable" in s for s in statuses)
+
+
+@pytest.mark.asyncio
+async def test_a_slash_say_that_is_not_a_skill_is_delivered_as_text(tmp_path: Path) -> None:
+    inbox = say_path(tmp_path)
+    calls: list[tuple[str, str]] = []
+    provider = _Recording([_tool_call("poke"), _DONE])
+    loop, session = _skill_loop(
+        provider, tmp_path, calls, [_SayWhileRunning(inbox, "/nonesuch now")]
+    )
+    await loop.arun_turn("do the thing")
+
+    assert calls == [("nonesuch", "now")]
+    framed = [m for m in session.messages if m.role == "user" and "/nonesuch now" in m.text]
+    assert len(framed) == 1 and "arrived mid-task" in framed[0].text

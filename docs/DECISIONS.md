@@ -2854,3 +2854,44 @@ mechanism from what it reads. ~120 tokens on the cacheable tier; one line below 
 boundary. Pinned by tests/test_prompt.py (the session line below the boundary, absent when
 no id; the contract in the stable tier) and tests/test_loop_prompt_session.py (the loop
 passes its own session id).
+
+## ADR-0073: A line typed while a turn runs reaches the running turn — and a typed skill runs
+
+**Context.** The chat REPL's keyboard pump put every typed line on a queue read at the
+prompt, between turns. A runner — a claude-mind reducer whose whole session is ONE turn
+(one `/start`, then Stop-hook vetoes without end) — never reaches that prompt, so a line
+typed into its terminal waited forever. Measured 2026-08-28 on coach (zc-03): `/stop coach`
+typed into the live reducer's pane was never consumed; the session had to be hard-cycled.
+Meanwhile the say inbox (ADR-0051) already delivered messages INTO a running turn at every
+iteration boundary — for `zakcode say` and the cockpit box, but not for the keyboard,
+which is the door an operator sitting at the runner actually uses. And a say that named a
+skill (`/stop coach`) reached the model as prose, not as the skill.
+
+**Decision.** (1) While a turn runs in this process (`_InputMux.turn_active`, set by the
+REPL around each turn) a typed line goes through the say inbox — the one contract every
+consumer polls — with a bounded wait for the single slot and a fall-back to the queue, so
+no line is lost and a turn that ends meanwhile releases it to the prompt at once. The
+REPL's own commands (`/help`, `/exit` …) and empty lines stay on the queue: they are for
+the REPL, not the agent. (2) A say that is a typed `/<skill> [args]` RUNS the skill: the
+loop hands it to the Agent's `compose_skill_turn` — the SAME composition the REPL runs for
+a typed slash — and appends the result (command-expansion frame + page 1) as the user
+message, seeding the skill's sections into the plan and counting page 1 as delivered,
+exactly like a turn-opening skill. A slash that is not a skill is an ordinary message; a
+skill this path may not run (`user-invocable: false`, an unreadable body) is refused with
+a note and a status line, never handed to the model as prose — the REPL shows a notice for
+the same case. The ADR-0052 task-boundary hold still applies (≤ 3 boundaries).
+
+**Alternatives rejected.** Having the loop read the REPL's queue directly (a second input
+door beside the file contract, which ADR-0051 exists to prevent); delivering a typed
+skill as text and trusting the model to load it (it reached the model as a request to
+consider, and a small model considered it); a keyboard-only fast path that bypasses the
+task-boundary hold (the hold is the whole ADR-0052 property, and a `/stop` mid-step lands
+at the seam a few tool calls later).
+
+**Consequences.** An operator at a runner's terminal types `/stop <agent>` and the stop
+skill runs at the next iteration boundary; a typed message mid-turn is an interjection
+(Claude Code semantics) rather than the next turn's input. Pinned by tests/test_loop_say.py
+(a typed-skill say runs the skill with the frame leading and the plan seeded; a refused
+skill is not delivered; a non-skill slash is text) and tests/test_cli_chat.py (mid-turn
+lines reach the inbox; REPL commands and idle lines stay queued; a busy slot falls back
+to the queue).
