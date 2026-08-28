@@ -57,7 +57,9 @@ Stop conditions
   same.
 * ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4).
   A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried with
-  ``retry_after``-aware jittered backoff inside a fixed ~5-minute horizon (its
+  ``retry_after``-aware jittered backoff inside a fixed ~15-minute horizon — also when
+  the limit lands MID-STREAM, after text already reached the client: the partial is
+  discarded and re-generated (ADR-0070) — (its
   timeout/rejection subclasses: a fixed :data:`_MAX_INTERRUPT_RETRIES` attempts);
   a :class:`~zakcode.providers.base.ContextWindowExceeded` is recovered up to
   ``_MAX_CONTEXT_RECOVERY`` times by force-compacting and retrying the same call in
@@ -219,7 +221,11 @@ _DOOM_RECOVERY_NUDGE = (
 #: Gemini's dynamic shared quota is that a 429 is temporary CONTENTION, remedied by
 #: minutes-scale exponential backoff plus traffic smoothing; the previous 3-attempt /
 #: 6-second budget was hopeless against that failure mode and killed a 42-iteration
-#: run mid-flight (vertex_ai/gemini-2.5-flash, 2026-08-26). Timeouts and
+#: run mid-flight (vertex_ai/gemini-2.5-flash, 2026-08-26). Widened again 2026-08-28
+#: (ADR-0070) to fifteen minutes: the loops this policy protects are UNATTENDED
+#: runners, whose only alternative to waiting is a dead session nobody resumes until
+#: morning, and fifteen minutes at a ≤60 s cadence is a handful of cheap probes
+#: against a quota storm. Timeouts and
 #: provider-rejected tool calls keep a small FIXED attempt bound
 #: (``_MAX_INTERRUPT_RETRIES``) — waiting minutes on a hung backend or a
 #: malformed-tool-call loop helps nobody. There is deliberately no knob for any of
@@ -228,7 +234,7 @@ _DOOM_RECOVERY_NUDGE = (
 _RETRY_BASE_DELAY = 2.0
 _RETRY_MAX_DELAY = 60.0
 _RETRY_AFTER_CEILING = 120.0
-_RATE_LIMIT_RETRY_HORIZON = 300.0
+_RATE_LIMIT_RETRY_HORIZON = 900.0
 _MAX_INTERRUPT_RETRIES = 3
 
 #: Resample temperature for a ModelOutputRejected retry (Groq ``tool_use_failed``). At
@@ -5107,18 +5113,20 @@ class AgentLoop:
                 rate_limit_started: float | None = None  # wall clock of the first pure 429
                 next_temperature: float | None = None
 
-                # Bounded RateLimited retry for THIS provider call (audit P0-4). A retry
-                # is only safe while NO event has arrived yet — once deltas streamed to
-                # the client, re-issuing the call would re-yield text the client already
-                # rendered, so a mid-stream RateLimited is terminal for the turn instead.
-                # EXCEPTION: ModelOutputRejected (the provider rejected the model's own
-                # malformed tool call, Groq ``tool_use_failed``) IS retried even mid-stream
-                # — its partial output is known-invalid, so a small duplicate text fragment
-                # is the right price for not killing the turn. Without this, deep models
-                # that emit a malformed tool call mid-stream die with provider_error even
-                # though the documented remedy is a retry (base.py ModelOutputRejected).
+                # Bounded RateLimited retry for THIS provider call (audit P0-4), also
+                # MID-STREAM (ADR-0070): a rate limit that lands after deltas reached the
+                # client used to be terminal — "re-issuing would re-yield text the client
+                # already rendered" — and that ruling killed a 97-iteration vertex_ai run
+                # on 2026-08-28 (``MidStreamFallbackError: RateLimitError:
+                # RESOURCE_EXHAUSTED`` mid-answer, session over). The duplicate is
+                # cosmetic and named to the client (the status says the partial is
+                # discarded); the transcript never saw the partial, because an attempt's
+                # text is committed only when it streams to completion. A dead turn on an
+                # unattended runner is the expensive outcome, not a repeated paragraph.
+                # ModelOutputRejected (the provider rejected the model's own malformed tool
+                # call, Groq ``tool_use_failed``) retries mid-stream for the same reason.
                 # The accumulators are rebuilt per attempt so a retried call can never
-                # inherit partial state (defense in depth on top of the no-event gate).
+                # inherit partial state.
                 stream_finish_reason: str | None = None
                 # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off.
                 call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
@@ -5229,14 +5237,12 @@ class AgentLoop:
                                 streamed=True,
                             )
                     except RateLimited as exc:
-                        # A generic mid-stream RateLimited is terminal (re-yielding rendered
-                        # text would duplicate it), but ModelOutputRejected is retried even
-                        # mid-stream — the provider rejected the model's own malformed tool
-                        # call, so the partial stream is known-invalid and re-issuing is the
-                        # documented recovery (base.py). Same budgets as _call_provider:
+                        # Retried whether or not deltas already streamed (ADR-0070 — see
+                        # the attempt-loop comment above). Same budgets as _call_provider:
                         # pure 429s ride the backoff horizon; interrupt classes keep the
                         # small fixed bound.
-                        retryable = not received_any or isinstance(exc, ModelOutputRejected)
+                        retryable = True
+                        discarded = len("".join(text_parts)) if received_any else 0
                         interrupt_class = isinstance(exc, ModelOutputRejected | TimedOut)
                         if interrupt_class:
                             within_budget = interrupt_attempts < _MAX_INTERRUPT_RETRIES
@@ -5276,6 +5282,11 @@ class AgentLoop:
                                 budget = (
                                     f"{elapsed:.0f}s into the "
                                     f"{_RATE_LIMIT_RETRY_HORIZON:.0f}s backoff budget"
+                                )
+                            if discarded:
+                                reason = (
+                                    f"{reason} mid-stream — the {discarded} characters "
+                                    "streamed above are discarded and will be re-generated"
                                 )
                             logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
                             yield AgentStatus(

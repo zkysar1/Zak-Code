@@ -261,20 +261,58 @@ def test_streaming_rate_limit_retries_before_first_event(fast_sleep: list[float]
     assert any(getattr(ev, "text", None) == "hello" for ev in events)
 
 
-def test_streaming_midstream_failure_is_terminal_but_resumable(
+def test_streaming_midstream_rate_limit_is_retried_and_the_partial_discarded(
     fast_sleep: list[float],
 ) -> None:
-    """Once deltas reached the client, a retry would duplicate them — never retry.
-    But the stop is RESUMABLE (2026-08-26 vertex_ai incident): the partial text is
-    persisted with an interruption rail, and the status names the saved session."""
+    """A rate limit that lands after text already streamed is retried (ADR-0070): the
+    partial is discarded and re-generated, the client is told so, and the transcript
+    holds only the completed attempt. Measured 2026-08-28: a vertex_ai runner died 97
+    iterations in on ``MidStreamFallbackError: RateLimitError: RESOURCE_EXHAUSTED``."""
     provider = FlakyStreamProvider([], fail_midstream=RateLimited("429 mid-stream"))
+    loop = _make_loop(provider)
+    events = asyncio.run(_collect(loop, "hi"))
+    done = events[-1]
+    assert done.stop_reason == "completed"
+    assert not done.degraded
+    assert provider.stream_calls == 2  # retried once the limit lifted
+    assert len(fast_sleep) == 1
+    statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
+    assert any("discarded" in s and "5 characters" in s for s in statuses)
+    roles = [m.role for m in loop.session.messages]
+    assert roles == ["user", "assistant"]
+    assert loop.session.messages[1].text == "hello"
+
+
+class _AlwaysFailsMidStream(FlakyStreamProvider):
+    """Streams text, then fails EVERY attempt — a quota storm that outlasts the budget."""
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kw: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        self.stream_calls += 1
+        yield StreamTextDelta(text="hello")
+        raise RateLimited("429 mid-stream")
+
+
+def test_streaming_midstream_failure_past_the_budget_is_terminal_but_resumable(
+    fast_sleep: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the backoff budget is spent the stop is RESUMABLE (2026-08-26 vertex_ai
+    incident): the partial text is persisted with an interruption rail, and the status
+    names the saved session."""
+    monkeypatch.setattr("zakcode.agent.loop._RATE_LIMIT_RETRY_HORIZON", 0.0)
+    provider = _AlwaysFailsMidStream([])
     loop = _make_loop(provider)
     events = asyncio.run(_collect(loop, "hi"))
     done = events[-1]
     assert done.stop_reason == "provider_error"
     assert done.degraded
-    assert provider.stream_calls == 1  # not retried despite being RateLimited
-    assert fast_sleep == []
+    assert provider.stream_calls == 2  # one retry inside the (zero) budget, then terminal
     statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
     assert any("provider error" in s for s in statuses)
     assert any("continues from here" in s for s in statuses)
@@ -390,14 +428,17 @@ def test_provider_error_refunds_shared_budget_streaming(fast_sleep: list[float])
     assert budget.remaining == 10  # symmetric with the buffered path
 
 
-def test_streaming_midstream_failure_still_refunds_budget(fast_sleep: list[float]) -> None:
-    """Stack review minor #8: a MID-stream failure (events already received) also
-    refunds the shared-budget unit — the partial output is discarded, so nothing the
-    iteration consumed survives the turn."""
+def test_streaming_midstream_failure_still_refunds_budget(
+    fast_sleep: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stack review minor #8: a MID-stream failure (events already received) that outlasts
+    the backoff budget also refunds the shared-budget unit — the partial output is
+    discarded, so nothing the iteration consumed survives the turn."""
     from zakcode.agent.budget import IterationBudget
 
+    monkeypatch.setattr("zakcode.agent.loop._RATE_LIMIT_RETRY_HORIZON", 0.0)
     budget = IterationBudget(10)
-    provider = FlakyStreamProvider([], fail_midstream=RateLimited("429 mid-stream"))
+    provider = _AlwaysFailsMidStream([])
     settings = load_settings(workspace_root=Path.cwd())
     loop = AgentLoop(
         provider,

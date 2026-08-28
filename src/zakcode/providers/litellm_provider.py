@@ -848,6 +848,19 @@ class LiteLLMProvider(Provider):
         # unavailable. Auth is checked before the generic catch-all; rate-limit
         # carries through any server-suggested retry delay. An unknown exception
         # always degrades to RequestFailed — a raw vendor exception never leaks.
+        #
+        # A WRAPPER is classified by what it wraps. litellm's ``MidStreamFallbackError``
+        # (a stream that died after its first chunk) carries the real failure as
+        # ``original_exception`` and subclasses ServiceUnavailableError, so the wrapper alone
+        # would map every mid-stream death to a generic transient — a wrapped 429 lost its
+        # Retry-After, a wrapped auth failure became a retry. Measured 2026-08-28 (a
+        # vertex_ai runner, 97 iterations): ``MidStreamFallbackError: RateLimitError:
+        # RESOURCE_EXHAUSTED`` ended the turn. Unwrap to the innermost cause first.
+        for _ in range(4):
+            inner = getattr(exc, "original_exception", None)
+            if not isinstance(inner, Exception) or inner is exc:
+                break
+            exc = inner
         retry_after = cls._extract_retry_after(exc)
         # Scrub credential-shaped text (e.g. a gateway api_base with embedded creds, or a
         # backend echoing a token) from the vendor message BEFORE it propagates to any
