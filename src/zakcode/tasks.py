@@ -483,6 +483,18 @@ class TaskNetwork(BaseModel):
 _STEP_HEADING_RE = re.compile(
     r"^(#{2,3})\s+(?:\*\*)?(?:phase|step|lane|stage|part|task|\d+[.)])(?![a-z-])", re.I
 )
+#: The same ordered-work markers written as a bold lead-in instead of a heading — the shape
+#: a Mind's control skills use ("**Step 0.7: Recovery Branch** — …", "**Step 1 — Find the
+#: right session:**", "- **Step 2**: …"): at line start (a list bullet allowed), the word, a
+#: number, then a separator or the closing bold. "**Phase 6 spark is NOT wrapped …**" is
+#: prose (a word follows the number) and never matches. Measured (ADR-0064): /start, /stop
+#: and /aspirations carry no step-like heading at all and 6 / 4 / 2 of these; a first
+#: `/start` on a small model stopped after "Following Step 0.7 cleanup sequence." with an
+#: empty plan and nothing to hold it.
+_STEP_BOLD_RE = re.compile(
+    r"^\s*(?:[-*+]\s+)?\*\*(?:phase|step|lane|stage|part|task)\s+\d[\w.]*\s*(?:[:.)\-—–]|\*\*)",
+    re.I,
+)
 #: A skeleton never exceeds this many top-level steps; the rest fold into one closing step.
 _MAX_SKELETON_STEPS = 40
 #: …nor this many sub-steps under one section (the overflow is counted in the section's note).
@@ -498,14 +510,34 @@ def _heading_title(line: str) -> str:
     return text
 
 
+_BARE_STEP_MARKER_RE = re.compile(
+    r"^(?:phase|step|lane|stage|part|task)\s+\d[\w.]*\s*[:.)\-—–]*\s*$", re.I
+)
+
+
+def _bold_title(line: str) -> str:
+    """The title of a ``**Step N …**`` lead-in: the bold span without its trailing separator
+    — or, when the span is the bare marker (``**Step 2**: resume the agent.``), the marker
+    plus the first sentence that follows it."""
+    _, span, *tail = line.split("**")
+    title = _heading_title(span).rstrip(" :—–-")
+    if _BARE_STEP_MARKER_RE.match(span.replace("`", "")):
+        clause = _heading_title("".join(tail)).lstrip(" :—–-")
+        clause = re.split(r"\.(?:\s|$)", clause, maxsplit=1)[0].strip()
+        if clause:
+            title = f"{title}: {clause}"
+    return _heading_title(title)
+
+
 def skill_skeleton(body: str, *, skill: str) -> list[Task]:
     """Plan steps from a skill body's numbered sections (ADR-0062) — ``[]`` when it has none.
 
-    Walks the markdown headings outside fenced code: a step-like ``##`` heading becomes a
-    top-level step, a step-like ``###`` heading a sub-step of the section it sits in (which
-    becomes ``compound``), and a non-step ``##`` heading closes the current section so a
-    step-like ``###`` after it stands on its own. Every note opens with the ``from /<skill>``
-    marker — how the loop recognises a skeleton it already seeded. Pure: no model, no I/O.
+    Walks the markdown outside fenced code: a step-like ``##`` heading becomes a top-level
+    step; a step-like ``###`` heading, or a bold ``**Step N …**`` lead-in at line start
+    (ADR-0064), a sub-step of the section it sits in (which becomes ``compound``) — or a
+    step of its own when no section is open; a non-step ``##`` heading closes the current
+    section. Every note opens with the ``from /<skill>`` marker — how the loop recognises a
+    skeleton it already seeded. Pure: no model, no I/O.
     """
     note = f"from /{skill}; done when this section has been carried out"
     top: list[Task] = []
@@ -519,12 +551,17 @@ def skill_skeleton(body: str, *, skill: str) -> list[Task]:
         if fenced:
             continue
         match = _STEP_HEADING_RE.match(line)
-        if match is None:
+        if match is not None:
+            task = Task(title=_heading_title(line), note=note)
+            top_level = len(match.group(1)) == 2
+        elif _STEP_BOLD_RE.match(line):
+            task = Task(title=_bold_title(line), note=note)
+            top_level = False
+        else:
             if line.startswith("## "):
                 parent = None
             continue
-        task = Task(title=_heading_title(line), note=note)
-        if len(match.group(1)) == 2:
+        if top_level:
             top.append(task)
             parent = task
         elif parent is None:

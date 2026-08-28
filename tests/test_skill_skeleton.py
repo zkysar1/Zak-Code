@@ -38,7 +38,7 @@ Some intro prose that mentions /fresh-eyes-code in passing.
 
 ## Phase 0: Load Conventions
 
-**Step 0** — run `load-conventions.sh` (this bold line is prose, not a heading).
+**Step 0 is the load** — run `load-conventions.sh` (bold prose: a word follows the number).
 
 ## Phase 1: Establish Session Context
 
@@ -124,6 +124,61 @@ def test_caps_fold_the_rest_into_one_closing_step() -> None:
     [section] = skill_skeleton(body, skill="wide")
     assert len(section.children) == 12
     assert section.note.endswith("(+3 more sub-sections not listed)")
+
+
+START = """# /start — Create or resume an agent
+
+## Syntax
+
+`/start <name> [--mode <mode>] [--recover]`
+
+**Step 0: Load Conventions** — `Bash: load-conventions.sh` with each name listed.
+
+**Step 0.5: Parse Mode + Recovery Flags** — Extract the following:
+- `recover` — present when `--recover` was passed
+
+**Step 0.7: Recovery Branch (only if `recover = true`)** — Runs BEFORE Step 1's check.
+
+**Phase 6 spark is NOT wrapped by recurring-close.sh** (bold prose: a word follows the number).
+
+**Step 1 — Check Requested Agent's State:**
+
+## Behavior by Current State
+
+### IDLE (agent-state contains "IDLE")
+
+- **Step 2**: resume the agent in the requested mode. Then wait.
+
+**Step 3**
+
+```
+**Step 99: inside a fence** — never a step
+```
+"""
+
+
+def test_bold_step_lead_ins_are_steps_too() -> None:
+    # ADR-0064: the control skills write their checklist as bold lead-ins, not headings.
+    steps = skill_skeleton(START, skill="start")
+    assert [t.title for t in steps] == [
+        "Step 0: Load Conventions",
+        "Step 0.5: Parse Mode + Recovery Flags",
+        "Step 0.7: Recovery Branch (only if recover = true)",
+        "Step 1 — Check Requested Agent's State",
+        "Step 2: resume the agent in the requested mode",  # a bare marker takes its sentence
+        "Step 3",
+    ]
+    assert all(t.kind == "primitive" for t in steps)
+    assert all(t.note.startswith("from /start;") for t in steps)
+
+
+def test_bold_steps_nest_under_the_open_section() -> None:
+    body = "## Phase 0: Load\n\n**Step 0: Load Conventions** — do it.\n\n## Phase 1: Act\n"
+    steps = skill_skeleton(body, skill="x")
+    assert [t.title for t in steps] == ["Phase 0: Load", "Phase 1: Act"]
+    assert steps[0].kind == "compound"
+    assert [c.title for c in steps[0].children] == ["Step 0: Load Conventions"]
+    assert steps[1].kind == "primitive"
 
 
 def test_composed_skill_body_is_the_text_after_the_frame() -> None:
