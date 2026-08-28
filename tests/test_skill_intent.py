@@ -138,6 +138,9 @@ class _Resolver:
     def names(self) -> list[str]:
         return list(self._names)
 
+    def body(self, name: str) -> str | None:
+        return None  # no whole-body seam: the loop seeds from what the load delivered
+
     async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         raise AssertionError("no skill is loaded in these tests")
 

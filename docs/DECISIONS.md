@@ -2597,3 +2597,73 @@ LOCAL_ONLY; listing cache), tests/test_zakpick.py (the entry's window travels wi
 model; every offender named; the warning text), tests/test_compact.py (no fallback),
 tests/test_output_clamp.py (`skill_too_large`; a body with answer room loads) and
 tests/test_skill_fit.py (verdicts, `zakcode info` rows, banner lines).
+
+## ADR-0067: A sectioned skill is paged through the plan — one section in context at a time
+
+**Context.** ADR-0066 left the second defect standing. A skill that takes 35% of the pod's
+131k window (`/aspirations-precheck`, 184 KB, ~46k tokens) cannot load on a 32k model at
+all, and the only answers were a refusal (ADR-0066), a truncation (rejected in ADR-0065 —
+a head-and-tail of a skill is a broken skill) or a bigger window. ADR-0062 already turns a
+sectioned skill into a table of contents — its `##` step sections seed the plan the moment
+the body lands — but the body still landed WHOLE, so the plan was a checklist over
+instructions the model had to hold in full. The plan knew which section was current; the
+harness was not using that.
+
+**Decision.** Page the skill through the plan. One way, for every window size, no flag.
+
+1. *Splitting.* `skill_pages(body, skill)` (`zakcode.tasks`) splits a skill with two or
+   more top-level step sections — the same `##` headings `skill_skeleton` seeds, fenced
+   headings ignored, folded identically past `_MAX_SKELETON_STEPS` — into `SkillPages`:
+   `front` (the preamble plus every non-step `##` section: Sub-commands, Return Protocol,
+   …) and pages, page k ↔ skeleton step k. A page renders with a header
+   `[/<skill> — page k of N: <title>]` and the contract line ("When this section is done,
+   mark its step done with update_plan (send the whole plan) and section k+1 of N arrives
+   in the next message." — "This is the last section." on the last).
+2. *Delivery.* Both doors hand over page 1 only: `use_skill` returns front + page 1
+   (data `paged: True, page: 1`; the hint says this result holds SECTION 1's instructions
+   only) and a typed `/<skill>` turn (`compose_skill_turn`) composes the same text. The
+   loop seeds the skeleton from the WHOLE body through the new `SkillResolver.body(name)`
+   seam, so the plan names every section, and the skeleton rail adds "You hold section 1's
+   instructions now; each next section's instructions arrive in a new message when you
+   mark the section before it done."
+3. *Turning.* After any batch that carried `update_plan`, `_turn_skill_pages` finds the
+   current page of every paged skill (`_current_page`): with the seeded structure intact,
+   the first open section step; once the model has reshaped the plan, each page finds its
+   step by title or by its marker token ("Step 0.5" survives "Step 0.5 + 0.6: …"), and a
+   page whose step is gone counts as finished once the plan has moved past it (a later
+   page's step under way or closed) — until then it is delivered, because the model closed
+   a section whose text it never held. Only the current page is delivered, as a
+   control-rail user message; sections closed without their page are counted as skipped,
+   never replayed. A page that cannot fit (`_verbatim_overflow`) ends the turn
+   `skill_too_large`, as ADR-0066 does for a whole body. A mid-skill re-load (ADR-0063's
+   pointer) hands the CURRENT section again instead of pointing at text the model may have
+   lost, and a restart reads how far a skill was paged from the headers in the transcript
+   (`PAGE_HEADER_RE`) — the in-memory count dies with the process; the headers do not.
+4. *Signal.* Every page delivered writes a trace note `skill_page` (skill, page, of,
+   tokens, skipped) and a streaming status `page k/N of /<skill>: <title>`; every turn
+   that paged writes a `skill_paging` summary per skill (pages, delivered, sections closed,
+   delivered tokens against the whole body's tokens, skipped). That is the effectiveness
+   measure: what the model actually held against what the skill would have cost whole,
+   and how many sections it closed unread. `skill_fit_report` measures a paged skill by
+   its LARGEST page ("tokens, largest section"), so the banner flags exactly what a turn
+   would refuse.
+
+**Alternatives rejected.** A flag or a per-window switch (one way); paging by token
+budget instead of by section (the plan has no step for half a section — a page bounded
+by the author's structure is a unit the model can mark done); replaying skipped
+sections (the plan is the model's to shape; a replay would fight a merge the model chose,
+and the skipped count is the signal that says when that choice was wrong); delivering
+pages as tool results (a page is not the answer to a call; the control rail is where every
+other harness hint lives and it survives compaction the same way); paging unsectioned
+skills (bold-step skills such as `/start` have no `##` sections — they land whole and stay
+the fit report's problem).
+
+**Consequences.** Context is bounded by the front matter plus the largest section, not the
+largest skill: a 32k model can run a 184 KB skill one lane at a time. A model must mark a
+section done to receive the next — the plan discipline ADR-0062 already demanded, now with
+a cost for skipping it — and a model that never touches the plan holds section 1 only.
+The `skill_paging` note and the skipped count make paging's effect measurable per session.
+Every `SkillResolver` implements `body(name)`. Pinned by tests/test_skill_paging.py
+(splitting, the fold, marker matching, page 1 at both doors, page turns in order and never
+twice, a merged step, a fully closed plan, restart recovery, the streaming status, a page
+that cannot fit, the fit report) and the paged hint contract in tests/test_skill_skeleton.py.

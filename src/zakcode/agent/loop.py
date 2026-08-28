@@ -156,7 +156,7 @@ from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
-from zakcode.tasks import Task, skill_skeleton
+from zakcode.tasks import PAGE_HEADER_RE, SkillPages, Task, skill_pages, skill_skeleton
 from zakcode.tools.base import (
     ConcurrencyClass,
     Sampler,
@@ -394,16 +394,22 @@ def _id_span(steps: list[Task]) -> str:
     return steps[0].id if len(steps) == 1 else f"{steps[0].id}–{steps[-1].id}"
 
 
-def _skeleton_rail(skill: str, steps: list[Task]) -> str:
+def _skeleton_rail(skill: str, steps: list[Task], *, paged: bool = False) -> str:
     """The rail that follows a skill load (ADR-0062): what the harness put in the plan and
-    what is expected of it."""
-    return (
+    what is expected of it — and, for a paged skill (ADR-0067), how its sections arrive."""
+    rail = (
         f"I added the {len(steps)} sections of /{skill} to your plan as steps "
         f"({_id_span(steps)}). They are the work now: do them in order, mark each done with "
         "update_plan (send the whole plan) as you finish it, split any step that turns out to "
         "be several actions, and mark a section that does not apply to this request "
         "cancelled with the reason in its note."
     )
+    if paged:
+        rail += (
+            " You hold section 1's instructions now; each next section's instructions arrive "
+            "in a new message when you mark the section before it done."
+        )
+    return rail
 
 
 #: How many times a turn may discard a degenerate (repetition-looping) completion and
@@ -1253,6 +1259,12 @@ class AgentLoop:
         # seam when a verbatim body cannot fit the window; both twins end the turn on it
         # right after the batch's results land. Per-turn.
         self._turn_fatal: tuple[str, str] | None = None
+        # Skill paging (ADR-0067): a sectioned skill's pages by lower-cased name, the highest
+        # page delivered so far (session-lifetime — a page belongs to the plan, not the turn),
+        # and this turn's delivery record for the summary note.
+        self._skill_pages: dict[str, SkillPages] = {}
+        self._skill_page_delivered: dict[str, int] = {}
+        self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
         # as re-measuring while probe → probe → probe with nothing changed does. Per-turn.
@@ -1939,6 +1951,21 @@ class AgentLoop:
         anchor = self._plan_step_for_skill(skill)
         if anchor is not None and anchor.children:
             return []  # the model already decomposed that step itself
+        # The WHOLE body, not what was delivered: a paged load (ADR-0067) hands the model
+        # page 1 only, and the skeleton must still name every section. Falling back to the
+        # delivered text is right for an unpaged load; for a paged one it is a defect that
+        # would otherwise hide (a one-step plan, no page ever turned) — so it is named.
+        whole = self._skill_body(skill)
+        if whole is None and PAGE_HEADER_RE.search(body):
+            self._note(
+                "intervention",
+                f"/{skill} arrived paged but its whole body is unreadable through the "
+                "resolver: the plan holds section 1 only and no further section can be "
+                "delivered",
+                kind="skill_page_body_missing",
+                skill=skill,
+            )
+        body = whole or body
         steps = skill_skeleton(body, skill=skill)
         if not steps:
             return []  # no numbered sections: nothing to seed
@@ -1955,7 +1982,10 @@ class AgentLoop:
             f"plan seeded from /{skill}: its {len(steps)} sections",
             kind="skill_skeleton",
         )
-        self.session.add_message(Message.user(_control_rail(_skeleton_rail(skill, steps))))
+        paged = self._ensure_skill_pages(skill) is not None
+        self.session.add_message(
+            Message.user(_control_rail(_skeleton_rail(skill, steps, paged=paged)))
+        )
         self._persist()
         return steps
 
@@ -1978,10 +2008,229 @@ class AgentLoop:
             name = str((block.data or {}).get("skill") or call.arguments.get("name", "")).strip()
             if not name:
                 continue
+            self._register_skill_load(name)  # a paged skill starts over at page 1 (ADR-0067)
             steps = self._seed_skill_skeleton(name, block.output, seeded)
             if steps:
                 out.append((name, steps))
         return out
+
+    # ── skill paging: one section at a time, turned by the plan (ADR-0067) ─────────────
+
+    def _skill_body(self, name: str) -> str | None:
+        """The whole body of ``/<name>`` through the resolver's ``body`` seam, or ``None``
+        (no resolver, an unknown skill, or a resolver without the seam)."""
+        reader = getattr(self._skill_resolver, "body", None)
+        if reader is None:
+            return None
+        try:
+            body = reader(name)
+        except Exception:  # noqa: BLE001 — a body the resolver cannot read is not ours to raise
+            return None
+        return body if isinstance(body, str) and body.strip() else None
+
+    def _ensure_skill_pages(self, name: str) -> SkillPages | None:
+        """The pages of ``/<name>`` (cached), or ``None`` when it is not a sectioned skill.
+        First sight of a skill after a restart reads how far it was paged from the transcript."""
+        key = name.lower()
+        if key in self._skill_pages:
+            return self._skill_pages[key]
+        body = self._skill_body(name)
+        pages = skill_pages(body, skill=name) if body else None
+        if pages is None:
+            return None
+        self._skill_pages[key] = pages
+        if key not in self._skill_page_delivered:
+            self._skill_page_delivered[key] = self._pages_in_transcript(name)
+        return pages
+
+    def _pages_in_transcript(self, name: str) -> int:
+        """The highest page of ``/<name>`` already in the transcript — the in-memory count
+        dies with the process; the page headers do not."""
+        highest = 0
+        for message in self.session.messages:
+            texts = [message.text or ""]
+            texts.extend(b.output for b in message.blocks if isinstance(b, ToolResultBlock))
+            for text in texts:
+                for match in PAGE_HEADER_RE.finditer(text):
+                    if match.group("skill").lower() == name.lower():
+                        highest = max(highest, int(match.group("page")))
+        return highest
+
+    def _register_skill_load(self, name: str) -> None:
+        """A fresh load (either door) delivered page 1: the count for that skill starts over."""
+        pages = self._ensure_skill_pages(name)
+        if pages is None:
+            return
+        self._skill_page_delivered[name.lower()] = 1
+        record = self._turn_paging.setdefault(
+            name, {"pages": pages.count, "delivered": [], "skipped": 0}
+        )
+        record["delivered"].append(1)
+
+    def _section_steps(self, name: str) -> list[Task]:
+        """The plan steps seeded from ``/<name>``'s top-level sections, in order: a task
+        whose note opens with the skill's marker and whose parent's does not (sub-steps carry
+        the marker too, and are not pages)."""
+        marker = re.compile(rf"^from /{re.escape(name.lower())}(?![a-z0-9_-])")
+        out: list[Task] = []
+
+        def walk(tasks: list[Task], parent_marked: bool) -> None:
+            for task in tasks:
+                marked = marker.match(task.note.lower()) is not None
+                if marked and not parent_marked:
+                    out.append(task)
+                walk(task.children, marked)
+
+        walk(self.session.task_network.tasks, False)
+        return out
+
+    def _current_page(self, name: str) -> int | None:
+        """The page of ``/<name>`` the plan is on (1-based) — ``None`` when every section is
+        closed or the skill is not paged.
+
+        With the seeded structure intact, page k is section step k. Once the model has
+        reshaped the plan (merged, renamed, added steps — ``update_plan`` is full-replace),
+        each page finds its step by title or by its marker token ("Step 0.5" survives in
+        "Step 0.5 + 0.6: …"). A page with no step left counts as finished once the plan has
+        moved past it — a later page's step is under way or closed, or as many section
+        steps are closed as its index — because sections are worked in order; until then
+        it is delivered, since the model closed a section whose text it never held.
+        """
+        pages = self._ensure_skill_pages(name)
+        if pages is None:
+            return None
+        closed = {"done", "cancelled"}
+        steps = self._section_steps(name)
+        if len(steps) == pages.count:
+            for step, page in zip(steps, pages.pages, strict=True):
+                if step.status not in closed:
+                    return page.index
+            return None
+        done_count = sum(1 for step in steps if step.status in closed)
+        all_steps = self._plan_tasks()
+        matches = [[step for step in all_steps if page.matches(step.title)] for page in pages.pages]
+        for page, matched in zip(pages.pages, matches, strict=True):
+            if matched:
+                if any(step.status not in closed for step in matched):
+                    return page.index
+                continue
+            moved_past = any(
+                step.status != "pending" for later in matches[page.index :] for step in later
+            )
+            if done_count < page.index and not moved_past:
+                return page.index
+        return None
+
+    def current_skill_page(self, name: str) -> str | None:
+        """The rendered page ``/<name>`` is on, for a mid-skill re-load (the ADR-0063 pointer
+        hands a paged skill its current section again instead of pointing at lost text)."""
+        index = self._current_page(name)
+        if index is None:
+            return None
+        pages = self._skill_pages[name.lower()]
+        return pages.render(index)
+
+    def _paged_skills_in_plan(self) -> list[str]:
+        """Every skill whose sections may be in the plan: those seeded (the ``from /<skill>``
+        note marker) and those paged this session — a model that rewrites the plan without
+        the notes still has the skill's titles, which ``_current_page`` matches on."""
+        names = list(self._skill_pages)
+        for task in self._plan_tasks():
+            match = re.match(r"^from /([a-z0-9][a-z0-9_-]*)", task.note.lower())
+            if match is not None and match.group(1) not in names:
+                names.append(match.group(1))
+        return names
+
+    def _count_text(self, text: str) -> int:
+        try:
+            return int(self.provider.count_tokens([Message.user(text)]))
+        except Exception:  # noqa: BLE001 — telemetry never raises into the turn
+            return 0
+
+    def _turn_skill_pages(self, calls: list[ToolCall]) -> list[tuple[str, int, int, str]]:
+        """After a batch that rewrote the plan, hand over the next page of every paged skill
+        the plan has moved past (ADR-0067). Returns ``(skill, page, count, title)`` per page
+        delivered, for the streaming status line.
+
+        Only the CURRENT page is delivered: sections the model closed without holding their
+        page (a merge, a skip) are counted, not replayed — the plan is the model's to shape.
+        A page that cannot fit the window ends the turn loudly, like any verbatim body.
+        """
+        if not any(call.name == "update_plan" for call in calls):
+            return []
+        out: list[tuple[str, int, int, str]] = []
+        for name in self._paged_skills_in_plan():
+            pages = self._ensure_skill_pages(name)
+            if pages is None:
+                continue
+            key = name.lower()
+            current = self._current_page(name)
+            delivered = self._skill_page_delivered.get(key, 0)
+            if current is None or current <= delivered:
+                continue
+            text = pages.render(current)
+            too_large = self._verbatim_overflow(text, what=f"section {current} of skill {name!r}")
+            if too_large is not None:
+                self.session.add_message(Message.user(_control_rail(too_large)))
+                self._persist()
+                self._turn_fatal = ("skill_too_large", too_large)
+                return out
+            self.session.add_message(Message.user(_control_rail(text)))
+            self._persist()
+            self._skill_page_delivered[key] = current
+            skipped = max(0, current - delivered - 1)
+            record = self._turn_paging.setdefault(
+                name, {"pages": pages.count, "delivered": [], "skipped": 0}
+            )
+            record["delivered"].append(current)
+            record["skipped"] += skipped
+            title = pages.pages[current - 1].title
+            self._note(
+                "intervention",
+                f"/{name} page {current}/{pages.count}: {title}",
+                kind="skill_page",
+                skill=name,
+                page=current,
+                of=pages.count,
+                tokens=self._count_text(text),
+                skipped=skipped,
+            )
+            out.append((name, current, pages.count, title))
+        return out
+
+    def _note_paging_summary(self) -> None:
+        """One note per skill paged this turn (ADR-0067) — the effectiveness signal: pages the
+        plan pulled, tokens they cost against the whole body, sections closed, and sections
+        closed without their page ever being held."""
+        for name, record in self._turn_paging.items():
+            pages = self._skill_pages.get(name.lower())
+            if pages is None:
+                continue
+            delivered = sorted(set(record["delivered"]))
+            delivered_tokens = sum(
+                self._count_text(pages.first() if index == 1 else pages.render(index))
+                for index in delivered
+            )
+            body_tokens = self._count_text(
+                "\n\n".join([pages.front, *(page.text for page in pages.pages)])
+            )
+            closed = sum(
+                1 for step in self._section_steps(name) if step.status in ("done", "cancelled")
+            )
+            self._note(
+                "intervention",
+                f"/{name}: {len(delivered)}/{pages.count} pages delivered, {closed} sections "
+                f"closed, {delivered_tokens:,} of {body_tokens:,} body tokens in context, "
+                f"{record['skipped']} skipped",
+                kind="skill_paging",
+                skill=name,
+                pages=pages.count,
+                delivered=len(delivered),
+                closed=closed,
+                delivered_tokens=delivered_tokens,
+                body_tokens=body_tokens,
+                skipped=record["skipped"],
+            )
 
     def _seed_plan_from_request(self, user_text: str) -> list[str]:
         """Seed one plan step per referenced skill when the request names SEVERAL (>=2).
@@ -3314,6 +3563,7 @@ class AgentLoop:
             self._seed_skill_skeleton(
                 composed_skill, _composed_skill_body(user_text), skeleton_seeded
             )
+            self._register_skill_load(composed_skill)  # the turn text is page 1 (ADR-0067)
 
         turn_assistant: list[Message] = []
         turn_tool_results: list[ToolResultBlock] = []
@@ -3378,6 +3628,7 @@ class AgentLoop:
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
+        self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
@@ -4259,14 +4510,16 @@ class AgentLoop:
 
             self.session.add_message(Message.tool_results(result_blocks))
             self._persist()
+            # A skill loaded this batch puts its sections in the plan (ADR-0062), and a plan
+            # that moved past a delivered section pulls the next page (ADR-0067).
+            self._seed_loaded_skill_skeletons(result.tool_calls, result_blocks, skeleton_seeded)
+            self._turn_skill_pages(result.tool_calls)
             if self._turn_fatal is not None:
                 # A verbatim body that cannot fit the window (ADR-0066): the model has its
                 # error result; nothing it could do next changes the arithmetic. End loudly.
                 stop_reason, fatal_detail = self._turn_fatal
                 self._note("intervention", fatal_detail, kind=stop_reason)
                 break
-            # A skill loaded this batch puts its sections in the plan (ADR-0062).
-            self._seed_loaded_skill_skeletons(result.tool_calls, result_blocks, skeleton_seeded)
 
             # Write-grounding is unconditional (no flag); it no-ops when nothing was written.
             grounding = build_write_grounding(result.tool_calls, result_blocks)
@@ -4365,6 +4618,7 @@ class AgentLoop:
         self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
         self._persist()
+        self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
         self._dump_trace()
         return TurnResult(
             assistant_messages=turn_assistant,
@@ -4457,6 +4711,7 @@ class AgentLoop:
             skeleton = self._seed_skill_skeleton(
                 composed_skill, _composed_skill_body(user_text), skeleton_seeded
             )
+            self._register_skill_load(composed_skill)  # the turn text is page 1 (ADR-0067)
             if skeleton:
                 yield AgentStatus(
                     message=f"plan seeded from /{composed_skill}: {len(skeleton)} steps"
@@ -4528,6 +4783,7 @@ class AgentLoop:
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
+        self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
@@ -5672,17 +5928,20 @@ class AgentLoop:
 
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()
+                # A skill loaded this batch puts its sections in the plan (ADR-0062), and a
+                # plan that moved past a delivered section pulls the next page (ADR-0067).
+                for skill_name, steps in self._seed_loaded_skill_skeletons(
+                    tool_calls, result_blocks, skeleton_seeded
+                ):
+                    yield AgentStatus(message=f"plan seeded from /{skill_name}: {len(steps)} steps")
+                for skill_name, page, count, title in self._turn_skill_pages(tool_calls):
+                    yield AgentStatus(message=f"page {page}/{count} of /{skill_name}: {title}")
                 if self._turn_fatal is not None:
                     # A verbatim body that cannot fit the window (ADR-0066): end loudly.
                     stop_reason, fatal_detail = self._turn_fatal
                     self._note("intervention", fatal_detail, kind=stop_reason)
                     yield AgentStatus(message=f"turn ended — {fatal_detail}")
                     break
-                # A skill loaded this batch puts its sections in the plan (ADR-0062).
-                for skill_name, steps in self._seed_loaded_skill_skeletons(
-                    tool_calls, result_blocks, skeleton_seeded
-                ):
-                    yield AgentStatus(message=f"plan seeded from /{skill_name}: {len(steps)} steps")
 
                 # Write-grounding is unconditional (no flag); no-ops when nothing was written.
                 grounding = build_write_grounding(tool_calls, result_blocks)
@@ -5802,6 +6061,7 @@ class AgentLoop:
         self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
         self._persist()
+        self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
         self._dump_trace()
         yield AgentDone(
             stop_reason=stop_reason,

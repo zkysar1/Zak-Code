@@ -170,6 +170,9 @@ async def test_registry_unknown_tool_that_is_a_skill_points_at_use_skill() -> No
         def names(self) -> list[str]:
             return ["start", "reflect"]
 
+        def body(self, name: str) -> str | None:
+            return None
+
         async def load(self, name: str, *, query: str = "", args: str = "") -> object:
             raise NotImplementedError  # pragma: no cover — not exercised by this path
 

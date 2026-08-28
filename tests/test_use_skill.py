@@ -47,6 +47,10 @@ class _FakeResolver:
     def names(self) -> list[str]:
         return list(self._names)
 
+    def body(self, name: str) -> str | None:
+        load = self._skills.get(name)
+        return load.body if load is not None and load.found else None
+
     async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         self.loaded.append(name)
         self.loaded_args.append(args)
@@ -240,6 +244,9 @@ class _RecordingResolver:
 
     def names(self) -> list[str]:
         return ["greeter"]
+
+    def body(self, name: str) -> str | None:
+        return None  # no whole-body seam: the loop seeds from what the load delivered
 
     async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         self.loaded.append(name)
