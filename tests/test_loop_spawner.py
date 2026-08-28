@@ -69,7 +69,7 @@ class _CallThenDoneProvider(Provider):
         self._calls = 0
 
     async def acomplete(
-        self, messages: list, *, tools: list | None = None, system: str | None = None
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw
     ) -> LLMResult:
         self._calls += 1
         if self._calls == 1:
@@ -80,7 +80,7 @@ class _CallThenDoneProvider(Provider):
         return LLMResult(text="done", usage=Usage(total_tokens=1))
 
     async def astream(
-        self, messages: list, *, tools: list | None = None, system: str | None = None
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw
     ) -> AsyncIterator[ProviderStreamEvent]:
         result = await self.acomplete(messages, tools=tools, system=system)
         for i, call in enumerate(result.tool_calls):

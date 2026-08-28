@@ -67,7 +67,7 @@ class _OneShotProvider(Provider):
         self._calls = 0
 
     async def acomplete(
-        self, messages: list, *, tools: list | None = None, system: str | None = None
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw
     ) -> LLMResult:
         self._calls += 1
         if self.call_tool and self._calls == 1:
@@ -78,7 +78,7 @@ class _OneShotProvider(Provider):
         return LLMResult(text=self.text, usage=Usage(total_tokens=1))
 
     async def astream(
-        self, messages: list, *, tools: list | None = None, system: str | None = None
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw
     ) -> AsyncIterator[ProviderStreamEvent]:
         result = await self.acomplete(messages, tools=tools, system=system)
         if result.text:
