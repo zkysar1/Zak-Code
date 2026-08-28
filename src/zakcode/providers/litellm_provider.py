@@ -49,15 +49,18 @@ from zakcode.providers.base import (
     StreamUsage,
     TimedOut,
     ToolCall,
+    UnknownContextWindow,
+    WindowResolution,
 )
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
     LocalOnlyViolation,
     classify_destination,
+    is_sentinel,
     model_uses_generic_endpoint,
 )
 from zakcode.providers.pricing import estimate_cost_usd
-from zakcode.providers.registry import _DEFAULT, _strip_provider_prefix, get_capabilities
+from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
 
@@ -186,6 +189,8 @@ def _model_uses_generic_endpoint(model: str) -> bool:
 #: model was an alias neither the static table nor litellm knew, capabilities fell to the
 #: 8,192 default against a 131,072 server, and every window-keyed limit (the seam clamp, the
 #: compaction threshold) was wrong by 16× — while the server declared the real figure here.
+#: ADR-0066 then made the listing a CHECK against the model's declared window, never a
+#: source: the number in force always comes from the config entry or the registry.
 _MODELS_WINDOW_PATHS: tuple[tuple[str, ...], ...] = (
     ("max_model_len",),
     ("context_window",),
@@ -239,6 +244,115 @@ def _zds_slots_per_engine(zds: dict[str, Any]) -> int:
     if isinstance(slots, int) and isinstance(replicas, int) and replicas > 0 and slots > replicas:
         return max(1, slots // replicas)
     return 1
+
+
+def probe_served_window(
+    model: str,
+    api_base: str | None,
+    api_key: str | None,
+    *,
+    local_only: bool = False,
+    local_api_bases: list[str] | tuple[str, ...] = (),
+    listing_cache: dict[str, Any] | None = None,
+) -> int | None:
+    """The window the server at ``api_base`` declares for ``model`` — ``None`` when there
+    is no generic endpoint to ask, the listing is unreachable, or it has no figure.
+
+    Only for a generic-endpoint model with an ``api_base``: the case where the server is
+    the one party most likely to know. Under ``local_only`` the probe obeys the same
+    destination rule the request path enforces — an unlisted base is never contacted.
+    ``listing_cache`` (keyed by base) lets a startup sweep ask each server once. Never raises.
+    """
+    try:
+        if not api_base or not _model_uses_generic_endpoint(model):
+            return None
+        if local_only:
+            ok, _reason = classify_destination(model, api_base, list(local_api_bases))
+            if not ok:
+                return None
+        if listing_cache is not None and api_base in listing_cache:
+            listing = listing_cache[api_base]
+        else:
+            listing = _fetch_models(api_base, api_key, _WINDOW_PROBE_TIMEOUT)
+            if listing_cache is not None:
+                listing_cache[api_base] = listing
+        return discover_context_window(listing, model)
+    except Exception:  # noqa: BLE001 — a check must never take the process down
+        logging.getLogger(__name__).debug(
+            "context-window listing at %s unavailable", api_base, exc_info=True
+        )
+        if listing_cache is not None:
+            listing_cache.setdefault(api_base or "", None)
+        return None
+
+
+def resolve_context_window(
+    model: str,
+    declared: int | None = None,
+    *,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    local_only: bool = False,
+    local_api_bases: list[str] | tuple[str, ...] = (),
+    verify: bool = False,
+    listing_cache: dict[str, Any] | None = None,
+) -> WindowResolution:
+    """Resolve ``model``'s context window (ADR-0066): the model's config entry, else the
+    capability registry / litellm metadata, else UNKNOWN — never a default.
+
+    The server's ``/models`` listing is consulted only to CHECK: always when ``verify`` is
+    set (the startup sweep reports a mismatch loudly), and when the window is unknown so
+    the refusal can name the figure the server declares. The declared/registry number
+    stays in force either way — a router's per-engine figure can overstate the
+    per-request window, so the operator's number wins over the server's.
+    """
+    if is_sentinel(model):
+        return WindowResolution(None, "sentinel")
+    window: int | None
+    if declared:
+        window, source = int(declared), "config"
+    else:
+        known = get_capabilities(model).context_window
+        window, source = (known, "registry") if known else (None, "unknown")
+    served = None
+    if verify or window is None:
+        served = probe_served_window(
+            model,
+            api_base,
+            api_key,
+            local_only=local_only,
+            local_api_bases=local_api_bases,
+            listing_cache=listing_cache,
+        )
+    return WindowResolution(window, source, served)
+
+
+def unknown_window_message(model: str, resolution: WindowResolution, api_base: str | None) -> str:
+    """The refusal for a model with no known window: what was checked, and the one line to
+    paste — with the server's figure filled in when it declared one."""
+    if resolution.served is not None:
+        offer = (
+            f"The server at {api_base} declares {resolution.served:,} for it — add "
+            f'"context_window": {resolution.served} to its ZAKCODE_ZAKPICK_MODELS entry '
+            f"(or set ZAKCODE_CONTEXT_WINDOW={resolution.served} for a single default model)."
+        )
+    else:
+        where = (
+            f"the server at {api_base} did not declare one in its /v1/models listing"
+            if api_base
+            else "no server was configured to ask"
+        )
+        offer = (
+            f'{where}; find it on the model card and add "context_window": <tokens> to its '
+            "ZAKCODE_ZAKPICK_MODELS entry (or set ZAKCODE_CONTEXT_WINDOW for a single "
+            "default model)."
+        )
+    return (
+        f"model {model!r} has no known context window: it is not in the capability registry, "
+        f"litellm has no metadata for it, and its config entry declares none. {offer} "
+        "Zak Code does not guess — a guessed window once sized every limit for a 131k model "
+        "at 8k and silently cut every skill body to 6 KB."
+    )
 
 
 #: The system-prompt stable/dynamic split marker (parity #2 prompt caching). It MUST equal
@@ -331,6 +445,7 @@ class LiteLLMProvider(Provider):
         local_api_bases: list[str] | None = None,
         extra_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        context_window: int | None = None,
     ) -> None:
         resolved_model = model
         resolved_temperature = temperature
@@ -342,10 +457,16 @@ class LiteLLMProvider(Provider):
         resolved_local_api_bases = local_api_bases
         resolved_extra_body = extra_body
         resolved_extra_headers = extra_headers
+        resolved_window = context_window
 
         if settings is not None:
             if resolved_model is None:
                 resolved_model = settings.default_model
+            if resolved_window is None:
+                # Settings.context_window describes the settings' own default_model; a
+                # routed model gets its window from its own entry (Agent._build_provider
+                # copies settings with default_model AND context_window replaced together).
+                resolved_window = getattr(settings, "context_window", None)
             if resolved_temperature is None:
                 resolved_temperature = settings.temperature
             # Generic endpoint override (any OpenAI-compatible server). Explicit
@@ -394,11 +515,24 @@ class LiteLLMProvider(Provider):
         #: than per call — the values are constant for the process, and expanding at
         #: call time would put a formatting operation on the hot path for no gain.
         self.extra_headers: dict[str, str] = _expand_headers(resolved_extra_headers)
-        #: Context-window discovery (ADR-0065): the window the server's ``/models`` listing
-        #: declared for an otherwise-unknown model, probed once and remembered — ``None``
-        #: after a probe that found nothing, so a failure is never retried per call.
-        self._discovered_window: int | None = None
-        self._window_probed: bool = False
+        #: The model's context window and where it came from (ADR-0066): the model's config
+        #: entry, else the capability registry / litellm metadata — never a stand-in. Fixed
+        #: at construction: a model nobody knows the window of refuses to exist as a
+        #: provider, with the value the server declares (when it declares one) in the
+        #: message so the operator pastes it once. Routing sentinels name no model and
+        #: carry no window (``capabilities()`` then reports ``None``).
+        self.window: WindowResolution = resolve_context_window(
+            self.model,
+            resolved_window,
+            api_base=self.api_base,
+            api_key=self.api_key,
+            local_only=self.local_only,
+            local_api_bases=self.local_api_bases,
+        )
+        if self.window.window is None and not is_sentinel(self.model):
+            raise UnknownContextWindow(
+                unknown_window_message(self.model, self.window, self.api_base)
+            )
         #: Traffic smoothing (2026-08-26): monotonic time of the most recent request
         #: START on this instance — see _pace(). Never a knob.
         self._last_request_started = 0.0
@@ -851,10 +985,7 @@ class LiteLLMProvider(Provider):
             # so the prompt tail is not silently truncated. Gated on the Ollama prefix —
             # for other backends litellm may wrap an unknown num_ctx into extra_body
             # rather than drop it. setdefault so an explicit caller override wins.
-            try:
-                window = get_capabilities(self.model).context_window
-            except Exception:  # noqa: BLE001 — a capability probe must never fail a call
-                window = 0
+            window = self.window.window or 0
             if window:
                 call_kwargs.setdefault("num_ctx", min(window, _OLLAMA_NUM_CTX_CAP))
         # Structured-output request. litellm maps response_format per-backend (incl. Ollama's
@@ -1106,44 +1237,13 @@ class LiteLLMProvider(Provider):
     def model_id(self) -> str:
         return self.model
 
-    def _served_window(self) -> int | None:
-        """The window the configured server declares for this model (ADR-0065), probed once.
-
-        Only for a generic-endpoint model with an ``api_base`` — the case where the static
-        table and litellm are most likely blind (a self-hosted alias) and the server most
-        likely to know. Under ``local_only`` the probe obeys the same destination rule the
-        request path enforces: an unlisted base is never contacted. Never raises.
-        """
-        if self._window_probed:
-            return self._discovered_window
-        self._window_probed = True
-        try:
-            if not self.api_base or not _model_uses_generic_endpoint(self.model):
-                return None
-            if self.local_only:
-                # Raises on a routing sentinel ("zakpick") — caught below: a sentinel names
-                # no destination, so it is never probed and keeps the default window.
-                ok, _reason = classify_destination(self.model, self.api_base, self.local_api_bases)
-                if not ok:
-                    return None
-            listing = _fetch_models(self.api_base, self.api_key, _WINDOW_PROBE_TIMEOUT)
-            self._discovered_window = discover_context_window(listing, self.model)
-        except Exception:  # noqa: BLE001 — a capability probe must never fail a request
-            logging.getLogger(__name__).debug(
-                "context-window probe of %s failed; keeping the default",
-                self.api_base,
-                exc_info=True,
-            )
-        return self._discovered_window
-
     def capabilities(self) -> Capabilities:
         caps = get_capabilities(self.model)
-        # An unknown model falls to the registry's default window; ask the server it is
-        # routed to before believing that (ADR-0065). Probed once per provider instance.
-        if caps.context_window == _DEFAULT.context_window:
-            served = self._served_window()
-            if served is not None:
-                caps = caps.model_copy(update={"context_window": served})
+        # The window is the one resolved at construction (ADR-0066): the model's config
+        # entry over the registry, never the server's listing (that is a check, run by the
+        # Agent's startup assertion) and never a stand-in.
+        if self.window.window is not None:
+            caps = caps.model_copy(update={"context_window": self.window.window})
         # Best-effort gate: if litellm is confident the model lacks function
         # calling, reflect that. Never hard-fail on the probe.
         try:
@@ -1155,7 +1255,11 @@ class LiteLLMProvider(Provider):
         # Keep the reported window in lockstep with the num_ctx we actually request for
         # Ollama (see _OLLAMA_NUM_CTX_CAP / _build_kwargs) so the compactor's threshold
         # matches Ollama's real context and never truncates before compaction fires.
-        if _is_ollama_model(self.model) and caps.context_window > _OLLAMA_NUM_CTX_CAP:
+        if (
+            _is_ollama_model(self.model)
+            and caps.context_window is not None
+            and caps.context_window > _OLLAMA_NUM_CTX_CAP
+        ):
             caps = caps.model_copy(update={"context_window": _OLLAMA_NUM_CTX_CAP})
         # Declare the backend's stop-sequence cap so the text layer trims its sentinel list
         # (OpenAI/Azure reject >4); leaves unknown backends unbounded. (audit2 #8)

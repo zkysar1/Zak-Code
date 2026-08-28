@@ -165,7 +165,7 @@ class _StubProvider:
     def capabilities(self) -> Any:
         from zakcode.providers.base import Capabilities
 
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 async def test_agent_egress_proxy_off_by_default(tmp_path: Path) -> None:

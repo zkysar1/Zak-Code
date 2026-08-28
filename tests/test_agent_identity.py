@@ -30,7 +30,7 @@ class _StubProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 def _fake_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:

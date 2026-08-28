@@ -107,8 +107,20 @@ are billed against `max_tokens`, so the bounded categories are much faster with 
 ```bash
 ZAKCODE_DEFAULT_MODEL=zakpick
 ZAKCODE_API_BASE=http://zakpod1:9090/v1
-ZAKCODE_ZAKPICK_MODELS={"deep_code":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true},"quick_code":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false},"classify":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false},"summarize":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false},"plan":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true},"delegate":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true}}
+ZAKCODE_ZAKPICK_MODELS={"deep_code":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true,"context_window":131072},"quick_code":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false,"context_window":131072},"classify":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false,"context_window":131072},"summarize":{"model":"zds-qwen3.8-27b","source":"openai","thinking":false,"context_window":131072},"plan":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true,"context_window":131072},"delegate":{"model":"zds-qwen3.8-27b","source":"openai","thinking":true,"context_window":131072}}
 ```
+
+**`context_window` is required for any model the capability registry does not know** — every
+self-hosted alias (ADR-0066). It is a fact about the model, so it lives in the model's entry
+(or `ZAKCODE_CONTEXT_WINDOW` for a single concrete `ZAKCODE_DEFAULT_MODEL`). There is no
+default: a model with no known window refuses to run, and the startup error names the value
+the server's `GET /v1/models` declares so you can paste it once. That listing is a *check*,
+not a source — `zakcode info` prints each category's window and where it came from, and a
+mismatch (config says 131,072, server declares 43,690) is reported loudly; the config wins,
+because a server's per-engine figure can overstate the per-request window. Every
+window-keyed limit inherits this number — the tool-output clamp, the compaction threshold,
+overflow recovery, and the skill-fit check (`zakcode info` lists skills that cannot load on
+the model, and a skill that cannot fit ends the turn as `skill_too_large`).
 
 Set **every** category when combining `zakpick` with `local_only`: an unset category falls
 through to a built-in Groq/OpenAI default rather than to your pod. The startup check names

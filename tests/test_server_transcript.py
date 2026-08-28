@@ -22,7 +22,7 @@ from zakcode.session.store import Session, SessionStore
 
 
 def _build(tmp_path: Path) -> tuple[Any, SessionStore]:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(
         settings=settings,

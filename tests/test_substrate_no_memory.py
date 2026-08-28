@@ -17,7 +17,11 @@ from zakcode.hooks import HookEvent
 
 
 def _agent(tmp_path: Path) -> Agent:
-    return Agent(settings=Settings(default_model="scripted/test", workspace_root=tmp_path))
+    return Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        )
+    )
 
 
 def test_default_agent_ships_no_memory(tmp_path: Path) -> None:

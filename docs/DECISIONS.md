@@ -2523,3 +2523,77 @@ Pinned by tests/test_window_discovery.py (the reader across the three server sha
 the alias; probed once; a failed probe keeps the default and is not retried; a known model,
 a base-less model and an unlisted base under LOCAL_ONLY are never probed) and
 tests/test_output_clamp.py (`test_a_verbatim_result_is_never_clamped`).
+
+**Status.** The `verbatim` half stands. The window half is superseded the same day by
+ADR-0066: the listing is a *check* now, never a source, and the "default window" it was
+correcting no longer exists.
+
+## ADR-0066: The window comes from the model's entry, never a default — and a skill that cannot fit blocks loud
+
+**Context.** Root-causing ADR-0065's incident found two defects, and ADR-0065 had fixed the
+surface of one. The pod's model was unknown to the registry, so `Capabilities` handed
+the loop a made-up number — and it was not one number but five: `Capabilities.context_window
+= 8192`, the registry's `_DEFAULT` 8192, `CompactionConfig.fallback_context_window` 8192,
+the summarizer's `or 8192`, the route-ratio `or 1`, plus `_CLAMP_FALLBACK_WINDOW = 32_768`
+in the loop. Every window-keyed limit (the seam clamp, the pre-turn compaction threshold,
+in-turn overflow recovery) ran on a guess and nothing said so; the operator saw
+"[output clamped]" and a model that "completed" a boot it had never read. Reading the
+server's listing (ADR-0065) fixes the pod but keeps the shape: a fact about the model
+sourced from wherever happened to answer, with a silent stand-in when nothing did. And the
+second defect stays open: a model with a real 32k window still cannot hold a 184 KB skill,
+and the loop's answer was to compact, retry, and finally "continue without it".
+
+**Decision.** Three things, one way, no flag.
+
+1. *The window is a fact about the model, so it lives with the model.* `ZakpickModel`
+   gains `context_window` (next to `thinking`); `Settings.context_window` covers a concrete
+   `ZAKCODE_DEFAULT_MODEL`. `LiteLLMProvider` resolves the window at construction — the
+   model's entry, else the checked-in registry / litellm metadata, else **unknown** — and an
+   unknown window raises `UnknownContextWindow` naming the model, what was checked, and the
+   number the server's `GET /v1/models` declares, so the operator pastes it once. There is
+   no default anywhere: `Capabilities.context_window` is `int | None` with `None` meaning
+   unknown, the registry's `_DEFAULT` carries `None`, `CompactionConfig` has no fallback
+   (`should_compact` raises), the loop reads every window through `_window()` (raises), and
+   `_CLAMP_FALLBACK_WINDOW` is gone. `Agent._assert_context_windows` runs at startup over
+   the same EFFECTIVE model list as the local-only check and names every offender at once.
+2. *The listing is a check, not a source.* `resolve_context_window(verify=True)` asks each
+   `api_base` once (LOCAL_ONLY honoured) and flags a mismatch — config says 131,072, server
+   says 43,690 — loudly (`Agent.window_warnings`, red at chat start; `zakcode info` shows
+   "server declares N"). The configured number stays in force: a router's per-engine figure
+   can overstate the per-request window (rb-8892), so the operator's number wins over the
+   server's. `zakcode info` prints one `Context window (<label>)` row per effective model:
+   the number, its source (`config` / `registry`), the server's verdict, or
+   `unknown — REFUSES TO RUN`.
+3. *Block loud, both ends.* At start, every discovered skill is measured against the
+   smallest effective window (`Agent.skill_fit_report`, `zakcode.skills.fit`): a body that
+   with the system prompt and answer room (`max_output`, else `_MIN_ANSWER_ROOM` 4,096)
+   exceeds the window "cannot load on this model"; one over half the window is flagged as
+   crowding out the work. Both print red in the banner. In-turn, the execution seam runs the
+   same arithmetic on every verbatim result (`_verbatim_overflow`): over the window, the
+   model gets an error result naming the numbers, `_turn_fatal` is armed, and both twins end
+   the turn as `stop_reason = "skill_too_large"` — degraded, non-vetoable, rendered red —
+   never "continue without it". Start and turn share the sum, so what the banner flags is
+   exactly what a turn would refuse.
+
+**Alternatives rejected.** A larger default (the same defect, later); the server as the
+source (ADR-0065's shape — right for the pod, silent when the listing lies or is absent);
+a global `ZAKCODE_CONTEXT_WINDOW` for every model (a fact about a model stored away from the
+model — the zakpick entries name six models); compact-and-retry as the answer for a body
+that cannot fit even in an empty transcript (the loop already does that where it can help;
+past that point every retry is the same failure); truncating the skill (ADR-0065's "a
+head-and-tail of a skill is a broken skill"); a warning instead of a refusal for an unknown
+window (the incident WAS a warning-free run on a guess).
+
+**Consequences.** A self-hosted alias needs `"context_window"` in its entry or the CLI
+refuses with the one line to paste; every window-keyed limit runs on the operator's number
+or not at all; a too-small window is reported at start (fit report) and, if a skill is
+loaded anyway, at the turn (`skill_too_large`). Test fakes must declare a window
+(`Capabilities(context_window=…)`) — a fake that models a windowless provider now models a
+configuration the harness refuses. Skills that cannot fit a small model are the next
+problem, not this one: ADR-0067 pages a sectioned skill through the plan so the largest
+SECTION, not the largest skill, bounds context. Pinned by tests/test_window_discovery.py
+(config wins; verify flags a mismatch; unknown refuses with the served figure; sentinels;
+LOCAL_ONLY; listing cache), tests/test_zakpick.py (the entry's window travels with the
+model; every offender named; the warning text), tests/test_compact.py (no fallback),
+tests/test_output_clamp.py (`skill_too_large`; a body with answer room loads) and
+tests/test_skill_fit.py (verdicts, `zakcode info` rows, banner lines).

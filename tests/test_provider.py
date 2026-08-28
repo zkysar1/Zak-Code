@@ -553,7 +553,7 @@ def test_get_capabilities_unknown_falls_back_to_default(
     # Force the litellm metadata lookup to yield nothing so we hit the default.
     monkeypatch.setattr(reg, "_from_litellm", lambda model: None)
     caps = get_capabilities("totally-made-up-model-xyz")
-    assert caps.context_window == 8192
+    assert caps.context_window is None  # unknown is a first-class state, never 8192 (ADR-0066)
     assert caps.supports_tools is True
 
 

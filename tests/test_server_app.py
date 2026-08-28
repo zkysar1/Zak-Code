@@ -74,7 +74,7 @@ def _factory(session: Session, model: str | None, prompter: object = None) -> _F
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(settings=settings, store=store, agent_factory=_factory)
     return TestClient(app)
@@ -109,7 +109,10 @@ def test_config_omits_api_key_even_when_set(tmp_path: Path) -> None:
     holds, not just the defensive pop.
     """
     settings = Settings(
-        default_model="scripted/test", workspace_root=tmp_path, api_key="super-secret-token"
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        api_key="super-secret-token",
     )
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(settings=settings, store=store, agent_factory=_factory)
@@ -130,7 +133,10 @@ def test_default_factory_model_override_preserves_posture(tmp_path: Path) -> Non
     from zakcode.server.app import _default_agent_factory
 
     settings = Settings(
-        default_model="configured/base", permission_mode="allow", workspace_root=tmp_path
+        default_model="configured/base",
+        permission_mode="allow",
+        workspace_root=tmp_path,
+        context_window=8192,  # a fake model needs a declared window (ADR-0066)
     )
     store = SessionStore(base_dir=tmp_path / "sessions")
     factory = _default_agent_factory(settings, store)
@@ -162,7 +168,7 @@ def test_default_factory_loads_a_mind(tmp_path: Path, monkeypatch: pytest.Monkey
     (ws / "self.md").write_text("You are Vinheim, the guide.", encoding="utf-8")
     (ws / ".zakcode" / "rules" / "tone.md").write_text("Always be kind.", encoding="utf-8")
 
-    settings = Settings(default_model="scripted/test", workspace_root=ws)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=ws)
     store = SessionStore(base_dir=tmp_path / "sessions")
     factory = _default_agent_factory(settings, store)
 
@@ -184,7 +190,10 @@ def test_default_factory_agent_compacts(tmp_path: Path) -> None:
     from zakcode.server.app import _default_agent_factory
 
     settings = Settings(
-        default_model="scripted/test", permission_mode="allow", workspace_root=tmp_path
+        default_model="scripted/test",
+        context_window=8192,
+        permission_mode="allow",
+        workspace_root=tmp_path,
     )
     store = SessionStore(base_dir=tmp_path / "sessions")
     agent = _default_agent_factory(settings, store)(
@@ -251,7 +260,7 @@ def test_list_sessions_skips_a_corrupt_file(client: TestClient, tmp_path: Path) 
 
 
 def test_session_artifacts_list_and_download(tmp_path: Path) -> None:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     report = tmp_path / "reports" / "hello.txt"
     report.parent.mkdir()
@@ -278,7 +287,7 @@ def test_session_artifacts_list_and_download(tmp_path: Path) -> None:
 
 
 def test_session_upload_saves_file_and_records_downloadable_artifact(tmp_path: Path) -> None:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(settings=settings, store=store, agent_factory=_factory)
     local_client = TestClient(app)
@@ -313,7 +322,7 @@ def test_session_upload_saves_file_and_records_downloadable_artifact(tmp_path: P
 
 
 def test_session_upload_allocates_unique_names_without_clobbering(tmp_path: Path) -> None:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(settings=settings, store=store, agent_factory=_factory)
     local_client = TestClient(app)
@@ -342,7 +351,7 @@ def test_session_upload_allocates_unique_names_without_clobbering(tmp_path: Path
 
 
 def test_session_upload_sanitizes_filename_and_rejects_bad_base64(tmp_path: Path) -> None:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(settings=settings, store=store, agent_factory=_factory)
     local_client = TestClient(app)
@@ -369,7 +378,7 @@ def test_session_upload_sanitizes_filename_and_rejects_bad_base64(tmp_path: Path
 
 
 def test_session_artifact_download_rejects_changed_file(tmp_path: Path) -> None:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     report = tmp_path / "out.txt"
     report.write_text("first", encoding="utf-8")
@@ -390,7 +399,7 @@ def test_session_artifact_download_rejects_changed_file(tmp_path: Path) -> None:
 
 
 def test_session_artifact_download_rejects_path_escape(tmp_path: Path) -> None:
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     outside = tmp_path.parent / "secret-artifact.txt"
     outside.write_text("secret", encoding="utf-8")
@@ -475,7 +484,7 @@ async def test_chat_rejects_concurrent_turn_on_same_session(tmp_path: Path) -> N
             await release.wait()
             yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
 
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(
         settings=settings, store=store, agent_factory=lambda s, m, p: _BlockingAgent(s)
@@ -509,7 +518,7 @@ def test_chat_stream_factory_error_does_not_strand_inflight(tmp_path: Path) -> N
             raise RuntimeError("bad model string")
         return _FakeAgent(session)
 
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(settings=settings, store=store, agent_factory=flaky_factory)
     client = TestClient(app, raise_server_exceptions=False)

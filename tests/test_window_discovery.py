@@ -1,13 +1,14 @@
-"""ADR-0065: a local pod declares its own context window.
+"""ADR-0066: the context window comes from the model's config entry, never a default.
 
 Field 2026-08-28 (coach on zc-03): the route model ``openai/zds-qwen3.8-27b`` is an alias
-the static table does not know and litellm has no metadata for, so capabilities fell to the
-8,192-token default while the server ran a 131,072 context. Everything keyed on the window
-was wrong by 16×: the seam clamp cut every tool result to 6 KB (a 39 KB /boot lost Steps
-0–11), and the pre-turn compaction threshold sat at 6.5k tokens. The server had been
-announcing the real figure the whole time in ``GET /v1/models`` (``zds.ctx_per_engine``),
-as vLLM does in ``max_model_len`` and llama.cpp in ``meta.n_ctx_train``. Hermetic: the
-HTTP fetch is monkeypatched; no socket is opened.
+the static table does not know and litellm has no metadata for, so capabilities fell to
+an 8,192-token stand-in while the server ran a 131,072 context. Everything keyed on the
+window was wrong by 16×: the seam clamp cut every tool result to 6 KB (a 39 KB /boot lost
+Steps 0–11), and the pre-turn compaction threshold sat at 6.5k tokens. ADR-0065 first made
+the server's ``GET /v1/models`` listing the source for such a model; ADR-0066 makes the
+model's own config entry the source and the listing a CHECK — and a model nobody knows the
+window of refuses to run, with the server's figure in the message. Hermetic: the HTTP
+fetch is monkeypatched; no socket is opened.
 """
 
 from __future__ import annotations
@@ -17,7 +18,12 @@ from typing import Any
 import pytest
 
 from zakcode.providers import litellm_provider as lp
-from zakcode.providers.litellm_provider import LiteLLMProvider, discover_context_window
+from zakcode.providers.base import UnknownContextWindow, WindowResolution
+from zakcode.providers.litellm_provider import (
+    LiteLLMProvider,
+    discover_context_window,
+    resolve_context_window,
+)
 
 ZDS = {
     "object": "list",
@@ -42,7 +48,7 @@ VLLM = {"data": [{"id": "Qwen/Qwen3-32B", "max_model_len": 40960}]}
 LLAMA_CPP = {"data": [{"id": "qwen3-8b.gguf", "meta": {"n_ctx_train": 32768, "n_params": 8}}]}
 
 
-# ── the pure reader ────────────────────────────────────────────────────────────
+# ── the pure reader (unchanged from ADR-0065: the check needs it) ───────────────
 
 
 def test_reads_the_window_the_server_declares() -> None:
@@ -66,7 +72,7 @@ def test_unknown_model_or_bogus_value_reads_as_nothing() -> None:
     assert discover_context_window(None, "m") is None
 
 
-# ── the provider probes once, fails open, and respects LOCAL_ONLY ───────────────
+# ── the resolver: config → registry → refuse; the listing only checks ───────────
 
 
 class _Fetch:
@@ -83,74 +89,130 @@ class _Fetch:
 
 
 POD = "http://pod.test:9090/v1"
+ALIAS = "openai/zds-qwen3.8-27b"
 
 
-def _pod_provider(**kw: Any) -> LiteLLMProvider:
-    return LiteLLMProvider(model="openai/zds-qwen3.8-27b", api_base=POD, api_key="sk-pod", **kw)
-
-
-def test_unknown_pod_model_takes_the_servers_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    fetch = _Fetch(ZDS)
-    monkeypatch.setattr(lp, "_fetch_models", fetch)
-    provider = _pod_provider()
-    assert provider.capabilities().context_window == 131072
-    assert provider.capabilities().context_window == 131072
-    assert fetch.calls == [(POD, "sk-pod")]  # probed once, then remembered
-
-
-def test_a_failed_probe_keeps_the_default_and_is_not_retried(
+def test_a_declared_window_is_the_source_and_is_not_verified_unless_asked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fetch = _Fetch(error=OSError("connection refused"))
+    fetch = _Fetch(ZDS)
     monkeypatch.setattr(lp, "_fetch_models", fetch)
-    provider = _pod_provider()
-    assert provider.capabilities().context_window == 8192
-    assert provider.capabilities().context_window == 8192
+    res = resolve_context_window(ALIAS, 131072, api_base=POD, api_key="sk-pod")
+    assert res == WindowResolution(131072, "config", None)
+    assert fetch.calls == []  # a known window is not probed on the request path
+
+
+def test_verify_asks_the_server_and_flags_a_mismatch_but_config_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch = _Fetch(ZDS)
+    monkeypatch.setattr(lp, "_fetch_models", fetch)
+    res = resolve_context_window(ALIAS, 32768, api_base=POD, api_key="sk-pod", verify=True)
+    assert res.window == 32768 and res.source == "config"
+    assert res.served == 131072 and res.mismatch is True
+    assert "server declares 131,072" in res.describe()
+    agree = resolve_context_window(ALIAS, 131072, api_base=POD, verify=True)
+    assert agree.mismatch is False and agree.describe() == "131,072 (config), server agrees"
+
+
+def test_a_registry_model_needs_no_declaration() -> None:
+    res = resolve_context_window("openai/gpt-4o")
+    assert res.window == 128_000 and res.source == "registry"
+
+
+def test_an_unknown_model_resolves_to_unknown_with_the_servers_figure_offered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch = _Fetch(ZDS)
+    monkeypatch.setattr(lp, "_fetch_models", fetch)
+    res = resolve_context_window(ALIAS, None, api_base=POD, api_key="sk-pod")
+    assert res == WindowResolution(None, "unknown", 131072)
+    assert fetch.calls == [(POD, "sk-pod")]
+    message = lp.unknown_window_message(ALIAS, res, POD)
+    assert '"context_window": 131072' in message
+    assert ALIAS in message and POD in message
+
+
+def test_an_unknown_model_with_no_listing_says_where_to_look(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lp, "_fetch_models", _Fetch(error=OSError("connection refused")))
+    res = resolve_context_window(ALIAS, None, api_base=POD)
+    assert res.window is None and res.served is None
+    assert "model card" in lp.unknown_window_message(ALIAS, res, POD)
+    assert "no server was configured" in lp.unknown_window_message(ALIAS, res, None)
+
+
+def test_a_routing_sentinel_has_no_window_and_never_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch = _Fetch(ZDS)
+    monkeypatch.setattr(lp, "_fetch_models", fetch)
+    assert resolve_context_window("zakpick", api_base=POD, verify=True).source == "sentinel"
+    sentinel = LiteLLMProvider(
+        model="zakpick", api_base=POD, local_only=True, local_api_bases=[POD]
+    )
+    assert sentinel.capabilities().context_window is None
+    assert fetch.calls == []
+
+
+def test_local_only_never_asks_an_unlisted_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetch = _Fetch(ZDS)
+    monkeypatch.setattr(lp, "_fetch_models", fetch)
+    metered = resolve_context_window(
+        ALIAS, None, api_base=POD, local_only=True, local_api_bases=["http://other.test/v1"]
+    )
+    assert metered.served is None and fetch.calls == []
+    listed = resolve_context_window(
+        ALIAS, None, api_base=POD, api_key="sk-pod", local_only=True, local_api_bases=[POD]
+    )
+    assert listed.served == 131072 and fetch.calls == [(POD, "sk-pod")]
+
+
+def test_a_listing_cache_asks_each_base_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetch = _Fetch(ZDS)
+    monkeypatch.setattr(lp, "_fetch_models", fetch)
+    cache: dict[str, Any] = {}
+    for _ in range(3):
+        resolve_context_window(ALIAS, 131072, api_base=POD, verify=True, listing_cache=cache)
     assert len(fetch.calls) == 1
 
 
-def test_a_listing_without_the_model_keeps_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    fetch = _Fetch(VLLM)
+# ── the provider: refuses to exist without a window, reports the one it has ─────
+
+
+def test_a_provider_carries_its_declared_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetch = _Fetch(ZDS)
     monkeypatch.setattr(lp, "_fetch_models", fetch)
-    assert _pod_provider().capabilities().context_window == 8192
+    provider = LiteLLMProvider(model=ALIAS, api_base=POD, api_key="sk-pod", context_window=131072)
+    assert provider.capabilities().context_window == 131072
+    assert provider.window.source == "config"
+    assert fetch.calls == []
 
 
-def test_a_known_model_is_never_probed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_provider_for_an_unknown_model_refuses_with_the_number_to_paste(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lp, "_fetch_models", _Fetch(ZDS))
+    with pytest.raises(UnknownContextWindow, match=r'"context_window": 131072'):
+        LiteLLMProvider(model=ALIAS, api_base=POD, api_key="sk-pod")
+
+
+def test_a_known_model_never_needs_a_declaration(monkeypatch: pytest.MonkeyPatch) -> None:
     fetch = _Fetch(ZDS)
     monkeypatch.setattr(lp, "_fetch_models", fetch)
     provider = LiteLLMProvider(model="openai/gpt-4o", api_base=POD)
     assert provider.capabilities().context_window == 128_000
+    assert provider.window.source == "registry"
     assert fetch.calls == []
 
 
-def test_no_api_base_means_no_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    fetch = _Fetch(ZDS)
-    monkeypatch.setattr(lp, "_fetch_models", fetch)
-    provider = LiteLLMProvider(model="openai/zds-qwen3.8-27b")
-    assert provider.capabilities().context_window == 8192
-    assert fetch.calls == []
+def test_settings_context_window_describes_the_default_model() -> None:
+    from zakcode.config import Settings
 
-
-def test_a_routing_sentinel_is_never_probed_and_never_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # classify_destination refuses a sentinel loudly; the probe must swallow that, not
-    # propagate it into every capabilities() caller (the clamp, the compactor).
-    fetch = _Fetch(ZDS)
-    monkeypatch.setattr(lp, "_fetch_models", fetch)
-    sentinel = LiteLLMProvider(
-        model="zakpick", api_base=POD, local_only=True, local_api_bases=[POD]
-    )
-    assert sentinel.capabilities().context_window == 8192
-    assert fetch.calls == []
-
-
-def test_local_only_never_probes_an_unlisted_base(monkeypatch: pytest.MonkeyPatch) -> None:
-    fetch = _Fetch(ZDS)
-    monkeypatch.setattr(lp, "_fetch_models", fetch)
-    metered = _pod_provider(local_only=True, local_api_bases=["http://other.test/v1"])
-    assert metered.capabilities().context_window == 8192
-    assert fetch.calls == []
-    listed = _pod_provider(local_only=True, local_api_bases=[POD])
-    assert listed.capabilities().context_window == 131072
-    assert fetch.calls == [(POD, "sk-pod")]
+    settings = Settings(default_model=ALIAS, context_window=65536)
+    provider = LiteLLMProvider(settings)
+    assert provider.capabilities().context_window == 65536
+    # An explicit kwarg (a routed model's own entry) wins over the settings' value.
+    routed = LiteLLMProvider(settings, model=ALIAS, context_window=131072)
+    assert routed.capabilities().context_window == 131072

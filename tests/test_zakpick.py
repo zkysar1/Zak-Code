@@ -272,7 +272,10 @@ def test_agent_override_changes_startup_and_routing(tmp_path: Path) -> None:
     agent = zakcode.Agent(
         default_model="zakpick",
         workspace_root=tmp_path,
-        zakpick_models={"deep_code": {"model": "qwen3:32b", "source": "local"}},
+        # A local alias the registry does not know declares its own window (ADR-0066).
+        zakpick_models={
+            "deep_code": {"model": "qwen3:32b", "source": "local", "context_window": 32768}
+        },
     )
     assert agent.settings.default_model == "ollama_chat/qwen3:32b"
     _provider, model = agent._resolve_task_provider("deep_code")
@@ -306,6 +309,99 @@ def test_non_zakpick_unaffected(tmp_path: Path) -> None:
     assert agent._main_provider_for is not None  # method exists but the loop never calls it
     # the loop got no main_provider_for (single provider path)
     assert agent.loop.main_provider_for is None
+
+
+# ── the context window travels with the model's entry (ADR-0066) ────────────────
+
+_POD = "http://pod.test:9090/v1"
+_ZDS = {"data": [{"id": "zds-qwen3.8-27b", "zds": {"ctx_per_engine": 131072}}]}
+
+
+def _alias(**extra: object) -> dict[str, object]:
+    return {"model": "zds-qwen3.8-27b", "source": "openai", **extra}
+
+
+def test_zakpick_entry_declares_the_window(tmp_path: Path) -> None:
+    agent = zakcode.Agent(
+        default_model="zakpick",
+        workspace_root=tmp_path,
+        zakpick_models={"deep_code": _alias(context_window=131072)},
+    )
+    # The startup (deep_code) model's window rides along into the copied settings …
+    assert agent.settings.default_model == "openai/zds-qwen3.8-27b"
+    assert agent.settings.context_window == 131072
+    assert agent.provider.capabilities().context_window == 131072
+    # … and the startup sweep recorded where every category's number came from.
+    assert agent.context_windows["zakpick 'deep_code'"].source == "config"
+    assert agent.context_windows["zakpick 'summarize'"].source == "registry"
+    assert "default_model" in agent.context_windows
+
+
+def test_a_routed_category_gets_its_own_window(tmp_path: Path) -> None:
+    agent = zakcode.Agent(
+        default_model="zakpick",
+        workspace_root=tmp_path,
+        zakpick_models={
+            "deep_code": _alias(context_window=131072),
+            "summarize": _alias(context_window=32768, thinking=False),
+        },
+    )
+    provider, model = agent._resolve_task_provider("summarize")
+    assert model == "openai/zds-qwen3.8-27b"
+    assert provider.capabilities().context_window == 32768
+    assert agent.provider.capabilities().context_window == 131072
+
+
+def test_an_entry_without_a_window_refuses_to_start_naming_the_offender(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zakcode.providers import litellm_provider as lp
+    from zakcode.providers.base import UnknownContextWindow
+
+    monkeypatch.setattr(lp, "_fetch_models", lambda base, key, timeout: _ZDS)
+    with pytest.raises(UnknownContextWindow) as info:
+        zakcode.Agent(
+            default_model="zakpick",
+            workspace_root=tmp_path,
+            api_base=_POD,
+            zakpick_models={"deep_code": _alias(), "plan": _alias()},
+        )
+    message = str(info.value)
+    assert "zakpick 'deep_code'" in message and "zakpick 'plan'" in message
+    assert '"context_window": 131072' in message  # the server's figure, ready to paste
+
+
+def test_a_server_that_disagrees_is_reported_and_the_config_stays_in_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zakcode.providers import litellm_provider as lp
+
+    monkeypatch.setattr(lp, "_fetch_models", lambda base, key, timeout: _ZDS)
+    agent = zakcode.Agent(
+        default_model="zakpick",
+        workspace_root=tmp_path,
+        api_base=_POD,
+        zakpick_models={"deep_code": _alias(context_window=32768)},
+    )
+    assert agent.provider.capabilities().context_window == 32768
+    # One warning for the model, even though the startup model is listed twice (as
+    # default_model and as its category).
+    assert len(agent.window_warnings) == 1
+    assert "declares 131,072" in agent.window_warnings[0]
+    assert "openai/zds-qwen3.8-27b" in agent.window_warnings[0]
+    assert "32,768" in agent.window_warnings[0]
+
+
+def test_a_concrete_default_model_takes_settings_context_window(tmp_path: Path) -> None:
+    from zakcode.providers.base import UnknownContextWindow
+
+    with pytest.raises(UnknownContextWindow, match="zds-qwen3.8-27b"):
+        zakcode.Agent(default_model="openai/zds-qwen3.8-27b", workspace_root=tmp_path)
+    agent = zakcode.Agent(
+        default_model="openai/zds-qwen3.8-27b", workspace_root=tmp_path, context_window=131072
+    )
+    assert agent.provider.capabilities().context_window == 131072
+    assert agent.context_windows["default_model"].source == "config"
 
 
 # ── loop wiring: the main-turn router fires per iteration ────────────────────────
@@ -478,7 +574,7 @@ async def test_agent_classify_difficulty_fails_up_on_error(
         def capabilities(self):
             from zakcode.providers.base import Capabilities
 
-            return Capabilities()
+            return Capabilities(context_window=8192)
 
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (_Raises(), "classify/m"))
     # A provider error during classification FAILS UP to the reliable coder, never crashes.

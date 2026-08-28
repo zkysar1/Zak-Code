@@ -28,9 +28,8 @@ class ScriptedProvider(Provider):
         self._results = list(results)
         self.calls = 0
 
-    @property
     def capabilities(self) -> Capabilities:
-        return Capabilities(supports_tools=True)
+        return Capabilities(supports_tools=True, context_window=8192)
 
     async def acomplete(self, messages, tools=None, **kwargs):  # type: ignore[override]
         self.calls += 1

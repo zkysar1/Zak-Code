@@ -27,7 +27,9 @@ def _runner(tmp_path: Path) -> SubAgentRunner:
     return SubAgentRunner(
         provider=cast(Provider, object()),
         registry=default_registry(),
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
     )
@@ -63,7 +65,9 @@ def test_general_purpose_still_has_write_tools(tmp_path: Path) -> None:
 
 def test_facade_exposes_plan_subagent_type(tmp_path: Path) -> None:
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         enable_subagents=True,
     )
     spawner = agent.loop.spawner

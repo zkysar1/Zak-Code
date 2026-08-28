@@ -75,7 +75,10 @@ def _factory(session: Session, model: str | None, prompter: object = None) -> _F
 
 def _make_app(tmp_path: Path, *, auth_token: str | None = None) -> FastAPI:
     settings = Settings(
-        default_model="scripted/test", workspace_root=tmp_path, auth_token=auth_token
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        auth_token=auth_token,
     )
     store = SessionStore(base_dir=tmp_path / "sessions")
     return create_app(settings=settings, store=store, agent_factory=_factory)

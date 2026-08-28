@@ -150,6 +150,7 @@ def test_agent_enable_skills_registers_save_skill(tmp_path: Path) -> None:
         provider=ScriptedProvider(script=[reply("ok")]),
         enable_skills=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     assert agent.registry.get("save_skill") is not None

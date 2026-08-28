@@ -85,7 +85,7 @@ def _build(tmp_path: Path) -> tuple[TestClient, SessionStore, list[_SkillAgent]]
         made.append(agent)
         return agent
 
-    settings = Settings(default_model="scripted/test", workspace_root=tmp_path)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
     store = SessionStore(base_dir=tmp_path / "sessions")
     app = create_app(settings=settings, store=store, agent_factory=factory)
     return TestClient(app, raise_server_exceptions=False), store, made

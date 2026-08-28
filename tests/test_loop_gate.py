@@ -81,7 +81,7 @@ class _OneToolThenDone(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 class _ScriptedPrompter:

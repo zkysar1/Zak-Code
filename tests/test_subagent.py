@@ -93,7 +93,7 @@ class _OneShotProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 def _runner(
@@ -105,7 +105,9 @@ def _runner(
     return SubAgentRunner(
         provider=provider,
         registry=registry,
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=budget,
         workspace_root=tmp_path,
     )
@@ -304,7 +306,9 @@ async def test_child_loop_constructed_without_obsolete_flags(tmp_path: Path, mon
     runner = SubAgentRunner(
         provider=_OneShotProvider("x"),
         registry=_registry(_RecordingTool("read_file")),
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
     )
@@ -343,7 +347,9 @@ async def test_child_gets_isolated_permission_view(tmp_path: Path, monkeypatch) 
     runner = SubAgentRunner(
         provider=_OneShotProvider("x"),
         registry=_registry(_RecordingTool("read_file")),
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         permission_policy=parent_policy,
         workspace_root=tmp_path,
@@ -378,7 +384,9 @@ async def test_child_inherits_extra_workspace_roots(tmp_path: Path, monkeypatch)
     runner = SubAgentRunner(
         provider=_OneShotProvider("x"),
         registry=_registry(_RecordingTool("read_file")),
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         extra_workspace_roots=extra,
         workspace_root=tmp_path,
@@ -400,7 +408,9 @@ async def test_subagent_does_not_refire_session_start(tmp_path: Path) -> None:
     runner = SubAgentRunner(
         provider=_OneShotProvider("done"),
         registry=_registry(_RecordingTool("read_file")),
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
         hook_manager=mgr,
@@ -437,7 +447,9 @@ async def test_subagent_gets_its_own_empty_hooks_not_the_parents(
     runner = SubAgentRunner(
         provider=_OneShotProvider("x"),
         registry=_registry(_RecordingTool("read_file")),
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         budget=IterationBudget(10),
         workspace_root=tmp_path,
         hook_manager=parent_hooks,

@@ -198,11 +198,15 @@ _CAPABILITIES: dict[str, Capabilities] = {
     ),
 }
 
+#: What an UNKNOWN model gets: tools assumed, and NO context window (``None``, never a
+#: stand-in number — ADR-0066). The window must then come from the model's config entry
+#: (``ZakpickModel.context_window`` / ``Settings.context_window``) or the provider refuses
+#: to run; a guessed 8,192 here once sized every window-keyed limit for a 131k pod.
 _DEFAULT = Capabilities(
     supports_tools=True,
     supports_vision=False,
     supports_caching=False,
-    context_window=8_192,
+    context_window=None,
     max_output=None,
 )
 
@@ -323,10 +327,10 @@ def _from_litellm(model: str) -> Capabilities | None:
 def get_capabilities(model: str) -> Capabilities:
     """Return the capabilities for ``model``.
 
-    Resolution order: static table -> litellm metadata -> safe default
-    (``context_window=8192``, ``supports_tools=True``). This never raises: an
-    empty/blank/non-string model, an unknown model, or any lookup failure all
-    fall through to the safe default.
+    Resolution order: static table -> litellm metadata -> the unknown-model default
+    (``context_window=None`` — unknown, never a number — ``supports_tools=True``).
+    This never raises: an empty/blank/non-string model, an unknown model, or any
+    lookup failure all fall through to the safe default.
     """
     # Defensively coerce: callers should pass a str, but a None/odd value must
     # not blow up capability resolution. An empty/blank name skips lookups.

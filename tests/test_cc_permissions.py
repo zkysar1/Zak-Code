@@ -39,6 +39,7 @@ def _agent(ws: Path, *, mode: str = "ask") -> Agent:
     return Agent(
         settings=Settings(
             default_model="scripted/test",
+            context_window=8192,
             workspace_root=ws,
             permission_mode=mode,
         ),
@@ -239,7 +240,10 @@ def test_ingestion_is_always_on(tmp_path: Path) -> None:
     _write_permissions(tmp_path, {"deny": ["Bash"]})
     agent = Agent(
         settings=Settings(
-            default_model="scripted/test", workspace_root=tmp_path, permission_mode="allow"
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            permission_mode="allow",
         ),
     )
     decision, reason = agent.permission_policy.decide(_spec(agent, "bash"), {"command": "ls"})

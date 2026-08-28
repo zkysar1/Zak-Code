@@ -49,8 +49,6 @@ class CompactionConfig(BaseModel):
     threshold_fraction: float = 0.8
     #: Number of most-recent messages to always keep verbatim.
     preserve_recent: int = 6
-    #: Fallback context window when the provider doesn't declare one.
-    fallback_context_window: int = 8192
 
 
 class CompactionResult(BaseModel):
@@ -80,11 +78,14 @@ class Compactor:
         context_window: int | None,
         count_tokens: CountTokens,
     ) -> bool:
-        """True if ``messages`` exceed the configured fraction of the context window."""
-        window = context_window or self.config.fallback_context_window
-        if window <= 0:
-            return False
-        threshold = int(window * self.config.threshold_fraction)
+        """True if ``messages`` exceed the configured fraction of the context window.
+
+        Raises when the window is unknown: there is no honest threshold without one, and a
+        stand-in number is how a 131k pod once compacted against 8,192 (ADR-0066).
+        """
+        if not context_window or context_window <= 0:
+            raise ValueError("compaction needs the model's context window, and none is known")
+        threshold = int(context_window * self.config.threshold_fraction)
         return count_tokens(messages) > threshold
 
     def _split_index(self, messages: list[Message]) -> int:

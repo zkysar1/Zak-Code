@@ -181,7 +181,7 @@ class _FakeProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 async def test_complete_structured_no_schema_single_call() -> None:
@@ -241,7 +241,7 @@ async def test_complete_structured_unreliable_model_uses_json_object() -> None:
 
     class _UnreliableProvider(_FakeProvider):
         def capabilities(self) -> Capabilities:
-            return Capabilities(tools_unreliable=True)
+            return Capabilities(tools_unreliable=True, context_window=8192)
 
     p = _UnreliableProvider(['{"a": "x"}'])
     res = await complete_structured(p, [Message.user("hi")], schema=_OBJ_SCHEMA)

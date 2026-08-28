@@ -181,7 +181,7 @@ async def test_text_tool_calling_provider_text_mode() -> None:
     )
     stub = StubProvider(
         result=LLMResult(text=response_text),
-        caps=Capabilities(supports_tools=False),
+        caps=Capabilities(supports_tools=False, context_window=8192),
     )
     wrapper = TextToolCallingProvider(stub, mode="text")
     tools = [_make_tool("read_file")]
@@ -202,7 +202,7 @@ async def test_text_tool_calling_provider_native_passthrough() -> None:
             text="",
             tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": "a.py"})],
         ),
-        caps=Capabilities(supports_tools=True),
+        caps=Capabilities(supports_tools=True, context_window=8192),
     )
     wrapper = TextToolCallingProvider(stub, mode="native")
     tools = [_make_tool("read_file")]
@@ -242,7 +242,10 @@ async def test_astream_forwards_response_format_to_inner() -> None:
     # branch (buffered via the wrapper's acomplete) and the native auto branch (inner.astream).
     class _Recording(StubProvider):
         def __init__(self) -> None:
-            super().__init__(result=LLMResult(text="ok"), caps=Capabilities(supports_tools=True))
+            super().__init__(
+                result=LLMResult(text="ok"),
+                caps=Capabilities(supports_tools=True, context_window=8192),
+            )
             self.seen: list[dict | None] = []
 
         async def acomplete(  # noqa: ANN001
@@ -283,7 +286,7 @@ async def test_text_tool_calling_provider_auto_salvage() -> None:
     )
     stub = StubProvider(
         result=LLMResult(text=response_text, tool_calls=[]),
-        caps=Capabilities(supports_tools=True),
+        caps=Capabilities(supports_tools=True, context_window=8192),
     )
     wrapper = TextToolCallingProvider(stub, mode="auto")
     tools = [_make_tool("read_file")]

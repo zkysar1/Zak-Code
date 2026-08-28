@@ -18,6 +18,8 @@ from zakcode.providers.base import (
     RateLimited,
     RequestFailed,
     ToolCall,
+    UnknownContextWindow,
+    WindowResolution,
 )
 from zakcode.providers.bitnet import BitNetProvider
 from zakcode.providers.claude_code import ClaudeCodeProvider, CompletionBridge
@@ -63,6 +65,8 @@ __all__ = [
     "RateLimited",
     "RequestFailed",
     "ResolvedModel",
+    "UnknownContextWindow",
+    "WindowResolution",
     "StructuredResult",
     "StructuredValidationError",
     "TextToolCallingProvider",

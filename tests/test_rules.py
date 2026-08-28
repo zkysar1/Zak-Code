@@ -196,6 +196,7 @@ def test_agent_lean_rules_renders_index_not_bodies(tmp_path: Path) -> None:
         enable_rules=True,
         lean_rules=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     prompt = agent.loop.prompt_builder.build(agent.settings)
@@ -218,6 +219,7 @@ def test_agent_lean_rules_off_is_unchanged_full_render(tmp_path: Path) -> None:
         provider=ScriptedProvider(script=[reply("ok")]),
         enable_rules=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     prompt = agent.loop.prompt_builder.build(agent.settings)
@@ -255,6 +257,7 @@ def test_agent_enable_rules_renders_into_prompt(tmp_path: Path) -> None:
         provider=ScriptedProvider(script=[reply("ok")]),
         enable_rules=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     assert agent.rule_registry is not None
@@ -303,6 +306,7 @@ def test_agent_enable_skills_and_rules_both_in_stable(tmp_path: Path) -> None:
         enable_skills=True,
         enable_rules=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     assert agent.skill_registry is not None and agent.rule_registry is not None
@@ -323,6 +327,7 @@ def test_injected_prompt_builder_is_populated_with_rules(tmp_path: Path) -> None
         prompt_builder=pb,
         enable_rules=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     # enable_rules is not a silent no-op: the injected builder's empty rules slot is filled.
@@ -358,6 +363,7 @@ def test_agent_subagents_inherit_parent_rules(tmp_path: Path) -> None:
         enable_rules=True,
         enable_subagents=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     # The runner behind the task spawner carries the parent's rendered rules.

@@ -100,6 +100,7 @@ def test_self_hosted_call_is_allowed() -> None:
     provider = LiteLLMProvider(
         Settings(
             default_model="openai/zds-qwen3.8-27b",
+            context_window=131072,  # an alias the registry does not know (ADR-0066)
             api_base=POD,
             api_key="sk-noop",
             local_only=True,
@@ -157,6 +158,7 @@ def test_startup_gate_passes_for_a_fully_self_hosted_config() -> None:
     _assert(
         Settings(
             default_model="openai/zds-qwen3.8-27b",
+            context_window=131072,  # an alias the registry does not know (ADR-0066)
             api_base=POD,
             local_only=True,
             _env_file=None,
@@ -170,6 +172,7 @@ def test_startup_gate_catches_a_metered_fallback_model() -> None:
         _assert(
             Settings(
                 default_model="openai/zds-qwen3.8-27b",
+                context_window=131072,  # an alias the registry does not know (ADR-0066)
                 fallback_model="groq/qwen/qwen3-32b",
                 api_base=POD,
                 local_only=True,
@@ -256,6 +259,7 @@ def test_extra_body_reaches_the_request() -> None:
     provider = LiteLLMProvider(
         Settings(
             default_model="openai/zds-qwen3.8-27b",
+            context_window=131072,  # an alias the registry does not know (ADR-0066)
             api_base=POD,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             _env_file=None,
@@ -282,7 +286,9 @@ def test_same_model_different_thinking_gets_different_providers() -> None:
     from zakcode import Agent
 
     agent = object.__new__(Agent)
-    agent.settings = Settings(default_model="openai/zds-qwen3.8-27b", api_base=POD, _env_file=None)
+    agent.settings = Settings(
+        default_model="openai/zds-qwen3.8-27b", api_base=POD, context_window=131072, _env_file=None
+    )
     agent._provider_injected = False
     agent._provider_cache = {}
 
@@ -303,6 +309,7 @@ def test_per_category_thinking_merges_over_the_global_extra_body() -> None:
     agent = object.__new__(Agent)
     agent.settings = Settings(
         default_model="openai/zds-qwen3.8-27b",
+        context_window=131072,  # an alias the registry does not know (ADR-0066)
         api_base=POD,
         extra_body={"seed": 42},
         _env_file=None,
@@ -311,7 +318,9 @@ def test_per_category_thinking_merges_over_the_global_extra_body() -> None:
     agent._provider_cache = {}
 
     built = agent._build_provider(
-        "openai/other-model", extra_body={"chat_template_kwargs": {"enable_thinking": False}}
+        "openai/other-model",
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        context_window=8192,
     )
     inner = built.inner if hasattr(built, "inner") else built
     body = inner.extra_body
@@ -328,6 +337,7 @@ def test_per_call_extra_body_merges_over_the_instance_body() -> None:
     provider = LiteLLMProvider(
         Settings(
             default_model="openai/zds-qwen3.8-27b",
+            context_window=131072,  # an alias the registry does not know (ADR-0066)
             api_base=POD,
             extra_body={"chat_template_kwargs": {"enable_thinking": True}, "seed": 42},
             _env_file=None,
@@ -377,6 +387,7 @@ def test_extra_headers_reach_the_provider_call_kwargs():
 
     s = Settings(
         default_model="openai/zds-qwen3.8-27b",
+        context_window=131072,  # an alias the registry does not know (ADR-0066)
         api_base="http://10.0.0.250:9090/v1",
         extra_headers={"X-ZDS-Instance": "{hostname}-{pid}"},
     )

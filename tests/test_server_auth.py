@@ -70,7 +70,7 @@ class _ScriptedProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 def _app(
@@ -82,6 +82,7 @@ def _app(
 ) -> tuple[TestClient, SessionStore]:
     settings = Settings(
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=tmp_path,
         auth_token=auth_token,
         allowed_models=allowed_models or [],

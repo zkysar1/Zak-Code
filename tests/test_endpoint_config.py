@@ -37,6 +37,7 @@ def test_settings_api_base_from_env(monkeypatch) -> None:
 def test_provider_reads_endpoint_from_settings() -> None:
     s = Settings(
         default_model="openai/qwen2.5-coder",
+        context_window=8192,  # a fake model needs a declared window (ADR-0066)
         api_base="http://127.0.0.1:8000/v1",
         api_key="sk-local-noop",
     )
@@ -46,7 +47,7 @@ def test_provider_reads_endpoint_from_settings() -> None:
 
 
 def test_explicit_kwargs_override_settings() -> None:
-    s = Settings(default_model="openai/x", api_base="http://from-settings/v1")
+    s = Settings(default_model="openai/x", api_base="http://from-settings/v1", context_window=8192)
     provider = LiteLLMProvider(s, api_base="http://from-kwarg/v1")
     assert provider.api_base == "http://from-kwarg/v1"
 
@@ -68,6 +69,7 @@ def test_endpoint_flows_into_request_kwargs() -> None:
     """A configured api_base/api_key must appear in the kwargs sent to litellm."""
     s = Settings(
         default_model="openai/qwen2.5-coder",
+        context_window=8192,  # a fake model needs a declared window (ADR-0066)
         api_base="http://127.0.0.1:8000/v1",
         api_key="sk-local-noop",
     )
@@ -173,6 +175,7 @@ def test_api_base_forwarded_to_local_llamacpp_model_with_groq_base_configured() 
     """
     s = Settings(
         default_model="openai/qwen3.5-9b",  # llama.cpp llama-server
+        context_window=8192,  # a fake model needs a declared window (ADR-0066)
         api_base="http://127.0.0.1:8080/v1",
         api_key="sk-local-noop",
     )

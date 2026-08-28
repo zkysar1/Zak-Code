@@ -68,6 +68,11 @@ Stop conditions
 * ``"budget_exhausted"`` — an optional cumulative cost/token ceiling
   (``Settings.max_cost_usd`` / ``max_tokens``, shared across the whole sub-agent tree)
   was crossed (parity #4). A hard, non-vetoable bound like ``max_iterations``.
+* ``"skill_too_large"`` — a skill (or rule) body that cannot fit this model's context
+  window at all: beside the system prompt it leaves less than the answer room. Nothing the
+  model does changes that, so the turn ends loudly here instead of continuing without the
+  instructions (ADR-0066); the tool result the model sees says the same. Non-vetoable, and
+  an operator problem — a bigger window or a smaller skill.
 
 A ``finish_reason`` of ``length``/``max_tokens`` on a final (no-tool-calls) answer is
 auto-continued up to ``_MAX_LENGTH_CONTINUATIONS`` times rather than mis-reported as a
@@ -144,6 +149,7 @@ from zakcode.providers.base import (
     StreamUsage,
     TimedOut,
     ToolCall,
+    UnknownContextWindow,
 )
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
 from zakcode.providers.text_tools import defang_untrusted
@@ -158,6 +164,7 @@ from zakcode.tools.base import (
     SubAgentSpawner,
     ToolContext,
     ToolRegistry,
+    ToolResult,
     ToolSpec,
 )
 from zakcode.usage import Usage
@@ -264,8 +271,15 @@ _SUMMARY_CHARS_PER_TOKEN = 2
 #: code-heavy text; head-heavy head+tail keep with an elision note between.
 _CLAMP_WINDOW_FRACTION = 0.25
 _CLAMP_CHARS_PER_TOKEN = 3
-#: Assumed window when a provider declares none (conservative; matches common local models).
-_CLAMP_FALLBACK_WINDOW = 32_768
+#: There is NO assumed window when a provider declares none: the loop refuses to run on an
+#: unknown window (ADR-0066, ``_window``). A stand-in here once sized this clamp at 6 KB for
+#: a 131k pod and cut every skill body to head+tail.
+
+#: The room a completion needs after everything else is in the window: the model's declared
+#: output cap when it has one, else this floor. Used by the skill-fit check (ADR-0066): a
+#: verbatim body that cannot sit beside the system prompt and still leave this much is too
+#: large for the model, full stop — no compaction changes that.
+_MIN_ANSWER_ROOM = 4_096
 
 #: Finish reasons that mean the model's output was cut off at the token cap (parity #5):
 #: OpenAI reports ``length``; litellm maps Anthropic's ``max_tokens`` stop reason similarly.
@@ -982,6 +996,7 @@ _DEGRADED_STOP_REASONS = {
     "recipe_stalled",
     "verification_failed",
     "provider_error",
+    "skill_too_large",
 }
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
@@ -1131,6 +1146,10 @@ class AgentLoop:
         consume_say_inbox: bool = False,
     ) -> None:
         self.provider = provider
+        # A loop cannot run on a model whose window nobody knows (ADR-0066): every
+        # window-keyed limit would be sized on a guess. Refuse here, at construction.
+        if provider is not None:
+            self._window()
         # Deliberation seam: a Sampler for tools that make their own model calls (deep_think's
         # best-of-N synthesis). Threaded into every ToolContext; ``None`` (bare/test loop) makes
         # such a tool return a clean "unavailable" error. The Agent wires it to its strongest
@@ -1230,6 +1249,10 @@ class AgentLoop:
         # Blocker-without-evidence guard (ADR-0036): tool calls that FAILED this turn. A
         # completion declaring a blocker while this is zero measured nothing. Per-turn.
         self._turn_tool_errors = 0
+        # Loud in-turn terminal (ADR-0066): ``(stop_reason, detail)`` armed by the execution
+        # seam when a verbatim body cannot fit the window; both twins end the turn on it
+        # right after the batch's results land. Per-turn.
+        self._turn_fatal: tuple[str, str] | None = None
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
         # as re-measuring while probe → probe → probe with nothing changed does. Per-turn.
@@ -1451,7 +1474,7 @@ class AgentLoop:
             "the summary."
         )
         summarizer = self._summarizer_provider or self.provider
-        window = summarizer.capabilities().context_window or 8192
+        window = summarizer.capabilities().context_window or self._window()
         if summarizer.count_tokens(messages) <= int(window * _SUMMARY_SINGLE_CALL_FRACTION):
             result = await summarizer.acomplete(messages, system=instruction)
             return result.text.strip()
@@ -2119,8 +2142,10 @@ class AgentLoop:
         repairs a too-cheap route; routing on a stale window is never a correctness issue.
         """
         try:
-            window = self.provider.capabilities().context_window or 1
-            return self.provider.count_tokens(messages) / max(1, window)
+            window = self.provider.capabilities().context_window
+            if not window:
+                return 1.0
+            return self.provider.count_tokens(messages) / window
         except Exception:  # noqa: BLE001 — a classification input is best-effort, never fatal
             return 1.0
 
@@ -2496,6 +2521,21 @@ class AgentLoop:
         # subprocesses, not context). A verbatim result (a skill body, a rule — ADR-0065)
         # is instructions and lands whole: measured 2026-08-28 (coach, zc-03), a 39 KB /boot
         # clamped to 6 KB lost Steps 0–11 and the model "completed" the boot without them.
+        # And instructions that cannot fit the window AT ALL end the turn loudly (ADR-0066)
+        # — the model gets an error it cannot work around, and the loop stops on it.
+        if tool_res.verbatim and not tool_res.is_error:
+            too_large = self._verbatim_overflow(
+                tool_res.output, what=self._verbatim_label(spec, arguments)
+            )
+            if too_large is not None:
+                tool_res = ToolResult.error(
+                    too_large,
+                    fix=(
+                        "Stop here and say so: this is an operator problem — a bigger model "
+                        "window or a smaller skill — not something you can work around."
+                    ),
+                )
+                self._turn_fatal = ("skill_too_large", too_large)
         output = tool_res.output if tool_res.verbatim else self._clamp_tool_output(tool_res.output)
         if post.message:
             output = f"{output}\n[hook] {post.message}" if output else f"[hook] {post.message}"
@@ -2534,6 +2574,75 @@ class AgentLoop:
             artifacts=tool_res.artifacts,
         )
 
+    def _window(self) -> int:
+        """The current provider's context window — the ONE place an unknown window surfaces.
+
+        Every window-keyed limit (the seam clamp, compaction, the skill-fit check) reads
+        through here, and there is no stand-in: a provider that declares none raises
+        :class:`UnknownContextWindow` (ADR-0066), at loop construction and at every model
+        swap, so the failure is loud and early rather than a silently mis-sized limit.
+        """
+        try:
+            window = self.provider.capabilities().context_window
+        except NotImplementedError:
+            window = None
+        if not window:
+            try:
+                label = self.provider.model_id() or type(self.provider).__name__
+            except Exception:  # noqa: BLE001 — naming the provider must not mask the refusal
+                label = type(self.provider).__name__
+            raise UnknownContextWindow(
+                f"model {label!r} has no known context window — the loop cannot size its "
+                "clamp, compaction, or skill-fit check. Declare it in the model's config entry "
+                "(context_window) or use a model the registry knows."
+            )
+        return window
+
+    @staticmethod
+    def _verbatim_label(spec: ToolSpec | None, arguments: dict[str, Any]) -> str:
+        """What a verbatim body IS, for the skill-fit message: ``skill 'x'`` / ``rule 'y'``."""
+        name = arguments.get("name")
+        if spec is not None and isinstance(name, str) and name.strip():
+            kind = (
+                "skill"
+                if spec.name == "use_skill"
+                else "rule"
+                if spec.name == "read_rule"
+                else spec.name
+            )
+            return f"{kind} {name.strip()!r}"
+        return "these instructions"
+
+    def _verbatim_overflow(self, text: str, *, what: str) -> str | None:
+        """The skill-fit check (ADR-0066): the message when ``text`` cannot fit this model's
+        window beside the system prompt while leaving answer room — else ``None``.
+
+        Counts with the provider's own tokenizer (best-effort: an uncountable body is never
+        blocked on a guess). The check is arithmetic, not a fraction knob: a body that fits
+        only with the transcript emptied is the compactor's job (pre-turn threshold, in-turn
+        overflow recovery); a body that does not fit even then is nobody's job but the
+        operator's, and the loop says so instead of continuing without it.
+        """
+        try:
+            window = self._window()
+            caps = self.provider.capabilities()
+            body = self.provider.count_tokens([Message.user(text)])
+            system = self.provider.count_tokens([], system=self._build_system())
+        except UnknownContextWindow:
+            raise
+        except Exception:  # noqa: BLE001 — counting is best-effort; never block on a guess
+            return None
+        reserve = caps.max_output or _MIN_ANSWER_ROOM
+        if body + system + reserve <= window:
+            return None
+        return (
+            f"{what} is about {body:,} tokens; with the system prompt (~{system:,}) and "
+            f"room to answer ({reserve:,}) it needs {body + system + reserve:,}, and this "
+            f"model's context window is {window:,}. It cannot be loaded on this model, so "
+            "the turn ends here — an operator must give this workspace a bigger window or "
+            "a smaller skill."
+        )
+
     def _clamp_tool_output(self, text: str) -> str:
         """Bound one result's model-facing text to a fraction of the provider's window.
 
@@ -2542,7 +2651,7 @@ class AgentLoop:
         lines); the middle is the safest cut. The note names the loss and the remedy so
         the model re-runs narrower instead of trusting a silently partial result.
         """
-        window = self.provider.capabilities().context_window or _CLAMP_FALLBACK_WINDOW
+        window = self._window()
         max_chars = int(window * _CLAMP_WINDOW_FRACTION * _CLAMP_CHARS_PER_TOKEN)
         if len(text) <= max_chars:
             return text
@@ -3268,6 +3377,7 @@ class AgentLoop:
         cascade_capped = False  # cross-gate cascade cap (ADR-0058): once per turn
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
+        self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
@@ -3360,6 +3470,7 @@ class AgentLoop:
                 )
                 if category != main_category:
                     self.provider = self.main_provider_for(category)
+                    self._window()  # the routed model must have a known window (ADR-0066)
                     main_category = category
                     self._note("route", category, category=category)
 
@@ -4148,6 +4259,12 @@ class AgentLoop:
 
             self.session.add_message(Message.tool_results(result_blocks))
             self._persist()
+            if self._turn_fatal is not None:
+                # A verbatim body that cannot fit the window (ADR-0066): the model has its
+                # error result; nothing it could do next changes the arithmetic. End loudly.
+                stop_reason, fatal_detail = self._turn_fatal
+                self._note("intervention", fatal_detail, kind=stop_reason)
+                break
             # A skill loaded this batch puts its sections in the plan (ADR-0062).
             self._seed_loaded_skill_skeletons(result.tool_calls, result_blocks, skeleton_seeded)
 
@@ -4410,6 +4527,7 @@ class AgentLoop:
         cascade_capped = False  # cross-gate cascade cap (ADR-0058): once per turn
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
+        self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
@@ -4511,6 +4629,7 @@ class AgentLoop:
                     )
                     if category != main_category:
                         self.provider = self.main_provider_for(category)
+                        self._window()  # the routed model must have a known window (ADR-0066)
                         main_category = category
                         self._note("route", category, category=category)
                         # Transparency (ADR-0033): the route was a trace-only note, so an
@@ -5553,6 +5672,12 @@ class AgentLoop:
 
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()
+                if self._turn_fatal is not None:
+                    # A verbatim body that cannot fit the window (ADR-0066): end loudly.
+                    stop_reason, fatal_detail = self._turn_fatal
+                    self._note("intervention", fatal_detail, kind=stop_reason)
+                    yield AgentStatus(message=f"turn ended — {fatal_detail}")
+                    break
                 # A skill loaded this batch puts its sections in the plan (ADR-0062).
                 for skill_name, steps in self._seed_loaded_skill_skeletons(
                     tool_calls, result_blocks, skeleton_seeded

@@ -24,17 +24,18 @@ from typing import TYPE_CHECKING, Any
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
-from zakcode.agent.loop import AgentLoop, TurnResult, _composed_skill_name
+from zakcode.agent.loop import _MIN_ANSWER_ROOM, AgentLoop, TurnResult, _composed_skill_name
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
 from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
 from zakcode.messages import Message
 from zakcode.permissions import PermissionPolicy, PermissionPrompter
-from zakcode.providers.base import Provider, ProviderError
+from zakcode.providers.base import Provider, ProviderError, UnknownContextWindow, WindowResolution
 from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedModel
 from zakcode.providers.routing import DifficultyVerdict
 from zakcode.session.store import Session, SessionStore
+from zakcode.skills.fit import SkillFit, measure_skill_fit
 from zakcode.tools.base import SkillLoad, SkillResolver
 from zakcode.tools.builtins.default_registry import default_registry
 
@@ -361,18 +362,35 @@ class Agent:
                 self.model_resolution.reason,
             )
         elif not self._provider_injected and self.settings.default_model == ZAKPICK_SENTINEL:
-            from zakcode.providers.routing import model_for_category
+            from zakcode.providers.routing import model_spec_for_category
 
             self._zakpick = True
-            startup_model = model_for_category("deep_code", self.settings)
-            self.settings = self.settings.model_copy(update={"default_model": startup_model})
+            startup_spec = model_spec_for_category("deep_code", self.settings)
+            startup_model = startup_spec.litellm_string
+            # The window travels WITH the model (ADR-0066): the startup model's entry
+            # carries its own context_window, and the copied settings must say so too, or
+            # the default provider would be built against Settings.context_window — which
+            # describes a concrete ZAKCODE_DEFAULT_MODEL, not this category's model.
+            self.settings = self.settings.model_copy(
+                update={
+                    "default_model": startup_model,
+                    "context_window": startup_spec.context_window,
+                }
+            )
             logger.info("zakpick: routing per task category; startup model %s", startup_model)
+        #: Every effective model's context window and its source (ADR-0066), by label —
+        #: filled by ``_assert_context_windows`` for the info panel and the skill-fit check.
+        self.context_windows: dict[str, WindowResolution] = {}
+        #: Loud-but-not-fatal window findings (a server declaring a different window than
+        #: the config), printed red at startup by the CLI.
+        self.window_warnings: list[str] = []
         # Cost guarantee, checked once the sentinels above have resolved to concrete models so
         # every destination is knowable. Placed BEFORE the first provider is built (and long
         # before any completion), and safe to run after auto-resolution because the resolver
         # only makes read-only /v1/models probes — no billable call has happened yet.
         if not self._provider_injected:
             self._assert_local_only()
+            self._assert_context_windows()
         # Cache of role providers built for a non-default model, keyed by model string, so
         # spawning N sub-agents on the same role model doesn't rebuild the litellm wrapper N×.
         self._provider_cache: dict[str, Provider] = {}
@@ -1106,24 +1124,122 @@ class Agent:
                 "ZAKCODE_LOCAL_ONLY to allow paid calls."
             )
 
+    def _assert_context_windows(self) -> None:
+        """Refuse to start when any effective model has no known context window (ADR-0066),
+        naming every offender at once; report (loudly, not fatally) any server whose
+        ``/models`` listing declares a different window than the one in force.
+
+        The same enumeration as ``_assert_local_only`` — EFFECTIVE models, so a zakpick
+        category the operator never overrode is checked against its built-in default too.
+        Each model's window resolves the one way the provider itself will resolve it (the
+        model's entry, else the registry); this sweep exists so the failure happens at
+        startup with the whole list, instead of on whichever model a turn reached first.
+        The server listing is asked once per api_base and only ever to CHECK.
+        """
+        from zakcode.providers.litellm_provider import (
+            resolve_context_window,
+            unknown_window_message,
+        )
+        from zakcode.providers.routing import effective_model_entries
+
+        settings = self.settings
+        local_api_bases = list(getattr(settings, "local_api_bases", []) or [])
+        listing_cache: dict[str, object] = {}
+        offenders: list[str] = []
+        warned: set[tuple[str, int | None, int | None]] = set()
+        for label, model, declared in effective_model_entries(settings, zakpick=self._zakpick):
+            resolution = resolve_context_window(
+                model,
+                declared,
+                api_base=settings.api_base,
+                api_key=settings.api_key,
+                local_only=settings.local_only,
+                local_api_bases=local_api_bases,
+                verify=True,
+                listing_cache=listing_cache,
+            )
+            self.context_windows[label] = resolution
+            if resolution.source == "sentinel":
+                continue
+            if resolution.window is None:
+                offenders.append(
+                    f"  - {label}: {unknown_window_message(model, resolution, settings.api_base)}"
+                )
+            elif resolution.mismatch:
+                # One warning per (model, config, served) — under zakpick the startup model
+                # is listed twice (as default_model and as its category).
+                key = (model, resolution.window, resolution.served)
+                if key in warned:
+                    continue
+                warned.add(key)
+                warning = (
+                    f"context window check: {label} ({model}) is configured at "
+                    f"{resolution.window:,} tokens but the server at {settings.api_base} "
+                    f"declares {resolution.served:,} — the configured number stays in force; "
+                    "fix whichever one is wrong."
+                )
+                self.window_warnings.append(warning)
+                logger.warning(warning)
+        if offenders:
+            raise UnknownContextWindow(
+                "these configured models have no known context window:\n" + "\n".join(offenders)
+            )
+
+    def skill_fit_report(self) -> list[SkillFit]:
+        """Every discovered skill measured against the smallest effective window (ADR-0066):
+        the startup half of the loud block — see :func:`zakcode.skills.fit.measure_skill_fit`.
+        Empty when there are no skills or no window is known (an injected provider)."""
+        if self.skill_registry is None:
+            return []
+        windows = [r.window for r in self.context_windows.values() if r.window]
+        if not windows:
+            return []
+        try:
+            system_tokens = self.provider.count_tokens([], system=self.loop._build_system())
+        except Exception:  # noqa: BLE001 — a fit report is advisory; never block startup on it
+            system_tokens = 0
+        reserve = self.provider.capabilities().max_output or _MIN_ANSWER_ROOM
+        skills = [
+            (skill.name, skill.body())
+            for skill in (self.skill_registry.get(n) for n in self.skill_registry.names())
+            if skill is not None
+        ]
+        return measure_skill_fit(
+            skills,
+            count_tokens=lambda text: self.provider.count_tokens([Message.user(text)]),
+            window=min(windows),
+            system_tokens=system_tokens,
+            reserve=reserve,
+        )
+
     def _build_provider(
-        self, model: str, *, extra_body: dict[str, object] | None = None
+        self,
+        model: str,
+        *,
+        extra_body: dict[str, object] | None = None,
+        context_window: int | None = None,
     ) -> Provider:
         """Build a settings-based provider for ``model`` (litellm wrapped in the text-tool
         protocol) — the same construction used for the default model and for per-role overrides.
 
         ``extra_body`` (a zakpick category's thinking flag) is MERGED OVER the configured
         ``Settings.extra_body`` rather than replacing it, so a global knob and a per-category
-        one compose instead of one silently erasing the other.
+        one compose instead of one silently erasing the other. ``context_window`` is the
+        routed model's own declared window (ADR-0066) and REPLACES the settings' value,
+        which describes the default model only.
         """
         from zakcode.providers.endpoints import model_uses_generic_endpoint
         from zakcode.providers.litellm_provider import LiteLLMProvider
         from zakcode.providers.text_tools import TextToolCallingProvider
 
-        if model == self.settings.default_model and not extra_body:
+        if model == self.settings.default_model and not extra_body and context_window is None:
             role_settings = self.settings
         else:
-            update: dict[str, object] = {"default_model": model}
+            if context_window is None and model == self.settings.default_model:
+                # A variant of the default model (a per-category thinking flag) is the same
+                # model, so the settings' window still describes it.
+                context_window = self.settings.context_window
+            update: dict[str, object] = {"default_model": model, "context_window": context_window}
             # api_base/api_key are ENDPOINT-specific. Don't carry the configured custom
             # endpoint onto a routed model that litellm sends somewhere else — an
             # ollama_chat/* or groq/* role would otherwise be handed the OpenAI-compatible
@@ -1189,7 +1305,11 @@ class Agent:
         return provider, f"{failed} -> {new_model} ({reason})"
 
     def _provider_for(
-        self, model: str | None, *, extra_body: dict[str, object] | None = None
+        self,
+        model: str | None,
+        *,
+        extra_body: dict[str, object] | None = None,
+        context_window: int | None = None,
     ) -> Provider:
         """Resolve a per-role model string to a :class:`Provider` (the model-routing seam).
 
@@ -1201,14 +1321,20 @@ class Agent:
         ``thinking`` flag). It participates in the CACHE KEY, which it must: two categories
         can name the SAME model and want different thinking, and a model-only key would hand
         the second one the first one's provider and silently apply the wrong setting.
+        ``context_window`` (the category entry's declared window, ADR-0066) is keyed the
+        same way for the same reason.
         """
         if not model or self._provider_injected:
             return self.provider
         if model == self.settings.default_model and not extra_body:
             return self.provider
-        key = model if not extra_body else f"{model}\x00{sorted(extra_body.items())!r}"
+        key = model
+        if extra_body or context_window is not None:
+            key = f"{model}\x00{sorted((extra_body or {}).items())!r}\x00{context_window}"
         if key not in self._provider_cache:
-            self._provider_cache[key] = self._build_provider(model, extra_body=extra_body)
+            self._provider_cache[key] = self._build_provider(
+                model, extra_body=extra_body, context_window=context_window
+            )
         return self._provider_cache[key]
 
     # ── zakpick task-category routing seams (active only when default_model="zakpick") ──────
@@ -1233,7 +1359,12 @@ class Agent:
         # it off and deep_code wants it on).
         spec = model_spec_for_category(category, self.settings)
         model = spec.litellm_string
-        return self._provider_for(model, extra_body=spec.extra_body), model
+        return (
+            self._provider_for(
+                model, extra_body=spec.extra_body, context_window=spec.context_window
+            ),
+            model,
+        )
 
     def _provider_pair_for_task(self, category: str) -> tuple[Provider, str]:
         """``(provider, model)`` for a category-routed sub-agent (plan / delegate)."""

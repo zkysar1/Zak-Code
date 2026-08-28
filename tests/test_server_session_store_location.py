@@ -32,7 +32,9 @@ def _no_turns(session: Session, model: str | None, prompter: object = None) -> o
 
 
 def _served(workspace: Path) -> TestClient:
-    settings = Settings(default_model="scripted/test", workspace_root=workspace)
+    settings = Settings(
+        default_model="scripted/test", context_window=8192, workspace_root=workspace
+    )
     return TestClient(create_app(settings=settings, agent_factory=_no_turns))
 
 
@@ -103,7 +105,9 @@ def _agent_on(workspace: Path, store: SessionStore | None):
     from zakcode import Agent
 
     return Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=workspace),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=workspace
+        ),
         session_store=store,
     )
 

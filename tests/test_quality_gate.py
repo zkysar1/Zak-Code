@@ -33,7 +33,7 @@ class _ScoreProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
     def model_id(self) -> str:
         return "judge/test"

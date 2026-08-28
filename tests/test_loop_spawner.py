@@ -93,7 +93,7 @@ class _CallThenDoneProvider(Provider):
         return 0
 
     def capabilities(self) -> Capabilities:
-        return Capabilities()
+        return Capabilities(context_window=8192)
 
 
 def _loop(tmp_path: Path, tool: _CaptureTool, spawner: SubAgentSpawner | None) -> AgentLoop:

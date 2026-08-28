@@ -55,7 +55,10 @@ def _full_agent(ws: Path) -> Agent:
     # Every CC-compat seam on — the way an operator hosting a CC plug-in would run it.
     return Agent(
         settings=Settings(
-            default_model="scripted/test", workspace_root=ws, permission_mode="allow"
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=ws,
+            permission_mode="allow",
         ),
         enable_skills=True,
         enable_rules=True,

@@ -151,7 +151,9 @@ def _tool_outputs(agent: Agent) -> list[str]:
 async def test_reinvoking_the_typed_skill_gets_the_pointer(tmp_path: Path) -> None:
     _write_skill(tmp_path, "start", body="Bring the agent up, step by step.")
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         enable_skills=True,
         provider=_Replay([_use("start", "t1"), LLMResult(text="up", usage=Usage(total_tokens=1))]),
     )
@@ -169,7 +171,9 @@ async def test_a_different_skill_still_loads_in_full(tmp_path: Path) -> None:
     _write_skill(tmp_path, "start", body="Bring the agent up.")
     _write_skill(tmp_path, "prime", body="Prime the context.")
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         enable_skills=True,
         provider=_Replay([_use("prime", "t1"), LLMResult(text="up", usage=Usage(total_tokens=1))]),
     )
@@ -194,7 +198,9 @@ async def test_a_veto_still_opens_a_fresh_skill_turn(tmp_path: Path) -> None:
     # ADR-0048 is untouched: after a TURN_END veto the typed skill's body comes back in full.
     _write_skill(tmp_path, "start", body="Bring the agent up, step by step.")
     agent = Agent(
-        settings=Settings(default_model="scripted/test", workspace_root=tmp_path),
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
         enable_skills=True,
         provider=_Replay(
             [

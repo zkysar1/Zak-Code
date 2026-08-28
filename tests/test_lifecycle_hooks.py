@@ -123,6 +123,7 @@ async def test_pre_compact_fires_on_manual_compaction(tmp_path: Path) -> None:
         provider=provider,
         enable_compaction=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     agent.hook_manager.register_lifecycle(HookEvent.PRE_COMPACT, lambda p: fired.append(p.event))

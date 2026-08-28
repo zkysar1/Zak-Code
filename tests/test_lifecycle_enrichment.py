@@ -50,6 +50,7 @@ async def test_pre_compact_enriched_data(tmp_path: Path) -> None:
         provider=provider,
         enable_compaction=True,
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     agent.hook_manager.register_lifecycle(HookEvent.PRE_COMPACT, lambda p: captured.append(p))
@@ -93,6 +94,7 @@ async def test_session_end_shell_hook_receives_enriched_data(tmp_path: Path) -> 
         provider=ScriptedProvider(script=[reply("ok")]),
         hook_manager=HookManager([spec]),
         default_model="scripted/test",
+        context_window=8192,
         workspace_root=str(tmp_path),
     )
     await agent.arun_turn("hello")

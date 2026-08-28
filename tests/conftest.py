@@ -26,7 +26,7 @@ class StubProvider(Provider):
         caps: Capabilities | None = None,
     ) -> None:
         self._result = result or LLMResult(text="stub response")
-        self._caps = caps or Capabilities()
+        self._caps = caps or Capabilities(context_window=8192)
 
     async def acomplete(
         self,

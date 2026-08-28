@@ -103,5 +103,7 @@ class TestSettingsPlumbing:
         monkeypatch.setenv("ZAKCODE_LOCAL_API_BASES", POD)
         from zakcode.providers.litellm_provider import LiteLLMProvider
 
-        provider = LiteLLMProvider(settings=Settings(default_model="openai/x", api_base=POD))
+        provider = LiteLLMProvider(
+            settings=Settings(default_model="openai/x", api_base=POD, context_window=8192)
+        )
         assert provider.local_api_bases == [POD]
