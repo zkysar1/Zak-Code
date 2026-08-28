@@ -280,8 +280,17 @@ def test_typed_skill_turn_starts_from_its_sections(tmp_path: Path) -> None:
     plan_seen = next(t for t in first if "Current plan (0/6 steps done):" in t)
     assert "[ ] 3.1 1.0 Pre-Encoding" in plan_seen
     assert any(e.data.get("kind") == "skill_skeleton" for e in result.trace.events)
-    # update_plan is full-replace: the model's own plan won, and the turn finished clean.
-    assert [t.title for t in loop.session.task_network.tasks] == ["carried out"]
+    # update_plan is full-replace, so the model's own step stands — but this is a PAGED
+    # skill (ADR-0067) and the model held section 1 only: the four sections it dropped
+    # without ever holding them come back, in order, and section 2 is delivered.
+    tasks = loop.session.task_network.tasks
+    assert tasks[0].title == "carried out" and len(tasks) == 5
+    assert all(t.note.startswith("from /encode-session") for t in tasks[1:])
+    (restored,) = [
+        e.data for e in result.trace.events if e.data.get("kind") == "skill_sections_restored"
+    ]
+    assert (restored["restored"], restored["pages"]) == (4, [2, 3, 4, 5])
+    assert any("[/encode-session — page 2 of 5:" in (m.text or "") for m in loop.session.messages)
 
 
 def test_streaming_twin_announces_the_seeded_plan(tmp_path: Path) -> None:

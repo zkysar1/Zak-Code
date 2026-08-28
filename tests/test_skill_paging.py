@@ -233,7 +233,7 @@ def test_use_skill_delivers_page_one_and_seeds_every_section(tmp_path: Path) -> 
     ]
     rail = next(t for t in _user_texts(provider.seen[1]) if "I added the 3 sections" in t)
     assert "You hold section 1's instructions now" in rail
-    assert loop._skill_page_delivered["demo"] == 1
+    assert loop._skill_pages_delivered["demo"] == {1}
 
 
 def test_marking_a_section_done_turns_the_page(tmp_path: Path) -> None:
@@ -282,7 +282,7 @@ def test_the_plan_pulls_pages_in_order_and_never_twice(tmp_path: Path) -> None:
     asyncio.run(loop.arun_turn("run /demo"))
     pages = [n["page"] for n in _notes(loop, "skill_page")]
     assert pages == [2, 3]
-    assert loop._skill_page_delivered["demo"] == 3
+    assert loop._skill_pages_delivered["demo"] == {1, 2, 3}
     assert loop.current_skill_page("demo") is not None  # section 3 is still open
     assert "[/demo — page 3 of 3" in (loop.current_skill_page("demo") or "")
 
@@ -341,7 +341,7 @@ def test_the_typed_door_carries_page_one_and_seeds_the_rest(tmp_path: Path) -> N
         "Step 2: Second",
         "Step 3: Third",
     ]
-    assert loop._skill_page_delivered["demo"] == 1 or loop._skill_page_delivered["demo"] == 2
+    assert loop._skill_pages_delivered["demo"] == {1, 2}
     assert any("[/demo — page 2 of 3" in t for t in _user_texts(provider.seen[1]))
 
 
@@ -357,9 +357,9 @@ def test_a_restart_reads_how_far_it_was_paged_from_the_transcript(tmp_path: Path
     asyncio.run(first.arun_turn("run /demo"))
     # A new loop over the same session (a restart) forgets nothing the transcript kept.
     second = _loop(_ScriptByCall(lambda n, m: LLMResult(text="x")), tmp_path, first.session)
-    assert second._pages_in_transcript("demo") == 2
+    assert second._pages_in_transcript("demo") == {1, 2}
     assert second._ensure_skill_pages("demo") is not None
-    assert second._skill_page_delivered["demo"] == 2
+    assert second._skill_pages_delivered["demo"] == {1, 2}
 
 
 def test_streaming_twin_announces_the_page(tmp_path: Path) -> None:
@@ -455,3 +455,109 @@ def test_a_paged_load_without_a_whole_body_is_named_not_hidden(tmp_path: Path) -
     (note,) = _notes(loop, "skill_page_body_missing")
     assert note["skill"] == "demo"
     assert [t.title for t in loop.session.task_network.tasks] == ["Step 1: First"]
+
+
+# ── the first field run's defects (2026-08-28, coach /boot) ──────────────────────
+
+
+def _start_steps(*statuses: str) -> list[dict[str, Any]]:
+    """Another skill's steps, seeded before ours — /start's, closed."""
+    titles = ["Step 1: Check state", "Step 2: Set Mode", "Step 3: Activate"]
+    note = "from /start; done when this section has been carried out"
+    return [{"title": t, "status": s, "note": note} for t, s in zip(titles, statuses, strict=True)]
+
+
+def test_another_skills_closed_steps_never_satisfy_our_pages(tmp_path: Path) -> None:
+    """/boot's 'Step 1..3' pages were matched by /start's closed 'Step 1..3' steps and the
+    boot jumped to page 14 — a page matches only steps seeded from its own skill or owned
+    by none."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            # The model's rewrite: /start's steps kept, /demo's section 1 done, 2–3 dropped.
+            return _plan(_start_steps("done", "done", "done") + _seeded("done", "done", "done")[:1])
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    (note,) = _notes(loop, "skill_page")
+    assert (note["page"], note["skipped"]) == (2, 0)
+    page = next(t for msgs in provider.seen for t in _user_texts(msgs) if "page 2 of 3" in t)
+    assert "Your plan dropped 2 of /demo's sections" in page
+    assert "'Step 2: Second'" in page and "Do the second thing." in page
+
+
+def test_dropped_sections_come_back_into_the_plan_in_order(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(
+                [{"title": "Something else the model added", "status": "done"}]
+                + _seeded("done", "done", "done")[:1]
+            )
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    (restored,) = _notes(loop, "skill_sections_restored")
+    assert (restored["restored"], restored["pages"]) == (2, [2, 3])
+    titles = [t.title for t in loop.session.task_network.tasks]
+    assert titles == [
+        "Something else the model added",
+        "Step 1: First",
+        "Step 2: Second",
+        "Step 3: Third",
+    ]
+    assert all(t.note.startswith("from /demo") for t in loop.session.task_network.tasks[1:])
+    assert [t.status for t in loop.session.task_network.tasks[2:]] == ["pending", "pending"]
+    assert loop._skill_pages_delivered["demo"] == {1, 2}
+
+
+def test_a_section_the_plan_moved_past_is_not_restored(tmp_path: Path) -> None:
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            # Section 2 dropped, section 3 under way: the model skipped 2 on purpose.
+            return _plan(
+                [
+                    _seeded("done", "done", "in_progress")[0],
+                    _seeded("done", "done", "in_progress")[2],
+                ]
+            )
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert _notes(loop, "skill_sections_restored") == []
+    (note,) = _notes(loop, "skill_page")
+    assert (note["page"], note["skipped"]) == (3, 1)
+
+
+def test_the_plan_can_come_back_to_a_page_it_jumped_over(tmp_path: Path) -> None:
+    """Delivery is 'never the same page twice', not 'only forward': after a jump to page 3
+    the model re-added section 2 and made it current, so page 2 is delivered."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(
+                [
+                    _seeded("done", "done", "in_progress")[0],
+                    _seeded("done", "done", "in_progress")[2],
+                ]
+            )
+        if n == 4:  # n == 3 is the plan-quality side call that follows every update_plan
+            return _plan(_seeded("done", "pending", "pending"), call_id="p2")
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    pages = [(n["page"], n["skipped"]) for n in _notes(loop, "skill_page")]
+    assert pages == [(3, 1), (2, 0)]
+    assert loop._skill_pages_delivered["demo"] == {1, 2, 3}
