@@ -622,3 +622,42 @@ def test_litellm_logging_worker_cancellation_noise_is_filtered() -> None:
 
     assert not lite.filter(_record("/site-packages/litellm/litellm_core_utils/logging_worker.py"))
     assert lite.filter(_record("/site-packages/litellm/main.py"))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _map_error — a wrapper is classified by what it wraps (ADR-0070)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_map_error_classifies_a_wrapper_by_its_original_exception() -> None:
+    """litellm's MidStreamFallbackError subclasses ServiceUnavailableError and carries the
+    real failure as ``original_exception``. Measured 2026-08-28 (a vertex_ai runner): the
+    wrapper around a RateLimitError ended a 97-iteration session; classified by its
+    cause it is a rate limit that keeps the server's Retry-After."""
+
+    class RateLimitError(Exception):
+        retry_after = 7.0
+
+    class ServiceUnavailableError(Exception):
+        pass
+
+    class MidStreamFallbackError(ServiceUnavailableError):
+        def __init__(self, original: Exception) -> None:
+            super().__init__(f"litellm.MidStreamFallbackError: {original}")
+            self.original_exception = original
+
+    inner = RateLimitError("vertex_ai_betaException - RESOURCE_EXHAUSTED")
+    mapped = lp.LiteLLMProvider._map_error(MidStreamFallbackError(inner))
+    assert type(mapped) is RateLimited
+    assert mapped.retry_after == 7.0
+    assert "RESOURCE_EXHAUSTED" in str(mapped)
+
+    class AuthenticationError(Exception):
+        pass
+
+    # A wrapped auth failure is an auth failure — never retried as a transient.
+    wrapped_auth = MidStreamFallbackError(AuthenticationError("bad key"))
+    assert type(lp.LiteLLMProvider._map_error(wrapped_auth)).__name__ == "AuthError"
+
+    # A wrapper pointing at itself cannot loop the unwrap.
+    loop_exc = MidStreamFallbackError(inner)
+    loop_exc.original_exception = loop_exc
+    assert isinstance(lp.LiteLLMProvider._map_error(loop_exc), RateLimited)

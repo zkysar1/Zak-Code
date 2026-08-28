@@ -2748,3 +2748,38 @@ network round-trip per session for a fact the salvage path already covers); trea
 text protocol remains for models litellm knows lack tools and for `tool_calling_mode =
 "text"`. Pinned by tests/test_provider.py (mapped-and-False still demotes; unmapped keeps
 native).
+
+## ADR-0070: A rate limit mid-stream is waited out, not fatal — and the wait is fifteen minutes
+
+**Context.** The rate-limit retry policy (audit P0-4, widened 2026-08-26) waited out a
+429 only when it arrived BEFORE any delta reached the client; once text had streamed, a `RateLimited` was terminal ("a retry
+would re-yield text the client already rendered"). Measured 2026-08-28 on a Vertex AI
+runner: 97 iterations, 33 minutes, then `litellm.MidStreamFallbackError:
+litellm.RateLimitError: vertex_ai_betaException - RESOURCE_EXHAUSTED` landed mid-answer
+and the session stopped — resumable, but nobody resumes an unattended runner at night.
+Two defects compounded: the mid-stream ruling, and the classifier reading the WRAPPER
+(`MidStreamFallbackError` subclasses `ServiceUnavailableError`) instead of the 429 it
+carried as `original_exception`, so even the pre-stream path would have lost the
+server's Retry-After.
+
+**Decision.** (1) The streaming twin retries every `RateLimited` inside the backoff
+horizon whether or not deltas already streamed. The partial is discarded and
+re-generated; the status names it ("rate limited mid-stream — the N characters streamed
+above are discarded and will be re-generated"); the transcript never held it, because an
+attempt's text is committed only when it streams to completion. (2) `_map_error`
+unwraps `original_exception` (bounded) before classifying, so a wrapped 429 is a 429 with
+its Retry-After, and a wrapped auth failure is not retried. (3) The pure-rate-limit
+horizon is 900 s: an unattended runner's only alternative to waiting is a dead session,
+and fifteen minutes at a ≤60 s cadence is a handful of cheap probes. Timeouts and
+rejected tool calls keep their small fixed bound; the budget-exhausted stop keeps the
+resumable shape (partial persisted behind an interruption rail).
+
+**Alternatives rejected.** Re-yielding a marker the client could use to erase the partial
+(a UI protocol for a cosmetic problem); making the horizon a setting (no-knobs ruling — the
+policy is fixed, jitter keeps a fleet from re-spiking in lockstep); model failover on a
+mid-stream 429 (a rate limit is contention on THIS route, and the fallback model is the
+operator's choice for a broken route, not a busy one).
+
+**Consequences.** A quota storm costs a repeated paragraph in the terminal instead of the
+turn. Pinned by tests/test_loop_retry.py (mid-stream retry with the discard status;
+budget-exhausted stop still resumable) and tests/test_provider_edge.py (wrapper unwrap).
