@@ -1628,7 +1628,7 @@ class AgentLoop:
         if not self.compactor.should_compact(
             self.session.messages,
             context_window=window,
-            count_tokens=lambda m: self.provider.count_tokens(m),
+            count_tokens=self._count_tokens_anchored,
         ):
             return None
         # Let a host serialize learning/state before the transcript is compacted.
@@ -1655,6 +1655,7 @@ class AgentLoop:
         if not result.compacted:
             return None
         self.session.messages[:] = result.messages
+        self._forget_prompt_anchor()
         self._persist()
         # Claude Code parity: SessionStart(source="compact") right after each compaction —
         # the seam a framework's post-compact state-restore automation plugs into.
@@ -1662,6 +1663,41 @@ class AgentLoop:
         notice = f"context near the window — compacted {before} → {len(result.messages)} messages"
         self._note("intervention", notice, kind="compaction")
         return notice
+
+    def _anchor_prompt(self, prompt_tokens: int) -> None:
+        """Remember the provider's REPORTED size of the prompt just sent (ADR-0077).
+
+        Called from the two main-conversation call sites right after a usage lands, while
+        ``self.session.messages`` is still exactly the prefix that call was sent with (the
+        reply is appended by the caller afterwards). Side calls (the plan judge, the
+        compaction summarizer) go to the provider directly and never anchor.
+        """
+        if prompt_tokens > 0:
+            self.session.prompt_anchor_tokens = int(prompt_tokens)
+            self.session.prompt_anchor_index = len(self.session.messages)
+
+    def _forget_prompt_anchor(self) -> None:
+        """The measured prefix is gone (compaction rewrote it); fall back to the estimate."""
+        self.session.prompt_anchor_tokens = 0
+        self.session.prompt_anchor_index = 0
+
+    def _count_tokens_anchored(self, messages: list[Message]) -> int:
+        """The pre-call token count: the provider's estimate, floored by what it last MEASURED.
+
+        ``count_tokens`` is chars/4; id-dense tool output runs ~2.5 chars per token, so the
+        estimate sat ~25k under the truth on a 131k window and the threshold check read
+        "fine" at 129k real (coach, 2026-08-28 — the compaction fired 2k under the window,
+        and the turn before it died at 131,297). The anchor is the reported prompt size of
+        the last main call — system prompt and tools included — plus the estimate of only
+        the messages appended since; the delta is small, so its error is small. Whichever
+        is larger wins: the anchor can only pull the check EARLIER, never later.
+        """
+        estimate = self.provider.count_tokens(messages)
+        tokens = self.session.prompt_anchor_tokens
+        index = self.session.prompt_anchor_index
+        if tokens > 0 and 0 < index <= len(messages):
+            estimate = max(estimate, tokens + self.provider.count_tokens(messages[index:]))
+        return estimate
 
     async def compact_now(self, *, trigger: str = "manual") -> bool:
         """Force a compaction regardless of threshold.
@@ -1695,6 +1731,7 @@ class AgentLoop:
             return False
         if result.compacted:
             self.session.messages[:] = result.messages
+            self._forget_prompt_anchor()
             self._persist()
             # Claude Code parity: SessionStart(source="compact") after each compaction.
             await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
@@ -2732,6 +2769,9 @@ class AgentLoop:
                     cost_usd=result.usage.cost_usd,
                     latency_s=round(time.monotonic() - call_started, 3),
                 )
+                # The measured size of what was just sent floors the next pre-call
+                # compaction check (ADR-0077).
+                self._anchor_prompt(result.usage.prompt_tokens)
                 return result
             except RateLimited as exc:
                 # ModelOutputRejected and TimedOut subclass RateLimited for their retry
@@ -5377,6 +5417,8 @@ class AgentLoop:
                                 latency_s=round(time.monotonic() - attempt_started, 3),
                                 streamed=True,
                             )
+                            # Streaming twin of _call_provider's anchor (ADR-0077).
+                            self._anchor_prompt(attempt_usage.prompt_tokens)
                     except RateLimited as exc:
                         # Retried whether or not deltas already streamed (ADR-0070 — see
                         # the attempt-loop comment above). Same budgets as _call_provider:

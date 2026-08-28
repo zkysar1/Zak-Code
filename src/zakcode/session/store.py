@@ -174,6 +174,18 @@ class Session(BaseModel):
     #: reads as "an older build" and is compacted (fails SAFE).
     build: str = ""
     last_stop_reason: str = ""
+    #: The provider's last REPORTED prompt size and the transcript length it was measured
+    #: at (ADR-0077). The pre-call compaction check estimates tokens locally (chars/4),
+    #: and id-dense tool output tokenizes ~1.6x denser than that, so a 131k window read
+    #: as "fine" until the provider rejected it. Anchoring the estimate on this measured
+    #: figure — plus only the messages appended since — makes the check track the real
+    #: occupancy (system prompt and tools included). Persisted so a RESUME is covered
+    #: too: the turn that dies of its context is usually the first after one. Reset on
+    #: every compaction (the prefix it measured is gone). Schema v1 stays append-only:
+    #: an OLDER build drops both on load and falls back to the bare estimate (fails
+    #: SAFE — the pre-ADR-0077 behavior).
+    prompt_anchor_tokens: int = 0
+    prompt_anchor_index: int = 0
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""

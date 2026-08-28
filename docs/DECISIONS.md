@@ -3000,3 +3000,45 @@ because a transient was classified as terminal, and the classification is the bu
 **Consequences.** A pod engine restart, a gateway blip, or an unnamed 5xx costs a backoff,
 not a loop. Pinned by tests/test_provider.py: a 502 / 504 / 500 by status code retries, a
 404 / bool / missing status does not, and an auth failure carrying a status keeps its class.
+
+## ADR-0077: The compaction check is floored by what the provider last measured
+
+**Context.** ADR-0074 made the auto-compaction check run before every call, against
+`threshold_fraction` (0.8) of the model's window. The count it checks is
+`LiteLLMProvider.count_tokens` — `chars // 4 + 4 per message`, a heuristic. Id-dense tool
+output (goal ids, shas, YAML, JSONL) tokenizes at ~2.5 chars per token, so on that content
+the estimate runs ~40% low. Measured 2026-08-28 on coach (zc-03, 131,072-token window,
+threshold 104,858): the provider reported 107,868 → 112,355 → 113,854 → **129,251** prompt
+tokens across four consecutive calls while the pre-call check stayed silent; the compaction
+finally fired at the next check, 2k under the window. The turn before it had died at
+131,297 the same way — a single 15k tool result crossed the gap the estimate could not see.
+The provider reports the true size after every call; the check just never read it.
+
+**Decision.** The session keeps the provider's last reported `prompt_tokens` and the
+transcript length it was measured at (`prompt_anchor_tokens` / `prompt_anchor_index`),
+set at the two main-conversation call sites (buffered and streaming) while the transcript
+is still exactly the prefix that was sent. The pre-call check counts
+`max(estimate, anchor + estimate(messages appended since))`. The anchor is the measured
+size of the prompt — system prompt and tools included — and only the small delta is
+estimated, so the check tracks real occupancy. It is forgotten on every compaction (the
+measured prefix is gone), ignored when its index no longer fits the transcript, and
+persisted with the session so the first check after a resume is covered — the turn that
+dies of its context is usually the first after one. Side calls (the plan judge, the
+summarizer) never anchor. Schema v1 stays append-only: an older build drops both fields
+and falls back to the bare estimate.
+
+**Alternatives rejected.** A better local tokenizer (needs the model's vocabulary per
+provider and per pod; the provider already tells us the number, exactly, for free); a
+calibration ratio learned from reported/estimated (folds the fixed system-prompt cost into
+a multiplier and over-corrects small transcripts); lowering `threshold_fraction` (a guess
+at the density of unknown content — wrong in both directions and a knob); trusting the
+reactive overflow recovery (it costs a failed 129k call, 2–7 minutes cold, per overflow,
+and ADR-0074's bound is per call — the loop survives, slowly, when it should not have to).
+
+**Consequences.** Compaction fires where the threshold says, not where the window does —
+~25k tokens of headroom restored on dense content, none lost on sparse content (the floor
+only ever pulls the check earlier). Pinned by tests/test_resilience_context.py: a provider
+whose estimate is tiny but whose usage reports 90% of the window compacts on the check after
+the first call in both twins; the floor never lowers a larger estimate; a compaction
+forgets it; an out-of-range index is ignored; the fields round-trip through the session
+document and an older document loads without them.
