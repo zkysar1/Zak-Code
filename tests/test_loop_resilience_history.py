@@ -103,15 +103,24 @@ def test_trace_label_separates_child_dumps(tmp_path: Path) -> None:
     child = ScriptedProvider([LLMResult(text="child", finish_reason="stop", usage=_usage())])
 
     root_loop = _loop(root, trace_dir=str(tmp_path))
-    child_loop = _loop(child, trace_dir=str(tmp_path), trace_label="sub1-general-purpose")
+    # A child writes into its PARENT's session directory (trace_session), beside the
+    # turns that spawned it — its own fresh session never gets a directory of its own.
+    child_loop = _loop(
+        child,
+        trace_dir=str(tmp_path),
+        trace_label="sub1-general-purpose",
+        trace_session=root_loop.session.id,
+    )
 
     asyncio.run(root_loop.arun_turn("go"))
     asyncio.run(child_loop.arun_turn("go"))
 
-    names = sorted(p.name for p in tmp_path.glob("*.jsonl"))
+    session_dir = tmp_path / root_loop.session.id
+    assert not (tmp_path / child_loop.session.id).exists()
+    names = sorted(p.name for p in session_dir.glob("*.jsonl"))
     assert "turn_1.jsonl" in names  # root keeps the bare name (zakcode-usage-stats compat)
     assert "sub1-general-purpose_turn_1.jsonl" in names  # child no longer clobbers it
     # Both are real trace files, not empty artifacts.
     for name in names:
-        assert (tmp_path / name).read_text(encoding="utf-8").strip()
-        json.loads((tmp_path / name).read_text(encoding="utf-8").splitlines()[0])
+        assert (session_dir / name).read_text(encoding="utf-8").strip()
+        json.loads((session_dir / name).read_text(encoding="utf-8").splitlines()[0])

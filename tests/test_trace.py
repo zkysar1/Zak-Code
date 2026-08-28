@@ -96,10 +96,26 @@ async def test_trace_dump_writes_jsonl_when_trace_dir_set(tmp_path: Path) -> Non
     trace_dir = tmp_path / "traces"
     loop = _loop(tmp_path, ScriptedProvider([reply("done")]), trace_dir=str(trace_dir))
     await loop.arun_turn("hi")
-    dumped = trace_dir / "turn_1.jsonl"
+    dumped = trace_dir / loop.session.id / "turn_1.jsonl"
     assert dumped.is_file()
     events = [json.loads(line) for line in dumped.read_text(encoding="utf-8").splitlines()]
     assert any(e["kind"] == "stop" for e in events)
+
+
+async def test_trace_dumps_are_per_session_so_a_restart_keeps_the_previous_turns(
+    tmp_path: Path,
+) -> None:
+    # Turn numbers restart with every session; a flat turn_1.jsonl was overwritten by the
+    # next session's first turn (every coach restart erased the boot turn's telemetry).
+    trace_dir = tmp_path / "traces"
+    first = _loop(tmp_path, ScriptedProvider([reply("one")]), trace_dir=str(trace_dir))
+    await first.arun_turn("hi")
+    second = _loop(tmp_path, ScriptedProvider([reply("two")]), trace_dir=str(trace_dir))
+    await second.arun_turn("hi")
+    assert first.session.id != second.session.id
+    assert (trace_dir / first.session.id / "turn_1.jsonl").is_file()
+    assert (trace_dir / second.session.id / "turn_1.jsonl").is_file()
+    assert not (trace_dir / "turn_1.jsonl").exists()
 
 
 async def test_trace_dump_is_best_effort(tmp_path: Path) -> None:

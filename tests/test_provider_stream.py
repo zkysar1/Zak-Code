@@ -313,3 +313,25 @@ async def test_midstream_exception_mapped_to_taxonomy(monkeypatch: pytest.Monkey
 
     # The text delta before the failure still surfaced; no raw vendor exception leaked.
     assert [e.text for e in seen if isinstance(e, StreamTextDelta)] == ["partial"]
+
+
+async def test_stream_keeps_a_bounded_sample_of_raw_deltas(monkeypatch: Any) -> None:
+    # The loop reads this when a completion delivers nothing (2026-08-28, coach: 622 tokens
+    # generated, no text/thinking/tool call) — every field the backend sent, head and tail.
+    usage = SimpleNamespace(prompt_tokens=1, completion_tokens=5, total_tokens=6)
+    chunks = [_chunk(content=c) for c in "abcd"] + [
+        _chunk(content="", finish_reason="stop"),
+        _usage_only_chunk(usage),
+    ]
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _fake_stream(chunks))
+    provider = _make_provider()
+    assert provider.last_stream_sample is None
+    await _collect(provider.astream(_MSGS))
+    sample = provider.last_stream_sample
+    assert sample is not None
+    assert sample["chunks"] == 6 and sample["finish_reason"] == "stop"
+    # Three from the head, the last two of the five deltas from the tail; the usage-only
+    # chunk carries no delta and is not sampled.
+    assert len(sample["deltas"]) == 5
+    assert '"content": "a"' in sample["deltas"][0]
+    assert '"content": ""' in sample["deltas"][-1]

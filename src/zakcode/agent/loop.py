@@ -351,13 +351,33 @@ _REASONING_OVERFLOW_NUDGE = (
 )
 
 
-def _silent_detail(generated: int) -> str:
+def _silent_detail(generated: int, finish_reason: str | None = None) -> str:
     """What an empty completion cost, for its note and status (ADR-0063): ``""`` when the
     model truly produced nothing, else how many tokens the backend generated and then
-    delivered as neither text, thinking, nor a tool call. Measured 2026-08-28 (coach,
-    zc-03): 254 generated, nothing visible, no thinking — a silence the operator could not
-    tell from a zero-token one, and the two point at different failures."""
-    return f" ({generated} tokens generated, none delivered)" if generated > 0 else ""
+    delivered as neither text, thinking, nor a tool call — and how the backend said the
+    response ended, when it said. Measured 2026-08-28 (coach, zc-03): 254 generated,
+    nothing visible, no thinking — a silence the operator could not tell from a zero-token
+    one, and the two point at different failures."""
+    if generated <= 0:
+        return ""
+    finish = f"; finish={finish_reason}" if finish_reason else ""
+    return f" ({generated} tokens generated, none delivered{finish})"
+
+
+def _raw_message_excerpt(raw: Any, limit: int = 600) -> str | None:
+    """The backend's message object from a buffered response, compacted for a trace note —
+    what a silent completion actually carried. ``None`` when the provider kept no raw."""
+    if not isinstance(raw, dict):
+        return None
+    choices = raw.get("choices")
+    message: Any = None
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+    try:
+        text = json.dumps(message if message is not None else raw, default=str, ensure_ascii=False)
+    except Exception:  # noqa: BLE001 — an excerpt is best-effort telemetry
+        text = str(message if message is not None else raw)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _reasoning_overflow_nudge(skill: str | None) -> str:
@@ -1148,6 +1168,7 @@ class AgentLoop:
         completion_review_attempts: int = 0,
         fire_session_start: bool = True,
         trace_label: str | None = None,
+        trace_session: str | None = None,
         turn_end_veto_reset: Callable[[], None] | None = None,
         consume_say_inbox: bool = False,
     ) -> None:
@@ -1167,6 +1188,9 @@ class AgentLoop:
         # skill registry and fires ON_SKILL_SELECTED (source="tool") on each load.
         self._skill_resolver = skill_resolver
         self._trace_label = trace_label
+        # The session whose trace directory this loop writes into: its own, or — for a child
+        # loop — the parent's, so a delegation tree's traces sit together.
+        self._trace_session = trace_session
         # Rules seam (Vinheim Lever A chunk 2): the discovered RuleRegistry the read_rule
         # tool reads to return ONE rule body by name. Threaded into every ToolContext;
         # ``None`` (rules disabled) makes read_rule return a clean "not enabled" error.
@@ -1337,8 +1361,20 @@ class AgentLoop:
         """
         self._trace.note(kind, detail, **data)
 
+    def _stream_sample(self) -> dict[str, Any] | None:
+        """The provider's sample of the last stream's raw deltas, when it keeps one."""
+        sample = getattr(self.provider, "last_stream_sample", None)
+        return sample if isinstance(sample, dict) else None
+
     def _dump_trace(self) -> None:
-        """Write the current turn's trace to ``<trace_dir>/turn_<n>.jsonl`` when configured.
+        """Write the current turn's trace to ``<trace_dir>/<session>/turn_<n>.jsonl`` when
+        configured.
+
+        One directory per session: turn numbers restart with every session, so a flat
+        ``turn_<n>.jsonl`` was overwritten by the next session's turn ``n`` — every coach
+        restart erased the previous session's turn 1, the very turn a boot's paging and
+        silence telemetry lands in (measured 2026-08-28). A child loop writes under its
+        PARENT's session (``trace_session``), beside the turns that spawned it.
 
         Best-effort observability: a missing directory is created, and any filesystem error is
         swallowed so tracing can never raise into (or abort) the turn it is recording.
@@ -1346,7 +1382,7 @@ class AgentLoop:
         if not self.settings.trace_dir:
             return
         try:
-            trace_dir = Path(self.settings.trace_dir)
+            trace_dir = Path(self.settings.trace_dir) / (self._trace_session or self.session.id)
             trace_dir.mkdir(parents=True, exist_ok=True)
             # Sub-agent loops share the parent's trace_dir but count their own turns from 1,
             # so unlabeled children would silently OVERWRITE the parent's turn_N.jsonl
@@ -4081,9 +4117,11 @@ class AgentLoop:
                             self._note(
                                 "intervention",
                                 "empty completion — asking for a real answer"
-                                + _silent_detail(generated),
+                                + _silent_detail(generated, result.finish_reason),
                                 kind="empty_completion",
                                 completion_tokens=generated,
+                                finish_reason=result.finish_reason,
+                                raw=_raw_message_excerpt(result.raw),
                             )
                             rail = (
                                 _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
@@ -5477,22 +5515,21 @@ class AgentLoop:
                                 status = "reasoning overflow; retrying with thinking off"
                             else:
                                 generated = attempt_usage.completion_tokens
+                                silent = _silent_detail(generated, stream_finish_reason)
                                 self._note(
                                     "intervention",
-                                    "empty completion — asking for a real answer"
-                                    + _silent_detail(generated),
+                                    "empty completion — asking for a real answer" + silent,
                                     kind="empty_completion",
                                     completion_tokens=generated,
+                                    finish_reason=stream_finish_reason,
+                                    stream=self._stream_sample(),
                                 )
                                 rail = (
                                     _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
                                     if composed_skill is not None
                                     else _EMPTY_COMPLETION_NUDGE
                                 )
-                                status = (
-                                    f"model went silent{_silent_detail(generated)}; "
-                                    "asking for a real answer"
-                                )
+                                status = f"model went silent{silent}; asking for a real answer"
                             self.session.add_message(Message.user(_control_rail(rail)))
                             self._refund_iteration()  # an empty completion did no work
                             self._persist()
