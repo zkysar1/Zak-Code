@@ -709,3 +709,20 @@ def test_facade_gate_allows_the_harness_self_fix_in_autonomous(tmp_path) -> None
     # the union widens nothing else: an unvetted package still hard-denies
     decision, _ = agent.permission_policy.decide(SHELL, {"command": "pip install evil"})
     assert decision is PermissionDecision.DENY
+
+
+def test_shell_redirections_are_not_package_names() -> None:
+    # Field incident 2026-08-28 (coach, zc-03): 'pip install espn-api 2>&1 | tail -5' flagged
+    # phantom undeclared package '2' — the '&' segment-split leaves a '2>' token, whose
+    # spec-parse reads the fd digits as a name. Redirections are shell plumbing: a fused form
+    # ('>out.log', '2>/dev/null') is skipped whole, and a BARE operator ('2>', '>>', '<')
+    # also owns its following target token ('2> err.log').
+    assert installed_specs("pip install espn-api 2>&1 | tail -5") == ["pypi:espn-api"]
+    assert installed_specs("pip install requests > out.log") == ["pypi:requests"]
+    assert installed_specs("pip install requests 2>/dev/null") == ["pypi:requests"]
+    assert installed_specs("pip install requests >> log.txt 2>&1") == ["pypi:requests"]
+    assert installed_specs("pip install 2> err.log requests") == ["pypi:requests"]
+    assert installed_specs("pip install requests < input.txt") == ["pypi:requests"]
+    # Version constraints still parse: the operator must LEAD the token to be a redirection.
+    assert installed_specs("pip install 'requests>=2.0'") == ["pypi:requests"]
+    assert installed_specs("pip install 2to3>=1.0") == ["pypi:2to3"]

@@ -316,6 +316,35 @@ async def test_pre_hook_cannot_rewrite_into_an_undeclared_install(tmp_path: Path
     assert tool.calls == []  # the rewritten undeclared install never ran
 
 
+async def test_pre_hook_env_prepend_keeps_an_approved_install_runnable(tmp_path: Path) -> None:
+    # Field incident 2026-08-28 (coach, zc-03): a Mind deployment's agent-env hook rewrites
+    # EVERY bash command (prepends env assignments), and the post-rewrite re-check re-asserted
+    # the dependency floor ABSOLUTELY — so an install the operator had approved at the prompt
+    # seconds earlier was hard-blocked, on every retry, on every Mind box. The floor is a
+    # smuggle guard: it judges what the rewrite INTRODUCED, and never re-litigates targets
+    # the authorized original already carried.
+    tool = _RecordingTool("bash", PermissionTier.DANGER_FULL_ACCESS)
+    registry = ToolRegistry()
+    registry.register(tool)
+    provider = _OneToolThenDone("bash", {"command": "pip install espn-api"})
+
+    def rewrite(payload: HookPayload) -> HookResult:
+        cmd = payload.arguments["command"]
+        return HookResult(mutated_arguments={"command": f"MIND_AGENT=coach {cmd}"})
+
+    hooks = HookManager(in_process={HookEvent.PRE_TOOL_USE: [rewrite]})
+    prompter = _ScriptedPrompter(PermissionOutcome.ALLOW_ONCE)  # the operator approves
+    policy = PermissionPolicy(
+        PermissionMode.ASK, prompter=prompter, declared_packages=lambda: {"pypi:requests"}
+    )
+    loop = _loop(tmp_path, provider, registry, policy=policy, hooks=hooks)
+
+    await _collect(loop, "go", stream=False)
+    assert len(prompter.requests) == 1  # the undeclared install was prompted, once
+    assert tool.calls, "the operator-approved install must run despite the env-prepend rewrite"
+    assert tool.calls[0]["command"] == "MIND_AGENT=coach pip install espn-api"
+
+
 async def test_post_hook_message_appended_to_result(tmp_path: Path) -> None:
     tool = _RecordingTool("peek", PermissionTier.READ_ONLY)
     registry = ToolRegistry()

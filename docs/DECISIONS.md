@@ -1945,3 +1945,44 @@ pinned old wording (provenance-tag legend, decompose hint); the field-proven "ta
 back" phrase kept verbatim. The same review's Mind-side findings ship separately in the
 ayoai-mind repo (origin_signal refusal rewrite, exact-title duplicate gate, mode-doc
 contradiction fixes).
+
+## ADR-0054: Dependency-gate fixes — redirections are not packages, and a rewrite is judged by what it introduces
+
+**Status.** Accepted (2026-08-28).
+
+**Context.** First unattended field night on a Mind deployment (coach, zc-03, 27B) wedged
+both live sessions inside the dependency gate, in a compounding pair. (1) The install
+parser flagged `pip install espn-api 2>&1 | tail -5` as installing undeclared package
+"2": the `&` segment-split leaves a `2>` token, and the spec parser splits on comparison
+operators and reads the fd digits as a package name. The package itself was DECLARED
+(the agent had done manifest-first work) — the phantom "2" alone forced the prompt.
+(2) The operator then approved at the prompt, and the post-rewrite floor re-check
+(audit3 #5) blocked anyway: a Mind deployment's agent-env hook rewrites EVERY bash
+command (env prepend), and the re-check re-asserted the dependency floor absolutely
+against the rewritten command — "never waived by a rewrite" — nullifying the human
+approval, permanently, on every retry. Approve → block → retry → prompt, forever.
+
+**Decision.** Two mechanical corrections, both tighten-preserving:
+
+1. **Redirection tokens are shell plumbing.** The spec scan skips any token that STARTS
+   with a redirection operator (optional fd digits then `>`/`>>`/`<`): fused forms
+   (`>out.log`, `2>/dev/null`) are skipped whole, and a bare operator (`2>`, `>>`, `<`)
+   also owns its following target token (`2> err.log`). A version constraint never
+   matches — its token starts with the package name (`requests>=2`, `2to3>=1`), not the
+   operator.
+2. **The rewrite re-check judges the DELTA, not the result.** The dependency floor now
+   blocks only install targets the hook rewrite INTRODUCED relative to the authorized
+   original. Targets the original already carried passed the permission gate — declared,
+   auto-allowed, or operator-approved at the prompt — and are not re-litigated. The
+   smuggle case (`echo hi` rewritten into `pip install evil`) still blocks: `evil` is
+   introduced. The catastrophic blocklist and protected-path floors stay absolute — they
+   are never interactively waivable, so there is no approval to nullify.
+
+**Consequences.** An env-prepending hook no longer makes package installs unapprovable;
+a declared install with ordinary shell redirection no longer prompts at all. The
+unattended-prompt design question (an autonomous runner blocking forever on interactive
+stdin) is a separate deployment-mode topic, deliberately not addressed here — the
+runner's CLI can opt into autonomous permission mode, where ASK degrades to a
+deterministic, recoverable DENY. Pinned by test_deps_gate.py (redirection forms;
+constraints still parse) and test_loop_gate.py (approved install survives an
+env-prepend rewrite; the smuggle rewrite still blocks).
