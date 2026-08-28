@@ -1265,9 +1265,17 @@ class LiteLLMProvider(Provider):
         # Agent's startup assertion) and never a stand-in.
         if self.window.window is not None:
             caps = caps.model_copy(update={"context_window": self.window.window})
-        # Best-effort gate: if litellm is confident the model lacks function
-        # calling, reflect that. Never hard-fail on the probe.
+        # Best-effort gate: if litellm is confident the model lacks function calling,
+        # reflect that. Confidence needs a MAPPED model: ``supports_function_calling``
+        # answers False for a model the registry has never heard of, and that "unknown"
+        # used to read as "no" — measured 2026-08-28 (coach, zc-03): every self-hosted pod
+        # model (``openai/zds-…``, unmapped) was demoted to the text tool protocol, ~7k
+        # tokens of injected protocol per request plus stop sentinels, while the same
+        # endpoint answered native tool calls. An unmapped model keeps the default (native;
+        # the text wrapper still salvages a ``<tool_call>`` block a quirky model writes).
+        # Never hard-fail on the probe.
         try:
+            litellm.get_model_info(self.model)  # raises for a model the registry lacks
             supports = litellm.supports_function_calling(model=self.model)
         except Exception:
             supports = None
