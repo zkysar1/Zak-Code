@@ -841,6 +841,16 @@ class LiteLLMProvider(Provider):
         wanted = set(names)
         return any(base.__name__ in wanted for base in type(exc).__mro__)
 
+    @staticmethod
+    def _is_server_error(exc: Exception) -> bool:
+        """True when the vendor exception carries an HTTP 5xx ``status_code``.
+
+        litellm's ``APIStatusError`` family exposes the upstream status; a 5xx is the
+        server's fault and transient by definition, whatever class name it arrived under.
+        """
+        code = getattr(exc, "status_code", None)
+        return isinstance(code, int) and not isinstance(code, bool) and 500 <= code < 600
+
     @classmethod
     def _map_error(cls, exc: Exception) -> ProviderError:
         # Prefer isinstance against resolved classes; fall back to class-name
@@ -908,10 +918,20 @@ class LiteLLMProvider(Provider):
             "APIConnectionError",
             "ServiceUnavailableError",
             "InternalServerError",
-        ):
-            # Transient infrastructure errors (dropped connection, 503/500): the
-            # remedy is a bounded backoff-retry, not a dead turn. Surfaced as RateLimited so the
-            # loop's existing retry path handles it (no retry_after -> default backoff).
+            "BadGatewayError",
+        ) or cls._is_server_error(exc):
+            # Transient infrastructure errors (dropped connection, 503/500/502 — and any other
+            # 5xx status litellm surfaces under a class of its own): the remedy is a bounded
+            # backoff-retry, not a dead turn. Surfaced as RateLimited so the loop's existing
+            # retry path handles it (no retry_after -> default backoff).
+            #
+            # ``BadGatewayError`` is listed by NAME because it does not subclass
+            # ServiceUnavailableError (litellm 1.86: BadGatewayError -> APIStatusError), so the
+            # MRO match never saw it. Measured 2026-08-28 on a Mind runner (coach, zc-03): the
+            # inference pod's engine restarted, litellm raised ``BadGatewayError: 502
+            # upstream_unavailable``, and the turn ended as ``provider_error`` — the one stop a
+            # Stop hook cannot veto — while the pod was healthy again within the minute. The
+            # status-code rule is the catch-all for the same shape under a future name.
             return RateLimited(message, retry_after=retry_after)
         return RequestFailed(message)
 
