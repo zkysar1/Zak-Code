@@ -17,6 +17,7 @@ import logging
 import os
 import socket
 import time
+import urllib.request
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -56,7 +57,7 @@ from zakcode.providers.endpoints import (
     model_uses_generic_endpoint,
 )
 from zakcode.providers.pricing import estimate_cost_usd
-from zakcode.providers.registry import get_capabilities
+from zakcode.providers.registry import _DEFAULT, _strip_provider_prefix, get_capabilities
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
 
@@ -175,6 +176,69 @@ def _model_uses_generic_endpoint(model: str) -> bool:
     ``openai/gpt-4o-mini``.
     """
     return model_uses_generic_endpoint(model)
+
+
+# ── context-window discovery (ADR-0065) ─────────────────────────────────────────────
+#: Where an OpenAI-compatible ``GET /models`` entry may declare its context window, first
+#: present wins: vLLM (``max_model_len``), gateways (``context_window`` / ``context_length``
+#: / ``max_context_length``), llama.cpp (``meta.n_ctx_train`` / ``meta.n_ctx``), the zds
+#: inference server (``zds.ctx_per_engine``). Measured 2026-08-28 (coach, zc-03): the route
+#: model was an alias neither the static table nor litellm knew, capabilities fell to the
+#: 8,192 default against a 131,072 server, and every window-keyed limit (the seam clamp, the
+#: compaction threshold) was wrong by 16× — while the server declared the real figure here.
+_MODELS_WINDOW_PATHS: tuple[tuple[str, ...], ...] = (
+    ("max_model_len",),
+    ("context_window",),
+    ("context_length",),
+    ("max_context_length",),
+    ("meta", "n_ctx_train"),
+    ("meta", "n_ctx"),
+    ("zds", "ctx_per_engine"),
+)
+#: One probe, off the request path; a slow server costs at most this once per provider.
+_WINDOW_PROBE_TIMEOUT = 3.0
+
+
+def _fetch_models(api_base: str, api_key: str | None, timeout: float) -> Any:
+    """``GET {api_base}/models`` as parsed JSON. Raises on any failure — callers fail open."""
+    request = urllib.request.Request(
+        api_base.rstrip("/") + "/models", headers={"Accept": "application/json"}
+    )
+    if api_key:
+        request.add_header("Authorization", f"Bearer {api_key}")
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 — the configured base
+        return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
+def discover_context_window(models_json: Any, model: str) -> int | None:
+    """The context window a ``/models`` listing declares for ``model`` — ``None`` if it
+    names no such model or no window field carries a positive integer (ADR-0065)."""
+    entries = models_json.get("data") if isinstance(models_json, dict) else models_json
+    if not isinstance(entries, list):
+        return None
+    wanted = {model.strip().lower(), _strip_provider_prefix(model.strip()).lower()}
+    for entry in entries:
+        if not isinstance(entry, dict) or str(entry.get("id", "")).lower() not in wanted:
+            continue
+        for path in _MODELS_WINDOW_PATHS:
+            value: Any = entry
+            for key in path:
+                value = value.get(key) if isinstance(value, dict) else None
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                if path == ("zds", "ctx_per_engine"):
+                    return value // _zds_slots_per_engine(entry["zds"])
+                return value
+    return None
+
+
+def _zds_slots_per_engine(zds: dict[str, Any]) -> int:
+    """How many request slots share one zds engine's context — ``ctx_per_engine`` is the
+    engine TOTAL (llama.cpp ``-c`` across ``-np``), so a fan-out divides the per-request
+    window (rb-8892: a router advertising 131,072 over 3 slots serves ~43,690 per lane)."""
+    slots, replicas = zds.get("slots_total"), zds.get("replicas")
+    if isinstance(slots, int) and isinstance(replicas, int) and replicas > 0 and slots > replicas:
+        return max(1, slots // replicas)
+    return 1
 
 
 #: The system-prompt stable/dynamic split marker (parity #2 prompt caching). It MUST equal
@@ -330,6 +394,11 @@ class LiteLLMProvider(Provider):
         #: than per call — the values are constant for the process, and expanding at
         #: call time would put a formatting operation on the hot path for no gain.
         self.extra_headers: dict[str, str] = _expand_headers(resolved_extra_headers)
+        #: Context-window discovery (ADR-0065): the window the server's ``/models`` listing
+        #: declared for an otherwise-unknown model, probed once and remembered — ``None``
+        #: after a probe that found nothing, so a failure is never retried per call.
+        self._discovered_window: int | None = None
+        self._window_probed: bool = False
         #: Traffic smoothing (2026-08-26): monotonic time of the most recent request
         #: START on this instance — see _pace(). Never a knob.
         self._last_request_started = 0.0
@@ -1037,8 +1106,42 @@ class LiteLLMProvider(Provider):
     def model_id(self) -> str:
         return self.model
 
+    def _served_window(self) -> int | None:
+        """The window the configured server declares for this model (ADR-0065), probed once.
+
+        Only for a generic-endpoint model with an ``api_base`` — the case where the static
+        table and litellm are most likely blind (a self-hosted alias) and the server most
+        likely to know. Under ``local_only`` the probe obeys the same destination rule the
+        request path enforces: an unlisted base is never contacted. Never raises.
+        """
+        if self._window_probed:
+            return self._discovered_window
+        self._window_probed = True
+        if not self.api_base or not _model_uses_generic_endpoint(self.model):
+            return None
+        if self.local_only:
+            ok, _reason = classify_destination(self.model, self.api_base, self.local_api_bases)
+            if not ok:
+                return None
+        try:
+            listing = _fetch_models(self.api_base, self.api_key, _WINDOW_PROBE_TIMEOUT)
+            self._discovered_window = discover_context_window(listing, self.model)
+        except Exception:  # noqa: BLE001 — a capability probe must never fail a request
+            logging.getLogger(__name__).debug(
+                "context-window probe of %s failed; keeping the default",
+                self.api_base,
+                exc_info=True,
+            )
+        return self._discovered_window
+
     def capabilities(self) -> Capabilities:
         caps = get_capabilities(self.model)
+        # An unknown model falls to the registry's default window; ask the server it is
+        # routed to before believing that (ADR-0065). Probed once per provider instance.
+        if caps.context_window == _DEFAULT.context_window:
+            served = self._served_window()
+            if served is not None:
+                caps = caps.model_copy(update={"context_window": served})
         # Best-effort gate: if litellm is confident the model lacks function
         # calling, reflect that. Never hard-fail on the probe.
         try:
