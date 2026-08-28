@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from typer.testing import CliRunner
 
@@ -15,7 +17,16 @@ def test_version_string() -> None:
     assert __version__.count(".") >= 2
 
 
-def test_settings_defaults() -> None:
+def test_settings_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    # Hermetic on purpose: importing litellm ANYWHERE in the suite exports the
+    # workspace .env into os.environ at import time (dotenv's find_dotenv walks
+    # up from site-packages — inside this repo — to the repo root; probed
+    # 2026-08-28). Without this scrub, the "defaults" test asserts whatever the
+    # developer's .env says, on every box with a populated .env, while CI stays
+    # green because its checkout has none.
+    for k in [k for k in os.environ if k.startswith("ZAKCODE_")]:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.chdir(tmp_path)  # Settings(env_file=".env") is CWD-relative
     settings = Settings()
     assert settings.default_model
     assert settings.provider == settings.default_model.split("/", 1)[0]

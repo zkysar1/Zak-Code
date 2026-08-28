@@ -46,7 +46,7 @@ class _DelegatingProvider(Provider):
         pass
 
     async def acomplete(
-        self, messages: list[Message], *, tools: list | None = None, system: str | None = None
+        self, messages: list[Message], *, tools: list | None = None, system: str | None = None, **kw
     ) -> LLMResult:
         first = _first_user_text(messages)
         if first == "DELEGATE":  # the parent turn
@@ -133,7 +133,7 @@ class _CallCaptureProvider(Provider):
         self._calls = 0
 
     async def acomplete(
-        self, messages: list[Message], *, tools: list | None = None, system: str | None = None
+        self, messages: list[Message], *, tools: list | None = None, system: str | None = None, **kw
     ) -> LLMResult:
         self._calls += 1
         if self._calls == 1:
@@ -144,7 +144,7 @@ class _CallCaptureProvider(Provider):
         return LLMResult(text="child done", usage=Usage(total_tokens=1))
 
     async def astream(
-        self, messages: list[Message], *, tools: list | None = None, system: str | None = None
+        self, messages: list[Message], *, tools: list | None = None, system: str | None = None, **kw
     ) -> AsyncIterator[ProviderStreamEvent]:  # pragma: no cover - unused
         result = await self.acomplete(messages, tools=tools, system=system)
         from zakcode.providers.base import StreamDone

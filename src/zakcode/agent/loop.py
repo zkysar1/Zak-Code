@@ -1580,7 +1580,11 @@ class AgentLoop:
         summarizer = self._summarizer_provider or self.provider
         window = summarizer.capabilities().context_window or self._window()
         if summarizer.count_tokens(messages) <= int(window * _SUMMARY_SINGLE_CALL_FRACTION):
-            result = await summarizer.acomplete(messages, system=instruction)
+            result = await summarizer.acomplete(
+                messages,
+                system=instruction,
+                prompt_cache_key=f"zakcode/{self.session.id}",
+            )
             return result.text.strip()
         rendered = self._render_for_summary(messages)
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
@@ -1588,7 +1592,11 @@ class AgentLoop:
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
             prompt = f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}"
-            result = await summarizer.acomplete([Message.user(prompt)], system=instruction)
+            result = await summarizer.acomplete(
+                [Message.user(prompt)],
+                system=instruction,
+                prompt_cache_key=f"zakcode/{self.session.id}",
+            )
             parts.append(result.text.strip())
         combined = "\n\n".join(parts)
         if len(parts) > 1 and len(combined) > chunk_chars:
@@ -1600,6 +1608,7 @@ class AgentLoop:
                     )
                 ],
                 system=instruction,
+                prompt_cache_key=f"zakcode/{self.session.id}",
             )
             combined = result.text.strip()
         return combined
@@ -2701,7 +2710,11 @@ class AgentLoop:
             try:
                 call_started = time.monotonic()
                 result = await self.provider.acomplete(
-                    messages, system=system, tools=tools, **call_kw
+                    messages,
+                    system=system,
+                    tools=tools,
+                    prompt_cache_key=f"zakcode/{self.session.id}",
+                    **call_kw,
                 )
                 # Per-request usage on the decision trace: the one point every
                 # buffered completion passes, so a trace_dir session yields
@@ -5284,6 +5297,11 @@ class AgentLoop:
                             call_messages,
                             system=system,
                             tools=tool_defs or None,
+                            # One stable key per session: an affinity-routing pod
+                            # pins the conversation to the engine holding its KV
+                            # prefix; OpenAI uses the same field the same way.
+                            # Non-OpenAI-compatible providers ignore it.
+                            prompt_cache_key=f"zakcode/{self.session.id}",
                             **call_kw,
                         ):
                             if isinstance(ev, StreamThinkingDelta):

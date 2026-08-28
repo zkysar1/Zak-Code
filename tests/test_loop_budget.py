@@ -46,7 +46,7 @@ class _AlwaysToolProvider(Provider):
         self.calls = 0
 
     async def acomplete(
-        self, messages: list, *, tools: list | None = None, system: str | None = None
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw
     ) -> LLMResult:
         self.calls += 1
         return LLMResult(
@@ -56,7 +56,7 @@ class _AlwaysToolProvider(Provider):
         )
 
     async def astream(
-        self, messages: list, *, tools: list | None = None, system: str | None = None
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw
     ) -> AsyncIterator[ProviderStreamEvent]:
         self.calls += 1
         yield StreamToolCallDelta(
@@ -184,7 +184,7 @@ async def test_unlimited_default_runs_past_the_old_cap(tmp_path: Path) -> None:
 
     class _NToolsThenDone(_AlwaysToolProvider):
         async def acomplete(
-            self, messages: list, *, tools: list | None = None, system: str | None = None
+            self, messages: list, *, tools: list | None = None, system: str | None = None, **kw
         ) -> LLMResult:
             self.calls += 1
             if self.calls <= 60:

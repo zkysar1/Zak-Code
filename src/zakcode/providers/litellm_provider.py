@@ -894,6 +894,14 @@ class LiteLLMProvider(Provider):
             return AuthError(message)
         if cls._is_a(exc, _LiteLLMContextWindowError, "ContextWindowExceededError"):
             return ContextWindowExceeded(message)
+        if "exceeds the available context size" in str(exc).lower():
+            # llama.cpp's phrasing ("request (N tokens) exceeds the available
+            # context size (M tokens)") is NOT in litellm's context-window
+            # sniff list (probed litellm 2026-08-28: recognized False), so it
+            # arrives as a generic BadRequestError and the loop's
+            # compact-and-retry recovery never fires. Measured on zakpod1 the
+            # same day: 8 such 400s, each a failed turn instead of a compact.
+            return ContextWindowExceeded(message)
         if cls._is_a(exc, _LiteLLMRateLimitError, "RateLimitError"):
             return RateLimited(message, retry_after=retry_after)
         if "tool_use_failed" in str(exc):
@@ -944,6 +952,7 @@ class LiteLLMProvider(Provider):
         tools: list[dict[str, Any]] | None,
         *,
         response_format: dict[str, Any] | None = None,
+        prompt_cache_key: str | None = None,
         **kw: Any,
     ) -> dict[str, Any]:
         """Assemble the kwargs handed to ``litellm.acompletion``.
@@ -1005,6 +1014,19 @@ class LiteLLMProvider(Provider):
         merged_body: dict[str, Any] = {**self.extra_body, **(per_call_body or {})}
         if merged_body:
             call_kwargs["extra_body"] = merged_body
+        # Session-affinity routing key (OpenAI-standard `prompt_cache_key`). Rides
+        # extra_body, never top-level: drop_params silently discards unknown
+        # top-level kwargs, and extra_body is the passthrough litellm keeps.
+        # Scoped to OpenAI-compatible destinations — the zds pod pins the
+        # conversation to the engine holding its KV prefix, and OpenAI itself
+        # uses the same field for the same cache-routing purpose. Other clouds
+        # (anthropic/...) reject unknown body params, so the key is omitted there.
+        if prompt_cache_key and (
+            _model_uses_generic_endpoint(self.model) or self.model.startswith(("openai/", "gpt-"))
+        ):
+            eb = dict(call_kwargs.get("extra_body") or {})
+            eb["prompt_cache_key"] = prompt_cache_key
+            call_kwargs["extra_body"] = eb
         if self.extra_headers:
             call_kwargs["extra_headers"] = dict(self.extra_headers)
         # Forward the configured generic api_base ONLY for OpenAI-compatible models — never to
@@ -1093,11 +1115,16 @@ class LiteLLMProvider(Provider):
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         response_format: dict[str, Any] | None = None,
+        prompt_cache_key: str | None = None,
         **kw: Any,
     ) -> LLMResult:
         wire_messages = self._translate_messages(messages, system)
         call_kwargs = self._build_kwargs(
-            wire_messages, tools, response_format=response_format, **kw
+            wire_messages,
+            tools,
+            response_format=response_format,
+            prompt_cache_key=prompt_cache_key,
+            **kw,
         )
 
         await self._pace()
@@ -1205,6 +1232,7 @@ class LiteLLMProvider(Provider):
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         response_format: dict[str, Any] | None = None,
+        prompt_cache_key: str | None = None,
         **kw: Any,
     ) -> AsyncIterator[ProviderStreamEvent]:
         """Stream a completion as true per-token :data:`ProviderStreamEvent`s.
@@ -1220,7 +1248,11 @@ class LiteLLMProvider(Provider):
         """
         wire_messages = self._translate_messages(messages, system)
         call_kwargs = self._build_kwargs(
-            wire_messages, tools, response_format=response_format, **kw
+            wire_messages,
+            tools,
+            response_format=response_format,
+            prompt_cache_key=prompt_cache_key,
+            **kw,
         )
         call_kwargs["stream"] = True
         call_kwargs["stream_options"] = {"include_usage": True}
