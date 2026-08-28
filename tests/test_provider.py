@@ -496,9 +496,25 @@ def test_capabilities_known_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_capabilities_gate_disables_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lp.litellm, "get_model_info", lambda model: {"mapped": True})
     monkeypatch.setattr(lp.litellm, "supports_function_calling", lambda model: False)
     caps = LiteLLMProvider(model="gpt-4o").capabilities()
     assert caps.supports_tools is False
+
+
+def test_capabilities_unmapped_model_keeps_native_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    # litellm answers supports_function_calling=False for a model it has never mapped;
+    # that is "unknown", not "no". Measured 2026-08-28 (coach): the self-hosted pod's
+    # ``openai/zds-…`` models were demoted to the text tool protocol on that answer.
+    def unmapped(model: str) -> dict[str, Any]:
+        raise Exception("This model isn't mapped yet.")
+
+    monkeypatch.setattr(lp.litellm, "get_model_info", unmapped)
+    monkeypatch.setattr(lp.litellm, "supports_function_calling", lambda model: False)
+    caps = LiteLLMProvider(
+        model="openai/zds-qwen3.8-27b", api_base="http://pod/v1", context_window=131_072
+    ).capabilities()
+    assert caps.supports_tools is True
 
 
 def test_capabilities_probe_failure_is_tolerated(

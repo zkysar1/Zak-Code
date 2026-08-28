@@ -2716,3 +2716,35 @@ boundary already offers).
 whether the model calls the tool or types the line. Trace files are rewritten per
 iteration (small, best-effort). Pinned by tests/test_slash_text.py (both twins, args,
 prose and unknown names left alone, the checkpoint).
+
+## ADR-0069: A model the registry has never mapped keeps native tool calling
+
+**Context.** `LiteLLMProvider.capabilities()` demoted `supports_tools` whenever
+`litellm.supports_function_calling` answered False, and the `auto` tool-calling mode then
+put the model on the text tool protocol. But litellm answers False for any model it has
+never mapped — "unknown", not "no". Measured 2026-08-28 on coach (zc-03): all three
+self-hosted pod models (`openai/zds-qwen3.8-27b`, `-3.6-35b`, `-3.5-35b`;
+`get_model_info` raises "This model isn't mapped yet") were running the text protocol —
+~7k tokens of injected protocol on every request, tool calls parsed from text, stop
+sentinels on the completion — while a direct probe of the same endpoint answered native
+tool calls. Every paging telemetry number was inflated by that overhead
+(`priority-review`: "24,290 of 10,201 body tokens in context" after 3 of 7 pages), and
+the silences under investigation (finish=stop, 600–2000 tokens, nothing delivered) all
+happened in that mode.
+
+**Decision.** The registry's verdict counts only for a model the registry has mapped:
+`capabilities()` asks `litellm.get_model_info` first and consults
+`supports_function_calling` only when that succeeds. An unmapped model keeps the default
+(native); the `auto` wrapper still salvages a `<tool_call>` block a quirky model writes on
+its own, so a genuinely tool-less model degrades the way it already did in native mode.
+No flag, no per-model list — the one way is "native unless the registry knows better".
+
+**Alternatives rejected.** A config knob per model (a flag, and the operator would have to
+know litellm's map); probing the endpoint with a throwaway tool call at startup (a
+network round-trip per session for a fact the salvage path already covers); treating the
+`openai/` prefix as a signal (gpt-4o is `openai/` and mapped; the prefix says nothing).
+
+**Consequences.** Self-hosted OpenAI-compatible pods run native tool calls by default; the
+text protocol remains for models litellm knows lack tools and for `tool_calling_mode =
+"text"`. Pinned by tests/test_provider.py (mapped-and-False still demotes; unmapped keeps
+native).
