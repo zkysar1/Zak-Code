@@ -2393,3 +2393,51 @@ after its result with the rail between result and plan; sections nest under the 
 named the skill; a section-less body seeds nothing and stays ceremony-free; a skeleton is
 seeded once per turn and never over the plan's own marker; a step the model already
 decomposed is left alone; the tool hint names the sections).
+
+## ADR-0063: The typed skill is a loaded skill — and a silence says what it cost
+
+**Context.** Field 2026-08-28 (coach on zc-03, `zds-qwen3.8-27b`, the composed `/start`
+turn): the third completion came back empty — usage said 254 completion tokens, no text, no
+thinking, no tool call, finish reason not `length` — and the loop reported "empty completion
+— asking for a real answer" (ADR-0042's skill-naming nudge, since the turn was a `/<skill>`).
+The model answered the nudge with `use_skill start`, and 65 KB of instructions it already
+held landed in context a second time. The per-turn reload dedup (`_load_skill_body`) only
+ever registered `source == "tool"` loads, so a body that arrived as the typed command was
+invisible to it: the one skill the model is most likely to re-invoke mid-turn — the one it
+is running — was the one the dedup could not see. Separately, the silence was
+indistinguishable from a zero-token one. Those point at different failures (a backend that
+generated 254 tokens and delivered them as nothing, versus one that produced nothing at
+all), and the note, the status line and the trace carried no count.
+
+**Decision.** Two small things, no flag.
+
+- `Agent._register_composed_skill(user_text)` runs at both top-level doors (`arun_turn`,
+  `astream_turn`) right after `_begin_skill_turn()`: it resolves the composed skill from the
+  turn text and registers the same digest the dedup compares (`sha1(body)`) under the
+  skill's name. `use_skill <that skill>` inside its own turn now returns the
+  `[already loaded]` pointer — whose wording names both sources ("the /command you were
+  given, or an earlier use_skill call") — costing no skill-invocation budget; any other skill
+  loads in full; a TURN_END veto (ADR-0048) still clears the registration, so a continuation
+  that reloads the skill gets the body, as before.
+- `_silent_detail(generated)`: the empty-completion note and the streaming status carry
+  "(N tokens generated, none delivered)" when the attempt's usage reports N > 0 completion
+  tokens, and the note's data carries `completion_tokens`; a true zero stays plain. The
+  buffered twin reads the result's usage, the streaming twin the attempt's accumulated
+  `StreamUsage`.
+
+**Alternatives rejected.** Registering inside `compose_skill_turn` (it runs before the door
+clears the map, so the registration would be wiped a moment later — the doors are the only
+place a per-turn fact survives); refusing a `use_skill` of the running skill outright (the
+pointer is what the dedup already does for tool loads, and a refusal would make a
+re-invocation with different arguments an error); treating a generated-but-undelivered
+completion as reasoning overflow (it is not: the finish reason was a stop and nothing was
+reasoned, and the overflow rail would ask the model to shorten a plan it never wrote).
+
+**Consequences.** A re-invocation of the running skill costs a one-line pointer instead of
+the body, so the ADR-0042 nudge can no longer double a skill turn's context by accident.
+An empty completion's trace note says whether the backend generated anything, which is
+the first question when one shows up in a field log. Pinned by
+tests/test_silent_completion.py (the count in the note and its data; a zero-token silence
+stays plain; the streaming status carries the count; re-invoking the typed skill gets the
+pointer at no budget cost; a different skill still loads in full; a veto still opens a
+fresh skill turn).
