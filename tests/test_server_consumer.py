@@ -365,8 +365,31 @@ def test_reserve_is_carved_out_of_the_cap_not_added_to_it(tmp_path: Path) -> Non
     Discriminates the three ways this goes wrong: a reserve ADDED to the cap (digest
     starts after `cap`), a reserve IGNORED (digest starts at ~`cap`), and the correct
     carve-out (digest starts at ~`cap - reserve`).
+
+    THE MARGIN IS SIZED IN BEATS, NOT AS A FRACTION OF THE CAP. The loop only notices
+    `turn_deadline` when it wakes between beats, so the digest fires at the first
+    `_IDLE_BEAT_SECONDS` boundary at or after the deadline -- never at the deadline
+    itself. The previous constants (cap 1.2, reserve 0.9, assert < 0.75 * cap) put the
+    deadline at 0.3s, the observed digest at the 0.5s beat, and the threshold at 0.9s:
+    a measured margin of 0.31s against a 0.5s beat, i.e. SMALLER THAN ONE BEAT. One
+    slow iteration was therefore enough to fail it, and one was observed on
+    windows-latest taking ~1.9s. That mattered beyond the red X: the sidecar publish
+    job is conditioned on every test job, so this flake on main silently withheld the
+    S3 artifact and left vessels on the older build.
+
+    Sized so both gaps are ~9 beats. The carve-out deadline is 0.4s (digest observed at
+    the 0.5s beat) and the nearest wrong answer is `cap`, so a run may overrun by ~4.7s
+    -- about 2.5x the worst iteration ever seen on CI -- before either verdict flips.
+    Widening the cap does not slow the happy path: the run stops taking turns at
+    `cap - reserve`, so a correct carve-out still finishes in ~0.5s and only a genuinely
+    broken one pays the full cap.
     """
-    cap, reserve = 1.2, 0.9
+    cap, reserve = 10.0, 9.6
+    carve_out_deadline = cap - reserve  # 0.4s -- when the digest SHOULD start
+    # Midpoint between the right answer and the nearest wrong one (`cap`), which is
+    # where the margin on each side is widest. Deliberately not a fraction of the cap:
+    # the noise scales with the beat, not with the cap.
+    threshold = (carve_out_deadline + cap) / 2
     app, seen, _endings, _t0 = _build_bounded(
         tmp_path, max_duration=cap, reserve=reserve, message="digest"
     )
@@ -375,7 +398,10 @@ def test_reserve_is_carved_out_of_the_cap_not_added_to_it(tmp_path: Path) -> Non
 
     assert len(seen) == 1
     _text, started_at = seen[0]
-    assert started_at < cap * 0.75, f"digest started at {started_at:.2f}s of a {cap}s cap"
+    assert started_at < threshold, (
+        f"digest started at {started_at:.2f}s; expected ~{carve_out_deadline}s "
+        f"(reserve carved OUT of the {cap}s cap), threshold {threshold}s"
+    )
 
 
 def test_reserve_larger_than_the_cap_still_consolidates(tmp_path: Path) -> None:
