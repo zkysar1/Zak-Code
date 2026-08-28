@@ -76,17 +76,13 @@ def test_bypass_mode_allows_everything_and_never_prompts() -> None:
 def test_bypass_waives_the_dependency_gate() -> None:
     # The coach wedge: an undeclared install (plus a phantom package parsed from a
     # redirection) escalated to a prompt no one could answer. In bypass it just runs.
-    policy = PermissionPolicy(
-        PermissionMode.BYPASS, declared_packages=lambda: {"pypi:requests"}
-    )
+    policy = PermissionPolicy(PermissionMode.BYPASS, declared_packages=lambda: {"pypi:requests"})
     assert _auth(policy, SHELL, {"command": "pip install evil-pkg"}) == (True, "")
 
 
 def test_bypass_waives_protected_paths_and_confirm_tools() -> None:
     prompter = ScriptedPrompter()
-    policy = PermissionPolicy(
-        PermissionMode.BYPASS, prompter=prompter, confirm_tools={"web_fetch"}
-    )
+    policy = PermissionPolicy(PermissionMode.BYPASS, prompter=prompter, confirm_tools={"web_fetch"})
     # Protected path (.env is a built-in write-sensitive floor elsewhere): allowed.
     assert _auth(policy, WRITE, {"path": ".env"}) == (True, "")
     # Confirm-on-use tool: the confirmation is waived, not failed closed.
