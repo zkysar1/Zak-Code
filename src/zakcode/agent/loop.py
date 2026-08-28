@@ -91,7 +91,7 @@ import os
 import random
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -104,7 +104,7 @@ from zakcode.agent.degeneration import burst_repetition, repeated_tail
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
-from zakcode.agent.stuck import StuckAction, StuckTracker, batch_signature
+from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate
 from zakcode.build_info import running_build
@@ -343,6 +343,27 @@ def _reasoning_overflow_nudge(skill: str | None) -> str:
         "" if skill is None else f", and the /{skill} sequence you are running is not finished"
     )
     return _REASONING_OVERFLOW_NUDGE.format(sequence=sequence)
+
+
+def _investigation_rail(diagnosis: str, steps: list[Task], *, fresh: bool) -> str:
+    """The rung-1 stuck rail (ADR-0057): the diagnosis, then what the harness did about it.
+
+    ``fresh`` is the first climb — the steps were just spliced into the plan. A re-climb
+    after the step-back reset points back at the same steps while any of them is open,
+    rather than adding a second batch on top of an ignored first one.
+    """
+    ids = ", ".join(step.id for step in steps)
+    if fresh:
+        return (
+            f"{diagnosis} I added {len(steps)} investigative steps to your plan ({ids}), ahead "
+            "of the step you were on — they are the current work now. Do them in order with "
+            "read-only probes, mark each done with update_plan, and only then retry the "
+            "original step, differently."
+        )
+    return (
+        f"{diagnosis} The investigative steps I added earlier ({ids}) are still open — do them "
+        "before anything else, and mark each done with update_plan."
+    )
 
 
 #: How many times a turn may discard a degenerate (repetition-looping) completion and
@@ -1635,21 +1656,106 @@ class AgentLoop:
             quality=quality,
         )
 
-    def _decompose_hint(self) -> str:
-        """A 'break the current step down' suffix for a stuck nudge (R3 / ADaPT).
+    def _seed_investigation_steps(self, stuck: StuckTracker) -> list[Task]:
+        """Decompose-on-stuck (ADR-0057): turn the stuck evidence into plan steps.
 
-        Capability-triggered decomposition: when the model is stuck AND the live plan's current
-        step is a primitive (not already decomposed), suggest splitting it into sub-steps — the
-        research finding that decomposing *on executor failure* beats fixed up-front plans.
-        Empty when there is no plan or the current step is already compound.
+        Rung 1 of the recovery ladder used to be a paragraph of advice ("re-read the error,
+        try a different approach"). A small model reads advice and carries on; it FOLLOWS a
+        checklist. So the evidence the tracker already holds — which calls keep failing,
+        whether the same result keeps being re-measured — becomes primitive steps with
+        done-conditions, spliced in ahead of the step the model is stuck on, where the
+        re-injected plan and the plan gate keep them in view until they are marked done.
+        Capability-triggered decomposition (R3 / ADaPT), done by the harness this time.
         """
-        current = self.session.task_network.current()
-        if current is None or current.is_compound():
-            return ""
-        return (
-            f" If step {current.id} ({current.title}) is harder than it looked, break it into "
-            "smaller sub-steps with update_plan and tackle them one at a time."
+        steps: list[Task] = []
+        repeated = stuck.error_signatures()[:2]
+        for name, args in repeated:
+            shown = args if len(args) <= 80 else args[:77] + "..."
+            steps.append(
+                Task(
+                    title=f"Investigate: why `{name}` keeps failing with the same arguments",
+                    note=(
+                        f"the call: {name}({shown}). Done when the exact error text has been "
+                        "read and its cause stated in one sentence, backed by a read-only "
+                        "probe (list the directory, run --help, read the file)"
+                    ),
+                )
+            )
+        named = {name for name, _args in repeated}
+        for name, count in stuck.failing_tools():
+            if len(steps) >= 2:
+                break
+            if name in named:
+                continue
+            steps.append(
+                Task(
+                    title=f"Investigate: why `{name}` keeps failing across {count} attempts",
+                    note=(
+                        "the arguments changed each time and the call still failed, so the "
+                        "arguments are not the problem. Done when the exact error text has "
+                        "been read and the shared premise (the path, command, or interface "
+                        "it assumes) has been checked with a read-only probe"
+                    ),
+                )
+            )
+        if SIG_REPEATED_OUTCOME in stuck.last_signals:
+            steps.append(
+                Task(
+                    title="Investigate: what the result you keep re-measuring already tells you",
+                    note=(
+                        "done when you have written the hypothesis that result supports and run "
+                        "ONE different probe that could falsify it — or made the change it "
+                        "calls for"
+                    ),
+                )
+            )
+        if not steps:
+            steps.append(
+                Task(
+                    title="Investigate: what the last tool results actually say",
+                    note=(
+                        "done when you have re-read them and stated in one sentence why the "
+                        "last steps made no progress"
+                    ),
+                )
+            )
+        steps.append(
+            Task(
+                title="Decide: name the assumption the failed steps share and verify it",
+                note=(
+                    "done when a read-only probe has confirmed or refuted it (a path that "
+                    "exists, a command that is available, an interface that matches) — only "
+                    "then retry, differently"
+                ),
+            )
         )
+        network = self.session.task_network
+        network.insert_before(network.current(), steps)
+        return steps
+
+    def _open_investigation_steps(self, seeded: list[Task]) -> list[Task]:
+        """The harness-added steps still in the plan and not yet finished (ADR-0057)."""
+        network = self.session.task_network
+        return [
+            step
+            for step in seeded
+            if network.contains(step) and step.status not in ("done", "cancelled")
+        ]
+
+    def _retire_investigation_steps(self, seeded: list[Task]) -> None:
+        """Cancel harness-added steps still open when the turn ends (ADR-0057).
+
+        The steps are a recovery device for the turn that seeded them, not a commitment the
+        model made: a model that got unstuck another way finishes without them, and they
+        never hold a turn open (the plan gate skips them). Retired here so they cannot haunt
+        the next turn's plan; a model stuck again gets fresh steps for its fresh evidence.
+        """
+        open_steps = self._open_investigation_steps(seeded)
+        if not open_steps:
+            return
+        for step in open_steps:
+            step.status = "cancelled"
+        self.session.task_network.normalize()
 
     # ── request decomposition: compound asks become plan steps ─────────────────
 
@@ -1796,15 +1902,21 @@ class AgentLoop:
             "explicitly why it should be skipped."
         )
 
-    def _plan_gate_nudge(self) -> str | None:
+    def _plan_gate_nudge(self, *, ignore: Sequence[Task] = ()) -> str | None:
         """The plan-completion nudge, or ``None`` when the plan permits finishing.
 
         Fires when a plan exists with steps that still owe work (neither done/cancelled nor
         blocked): the turn should not quietly end with open steps. The model is told to either
         do them or explicitly mark them done/cancelled — closing the decompose-then-finish loop.
+        ``ignore`` is the turn's harness-added investigation steps (ADR-0057): they guide a
+        stuck model, they never hold a recovered one.
         """
         network = self.session.task_network
-        remaining = network.actionable_remaining()
+        remaining = [
+            step
+            for step in network.actionable_remaining()
+            if not any(step is skipped for skipped in ignore)
+        ]
         if not remaining:
             return None
         nxt = remaining[0]
@@ -2938,6 +3050,7 @@ class AgentLoop:
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
+        investigation_steps: list[Task] = []  # decompose-on-stuck (ADR-0057): steps added
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
@@ -3333,7 +3446,7 @@ class AgentLoop:
                 # finish. Nudge the model to complete them (or mark them done/cancelled);
                 # bounded by _MAX_PLAN_NUDGES so a deliberate finish can never deadlock — past
                 # the cap the turn completes but is flagged degraded (plan left unresolved).
-                plan_nudge = self._plan_gate_nudge()
+                plan_nudge = self._plan_gate_nudge(ignore=investigation_steps)
                 if plan_nudge is not None:
                     # A nudge that produced NO progress (the model answered with text only
                     # and the plan is byte-identical) ends the nudging: it is legitimately
@@ -3851,10 +3964,21 @@ class AgentLoop:
                 self._note("intervention", "stuck — repeated steps made no progress", kind="stuck")
                 break
             if action is StuckAction.NUDGE:
-                self._note("intervention", "no progress — nudging a rethink", kind="stuck")
-                self.session.add_message(
-                    Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
+                # Decompose-on-stuck (ADR-0057): rung 1 adds investigative steps to the plan
+                # instead of advice; a re-climb after step-back points back at open ones.
+                open_steps = self._open_investigation_steps(investigation_steps)
+                fresh = not open_steps
+                if fresh:
+                    open_steps = self._seed_investigation_steps(stuck)
+                    investigation_steps.extend(open_steps)
+                self._note(
+                    "intervention",
+                    f"no progress — {'added' if fresh else 're-pointed at'} "
+                    f"{len(open_steps)} investigative steps in the plan",
+                    kind="stuck",
                 )
+                rail = _investigation_rail(stuck.nudge_message(), open_steps, fresh=fresh)
+                self.session.add_message(Message.user(_control_rail(rail)))
                 self._persist()
             elif action is StuckAction.NARROW:
                 self._note("intervention", "limiting to read-only tools", kind="stuck")
@@ -3879,6 +4003,7 @@ class AgentLoop:
             iterations,
             turn_usage.total_tokens,
         )
+        self._retire_investigation_steps(investigation_steps)  # they live one turn (ADR-0057)
         # zakpick routing report (coherent regardless of where the turn ended): "escalated" only
         # under zakpick, and a latch always reports deep_code even if the turn broke before the
         # next iteration's re-select updated main_category (e.g. a terminal doom-loop).
@@ -4029,6 +4154,7 @@ class AgentLoop:
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
         plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
         plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
+        investigation_steps: list[Task] = []  # decompose-on-stuck (ADR-0057): steps added
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
@@ -4663,7 +4789,7 @@ class AgentLoop:
                     # Plan gate (streaming twin of the buffered path): don't quietly finish
                     # with open plan steps; nudge, bounded by _MAX_PLAN_NUDGES, then complete
                     # (degraded) rather than deadlock.
-                    plan_nudge = self._plan_gate_nudge()
+                    plan_nudge = self._plan_gate_nudge(ignore=investigation_steps)
                     if plan_nudge is not None:
                         # No-progress guard — see the buffered path: an unchanged plan after
                         # a nudge means the model is waiting on something external; stop
@@ -5205,12 +5331,29 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break
                 if action is StuckAction.NUDGE:
-                    self._note("intervention", "no progress — nudging a rethink", kind="stuck")
-                    self.session.add_message(
-                        Message.user(_control_rail(stuck.nudge_message() + self._decompose_hint()))
+                    # Decompose-on-stuck (ADR-0057) — see _run_turn (buffered twin).
+                    open_steps = self._open_investigation_steps(investigation_steps)
+                    fresh = not open_steps
+                    if fresh:
+                        open_steps = self._seed_investigation_steps(stuck)
+                        investigation_steps.extend(open_steps)
+                    verb = "added" if fresh else "re-pointed at"
+                    self._note(
+                        "intervention",
+                        f"no progress — {verb} {len(open_steps)} investigative steps in the plan",
+                        kind="stuck",
                     )
+                    rail = _investigation_rail(stuck.nudge_message(), open_steps, fresh=fresh)
+                    self.session.add_message(Message.user(_control_rail(rail)))
                     self._persist()
-                    yield AgentStatus(message="recovering: no progress — nudging a rethink")
+                    task_event = self._task_update_event()
+                    if task_event is not None and task_event.plan != last_plan_render:
+                        last_plan_render = task_event.plan
+                        yield task_event  # the client redraws the plan with the new steps
+                    yield AgentStatus(
+                        message=f"recovering: no progress — {verb} {len(open_steps)} "
+                        "investigative steps in the plan"
+                    )
                 elif action is StuckAction.NARROW:
                     self._note("intervention", "limiting to read-only tools", kind="stuck")
                     self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
@@ -5245,6 +5388,7 @@ class AgentLoop:
             iterations,
             turn_usage.total_tokens,
         )
+        self._retire_investigation_steps(investigation_steps)  # they live one turn (ADR-0057)
         yield AgentUsage(usage=turn_usage)
         # zakpick routing report — see the buffered twin for the coherence rationale.
         zakpick_on = self.main_provider_for is not None

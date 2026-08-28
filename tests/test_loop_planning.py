@@ -262,25 +262,8 @@ async def test_streaming_emits_task_update_event() -> None:
     assert last.total == 2 and [t["title"] for t in last.tasks] == ["A", "B"]
 
 
-# ── R3: capability-triggered decomposition hint (decompose-on-stuck) ──────────
-
-
-def test_decompose_hint_targets_a_primitive_current_step() -> None:
-    loop, session = _loop(_Scripted([_done()]))
-    session.task_network = TaskNetwork(tasks=[Task(title="big step")])
-    session.task_network.normalize()
-    assert "smaller sub-steps" in loop._decompose_hint()  # current step is primitive
-
-
-def test_decompose_hint_is_empty_without_a_primitive_current_step() -> None:
-    loop, session = _loop(_Scripted([_done()]))
-    assert loop._decompose_hint() == ""  # no plan
-    # an already-decomposed (compound) current step is not re-suggested for decomposition
-    session.task_network = TaskNetwork(
-        tasks=[Task(title="g", kind="compound", children=[Task(title="leaf", status="done")])]
-    )
-    session.task_network.normalize()
-    assert loop._decompose_hint() == ""
+# R3 (capability-triggered decomposition on stuck) is pinned in tests/test_stuck_decompose.py:
+# since ADR-0057 the harness splices investigative steps into the plan itself.
 
 
 # ── R5: opt-in plan-first gate (plan before you mutate) ───────────────────────

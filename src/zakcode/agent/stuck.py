@@ -201,6 +201,24 @@ class StuckTracker:
             reverse=True,
         )
 
+    def failing_tools(self) -> list[tuple[str, int]]:
+        """Tool names that failed at least ``repeated_failure_at`` times this turn, with the
+        count, most-failed first — regardless of arguments.
+
+        :meth:`error_signatures` sees the model that retries the SAME call; this sees the one
+        that varies the arguments and fails every time (the wrong-premise shape: the path,
+        command, or interface is what is wrong, not the argument). The decompose-on-stuck
+        steps (ADR-0057) name the tool either way.
+        """
+        by_name: Counter[str] = Counter()
+        for (name, _args), count in self._error_counts.items():
+            by_name[name] += count
+        return sorted(
+            ((name, n) for name, n in by_name.items() if n >= self.repeated_failure_at),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+
     # ── core ─────────────────────────────────────────────────────────────────
     def observe(
         self,
@@ -314,21 +332,21 @@ class StuckTracker:
 
     # ── recovery messages ────────────────────────────────────────────────────
     def nudge_message(self) -> str:
-        """The corrective hint injected on a :attr:`StuckAction.NUDGE`."""
+        """The diagnosis injected on a :attr:`StuckAction.NUDGE` — WHY the model is stuck.
+
+        The remedy no longer rides here as advice: the loop turns the same evidence into
+        investigative plan steps (ADR-0057) and says what it added. This stays the symptom,
+        in the model's own terms.
+        """
         if SIG_REPEATED_OUTCOME in self._last_signals:
             return (
                 f"You have now observed the SAME tool result {self._last_outcome_repeats} "
                 "times this turn without changing anything in between. Re-measuring a known "
-                "result is not progress. Act on what you already know: either change the "
-                "question (a different probe that could FALSIFY your current hypothesis), make "
-                "the change the evidence supports, or stop and report what you found — and "
-                "read the error text you already have before forming a new theory."
+                "result is not progress."
             )
         return (
             "You appear to be stuck: the last few steps made no progress (a repeated or "
-            "all-failing tool call). Stop and reconsider — re-read the relevant file or the "
-            "exact error message, identify the specific cause, and try a DIFFERENT approach "
-            "rather than repeating an action that is not working."
+            "all-failing tool call)."
         )
 
     def narrow_message(self) -> str:
