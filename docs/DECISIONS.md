@@ -2201,3 +2201,28 @@ unchanged. Pinned by tests/test_gate_followups.py (a third text-only completion 
 re-prompted in a third direction; a tool batch resets the count; a clean answer is not
 degraded by the cap; the streaming status; a glob and a content-returning read earn the
 conclusion; a failed read is still nudged).
+
+## ADR-0059: A ceremony plan is not judged — the plan judge skips composed skill turns
+
+**Status.** Accepted (2026-08-28).
+
+**Context.** The judged decomposition (ADR-0050) scores a freshly-shaped plan against
+the turn's user text. On a composed `/skill` turn the user text IS the skill body — for
+coach's `/start`, ~65 KB of ceremony across dozens of phases — and the plan the model
+writes is a six-step phase checklist that tracks that ceremony. Judged as a
+decomposition of "the goal", it scored 12% (coverage 10%): a critique that told the
+model to "cover what is missing" in a plan whose whole job was to be coarser than the
+text it tracked. The model can neither act on that nor was it meant to; on a small
+model it is one more paragraph pulling in a direction the skill author never intended.
+
+**Decision.** The loop records the composed skill of the turn (`_turn_skill`, from the
+same frame parser the skill-turn rails use) and `_judged_plan_critique` returns
+silently when it is set. No judge call is made, so no judge tokens are spent. The
+structural quality score (`TaskNetwork.quality`) still rides every plan render — a phase
+checklist with no done-conditions is still told so. Plain request turns are judged
+exactly as before.
+
+**Consequences.** Composed skill turns lose one advisory that was measured to be
+noise; nothing else changes. Pinned in tests/test_loop_planning.py (a composed `/skill`
+turn's plan is never judged — the provider sees plan then done, no judge call, no
+critique — beside the existing weak/strong/once-per-turn/fail-open cases).

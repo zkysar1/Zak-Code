@@ -1179,6 +1179,9 @@ class AgentLoop:
         # Judged decomposition (ADR-0050): the turn's goal text (what the plan is judged
         # against) and whether the once-per-turn judge already ran. Set at every turn start.
         self._turn_user_text = ""
+        # The composed /skill this turn is running, else None (ADR-0059): its "goal" is a
+        # skill body, and a plan that tracks a ceremony by phase is never judged against it.
+        self._turn_skill: str | None = None
         self._turn_plan_judged = False
         # Small-model struggle flag (ADR-0024): set by seams that cannot reach the turn's
         # ``signal_latched`` local (the degenerate-argument veto in _execute_tool_call);
@@ -2723,6 +2726,12 @@ class AgentLoop:
         goal = self._turn_user_text
         if not rendered or not goal:
             return ""
+        if self._turn_skill is not None:
+            # A composed /skill turn's "goal" is the skill body — a wall of ceremony the plan
+            # tracks by phase, not a request the plan decomposes. Coach's six-step /start
+            # plan scored 12% coverage against 65 KB of skill text (ADR-0059): a critique the
+            # model could neither act on nor was meant to. Structural quality still rides.
+            return ""
         try:
             card, usage = await score_plan(self._judge_provider(), goal=goal, plan=rendered)
         except Exception:  # noqa: BLE001 — an unreachable judge must never break the tool result
@@ -3082,6 +3091,9 @@ class AgentLoop:
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
         self._turn_user_text = user_text  # judged decomposition (ADR-0050): the goal judged against
+        self._turn_skill = _composed_skill_name(
+            user_text
+        )  # a ceremony plan is not judged (ADR-0059)
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
@@ -4203,6 +4215,9 @@ class AgentLoop:
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
         self._turn_user_text = user_text  # judged decomposition (ADR-0050): the goal judged against
+        self._turn_skill = _composed_skill_name(
+            user_text
+        )  # a ceremony plan is not judged (ADR-0059)
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline

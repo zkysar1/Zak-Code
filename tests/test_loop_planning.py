@@ -568,3 +568,23 @@ async def test_judge_failure_is_fail_open() -> None:
     result = await loop.arun_turn("thing")
     assert result.stop_reason == "completed"
     assert not any("[plan critique]" in o for o in _plan_result_outputs(session))
+
+
+@pytest.mark.asyncio
+async def test_composed_skill_turn_is_never_judged() -> None:
+    # ADR-0059: a /skill turn's "goal" is the skill body, and the plan is a phase checklist
+    # that tracks it — coach's six-step /start plan scored 12% coverage against ~65 KB of
+    # ceremony. No judge call at all: the scripted provider sees plan, then done.
+    provider = _Scripted(
+        [_plan_call([{"title": "Phase 1", "status": "done", "note": "x"}]), _done()]
+    )
+    loop, session = _loop(provider)
+    frame = (
+        "<command-message>start is running</command-message>\n"
+        "<command-name>/start</command-name>\n<command-args>coach</command-args>\n\n"
+    )
+    body = "Phase 1: initialise the session.\nPhase 2: run the loop.\n" * 40
+    result = await loop.arun_turn(frame + body)
+    assert result.stop_reason == "completed"
+    assert provider.calls == 2  # plan, done — the judge never ran
+    assert not any("[plan critique]" in o for o in _plan_result_outputs(session))
