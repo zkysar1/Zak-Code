@@ -127,6 +127,49 @@ class TaskNetwork(BaseModel):
             self._derive_status(task, advisories)
         return advisories
 
+    def insert_before(self, anchor: Task | None, steps: list[Task]) -> None:
+        """Splice harness-authored ``steps`` in as siblings directly AHEAD of ``anchor``.
+
+        The decompose-on-stuck recovery (ADR-0057) uses this to put investigative steps in
+        front of the step the model is stuck on: ``anchor`` is demoted to ``pending`` so the
+        first new step becomes the current work, and the stuck step follows in document order
+        — investigate, decide, then retry. ``anchor=None`` (no plan, or a finished one) appends
+        at the top level: the investigation IS the plan. Normalizes afterwards, so ids, focus,
+        and derived statuses are consistent for the next render.
+        """
+        siblings = self._siblings_of(anchor) if anchor is not None else None
+        if siblings is None:
+            self.tasks.extend(steps)
+        else:
+            if anchor is not None and anchor.status == "in_progress":
+                anchor.status = "pending"
+            index = next(i for i, task in enumerate(siblings) if task is anchor)
+            siblings[index:index] = steps
+        self.normalize()
+
+    def contains(self, task: Task) -> bool:
+        """True while this exact ``task`` object is still part of the network.
+
+        Identity, not equality: a harness that spliced a step in (:meth:`insert_before`) asks
+        whether the model has since replaced the plan around it, and a same-titled step the
+        model re-authored is a different object.
+        """
+        return any(node is task for node in self._iter())
+
+    def _siblings_of(self, task: Task) -> list[Task] | None:
+        """The sibling list holding ``task`` (by identity), or ``None`` when it is not here."""
+
+        def visit(nodes: list[Task]) -> list[Task] | None:
+            for node in nodes:
+                if node is task:
+                    return nodes
+                found = visit(node.children)
+                if found is not None:
+                    return found
+            return None
+
+        return visit(self.tasks)
+
     def _flag_duplicate_siblings(self, advisories: list[str]) -> None:
         """Advise on same-titled sibling steps (ADR-0050 — the duplicate-subtask check).
 

@@ -359,8 +359,10 @@ class _RecoversOnStepBackProvider(Provider):
         self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
     ) -> LLMResult:
         self.calls += 1
-        last = messages[-1].text or ""
-        if "take a step back" in last.lower():
+        # Since ADR-0057 the stuck ladder seeds a plan, whose re-injection follows every rail
+        # as the last user message — so look at the recent tail, not only messages[-1].
+        recent = " ".join((m.text or "") for m in messages[-3:]).lower()
+        if "take a step back" in recent:
             return LLMResult(text="Stepping back: the real path is elsewhere. Done.")
         return LLMResult(tool_calls=[_c(f"c{self.calls}", "boom", n=self.calls)])
 
@@ -452,7 +454,7 @@ def test_streaming_stuck_stops_and_emits_status(tmp_path: Path) -> None:
     assert done.stop_reason == "stuck"
     assert done.degraded is True
     statuses = [e.message for e in events if isinstance(e, AgentStatus)]
-    assert any("nudging" in m for m in statuses)
+    assert any("investigative steps" in m for m in statuses)  # rung 1 (ADR-0057)
     assert any("read-only" in m for m in statuses)
     assert any("stepping back" in m for m in statuses)
     assert any("stopping: stuck" in m for m in statuses)

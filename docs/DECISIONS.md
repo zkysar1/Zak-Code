@@ -2090,3 +2090,74 @@ thinking off, one-shot, after prior text, thought-then-stopped and length-only s
 plain silence unchanged, consecutive budget, consecutive overflows still give up, default
 astream forwards thinking) and tests/test_local_only.py (a per-call body merges over the
 instance body).
+
+## ADR-0057: A stuck model gets investigative steps, not advice — decompose-on-stuck
+
+**Status.** Accepted (2026-08-28).
+
+**Context.** Watching coach's night on the bypass build, every `recovering: no progress —
+nudging a rethink` status line was the same cue: the step the model was on needed MORE
+decomposition. Rung 1 of the stuck ladder (nudge@3, ADR-0019 lineage) injected a paragraph
+of advice — "stop and reconsider, re-read the error, try a DIFFERENT approach" — plus a
+suffix suggesting the model break its current step into sub-steps with `update_plan`. A
+small model reads advice and carries on; and the suffix asked it to do decomposition work
+at exactly the moment it had shown it could not. Meanwhile the harness already held the
+evidence a better step list needs: the tracker knows which call signatures keep failing,
+which tool fails across varying arguments, and whether the same result keeps being
+re-measured (ADR-0038); the plan machinery (ADR-0017, ADR-0050) can hold steps with
+done-conditions that are re-injected every iteration and marked off with `update_plan`.
+
+**Decision.** Rung 1 decomposes instead of nudging.
+
+- `StuckTracker.nudge_message()` shrinks to the diagnosis (WHY the model is stuck); the
+  remedy is no longer prose. New accessor `failing_tools()` — tool names that failed
+  `repeated_failure_at` times regardless of arguments, the wrong-premise shape — beside
+  `error_signatures()` (the same call retried).
+- `AgentLoop._seed_investigation_steps(stuck)` turns that evidence into primitive
+  `Task`s with done-conditions: "Investigate: why `X` keeps failing with the same
+  arguments" (the call in the note); "Investigate: why `X` keeps failing across N
+  attempts" (the arguments varied, so the arguments are not the problem); "Investigate:
+  what the result you keep re-measuring already tells you" (repeated outcome); a generic
+  "what the last tool results actually say" when nothing specific fired — always closed
+  by "Decide: name the assumption the failed steps share and verify it". At most two
+  investigate steps, so the list stays a list.
+- `TaskNetwork.insert_before(anchor, steps)` splices them in AHEAD of the current step,
+  which is demoted from `in_progress` to `pending`: the first investigative step becomes
+  the current work and the stuck step follows in document order — investigate, decide,
+  then retry. No plan → they are the plan. `contains()` lets the loop tell whether the
+  model has since replaced the plan around them.
+- The rail says what happened: the diagnosis, then "I added N investigative steps to your
+  plan (ids), ahead of the step you were on — they are the current work now. Do them in
+  order with read-only probes, mark each done with update_plan, and only then retry the
+  original step, differently." Trace `kind="stuck"` and the status line read `no progress
+  — added N investigative steps in the plan`; the streaming twin also emits a
+  `task_update` so a client redraws the list.
+- Re-climb: after the step-back reset the ladder reaches rung 1 again. While the seeded
+  steps are still open the loop points back at them ("still open — do them before
+  anything else") rather than stacking a second batch on an ignored first one.
+- **They guide; they never hold.** The plan gate skips harness-added steps
+  (`_plan_gate_nudge(ignore=…)`), so a model that got unstuck another way — the step-back
+  rail, a different probe — finishes without them, while the model's OWN open steps keep
+  holding the turn. At turn end any still-open ones are cancelled (not deleted — the
+  transcript stays honest), so they cannot haunt the next turn; a model stuck again gets
+  fresh steps for its fresh evidence.
+- `_decompose_hint()` is deleted: the harness now does the decomposition it used to
+  suggest. NARROW and STEP_BACK are unchanged (the field-proven "take a step back" phrase
+  stays verbatim).
+
+**Why steps and not a better paragraph.** The plan is the one thing the loop re-injects
+every iteration and the model marks off; a rail is read once and scrolls away. A
+checklist the model did not have to write is the smallest unit of help a stuck small
+model can actually use — the same finding as the composed-skill seeding (ADR-0017): do
+the decomposition for it, then hold it to the list.
+
+**Consequences.** One behavior change, at rung 1, in both twins. Nothing holds a
+recovered turn: harness steps are invisible to the plan gate and retired at turn end.
+The plan re-injection now follows every rail as the LAST user message (there was no plan
+to inject before); a scripted provider that keyed on `messages[-1]` had to scan the
+recent tail instead. Pinned by tests/test_stuck_decompose.py (the network splice and
+focus demotion; steps replace advice; ahead of the stuck step; no-plan turn; same-call vs
+varying-args vs repeated-outcome shapes; re-climb points back instead of re-seeding; a
+recovered turn is never held while the model's own steps still are; streaming status +
+task_update), with tests/test_stuck.py and tests/test_loop_planning.py updated where they
+pinned the old wording or the deleted hint.
