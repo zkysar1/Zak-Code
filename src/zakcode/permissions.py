@@ -728,6 +728,16 @@ class PermissionPolicy:
             return None
         return "undeclared package install: " + ", ".join(undeclared)
 
+    def undeclared_install_targets(self, arguments: dict) -> list[str]:
+        """Public: the undeclared install targets in ``arguments`` (display names), or ``[]``.
+
+        The list form of :meth:`undeclared_install_reason`, for callers that must COMPARE two
+        commands — the loop's post-rewrite re-check blocks only the targets a hook rewrite
+        INTRODUCED relative to the authorized original, so a hook that rewrites every command
+        (a Mind deployment's env prepend) cannot nullify an operator-approved install.
+        """
+        return self._undeclared_install(arguments)
+
     def decide(self, spec: ToolSpec | None, arguments: dict) -> tuple[PermissionDecision, str]:
         """Return the static (pre-prompt, stateless) verdict and a human reason.
 

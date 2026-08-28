@@ -2097,6 +2097,7 @@ class AgentLoop:
                 data={"hook_blocked": True, "reason": pre.message},
             )
         if pre.mutated_arguments is not None:
+            original_arguments = arguments
             arguments = pre.mutated_arguments
             # A PreToolUse hook may rewrite the arguments AFTER the permission gate ran on
             # the originals; re-check the NEVER-WAIVABLE floors against what will ACTUALLY
@@ -2115,12 +2116,28 @@ class AgentLoop:
                         is_error=True,
                         data={"hook_blocked": True, "dangerous": True, "reason": danger},
                     )
-                undeclared = self.permission_policy.undeclared_install_reason(arguments)
-                if undeclared is not None:
+                # Dependency floor: judged by what the rewrite INTRODUCED, not re-asserted
+                # absolutely. Targets already in the authorized ORIGINAL passed the permission
+                # gate (declared, auto-allowed, or operator-approved at the prompt) and are not
+                # re-litigated; only NEW targets are the smuggle this floor exists to stop.
+                # Field incident 2026-08-28 (coach, zc-03): a Mind deployment's agent-env hook
+                # rewrites EVERY bash command (env prepend), so the absolute re-check hard-
+                # blocked an install the operator had approved seconds earlier — permanently,
+                # on every retry, on every Mind box.
+                introduced = [
+                    t
+                    for t in self.permission_policy.undeclared_install_targets(arguments)
+                    if t
+                    not in set(
+                        self.permission_policy.undeclared_install_targets(original_arguments)
+                    )
+                ]
+                if introduced:
+                    reason = "undeclared package install: " + ", ".join(introduced)
                     return ToolResultBlock(
                         tool_use_id=call.id,
                         output=(
-                            f"Blocked: a hook rewrote {call.name!r} into an {undeclared}; the "
+                            f"Blocked: a hook rewrote {call.name!r} into an {reason}; the "
                             "dependency gate (only manifest-declared packages auto-install) is "
                             "never waived by a rewrite."
                         ),
@@ -2128,7 +2145,7 @@ class AgentLoop:
                         data={
                             "hook_blocked": True,
                             "undeclared_install": True,
-                            "reason": undeclared,
+                            "reason": reason,
                         },
                     )
                 read_only = (

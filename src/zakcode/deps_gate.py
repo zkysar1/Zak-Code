@@ -137,6 +137,16 @@ _SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&(){}\n]")
 #: assignment isn't mistaken for the installer head token.
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
+#: A shell redirection at the START of a token: optional fd digits then ``>``/``>>``/``<``
+#: (``2>``, ``>>``, ``<``, and the fused ``>out.log`` / ``2>/dev/null`` forms). These are
+#: plumbing, not packages — but they LOOK like packages to the spec parser, which splits on
+#: comparison operators and reads the fd digits as a name. Field incident 2026-08-28 (coach,
+#: zc-03): ``pip install espn-api 2>&1 | tail -5`` flagged phantom undeclared package ``2``
+#: (the ``&`` segment-split leaves a ``2>`` token), wedging an approved install behind the
+#: dependency gate on every retry. A version constraint never matches: its token starts with
+#: the package name (``requests>=2`` / ``2to3>=1``), so the operator is not at the start.
+_REDIRECTION = re.compile(r"\d*(?:>>?|<)")
+
 
 def normalize(name: str) -> str:
     """PEP 503 normalization: lowercase, collapse runs of ``- _ .`` to a single ``-``.
@@ -372,6 +382,12 @@ def installed_specs(command: str) -> list[str]:
                 if tok in value_flags and "=" not in tok:
                     i += 1  # also consume this flag's value token
                 i += 1
+                continue
+            redir = _REDIRECTION.match(tok)
+            if redir is not None:
+                # A BARE operator (``2>`` / ``>>`` / ``<``) also owns the NEXT token as its
+                # target (``2> err.log``); a fused one (``>out.log``) carries its target.
+                i += 2 if redir.end() == len(tok) else 1
                 continue
             name = _name_from_spec(tok, npm=npm)
             if name is not None:
