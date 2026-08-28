@@ -835,7 +835,10 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 
 ## ADR-0023: Seam-level tool-output clamp — no single result may swamp the window
 
-- **Status:** Accepted (shipped, 2026-08-26).
+- **Status:** Accepted (shipped, 2026-08-26). Scoped by ADR-0065: a `verbatim` result
+  (a skill body, a rule) is instructions and is never clamped — the incident below happened
+  under a misdeclared 8k window, and a head-and-tail of a skill is a broken skill, not a
+  shorter one. The clamp stands for data.
 - **Context:** The 131k-pod overflow (ADR-0022's incident) had a root cause upstream of
   compaction: a `use_skill` call returned a 2,776-line skill body whole, and nothing
   between a tool and the transcript bounds result size. Per-tool caps exist only where a
@@ -2467,3 +2470,56 @@ sub-step restating the preamble — harmless, and marked done in the same breath
 tests/test_skill_skeleton.py (`test_bold_step_lead_ins_are_steps_too`,
 `test_bold_steps_nest_under_the_open_section`; the ADR-0062 fixture keeps a bold prose
 line that must not count).
+
+## ADR-0065: A skill body lands whole, and a local pod declares its own window
+
+**Context.** Field 2026-08-28 (coach on zc-03), reading the first ADR-0062 seeding: "plan
+seeded from /boot: 7 steps" — for a skill with 25 numbered sections. The `use_skill` result
+carried `[output clamped: 37,875 chars is too large for the model's context window; kept
+the first 4,096 and last 2,048]`: the seam clamp (ADR-0023) had cut /boot to Phases -3…-0.5
+plus Step 12, Steps 0–11 never reached the model, and the model "completed" the boot 7/7.
+Every core skill the coach had loaded for days was cut the same way (/aspirations 55 KB,
+/aspirations-execute 78 KB, /aspirations-precheck 184 KB, /prime 27 KB — eleven clamped
+loads in one session). Two causes, both real:
+
+1. The route model `openai/zds-qwen3.8-27b` is an alias the static capability table does
+   not carry and litellm has no metadata for, so `get_capabilities` fell to the 8,192-token
+   default — while the server runs 131,072. The clamp (0.25 × window × 3 chars) was 6,144
+   chars instead of 98,304, and the pre-turn compaction threshold 6.5k tokens instead of
+   105k. The server had been announcing the real figure the whole time in
+   `GET /v1/models` (`zds.ctx_per_engine: 131072`), as vLLM does in `max_model_len` and
+   llama.cpp in `meta.n_ctx_train`.
+2. Even at the right window, a 184 KB skill exceeds the clamp, and a head-and-tail of a
+   skill is not a shorter skill — it is a broken one. "Re-run narrower" is a remedy for
+   data; there is no narrower re-run of a procedure.
+
+**Decision.** Two things, no flag.
+
+- `LiteLLMProvider.capabilities()`: when the registry answers with the default window for a
+  generic-endpoint model that has an `api_base`, the provider fetches `{api_base}/models`
+  once (Bearer key if one is configured; 3 s timeout), finds the model's entry (prefix
+  stripped) and takes the first window field present — `max_model_len`, `context_window`,
+  `context_length`, `max_context_length`, `meta.n_ctx_train`, `meta.n_ctx`,
+  `zds.ctx_per_engine` (divided by the slots per engine when the listing shows a fan-out:
+  the per-engine figure is the engine total, rb-8892). Fail-open and remembered either way: one probe per provider
+  instance, never on the request path. `LOCAL_ONLY` is honoured — an unlisted base is not
+  probed, by the same `classify_destination` the request path uses.
+- `ToolResult.verbatim`: a result that is instructions rather than data. `use_skill` and
+  `read_rule` set it; the seam clamp skips it. An oversized verbatim body is the
+  compactor's problem (pre-turn threshold, and the in-turn `ContextWindowExceeded`
+  compact-then-retry), exactly as a skill file is under Claude Code.
+
+**Alternatives rejected.** A static table entry for the pod's models (its ids are aliases
+— `zds-qwen3.8-27b` is `zds-qwen3.6-35b` today — and they rotate); a settings knob for the
+window (a knob for a fact the server states); a larger clamp fraction for skills (still a
+broken skill at 184 KB); paging a skill body across calls (the model that skips a hint
+would skip the second page).
+
+**Consequences.** On the pod the clamp is 98 KB and compaction fires near 105k tokens;
+every skill lands whole, so ADR-0062's skeleton and the model see the same sections. ADR-0023
+stands for data (bash, grep, file dumps) — its own motivating incident (a 2,776-line skill
+body "overflowing the window" on 2026-08-26) happened under this same misdeclared window.
+Pinned by tests/test_window_discovery.py (the reader across the three server shapes and
+the alias; probed once; a failed probe keeps the default and is not retried; a known model,
+a base-less model and an unlisted base under LOCAL_ONLY are never probed) and
+tests/test_output_clamp.py (`test_a_verbatim_result_is_never_clamped`).

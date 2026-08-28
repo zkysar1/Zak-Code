@@ -100,4 +100,4 @@ class ReadRuleTool(Tool):
             )
         if len(body) > MAX_RULE_BODY_CHARS:
             body = body[:MAX_RULE_BODY_CHARS] + f"\n\n[truncated at {MAX_RULE_BODY_CHARS} chars]"
-        return ToolResult.ok(f"# {name}\n{body}")
+        return ToolResult.ok(f"# {name}\n{body}", verbatim=True)  # instructions, never clamped

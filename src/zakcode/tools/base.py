@@ -307,6 +307,11 @@ class ToolResult(BaseModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     hint: str | None = None
     fix: str | None = None
+    #: The output is INSTRUCTIONS, not data (a skill body, a rule): the loop's seam clamp
+    #: (ADR-0023) never cuts it, because there is no "re-run narrower" for a procedure — a
+    #: head-and-tail of a skill is not a shorter skill, it is a broken one (ADR-0065). An
+    #: oversized verbatim result is the compactor's problem, not the clamp's.
+    verbatim: bool = False
 
     @classmethod
     def ok(
@@ -316,9 +321,17 @@ class ToolResult(BaseModel):
         data: dict[str, Any] | None = None,
         artifacts: list[ArtifactRef] | None = None,
         hint: str | None = None,
+        verbatim: bool = False,
     ) -> ToolResult:
         """A successful result, optionally with a next-step ``hint``."""
-        return cls(output=output, is_error=False, data=data, artifacts=artifacts or [], hint=hint)
+        return cls(
+            output=output,
+            is_error=False,
+            data=data,
+            artifacts=artifacts or [],
+            hint=hint,
+            verbatim=verbatim,
+        )
 
     @classmethod
     def error(

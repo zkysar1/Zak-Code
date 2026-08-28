@@ -116,3 +116,21 @@ def test_rails_survive_the_clamp(tmp_path: Path) -> None:
     block = _run(_BigDumpTool(payload, hint="read the tail"), tmp_path, window=8192)
     assert "[output clamped:" in block.output
     assert block.output.rstrip().endswith("Hint: read the tail")
+
+
+class _VerbatimDumpTool(_BigDumpTool):
+    """Instructions, not data: a skill body or a rule (ADR-0065)."""
+
+    async def execute(self, args: dict, ctx: ToolContext) -> ToolResult:
+        return ToolResult.ok(self._payload, hint=self._hint, verbatim=True)
+
+
+def test_a_verbatim_result_is_never_clamped(tmp_path: Path) -> None:
+    # 2026-08-28 (coach, zc-03): a 37,875-char /boot body clamped to 6 KB lost Steps 0–11.
+    payload = (
+        "## Step 0\n" + "A" * 10_000 + "\n## Step 5: THE-MIDDLE\n" + "B" * 10_000 + "\n## Step 12\n"
+    )
+    block = _run(_VerbatimDumpTool(payload, hint="follow it"), tmp_path, window=8192)
+    assert "[output clamped:" not in block.output
+    assert "## Step 5: THE-MIDDLE" in block.output
+    assert block.output.rstrip().endswith("Hint: follow it")

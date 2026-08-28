@@ -2493,8 +2493,10 @@ class AgentLoop:
         )
         # Clamp the tool's own text BEFORE hook notes and rails are appended, so guidance
         # can never be lost to the elision. Hooks above saw the full output (they are
-        # subprocesses, not context).
-        output = self._clamp_tool_output(tool_res.output)
+        # subprocesses, not context). A verbatim result (a skill body, a rule — ADR-0065)
+        # is instructions and lands whole: measured 2026-08-28 (coach, zc-03), a 39 KB /boot
+        # clamped to 6 KB lost Steps 0–11 and the model "completed" the boot without them.
+        output = tool_res.output if tool_res.verbatim else self._clamp_tool_output(tool_res.output)
         if post.message:
             output = f"{output}\n[hook] {post.message}" if output else f"[hook] {post.message}"
         if post.additional_context:

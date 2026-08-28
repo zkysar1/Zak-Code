@@ -157,6 +157,7 @@ class UseSkillTool(Tool):
                     "whole plan) as you finish it; split any step that is several actions. "
                     "If a step says to use another skill, call use_skill with that name."
                 ),
+                verbatim=True,
             )
         if len(load.body) >= _DECOMPOSE_HINT_MIN_CHARS:
             # The decompose rail (ADR-0027): a long body is a plan waiting to happen, not
@@ -174,6 +175,7 @@ class UseSkillTool(Tool):
                     "marking each done as you finish. If a step says to use another "
                     "skill, call use_skill with that name."
                 ),
+                verbatim=True,
             )
         return ToolResult.ok(
             output,
@@ -182,6 +184,7 @@ class UseSkillTool(Tool):
                 "Follow these skill instructions now. If a step says to use another skill, "
                 "call use_skill with that name."
             ),
+            verbatim=True,
         )
 
 
