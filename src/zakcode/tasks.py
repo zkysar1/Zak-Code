@@ -31,6 +31,7 @@ Design rules (mirroring :mod:`zakcode.agent.recipe` / :mod:`zakcode.agent.stuck`
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -474,4 +475,78 @@ class TaskNetwork(BaseModel):
         return "\n".join(lines)
 
 
-__all__ = ["Task", "TaskNetwork", "TaskStatus", "TaskKind"]
+# ── skill skeletons: a skill body's numbered sections as plan steps (ADR-0062) ─────────
+#: Section headings that read as ORDERED WORK — the checklist a skill author already wrote
+#: ("## Phase 1: …", "### Step 2.3 …", "## Lane 4 …", "## 3. …"). Anything else ("## Syntax",
+#: "## Return Protocol", "## Chaining") is documentation and never becomes a step. Measured
+#: on a Mind deployment's 130 skills: 78 carry such sections, 52 carry none.
+_STEP_HEADING_RE = re.compile(
+    r"^(#{2,3})\s+(?:\*\*)?(?:phase|step|lane|stage|part|task|\d+[.)])(?![a-z-])", re.I
+)
+#: A skeleton never exceeds this many top-level steps; the rest fold into one closing step.
+_MAX_SKELETON_STEPS = 40
+#: …nor this many sub-steps under one section (the overflow is counted in the section's note).
+_MAX_SKELETON_CHILDREN = 12
+#: Step titles are the heading text, trimmed to this many characters.
+_MAX_SKELETON_TITLE = 100
+
+
+def _heading_title(line: str) -> str:
+    text = " ".join(line.lstrip("#").replace("**", "").replace("`", "").split())
+    if len(text) > _MAX_SKELETON_TITLE:
+        text = text[: _MAX_SKELETON_TITLE - 1].rstrip() + "…"
+    return text
+
+
+def skill_skeleton(body: str, *, skill: str) -> list[Task]:
+    """Plan steps from a skill body's numbered sections (ADR-0062) — ``[]`` when it has none.
+
+    Walks the markdown headings outside fenced code: a step-like ``##`` heading becomes a
+    top-level step, a step-like ``###`` heading a sub-step of the section it sits in (which
+    becomes ``compound``), and a non-step ``##`` heading closes the current section so a
+    step-like ``###`` after it stands on its own. Every note opens with the ``from /<skill>``
+    marker — how the loop recognises a skeleton it already seeded. Pure: no model, no I/O.
+    """
+    note = f"from /{skill}; done when this section has been carried out"
+    top: list[Task] = []
+    parent: Task | None = None
+    overflow: dict[int, int] = {}
+    fenced = False
+    for line in body.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        match = _STEP_HEADING_RE.match(line)
+        if match is None:
+            if line.startswith("## "):
+                parent = None
+            continue
+        task = Task(title=_heading_title(line), note=note)
+        if len(match.group(1)) == 2:
+            top.append(task)
+            parent = task
+        elif parent is None:
+            top.append(task)
+        elif len(parent.children) < _MAX_SKELETON_CHILDREN:
+            parent.children.append(task)
+            parent.kind = "compound"
+        else:
+            overflow[id(parent)] = overflow.get(id(parent), 0) + 1
+    for section in top:
+        extra = overflow.get(id(section))
+        if extra:
+            section.note += f" (+{extra} more sub-sections not listed)"
+    if len(top) > _MAX_SKELETON_STEPS:
+        rest = len(top) - (_MAX_SKELETON_STEPS - 1)
+        top = top[: _MAX_SKELETON_STEPS - 1] + [
+            Task(
+                title=f"Remaining sections of /{skill} ({rest} more)",
+                note=f"from /{skill}; add them to the plan with update_plan as you reach them",
+            )
+        ]
+    return top
+
+
+__all__ = ["Task", "TaskNetwork", "TaskStatus", "TaskKind", "skill_skeleton"]

@@ -955,7 +955,9 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 
 ## ADR-0027: Long skill bodies are decomposed into the plan, not held in the model's head
 
-- **Status:** Accepted (shipped, 2026-08-26).
+- **Status:** Accepted (shipped, 2026-08-26). Since ADR-0062 the hint is backed by harness
+  seeding: the body's numbered sections are put in the plan by the loop, and the hint
+  describes that checklist rather than asking the model to write one.
 - **Context:** The harness already decomposes USER requests (plan seeding for multi-skill
   asks, the plan gate holding open steps) — but a skill body arrives as one wall of
   instructions and the model is simply told to follow it. Capable models can; the small
@@ -2323,3 +2325,71 @@ reads it. Neither addresses the isolation gap, which is the actual finding.
 the container and the projection goes with the host that no longer holds the only copy;
 two served workspaces share no transcript directory. Hooks are unaffected — they read the
 path they are handed. A host user's home stops accumulating other minds' conversations.
+
+## ADR-0062: A loaded skill's sections are the plan — the harness decomposes, the model refines
+
+**Context.** ADR-0027 asked the model to decompose a long skill body into plan steps
+("FIRST call update_plan …") and deliberately left the decomposition to the model — bodies
+are heterogeneous prose, and the model holds the request context. It was a hint. Field
+2026-08-28 (sera, `gemini-2.5-flash`): a say naming `/encode-session` mid-sentence had the
+model load the skill through `use_skill` (883 lines, decompose hint attached) and go straight
+to `git status`; no plan was ever written, nothing enforced the hint, and the operator asked
+why "all skills are supposed to get decomposed" had not happened. A turn typed as
+`/encode-session` fared no better: the only mechanical seeding was ADR-0017's `run /a,
+run /b` steps for a message naming two or more skills. Measured across a Mind deployment's
+130 skills: 78 carry numbered `## Phase` / `## Step` / `## Lane` sections — a checklist their
+author already wrote (encode-session: 22 headings) — and 52 do not (`/start` and
+`/aspirations` among them).
+
+**Decision.** Seeding, not hinting — the ADR-0057 shape ("I added steps to your plan")
+applied to skill loads, at both doors, no flag.
+
+- `tasks.skill_skeleton(body, skill=…)` (pure): step-like `##` headings
+  (`Phase|Step|Lane|Stage|Part|Task|N.`) become top-level primitive steps; step-like `###`
+  headings the sub-steps of the section they sit in (which becomes `compound`); a non-step
+  `##` closes a section; headings inside fenced code never count. Titles are the heading
+  text (trimmed to 100 chars); every note opens with the `from /<skill>` marker. Caps: 40
+  top-level steps (the rest fold into one closing step), 12 sub-steps per section.
+- The loop seeds at the moment a body enters context: the typed `/<skill>` turn at turn
+  entry (the body IS the message), and every successful `use_skill` load right after its
+  batch, in both twins — `[already loaded]` pointers and errored loads never seed. A body
+  with no numbered sections seeds NOTHING: ADR-0027's hint stands and the plan is the
+  model's own. Placement: as the children of the still-open plan step that names the skill
+  (ADR-0017's `run /<skill>`, or the model's own) when there is one, else appended. Once
+  per skill per turn, and never when the plan already carries that skill's marker or the
+  naming step was already broken down by the model.
+- A control rail says what happened and what is expected: "I added the N sections of
+  /<skill> to your plan as steps (ids). They are the work now: do them in order, mark each
+  done with update_plan (send the whole plan) as you finish it … mark a section that does
+  not apply to this request cancelled with the reason in its note." `use_skill`'s hint says
+  the same and its result data carries `sections: N`; a long body without sections keeps
+  ADR-0027's decompose hint.
+- The existing machinery does the rest: `update_plan` is full-replace, so the model's own
+  plan always wins; the plan gate holds a quiet finish while sections are open; the plan
+  survives compaction and the seam clamp where instruction recall does not; ADR-0059 still
+  keeps the judge off a composed turn's plan.
+
+**Alternatives rejected.** Nudging when the model ignored the hint (still advice, and the
+model that skipped the hint skips the nudge); parsing prose into steps (headings are the only
+structure a skill reliably has — the 52 without them get nothing seeded, not a guess: the fix
+for such a skill is to give it numbered sections, a documentation matter, not a parser); a
+single holding step for a section-less body ("Carry out /<skill> end to end") — tried, and
+rejected because it is not a decomposition and it turned every section-less skill turn,
+however short, into a plan-gate nudge at the finish (thirteen existing tests measured it);
+making these harness steps non-holding like ADR-0057's investigative steps (these ARE the
+work, not guidance — a skipped section is the silent non-execution ADR-0027 was written
+against).
+
+**Consequences.** Every skill load leaves a checklist behind it, on every model size: a
+typed `/encode-session` starts from its ten lanes and their sub-steps, a `use_skill` load
+mid-turn nests them under the step that asked for it, and a section the model does not
+mark done is what the plan gate asks about at the finish. Plans get longer (a 22-section
+skill renders 22 lines each iteration); the model may replace them at any time. Pinned by
+tests/test_skill_skeleton.py (sections and sub-sections nest with dotted ids; prose, fenced
+and plural headings never count; a sub-section outside a section stands alone; titles are
+cleaned and trimmed; both caps; the composed body helper; the typed turn seeds before the
+first completion in both twins with the status and task_update; a use_skill load seeds
+after its result with the rail between result and plan; sections nest under the step that
+named the skill; a section-less body seeds nothing and stays ceremony-free; a skeleton is
+seeded once per turn and never over the plan's own marker; a step the model already
+decomposed is left alone; the tool hint names the sections).
