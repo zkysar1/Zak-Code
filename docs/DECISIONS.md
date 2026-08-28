@@ -2255,7 +2255,14 @@ runner, and the runner spent the next hour idle-ticking and misdiagnosing itself
   before, so a say written while the runner works lands in the runner.
 - Staleness, not pid liveness, decides: a marker older than 120 s names nobody. A pid
   probe is not portable (`os.kill(pid, 0)` TERMINATES the target on Windows), and a
-  crashed holder's marker simply ages out.
+  crashed holder's marker simply ages out. Read the threshold by what resets its stamp:
+  the holder's event loop touches the file every 30 s, so "stale" means *the holder's
+  loop has not run for two minutes* — process death, or a loop blocked by a synchronous
+  call that long (a bug elsewhere; every tool and model call awaits). A healthy
+  twenty-minute model call keeps it fresh. Conversely the marker says a turn is in
+  flight, not that it is making progress: a holder wedged in a call it never times out
+  of keeps the inbox until its own request timeout fires — the ADR-0051 shape, and the
+  runner's timeouts and watchdog own it, not this file.
 - The cockpit say box says where a message will land: `✓ sent → the running turn`.
 
 **What this does not do.** It does not address a say. With a runner busy, the cockpit
