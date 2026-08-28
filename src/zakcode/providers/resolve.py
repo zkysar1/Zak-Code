@@ -294,11 +294,19 @@ VAULT_PROVIDER_KEY_NAMES: frozenset[str] = frozenset(
     src.key_env for src in _EXTERNAL_SOURCES.values()
 )
 
-#: The deployment's OWN provider keys, captured the first time each name is seen — before
-#: any overlay has replaced it. Restoring from here is what makes a vault entry's REMOVAL
-#: take effect: without it the first overlay would pin the member's key into the process
-#: for its whole life and deleting the secret would appear to do nothing until a restart.
-_PLATFORM_KEY_BASELINE: dict[str, str | None] = {}
+#: What an overlay DISPLACED, per name, recorded at the moment we replace it and dropped
+#: when we put it back. Restoring from here is what makes a vault entry's REMOVAL take
+#: effect: without it the first overlay would pin the member's key into the process for
+#: its whole life and deleting the secret would appear to do nothing until a restart.
+#:
+#: A name absent from this map is one we have NOT overlaid, and the rule below is that we
+#: then leave it completely alone. The first version instead snapshotted every recognised
+#: name on first call and "restored" from that snapshot forever — which silently REVERTED
+#: any provider key that entered the environment later (a rotation, a late ``load_dotenv``,
+#: a second Agent in one process). CI caught it as a real failover regression; it passed
+#: locally only because this machine's .env has provider keys, so the snapshot was
+#: non-empty and the revert was a no-op. Touch nothing you did not change.
+_OVERLAID_DISPLACED: dict[str, str | None] = {}
 
 
 def apply_vault_provider_keys(settings: object) -> list[str]:
@@ -340,18 +348,21 @@ def apply_vault_provider_keys(settings: object) -> list[str]:
 
     applied: list[str] = []
     for name in sorted(VAULT_PROVIDER_KEY_NAMES):
-        if name not in _PLATFORM_KEY_BASELINE:
-            _PLATFORM_KEY_BASELINE[name] = os.environ.get(name)
         value = held.get(name)
         if value:
+            if name not in _OVERLAID_DISPLACED:
+                _OVERLAID_DISPLACED[name] = os.environ.get(name)
             os.environ[name] = value
             applied.append(name)
-        else:
-            baseline = _PLATFORM_KEY_BASELINE[name]
-            if baseline is None:
+        elif name in _OVERLAID_DISPLACED:
+            # We overlaid this name before and the vault entry is now gone: put back
+            # exactly what we displaced, then forget it.
+            prior = _OVERLAID_DISPLACED.pop(name)
+            if prior is None:
                 os.environ.pop(name, None)
             else:
-                os.environ[name] = baseline
+                os.environ[name] = prior
+        # else: never overlaid by us — leave the environment untouched.
     if applied:
         # Names only. A value must never reach a log line (GUARDRAILS §6).
         logger.info(

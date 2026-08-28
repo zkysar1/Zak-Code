@@ -50,11 +50,11 @@ class _Settings:
 
 
 @pytest.fixture(autouse=True)
-def _clean_baseline():
+def _clean_overlay_state():
     """The baseline is process state by design; a test must not inherit another's."""
-    R._PLATFORM_KEY_BASELINE.clear()
+    R._OVERLAID_DISPLACED.clear()
     yield
-    R._PLATFORM_KEY_BASELINE.clear()
+    R._OVERLAID_DISPLACED.clear()
 
 
 def _vault(tmp_path, mapping):
@@ -232,3 +232,34 @@ def test_cloud_call_still_omits_api_key_so_litellm_reads_the_environment():
         model="openai/local-model", api_base="http://127.0.0.1:8080/v1", api_key="explicit-key"
     )
     assert generic._build_kwargs(msgs, None).get("api_key") == "explicit-key"
+
+
+def test_a_key_that_appears_after_the_first_call_is_never_reverted(monkeypatch, tmp_path):
+    """The regression CI caught and this machine could not.
+
+    The first version snapshotted every recognised name on its first call and
+    "restored" from that snapshot on every later call — so a provider key that entered
+    the environment AFTERWARDS (a rotation, a late ``load_dotenv``, a second Agent in
+    one process) was silently reverted to the snapshot. It surfaced as auto-failover
+    finding no alternative provider.
+
+    It passed locally because this machine's ``.env`` supplies provider keys, making
+    the snapshot non-empty and the revert a no-op. A clean environment is the only one
+    that shows it — which is exactly what CI has and a developer box does not.
+    """
+    v = _vault(tmp_path, {})
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    R.apply_vault_provider_keys(_Settings(v))  # first call: nothing overlaid
+
+    monkeypatch.setenv("GROQ_API_KEY", "arrived-later")
+    assert R.apply_vault_provider_keys(_Settings(v)) == []
+    assert os.environ["GROQ_API_KEY"] == "arrived-later"
+
+
+def test_a_vaultless_process_never_has_its_environment_touched(monkeypatch):
+    """Feature-off means the function is not merely a no-op in effect but in action."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "platform-key")
+    monkeypatch.setenv("GROQ_API_KEY", "platform-groq")
+    before = dict(os.environ)
+    R.apply_vault_provider_keys(_Settings(None))
+    assert dict(os.environ) == before
