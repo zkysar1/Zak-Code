@@ -1763,3 +1763,83 @@ def test_update_local_checkout_already_current_says_so_with_sha(tmp_path, monkey
     result = runner.invoke(app, ["update"])
     assert result.exit_code == 0
     assert "already current" in result.stdout
+
+
+# ── ADR-0073: a line typed while a turn runs reaches the turn through the say inbox ──
+
+
+def _feed_lines(monkeypatch, lines: list[str], gate) -> None:
+    """The pump reads these lines (after ``gate`` opens), then blocks forever."""
+    import threading as _threading
+
+    pending = list(lines)
+
+    def _read() -> str:
+        gate.wait(timeout=30)
+        if pending:
+            return pending.pop(0)
+        _threading.Event().wait(timeout=60)
+        raise EOFError
+
+    monkeypatch.setattr("zakcode.cli._read_stdin_line", _read)
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return True
+        _time.sleep(0.02)
+    return predicate()
+
+
+def test_typed_line_mid_turn_goes_to_the_say_inbox(monkeypatch, tmp_path) -> None:
+    import threading
+
+    from zakcode.session import say_inbox as si
+
+    gate = threading.Event()
+    _feed_lines(monkeypatch, ["/stop coach"], gate)
+    mux = _make_mux(tmp_path)
+    mux.turn_active = True
+    gate.set()
+    assert _wait_for(lambda: si.say_pending(si.say_path(tmp_path)))
+    assert si.read_say(si.say_path(tmp_path)) == "/stop coach"
+    assert mux.queue.empty()  # not parked for a prompt the runner never reaches
+
+
+def test_typed_line_idle_or_repl_command_stays_on_the_queue(monkeypatch, tmp_path) -> None:
+    import threading
+
+    from zakcode.session import say_inbox as si
+
+    gate = threading.Event()
+    _feed_lines(monkeypatch, ["/exit", "plain text"], gate)
+    mux = _make_mux(tmp_path)
+    mux.turn_active = True
+    gate.set()
+    # /exit is the REPL's own command: queued even mid-turn.
+    assert mux.queue.get(timeout=5) == ("line", "/exit")
+    # …and the next line went to the inbox (turn still active).
+    assert _wait_for(lambda: si.say_pending(si.say_path(tmp_path)))
+    si.read_say(si.say_path(tmp_path))
+    # Idle: everything is queued, nothing touches the inbox.
+    mux.turn_active = False
+    mux._route_typed("idle line")
+    assert mux.queue.get(timeout=5) == ("line", "idle line")
+    assert not si.say_pending(si.say_path(tmp_path))
+
+
+def test_typed_line_falls_back_to_the_queue_when_the_slot_stays_busy(monkeypatch, tmp_path) -> None:
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    mux = _make_mux(tmp_path)
+    monkeypatch.setattr(type(mux), "_INBOX_WAIT_SECONDS", 0.3)
+    assert si.write_say(si.say_path(tmp_path), "earlier say, unconsumed")
+    mux.turn_active = True
+    mux._route_typed("second line")
+    assert mux.queue.get(timeout=5) == ("line", "second line")  # never lost
+    assert si.read_say(si.say_path(tmp_path)) == "earlier say, unconsumed"  # slot untouched
