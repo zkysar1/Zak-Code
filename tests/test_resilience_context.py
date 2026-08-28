@@ -29,11 +29,13 @@ from zakcode.providers.base import (
     StreamDone,
     StreamTextDelta,
     StreamToolCallDelta,
+    StreamUsage,
     ToolCall,
 )
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
+from zakcode.usage import Usage
 
 
 class OverflowProvider(Provider):
@@ -457,6 +459,140 @@ def test_streaming_auto_compaction_is_checked_before_every_call() -> None:
     assert compactor.compact_calls >= 1
     statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
     assert any("context near the window — compacted" in s for s in statuses)
+
+
+class MeasuringProvider(PlanningProvider):
+    """Reports a prompt size the local estimate cannot see: ``count_tokens`` says the
+    transcript is a handful of tokens, the usage says it fills 90% of the window — the shape
+    id-dense tool output takes against a chars/4 estimate (coach, 2026-08-28: the check read
+    "fine" at 129k real on a 131k window)."""
+
+    def __init__(self, steps: int, *, reported: int) -> None:
+        super().__init__(steps)
+        self._reported = reported
+
+    def _answer(self, tools: list[dict[str, Any]] | None) -> LLMResult:
+        result = super()._answer(tools)
+        if not tools:
+            return result
+        usage = Usage(
+            prompt_tokens=self._reported, completion_tokens=1, total_tokens=self._reported + 1
+        )
+        return result.model_copy(update={"usage": usage})
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kw: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        result = self._answer(tools)
+        for call in result.tool_calls:
+            yield StreamToolCallDelta(
+                index=0, id=call.id, name=call.name, arguments_delta=json.dumps(call.arguments)
+            )
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        if tools:
+            yield StreamUsage(usage=result.usage)
+        yield StreamDone(finish_reason="tool_calls" if result.tool_calls else "stop")
+
+    def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
+        return len(messages)  # a deliberately tiny estimate
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=1000)
+
+
+class CountingCompactor:
+    """The real trigger's shape — a count against a window — recording every count it is
+    handed, so a test can see what the check BELIEVED the transcript weighed."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self.counts: list[int] = []
+        self.compact_calls = 0
+
+    def should_compact(self, messages: list[Message], *, count_tokens: Any, **kw: Any) -> bool:
+        n = count_tokens(messages)
+        self.counts.append(n)
+        return n > self._limit
+
+    async def compact(self, messages: list[Message], *, summarize: Any) -> Any:
+        from types import SimpleNamespace
+
+        self.compact_calls += 1
+        return SimpleNamespace(compacted=True, messages=list(messages[-2:]))
+
+
+def test_the_compaction_check_is_floored_by_what_the_provider_last_measured() -> None:
+    """ADR-0077: the check counts chars/4 locally, which ran ~25k under a 131k window on
+    id-dense tool output. After a call, the provider's reported prompt size floors the next
+    check, so the compaction fires where the threshold says — not where the window does."""
+    provider = MeasuringProvider(steps=3, reported=900)
+    compactor = CountingCompactor(limit=800)  # 0.8 of a 1000-token window
+    loop = _planning_loop(provider, compactor)
+    result = asyncio.run(loop.arun_turn("plan it"))
+    assert result.stop_reason == "completed", result.error
+    # Before the first call (turn start, then the pre-call check) nothing is measured yet —
+    # the tiny estimate stands and no compaction fires.
+    assert all(n < 800 for n in compactor.counts[:2]), compactor.counts
+    # The first check after a call sees the measured 900 plus the appended messages.
+    assert compactor.counts[2] >= 900, compactor.counts
+    assert compactor.compact_calls >= 1
+    # The anchor is the last main call's measurement, kept on the session for a resume.
+    assert loop.session.prompt_anchor_tokens == 900
+    assert 0 < loop.session.prompt_anchor_index <= len(loop.session.messages)
+
+
+def test_streaming_compaction_check_is_floored_by_the_measured_prompt() -> None:
+    provider = MeasuringProvider(steps=3, reported=900)
+    compactor = CountingCompactor(limit=800)
+    loop = _planning_loop(provider, compactor)
+    events = asyncio.run(_collect(loop, "plan it"))
+    assert events[-1].stop_reason == "completed", events[-1].error
+    assert all(n < 800 for n in compactor.counts[:2]), compactor.counts
+    assert compactor.counts[2] >= 900, compactor.counts
+    assert compactor.compact_calls >= 1
+    assert loop.session.prompt_anchor_tokens == 900
+
+
+def test_the_anchor_only_ever_pulls_the_check_earlier_and_is_forgotten_on_compaction() -> None:
+    session = Session(cwd="/tmp/work", model="test/model")
+    session.add_message(Message.user("hi"))
+    provider = MeasuringProvider(steps=0, reported=900)
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        session,
+        settings=load_settings(workspace_root=Path.cwd()),
+        compactor=CountingCompactor(limit=800),
+    )
+    assert loop._count_tokens_anchored(session.messages) == 1  # bare estimate, no anchor
+    loop._anchor_prompt(900)
+    session.add_message(Message.user("more"))
+    assert loop._count_tokens_anchored(session.messages) == 900 + 1  # anchor + the delta
+    # An estimate larger than the anchor wins — the floor never lowers the count.
+    session.prompt_anchor_tokens = 1
+    assert loop._count_tokens_anchored(session.messages) == 2
+    # A compaction rewrote the measured prefix: back to the bare estimate.
+    loop._anchor_prompt(900)
+    loop._forget_prompt_anchor()
+    assert loop._count_tokens_anchored(session.messages) == 2
+    # An anchor index past the transcript (a shrunk document) is ignored, not trusted.
+    session.prompt_anchor_tokens, session.prompt_anchor_index = 900, 99
+    assert loop._count_tokens_anchored(session.messages) == 2
+
+
+def test_the_anchor_persists_with_the_session_and_an_old_document_loads_without_it() -> None:
+    session = Session(cwd="/tmp/work", model="test/model")
+    session.prompt_anchor_tokens, session.prompt_anchor_index = 900, 3
+    reloaded = Session.model_validate(session.model_dump())
+    assert (reloaded.prompt_anchor_tokens, reloaded.prompt_anchor_index) == (900, 3)
+    older = Session.model_validate({"cwd": "/tmp/work", "model": "test/model"})
+    assert (older.prompt_anchor_tokens, older.prompt_anchor_index) == (0, 0)
 
 
 def test_module_constant_is_sane() -> None:
