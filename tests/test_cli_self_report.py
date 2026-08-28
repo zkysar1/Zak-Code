@@ -62,7 +62,20 @@ class TestRequestShapingRows:
         assert secret not in rendered
         assert "abc" not in rendered
 
-    def test_absent_when_unset(self) -> None:
+    def test_absent_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # "Unset" has to mean unset, and a bare Settings() reads the AMBIENT process
+        # environment — which any earlier test that called load_settings() has already
+        # polluted. load_settings does `load_dotenv(user_env, override=False)`
+        # (config.py:806), so a developer whose ~/.zakcode/.env carries
+        # ZAKCODE_EXTRA_HEADERS gets it exported into os.environ for the rest of the
+        # process, and every later Settings() reports it. That made this test pass
+        # solo, pass in CI (clean runner, no user .env), and FAIL in the full suite on
+        # a real developer box — the worst shape, because a red that only appears
+        # locally trains everyone to wave past local suite failures.
+        # _clean_provenance (below) does NOT cover this: it clears the provenance
+        # dicts, not os.environ.
+        monkeypatch.delenv("ZAKCODE_EXTRA_HEADERS", raising=False)
+        monkeypatch.delenv("ZAKCODE_EXTRA_BODY", raising=False)
         rows = _rows(Settings())
         assert "Extra body" not in rows
         assert "Extra headers" not in rows
