@@ -2441,3 +2441,29 @@ tests/test_silent_completion.py (the count in the note and its data; a zero-toke
 stays plain; the streaming status carries the count; re-invoking the typed skill gets the
 pointer at no budget cost; a different skill still loads in full; a veto still opens a
 fresh skill turn).
+
+## ADR-0064: Bold step lead-ins are sections too
+
+**Context.** ADR-0062 seeds a plan from a skill body's step-like headings. Field
+2026-08-28 (coach on zc-03, the first `/start coach --recover --force` on that build): the
+model ran one state check, wrote "Agent coach is RUNNING. Recovery with --force detected.
+Following Step 0.7 cleanup sequence." and ended the turn — two iterations, plan empty,
+nothing to hold it. `/start` has no step-like heading at all: its checklist is written as
+bold lead-ins (`**Step 0.7: Recovery Branch (…)** — …`), and so are `/stop`'s and
+`/aspirations`' — the three control skills, exactly the ones a served Mind cannot afford to
+half-run. Measured across the deployment's 130 skills: 44 carry such lead-ins (most just
+`**Step 0: Load Conventions**`, the preamble convention; /start 6, /stop 4, state-replay 6).
+
+**Decision.** A bold `**Step N …**` lead-in at line start (list bullet allowed; the word,
+a number, then a separator or the closing bold) is a step marker, ranked like a `###`
+heading: a sub-step of the open section, or a step of its own when none is open. Titles are
+the bold span without its trailing separator. `**Phase 6 spark is NOT wrapped …**` — a
+word after the number — is prose and never matches; fenced code is skipped as before.
+
+**Consequences.** `/start` now seeds six steps (0, 0.5, 0.6, 0.7, 1, 1.5), so a turn that
+narrates past Step 0.7 meets the plan gate with steps 1 and 1.5 open instead of ending as
+"completed". A section that carries its own `**Step 0: Load Conventions**` line gains one
+sub-step restating the preamble — harmless, and marked done in the same breath. Pinned by
+tests/test_skill_skeleton.py (`test_bold_step_lead_ins_are_steps_too`,
+`test_bold_steps_nest_under_the_open_section`; the ADR-0062 fixture keeps a bold prose
+line that must not count).
