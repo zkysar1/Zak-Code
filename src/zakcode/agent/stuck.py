@@ -334,9 +334,10 @@ class StuckTracker:
     def narrow_message(self) -> str:
         """The corrective hint injected on a :attr:`StuckAction.NARROW`."""
         return (
-            "You are still stuck, so for this step only read-only tools are available. Use "
-            "them to investigate first — read the file, the error, or the directory — and "
-            "take one focused step to find the real cause before attempting another change."
+            "You are still stuck, so for your NEXT response only read-only tools are "
+            "available (the full toolset returns after that). Use them to investigate: "
+            "read the file, the error, or the directory, and find the real cause before "
+            "attempting another change."
         )
 
     def step_back_message(self) -> str:
@@ -349,14 +350,18 @@ class StuckTracker:
         """
         return (
             "Stop and take a step back — do not retry anything yet. Several different "
-            "attempts have all failed, which usually means they share one wrong assumption: "
-            "a path that does not exist here, a command or tool that is not available, an "
-            "interface that differs from what you expect. First state in one sentence what "
-            "you are trying to accomplish. Then verify the assumption every failed attempt "
-            "depended on, from the ground up, with read-only probes: list a directory you "
-            "KNOW exists (such as the workspace root) and walk down to find the real path; "
-            "run the command with --help to see its real interface; read the file you "
-            "believe is there. Rebuild your approach from what the probes actually show, "
-            "and only then act. Do not repeat any earlier failing call until a probe has "
-            "confirmed the assumption it depends on."
+            "attempts have all failed, which usually means they share one wrong "
+            "assumption: a path that "
+            "does not exist here, a command or tool that is not available, an interface "
+            "that differs from what you expect. Do this, in order:\n"
+            "1. State in one sentence what you are trying to accomplish.\n"
+            "2. Name the assumption every failed attempt depended on.\n"
+            "3. Check that assumption with read-only probes: list a directory you KNOW "
+            "exists (such as the workspace root) and walk down to the real path; run the "
+            "command with --help to see its real interface; read the file you believe is "
+            "there.\n"
+            "4. Rebuild your approach from what the probes actually show, and only then "
+            "act.\n"
+            "Do not repeat any earlier failing call until a probe has confirmed the "
+            "assumption it depends on."
         )

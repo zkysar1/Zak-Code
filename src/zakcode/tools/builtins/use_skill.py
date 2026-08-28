@@ -151,11 +151,11 @@ class UseSkillTool(Tool):
                 output,
                 data={"skill": load.name, "decompose": True},
                 hint=(
-                    "These instructions are long — do not try to hold them all in your "
-                    "head. FIRST decompose them: with update_plan, record the concrete "
-                    "steps THIS request needs (fold in the context you already have), "
-                    "then execute the steps in order, marking each done as you finish. "
-                    "If a step says to use another skill, call use_skill with that name."
+                    "These instructions are long. FIRST call update_plan and decompose "
+                    "them into the concrete steps THIS request needs, so the plan holds "
+                    "the steps instead of your memory. Then execute them in order, "
+                    "marking each done as you finish. If a step says to use another "
+                    "skill, call use_skill with that name."
                 ),
             )
         return ToolResult.ok(

@@ -1895,3 +1895,53 @@ tighten `mid_step`/`step_seam`, not move the poll.
 case and within 3 boundaries always. Sub-agents unchanged (they never poll). Pinned by
 tests/test_loop_say.py: hold-then-seam delivery (held calls proven message-free), and
 the patience cap on a step that never ends.
+
+## ADR-0053: Small-model prompt clarity — one story per rule, numbered escapes, declared tags
+
+**Status.** Accepted (2026-08-28).
+
+**Context.** Zak Code increasingly runs small local models (a 27B coach deployment is the
+live case), and a full clarity review of the prompt surface found texts that work fine for
+frontier models carrying contradictions and buried escape hatches that throw smaller ones.
+The worst was mechanical: the system prompt says plan at "roughly three or more distinct
+actions" while update_plan's own description said both "more than one action" and "skip …
+fewer than 3 steps" — three thresholds for one rule. Others: "ask a clarifying question"
+on ambiguity vs. gates that punish text-only turns; the claim nudge asserting "nothing on
+disk changed" when the change may have been made via bash; runtime tags ([verified],
+[plan critique], the mid-task user frame) injected but never declared; multi-branch prose
+nudges whose escape clause sits at the end of a 60-word sentence.
+
+**Decision.** One pass over every operator-facing rail, four principles applied
+mechanically:
+
+1. **One threshold, stated once.** update_plan's description now mirrors the prompt: plan
+   at three or more actions, or any multi-part request; skip only one thing needing one or
+   two actions.
+2. **Proceed beats ask.** An ambiguous request gets "state your interpretation in one
+   sentence and proceed"; the clarifying question is reserved for risky (destructive,
+   hard-to-undo) work. Asking is no longer the prescribed response to mere ambiguity —
+   that prescription collided with every gate that ends a text-only turn.
+3. **Numbered options, not prose disjunctions.** The empty-completion, skill-empty,
+   intent, plan-gate, and step-back rails each list their 2–4 legal moves as a numbered
+   list, with the escape hatch a first-class option instead of a trailing clause.
+4. **Every injected tag is declared.** The prompt's tag legend now covers [plan critique],
+   [verified]/[unverified] (with what verified means: content re-read from disk, trust it
+   over memory of the write), the [user message — arrived mid-task] frame (the one tag
+   that IS the user), and the <injected_context> fence (untrusted, same as tool output).
+
+Also: the claim nudge is bash-aware (no edit/write_file ran → verify by reading the file
+back, since the model may have written through the shell); the NARROW rail states its true
+scope (next response only, full toolset returns after); the degeneration nudge no longer
+says "do not repeat yourself" about a completion the model cannot see (it was discarded);
+the elided skill-body marker says what to do about it (nothing; use_skill reloads).
+
+**Deliberately not done (behavior changes, reserved).** Cross-gate cascade suppression
+(two gates can nudge in contradictory directions in one turn) and counting glob/read_file
+as searches for the missing-conclusion gate are behavior changes, not wording — deferred
+until field evidence demands them.
+
+**Consequences.** No behavior changes: every edit is a string. Tests updated where they
+pinned old wording (provenance-tag legend, decompose hint); the field-proven "take a step
+back" phrase kept verbatim. The same review's Mind-side findings ship separately in the
+ayoai-mind repo (origin_signal refusal rewrite, exact-title duplicate gate, mode-doc
+contradiction fixes).
