@@ -1913,6 +1913,52 @@ class AgentLoop:
                 refs.append(name)
         return refs
 
+    def _slash_invocation(self, text: str) -> tuple[str, str] | None:
+        """``(skill, args)`` when the whole completion is one ``/<skill> [args]`` line naming
+        a discovered skill — a request the model made of itself, not an answer — else
+        ``None``. Strict on purpose: one line, nothing but the invocation (a trailing period
+        or wrapping backticks tolerated); prose that mentions a skill is not an invocation.
+        """
+        if self._skill_resolver is None:
+            return None
+        line = re.sub(r"^[\s`]+|[\s`.]+$", "", text)
+        if not line or "\n" in line:
+            return None
+        match = re.match(r"^/([a-z0-9][a-z0-9_-]*)(?:\s+(.*))?$", line, re.I)
+        if match is None:
+            return None
+        known = {n.lower(): n for n in self._skill_resolver.names()}
+        name = known.get(match.group(1).lower())
+        if name is None:
+            return None
+        return name, (match.group(2) or "").strip()
+
+    def _route_slash_text(self, text: str, tool_calls: list[ToolCall]) -> ToolCall | None:
+        """Turn a completion that IS a skill invocation typed as text into the ``use_skill``
+        call the model meant (measured 2026-08-28: the served /start ended its last step
+        with the text "/boot"; the loop saw no tool call, the plan gate pushed on, and the
+        model went straight to /aspirations — the whole boot skipped). One door for
+        skills, whichever way the model spells the request."""
+        if tool_calls:
+            return None
+        routed = self._slash_invocation(text)
+        if routed is None:
+            return None
+        name, args = routed
+        arguments: dict[str, Any] = {"name": name}
+        if args:
+            arguments["args"] = args
+        self._note(
+            "intervention",
+            f"'/{name}' typed as text — routed to use_skill",
+            kind="slash_text_routed",
+            skill=name,
+            args=args,
+        )
+        return ToolCall(
+            id=f"slash-{len(self.session.messages)}", name="use_skill", arguments=arguments
+        )
+
     def _plan_mentions_skill(self, name: str) -> bool:
         """True when any plan step's title or note names ``/<skill>`` (any status).
 
@@ -4024,6 +4070,9 @@ class AgentLoop:
                 stuck.reset()
                 continue
 
+            routed_call = self._route_slash_text(result.text, result.tool_calls)
+            if routed_call is not None:
+                result = result.model_copy(update={"tool_calls": [routed_call]})
             assistant_msg = self._assistant_message(result)
             self.session.add_message(assistant_msg)
             turn_assistant.append(assistant_msg)
@@ -4657,6 +4706,7 @@ class AgentLoop:
             # that moved past a delivered section pulls the next page (ADR-0067).
             self._seed_loaded_skill_skeletons(result.tool_calls, result_blocks, skeleton_seeded)
             self._turn_skill_pages(result.tool_calls)
+            self._dump_trace()  # checkpoint: a runner's turn may never end, its trace must
             if self._turn_fatal is not None:
                 # A verbatim body that cannot fit the window (ADR-0066): the model has its
                 # error result; nothing it could do next changes the arithmetic. End loudly.
@@ -5396,6 +5446,15 @@ class AgentLoop:
                     )
                     continue
 
+                routed_call = self._route_slash_text(assistant_text, tool_calls)
+                if routed_call is not None:
+                    tool_calls = [routed_call]
+                    yield AgentStatus(
+                        message=(
+                            f"'/{routed_call.arguments['name']}' typed as text — "
+                            "running it as a skill"
+                        )
+                    )
                 turn_saw_text = turn_saw_text or bool(assistant_text)
                 if assistant_text or tool_calls:
                     empty_retries = 0  # visible output: the silence, if any, is over
@@ -6078,6 +6137,7 @@ class AgentLoop:
                     yield AgentStatus(message=f"plan seeded from /{skill_name}: {len(steps)} steps")
                 for skill_name, page, count, title in self._turn_skill_pages(tool_calls):
                     yield AgentStatus(message=f"page {page}/{count} of /{skill_name}: {title}")
+                self._dump_trace()  # checkpoint (see the buffered twin)
                 if self._turn_fatal is not None:
                     # A verbatim body that cannot fit the window (ADR-0066): end loudly.
                     stop_reason, fatal_detail = self._turn_fatal
