@@ -2967,3 +2967,36 @@ follow the rail loops exactly as before, and the loop's cost is the window).
 Pinned by tests/test_skill_paging.py: a restore with no page to turn still reaches the
 model with the closing instruction; the third drop is left out, noted, and the plan stays
 the model's.
+
+## ADR-0076: Any 5xx from the provider is a retry, whatever litellm names it
+
+**Context.** ADR-0070 made a mid-stream `RateLimitError` (RESOURCE_EXHAUSTED) a bounded
+backoff retry instead of a dead turn, and the transient list already retried
+`APIConnectionError`, `ServiceUnavailableError` (503) and `InternalServerError` (500) — matched
+by class NAME across the exception's MRO. litellm's `BadGatewayError` (502) subclasses
+`APIStatusError` directly, not `ServiceUnavailableError`, so the match never saw it and a
+502 fell through to `RequestFailed`. Measured 2026-08-28 on a Mind runner (coach, zc-03,
+/boot page 22 of 25, 57 iterations): the self-hosted pod's engine `qwen38-gpu1` restarted,
+litellm raised `BadGatewayError: 502 upstream_unavailable — All connection attempts
+failed`, and the turn ended as `provider_error` — the one stop a Stop hook cannot veto, so
+the perpetual loop it was running died. The pod reported every engine healthy again within
+the minute. A 5xx is the server's fault and transient by definition; the class name it
+arrives under is a litellm packaging detail.
+
+**Decision.** `_map_error` retries `BadGatewayError` by name AND any exception carrying an
+HTTP 5xx `status_code` (the `APIStatusError` shape), after the auth / context-window /
+rate-limit / timeout rules have had their say, so those keep precedence. Both surface as
+`RateLimited` with no `retry_after`, which the loop already retries with jittered backoff
+inside its fixed `_RATE_LIMIT_RETRY_HORIZON` (15 minutes) — long enough for an engine
+restart, bounded enough that a dead backend still ends the turn truthfully.
+
+**Alternatives rejected.** Adding only the one class name (the next 5xx class litellm
+introduces lands in exactly this ADR again); retrying every `APIError` (a 4xx is the
+caller's fault — a 404 model name or a 400 payload does not improve with waiting, and
+retrying it for 15 minutes hides the real error from the operator); a Zak-Code-side
+resurrection after a `provider_error` stop (that treats the symptom — the loop is dead
+because a transient was classified as terminal, and the classification is the bug).
+
+**Consequences.** A pod engine restart, a gateway blip, or an unnamed 5xx costs a backoff,
+not a loop. Pinned by tests/test_provider.py: a 502 / 504 / 500 by status code retries, a
+404 / bool / missing status does not, and an auth failure carrying a status keeps its class.

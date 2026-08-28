@@ -323,10 +323,35 @@ def test_extract_usage_recovers_cloud_cost_when_response_cost_missing() -> None:
 def test_map_error_retries_transient_infra_errors() -> None:
     # PROV-10: transient infra errors (timeout, dropped connection, 503/500) must map to a
     # retryable error so the loop's backoff retry handles them instead of killing the turn.
-    for name in ("Timeout", "APIConnectionError", "ServiceUnavailableError", "InternalServerError"):
+    for name in (
+        "Timeout",
+        "APIConnectionError",
+        "ServiceUnavailableError",
+        "InternalServerError",
+        "BadGatewayError",
+    ):
         exc = type(name, (Exception,), {})("boom")
         mapped = lp.LiteLLMProvider._map_error(exc)
         assert isinstance(mapped, lp.RateLimited), f"{name} -> {type(mapped).__name__}"
+
+
+def test_map_error_retries_a_502_however_litellm_names_it() -> None:
+    # ADR-0076: litellm's BadGatewayError subclasses APIStatusError, NOT ServiceUnavailableError,
+    # so the MRO name-match missed it and a pod engine restart (502 upstream_unavailable) ended
+    # a Mind runner's turn as a non-vetoable provider_error. Any 5xx status_code is the server's
+    # fault and transient: it retries under the loop's backoff horizon, whatever the class name.
+    for name, code in (("BadGatewayError", 502), ("SomeFutureVendorError", 504), ("APIError", 500)):
+        exc = type(name, (Exception,), {"status_code": code})("upstream_unavailable")
+        mapped = lp.LiteLLMProvider._map_error(exc)
+        assert isinstance(mapped, lp.RateLimited), f"{name}({code}) -> {type(mapped).__name__}"
+    # A 4xx, a bool, or no status at all is NOT a transient server fault.
+    for name, code in (("NotFoundError", 404), ("Weird", True), ("Bare", None)):
+        exc = type(name, (Exception,), {"status_code": code})("nope")
+        mapped = lp.LiteLLMProvider._map_error(exc)
+        assert isinstance(mapped, lp.RequestFailed), f"{name}({code}) -> {type(mapped).__name__}"
+    # Precedence: an auth failure or a rate limit carrying a status keeps its own class.
+    auth = type("AuthenticationError", (Exception,), {"status_code": 401})("bad key")
+    assert isinstance(lp.LiteLLMProvider._map_error(auth), lp.AuthError)
 
 
 def test_map_error_names_timeouts_truthfully() -> None:
