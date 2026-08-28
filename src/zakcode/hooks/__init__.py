@@ -128,6 +128,13 @@ class HookPayload(BaseModel):
     Code hook contract** — ``tool_input`` (not ``arguments``) and a top-level ``session_id`` —
     which frameworks like claude-mind read (e.g. ``tool_input.command``, ``session_id`` to
     resolve the agent and inject env). The in-process attribute stays ``arguments``.
+
+    The wire goes one step further than the alias (:func:`wire_payload`, ADR-0071): a tool
+    with a Claude Code counterpart is NAMED as that counterpart (``write_file`` → ``Write``)
+    and the file tools' ``path`` travels as ``file_path``, resolved against the workspace the
+    way the tool will resolve it — so a hook written against Claude Code's ``Write`` /
+    ``tool_input.file_path`` judges the path Zak Code is about to touch instead of approving
+    a shape it does not recognise. In-process hooks keep the Zak names and keys.
     """
 
     event: HookEvent
@@ -227,6 +234,54 @@ _CLAUDE_CODE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "task": ("Task",),
     "update_plan": ("TodoWrite",),
 }
+
+#: Argument keys renamed on the wire so a Claude-Code hook reads the shape it was written
+#: for: Zak Code's file tools take ``path``; Claude Code's Read/Write/Edit take ``file_path``.
+#: Values are the Zak key → wire key; :func:`_unwire_arguments` applies the inverse to an
+#: ``updatedInput`` rewrite coming back. Keys not listed travel unchanged.
+_WIRE_ARG_KEYS: dict[str, dict[str, str]] = {
+    "read_file": {"path": "file_path"},
+    "write_file": {"path": "file_path"},
+    "edit_file": {"path": "file_path"},
+}
+
+
+def wire_payload(payload: HookPayload) -> bytes:
+    """The stdin document a shell hook receives: the Claude Code hook contract, fully.
+
+    On top of the ``tool_input`` / ``session_id`` aliases, a tool with a Claude Code
+    counterpart is named as that counterpart (``write_file`` → ``Write``; the first alias
+    when there are several) and the file tools' ``path`` is sent as ``file_path`` — made
+    absolute against ``cwd`` (the workspace root) when relative, because that is the path
+    the tool will resolve and the path a gate must judge. Measured 2026-08-28 (a
+    claude-mind agent served by Zak Code): the framework's path-resolution hook DENIES a
+    write into a literal ``<project>/world/...`` cruft path when it sees ``Write`` +
+    ``tool_input.file_path``; it received ``write_file`` + ``path`` and approved
+    unconditionally, and the cruft directory was created. Hooks must run every time — and
+    they must be able to read what they are gating.
+    """
+    doc = payload.model_dump(mode="json", by_alias=True)
+    doc["tool_name"] = _CLAUDE_CODE_TOOL_NAMES.get(payload.tool_name, (payload.tool_name,))[0]
+    renames = _WIRE_ARG_KEYS.get(payload.tool_name)
+    if renames:
+        wire_input: dict[str, Any] = {}
+        for key, value in payload.arguments.items():
+            wire_key = renames.get(key, key)
+            relative = isinstance(value, str) and value and not os.path.isabs(value)
+            if wire_key == "file_path" and relative and payload.cwd:
+                value = os.path.normpath(os.path.join(payload.cwd, value))
+            wire_input[wire_key] = value
+        doc["tool_input"] = wire_input
+    return json.dumps(doc).encode("utf-8")
+
+
+def _unwire_arguments(tool_name: str, mutated: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Map a hook's ``updatedInput`` (wire keys) back to the tool's own argument keys."""
+    renames = _WIRE_ARG_KEYS.get(tool_name)
+    if not renames or mutated is None:
+        return mutated
+    inverse = {wire_key: key for key, wire_key in renames.items()}
+    return {inverse.get(key, key): value for key, value in mutated.items()}
 
 
 class HookSpec(BaseModel):
@@ -736,7 +791,7 @@ class HookManager:
         """
         if not spec.command:
             return None
-        stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
+        stdin_bytes = wire_payload(payload)
         child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -771,6 +826,7 @@ class HookManager:
 
         code = proc.returncode
         message, mutated_args, deny, additional = self._parse_stdout(stdout)
+        mutated_args = _unwire_arguments(payload.tool_name, mutated_args)
 
         # Claude Code blocks via {"hookSpecificOutput": {"permissionDecision": "deny"}} on
         # exit 0 (not exit 2). Honor it as a BLOCK regardless of exit code.
@@ -865,6 +921,7 @@ __all__ = [
     "HookDecision",
     "HookResult",
     "HookPayload",
+    "wire_payload",
     "LLMContextPayload",
     "LifecyclePayload",
     "TurnEndPayload",

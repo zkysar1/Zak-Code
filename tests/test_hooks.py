@@ -152,11 +152,12 @@ async def test_shell_hook_other_exit_is_warn(tmp_path: Path) -> None:
 
 
 async def test_shell_hook_reads_payload_on_stdin(tmp_path: Path) -> None:
-    # Block only if the payload (read from stdin) names the bash tool.
+    # Block only if the payload (read from stdin) names the bash tool — under its Claude Code
+    # name, which is what the wire carries (ADR-0071: one wire shape, and it is Claude Code's).
     body = (
         "import sys, json\n"
         "data = json.load(sys.stdin)\n"
-        "sys.exit(2 if data.get('tool_name') == 'bash' else 0)\n"
+        "sys.exit(2 if data.get('tool_name') == 'Bash' else 0)\n"
     )
     cmd = _script(tmp_path, "inspect.py", body)
     mgr = HookManager([HookSpec(event=HookEvent.PRE_TOOL_USE, command=cmd)])
