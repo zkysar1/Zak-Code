@@ -1362,9 +1362,22 @@ class AgentLoop:
         self._trace.note(kind, detail, **data)
 
     def _stream_sample(self) -> dict[str, Any] | None:
-        """The provider's sample of the last stream's raw deltas, when it keeps one."""
-        sample = getattr(self.provider, "last_stream_sample", None)
-        return sample if isinstance(sample, dict) else None
+        """The provider's sample of the last stream's raw deltas, when it keeps one.
+
+        The provider the loop holds is usually a wrapper (``TextToolCallingProvider`` around
+        the model provider that actually streamed), so the sample is looked for down the
+        ``inner`` chain — measured 2026-08-28 (coach, build 92c9a06): every ``empty_completion``
+        note carried ``stream: null`` because only the wrapper was asked.
+        """
+        provider: Any = self.provider
+        seen: set[int] = set()
+        while provider is not None and id(provider) not in seen:
+            seen.add(id(provider))
+            sample = getattr(provider, "last_stream_sample", None)
+            if isinstance(sample, dict):
+                return sample
+            provider = getattr(provider, "inner", None)
+        return None
 
     def _dump_trace(self) -> None:
         """Write the current turn's trace to ``<trace_dir>/<session>/turn_<n>.jsonl`` when
