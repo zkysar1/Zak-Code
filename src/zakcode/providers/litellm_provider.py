@@ -1002,8 +1002,7 @@ class LiteLLMProvider(Provider):
         # uses the same field for the same cache-routing purpose. Other clouds
         # (anthropic/...) reject unknown body params, so the key is omitted there.
         if prompt_cache_key and (
-            _model_uses_generic_endpoint(self.model)
-            or self.model.startswith(("openai/", "gpt-"))
+            _model_uses_generic_endpoint(self.model) or self.model.startswith(("openai/", "gpt-"))
         ):
             eb = dict(call_kwargs.get("extra_body") or {})
             eb["prompt_cache_key"] = prompt_cache_key

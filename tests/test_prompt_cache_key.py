@@ -24,6 +24,7 @@ it mapped to a generic BadRequestError and the agent loop's compact-and-retry
 recovery never fired — measured on zakpod1 the same day as 8 failed turns that
 should each have been a silent compaction.
 """
+
 from zakcode.providers.base import ContextWindowExceeded
 from zakcode.providers.litellm_provider import LiteLLMProvider
 
@@ -31,7 +32,9 @@ MSGS = [{"role": "user", "content": "hi"}]
 
 
 def test_prompt_cache_key_rides_extra_body_for_generic_endpoint() -> None:
-    p = LiteLLMProvider(model="openai/zds-qwen3.6-35b", api_base="http://10.0.0.205:9090/v1", context_window=131072)
+    p = LiteLLMProvider(
+        model="openai/zds-qwen3.6-35b", api_base="http://10.0.0.205:9090/v1", context_window=131072
+    )
     kwargs = p._build_kwargs(MSGS, None, prompt_cache_key="zakcode/sess-1")
     assert kwargs["extra_body"]["prompt_cache_key"] == "zakcode/sess-1"
     # NEVER top-level: drop_params would silently discard it there.
@@ -62,7 +65,9 @@ def test_prompt_cache_key_omitted_for_named_cloud_providers() -> None:
 
 def test_prompt_cache_key_absent_when_not_passed() -> None:
     """The default request shape stays byte-identical to before the feature."""
-    p = LiteLLMProvider(model="openai/zds-qwen3.6-35b", api_base="http://10.0.0.205:9090/v1", context_window=131072)
+    p = LiteLLMProvider(
+        model="openai/zds-qwen3.6-35b", api_base="http://10.0.0.205:9090/v1", context_window=131072
+    )
     kwargs = p._build_kwargs(MSGS, None)
     assert "extra_body" not in kwargs
 
