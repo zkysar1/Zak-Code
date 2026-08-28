@@ -26,6 +26,7 @@ from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.say_inbox import say_path, say_pending, write_say
 from zakcode.session.store import Session
 from zakcode.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, ToolSpec
+from zakcode.tools.builtins.update_plan import UpdatePlanTool
 
 
 class _Recording(Provider):
@@ -79,6 +80,7 @@ def _loop(
     tools: list[Tool] | None = None,
 ) -> tuple[AgentLoop, Session]:
     registry = ToolRegistry()
+    registry.register(UpdatePlanTool())  # the ADR-0052 hold tests plan; harmless elsewhere
     for t in tools or []:
         registry.register(t)
     session = Session(cwd=str(tmp_path), model="test/model")
@@ -184,3 +186,111 @@ async def test_streaming_path_delivers_and_announces(tmp_path: Path) -> None:
     assert any("delivered mid-turn" in s and "streamed directive" in s for s in statuses)
     framed = [m for m in session.messages if m.role == "user" and "streamed directive" in m.text]
     assert len(framed) == 1
+
+
+# ── ADR-0052: task-boundary hold ──────────────────────────────────────────────
+
+
+class _EchoArg(Tool):
+    spec = ToolSpec(name="step", description="One unit of step work.")
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult.ok(output=str(args.get("n", "")))
+
+
+def _plan_call(tasks: list[dict[str, Any]]) -> LLMResult:
+    return LLMResult(
+        text="", tool_calls=[ToolCall(id="p1", name="update_plan", arguments={"tasks": tasks})]
+    )
+
+
+def _step_call(n: int) -> LLMResult:
+    return LLMResult(text="", tool_calls=[ToolCall(id=f"s{n}", name="step", arguments={"n": n})])
+
+
+#: A strong plan-judge scorecard (ADR-0050 consumes one scripted result per structural
+#: plan authoring) — high across the board, so the judge stays silent.
+_JUDGE_OK = LLMResult(
+    text='{"scores": {"coverage": 0.9, "granularity": 0.9, "ordering": 0.9, "soundness": 0.9},'
+    ' "notes": ""}'
+)
+
+
+@pytest.mark.asyncio
+async def test_say_holds_mid_step_and_lands_at_the_step_seam(tmp_path: Path) -> None:
+    """A say arriving while a step is in flight waits; the moment a step completes
+    (the seam), it is delivered — before the patience cap is anywhere near."""
+    inbox = say_path(tmp_path)
+    provider = _Recording(
+        [
+            _plan_call(
+                [
+                    {"title": "A", "status": "in_progress", "note": "x"},
+                    {"title": "B", "note": "y"},
+                ]
+            ),
+            _JUDGE_OK,  # judge on the structural authoring (silent)
+            _tool_call("poke"),  # operator sends the say mid-step
+            _step_call(1),  # still mid-step: the boundary after this HELD the say
+            _plan_call(
+                [
+                    {"title": "A", "status": "done", "note": "x"},
+                    {"title": "B", "status": "in_progress", "note": "y"},
+                ]
+            ),  # A completes -> the seam
+            _plan_call(
+                [
+                    {"title": "A", "status": "done", "note": "x"},
+                    {"title": "B", "status": "done", "note": "y"},
+                ]
+            ),
+            _DONE,
+        ]
+    )
+    loop, session = _loop(
+        provider,
+        tmp_path,
+        tools=[_SayWhileRunning(inbox, "switch to the API question next"), _EchoArg()],
+    )
+    result = await loop.arun_turn("two-step job")
+
+    assert result.stop_reason == "completed"
+    assert not say_pending(inbox)
+    framed = [m for m in session.messages if m.role == "user" and "switch to the API" in m.text]
+    assert len(framed) == 1
+    # seen: [0]=plan, [1]=judge, [2]=poke, [3]=step(held boundary), [4]=tick(held),
+    # [5]=post-seam (delivered at the boundary after A completed), [6]=done.
+    held_calls = provider.seen[3] + provider.seen[4]
+    assert all("switch to the API" not in m.text for m in held_calls if m.role == "user")
+    assert any("switch to the API" in m.text for m in provider.seen[5] if m.role == "user")
+
+
+@pytest.mark.asyncio
+async def test_say_patience_cap_delivers_even_when_the_step_never_ends(tmp_path: Path) -> None:
+    """The hold is bounded: a step that never completes cannot starve the message —
+    after _SAY_PATIENCE held boundaries it is delivered mid-step anyway."""
+    inbox = say_path(tmp_path)
+    provider = _Recording(
+        [
+            _plan_call([{"title": "A", "status": "in_progress", "note": "x"}]),
+            _JUDGE_OK,
+            _tool_call("poke"),  # say arrives; step A never completes
+            _step_call(1),
+            _step_call(2),
+            _step_call(3),
+            _DONE,  # sees the delivered say; plan still open -> gate nudges, then repeats
+        ]
+    )
+    loop, session = _loop(
+        provider, tmp_path, tools=[_SayWhileRunning(inbox, "are you stuck?"), _EchoArg()]
+    )
+    await loop.arun_turn("one stubborn step")
+
+    assert not say_pending(inbox)
+    framed = [m for m in session.messages if m.role == "user" and "are you stuck?" in m.text]
+    assert len(framed) == 1
+    # Boundaries after poke: 3 holds (after poke, step1, step2), delivery on the 4th
+    # (after step3) — so the call at seen[6] is the first that carries it.
+    for i in (3, 4, 5):
+        assert all("are you stuck?" not in m.text for m in provider.seen[i] if m.role == "user")
+    assert any("are you stuck?" in m.text for m in provider.seen[6] if m.role == "user")
