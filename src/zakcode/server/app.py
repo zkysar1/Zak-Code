@@ -92,6 +92,8 @@ from zakcode.server.wire import (
     events_schema,
 )
 from zakcode.session.say_inbox import (
+    busy_elsewhere,
+    busy_path,
     interrupt_path,
     read_say,
     request_interrupt,
@@ -1518,8 +1520,12 @@ def create_app(
                 inflight.discard(session.id)
 
     async def _consume_one_say() -> bool:
-        """One consumer beat: run a turn if a say is waiting and nothing is in flight."""
-        if inflight:
+        """One consumer beat: run a turn if a say is waiting and nothing is in flight.
+
+        "In flight" includes a turn running in ANOTHER process on this workspace (a Mind
+        runner's REPL, say): its busy marker owns the inbox (ADR-0060) and this beat yields.
+        """
+        if inflight or busy_elsewhere(busy_path(resolved_settings.workspace_root)):
             return False
         text = read_say(say_path(resolved_settings.workspace_root))
         if text is None:

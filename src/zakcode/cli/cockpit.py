@@ -45,6 +45,8 @@ from zakcode.build_info import version_line
 from zakcode.cli._layout import kv_table, notice_error, notice_info, panel
 from zakcode.cli._theme import ZAK_THEME
 from zakcode.session.say_inbox import (
+    busy_elsewhere,
+    busy_path,
     interrupt_path,
     read_say,
     request_interrupt,
@@ -439,7 +441,9 @@ def cockpit_say_box(
             continue
         _append_ledger(ledger_path, line, via="cockpit-say-box", operator=operator)
         lines = line.count("\n") + 1
-        last = f"✓ sent ({lines} lines) {stamp}" if lines > 1 else f"✓ sent {stamp}"
+        # Where it will land (ADR-0060): a turn running in another process owns the inbox.
+        routed = " → the running turn" if busy_elsewhere(busy_path(inbox.parent)) else ""
+        last = f"✓ sent{routed} ({lines} lines) {stamp}" if lines > 1 else f"✓ sent{routed} {stamp}"
 
 
 def say(

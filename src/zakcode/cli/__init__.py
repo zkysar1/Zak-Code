@@ -936,12 +936,16 @@ class _InputMux:
         keyboard: bool = True,
         idle_probe: Callable[[], bool] | None = None,
     ) -> None:
-        from zakcode.session.say_inbox import read_say, take_interrupt
+        from zakcode.session.say_inbox import busy_elsewhere, busy_path, read_say, take_interrupt
 
         self._read_say = read_say
         self._take_interrupt = take_interrupt
+        self._busy_elsewhere = busy_elsewhere
         self.inbox = inbox
         self.interrupt_fp = interrupt_fp
+        #: The workspace's busy marker (ADR-0060): while a turn runs in ANOTHER process,
+        #: this idle REPL leaves the inbox to it — a say is for the agent doing the work.
+        self._busy_marker = busy_path(inbox.parent)
         #: Polled while the REPL is truly idle (ADR-0034): a True verdict ends the wait
         #: with ``("restart", None)`` so the REPL can hand the session to a fresh process.
         #: Never consulted mid-turn (a permission prompt is not an idle boundary).
@@ -1002,7 +1006,10 @@ class _InputMux:
                     return ("say", self._held_says.pop(0))
             elif self.interrupt_fp.exists():
                 return ("stop", None)
-            say_text = self._read_say(self.inbox)
+            # An idle REPL stands back while another process's turn owns the inbox
+            # (ADR-0060); a mid-turn consumer (the permission prompt) is that turn's own.
+            standing_back = idle and self._busy_elsewhere(self._busy_marker)
+            say_text = None if standing_back else self._read_say(self.inbox)
             if say_text is not None:
                 return ("say", say_text)
             try:
@@ -1032,7 +1039,8 @@ class _InputMux:
         self._take_interrupt(self.interrupt_fp)
         if self._held_says:
             return ("say", self._held_says.pop(0))
-        say_text = self._read_say(self.inbox)
+        standing_back = self._busy_elsewhere(self._busy_marker)  # idle semantics (ADR-0060)
+        say_text = None if standing_back else self._read_say(self.inbox)
         if say_text is not None:
             return ("say", say_text)
         try:
