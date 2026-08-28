@@ -1688,7 +1688,9 @@ class AgentLoop:
         return specs
 
     def _build_system(self, restrict_to: set[str] | None = None) -> str:
-        return self.prompt_builder.build(self.settings, tools=self._tool_specs(restrict_to))
+        return self.prompt_builder.build(
+            self.settings, tools=self._tool_specs(restrict_to), session_id=self.session.id
+        )
 
     async def _messages_for_call(self, user_text: str, iteration: int) -> list[Message]:
         """The message list for the next provider call, with any injected context.

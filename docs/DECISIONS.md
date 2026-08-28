@@ -2819,3 +2819,38 @@ that switched on the raw tool name reads the Claude Code name instead — the ma
 accepted both, and the payload now says what the matcher matched. Pinned by
 tests/test_claude_code_hook_contract.py (wire naming + path resolution; a scripted path
 gate denying the cruft path and its rewrite mapping back onto `path`).
+
+## ADR-0072: The prompt names the session and states the skill-paging contract
+
+**Context.** Two of six hard questions put to a served agent (a claude-mind deployment on a
+self-hosted 27B model, 2026-08-28) failed for one reason: the runtime knew something the
+model had no way to read. Asked which of the agent's concurrent sessions it was (a reducer
+and a worker of the same agent were running in other windows, and the framework keys
+per-session state — bindings, scratch, claims — by session id), it guessed; the id was in
+every hook's stdin and nowhere in the model's context. Asked what happens when a skill is
+larger than the context window, it recalled a plausible mechanism instead of reading one;
+paging (ADR-0067), the `skill_too_large` stop (ADR-0066) and the startup fit check exist,
+and the model had only seen them in tool hints that arrive after the fact.
+
+**Decision.** (1) The environment section (dynamic tier, constant per session) carries
+`- Session id: <id>` — the same value every hook receives as `session_id` — so "which
+session are you" is a read, not a guess; `build()` takes it as a keyword and omits the line
+when absent, keeping the default prompt byte-identical. (2) The stable tier gains a short
+`Skills (use_skill)` section stating the contract once: sections become plan steps; an
+oversized body is paged one section per completed step (`/<skill> page k/N: <title>`);
+a section that still cannot fit ends the turn as `skill_too_large`; the fit check flags
+such skills at startup. It ends with the rule the questions were really testing: answer
+"how does this work" from the prompt and from tool results, and say which — never present
+a recollection as something read.
+
+**Alternatives rejected.** Injecting the session id as a hook-only fact (that is the status
+quo, and it is invisible to the model); a `zakcode whoami` tool (a tool call to learn a
+constant the prompt can state for free); a per-framework prompt hook for the session id
+(every framework that runs concurrent sessions needs it — it is runtime truth, not domain
+guidance).
+
+**Consequences.** A small model can identify its own session and describe the paging
+mechanism from what it reads. ~120 tokens on the cacheable tier; one line below the
+boundary. Pinned by tests/test_prompt.py (the session line below the boundary, absent when
+no id; the contract in the stable tier) and tests/test_loop_prompt_session.py (the loop
+passes its own session id).
