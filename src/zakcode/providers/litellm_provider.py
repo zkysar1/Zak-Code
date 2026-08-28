@@ -1117,13 +1117,15 @@ class LiteLLMProvider(Provider):
         if self._window_probed:
             return self._discovered_window
         self._window_probed = True
-        if not self.api_base or not _model_uses_generic_endpoint(self.model):
-            return None
-        if self.local_only:
-            ok, _reason = classify_destination(self.model, self.api_base, self.local_api_bases)
-            if not ok:
-                return None
         try:
+            if not self.api_base or not _model_uses_generic_endpoint(self.model):
+                return None
+            if self.local_only:
+                # Raises on a routing sentinel ("zakpick") — caught below: a sentinel names
+                # no destination, so it is never probed and keeps the default window.
+                ok, _reason = classify_destination(self.model, self.api_base, self.local_api_bases)
+                if not ok:
+                    return None
             listing = _fetch_models(self.api_base, self.api_key, _WINDOW_PROBE_TIMEOUT)
             self._discovered_window = discover_context_window(listing, self.model)
         except Exception:  # noqa: BLE001 — a capability probe must never fail a request
