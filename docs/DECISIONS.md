@@ -2783,3 +2783,39 @@ operator's choice for a broken route, not a busy one).
 **Consequences.** A quota storm costs a repeated paragraph in the terminal instead of the
 turn. Pinned by tests/test_loop_retry.py (mid-stream retry with the discard status;
 budget-exhausted stop still resumable) and tests/test_provider_edge.py (wrapper unwrap).
+
+## ADR-0071: The hook stdin names the tool and its file argument the way Claude Code does
+
+**Context.** Shell hooks already received the Claude Code stdin shape (`tool_input`,
+`session_id`, `cwd` — ADR-0040-era contract) and a Claude-Code `matcher` (`Write`) already
+fired on the Zak tool (`write_file`). But the document itself still said
+`"tool_name": "write_file"` with `"tool_input": {"path": ...}`, while every Claude-Code
+path gate switches on `tool_name == "Write"` and reads `tool_input.file_path`. Measured
+2026-08-28 on a claude-mind agent served by Zak Code: the framework's L1 path-resolution
+hook DENIES a write into a literal `<project>/world/...` path (the world lives at an
+external path; the literal one is cruft) when it sees `Write` + `file_path` — fed
+`write_file` + `path`, it approved unconditionally, the model wrote four knowledge files
+into a cruft directory, and nothing in the framework could find them. The hooks ran every
+time; they could not read what they were gating.
+
+**Decision.** The wire document is the Claude Code contract in full, not just its aliases.
+`wire_payload()` names a tool with a Claude Code counterpart as that counterpart
+(`write_file` → `Write`, `edit_file` → `Edit`, `read_file` → `Read`, `bash` → `Bash` — the
+first alias when there are several) and sends the file tools' `path` as `file_path`, made
+absolute against the workspace root when relative, because that is what the tool will
+resolve and what a gate must judge. An `updatedInput` rewrite coming back is mapped onto
+the tool's own keys (`file_path` → `path`) before it replaces the arguments. In-process
+hooks keep the Zak names and keys — the translation is a property of the shell boundary.
+
+**Alternatives rejected.** Renaming the tools' own arguments to `file_path` (a churn across
+every tool schema, prompt, and transcript for a wire-format problem); sending both keys
+(`path` and `file_path`) side by side (a hook that rewrites one leaves the other stale, and
+"which wins" is a rule nobody wants to write); a per-hook `format` setting (no knobs — one
+wire shape, and it is Claude Code's).
+
+**Consequences.** A Claude-Code framework's file gates (path resolution, context-read dedup,
+tree-write fences) now apply to Zak Code's file tools unchanged. A Zak-native shell hook
+that switched on the raw tool name reads the Claude Code name instead — the matcher already
+accepted both, and the payload now says what the matcher matched. Pinned by
+tests/test_claude_code_hook_contract.py (wire naming + path resolution; a scripted path
+gate denying the cruft path and its rewrite mapping back onto `path`).

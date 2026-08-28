@@ -8,7 +8,10 @@ The contract, in five parts (each a fix proven here):
      ``permissionDecision: deny`` blocks on exit 0 (Claude Code blocks via JSON, not exit 2);
   3. shell executables resolve to a real path on Windows (dodging the WSL app-exec stub);
   4. the hook stdin carries a top-level ``session_id``;
-  5. the hook stdin names tool args ``tool_input`` (not Zak-native ``arguments``).
+  5. the hook stdin names tool args ``tool_input`` (not Zak-native ``arguments``);
+  6. the hook stdin names the tool as Claude Code does (``write_file`` → ``Write``) and the
+     file tools' argument ``file_path`` (workspace-resolved); an ``updatedInput`` rewrite
+     maps back onto ``path`` (ADR-0071).
 
 All hermetic: tmp-dir workspaces, scripted Python hooks, no network.
 """
@@ -28,6 +31,7 @@ from zakcode.hooks import (
     HookPayload,
     HookSpec,
     _valid_cwd,
+    wire_payload,
 )
 from zakcode.tools.builtins._proc import run_capturing
 
@@ -257,3 +261,91 @@ async def test_shell_hook_env_has_claude_project_dir(tmp_path: Path) -> None:
     res = await mgr.run(_payload(tmp_path))
     assert res.blocked
     assert res.message == tmp_path.as_posix()
+
+
+# ── (8) the wire names the tool and its file argument the way Claude Code does ──────
+
+
+def test_wire_payload_uses_claude_code_tool_name_and_file_path(tmp_path: Path) -> None:
+    # A Claude-Code hook keys off tool_name == "Write" and tool_input.file_path; Zak Code's
+    # write_file/path shape was approved unread. The relative path is resolved against the
+    # workspace (the way the tool resolves it) so a path gate judges the real target.
+    wire = json.loads(
+        wire_payload(
+            _payload(
+                tmp_path,
+                tool_name="write_file",
+                arguments={"path": "world/knowledge/x.md", "content": "c"},
+            )
+        )
+    )
+    assert wire["tool_name"] == "Write"
+    assert wire["tool_input"] == {
+        "file_path": os.path.normpath(os.path.join(str(tmp_path), "world/knowledge/x.md")),
+        "content": "c",
+    }
+    assert "path" not in wire["tool_input"] and "arguments" not in wire
+    assert wire["session_id"] == "sid-123"
+    # An absolute path passes through untouched; edit_file is named "Edit" (its first alias).
+    wire = json.loads(
+        wire_payload(
+            _payload(
+                tmp_path,
+                tool_name="edit_file",
+                arguments={"path": str(tmp_path / "a.md"), "old_string": "x", "new_string": "y"},
+            )
+        )
+    )
+    assert wire["tool_name"] == "Edit"
+    assert wire["tool_input"] == {
+        "file_path": str(tmp_path / "a.md"),
+        "old_string": "x",
+        "new_string": "y",
+    }
+    # bash keeps `command` under its CC name; a tool with no counterpart keeps its own shape.
+    wire = json.loads(wire_payload(_payload(tmp_path)))
+    assert wire["tool_name"] == "Bash"
+    assert wire["tool_input"] == {"command": "load-conventions.sh"}
+    wire = json.loads(wire_payload(_payload(tmp_path, tool_name="deep_think", arguments={"q": 1})))
+    assert wire["tool_name"] == "deep_think"
+    assert wire["tool_input"] == {"q": 1}
+
+
+async def test_shell_hook_gates_write_file_by_file_path_and_maps_the_rewrite_back(
+    tmp_path: Path,
+) -> None:
+    # A Claude-Code path gate: denies a write under <workspace>/world/ (the cruft claude-mind's
+    # L1 hook refuses), otherwise rewrites file_path. Zak Code must deliver the deny for its
+    # own write_file call, and map the rewrite back onto the tool's `path` argument.
+    body = (
+        "import sys, json\n"
+        "d = json.load(sys.stdin)\n"
+        "fp = (d.get('tool_input') or {}).get('file_path', '')\n"
+        "if d.get('tool_name') != 'Write' or not fp:\n"
+        "    sys.exit(0)\n"
+        "if '/world/' in fp or '\\\\world\\\\' in fp:\n"
+        "    print(json.dumps({'hookSpecificOutput': {'permissionDecision': 'deny',\n"
+        "        'permissionDecisionReason': 'cruft: ' + fp}}))\n"
+        "else:\n"
+        "    print(json.dumps({'hookSpecificOutput': {'permissionDecision': 'allow',\n"
+        "        'updatedInput': {'file_path': fp + '.rewritten', 'content': 'c'}}}))\n"
+    )
+    mgr = HookManager(
+        [HookSpec(event=HookEvent.PRE_TOOL_USE, command=_script(tmp_path, "gate.py", body))]
+    )
+    denied = await mgr.run(
+        _payload(
+            tmp_path,
+            tool_name="write_file",
+            arguments={"path": "world/knowledge/x.md", "content": "c"},
+        )
+    )
+    assert denied.blocked
+    assert "cruft: " in denied.message and "world" in denied.message
+
+    allowed = await mgr.run(
+        _payload(tmp_path, tool_name="write_file", arguments={"path": "notes/x.md", "content": "c"})
+    )
+    assert not allowed.blocked
+    expected = os.path.normpath(os.path.join(str(tmp_path), "notes/x.md")) + ".rewritten"
+    assert allowed.mutated_arguments == {"path": expected, "content": "c"}
