@@ -18,6 +18,7 @@ import os
 import socket
 import time
 import urllib.request
+from collections import deque
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -447,6 +448,12 @@ class LiteLLMProvider(Provider):
         extra_headers: dict[str, str] | None = None,
         context_window: int | None = None,
     ) -> None:
+        #: A bounded sample of the most recent stream's raw deltas (the first and last few,
+        #: compacted) with its chunk count and finish reason. The loop reads it when a
+        #: completion delivered nothing, so the trace can say what the backend actually sent
+        #: — measured 2026-08-28 (coach, zc-03): 622 tokens generated, no text, no
+        #: reasoning, no tool call, and nothing recorded to tell which channel they took.
+        self.last_stream_sample: dict[str, Any] | None = None
         resolved_model = model
         resolved_temperature = temperature
         resolved_api_base = api_base
@@ -1186,10 +1193,17 @@ class LiteLLMProvider(Provider):
         call_kwargs["stream_options"] = {"include_usage": True}
 
         finish_reason: str | None = None
+        head: list[Any] = []
+        tail: deque[Any] = deque(maxlen=_STREAM_SAMPLE_EDGE)
+        chunks = 0
         await self._pace()
         try:
             resp = await litellm.acompletion(**call_kwargs)
             async for chunk in resp:
+                chunks += 1
+                delta = _stream_delta(chunk)
+                if delta is not None:
+                    (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)
                 events, fr = self._parse_chunk(chunk)
                 if fr is not None:
                     finish_reason = fr
@@ -1199,6 +1213,13 @@ class LiteLLMProvider(Provider):
             raise
         except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
             raise self._map_error(exc) from exc
+        finally:
+            # Kept whatever ended the stream — an empty completion is diagnosed from this.
+            self.last_stream_sample = {
+                "chunks": chunks,
+                "finish_reason": finish_reason,
+                "deltas": [_compact_delta(d) for d in (*head, *tail)],
+            }
 
         yield StreamDone(finish_reason=finish_reason)
 
@@ -1267,6 +1288,34 @@ class LiteLLMProvider(Provider):
         if limit is not None and caps.max_stop_sequences is None:
             caps = caps.model_copy(update={"max_stop_sequences": limit})
         return caps
+
+
+#: Raw deltas kept from each end of a stream for ``LiteLLMProvider.last_stream_sample``.
+_STREAM_SAMPLE_EDGE = 3
+
+
+def _stream_delta(chunk: Any) -> Any | None:
+    """The first choice's delta object of a raw stream chunk, or ``None``."""
+    choices = _get(chunk, "choices")
+    if isinstance(choices, list | tuple) and choices:
+        return _get(choices[0], "delta")
+    return None
+
+
+def _compact_delta(delta: Any, limit: int = 300) -> str:
+    """A raw delta as a bounded JSON string — every field the backend sent, not just the
+    ones the parser reads, so an unread channel shows up instead of vanishing."""
+    try:
+        if hasattr(delta, "model_dump"):
+            dump = delta.model_dump(exclude_none=True)
+        elif hasattr(delta, "__dict__"):
+            dump = {k: v for k, v in vars(delta).items() if v is not None}
+        else:
+            dump = delta
+        text = json.dumps(dump, default=str, ensure_ascii=False)
+    except Exception:  # noqa: BLE001 — a sample is best-effort telemetry
+        text = str(delta)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _get(obj: Any, key: str) -> Any:

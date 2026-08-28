@@ -812,6 +812,7 @@ class Agent:
                 # The parent's skill resolver — so a delegated general-purpose agent can invoke
                 # (and chain) the same skills, drawing from the shared per-turn skill budget.
                 skill_resolver=skill_resolver,
+                trace_session=self.session.id,  # children trace under this session's directory
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
             # subset omits write tools, so Plan Mode is schema-enforced). Apply optional

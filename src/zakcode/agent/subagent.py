@@ -148,11 +148,16 @@ class SubAgentRunner:
         provider_for: Callable[[str | None], Provider] | None = None,
         provider_for_task: Callable[[str], tuple[Provider, str]] | None = None,
         skill_resolver: SkillResolver | None = None,
+        trace_session: str | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
         self.settings = settings
         self.budget = budget
+        # The parent's session id: a child's trace dump lands in the parent's per-session
+        # trace directory, beside the turns that spawned it (a child's own session is fresh
+        # and would otherwise scatter one directory per delegation).
+        self.trace_session = trace_session
         self.permission_policy = permission_policy
         self.hook_manager = hook_manager
         # Resolves a sub-agent's optional ``model`` override to a provider (e.g. the parent
@@ -260,6 +265,7 @@ class SubAgentRunner:
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent
             skill_resolver=self._skill_resolver,  # child use_skill resolves the parent's skills
             trace_label=f"sub{next(self._spawn_seq)}-{definition.name}",  # no turn_N clobber
+            trace_session=self.trace_session,  # under the parent's session directory
             # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
             # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )
