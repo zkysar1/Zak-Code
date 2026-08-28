@@ -502,7 +502,10 @@ _BLOCKER_NUDGE = (
 #: model tried, not about the workspace — field transcript 2026-08-27: "could not be found in
 #: the workspace", step marked blocked, the operator asked for the path twice; "you can't
 #: grep it?" → seven hits on the first search. The first move on a miss is grep, never the
-#: user. One nudge per turn; a model that already searched is never nudged.
+#: user. One nudge per turn; a model that already searched is never nudged. A search is a
+#: grep (content) or a glob (every path by name); a read_file that actually returned content
+#: counts too (ADR-0058) — the model then read the real thing, and its "could not find" is
+#: about content it saw. A FAILED read is exactly the one-path-tried case the gate exists for.
 _MISSING_CLAIM_RE = re.compile(
     r"\b(?:could\s+not|couldn['’]t|cannot|can['’]t|unable\s+to|not\s+able\s+to|failed\s+to"
     r"|did\s+not|didn['’]t)\s+(?:find|locate)\b"
@@ -512,7 +515,7 @@ _MISSING_CLAIM_RE = re.compile(
     r"|\bno\s+such\s+(?:file|directory|script|path)\b",
     re.IGNORECASE,
 )
-_SEARCH_TOOLS = frozenset({"grep"})
+_SEARCH_TOOLS = frozenset({"grep", "glob"})
 _MISSING_NUDGE = (
     "You concluded that something could not be found, but no content search ran this turn. "
     "A not-found answer is about the ONE path you tried, not the workspace. Run "
@@ -727,6 +730,14 @@ def _elide_skill_body(text: str) -> str | None:
 #: struggle flag so zakpick hands the turn to the deep coder; the serene spiral produced
 #: five such completions on the cheap model with nothing in the harness escalating.
 _TEXT_ONLY_STALL = 2
+
+#: Cross-gate cascade cap (ADR-0058): the six evidence gates (claim, blocker, missing,
+#: identity, figure, intent) each fire once per turn, so a model that answers every nudge
+#: in words can be re-prompted six times in a row — each time in a different direction,
+#: burning an iteration per gate. Past this many consecutive text-only completions the
+#: evidence gates stand down and the answer stands (degraded, traced); a tool batch resets
+#: the count, so a model that does real work between completions keeps every gate.
+_MAX_GATE_CASCADE = 2
 
 
 def _provider_label(provider: object) -> str:
@@ -2116,8 +2127,10 @@ class AgentLoop:
         block = await self._execute_tool_call_gated(call, ctx, restrict_to=restrict_to)
         if block.is_error:
             self._turn_tool_errors += 1
-        if call.name in _SEARCH_TOOLS:
-            self._turn_search_calls += 1  # a content search ran (ADR-0040), whatever it found
+        if call.name in _SEARCH_TOOLS or (call.name == "read_file" and not block.is_error):
+            # A search ran (ADR-0040), whatever it found — or a file was actually read
+            # (ADR-0058); a failed read stays the one-path-tried miss the gate is for.
+            self._turn_search_calls += 1
         if call.name in _LOOKUP_TOOLS:
             self._turn_lookup_calls += 1  # the model looked at something (ADR-0044)
         if (
@@ -3062,6 +3075,7 @@ class AgentLoop:
         figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
+        cascade_capped = False  # cross-gate cascade cap (ADR-0058): once per turn
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
@@ -3630,6 +3644,22 @@ class AgentLoop:
                         repeat_count = 0
                         stuck.reset()
                         continue
+                # Cross-gate cascade cap (ADR-0058): past _MAX_GATE_CASCADE consecutive
+                # text-only completions the six evidence gates below stand down — each
+                # already had its say, and a third re-prompt in a third direction is the
+                # cascade, not a correction. The answer stands; the turn is degraded.
+                if text_only_completions > _MAX_GATE_CASCADE and not cascade_capped:
+                    cascade_capped = True
+                    turn_degraded = True
+                    self._note(
+                        "intervention",
+                        f"{text_only_completions} text-only completions in a row — the "
+                        "evidence gates stand down; the answer stands",
+                        kind="gate_cascade",
+                    )
+                if cascade_capped:
+                    claim_nudged = blocker_nudged = missing_nudged = True
+                    identity_nudged = figure_nudged = intent_nudged = True
                 # Claim-vs-action guard (ADR-0033): the completion REPORTS a file change
                 # ("I have updated … I have registered …") but no file-changing tool call
                 # ran this turn, so nothing on disk changed. Ask once for the work or an
@@ -4166,6 +4196,7 @@ class AgentLoop:
         figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
+        cascade_capped = False  # cross-gate cascade cap (ADR-0058): once per turn
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
@@ -4986,6 +5017,20 @@ class AgentLoop:
                             stuck.reset()
                             yield AgentStatus(message="scoring for quality")
                             continue
+                    # Cross-gate cascade cap (ADR-0058) — see the buffered twin.
+                    if text_only_completions > _MAX_GATE_CASCADE and not cascade_capped:
+                        cascade_capped = True
+                        turn_degraded = True
+                        self._note(
+                            "intervention",
+                            f"{text_only_completions} text-only completions in a row — the "
+                            "evidence gates stand down; the answer stands",
+                            kind="gate_cascade",
+                        )
+                        yield AgentStatus(message="evidence gates stand down; the answer stands")
+                    if cascade_capped:
+                        claim_nudged = blocker_nudged = missing_nudged = True
+                        identity_nudged = figure_nudged = intent_nudged = True
                     # Claim-vs-action guard (ADR-0033) — see the buffered twin.
                     if (
                         assistant_text
