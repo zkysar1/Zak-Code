@@ -1861,3 +1861,37 @@ of one turn (∞ for a perpetual loop). A say arriving during a Stop-hook veto i
 delivered on the continued iteration — the exact coach scenario. Sub-agents and bare
 loops are byte-identical. Pinned by tests/test_loop_say.py (mid-turn reach, exactly-once,
 sub-agent isolation, veto-continuation pickup, streaming announcement).
+
+## ADR-0052: Task-boundary say hold — a mid-turn message waits for the seam, never forever
+
+**Context.** ADR-0051 delivers a pending say at the very next iteration boundary — which
+can be the middle of a focused step: the model is three tool calls into "migrate the
+schema" and suddenly has a new user message woven into its context. The operator's ask
+(2026-08-28): "could it be a little smarter, like waiting for in between tasks?" The task
+network already knows where the seams are.
+
+**Decision.** The boundary poll grows a hold rule, keyed entirely on live plan state:
+while a plan step is **in flight** (`has_step_in_flight()`), no step just completed, and
+the message has waited fewer than `_SAY_PATIENCE` (3) boundaries, the say is left IN the
+inbox file — held, with a trace note on the first hold. It is delivered at the first
+**seam**: a step completes (the finished-count rises between boundaries — this catches
+the canonical "mark done + next in_progress" edit in one call), nothing is in progress,
+the plan is absent or complete, or the patience cap expires. A turn with no plan behaves
+exactly as ADR-0051 (immediate). Holding by *not consuming* keeps exactly-once and
+crash-safety the file's contract: a process that dies mid-hold loses nothing, and
+`say_pending` stays true so senders see it queued.
+
+**The cap is the safety property.** ADR-0051 bought "a message can never starve"; a hold
+without a hard bound would quietly sell it back. Three boundaries ≈ the tail of the
+current step; worst case the message lands a few provider calls late, never hours. No
+knob (one way of doing things).
+
+**Growth path (deliberately not built now).** Urgency classification (an imperative
+"stop/wait/instead" bypassing the hold), delivering at plan-gate moments, and a
+sender-side priority flag are all compatible extensions of this seam — each would only
+tighten `mid_step`/`step_seam`, not move the poll.
+
+**Consequences.** A directive sent to a busy agent lands between steps in the common
+case and within 3 boundaries always. Sub-agents unchanged (they never poll). Pinned by
+tests/test_loop_say.py: hold-then-seam delivery (held calls proven message-free), and
+the patience cap on a step that never ends.

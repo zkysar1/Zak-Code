@@ -148,7 +148,7 @@ from zakcode.providers.base import (
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
-from zakcode.session.say_inbox import read_say, say_path
+from zakcode.session.say_inbox import read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import Task
 from zakcode.tools.base import (
@@ -499,6 +499,13 @@ _MIDTURN_SAY_FRAME = (
     "[user message — arrived mid-task]\n{text}\n"
     "(Address it as part of the current work; abandon or reorder the task only if it says to.)"
 )
+
+#: Task-boundary say hold (ADR-0052): while a plan step is in flight, a pending say waits
+#: for the step's seam (the step completes, or nothing is in progress) instead of landing
+#: mid-focus — but never longer than this many iteration boundaries. The cap is the whole
+#: safety property: ADR-0051 bought "a message can never starve", and a hold without a hard
+#: bound would quietly sell it back. 3 boundaries ≈ the tail of the current step. No knob.
+_SAY_PATIENCE = 3
 
 #: Apology spiral (ADR-0040): a no-tool-call completion that is mostly apology and
 #: retraction. The sycophantic twin of the repetition loop — it does no work either, and it
@@ -1070,6 +1077,11 @@ class AgentLoop:
         # must never set this: they would steal the user's message into a child
         # conversation. Consumption is exactly-once (read_say deletes).
         self._consume_say_inbox = consume_say_inbox
+        # Task-boundary say hold (ADR-0052): boundaries a pending say has waited, and the
+        # finished-step count at the previous boundary (a rise means a step just completed
+        # — the seam a held message lands on). Reset per turn.
+        self._say_waited = 0
+        self._say_prev_finished = 0
         # Completion-review gate (bounded): when a code-changing turn tries to finish, an
         # INDEPENDENT fresh-context critic (_completion_critic) judges whether the claimed result
         # covers the whole request; only a flagged gap sends the agent back, at most this many
@@ -2738,10 +2750,37 @@ class AgentLoop:
         persisted) or ``None``. Only the main loop polls (``consume_say_inbox``); the
         single-slot inbox makes this at most one message per iteration. Fail-open by
         inheritance: :func:`read_say` yields ``None`` on any OS error.
+
+        Task-boundary hold (ADR-0052): while a plan step is in flight and no step just
+        completed, the message WAITS — left in the inbox file, so exactly-once and
+        crash-safety stay the file's contract — and lands at the step's seam, or after
+        ``_SAY_PATIENCE`` boundaries, whichever comes first. A turn with no plan (or a
+        finished one) delivers immediately, the ADR-0051 behavior.
         """
         if not self._consume_say_inbox:
             return None
-        text = read_say(say_path(self.workspace_root))
+        network = self.session.task_network
+        finished, _total = network.progress()
+        step_seam = finished > self._say_prev_finished
+        self._say_prev_finished = finished  # every boundary, so the delta is boundary-local
+        path = say_path(self.workspace_root)
+        if not say_pending(path):
+            self._say_waited = 0
+            return None
+        mid_step = (
+            bool(network.tasks) and not network.is_complete() and network.has_step_in_flight()
+        )
+        if mid_step and not step_seam and self._say_waited < _SAY_PATIENCE:
+            if self._say_waited == 0:
+                self._note(
+                    "intervention",
+                    "user message waiting — held for the next step boundary",
+                    kind="say",
+                )
+            self._say_waited += 1
+            return None
+        text = read_say(path)
+        self._say_waited = 0
         if text is None:
             return None
         self.session.add_message(Message.user(_MIDTURN_SAY_FRAME.format(text=text)))
@@ -2848,6 +2887,8 @@ class AgentLoop:
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
         self._turn_user_text = user_text  # judged decomposition (ADR-0050): the goal judged against
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
+        self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
+        self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -3916,6 +3957,8 @@ class AgentLoop:
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
         self._turn_user_text = user_text  # judged decomposition (ADR-0050): the goal judged against
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
+        self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
+        self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written

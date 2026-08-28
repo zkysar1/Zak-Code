@@ -320,6 +320,14 @@ class TaskNetwork(BaseModel):
         finished = sum(1 for leaf in leaves if leaf.status in _TERMINAL)
         return finished, total
 
+    def has_step_in_flight(self) -> bool:
+        """True while any task is ``in_progress`` — the model is mid-step, not between steps.
+
+        The task-boundary say hold (ADR-0052) keys on this: a pending user message waits for
+        the current step's seam rather than landing mid-focus.
+        """
+        return any(t.status == "in_progress" for t in self._iter())
+
     def progress_signature(self) -> str:
         """A stable ``(id, status, title)`` snapshot of every task in document order.
 
