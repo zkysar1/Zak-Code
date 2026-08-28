@@ -401,3 +401,40 @@ def test_build_prompt_survives_a_non_utf8_context_file(tmp_path: Path) -> None:
     settings = load_settings(workspace_root=tmp_path)
     prompt = SystemPromptBuilder().build(settings)  # no crash
     assert "GUIDE_OK_42" in prompt
+
+
+# ── session identity + the skill-paging contract (ADR-0072) ─────────────────────
+
+
+def test_environment_section_names_the_session_id(tmp_path: Path) -> None:
+    # The one fact about THIS conversation the model cannot discover with a tool: a
+    # framework running several sessions of one agent keys its state by it, and every hook
+    # receives the same id as `session_id`. It lives below the boundary (constant per session).
+    settings = load_settings(workspace_root=tmp_path, default_model="openai/gpt-4o")
+    prompt = SystemPromptBuilder().build(settings, session_id="sid-42")
+    boundary_at = prompt.index(DYNAMIC_BOUNDARY)
+    stable, context = prompt[:boundary_at], prompt[boundary_at:]
+    assert "- Session id: sid-42" in context
+    assert "session_id" in context  # names the hook field it matches
+    assert "sid-42" not in stable
+    # Absent id ⇒ no line at all, and the default prompt is byte-for-byte unchanged.
+    assert "Session id" not in SystemPromptBuilder().build(settings)
+    assert SystemPromptBuilder().build(settings, session_id=None) == SystemPromptBuilder().build(
+        settings
+    )
+
+
+def test_skill_paging_contract_is_in_the_stable_tier(tmp_path: Path) -> None:
+    # Asked what happens when a skill is larger than the window, a served model recalled a
+    # mechanism instead of reading one. The contract (paging, the status line, the stop reason,
+    # the startup fit check) is now stated once in the cacheable tier, with the instruction to
+    # answer from the prompt and tool results and to say which.
+    settings = load_settings(workspace_root=tmp_path)
+    prompt = SystemPromptBuilder().build(settings)
+    stable = prompt[: prompt.index(DYNAMIC_BOUNDARY)]
+    assert "Skills (use_skill):" in stable
+    assert "PAGED" in stable and "page k/N" in stable
+    assert "update_plan" in stable
+    assert "`skill_too_large`" in stable
+    assert "zakcode info" in stable
+    assert "never present a recollection as something you read" in stable
