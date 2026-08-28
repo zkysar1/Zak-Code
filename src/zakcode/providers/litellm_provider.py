@@ -858,7 +858,7 @@ class LiteLLMProvider(Provider):
         # RESOURCE_EXHAUSTED`` ended the turn. Unwrap to the innermost cause first.
         for _ in range(4):
             inner = getattr(exc, "original_exception", None)
-            if not isinstance(inner, BaseException) or inner is exc:
+            if not isinstance(inner, Exception) or inner is exc:
                 break
             exc = inner
         retry_after = cls._extract_retry_after(exc)
