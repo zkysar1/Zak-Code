@@ -538,6 +538,72 @@ def test_a_section_the_plan_moved_past_is_not_restored(tmp_path: Path) -> None:
     assert (note["page"], note["skipped"]) == (3, 1)
 
 
+# ── the second field run's defects (2026-08-28, coach /aspirations-precheck) ────────
+
+
+def _keep_first(rewrite: int = 0) -> list[dict[str, Any]]:
+    """The model's collapse: section 1 kept (its page is held), sections 2–3 dropped. Each
+    ``rewrite`` words the note differently, as the field run's eight collapses did — a
+    byte-identical re-send is a different case (deduped before it runs)."""
+    note = MARK if rewrite == 0 else f"{MARK} (rewrite {rewrite})"
+    return [{"title": "Step 1: First", "status": "in_progress", "note": note}]
+
+
+def test_a_restore_with_no_new_page_still_tells_the_model(tmp_path: Path) -> None:
+    """Section 1 is current and already held, so no page turns — the restore used to be
+    silent, and the model re-issued the identical collapse every iteration (ADR-0075)."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_keep_first())
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    (restored,) = _notes(loop, "skill_sections_restored")
+    assert (restored["restored"], restored["pages"]) == (2, [2, 3])
+    assert not any(n["page"] > 1 for n in _notes(loop, "skill_page"))  # nothing turned
+    rail = next(
+        t
+        for msgs in provider.seen
+        for t in _user_texts(msgs)
+        if "Your plan dropped 2 of /demo's sections" in t
+    )
+    assert "Deleting a section from the plan does not close it" in rail
+    assert "mark it done or cancelled" in rail
+    assert "here is the one that is current now" not in rail  # no page rode along
+
+
+def test_a_third_drop_is_the_models_decision(tmp_path: Path) -> None:
+    """Restored and explained twice, dropped a third time: the sections stay out, the
+    drop is noted, and the plan is the model's (ADR-0075)."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        # Three collapses, counted by the plan results the transcript holds — the
+        # plan-quality judge shares the provider, so call numbers are not iterations.
+        plans = sum(
+            1
+            for m in messages
+            for b in m.blocks
+            if isinstance(b, ToolResultBlock) and (b.output or "").startswith("Current plan")
+        )
+        if plans < 3:
+            return _plan(_keep_first(rewrite=n), call_id=f"p{n}")
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert [n["pages"] for n in _notes(loop, "skill_sections_restored")] == [[2, 3], [2, 3]]
+    (dropped,) = _notes(loop, "skill_sections_dropped")
+    assert dropped["pages"] == [2, 3]
+    assert [t.title for t in loop.session.task_network.tasks] == ["Step 1: First"]
+
+
 def test_the_plan_can_come_back_to_a_page_it_jumped_over(tmp_path: Path) -> None:
     """Delivery is 'never the same page twice', not 'only forward': after a jump to page 3
     the model re-added section 2 and made it current, so page 2 is delivered."""

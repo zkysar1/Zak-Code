@@ -2895,3 +2895,75 @@ skill runs at the next iteration boundary; a typed message mid-turn is an interj
 skill is not delivered; a non-skill slash is text) and tests/test_cli_chat.py (mid-turn
 lines reach the inbox; REPL commands and idle lines stay queued; a busy slot falls back
 to the queue).
+
+## ADR-0074: Compaction is checked before every call, and the overflow bound is per call
+
+**Context.** The compactor's threshold check ran once per turn, at turn start, and the
+reactive `ContextWindowExceeded` recovery (force-compact, retry the same call) was bounded
+per turn at `_MAX_CONTEXT_RECOVERY = 2`. Both were written for a chat: turns of a few
+iterations with a prompt between them. A claude-mind runner's whole session is ONE turn —
+`/start`, then Stop-hook vetoes without end. Measured 2026-08-28 on coach (zc-03, a served
+27B, 131,072-token window): the reducer's first turn ran 142 minutes and 131 iterations.
+Its prompt grew from 35k to 125k tokens, was force-compacted to 52k by the first overflow
+recovery, grew to 109k, was compacted to 51k by the second, grew to 121k — and the third
+overflow (131,297 tokens) found the per-turn count spent: `stopping: provider error —
+ContextWindowExceededError`. The session was saved and resumable, and the runner sat idle
+at its prompt until an operator noticed. Two recoveries that each bought thirty more
+iterations are not the loop the bound exists to stop.
+
+**Decision.** (1) `_maybe_compact()` — the threshold check against the provider's real
+token count — runs before EVERY provider call in both twins, not only at turn start. A
+mid-turn compaction fires the same PreCompact → SessionStart(compact) lifecycle pair as a
+turn-start one, and the streaming twin surfaces the same status line. (2)
+`context_recoveries` is initialised per CALL: one call may compact-and-retry up to
+`_MAX_CONTEXT_RECOVERY` consecutive times, and the next call starts at zero. An
+un-compactable session still fails gracefully, on the same call, as before.
+
+**Alternatives rejected.** Raising the per-turn bound (a long enough turn spends any
+number; the bound's job is consecutive failure, not lifetime); resetting the count only
+when a compaction shrank the prompt (a compaction that shrank it but not enough would then
+loop — per-call keeps the bound on the thing it measures); leaving the mechanism reactive
+and trusting the recovery (the recovery is the backstop: it costs a failed request and a
+full summarize under pressure, and Claude Code's own autocompact runs mid-turn).
+
+**Consequences.** A long turn compacts when it crosses the threshold, wherever that falls;
+the reactive path becomes rare. Each iteration pays one `count_tokens` over the transcript
+— a local tokenizer pass, orders of magnitude shorter than the model call it precedes.
+Pinned by tests/test_resilience_context.py: three overflows in one turn all recover (the
+per-call bound, both twins); the threshold check is consulted per call and fires mid-turn
+(both twins); the existing bounded tests hold, because the SAME call overflowing
+repeatedly is still terminal.
+
+## ADR-0075: A restored section is explained, and a third drop is the model's decision
+
+**Context.** ADR-0067 restores the section steps of a paged skill that a full-replace plan
+dropped while their pages were undelivered — the model cannot receive a page whose step is
+gone. The put-back was explained only when it rode a page delivery; when the plan's
+current page was already held, the sections came back silently. Measured 2026-08-28 on
+coach (zc-03, /aspirations-precheck, 37 sections): the model collapsed a 46-step plan to
+10 ("steps 10–45 are precheck sections already executed"), the tool answered "1/10
+steps", the harness put 36 sections back before the next call, the model saw 46 steps
+again and issued the identical collapse — eight times in a row, each a full 27B call at
+125k+ tokens, until the window overflowed (ADR-0074). Nothing ever told the model why its
+edit did not take, nor how to close a section it meant to skip.
+
+**Decision.** (1) Every restore is spoken. When no page turns to carry the explanation,
+the same rail goes into context on its own: which sections came back, that deleting a
+section does not close it, and that a section is skipped by keeping it and marking it
+done or cancelled with a note. (2) Restores are bounded per skill per turn at
+`_MAX_SECTION_RESTORES = 2`: a plan rewritten without the sections a third time is the
+model's decision. They stay out (noted as `skill_sections_dropped`), and their pages are
+still handed over as the plan reaches them — `_current_page` treats an unheld, unmatched,
+not-moved-past page as current — so the skill's text still flows; only the harness's edit
+of the model's plan stops.
+
+**Alternatives rejected.** Restoring dropped sections as done or cancelled (the model
+never read them; ADR-0067's premise is that a plan which lost its open sections has not
+finished them); never restoring (the first field run lost twenty open boot sections that
+way — ADR-0067's incident); an unbounded restore with the rail (a model that will not
+follow the rail loops exactly as before, and the loop's cost is the window).
+
+**Consequences.** A collapse is answered once, explained, and if repeated, respected.
+Pinned by tests/test_skill_paging.py: a restore with no page to turn still reaches the
+model with the closing instruction; the third drop is left out, noted, and the plan stays
+the model's.
