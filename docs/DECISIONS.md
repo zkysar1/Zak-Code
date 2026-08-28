@@ -2667,3 +2667,18 @@ Every `SkillResolver` implements `body(name)`. Pinned by tests/test_skill_paging
 (splitting, the fold, marker matching, page 1 at both doors, page turns in order and never
 twice, a merged step, a fully closed plan, restart recovery, the streaming status, a page
 that cannot fit, the fit report) and the paged hint contract in tests/test_skill_skeleton.py.
+
+**Field correction (same day, coach's first paged /boot).** Three defects, one turn.
+The model's full-replace plan kept the five sections it had done and DROPPED the twenty
+still open; with the seeded structure gone, marker matching ran over every plan step, so
+/boot's "Step 1..3" pages were satisfied by /start's closed "Step 1..3" steps, a
+positional fallback finished the rest, page 14 was delivered, and the "only forward" rule
+then refused ever to go back to page 6 — the model narrated "I need to add the remaining
+boot sections to the plan" and looped. Now: a page matches only steps seeded from its own
+skill or owned by no skill (`_candidate_steps`); there is no positional fallback — a page
+with no step is finished only once the plan moved past it (`_moved_past`); delivery is
+"never the same page twice", not "only forward" (a set per skill, recovered as a set from
+the transcript); and sections a plan dropped while still open are put back, in order,
+after the last kept section (`_restore_dropped_sections`, trace note
+`skill_sections_restored`, the page's rail says which came back). Sections the plan moved
+past stay out — that is the model's call, and the skipped count records it.
