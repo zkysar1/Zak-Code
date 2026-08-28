@@ -337,6 +337,15 @@ _REASONING_OVERFLOW_NUDGE = (
 )
 
 
+def _silent_detail(generated: int) -> str:
+    """What an empty completion cost, for its note and status (ADR-0063): ``""`` when the
+    model truly produced nothing, else how many tokens the backend generated and then
+    delivered as neither text, thinking, nor a tool call. Measured 2026-08-28 (coach,
+    zc-03): 254 generated, nothing visible, no thinking — a silence the operator could not
+    tell from a zero-token one, and the two point at different failures."""
+    return f" ({generated} tokens generated, none delivered)" if generated > 0 else ""
+
+
 def _reasoning_overflow_nudge(skill: str | None) -> str:
     """The overflow rail, naming the unfinished ``/<skill>`` sequence when there is one."""
     sequence = (
@@ -3704,10 +3713,13 @@ class AgentLoop:
                             )
                             rail = _reasoning_overflow_nudge(composed_skill)
                         else:
+                            generated = result.usage.completion_tokens
                             self._note(
                                 "intervention",
-                                "empty completion — asking for a real answer",
+                                "empty completion — asking for a real answer"
+                                + _silent_detail(generated),
                                 kind="empty_completion",
+                                completion_tokens=generated,
                             )
                             rail = (
                                 _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
@@ -5087,17 +5099,23 @@ class AgentLoop:
                                 rail = _reasoning_overflow_nudge(composed_skill)
                                 status = "reasoning overflow; retrying with thinking off"
                             else:
+                                generated = attempt_usage.completion_tokens
                                 self._note(
                                     "intervention",
-                                    "empty completion — asking for a real answer",
+                                    "empty completion — asking for a real answer"
+                                    + _silent_detail(generated),
                                     kind="empty_completion",
+                                    completion_tokens=generated,
                                 )
                                 rail = (
                                     _SKILL_EMPTY_COMPLETION_NUDGE.format(skill=composed_skill)
                                     if composed_skill is not None
                                     else _EMPTY_COMPLETION_NUDGE
                                 )
-                                status = "model went silent; asking for a real answer"
+                                status = (
+                                    f"model went silent{_silent_detail(generated)}; "
+                                    "asking for a real answer"
+                                )
                             self.session.add_message(Message.user(_control_rail(rail)))
                             self._refund_iteration()  # an empty completion did no work
                             self._persist()

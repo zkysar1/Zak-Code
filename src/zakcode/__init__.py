@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
-from zakcode.agent.loop import AgentLoop, TurnResult
+from zakcode.agent.loop import AgentLoop, TurnResult, _composed_skill_name
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
@@ -1021,6 +1021,34 @@ class Agent:
         self._skill_invocations_this_turn = 0
         self._skills_loaded_this_turn.clear()
 
+    def _register_composed_skill(self, user_text: str) -> None:
+        """Count a typed ``/<skill>`` turn's body as loaded for the reload dedup (ADR-0063).
+
+        The command path never registered its load, so a ``use_skill`` of the very skill
+        the turn is running came back as the whole body again. Measured 2026-08-28 (coach,
+        zc-03): an empty completion inside ``/start`` drew the skill nudge, the model
+        answered ``use_skill start``, and 65 KB of instructions it already held landed a
+        second time. Runs AFTER :meth:`_begin_skill_turn` at every top-level turn start, on
+        the same digest the dedup compares, so that re-invocation now gets the pointer. A
+        TURN_END veto still clears it (ADR-0048: a vetoed stop is a fresh skill turn).
+        """
+        name = _composed_skill_name(user_text)
+        if name is None:
+            return
+        registry = getattr(self, "skill_registry", None)
+        skill = registry.resolve(name) if registry is not None else None
+        if skill is None:
+            return
+        try:
+            body = skill.body()
+        except Exception:  # noqa: BLE001 — an unreadable skill is the load's problem, not ours
+            return
+        import hashlib
+
+        self._skills_loaded_this_turn[skill.name] = hashlib.sha1(
+            body.encode("utf-8", errors="replace")
+        ).hexdigest()
+
     def _assert_local_only(self) -> None:
         """Refuse to start when ``local_only`` is set but a configured model is metered.
 
@@ -1384,8 +1412,9 @@ class Agent:
             if self._skills_loaded_this_turn.get(skill.name) == digest:
                 pointer = (
                     f"[already loaded] The full instructions for skill {skill.name!r} are "
-                    "already in your context from an earlier use_skill call THIS turn, "
-                    "unchanged. Follow those instructions; do not reload them."
+                    "already in your context THIS turn — the /command you were given, or an "
+                    "earlier use_skill call — unchanged. Continue those instructions from "
+                    "where you are; do not reload them."
                 )
                 if args.strip():
                     pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
@@ -1564,6 +1593,7 @@ class Agent:
         out best-of-N isolated retries and adopt (diff-apply) the first that verifies.
         """
         self._begin_skill_turn()  # new top-level turn: refill the skills budget, forget loads
+        self._register_composed_skill(user_text)  # …except the skill this turn IS (ADR-0063)
         if self._shared_budget is not None:
             self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         result = await self.loop.arun_turn(user_text)
@@ -1598,6 +1628,7 @@ class Agent:
         is the incremental counterpart to :meth:`run_turn` / :meth:`arun_turn`.
         """
         self._begin_skill_turn()  # new top-level turn: refill the skills budget, forget loads
+        self._register_composed_skill(user_text)  # …except the skill this turn IS (ADR-0063)
         if self._shared_budget is not None:
             self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         return self.loop.astream_turn(user_text)
