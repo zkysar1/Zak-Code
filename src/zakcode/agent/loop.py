@@ -150,7 +150,7 @@ from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
-from zakcode.tasks import Task
+from zakcode.tasks import Task, skill_skeleton
 from zakcode.tools.base import (
     ConcurrencyClass,
     Sampler,
@@ -363,6 +363,23 @@ def _investigation_rail(diagnosis: str, steps: list[Task], *, fresh: bool) -> st
     return (
         f"{diagnosis} The investigative steps I added earlier ({ids}) are still open — do them "
         "before anything else, and mark each done with update_plan."
+    )
+
+
+def _id_span(steps: list[Task]) -> str:
+    """``1–5`` for a run of sibling steps, or the lone id."""
+    return steps[0].id if len(steps) == 1 else f"{steps[0].id}–{steps[-1].id}"
+
+
+def _skeleton_rail(skill: str, steps: list[Task]) -> str:
+    """The rail that follows a skill load (ADR-0062): what the harness put in the plan and
+    what is expected of it."""
+    return (
+        f"I added the {len(steps)} sections of /{skill} to your plan as steps "
+        f"({_id_span(steps)}). They are the work now: do them in order, mark each done with "
+        "update_plan (send the whole plan) as you finish it, split any step that turns out to "
+        "be several actions, and mark a section that does not apply to this request "
+        "cancelled with the reason in its note."
     )
 
 
@@ -723,6 +740,16 @@ def _elide_skill_body(text: str) -> str | None:
     if not body.strip() or body.startswith("<command-body "):
         return None
     return text[: match.end()] + _ELIDED_SKILL_BODY.format(chars=len(body))
+
+
+def _composed_skill_body(text: str) -> str:
+    """The skill body a composed ``/<skill>`` turn carries (ADR-0062 seeds the plan from
+    its sections), or ``""`` when ``text`` is not one or its body was elided (ADR-0045)."""
+    match = _COMMAND_FRAME_FULL_RE.match(text)
+    if match is None:
+        return ""
+    body = text[match.end() :]
+    return "" if body.startswith("<command-body ") else body
 
 
 #: Text-only stall (ADR-0033): a turn whose model answers a nudge or veto with ANOTHER
@@ -1826,6 +1853,103 @@ class AgentLoop:
             )
 
         return walk(self.session.task_network.tasks)
+
+    # ── skill skeletons: a loaded skill's sections become the plan (ADR-0062) ─────────
+
+    def _plan_tasks(self) -> list[Task]:
+        """Every plan task in document order (a compound's children follow it)."""
+        out: list[Task] = []
+
+        def walk(tasks: list[Task]) -> None:
+            for task in tasks:
+                out.append(task)
+                walk(task.children)
+
+        walk(self.session.task_network.tasks)
+        return out
+
+    def _skeleton_in_plan(self, name: str) -> bool:
+        """True when the plan already carries a step seeded from ``/<skill>`` (its note
+        opens with the ``from /<skill>`` marker) — a re-load must not seed twice."""
+        marker = re.compile(rf"^from /{re.escape(name.lower())}(?![a-z0-9_-])")
+        return any(marker.match(task.note.lower()) for task in self._plan_tasks())
+
+    def _plan_step_for_skill(self, name: str) -> Task | None:
+        """The first still-open plan step whose title or note names ``/<skill>``, or ``None``
+        — the natural parent for that skill's sections (a seeded ``run /<skill>`` step,
+        ADR-0017/0035, or the model's own "run the X skill" step)."""
+        token = re.compile(rf"/{re.escape(name.lower())}(?![a-z0-9_-])")
+        for task in self._plan_tasks():
+            if task.status in ("done", "cancelled"):
+                continue
+            if token.search(task.title.lower()) or token.search(task.note.lower()):
+                return task
+        return None
+
+    def _seed_skill_skeleton(self, skill: str, body: str, seeded: set[str]) -> list[Task]:
+        """Put a just-loaded skill's numbered sections into the plan as steps (ADR-0062).
+
+        ADR-0027 asked the model to do this ("FIRST call update_plan …") and left it a hint;
+        a field model read the hint and went straight to work with no plan, so nothing held
+        it to the skill's remaining sections. The harness now seeds what the body's own
+        headings already spell out — the model refines (``update_plan`` is full-replace, so
+        its own plan always wins). A body with no numbered sections seeds nothing: the hint
+        stands and the plan is the model's own (a holding step was tried and rejected — it
+        turned every section-less skill turn into a plan-gate nudge at the finish). The
+        sections nest under the open plan step that names the skill when there is one, else
+        append. Once per skill per turn, never when the plan already carries that skill's
+        marker or the naming step was already broken down by the model. Returns the seeded
+        steps (``[]`` when nothing was).
+        """
+        key = skill.lower()
+        if key in seeded or not body.strip() or self._skeleton_in_plan(skill):
+            return []
+        anchor = self._plan_step_for_skill(skill)
+        if anchor is not None and anchor.children:
+            return []  # the model already decomposed that step itself
+        steps = skill_skeleton(body, skill=skill)
+        if not steps:
+            return []  # no numbered sections: nothing to seed
+        network = self.session.task_network
+        if anchor is not None:
+            anchor.children = steps
+            anchor.kind = "compound"
+            network.normalize()
+        else:
+            network.insert_before(None, steps)
+        seeded.add(key)
+        self._note(
+            "intervention",
+            f"plan seeded from /{skill}: its {len(steps)} sections",
+            kind="skill_skeleton",
+        )
+        self.session.add_message(Message.user(_control_rail(_skeleton_rail(skill, steps))))
+        self._persist()
+        return steps
+
+    def _seed_loaded_skill_skeletons(
+        self, calls: list[ToolCall], results: list[ToolResultBlock], seeded: set[str]
+    ) -> list[tuple[str, list[Task]]]:
+        """Seed a skeleton for every skill ``use_skill`` loaded in this batch (ADR-0062).
+
+        An errored load and the per-turn ``[already loaded]`` pointer are not loads. Returns
+        ``(skill, steps)`` per skill that gained steps, for the caller's status line.
+        """
+        by_id = {r.tool_use_id: r for r in results}
+        out: list[tuple[str, list[Task]]] = []
+        for call in calls:
+            if call.name != "use_skill":
+                continue
+            block = by_id.get(call.id)
+            if block is None or block.is_error or "[already loaded]" in block.output[:300]:
+                continue
+            name = str((block.data or {}).get("skill") or call.arguments.get("name", "")).strip()
+            if not name:
+                continue
+            steps = self._seed_skill_skeleton(name, block.output, seeded)
+            if steps:
+                out.append((name, steps))
+        return out
 
     def _seed_plan_from_request(self, user_text: str) -> list[str]:
         """Seed one plan step per referenced skill when the request names SEVERAL (>=2).
@@ -3045,7 +3169,8 @@ class AgentLoop:
             )
             self.session.add_message(Message.user(_control_rail(_CHALLENGE_RAIL)))
         # A typed /<skill> turn carries the skill's body as the message (ADR-0036): the
-        # body is documentation — never seed from it, never demand its re-load.
+        # body is documentation — never seed skill MENTIONS from it, never demand its
+        # re-load. Its numbered SECTIONS are the plan, seeded below (ADR-0062).
         composed_skill = _composed_skill_name(user_text)
         # Compound-ask decomposition: a request naming several skills seeds one plan
         # step per skill BEFORE the model acts, so no part can be lost to an
@@ -3062,6 +3187,13 @@ class AgentLoop:
         requested_skills = [] if composed_skill else self._skill_refs(user_text)
         skills_invoked: set[str] = set()
         coverage_nudged = False
+        # Skill skeletons (ADR-0062): the typed skill's sections become the plan before the
+        # first completion, so the model starts from a checklist instead of a wall.
+        skeleton_seeded: set[str] = set()
+        if composed_skill is not None:
+            self._seed_skill_skeleton(
+                composed_skill, _composed_skill_body(user_text), skeleton_seeded
+            )
 
         turn_assistant: list[Message] = []
         turn_tool_results: list[ToolResultBlock] = []
@@ -4002,6 +4134,8 @@ class AgentLoop:
 
             self.session.add_message(Message.tool_results(result_blocks))
             self._persist()
+            # A skill loaded this batch puts its sections in the plan (ADR-0062).
+            self._seed_loaded_skill_skeletons(result.tool_calls, result_blocks, skeleton_seeded)
 
             # Write-grounding is unconditional (no flag); it no-ops when nothing was written.
             grounding = build_write_grounding(result.tool_calls, result_blocks)
@@ -4186,6 +4320,16 @@ class AgentLoop:
         requested_skills = [] if composed_skill else self._skill_refs(user_text)
         skills_invoked: set[str] = set()
         coverage_nudged = False
+        # Skill skeletons (ADR-0062) — see _run_turn (buffered twin).
+        skeleton_seeded: set[str] = set()
+        if composed_skill is not None:
+            skeleton = self._seed_skill_skeleton(
+                composed_skill, _composed_skill_body(user_text), skeleton_seeded
+            )
+            if skeleton:
+                yield AgentStatus(
+                    message=f"plan seeded from /{composed_skill}: {len(skeleton)} steps"
+                )
         if seeded:
             yield AgentStatus(
                 message="plan seeded from the request: " + ", ".join(f"/{n}" for n in seeded)
@@ -5389,6 +5533,11 @@ class AgentLoop:
 
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()
+                # A skill loaded this batch puts its sections in the plan (ADR-0062).
+                for skill_name, steps in self._seed_loaded_skill_skeletons(
+                    tool_calls, result_blocks, skeleton_seeded
+                ):
+                    yield AgentStatus(message=f"plan seeded from /{skill_name}: {len(steps)} steps")
 
                 # Write-grounding is unconditional (no flag); no-ops when nothing was written.
                 grounding = build_write_grounding(tool_calls, result_blocks)

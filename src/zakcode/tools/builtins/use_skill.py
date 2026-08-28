@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.config import PermissionTier
+from zakcode.tasks import skill_skeleton
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 from zakcode.tools.builtins._suggest import _display
 
@@ -142,11 +143,27 @@ class UseSkillTool(Tool):
             )
         footer = skill_directory_line(load.path, ctx.workspace_root)
         output = f"{load.body}\n\n{footer}" if footer else load.body
+        sections = len(skill_skeleton(load.body, skill=load.name))
+        if sections:
+            # The body's numbered sections are the plan (ADR-0062): the loop seeds them as
+            # steps the moment this result lands, so the hint describes a checklist that
+            # already exists — not one the model is asked to write.
+            return ToolResult.ok(
+                output,
+                data={"skill": load.name, "decompose": True, "sections": sections},
+                hint=(
+                    f"Its {sections} numbered sections are now steps in your plan. Work "
+                    "through them in order, marking each done with update_plan (send the "
+                    "whole plan) as you finish it; split any step that is several actions. "
+                    "If a step says to use another skill, call use_skill with that name."
+                ),
+            )
         if len(load.body) >= _DECOMPOSE_HINT_MIN_CHARS:
             # The decompose rail (ADR-0027): a long body is a plan waiting to happen, not
             # working state to hold in the model's head. Fired at the exact moment the
             # body arrives — the one point where the model has both the instructions and
-            # its task context in hand.
+            # its task context in hand. (A body with no numbered sections seeds nothing in
+            # the plan — the concrete steps are the model's to write.)
             return ToolResult.ok(
                 output,
                 data={"skill": load.name, "decompose": True},
