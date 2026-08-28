@@ -755,8 +755,13 @@ class LiteLLMProvider(Provider):
         # through drop_params, so an unknown-to-litellm key still reaches the server; a
         # server that does not understand the key ignores it. Sent only when non-empty, so
         # the default request shape is byte-identical to before.
-        if self.extra_body:
-            call_kwargs["extra_body"] = dict(self.extra_body)
+        # A per-call ``extra_body`` (the loop's reasoning-overflow retry, ADR-0056: the
+        # thinking switch for ONE request) merges OVER the instance's, so a category's knob
+        # and a one-shot override compose instead of the override clobbering the rest.
+        per_call_body = kw.pop("extra_body", None)
+        merged_body: dict[str, Any] = {**self.extra_body, **(per_call_body or {})}
+        if merged_body:
+            call_kwargs["extra_body"] = merged_body
         if self.extra_headers:
             call_kwargs["extra_headers"] = dict(self.extra_headers)
         # Forward the configured generic api_base ONLY for OpenAI-compatible models — never to

@@ -296,6 +296,10 @@ class Provider(ABC):
         if response_format is not None:
             kwargs["response_format"] = response_format
         result = await self.acomplete(messages, system=system, tools=tools, **kwargs)
+        if result.thinking:
+            # Reasoning keeps its own event type here too, so a consumer of the default
+            # wrapper sees the same shape a true streaming provider emits (ADR-0056).
+            yield StreamThinkingDelta(text=result.thinking)
         if result.text:
             yield StreamTextDelta(text=result.text)
         for index, call in enumerate(result.tool_calls):
