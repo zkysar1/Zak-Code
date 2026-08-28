@@ -2161,3 +2161,43 @@ varying-args vs repeated-outcome shapes; re-climb points back instead of re-seed
 recovered turn is never held while the model's own steps still are; streaming status +
 task_update), with tests/test_stuck.py and tests/test_loop_planning.py updated where they
 pinned the old wording or the deleted hint.
+
+## ADR-0058: The ADR-0053 deferrals land — a cross-gate cascade cap, and a glob or a real read is a search
+
+**Status.** Accepted (2026-08-28).
+
+**Context.** ADR-0053's review left two behavior changes on the table "until field
+evidence demands them": two gates can nudge in contradictory directions in one turn, and
+the missing-conclusion gate (ADR-0040) counted only `grep` as a search. The coach
+transcripts of 2026-08-28 supplied the evidence for both. A small model that answers a
+nudge with more words is answered by the NEXT gate — intent, then missing, then identity —
+and each is a once-per-turn latch, so six different corrections can land in six
+consecutive iterations with no tool call in between (the cockpit pane's session reached
+its web search only after being re-prompted). And a model that had globbed for a name
+and read the file it found was still told to grep before it could say the key was not
+there — a not-found about content it had actually read.
+
+**Decision.**
+
+- **Cascade cap (F9).** `_MAX_GATE_CASCADE = 2`. Past two consecutive text-only
+  completions — the count `text_only_completions` already keeps for the ADR-0033 stall
+  latch, reset by any tool batch — the six evidence gates (claim, blocker, missing,
+  identity, figure, intent) stand down for the rest of the turn: their once-per-turn
+  latches are marked spent, the completion stands, the turn is `degraded`, the trace
+  carries `kind="gate_cascade"`, and the streaming twin emits a status. The structural
+  gates keep their own bounds (plan gate `_MAX_PLAN_NUDGES`, length continuation,
+  coverage, empty/overflow, completion review, quality rounds) — they are not re-prompts
+  in a new direction. Two is the shape the evidence shows: the first nudge is a
+  correction, the second a different correction, the third is the cascade.
+- **What counts as a search (F11).** `_SEARCH_TOOLS` gains `glob` — every path by name is
+  a workspace-wide search — and a `read_file` that returned content counts as one too: the
+  model read the real thing, so its "could not find" is about content it saw. A FAILED
+  read does not count; that is exactly the one-path-tried miss the gate exists for.
+
+**Consequences.** Two bounded behavior changes in both twins, no wording changes. A third
+text-only completion in a row now ends the turn (degraded) instead of collecting a third
+nudge; the ADR-0033 latch that hands the turn to the deep coder at the second is
+unchanged. Pinned by tests/test_gate_followups.py (a third text-only completion is not
+re-prompted in a third direction; a tool batch resets the count; a clean answer is not
+degraded by the cap; the streaming status; a glob and a content-returning read earn the
+conclusion; a failed read is still nudged).
