@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -195,6 +196,54 @@ class TestCapacity:
         )
         cap = tp.fetch_capacity("http://r/v1", None, "mine")
         assert not cap.ok and "no zds block" in cap.detail
+
+    def test_zakpick_resolves_through_the_models_its_categories_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The fleet's configured model is the in-process router 'zakpick', which no endpoint
+        # lists; the block that answers belongs to the model its categories name.
+        monkeypatch.setattr(
+            "zakcode.providers.litellm_provider._fetch_models",
+            lambda *a: {
+                "data": [
+                    {
+                        "id": "zds-qwen3.6-35b",
+                        "zds": {
+                            "canonical": "zds-qwen3.6-35b",
+                            "slots_total": 4,
+                            "inflight_now": 7,
+                        },
+                    }
+                ]
+            },
+        )
+        cap = tp.fetch_capacity(
+            "http://r/v1", None, "zakpick", resolved=("openai/zds-qwen3.6-35b",)
+        )
+        assert cap.ok and cap.model == "zds-qwen3.6-35b" and cap.slots_total == 4
+
+    def test_a_zakpick_miss_names_the_models_it_tried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "zakcode.providers.litellm_provider._fetch_models",
+            lambda *a: {"data": [{"id": "other", "zds": {"slots_total": 1}}]},
+        )
+        cap = tp.fetch_capacity("http://r/v1", None, "zakpick", resolved=("a-model", "b-model"))
+        assert not cap.ok and "'zakpick'" in cap.detail and "a-model, b-model" in cap.detail
+
+    def test_configured_models_under_zakpick_are_the_category_models(self) -> None:
+        settings = SimpleNamespace(
+            default_model="zakpick",
+            zakpick_models={
+                "plan": SimpleNamespace(model="zds-qwen3.6-35b"),
+                "classify": SimpleNamespace(model="zds-qwen3.6-35b"),
+                "deep_code": SimpleNamespace(model="big-model"),
+            },
+        )
+        assert tp._configured_models(settings) == ("zakpick", ("big-model", "zds-qwen3.6-35b"))
+        plain = SimpleNamespace(default_model="openai/m", zakpick_models={})
+        assert tp._configured_models(plain) == ("openai/m", ())
 
 
 class TestRender:
