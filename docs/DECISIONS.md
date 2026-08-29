@@ -3109,3 +3109,67 @@ build change and a running reducer has no idle prompt for hours).
 appears after refresh with programmatic hooks preserved and the old slice replaced, not
 appended; a removed file drops only its hooks; a broken edit keeps the previous hooks
 and a later good edit is picked up.
+
+## ADR-0080: A compaction forgets the per-turn skill reload dedup
+
+**Context.** ADR-0063 answers a second `use_skill` of a body already delivered THIS turn
+with a short "[already loaded] … continue from where you are" pointer, and ADR-0048
+resets that dedup on every TURN_END veto because a perpetual loop runs its whole session
+as one turn. One reset was missing. A Mind worker Body re-enters its loop skill after
+every work unit — mid-turn, by design — and its units are long enough to compact the
+transcript in between. Measured 2026-08-29 (coach, zc-03, worker 00be93b8): a
+`119 → 7` compaction, then `use_skill(worker-loop)` returned the pointer ("the full
+instructions … are already in your context THIS turn — unchanged"), which was false —
+the instructions were in the summarized half. The Body improvised its close by hand
+(a python heredoc setting status "done" in the aspirations store) instead of running the
+close writer the skill names; the framework grew a Bash gate for the write, but the
+reason the model had nothing to follow was this pointer.
+
+**Decision.** The loop treats a compaction as the boundary it is for per-turn skill
+state: `AgentLoop._adopt_compacted` (both the threshold path and `compact_now`) installs
+the new transcript, forgets the prompt anchor (ADR-0077), and calls the resolver's new
+`forget_loads()`, which the Agent implements as the same reset a turn start performs —
+the reload dedup AND the invocation budget, since the budget bounds skill-chaining inside
+one context and that context has just been rebuilt. A paged skill (ADR-0067) already
+re-delivered its current section; this makes a whole-body skill behave the same way.
+
+**Alternatives rejected.** Re-injecting every loaded skill body automatically after a
+compaction (pays the full body for skills the model may be finished with — the model
+asks for what it needs, and after this change asking works); checking whether the body
+text is still literally present in the messages (a summary may paraphrase it, and the
+pointer would then be right by accident).
+
+**Consequences.** After a compaction the next `use_skill` of an already-used skill
+delivers the body. Pinned by `tests/test_use_skill.py::test_compaction_forgets_the_reload_dedup`.
+
+## ADR-0081: Undecodable tool arguments name the real defect
+
+**Context.** When a provider cannot decode a tool call's argument string it hands the
+loop `{"_raw": "<text>"}` (providers/base.py) rather than raising. Every tool then sees
+its required field missing and answers with its own validation line — `write_file`:
+"'path' is required and must be a string." True of the dict, false of the call: the
+model had written a path. Measured 2026-08-29 (coach, zc-03, worker dbd99eac): a 27B
+writing a ~300-line module in one `write_file`, the JSON cut off by the output limit
+(the raw text stopped mid-value); two identical retries, each answered with the path
+message; then a guess ("the file write tool hit a parameter size limit") and a bash
+heredoc, which happened to work. The model spent three calls learning what the loop
+knew at the first.
+
+**Decision.** Before permission, hooks or the tool, the loop recognizes `{"_raw"}`
+arguments and returns an error that names the defect and the cheapest remedy: the
+arguments were not valid JSON, the call was not executed, N characters, and either
+"they stop mid-value, so the call was cut off by the output limit" or "a quote, backslash
+or newline inside a string value is not escaped"; for `write_file`/`edit_file`, "write
+the file in pieces: write_file the first part, then edit_file to append the rest". The
+struggle flag is latched (zakpick escalates on it, as for degenerate arguments,
+ADR-0024).
+
+**Alternatives rejected.** Repairing the JSON (closing the braces of a truncated call
+writes a truncated file as if complete); raising in the provider (the loop must never
+crash on model output); leaving it to each tool (fourteen tools, fourteen wrong
+messages).
+
+**Consequences.** A truncated or mis-escaped tool call costs one round trip and the
+model is told how to split it. Pinned by `tests/test_small_model_containment.py`
+(`test_undecodable_arguments_name_the_real_defect`,
+`test_undecodable_but_complete_arguments_blame_escaping`).

@@ -244,6 +244,13 @@ class _SkillToolResolver:
         # signal is attributed to the actual caller even though the resolver is the parent's.
         return await self._agent._load_skill_body(name, source="tool", query=query, args=args)
 
+    def forget_loads(self) -> None:
+        # ADR-0080: a compaction rewrote the transcript, so "already loaded this turn" is no
+        # longer true of anything. Same reset as a turn start (ADR-0048's veto re-entry uses
+        # it too): the reload dedup AND the invocation budget, because the budget bounds
+        # skill-chaining inside one context and that context has just been rebuilt.
+        self._agent._begin_skill_turn()
+
     def body(self, name: str) -> str | None:
         # The whole body, defanged like a load but with none of the ceremony (ADR-0067): the
         # loop seeds a skeleton and pages sections from it after a load delivered page 1 only.

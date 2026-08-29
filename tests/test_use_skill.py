@@ -369,6 +369,30 @@ async def test_skills_chain_across_invocations_in_one_turn(tmp_path: Path) -> No
     assert result.summary == "done"
 
 
+async def test_compaction_forgets_the_reload_dedup(tmp_path: Path) -> None:
+    """ADR-0080: after a compaction the "[already loaded]" pointer would point at text that is
+    no longer in context; the next use_skill must deliver the body again."""
+    from zakcode.agent.compact import CompactionResult
+
+    _write_skill(tmp_path, "worker", "Loop body.")
+    agent = _agent(tmp_path, enable_skills=True)
+    first = await agent._load_skill_body("worker", source="tool")
+    assert first.body is not None and "Loop body." in first.body
+    second = await agent._load_skill_body("worker", source="tool")
+    assert second.body is not None and second.body.startswith("[already loaded]")
+
+    class _Compactor:
+        async def compact(self, messages: list, *, summarize: object) -> CompactionResult:
+            return CompactionResult(compacted=True, messages=list(messages[-1:]))
+
+    agent.loop.compactor = _Compactor()  # type: ignore[assignment]
+    assert await agent.loop.compact_now() is True
+
+    third = await agent._load_skill_body("worker", source="tool")
+    assert third.body is not None and "Loop body." in third.body
+    assert not third.body.startswith("[already loaded]")
+
+
 async def test_task_tool_rejects_a_blank_delegated_prompt(tmp_path: Path) -> None:
     # Closes the attribution edge at the source: a blank child prompt would leave caller_query
     # empty and mis-attribute the child's skill use to the parent — so the task tool rejects it.

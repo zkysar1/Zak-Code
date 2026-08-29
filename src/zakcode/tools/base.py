@@ -220,6 +220,12 @@ class SkillResolver(Protocol):
         (sub-agents) must pass a non-empty ``query`` (the loop stamps ``caller_query`` for this)."""
         ...
 
+    # Optional (not part of the structural check, so a minimal test double still satisfies
+    # the protocol): ``forget_loads() -> None`` — forget which bodies are "already loaded"
+    # this turn (ADR-0080). The loop looks it up with getattr right after a compaction: the
+    # dedup's premise — the body is still in context — no longer holds, so the next
+    # ``use_skill`` must deliver the body, not a pointer. The Agent's resolver implements it.
+
     def body(self, name: str) -> str | None:
         """The skill's whole (defanged) body with none of the load ceremony — no budget, no
         selection signal, no dedup (ADR-0067). The loop reads it to seed a skeleton and to
