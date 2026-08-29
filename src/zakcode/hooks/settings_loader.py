@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 from zakcode._subprocess import resolve_executable
-from zakcode.hooks import DEFAULT_HOOK_TIMEOUT, HookEvent, HookSpec
+from zakcode.hooks import DEFAULT_HOOK_TIMEOUT, HookEvent, HookManager, HookSpec
 
 logger = logging.getLogger("zakcode.hooks.settings_loader")
 
@@ -207,3 +207,66 @@ def load_settings_hooks(
                     )
 
     return specs, errors
+
+
+def settings_hooks_signature(workspace_root: Path) -> tuple[tuple[str, int, int], ...]:
+    """``(path, mtime_ns, size)`` for every candidate settings file that exists (ADR-0079).
+
+    Three stats; the cheap change detector behind :class:`SettingsHooks`. A missing file
+    contributes nothing, so deleting one changes the signature too.
+    """
+    sig: list[tuple[str, int, int]] = []
+    for p in _settings_candidates(workspace_root):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        sig.append((str(p), st.st_mtime_ns, st.st_size))
+    return tuple(sig)
+
+
+class SettingsHooks:
+    """The settings.json-sourced slice of a :class:`HookManager`'s shell hooks (ADR-0079).
+
+    Owns the specs it loaded and the file signature they came from, so a later
+    :meth:`refresh` can tell "nothing changed" (three stats) from "re-read and replace
+    exactly my slice" without touching hooks registered programmatically.
+    """
+
+    def __init__(self, workspace_root: Path, *, permission_mode: str = "ask") -> None:
+        self.workspace_root = Path(workspace_root)
+        self.permission_mode = permission_mode
+        self.specs: list[HookSpec] = []
+        self.signature: tuple[tuple[str, int, int], ...] = ()
+
+    def load(self) -> tuple[list[HookSpec], dict[str, str]]:
+        """First read. Returns ``(specs, errors)`` exactly like :func:`load_settings_hooks`."""
+        self.signature = settings_hooks_signature(self.workspace_root)
+        specs, errors = load_settings_hooks(
+            self.workspace_root, permission_mode=self.permission_mode
+        )
+        self.specs = specs
+        return specs, errors
+
+    def refresh(self, manager: HookManager) -> tuple[bool, dict[str, str]]:
+        """Re-read when any settings file changed; replace this slice in ``manager``.
+
+        Returns ``(changed, errors)``. A parse error keeps the previous specs in place
+        (a bad edit must never strip a workspace's gates) but still advances the
+        signature, so the broken file is reported once rather than re-parsed every turn.
+        """
+        sig = settings_hooks_signature(self.workspace_root)
+        if sig == self.signature:
+            return False, {}
+        self.signature = sig
+        specs, errors = load_settings_hooks(
+            self.workspace_root, permission_mode=self.permission_mode
+        )
+        if any(err.startswith("parse error") for err in errors.values()):
+            return False, errors
+        old = self.specs
+        manager.shell_hooks[:] = [
+            h for h in manager.shell_hooks if not any(h is o for o in old)
+        ] + specs
+        self.specs = specs
+        return True, errors

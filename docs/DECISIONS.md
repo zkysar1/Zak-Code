@@ -3077,3 +3077,35 @@ Pinned by `tests/test_cli_chat.py` (the mux injects and never writes the slot; a
 no agent still does) and `tests/test_loop_say.py` (an injected line is framed, persisted
 and seen by the next provider call; two loops on one workspace cannot receive each
 other's lines; a line is consumed exactly once).
+
+## ADR-0079: settings.json hooks are re-read at the turn boundary when the file changes
+
+**Context.** ADR-0025 made workspace hooks unconditional, but the list was read once, at
+`Agent` construction — Claude Code's snapshot-at-startup semantics. A Mind is not a
+short-lived REPL: its sessions run for hours and pull framework updates by git while
+they run. Measured 2026-08-29 (coach, zc-03): a PreToolUse gate promoted into
+`.claude/settings.json` and pulled onto the live deployment was invisible to all four
+running sessions — the reducer that had just been restarted included — and would have
+stayed so until each next restart. The operator's standing rule is that hooks run every
+time, no exception; a hook that exists on disk and does not run is that exception.
+
+**Decision.** The settings-sourced slice of the hook list is owned by
+`SettingsHooks` (hooks/settings_loader.py), which remembers `(path, mtime_ns, size)` for
+every candidate settings file. `Agent.refresh_settings_hooks()` runs at the top of every
+turn (`arun_turn` / `astream_turn`): three stats, and only on a change a re-parse that
+REPLACES the previous settings slice in `HookManager.shell_hooks` — programmatic hooks
+are untouched and keep their order. A settings file that fails to parse keeps the
+previous hooks and logs the error once; a bad edit must never silently strip a
+workspace's gates.
+
+**Alternatives rejected.** Re-reading on every hook dispatch (stat + parse per tool call
+on a hot path, for a change that arrives a few times a day); a file watcher thread
+(another moving part, no portable inotify); restarting the session on change (ADR-0034
+does that for a `zakcode update` at an idle prompt, but a settings edit mid-turn is not a
+build change and a running reducer has no idle prompt for hours).
+
+**Consequences.** A hook registered mid-session fires from the next turn on. Pinned by
+`tests/test_settings_hooks_refresh.py`: unchanged files are not re-read; an added hook
+appears after refresh with programmatic hooks preserved and the old slice replaced, not
+appended; a removed file drops only its hooks; a broken edit keeps the previous hooks
+and a later good edit is picked up.

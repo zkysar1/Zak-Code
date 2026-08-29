@@ -533,12 +533,16 @@ class Agent:
         # danger-scanned (hard-denied in autonomous mode) and provider keys are scrubbed
         # from hook children. TE-R3(3): with a programmatic hook_manager, the settings.json
         # specs are APPENDED to its shell_hooks.
-        from zakcode.hooks.settings_loader import load_settings_hooks
+        # ADR-0079: the settings-sourced slice is re-read at the next turn boundary whenever a
+        # settings file changes on disk, so a hook a framework pull registers mid-session fires
+        # from the next turn on instead of after the next restart (see refresh below).
+        from zakcode.hooks.settings_loader import SettingsHooks
 
-        _specs, _errs = load_settings_hooks(
+        self._settings_hooks = SettingsHooks(
             self.settings.workspace_root,
             permission_mode=str(self.settings.permission_mode),
         )
+        _specs, _errs = self._settings_hooks.load()
         for _key, _err in _errs.items():
             logger.warning("settings.json hook %s: %s", _key, _err)
         if _specs:
@@ -1783,6 +1787,7 @@ class Agent:
         Seam B: when the turn STALLS and ``best_of_attempts > 1`` with a ``verify_command`` set, fan
         out best-of-N isolated retries and adopt (diff-apply) the first that verifies.
         """
+        self.refresh_settings_hooks()  # ADR-0079: a hook registered since last turn fires now
         self._begin_skill_turn()  # new top-level turn: refill the skills budget, forget loads
         self._register_composed_skill(user_text)  # …except the skill this turn IS (ADR-0063)
         if self._shared_budget is not None:
@@ -1818,11 +1823,29 @@ class Agent:
         it), so callers can ``async for event in agent.astream_turn(text)``. This
         is the incremental counterpart to :meth:`run_turn` / :meth:`arun_turn`.
         """
+        self.refresh_settings_hooks()  # ADR-0079: a hook registered since last turn fires now
         self._begin_skill_turn()  # new top-level turn: refill the skills budget, forget loads
         self._register_composed_skill(user_text)  # …except the skill this turn IS (ADR-0063)
         if self._shared_budget is not None:
             self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         return self.loop.astream_turn(user_text)
+
+    def refresh_settings_hooks(self) -> bool:
+        """Re-read the workspace's settings.json hooks if any settings file changed (ADR-0079).
+
+        Three stats per turn; a full re-parse only on change. Returns True when the hook
+        list was replaced. A settings file that fails to parse keeps the previous hooks —
+        a bad edit must never silently strip a workspace's gates.
+        """
+        changed, errs = self._settings_hooks.refresh(self.hook_manager)
+        for key, err in errs.items():
+            logger.warning("settings.json hook %s: %s", key, err)
+        if changed:
+            logger.info(
+                "settings.json hooks re-read: %d workspace hook(s) now active",
+                len(self._settings_hooks.specs),
+            )
+        return changed
 
     def inject_user_line(self, text: str) -> None:
         """Hand a line typed at THIS agent's own REPL to its running turn (ADR-0078).
