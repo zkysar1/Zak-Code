@@ -2803,11 +2803,8 @@ def chat(
                 _render_skills(console, agent)
                 continue
             if command == "/compact":
-                did = _run_async(agent.loop.compact_now())
-                _dim(
-                    console,
-                    "compacted older history into a summary." if did else "nothing to compact yet.",
-                )
+                _run_async(agent.loop.compact_now())
+                _dim(console, agent.loop.last_compaction or "nothing to compact yet.")
                 continue
             # A bare /<skill-name> RUNS the skill (Claude Code slash semantics): the
             # <command-name> expansion frame (+ <command-args> when trailing text was

@@ -15,10 +15,10 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from zakcode.agent.compact import CompactionConfig, Compactor
+from zakcode.agent.compact import ELISION_MARKER, CompactionConfig, Compactor
 from zakcode.agent.loop import AgentLoop
 from zakcode.hooks import HookEvent, LifecyclePayload
-from zakcode.messages import Message
+from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
@@ -207,3 +207,71 @@ def test_compact_now_reports_false_when_summarization_fails(tmp_path: Path) -> N
 
     assert asyncio.run(loop.compact_now(trigger="auto")) is False
     assert loop.session.messages == before  # history untouched on failure
+    # ADR-0083: the failure is named, never swallowed into a bare False.
+    assert loop.last_compaction == (
+        "summarizer failed (RuntimeError: summarizer down) and no long tool output to elide"
+    )
+
+
+def _tool_pair(tool_id: str, output: str) -> list[Message]:
+    return [
+        Message(role="assistant", blocks=[ToolUseBlock(id=tool_id, name="read", input={})]),
+        Message.tool_results([ToolResultBlock(tool_use_id=tool_id, output=output)]),
+    ]
+
+
+def _output(message: Message) -> str:
+    block = message.blocks[0]
+    assert isinstance(block, ToolResultBlock)
+    return block.output
+
+
+def test_compact_now_elides_old_tool_outputs_when_the_summarizer_fails(tmp_path: Path) -> None:
+    # ADR-0083: the summarizer is a model call and can fail (a busy pod, a provider error,
+    # an overflow of its own); the transcript still shrinks, and the failure is named.
+    provider = _ExplodingProvider([], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend([*_history(3), *_tool_pair("t1", "x" * 5000), *_history(3)])
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+    assert "summarizer failed (RuntimeError: summarizer down)" in loop.last_compaction
+    assert (
+        "elided 1 long tool output(s) instead — compacted 14 → 14 messages" in loop.last_compaction
+    )
+    assert _output(loop.session.messages[7]).startswith(ELISION_MARKER)
+    assert len(loop.session.messages) == 14  # nothing summarized away, nothing dropped
+
+
+def test_elide_now_reaches_the_tail(tmp_path: Path) -> None:
+    # The shape that killed a worker Body (coach, 2026-08-29): the LAST tool result was an
+    # 87 KB skill load, nothing was old enough to summarize, and every retry re-overflowed.
+    provider = _SummarizerProvider(["summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(
+        [Message.user("load the skill"), *_tool_pair("t1", "body " * 20_000)]
+    )
+    captured = _lifecycle_recorder(loop)
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is False
+    assert loop.last_compaction == "nothing old enough to compact"
+    assert asyncio.run(loop.elide_now(trigger="auto")) is True
+    assert loop.last_compaction == "elided 1 long tool output(s) across all 3 messages"
+    assert _output(loop.session.messages[2]).startswith(ELISION_MARKER)
+    events = [(p.event, p.trigger, p.source) for p in captured]
+    assert events[-2:] == [
+        (HookEvent.PRE_COMPACT, "auto", ""),
+        (HookEvent.SESSION_START, "", "compact"),
+    ]
+
+
+def test_maybe_compact_says_when_compaction_failed(tmp_path: Path) -> None:
+    # The turn-start check used to log a warning to a logger with no handler and return
+    # None — indistinguishable from "not needed" to anyone watching the session.
+    provider = _ExplodingProvider([], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    notice = asyncio.run(loop._maybe_compact())
+    assert notice == (
+        "compaction failed — summarizer failed (RuntimeError: summarizer down) and no long "
+        "tool output to elide; continuing with the full history"
+    )
