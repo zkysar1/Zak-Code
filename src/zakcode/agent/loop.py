@@ -982,18 +982,27 @@ def _restored_rail(skill: str, restored: list[Task]) -> str:
     )
 
 
-def _reopened_rail(skill: str, reopened: list[Task]) -> str:
-    """The rail that explains a reopen (ADR-0086): which sections went back to pending, and
-    that a section is done once its instructions were held and carried out."""
+def _reopened_rail(skill: str, reopened: list[Task], behind: list[str]) -> str:
+    """The rail that explains a reopen (ADR-0086): which sections went back to pending, that
+    the first of them is delivered with it (ADR-0089), and which open sections the plan
+    left behind on its way here."""
     titles = ", ".join(f"{step.title!r}" for step in reopened[:3])
     more = f" and {len(reopened) - 3} more" if len(reopened) > 3 else ""
-    return (
+    text = (
         f"You marked {len(reopened)} of /{skill}'s sections done before their instructions "
-        f"were delivered ({titles}{more}); they are pending again. A section's instructions "
-        "arrive when you mark the one before it done — do each as it arrives, then mark it "
-        "done (send the whole plan). To skip a section that does not apply, mark it "
-        "cancelled with a note saying why."
+        f"were delivered ({titles}{more}); they are pending again, and the first of them is "
+        "delivered below — carry it out, then mark its step done (send the whole plan); the "
+        "next section comes in the reply to that call. To skip a section that does not "
+        "apply, mark it cancelled with a note saying why."
     )
+    if behind:
+        names = ", ".join(f"{title!r}" for title in behind[:3])
+        rest = f" and {len(behind) - 3} more" if len(behind) > 3 else ""
+        text += (
+            f" Sections before it are still open ({names}{rest}): do them, or cancel them "
+            "with a note saying why."
+        )
+    return text
 
 
 def _reopen(task: Task) -> None:
@@ -2494,9 +2503,9 @@ class AgentLoop:
             if matched and all(step.status != "pending" for step in matched)
         }
 
-    def _current_page(self, name: str) -> int | None:
-        """The page of ``/<name>`` the plan is on (1-based) — ``None`` when every section is
-        closed or the skill is not paged.
+    def _current_page(self, name: str, *, frontier: int | None = None) -> int | None:
+        """The page of ``/<name>`` the plan is on (1-based) — ``None`` when every section at
+        or past the plan's frontier is closed, or the skill is not paged.
 
         With the seeded structure intact, page k is section step k. Once the model has
         reshaped the plan (merged, renamed, added steps — ``update_plan`` is full-replace),
@@ -2504,35 +2513,74 @@ class AgentLoop:
         "Step 0.5 + 0.6: …") among the steps that are THIS skill's (seeded from it, or
         owned by no skill) — never another skill's: /boot's "Step 1" is not /start's
         (measured 2026-08-28, first field run: /start's closed Steps 1–3 satisfied /boot's
-        pages 1–3 and the boot jumped to page 14). A page with no step left counts as
-        finished only once the plan has moved past it — a later page's step is under way
-        or closed — because sections are worked in order; until then it is delivered,
-        since the model closed (or dropped) a section whose text it never held. There is
-        no positional fallback: a plan that lost its open sections has not finished them.
+        pages 1–3 and the boot jumped to page 14). The current page is the first open one
+        at or past the plan's FRONTIER (``_plan_frontier``: the section under way, else the
+        last one closed): sections are worked in order, but an open section the plan has
+        moved past was left behind on purpose — a merge, a skip — and does not hold the
+        later pages back (ADR-0089; measured 2026-08-29, coach-w /worker-loop: the earliest
+        open section was delivered again and again while the model closed later ones it
+        had never held — every close reopened, the same rail re-sent, a doom loop). A page
+        with no step left is finished once the model HELD it (it read the section and
+        dropped it); else it is delivered. There is no positional fallback: a plan that
+        lost its open sections has not finished them.
         """
         pages = self._ensure_skill_pages(name)
         if pages is None:
             return None
+        if frontier is None:
+            frontier = self._plan_frontier(name, pages)
         closed = {"done", "cancelled"}
-        steps = self._section_steps(name)
-        if len(steps) == pages.count:
-            for step, page in zip(steps, pages.pages, strict=True):
-                if step.status not in closed:
-                    return page.index
-            return None
-        matches = self._page_matches(name, pages)
         held = self._skill_pages_delivered.get(name.lower(), set())
-        for page, matched in zip(pages.pages, matches, strict=True):
+        for page, matched in self._page_steps(name, pages):
+            if page.index < frontier:
+                continue  # left behind: the plan is past it
             if matched:
                 if any(step.status not in closed for step in matched):
                     return page.index
                 continue
-            # No step left for this page: finished if the model HELD it and dropped it (it
-            # read the section and decided), or if the plan moved past it; else current.
-            if page.index in held or self._moved_past(page, matches):
+            if page.index in held:
                 continue
             return page.index
         return None
+
+    def _plan_frontier(self, name: str, pages: SkillPages) -> int:
+        """The page of ``/<name>`` the plan has reached (1-based; 0 when none): the page of
+        the section under way, else the last page whose section is done or blocked. Pages
+        before it that are still open were left behind — a merge, a skip — and the plan is
+        not held back for them (ADR-0089; see ``_current_page``)."""
+        matches = [matched for _, matched in self._page_steps(name, pages)]
+        under_way = [
+            index
+            for index, matched in enumerate(matches, 1)
+            if any(step.status == "in_progress" for step in matched)
+        ]
+        if under_way:
+            return min(under_way)
+        return max(
+            (
+                index
+                for index, matched in enumerate(matches, 1)
+                if any(step.status in ("done", "blocked") for step in matched)
+            ),
+            default=0,
+        )
+
+    def _left_behind(self, name: str, pages: SkillPages, frontier: int) -> list[str]:
+        """Titles of the sections of ``/<name>`` before ``frontier`` that are still open, or
+        were dropped without ever being held — what a reopen rail names, so the model can
+        go back to them or cancel them on purpose."""
+        closed = {"done", "cancelled"}
+        held = self._skill_pages_delivered.get(name.lower(), set())
+        return [
+            page.title
+            for page, matched in self._page_steps(name, pages)
+            if page.index < frontier
+            and (
+                any(step.status not in closed for step in matched)
+                if matched
+                else page.index not in held
+            )
+        ]
 
     def _candidate_steps(self, name: str) -> list[Task]:
         """Plan steps a page of ``/<name>`` may match: those seeded from it (their note carries
@@ -2550,26 +2598,14 @@ class AgentLoop:
         candidates = self._candidate_steps(name)
         return [[step for step in candidates if page.matches(step.title)] for page in pages.pages]
 
-    @staticmethod
-    def _moved_past(page: SkillPage, matches: list[list[Task]]) -> bool:
-        """True when a later page's step is under way, done or blocked — the plan left
-        ``page`` behind on purpose (a merge, a skip), so it is finished without its text. A
-        later step CANCELLED is a decision about that section (a branch that does not apply),
-        not progress past this one (ADR-0086)."""
-        return any(
-            step.status in ("in_progress", "done", "blocked")
-            for later in matches[page.index :]
-            for step in later
-        )
-
-    def _reopen_unseen_done(self, name: str, pages: SkillPages) -> list[Task]:
+    def _reopen_unseen_done(self, name: str, pages: SkillPages) -> list[tuple[int, Task]]:
         """Put back to pending the section steps of ``/<name>`` the model marked done without
         ever holding their page — work it cannot have done (ADR-0086). Measured 2026-08-29
         (coach worker, paged /start): nine sections closed in one rewrite, the RUNNING branch
         among them, then "waiting for the next /start page" at an idle prompt for an hour —
         the page never came because its step was closed. A section CANCELLED unseen stays
-        closed: that is a decision about its title, not a claim of work. Returns the steps
-        reopened (``[]`` when none were)."""
+        closed: that is a decision about its title, not a claim of work. Returns
+        ``(page, step)`` per step reopened (``[]`` when none were)."""
         held = self._skill_pages_delivered.get(name.lower(), set())
         unseen = [
             (page.index, step)
@@ -2591,19 +2627,23 @@ class AgentLoop:
             reopened=len(unseen),
             pages=sorted({index for index, _ in unseen}),
         )
-        return [step for _, step in unseen]
+        return unseen
 
-    def _restore_dropped_sections(self, name: str, pages: SkillPages) -> list[Task]:
+    def _restore_dropped_sections(
+        self, name: str, pages: SkillPages, *, frontier: int | None = None
+    ) -> list[Task]:
         """Put back the section steps of ``/<name>`` that a full-replace plan dropped while
         they were still open — the skill's sections ARE the plan (ADR-0062), and a model
         that rewrites the plan without them cannot receive their pages. Measured 2026-08-28
         (coach, first paged /boot): an 18-step rewrite kept the five sections done so far
         and lost twenty open ones, then narrated "I need to add the remaining boot sections
-        to the plan" without knowing their titles. Sections the plan moved past (a later
-        section under way or closed) are the model's call and stay out. Returns the steps
-        restored (``[]`` when none were)."""
+        to the plan" without knowing their titles. Sections the plan moved past (before
+        ``frontier`` — a later section under way or closed) are the model's call and stay
+        out. Returns the steps restored (``[]`` when none were)."""
         if len(self._section_steps(name)) == pages.count:
             return []
+        if frontier is None:
+            frontier = self._plan_frontier(name, pages)
         matches = self._page_matches(name, pages)
         held = self._skill_pages_delivered.get(name.lower(), set())
         # Only sections the model never HELD: a delivered page whose step is gone was the
@@ -2611,7 +2651,7 @@ class AgentLoop:
         missing = [
             page
             for page, matched in zip(pages.pages, matches, strict=True)
-            if page.index not in held and not matched and not self._moved_past(page, matches)
+            if page.index >= frontier and page.index not in held and not matched
         ]
         if not missing:
             return []
@@ -2733,7 +2773,7 @@ class AgentLoop:
             found.append(entry)
         return found[-1] if found else None
 
-    def _unattended(self) -> bool:
+    def unattended(self) -> bool:
         """No one is at the prompt: the session runs under a permission mode that never asks
         (a worker Body's ``--dangerously-skip-permissions``, or autonomous)."""
         policy = self.permission_policy
@@ -2766,17 +2806,31 @@ class AgentLoop:
                 continue
             key = name.lower()
             delivered = self._skill_pages_delivered.setdefault(key, set())
+            # Where the plan is, as the model sent it — read BEFORE the reopen below turns
+            # its unseen closes back into open steps, which would drag the frontier down to
+            # the section it left behind (ADR-0089).
+            frontier = self._plan_frontier(name, pages)
             reopened = self._reopen_unseen_done(name, pages)
-            restored = self._restore_dropped_sections(name, pages)
+            if reopened:
+                # The model is at the first section it closed unseen: that page is what it
+                # needs, not the earliest open one behind it.
+                frontier = min(index for index, _ in reopened)
+            restored = self._restore_dropped_sections(name, pages, frontier=frontier)
             rails = [
                 rail
                 for rail in (
-                    _reopened_rail(name, reopened) if reopened else "",
+                    _reopened_rail(
+                        name,
+                        [step for _, step in reopened],
+                        self._left_behind(name, pages, frontier),
+                    )
+                    if reopened
+                    else "",
                     _restored_rail(name, restored) if restored else "",
                 )
                 if rail
             ]
-            current = self._current_page(name)
+            current = self._current_page(name, frontier=frontier)
             if current is None or current in delivered:
                 if rails:
                     # No new page to carry the explanation: say it on its own (ADR-0075).
@@ -5138,7 +5192,7 @@ class AgentLoop:
                 # the reply to the update_plan that closes this one — so a model that stops
                 # "awaiting the next section" waits forever, and an unattended Body has no
                 # one to type. Once per section per turn; a second stop ends the turn.
-                open_section = self._open_delivered_section() if self._unattended() else None
+                open_section = self._open_delivered_section() if self.unattended() else None
                 if open_section is not None and open_section[:2] not in section_nudged:
                     section_nudged.add(open_section[:2])
                     name, index, count, title = open_section
@@ -6607,7 +6661,7 @@ class AgentLoop:
                         yield AgentStatus(message="turn ended on announced work — asking for it")
                         continue
                     # Open-section guard (ADR-0087) — see the buffered twin.
-                    open_section = self._open_delivered_section() if self._unattended() else None
+                    open_section = self._open_delivered_section() if self.unattended() else None
                     if open_section is not None and open_section[:2] not in section_nudged:
                         section_nudged.add(open_section[:2])
                         name, index, count, title = open_section

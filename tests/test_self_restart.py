@@ -11,6 +11,8 @@ handoff that stamps the session for the build that will read it before exec.
 from __future__ import annotations
 
 import io
+import os
+import queue
 import sys
 import threading
 from pathlib import Path
@@ -212,3 +214,99 @@ def test_a_failed_exec_keeps_serving_and_says_so(
     console = Console(theme=cli.ZAK_THEME, file=out, force_terminal=False, width=100)
     cli._restart_into_new_build(console, agent)  # must not raise
     assert "restart failed" in out.getvalue()
+
+
+# ── an unattended session continues at the prompt (ADR-0090) ─────────────────
+
+
+def _unattended_agent(
+    tmp_path: Path,
+    *,
+    unattended: bool = True,
+    statuses: tuple[str, ...] = ("done", "pending", "pending"),
+) -> SimpleNamespace:
+    from zakcode.tasks import Task
+
+    session = Session(cwd=str(tmp_path), model="m", build="new-build")
+    session.task_network.tasks = [
+        Task(title=f"step {i}", status=s)
+        for i, s in enumerate(statuses, 1)  # type: ignore[arg-type]
+    ]
+    session.task_network.normalize()
+    return SimpleNamespace(session=session, loop=SimpleNamespace(unattended=lambda: unattended))
+
+
+def test_restart_marks_the_new_process_as_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, _store = _agent(tmp_path)
+    monkeypatch.delenv("ZAKCODE_RESTARTED_INTO", raising=False)
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: None)
+    monkeypatch.setattr(cli.sys, "argv", ["zakcode", "cli", "-s", "stale-id"])
+    cli._restart_into_new_build(_console(), agent)
+    assert os.environ["ZAKCODE_RESTARTED_INTO"] == "new-build"
+
+
+def test_an_unattended_restart_with_open_steps_continues_the_plan(tmp_path: Path) -> None:
+    """coach-w3 (2026-08-29): a doom-loop end, the restart into the next build, then 46
+    minutes at the prompt with 20 of 23 steps open — nobody types at a worker Body."""
+    line = cli._unattended_continuation(
+        _unattended_agent(tmp_path), restarted="new-build", stop_reason=None
+    )
+    assert line is not None
+    assert line.startswith("[harness] this session was restarted into build new-build")
+    assert "2 of 3 plan steps are still open" in line and "Do not stop to wait" in line
+
+
+def test_a_collapsed_turn_continues_and_any_other_end_does_not(tmp_path: Path) -> None:
+    agent = _unattended_agent(tmp_path)
+    for reason in ("doom_loop", "gave_up", "degenerated", "stuck"):
+        line = cli._unattended_continuation(agent, restarted=None, stop_reason=reason)
+        assert line is not None and f"the previous turn ended {reason!r}" in line
+    for reason in ("completed", "interrupted", "budget_exhausted", None):
+        assert cli._unattended_continuation(agent, restarted=None, stop_reason=reason) is None
+
+
+def test_no_continuation_when_attended_or_nothing_is_open(tmp_path: Path) -> None:
+    attended = _unattended_agent(tmp_path, unattended=False)
+    assert cli._unattended_continuation(attended, restarted="new-build", stop_reason=None) is None
+    finished = _unattended_agent(tmp_path, statuses=("done", "done", "cancelled"))
+    assert cli._unattended_continuation(finished, restarted="new-build", stop_reason=None) is None
+    empty = _unattended_agent(tmp_path, statuses=())
+    assert cli._unattended_continuation(empty, restarted="b", stop_reason="doom_loop") is None
+    bare = SimpleNamespace(session=finished.session)  # a thin remote agent: no loop at all
+    assert cli._unattended_continuation(bare, restarted="new-build", stop_reason=None) is None
+
+
+def test_after_a_collapse_the_continuation_is_queued_once_in_a_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = _unattended_agent(tmp_path)
+    agent.session.last_stop_reason = "doom_loop"
+    compacted: list[str] = []
+    monkeypatch.setattr(
+        cli, "_announce_resume", lambda console, a: compacted.append(a.session.last_stop_reason)
+    )
+    mux = SimpleNamespace(queue=queue.Queue())
+    collapsed = SimpleNamespace(stop_reason="doom_loop")
+    kicks = cli._continue_after_collapse(_console(), agent, mux, collapsed, 0)
+    assert kicks == 1 and compacted == ["doom_loop"]
+    kind, line = mux.queue.get_nowait()
+    assert kind == "harness" and "the previous turn ended 'doom_loop'" in line
+    # A second collapse in a row ends at the prompt, for the operator to see.
+    assert cli._continue_after_collapse(_console(), agent, mux, collapsed, kicks) == 1
+    assert mux.queue.empty()
+    # A clean turn resets the run; an attended session is never continued.
+    clean = SimpleNamespace(stop_reason="completed")
+    assert cli._continue_after_collapse(_console(), agent, mux, clean, 1) == 0
+    attended = _unattended_agent(tmp_path, unattended=False)
+    assert cli._continue_after_collapse(_console(), attended, mux, collapsed, 0) == 0
+    assert mux.queue.empty()
+
+
+@pytest.fixture(autouse=True)
+def _no_restart_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_restart_into_new_build`` sets the ADR-0090 marker for the process it execs into;
+    with the exec monkeypatched the marker would outlive the test."""
+    monkeypatch.delenv("ZAKCODE_RESTARTED_INTO", raising=False)

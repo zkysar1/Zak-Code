@@ -3467,3 +3467,68 @@ Body still sees each named step; the page carries their text in order. Pinned in
 splitter test's packed shape), `tests/test_skill_skeleton.py`
 (`test_a_skill_that_packs_into_one_page_arrives_whole_with_its_steps`) and
 `tests/test_slash_text.py` (a typed two-section skill arrives whole).
+
+## ADR-0089: The page delivered is the one the plan is on
+
+**Context.** The current page of a paged skill was its EARLIEST open section: sections are
+worked in order, so an open one held every later page back. A model that skips a section
+and closes a later one it never held (ADR-0086 reopens it) then got the skipped page again —
+and again: coach-w (2026-08-29, /worker-loop) had merged Phase 3.6 away, closed "Phase
+3.9–4.5" without its page, and for six turns the harness reopened 3.9, restored 3.6, and
+re-sent the same rail with page 14 while the model re-closed 3.9. The harness never
+escalated, the model never yielded, and the turn ended in the doom-loop detector. The same
+shape on coach-w3 ended a `/worker-loop` unit the same way.
+
+**Decision.** The plan has a FRONTIER: the page of the section under way, else the last
+page whose section is done or blocked, read from the plan as the model sent it — before a
+reopen turns its unseen closes back into open steps. The current page is the first open
+one at or past the frontier; open sections before it were left behind on purpose (a
+merge, a skip) and neither hold the later pages back nor come back through the restore
+(ADR-0075). When sections were closed unseen, the frontier is the first of them: its page
+is what arrives with the reopen rail, which now also names the open sections left behind
+("do them, or cancel them with a note"). A second close of that section is a close of a
+held page and stands. The plan can still come back to a page it jumped over (marking it
+under way makes it the frontier).
+
+**Alternatives rejected.** Reopening a section at most once, then letting the close stand
+(the model never sees the instructions it skipped; the deadlock only moves to the next
+section). Cancelling the left-behind sections on the model's behalf (a decision about a
+section is the model's — ADR-0086). Delivering every reopened page at once (breaks the
+one-page-at-a-time bound). Detecting the repeated rail by text (the shape is structural:
+frontier vs. earliest-open).
+
+**Consequences.** A model that closes N sections unseen is walked through them in N
+replies, one page each — bounded by the section count, never a loop. Pinned in
+`tests/test_skill_paging.py` (`test_a_section_closed_unseen_gets_its_own_page_not_the_one_left_behind`,
+`test_a_model_that_keeps_closing_unseen_sections_is_walked_through_them`,
+`test_the_page_delivered_is_the_one_the_plan_is_on`; the ADR-0086 and "came back to a
+page" tests hold).
+
+## ADR-0090: An unattended session continues at an idle prompt
+
+**Context.** A worker Body runs under a permission mode that never asks
+(`--dangerously-skip-permissions`), so an idle prompt is a dead Body — nobody types. Two
+paths put a working session there: the build restart (ADR-0034 execs a fresh process that
+resumes the session AT THE PROMPT), and a turn that collapsed (`doom_loop`, `gave_up`,
+`degenerated`, `stuck`). coach-w3 (2026-08-29): a doom-loop end at 09:04, the restart into
+the ADR-0087 build, the ADR-0033 compaction, then 46 minutes at the prompt with 20 of 23
+steps open — until an operator noticed.
+
+**Decision.** At the prompt, an unattended session with plan steps open continues its plan:
+the restart hands the fresh process a marker (`ZAKCODE_RESTARTED_INTO`), and the REPL
+queues a harness line — which build, how many steps are open, continue with the current
+step, do not wait — echoed with `(harness)` provenance. After a collapsed turn the same
+line follows the ADR-0033 compaction (the spiral does not carry over), once in a row: a
+second collapse ends at the prompt for the operator to see. Attended sessions, a plan with
+nothing open, and any other turn end are untouched.
+
+**Alternatives rejected.** Re-running the last user turn on restart (repeats work; a
+`/start` would re-boot). Continuing after `completed` turns too (a finished answer with
+optional plan steps left is legitimate; the turn-end veto and ADR-0087 cover the unattended
+cases). Continuing without a bound (a genuinely stuck session would loop forever). Doing it
+in the agent loop (idle is the REPL's; the loop does not know whether anyone is there).
+
+**Consequences.** A build update or a collapsed turn costs an unattended session one
+compaction and one continuation turn instead of its life. Pinned in
+`tests/test_self_restart.py` (the restart marker, the continuation line's conditions, the
+once-in-a-row bound).

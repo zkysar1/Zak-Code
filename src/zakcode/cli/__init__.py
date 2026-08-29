@@ -804,6 +804,71 @@ def _announce_resume(console: Console, agent: Any) -> None:
     )
 
 
+#: Turn ends after which an unattended session is continued (ADR-0090): the turn collapsed
+#: with nobody at the prompt to notice.
+_KICK_STOP_REASONS = frozenset({"doom_loop", "gave_up", "degenerated", "stuck"})
+
+
+def _unattended_continuation(
+    agent: Any, *, restarted: str | None, stop_reason: str | None
+) -> str | None:
+    """The line that continues an unattended session at an idle prompt, or ``None``
+    (ADR-0090).
+
+    A worker Body runs under a permission mode that never asks, so an idle prompt is a
+    dead Body: nobody types. Two ways it lands there with work still open — a build
+    restart (ADR-0034 resumes the session at the prompt) and a turn that collapsed
+    (``doom_loop`` …; the transcript is compacted first, as a resume would). Measured
+    2026-08-29 (coach-w3, zc-03): a doom-loop end, the restart into the next build, then
+    46 minutes at the prompt with 20 of 23 steps open. An attended session, a plan with
+    nothing open, and a turn that ended any other way are left alone.
+    """
+    unattended = getattr(getattr(agent, "loop", None), "unattended", None)
+    if unattended is None or not unattended():
+        return None
+    network = agent.session.task_network
+    if network.is_empty() or network.is_complete():
+        return None
+    if restarted is not None:
+        why = f"this session was restarted into build {restarted} (a zakcode update)"
+    elif stop_reason in _KICK_STOP_REASONS:
+        why = f"the previous turn ended {stop_reason!r} and its context was compacted"
+    else:
+        return None
+    done, total = network.progress()
+    return (
+        f"[harness] {why}. {total - done} of {total} plan steps are still open and nobody is "
+        "at the prompt: continue with the plan's current step. Read the plan in your "
+        "context, carry the step out, and mark it done with update_plan (send the whole "
+        "plan); if something repeated before, take a different approach. Do not stop to "
+        "wait for instructions."
+    )
+
+
+def _continue_after_collapse(
+    console: Console, agent: Any, mux: _InputMux, done: Any, kicks: int
+) -> int:
+    """After a turn: queue the continuation of an unattended session whose turn collapsed
+    with plan steps open (ADR-0090) — once in a row; a second collapse ends at the prompt
+    for the operator to see. Returns the updated count of continuations in a row."""
+    stop_reason = getattr(done, "stop_reason", None)
+    if stop_reason not in _KICK_STOP_REASONS:
+        return 0
+    if kicks >= 1:
+        return kicks
+    kick = _unattended_continuation(agent, restarted=None, stop_reason=stop_reason)
+    if kick is None:
+        return kicks
+    _announce_resume(console, agent)  # the collapsed context is compacted, as on a resume
+    notice_info(
+        console,
+        f"unattended session: the turn ended {stop_reason!r} with plan steps open "
+        f"{GLYPHS['dash']} continuing once (ADR-0090)",
+    )
+    mux.queue.put(("harness", kick))
+    return kicks + 1
+
+
 def _restart_args(argv: list[str], session_id: str) -> list[str]:
     """``argv`` (this process's arguments, program name excluded) with ``--session`` pinned
     to ``session_id`` — any ``-s``/``--session`` already present is replaced — so the fresh
@@ -860,6 +925,9 @@ def _restart_into_new_build(console: Console, agent: Any) -> None:
         if store is not None:
             store.save(agent.session)
     args = _restart_args(sys.argv[1:], agent.session.id)
+    # The fresh process learns it is a restart, not a human's resume (ADR-0090): an
+    # unattended session then continues its open plan instead of idling at the prompt.
+    os.environ["ZAKCODE_RESTARTED_INTO"] = new or "new build"
     sys.stdout.flush()
     sys.stderr.flush()
     try:
@@ -2491,6 +2559,9 @@ def chat(
         # Resume safety (ADR-0033) — after the session loop exists, so the compaction's
         # provider call runs on the loop every later turn uses, never a throwaway one.
         _announce_resume(console, agent)
+    # Set by the process that exec'd into this one (ADR-0034) — popped so a later restart
+    # cannot inherit it.
+    restarted = os.environ.pop("ZAKCODE_RESTARTED_INTO", None)
 
     # Headless one-shot (`-p/--prompt`): run a single task, no REPL, and exit with a code that
     # reflects the outcome (0 = completed cleanly, non-zero otherwise) so it composes in scripts.
@@ -2561,6 +2632,22 @@ def chat(
     )
     repl_mux.append(mux)
 
+    # ADR-0090: an unattended session (nobody types) that a restart put back at the prompt
+    # with plan steps open continues its plan; `kicks` bounds the same for collapsed turns.
+    kicks = 0
+    kick = (
+        _unattended_continuation(agent, restarted=restarted, stop_reason=None)
+        if restarted is not None
+        else None
+    )
+    if kick is not None:
+        notice_info(
+            console,
+            f"unattended session with plan steps open {GLYPHS['dash']} continuing after the "
+            "restart (ADR-0090)",
+        )
+        mux.queue.put(("harness", kick))
+
     global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
     _LAST_CTRL_C = 0.0  # the double-press window is per-session; never inherit one
     _LAST_CTRL_C_MID_TURN = False
@@ -2608,10 +2695,10 @@ def chat(
         via_say = kind == "say"
         if line.strip() and (via_say or not framed):
             # Echo input that never appeared in a frame — an injected say (with
-            # provenance) or a line typed ahead during the turn — where a typed
-            # line would have echoed: the transcript must show what the agent was
-            # just told.
-            tag = "(say) " if via_say else ""
+            # provenance), the harness's own continuation (ADR-0090), or a line typed
+            # ahead during the turn — where a typed line would have echoed: the
+            # transcript must show what the agent was just told.
+            tag = {"say": "(say) ", "harness": "(harness) "}.get(kind, "")
             console.print()
             console.print(f"  ▸ {tag}{escape(line)}", style="notice.dim")
 
@@ -2860,6 +2947,7 @@ def chat(
             # Cosmetic Claude Code statusLine (opt-in; no-op unless configured). After the
             # turn, in-process only — it never gated or slowed the turn that just ran.
             _maybe_render_status_line(console, agent)
+            kicks = _continue_after_collapse(console, agent, mux, renderer.last_done, kicks)
         except ProviderError as exc:
             notice_error(console, "provider error", str(exc))
             continue

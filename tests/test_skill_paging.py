@@ -832,6 +832,82 @@ def test_a_section_marked_done_unseen_is_reopened_and_its_page_arrives(tmp_path:
     assert loop._skill_pages_delivered["demo"] == {1, 2, 3}
 
 
+def test_a_section_closed_unseen_gets_its_own_page_not_the_one_left_behind(
+    tmp_path: Path,
+) -> None:
+    """The model skipped section 2 and closed 3 without its page. Reopening 3 and re-sending
+    page 2 — the earliest open one — was a doom loop in the field: the model wanted 3, closed
+    it again, got page 2 again (coach-w, 2026-08-29). ADR-0089: page 3 arrives, the rail
+    names the section left behind, and the second close stands."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        plans = _plans_sent(messages)
+        if plans == 0:
+            return _plan(_seeded("done", "pending", "done"), call_id=f"p{n}")
+        if plans == 1:  # page 3 held now: the close stands
+            tasks = _seeded("done", "pending", "done")
+            tasks[2]["note"] = f"{MARK} (carried out)"
+            return _plan(tasks, call_id=f"p{n}")
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert [n["pages"] for n in _notes(loop, "skill_sections_reopened")] == [[3]]
+    assert [(n["page"], n["skipped"]) for n in _notes(loop, "skill_page")] == [(3, 1)]
+    page, _ = _page_after_plan(provider, "[/demo — page 3 of 3: Step 3: Third]")
+    assert "the first of them is delivered below" in page
+    assert "Sections before it are still open ('Step 2: Second')" in page
+    assert "Do the third thing." in page
+    assert [t.status for t in loop.session.task_network.tasks] == ["done", "pending", "done"]
+    assert loop._skill_pages_delivered["demo"] == {1, 3}
+    assert _plans_sent(loop.session.messages) == 2
+
+
+def test_a_model_that_keeps_closing_unseen_sections_is_walked_through_them(
+    tmp_path: Path,
+) -> None:
+    """Every section closed at once, three times over: each reply delivers the first section
+    still unseen, so the walk is bounded by the section count — never a loop (ADR-0089)."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        plans = _plans_sent(messages)
+        if plans < 3:
+            tasks = _seeded("done", "done", "done")
+            for task in tasks:
+                task["note"] = f"{MARK} (rewrite {plans})"
+            return _plan(tasks, call_id=f"p{n}")
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert [n["pages"] for n in _notes(loop, "skill_sections_reopened")] == [[2, 3], [3]]
+    assert [n["page"] for n in _notes(loop, "skill_page")] == [2, 3]
+    assert [t.status for t in loop.session.task_network.tasks] == ["done", "done", "done"]
+    assert loop._skill_pages_delivered["demo"] == {1, 2, 3}
+
+
+def test_the_page_delivered_is_the_one_the_plan_is_on(tmp_path: Path) -> None:
+    """Section 3 under way while 2 is still open: the plan is on 3, so page 3 arrives — not
+    page 2, which the plan moved past (ADR-0089)."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "pending", "in_progress"))
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert [(n["page"], n["skipped"]) for n in _notes(loop, "skill_page")] == [(3, 1)]
+    assert loop._skill_pages_delivered["demo"] == {1, 3}
+
+
 def test_a_section_cancelled_unseen_stays_closed(tmp_path: Path) -> None:
     """Cancelling is a decision about the title — a branch that does not apply — and costs
     no page; only DONE claims work the model never saw."""
