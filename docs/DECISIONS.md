@@ -3703,3 +3703,27 @@ frontier; the two-word floor and the stop list are the guard.
 **Consequences.** Pinned in `tests/test_skill_paging.py`
 (`test_a_lettered_step_id_is_a_marker`, `test_overlap_finds_the_page_a_paraphrase_means`,
 `test_a_paraphrased_branch_plan_delivers_no_page_the_model_closed`).
+
+## ADR-0096: Apport's own crash is stripped from a traceback
+
+**Context.** Ubuntu installs apport's Python excepthook system-wide. On an inline program
+(`python3 -c …`) the hook itself crashes — it `stat`s the "binary", which is `-c` — so the
+interpreter prints the real traceback, then `Error in sys.excepthook:` with the hook's
+~20-line traceback (`FileNotFoundError: … '/opt/coach-mind/-c'`), then `Original exception
+was:` and the real traceback again. Measured 2026-08-29 on zc-03: 20 of the fleet's 61
+tracebacks that day. A small model reads the hook's failure as a second, unrelated error,
+and the block spends output budget on nothing.
+
+**Decision.** The bash tool strips the block before anything else looks at the output:
+from `Error in sys.excepthook:` through `Original exception was:`, when the block names
+`apport_python_hook`; the re-printed original that follows goes too when the same text
+already stands above, and stays when it is the only copy. Any other hook's failure is real
+output and is kept. Done before the 64 KB truncation so the noise cannot spend the budget.
+
+**Alternatives rejected.** Disabling apport on the box (`enabled=0` in
+`/etc/default/apport`) — a per-box fix the next box lacks; the harness runs wherever a Mind
+is deployed. Stripping every `Error in sys.excepthook` — another hook's failure is the
+model's to see.
+
+**Consequences.** Pinned in `tests/test_builtins.py`
+(`test_apport_excepthook_noise_is_stripped_from_bash_output`).
