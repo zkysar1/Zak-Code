@@ -3349,3 +3349,45 @@ denial; `rm -rf /`, `rm -rf ~`, `rm -rf /etc` and the wildcard forms are denied 
 as before. Pinned in `tests/test_permissions.py`: the dangerous list gains `~`, `~/*`,
 `/*`, `/home/user/*` and `/opt/..`; the benign list gains ten deep absolute and
 home-relative targets, the glued deep path, and `$HOMEDIR/x` (not the home variable).
+
+## ADR-0086: A section closed as done before its page was held is not finished — it is reopened, and the page arrives
+
+**Context.** ADR-0067 pages a sectioned skill through the plan: page k arrives when the plan
+reaches section step k, and a section the model closed without its page counted as finished
+("the plan is the model's to shape"). On a small field model that contract failed in one
+rewrite: a coach worker's paged `/start` (13 sections) was closed nine steps at a time — the
+`RUNNING + autonomous` branch, the one it needed, marked done unseen and later renamed; every
+branch after it cancelled — so `_current_page` found nothing open, the page never came, and
+the worker sat at an idle prompt for an hour saying "waiting for the next /start page (page 4
+of 13)" (coach-w3, 2026-08-29 05:51–06:27). Two smaller defects compounded it: a later
+section CANCELLED counted as "moved past" an earlier unseen one, so the renamed page was
+neither matched nor restored; and which pages had been held lived only in memory, re-read
+after an ADR-0034 restart from the transcript's page headers — which a compaction removes
+with the messages they rode in.
+
+**Decision.** Three rules, all in the paging seam. (1) A section step marked `done` while its
+page was never held goes back to `pending` (the step and any descendants closed as done — a
+compound's status derives from its children) and its page is delivered with a rail that says
+which sections were reopened and why: work the model never saw cannot be done. `cancelled`
+unseen stays closed — a decision about the section's title (a branch that does not apply),
+not a claim of work, and the one cheap way to skip. (2) `_moved_past` counts a later step
+under way, done or blocked — never cancelled. (3) The pages held per skill are session state
+(`Session.skill_pages_delivered`), written on every load and delivery; a document saved
+before the field existed is read once from the headers still in the transcript plus the
+sections its plan has taken up (any status but pending), so nothing already closed is
+reopened after the fact. Restored sections also go back in their place — before the nearest
+later kept step, else after the nearest earlier one — so page k is section step k again.
+
+**Alternatives rejected.** Refusing the `update_plan` call (the reply would be a fourth
+rewrite of the same plan; the tool result already mirrors the plan, and the page is what it
+lacks). Delivering every page before allowing any close (five wasted model turns per
+branch-exclusive skill on a three-minute-per-turn pod). Treating cancelled-unseen like
+done-unseen (the same cost, and it removes the one cheap skip). Keeping the transcript scan
+as the record (it is exactly what compaction erases).
+
+**Consequences.** A section closed unseen costs one page and one turn, then proceeds
+normally; a mass-close collapses to ordinary paging instead of an idle worker. Pinned in
+`tests/test_skill_paging.py`: done-unseen reopened and delivered with the rail;
+cancelled-unseen stays closed; cancelling later sections no longer finishes an unseen one
+(the restore lands in order); held pages survive a restart whose headers were compacted
+away; a pre-record document takes its open work as held.

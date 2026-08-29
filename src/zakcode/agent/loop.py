@@ -982,6 +982,30 @@ def _restored_rail(skill: str, restored: list[Task]) -> str:
     )
 
 
+def _reopened_rail(skill: str, reopened: list[Task]) -> str:
+    """The rail that explains a reopen (ADR-0086): which sections went back to pending, and
+    that a section is done once its instructions were held and carried out."""
+    titles = ", ".join(f"{step.title!r}" for step in reopened[:3])
+    more = f" and {len(reopened) - 3} more" if len(reopened) > 3 else ""
+    return (
+        f"You marked {len(reopened)} of /{skill}'s sections done before their instructions "
+        f"were delivered ({titles}{more}); they are pending again. A section's instructions "
+        "arrive when you mark the one before it done — do each as it arrives, then mark it "
+        "done (send the whole plan). To skip a section that does not apply, mark it "
+        "cancelled with a note saying why."
+    )
+
+
+def _reopen(task: Task) -> None:
+    """Back to pending — ``task`` and every descendant closed as done. A compound's status
+    derives from its children (``TaskNetwork.normalize``), so reopening only the parent
+    would not survive the next normalize."""
+    if task.status == "done":
+        task.status = "pending"
+    for child in task.children:
+        _reopen(child)
+
+
 def _control_rail(text: str) -> str:
     """Render loop-injected guidance (a stuck nudge / recipe stall) with provenance + rail.
 
@@ -1353,7 +1377,9 @@ class AgentLoop:
         # page delivered so far (session-lifetime — a page belongs to the plan, not the turn),
         # and this turn's delivery record for the summary note.
         self._skill_pages: dict[str, SkillPages] = {}
-        self._skill_pages_delivered: dict[str, set[int]] = {}
+        self._skill_pages_delivered: dict[str, set[int]] = {
+            key: set(pages) for key, pages in session.skill_pages_delivered.items()
+        }
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -2367,7 +2393,8 @@ class AgentLoop:
 
     def _ensure_skill_pages(self, name: str) -> SkillPages | None:
         """The pages of ``/<name>`` (cached), or ``None`` when it is not a sectioned skill.
-        First sight of a skill after a restart reads how far it was paged from the transcript."""
+        How far it was paged comes with the session (ADR-0086); a document saved before the
+        session carried that record is read from the transcript and the plan, once."""
         key = name.lower()
         if key in self._skill_pages:
             return self._skill_pages[key]
@@ -2377,7 +2404,11 @@ class AgentLoop:
             return None
         self._skill_pages[key] = pages
         if key not in self._skill_pages_delivered:
-            self._skill_pages_delivered[key] = self._pages_in_transcript(name)
+            # The page headers still in the transcript, plus the sections the plan has taken
+            # up — closed under the old contract, so never reopened after the fact.
+            self._set_delivered(
+                name, self._pages_in_transcript(name) | self._engaged_pages(name, pages)
+            )
         return pages
 
     def _pages_in_transcript(self, name: str) -> set[int]:
@@ -2393,12 +2424,20 @@ class AgentLoop:
                         seen.add(int(match.group("page")))
         return seen
 
+    def _set_delivered(self, name: str, pages: set[int]) -> None:
+        """Record the pages of ``/<name>`` the model holds — for this process and, through the
+        session, for the next one (ADR-0086): neither a restart nor a compaction may turn a
+        held page back into an unseen one."""
+        key = name.lower()
+        self._skill_pages_delivered[key] = pages
+        self.session.skill_pages_delivered[key] = sorted(pages)
+
     def _register_skill_load(self, name: str) -> None:
         """A fresh load (either door) delivered page 1: the count for that skill starts over."""
         pages = self._ensure_skill_pages(name)
         if pages is None:
             return
-        self._skill_pages_delivered[name.lower()] = {1}
+        self._set_delivered(name, {1})
         record = self._turn_paging.setdefault(
             name, {"pages": pages.count, "delivered": [], "skipped": 0}
         )
@@ -2420,6 +2459,24 @@ class AgentLoop:
 
         walk(self.session.task_network.tasks, False)
         return out
+
+    def _page_steps(self, name: str, pages: SkillPages) -> list[tuple[SkillPage, list[Task]]]:
+        """Per page of ``/<name>``, the plan steps that are its section: by position while the
+        seeded structure is intact, else by title or marker token (see ``_current_page``)."""
+        steps = self._section_steps(name)
+        if len(steps) == pages.count:
+            return [(page, [step]) for page, step in zip(pages.pages, steps, strict=True)]
+        return list(zip(pages.pages, self._page_matches(name, pages), strict=True))
+
+    def _engaged_pages(self, name: str, pages: SkillPages) -> set[int]:
+        """The pages of ``/<name>`` whose section steps the plan has taken up (any status but
+        pending) — all a document saved before ``skill_pages_delivered`` existed can say about
+        the pages it held: under the old contract a section closed unseen counted as finished."""
+        return {
+            page.index
+            for page, matched in self._page_steps(name, pages)
+            if matched and all(step.status != "pending" for step in matched)
+        }
 
     def _current_page(self, name: str) -> int | None:
         """The page of ``/<name>`` the plan is on (1-based) — ``None`` when every section is
@@ -2479,9 +2536,46 @@ class AgentLoop:
 
     @staticmethod
     def _moved_past(page: SkillPage, matches: list[list[Task]]) -> bool:
-        """True when a later page's step is under way or closed — the plan left ``page``
-        behind on purpose (a merge, a skip), so it is finished without its text."""
-        return any(step.status != "pending" for later in matches[page.index :] for step in later)
+        """True when a later page's step is under way, done or blocked — the plan left
+        ``page`` behind on purpose (a merge, a skip), so it is finished without its text. A
+        later step CANCELLED is a decision about that section (a branch that does not apply),
+        not progress past this one (ADR-0086)."""
+        return any(
+            step.status in ("in_progress", "done", "blocked")
+            for later in matches[page.index :]
+            for step in later
+        )
+
+    def _reopen_unseen_done(self, name: str, pages: SkillPages) -> list[Task]:
+        """Put back to pending the section steps of ``/<name>`` the model marked done without
+        ever holding their page — work it cannot have done (ADR-0086). Measured 2026-08-29
+        (coach worker, paged /start): nine sections closed in one rewrite, the RUNNING branch
+        among them, then "waiting for the next /start page" at an idle prompt for an hour —
+        the page never came because its step was closed. A section CANCELLED unseen stays
+        closed: that is a decision about its title, not a claim of work. Returns the steps
+        reopened (``[]`` when none were)."""
+        held = self._skill_pages_delivered.get(name.lower(), set())
+        unseen = [
+            (page.index, step)
+            for page, matched in self._page_steps(name, pages)
+            if page.index not in held
+            for step in matched
+            if step.status == "done"
+        ]
+        if not unseen:
+            return []
+        for _, step in unseen:
+            _reopen(step)
+        self.session.task_network.normalize()
+        self._note(
+            "intervention",
+            f"/{name}: reopened {len(unseen)} sections marked done before they were delivered",
+            kind="skill_sections_reopened",
+            skill=name,
+            reopened=len(unseen),
+            pages=sorted({index for index, _ in unseen}),
+        )
+        return [step for _, step in unseen]
 
     def _restore_dropped_sections(self, name: str, pages: SkillPages) -> list[Task]:
         """Put back the section steps of ``/<name>`` that a full-replace plan dropped while
@@ -2524,17 +2618,40 @@ class AgentLoop:
             return []  # the body and its pages disagree; nothing trustworthy to restore
         restored = [skeleton[page.index - 1] for page in missing]
         network = self.session.task_network
-        last_kept = next(
-            (step for matched in reversed(matches) for step in matched if matched), None
-        )
-        siblings = network.tasks
-        position = len(siblings)
-        if last_kept is not None:
-            found = self._siblings_holding(last_kept)
+        # Each section goes back in its place — before the first kept step of the nearest
+        # later section, else after the last kept step of the nearest earlier one — so the
+        # seeded order holds and page k is section step k again. Highest page first, so a
+        # lower one can anchor on it.
+        placed: dict[int, Task] = {}
+        for page, step in sorted(
+            zip(missing, restored, strict=True), key=lambda pair: -pair[0].index
+        ):
+            before = next(
+                (
+                    placed[index] if index in placed else matches[index - 1][0]
+                    for index in range(page.index + 1, pages.count + 1)
+                    if index in placed or matches[index - 1]
+                ),
+                None,
+            )
+            after = next(
+                (
+                    kept
+                    for earlier in reversed(matches[: page.index - 1])
+                    for kept in reversed(earlier)
+                ),
+                None,
+            )
+            anchor = before if before is not None else after
+            siblings = network.tasks
+            position = len(siblings)
+            found = self._siblings_holding(anchor) if anchor is not None else None
             if found is not None:
                 siblings = found
-                position = next(i for i, task in enumerate(siblings) if task is last_kept) + 1
-        siblings[position:position] = restored
+                at = next(i for i, task in enumerate(siblings) if task is anchor)
+                position = at if before is not None else at + 1
+            siblings[position:position] = [step]
+            placed[page.index] = step
         network.normalize()
         self._note(
             "intervention",
@@ -2604,22 +2721,29 @@ class AgentLoop:
                 continue
             key = name.lower()
             delivered = self._skill_pages_delivered.setdefault(key, set())
+            reopened = self._reopen_unseen_done(name, pages)
             restored = self._restore_dropped_sections(name, pages)
+            rails = [
+                rail
+                for rail in (
+                    _reopened_rail(name, reopened) if reopened else "",
+                    _restored_rail(name, restored) if restored else "",
+                )
+                if rail
+            ]
             current = self._current_page(name)
             if current is None or current in delivered:
-                if restored:
+                if rails:
                     # No new page to carry the explanation: say it on its own (ADR-0075).
                     # A silent restore reads as a plan edit that did not take, and the
                     # model re-issues the same collapse until the window overflows.
-                    self.session.add_message(
-                        Message.user(_control_rail(_restored_rail(name, restored)))
-                    )
+                    self.session.add_message(Message.user(_control_rail(" ".join(rails))))
                     self._persist()
                 continue
             text = pages.render(current)
-            if restored:
+            if rails:
                 text = (
-                    _restored_rail(name, restored)
+                    " ".join(rails)
                     + " Sections are delivered one at a time as you mark each done — here "
                     "is the one that is current now.\n\n" + text
                 )
@@ -2639,6 +2763,7 @@ class AgentLoop:
                 else 0
             )
             delivered.add(current)
+            self._set_delivered(name, delivered)
             record = self._turn_paging.setdefault(
                 name, {"pages": pages.count, "delivered": [], "skipped": 0}
             )

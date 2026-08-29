@@ -404,7 +404,8 @@ def test_every_section_closed_means_no_page(tmp_path: Path) -> None:
         if n == 1:
             return _use()
         if n == 2:
-            return _plan(_seeded("done", "cancelled", "done"))
+            # Cancelled, not done: a section closed as done unseen is reopened (ADR-0086).
+            return _plan(_seeded("done", "cancelled", "cancelled"))
         return LLMResult(text="done")
 
     loop = _loop(_ScriptByCall(script), tmp_path)
@@ -716,3 +717,159 @@ def test_the_plan_can_come_back_to_a_page_it_jumped_over(tmp_path: Path) -> None
     pages = [(n["page"], n["skipped"]) for n in _notes(loop, "skill_page")]
     assert pages == [(3, 1), (2, 0)]
     assert loop._skill_pages_delivered["demo"] == {1, 2, 3}
+
+
+# ── the third field run's defect (2026-08-29, coach worker /start) ────────────────────
+
+
+def _plans_sent(messages: list[Message]) -> int:
+    """How many plan results the transcript holds — the plan-quality judge shares the
+    provider, so call numbers are not iterations (see ``test_a_third_drop_...``)."""
+    return sum(
+        1
+        for m in messages
+        for b in m.blocks
+        if isinstance(b, ToolResultBlock) and (b.output or "").startswith("Current plan")
+    )
+
+
+def test_a_section_marked_done_unseen_is_reopened_and_its_page_arrives(tmp_path: Path) -> None:
+    """Nine sections closed in one rewrite, the RUNNING branch among them, then "waiting for
+    the next /start page" at an idle prompt for an hour: the pages never came because their
+    steps were closed (ADR-0086). Done before its page was held → pending again, page
+    delivered, and the model told why."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        plans = _plans_sent(messages)
+        if plans == 0:
+            return _plan(_seeded("done", "done", "done"), call_id=f"p{n}")
+        if plans == 1:  # page 2 arrived: done for real this time, 3 still pending
+            return _plan(_seeded("done", "done", "pending"), call_id=f"p{n}")
+        if plans == 2:  # page 3 arrived
+            return _plan(_seeded("done", "done", "done"), call_id=f"p{n}")
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    (reopened,) = _notes(loop, "skill_sections_reopened")
+    assert (reopened["reopened"], reopened["pages"]) == (2, [2, 3])
+    assert [n["page"] for n in _notes(loop, "skill_page")] == [2, 3]
+    page, _ = _page_after_plan(provider, "[/demo — page 2 of 3: Step 2: Second]")
+    assert "You marked 2 of /demo's sections done before their instructions were delivered" in page
+    assert "('Step 2: Second', 'Step 3: Third')" in page
+    assert "here is the one that is current now" in page
+    assert "Do the second thing." in page
+    assert [t.status for t in loop.session.task_network.tasks] == ["done", "done", "done"]
+    assert loop._skill_pages_delivered["demo"] == {1, 2, 3}
+
+
+def test_a_section_cancelled_unseen_stays_closed(tmp_path: Path) -> None:
+    """Cancelling is a decision about the title — a branch that does not apply — and costs
+    no page; only DONE claims work the model never saw."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "cancelled", "cancelled"))
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert _notes(loop, "skill_sections_reopened") == []
+    assert _notes(loop, "skill_page") == []
+    assert loop.current_skill_page("demo") is None
+
+
+def test_cancelling_later_sections_does_not_finish_an_unseen_one(tmp_path: Path) -> None:
+    """The worker renamed the RUNNING section, marked it done, and cancelled every branch
+    after it: the page matched no step and counted as "moved past" on the cancellations, so
+    it never came. A cancelled later step is not progress past an earlier one — the section
+    comes back and its page arrives."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(
+                [
+                    {"title": "Step 1: First", "status": "done", "note": MARK},
+                    {"title": "The middle, in the model's own words", "status": "done"},
+                    {"title": "Step 3: Third", "status": "cancelled", "note": MARK},
+                ]
+            )
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    (restored,) = _notes(loop, "skill_sections_restored")
+    assert restored["pages"] == [2]
+    (note,) = _notes(loop, "skill_page")
+    assert note["page"] == 2
+    assert "Step 2: Second" in [t.title for t in loop.session.task_network.tasks]
+
+
+def test_held_pages_survive_a_restart_that_lost_their_headers(tmp_path: Path) -> None:
+    """ADR-0034 execs a new process and a compaction drops the headers with the messages
+    they rode in. The session carries which pages were held, so a section closed after the
+    restart is not reopened as unseen — and the next page turns as usual."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "in_progress", "pending"))
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert loop.session.skill_pages_delivered == {"demo": [1, 2]}
+    loop.session.messages.clear()  # the compaction took every header
+    session = Session.model_validate_json(loop.session.model_dump_json())  # the store round-trip
+
+    def script2(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _plan(_seeded("done", "done", "in_progress"), call_id="p2")
+        return LLMResult(text="done")
+
+    loop2 = _loop(_ScriptByCall(script2), tmp_path, session=session)
+    asyncio.run(loop2.arun_turn("carry on"))
+    assert _notes(loop2, "skill_sections_reopened") == []
+    (note,) = _notes(loop2, "skill_page")
+    assert note["page"] == 3
+    assert session.skill_pages_delivered == {"demo": [1, 2, 3]}
+
+
+def test_a_document_saved_before_the_record_takes_its_open_work_as_held(tmp_path: Path) -> None:
+    """A session written by an older build carries no record: the pages it held are read
+    from the headers left in the transcript plus the sections the plan has taken up — so a
+    section under way when the headers were compacted away is not reopened, and the rule
+    governs only what is closed from here on."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("done", "in_progress", "pending"))
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    loop.session.messages.clear()
+    loop.session.skill_pages_delivered.clear()  # the older build never wrote it
+    session = Session.model_validate_json(loop.session.model_dump_json())
+
+    def script2(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _plan(_seeded("done", "done", "pending"), call_id="p2")
+        return LLMResult(text="done")
+
+    loop2 = _loop(_ScriptByCall(script2), tmp_path, session=session)
+    asyncio.run(loop2.arun_turn("carry on"))
+    assert _notes(loop2, "skill_sections_reopened") == []
+    (note,) = _notes(loop2, "skill_page")
+    assert note["page"] == 3
+    assert session.skill_pages_delivered == {"demo": [1, 2, 3]}
