@@ -3532,3 +3532,31 @@ in the agent loop (idle is the REPL's; the loop does not know whether anyone is 
 compaction and one continuation turn instead of its life. Pinned in
 `tests/test_self_restart.py` (the restart marker, the continuation line's conditions, the
 once-in-a-row bound).
+
+## ADR-0091: A closed section stays closed across a rewrite
+
+**Context.** The loop remembered which pages the model HELD (ADR-0086) but not which
+sections it had CLOSED. A full-replace rewrite that dropped a section the model had
+cancelled made it indistinguishable from one dropped unseen: the restore (ADR-0075) put it
+back pending, and once the restore gave up the pages still arrived "as the plan reached
+them". coach-w2 (2026-08-29, first unit on the ADR-0088 build): the worker had cancelled
+`/start`'s IDLE branches (the RUNNING branch was taken; correct), a 2-step rewrite dropped
+them, the restore resurrected all four as pending, and `/start` pages 4, 5 and 6 arrived one
+per turn while the worker was in `/worker-loop` — three model turns of a skill it had
+finished.
+
+**Decision.** The session records, per skill, the pages whose section the plan has closed —
+done after its page was held, or cancelled (`skill_pages_settled`, kept beside
+`skill_pages_delivered`; updated after every plan change, after the unseen-done reopen so a
+reopened section is not settled by mistake). A settled section that a rewrite drops is
+neither restored nor delivered, and the reopen rail does not list it among the sections
+left behind. A settled section the model re-adds is open again and paged as usual.
+
+**Alternatives rejected.** Treating every drop after the restore limit as final (ADR-0075
+deliberately keeps delivering undecided sections). Inferring "closed" from the transcript
+(compaction removes the evidence; the session record survives it, as for held pages).
+Never restoring a cancelled section's siblings (the siblings were never decided).
+
+**Consequences.** One more append-only session field (an older build forgets closures and
+falls back to ADR-0075's behavior). Pinned in `tests/test_skill_paging.py`
+(`test_a_section_cancelled_then_dropped_stays_closed`, including the store round-trip).

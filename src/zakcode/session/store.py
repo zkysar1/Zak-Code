@@ -173,6 +173,14 @@ class Session(BaseModel):
     #: the loop falls back to the headers still in the transcript plus the sections the plan
     #: has taken up (fails SAFE — nothing already closed is reopened after the fact).
     skill_pages_delivered: dict[str, list[int]] = Field(default_factory=dict)
+    #: Skill paging (ADR-0091): per lower-cased skill name, the pages whose section the plan
+    #: CLOSED — done after its page was held, or cancelled. A rewrite that drops a closed
+    #: section does not reopen the question: the section is neither put back nor delivered
+    #: (measured 2026-08-29: /start's cancelled IDLE branches came back pending and arrived
+    #: one page per turn while the worker was three skills further on). Schema v1 stays
+    #: append-only: an OLDER build drops the field and only forgets the closures (fails
+    #: SAFE — at worst a dropped section comes back, the ADR-0075 behavior).
+    skill_pages_settled: dict[str, list[int]] = Field(default_factory=dict)
     #: Resume safety (ADR-0033): the build (``build_info.build_commit()``) that last SAVED this
     #: document, and how its last turn ended (the ``stop_reason``). A resume reads both: a
     #: transcript written by another build — or one whose last turn collapsed (gave_up /

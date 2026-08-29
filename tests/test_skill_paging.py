@@ -1088,3 +1088,39 @@ def test_an_attended_turn_may_end_on_an_open_section(tmp_path: Path) -> None:
     asyncio.run(loop.arun_turn("run /demo"))
     assert _notes(loop, "section_gate") == []
     assert loop.session.messages[-1].role == "assistant"
+
+
+# ── the fifth field run's defect (2026-08-29, coach-w2 on the ADR-0088 build) ──────────
+
+
+def test_a_section_cancelled_then_dropped_stays_closed(tmp_path: Path) -> None:
+    """The worker cancelled /start's IDLE branches; a later rewrite dropped them; the restore
+    (ADR-0075) put them back PENDING and pages 4–6 arrived one per turn while the worker was
+    three skills further on (coach-w2, 2026-08-29). ADR-0091: a closed section is settled —
+    a rewrite that drops it neither restores nor delivers it — and the record outlives a
+    restart."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            return _plan(_seeded("in_progress", "cancelled", "cancelled"))
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert loop.session.skill_pages_settled == {"demo": [2, 3]}
+    assert _notes(loop, "skill_page") == []
+    session = Session.model_validate_json(loop.session.model_dump_json())  # the store round-trip
+
+    def script2(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:  # sections 2 and 3 dropped from the plan, after being cancelled
+            return _plan([_seeded("done", "cancelled", "cancelled")[0]], call_id="p2")
+        return LLMResult(text="done")
+
+    loop2 = _loop(_ScriptByCall(script2), tmp_path, session=session)
+    asyncio.run(loop2.arun_turn("carry on"))
+    assert _notes(loop2, "skill_sections_restored") == []
+    assert _notes(loop2, "skill_page") == []
+    assert [t.title for t in loop2.session.task_network.tasks] == ["Step 1: First"]
+    assert loop2.current_skill_page("demo") is None
