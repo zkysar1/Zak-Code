@@ -85,11 +85,12 @@ _FIND_MAX_DEPTH = 4
 _FIND_MAX_DIRS = 800
 
 
-def _locate_all(root: Path, name: str, limit: int = 3) -> list[str]:
+def _locate_all(root: Path, name: str, limit: int = 3, *, dirs: bool = False) -> list[str]:
     """Workspace-relative paths of up to ``limit`` files named ``name`` (bounded walk).
 
     VCS/dependency/cache trees are pruned, depth and visited-dir count are capped, so
     the search stays cheap even in a large repo — this only runs on a failed command.
+    With ``dirs=True`` it matches directories instead (never a pruned one).
     """
     if not name or "/" in name or "\\" in name:
         return []
@@ -101,7 +102,7 @@ def _locate_all(root: Path, name: str, limit: int = 3) -> list[str]:
             dirnames[:] = []
         else:
             dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
-        if name in filenames:
+        if name in (dirnames if dirs else filenames):
             hits.append((Path(dirpath) / name).relative_to(root).as_posix())
             if len(hits) >= limit:
                 break
@@ -252,14 +253,18 @@ _ENOENT_RES = (
     re.compile(r"can't open file '([^']+)': \[Errno 2\] No such file or directory"),
     # a Python program's own open()/read_text()
     re.compile(r"FileNotFoundError: \[Errno 2\] No such file or directory: '([^']+)'"),
-    # ls
-    re.compile(r"cannot access '([^']+)': No such file or directory"),
+    # coreutils: `ls: cannot access 'x'`, `touch: cannot touch 'x'`, `mkdir: cannot create
+    # directory 'x'`, `stat: cannot statx 'x'`, `rm: cannot remove 'x'`, `cp: cannot stat 'x'`
+    re.compile(r"cannot [a-z]+(?: [a-z]+)* '([^']+)': No such file or directory"),
     # pytest
     re.compile(r"ERROR: file or directory not found: (\S+)"),
     # bash / cat / cd / head / source ... : `<tool>: <path>: No such file or directory`
     re.compile(
         r"(?m)^[\w.\-/]+: (?:line \d+: )?((?:[A-Za-z]:)?[^\s:'\"]+): No such file or directory"
     ),
+    # the same frame with the path QUOTED — newer coreutils (Git Bash on Windows CI, 2026-08-29:
+    # `cat: 'C:/Users/.../forged-skills.yaml': No such file or directory`)
+    re.compile(r"(?m)^[\w.\-/]+: '([^']+)': No such file or directory"),
 )
 #: Names that are never a file the model meant: stdin markers and apport's `-c` artefact.
 _NOT_A_FILE = frozenset({"-", "-c", "<stdin>", "<string>"})
@@ -296,45 +301,123 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
     # `.mind-data/world/x.yaml`); a same-named file in an unrelated directory is only a
     # lead when the guessed directory does not exist at all. When the directory is real,
     # the file under another agent's dir is noise, not a lead.
-    guess = Path(path).as_posix().lstrip("./")
+    guess = _guess_relative(path, roots)
     found.sort(key=lambda fr: not (fr[1] == guess or fr[1].endswith("/" + guess)))
-    wrong_prefix = bool(found) and (
-        parent is None or found[0][1] == guess or found[0][1].endswith("/" + guess)
-    )
-    if wrong_prefix:
-        # Its neighbours with the same leading token are usually the family the model
-        # wanted (`reasoning-bank.py` found beside `reasoning-bank-add.sh`).
-        hits = [rel if r == roots[0] else (r / rel).as_posix() for r, rel in found]
-        first_root, first_rel = found[0]
-        kin = _prefix_siblings((first_root / first_rel).parent, name)
-        kin_note = f" (similar names there: {', '.join(kin[:5])})" if kin else ""
-        return (
-            f"'{path}' does not exist from the workspace root, but a file named '{name}' "
-            f"does: {', '.join(hits[:3])}{kin_note} — use that path (or `cd` there first) "
-            "instead of guessing another."
-        )
+    suffix_hit = bool(found) and (found[0][1] == guess or found[0][1].endswith("/" + guess))
+    if suffix_hit:
+        return _wrong_prefix_hint(path, name, found, roots)
     if parent is not None:
         # The directory is real and the file is not: a typo'd name (its siblings share
-        # the leading token: `wm-list.sh` beside `wm-read.sh`), or a deliberate check
-        # of an optional file — which gets no hint, because there is no lead.
+        # the leading token: `wm-list.sh` beside `wm-read.sh`), a directory guessed at
+        # the wrong place (`ls world/` for `.mind-data/world`), or a deliberate check of
+        # an optional file — which gets no hint, because there is no lead.
         kin = _prefix_siblings(parent, name)
         if kin:
             return (
                 f"'{path}' does not exist; that directory holds "
                 f"{', '.join(kin[:5])} — use one of those instead of inventing a name."
             )
+        dir_hits = [h for r in roots for h in _locate_all(r, name, dirs=True)]
+        if dir_hits:
+            return (
+                f"'{path}' does not exist, but a directory named '{name}' does: "
+                f"{', '.join(dir_hits[:3])} — use that path instead of guessing another."
+            )
         return None
-    by_name, _ = suggest(path, roots[0], roots[1:], soft=True)
-    if by_name:
-        return (
-            f"'{path}' does not exist and nothing in the workspace is named '{name}'; "
-            f"closest names: {', '.join(by_name[:5])} — pick one of those or `ls` the "
-            "directory before inventing a third."
-        )
+    # The guessed DIRECTORY does not exist. Name the first component that is missing and
+    # where a directory of that name really is: `.mind-data/agents/coach/sessions/<sid>/x`
+    # fails at `.mind-data/agents`, and `agents/` lives at the workspace root (measured
+    # 2026-08-29, zc-03: touch/grep/ls on that invented prefix, four times in one hour,
+    # none of them a name the file search could lead on — the file was about to be created).
+    # A same-named FILE elsewhere is the more specific lead and keeps the first word; the
+    # prefix diagnosis rides beside it, and stands alone only when there is no file lead.
+    prefix_note = ""
+    missing = _first_missing_component(path, roots)
+    if missing is not None:
+        anchor, part = missing
+        dir_hits = [h for r in roots for h in _locate_all(r, part, dirs=True)]
+        if dir_hits:
+            anchor_rel = _guess_relative(str(anchor), roots)
+            missing_txt = f"{anchor_rel}/{part}" if anchor_rel not in ("", ".") else part
+            prefix_note = (
+                f"'{missing_txt}' is the first missing part of that path, but a directory "
+                f"named '{part}' does exist: {', '.join(dir_hits[:3])} — rebuild the path "
+                "from there instead of guessing another prefix"
+            )
+    hint: str | None = None
+    if found:
+        hint = _wrong_prefix_hint(path, name, found, roots)
+    else:
+        by_name, _ = suggest(path, roots[0], roots[1:], soft=True)
+        if by_name:
+            hint = (
+                f"'{path}' does not exist and nothing in the workspace is named '{name}'; "
+                f"closest names: {', '.join(by_name[:5])} — pick one of those or `ls` the "
+                "directory before inventing a third."
+            )
+    if hint:
+        return f"{hint} ({prefix_note}.)" if prefix_note else hint
+    if prefix_note:
+        return f"'{path}' does not exist: {prefix_note}."
     return None
 
 
 _TOKEN_SPLIT_RE = re.compile(r"[-_.]")
+
+
+def _wrong_prefix_hint(
+    path: str, name: str, found: list[tuple[Path, str]], roots: list[Path]
+) -> str:
+    """The hint for a same-named file found elsewhere — with its neighbours sharing the
+    leading token, which are usually the family the model wanted (`reasoning-bank.py`
+    found beside `reasoning-bank-add.sh`)."""
+    hits = [rel if r == roots[0] else (r / rel).as_posix() for r, rel in found]
+    first_root, first_rel = found[0]
+    kin = _prefix_siblings((first_root / first_rel).parent, name)
+    kin_note = f" (similar names there: {', '.join(kin[:5])})" if kin else ""
+    return (
+        f"'{path}' does not exist from the workspace root, but a file named '{name}' "
+        f"does: {', '.join(hits[:3])}{kin_note} — use that path (or `cd` there first) "
+        "instead of guessing another."
+    )
+
+
+def _guess_relative(path: str, roots: list[Path]) -> str:
+    """The guessed path as a root-relative POSIX string when it lies under a root, else as
+    written minus any leading `./` — the form the suffix match compares against hits.
+    Bodies guess ABSOLUTE paths as often as relative ones (measured 2026-08-29), and an
+    absolute `<root>/world/x.yaml` must match the hit `.mind-data/world/x.yaml` too."""
+    p = Path(path)
+    if p.is_absolute():
+        for r in roots:
+            try:
+                return p.resolve().relative_to(Path(r).resolve()).as_posix()
+            except (ValueError, OSError):
+                continue
+        return p.as_posix()
+    return p.as_posix().lstrip("./")
+
+
+def _first_missing_component(path: str, roots: list[Path]) -> tuple[Path, str] | None:
+    """(deepest existing ancestor, first missing component) of a guessed path, or None
+    when only its last component is missing — that is the typo / optional-file case,
+    which the sibling branch answers. Relative paths are read against the first root."""
+    p = Path(path)
+    if p.is_absolute():
+        base, parts = Path(p.anchor), p.parts[1:]
+    else:
+        base, parts = Path(roots[0]), tuple(x for x in p.parts if x not in (".", ""))
+    cur = base
+    for i, part in enumerate(parts):
+        nxt = cur / part
+        try:
+            exists = nxt.exists()
+        except OSError:
+            return None
+        if not exists:
+            return None if i == len(parts) - 1 else (cur, part)
+        cur = nxt
+    return None
 
 
 def _existing_parent(path: str, roots: list[Path]) -> Path | None:

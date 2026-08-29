@@ -3778,6 +3778,40 @@ the loop makes deliberately.
 `test_bash_enoent_optional_file_in_a_real_directory_is_silent`,
 `test_bash_enoent_exact_hit_lists_the_family_beside_it`).
 
+**Addendum (2026-08-29, same day, after the first deploy).** The post-deploy census
+on zc-03 found four ENOENTs in the first hour that the hint did not touch, and none
+of them was a file the file search could lead on: a Body invented the prefix
+`.mind-data/agents/coach/sessions/<sid>/` (the agents dir lives at the workspace
+root) and then `touch`ed, `grep`ped and `ls`ed under it — the file was about to be
+*created*, so no same-named file existed anywhere. Three widenings, one rule:
+
+- **Shapes.** `touch: cannot touch 'x'`, `mkdir: cannot create directory 'x'`,
+  `stat: cannot statx 'x'`, `rm: cannot remove 'x'` share the coreutils frame
+  `cannot <verb> 'x': No such file or directory`; one regex now reads all of them
+  (`ls: cannot access` was the only one matched before). `grep: x: No such file`
+  already matched, but its command had exited 0 behind an `|| echo` — a deliberate
+  optional-file check gets no hint by design.
+- **Absolute guesses.** The suffix match compared the guessed path *as written*
+  against root-relative hits, so an absolute wrong-prefix guess
+  (`cat <root>/world/x.yaml`) never matched `.mind-data/world/x.yaml`. The guess is
+  now normalised to root-relative first (`_guess_relative`).
+- **Invented directory prefixes.** When the guessed *directory* does not exist, the
+  hint names the first missing path component and where a directory of that name
+  really is (`'.mind-data/agents' is the first missing part … but a directory named
+  'agents' does exist: agents`); a directory guessed at the wrong place with a real
+  parent (`ls world/`) gets the same directory lookup. **A file-level lead outranks
+  the prefix diagnosis**: an exact or nearest-name hit keeps the first word and the
+  prefix note rides beside it in parentheses, and the note stands alone only when
+  there is no file lead at all. The first draft inverted that order and demoted the
+  `reasoning-bank.py` family hint to a footnote — the two existing tests caught it.
+
+Pinned by `test_enoent_regexes_capture_the_coreutils_and_grep_shapes`,
+`test_bash_enoent_invented_prefix_names_the_real_directory`,
+`test_bash_enoent_invented_prefix_also_names_same_named_files`,
+`test_bash_enoent_directory_guessed_at_the_wrong_place`,
+`test_bash_enoent_absolute_guess_matches_the_real_file` and
+`test_first_missing_component_and_guess_relative`.
+
 ## ADR-0098: A tool written as a shell command is refused before it runs
 
 **Context.** The Mind's loop skills show the deadman net as
