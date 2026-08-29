@@ -845,18 +845,28 @@ def _unattended_continuation(
     )
 
 
-def _restart_kick(agent: Any, *, restarted: str | None, carried: str | None) -> str | None:
+def _restart_kick(
+    agent: Any, *, restarted: str | None, carried: str | None, boundary: str | None = None
+) -> str | None:
     """The line that continues a session a build restart put back at the prompt, or None.
 
-    A restart taken at a Stop-hook boundary (ADR-0099) carries the hook's own continuation
-    prompt across the exec; delivering it verbatim resumes the loop exactly where the hook
-    pointed, whatever the plan's state — a loop whose plan happened to be complete at that
-    boundary would otherwise sit at the prompt forever. Any other restart falls back to
-    the open-plan kick (ADR-0090). Not a restart at all: nothing.
+    A restart taken at a Stop-hook boundary (ADR-0099) or a skill re-entry (ADR-0101)
+    carries the continuation the loop set aside across the exec; delivering it verbatim
+    resumes the loop exactly where it was, whatever the plan's state — a loop whose plan
+    happened to be complete at that boundary would otherwise sit at the prompt forever.
+    ``boundary`` (``"skill"`` or ``"stop-hook"``) words the preface for what actually
+    happened. Any other restart falls back to the open-plan kick (ADR-0090). Not a
+    restart at all: nothing.
     """
     if restarted is None:
         return None
     if carried:
+        if boundary == "skill":
+            return (
+                f"[harness] this session was restarted into build {restarted} (a zakcode "
+                "update) at a skill boundary; the skill call it was about to make did not "
+                f"run. Nothing was lost; make that call now:\n{carried}"
+            )
         return (
             f"[harness] this session was restarted into build {restarted} (a zakcode update) "
             "at a turn boundary where a Stop hook had asked it to continue. Nothing was "
@@ -952,10 +962,13 @@ def _restart_into_new_build(console: Console, agent: Any) -> None:
     # along, so the fresh process resumes exactly where the hook pointed — never a stale
     # one from an earlier restart.
     carried = getattr(getattr(agent, "loop", None), "restart_continuation", None)
+    boundary = getattr(getattr(agent, "loop", None), "restart_boundary", None)
     if carried:
         os.environ["ZAKCODE_RESTART_CONTINUATION"] = carried
+        os.environ["ZAKCODE_RESTART_BOUNDARY"] = boundary or "stop-hook"
     else:
         os.environ.pop("ZAKCODE_RESTART_CONTINUATION", None)
+        os.environ.pop("ZAKCODE_RESTART_BOUNDARY", None)
     sys.stdout.flush()
     sys.stderr.flush()
     try:
@@ -2608,8 +2621,10 @@ def chat(
     # Set by the process that exec'd into this one (ADR-0034) — popped so a later restart
     # cannot inherit it.
     restarted = os.environ.pop("ZAKCODE_RESTARTED_INTO", None)
-    # The Stop-hook continuation the previous process set aside for this restart (ADR-0099).
+    # The continuation the previous process set aside for this restart (ADR-0099 / ADR-0101)
+    # and which boundary set it aside.
     carried = os.environ.pop("ZAKCODE_RESTART_CONTINUATION", None)
+    boundary = os.environ.pop("ZAKCODE_RESTART_BOUNDARY", None)
 
     # Headless one-shot (`-p/--prompt`): run a single task, no REPL, and exit with a code that
     # reflects the outcome (0 = completed cleanly, non-zero otherwise) so it composes in scripts.
@@ -2692,16 +2707,23 @@ def chat(
     # ADR-0090: an unattended session (nobody types) that a restart put back at the prompt
     # with plan steps open continues its plan; `kicks` bounds the same for collapsed turns.
     kicks = 0
-    kick = _restart_kick(agent, restarted=restarted, carried=carried)
+    kick = _restart_kick(agent, restarted=restarted, carried=carried, boundary=boundary)
     if kick is not None:
-        notice_info(
-            console,
-            f"restarted at a Stop-hook boundary {GLYPHS['dash']} delivering the hook's "
-            "continuation (ADR-0099)"
-            if carried
-            else f"unattended session with plan steps open {GLYPHS['dash']} continuing after "
-            "the restart (ADR-0090)",
-        )
+        if carried and boundary == "skill":
+            what = (
+                f"restarted at a skill boundary {GLYPHS['dash']} re-invoking the skill (ADR-0101)"
+            )
+        elif carried:
+            what = (
+                f"restarted at a Stop-hook boundary {GLYPHS['dash']} delivering the hook's "
+                "continuation (ADR-0099)"
+            )
+        else:
+            what = (
+                f"unattended session with plan steps open {GLYPHS['dash']} continuing after "
+                "the restart (ADR-0090)"
+            )
+        notice_info(console, what)
         mux.queue.put(("harness", kick))
 
     global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN

@@ -3926,3 +3926,46 @@ from any OpenAI-compatible server is honoured through litellm. Pinned by
 `tests/test_compact_loop.py`
 (`test_a_streaming_turn_says_the_summarizer_is_waiting_on_a_rate_limit`,
 `test_statuses_until_cancels_a_compaction_the_turn_abandoned`), each mutation-proved.
+
+## ADR-0101: A perpetual loop takes a build update at its skill re-entry
+
+**Context.** ADR-0099 restarts a perpetual loop into a newer build when a Stop hook vetoes
+a turn end. Measured 2026-08-29 on zc-03, 50 minutes after `zakcode update` installed
+2e81727: 0 of 8 Bodies had restarted — every session document still carried its
+pre-install `build`, and no session log had the "restarted into build" line. The hook
+never vetoed because the loop never tried to stop: a healthy loop ends each unit by
+calling `use_skill` for the next one, and a turn that keeps issuing tool calls never
+reaches a vetoable break site. ADR-0099's boundary is real but rare (only a loop that
+stumbles into "completed" crosses it); the boundary every loop crosses every unit is the
+skill re-entry. (A process's pid and start time survive the `os.execv` restart, so `ps`
+cannot tell a restarted Body from a stale one — the session document's `build` stamp is
+the honest signal.)
+
+**Decision.** Before executing a tool batch, both loop twins ask
+`_restart_at_skill_boundary`: when the batch is exactly one `use_skill` call and
+`install_changed()` reports a newer install, the call is answered UNEXECUTED — an
+`is_error` result saying why, `data={"restart": True}`, so the transcript stays
+replayable — the iteration is refunded, `restart_continuation` becomes "Call
+use_skill(name=…, args=…) now …", `restart_boundary` becomes `"skill"`, and the turn ends
+with stop reason `restart` (not vetoable: no hook runs, there is nothing to veto). The
+REPL then reaches its idle prompt, the ADR-0034 probe fires, and `_restart_into_new_build`
+exports the continuation and its boundary (`ZAKCODE_RESTART_BOUNDARY`) beside
+`ZAKCODE_RESTARTED_INTO`; the fresh process's `_restart_kick` words its preface for a
+skill boundary and hands the model the call. A batch with more than one call, or whose
+one call is not `use_skill`, executes as before — work in flight is never abandoned for a
+restart.
+
+**Alternatives rejected.** Restarting at any iteration boundary — tool results in flight
+(ADR-0099's own objection); the skill re-entry is the one boundary where the batch's only
+work is to load the next instructions, which the fresh process can do itself. Making the
+skill loader exec — a tool must not replace the process it runs in. Executing the
+`use_skill` and restarting afterwards — the loaded body dies with the old process.
+Cycling Bodies by hand at each deploy (the operator's actual workaround) — needs a human
+and parks every worker for the reducer's downtime.
+
+**Consequences.** A deploy reaches every Body within one unit, so a fleet test measures
+the code that was shipped. Pinned by `tests/test_turn_end_loop.py`
+(`test_a_lone_use_skill_call_takes_a_newer_build_at_the_skill_boundary`,
+`test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call`) and
+`tests/test_self_restart.py` (`test_restart_exports_the_boundary_beside_the_continuation`,
+`test_restart_kick_words_a_skill_boundary_restart`), each mutation-proved.
