@@ -847,3 +847,79 @@ def test_locate_basename_is_bounded_and_prunes(tmp_path) -> None:
     assert _locate_basename(tmp_path, "x.sh") == "core/scripts/x.sh"  # pruned dir never wins
     assert _locate_basename(tmp_path, "missing.sh") is None
     assert _locate_basename(tmp_path, "core/scripts/x.sh") is None  # basenames only
+
+
+# ── ADR-0106: a script path that does not exist is refused BEFORE anything runs ──────
+
+
+def _script_workspace(tmp_path: Path) -> Path:
+    (tmp_path / "core" / "scripts").mkdir(parents=True)
+    (tmp_path / "core" / "scripts" / "wm-read.sh").write_text(
+        "echo wm-read ran\n", encoding="utf-8"
+    )
+    (tmp_path / "core" / "scripts" / "ok.sh").write_text("echo ok ran\n", encoding="utf-8")
+    return tmp_path
+
+
+async def test_bash_refuses_a_missing_script_path_before_running(tmp_path) -> None:
+    """The piped shape that hid the ENOENT from the post-run hint: nothing runs, and the
+    refusal carries the sibling lead the hint would have given."""
+    ctx = ToolContext(workspace_root=_script_workspace(tmp_path))
+    parse = 'python3 -c "import sys, json; json.loads(sys.stdin.read())"'
+    cmd = f"bash core/scripts/wm-list.sh --json 2>&1 | {parse}"
+    res = await BashTool().execute({"command": cmd}, ctx)
+    assert res.is_error
+    assert res.data is not None and res.data.get("script_path_missing") is True
+    assert "[exit code" not in res.output  # nothing ran
+    assert "was not run" in res.output and "wm-read.sh" in res.output
+    assert res.fix is not None and "wm-list.sh" in res.fix
+
+
+async def test_bash_runs_an_existing_script_and_follows_a_literal_cd(tmp_path) -> None:
+    ctx = ToolContext(workspace_root=_script_workspace(tmp_path))
+    res = await BashTool().execute({"command": "bash core/scripts/ok.sh"}, ctx)
+    assert not res.is_error and "ok ran" in res.output
+    res = await BashTool().execute({"command": "cd core && bash scripts/ok.sh"}, ctx)
+    assert not res.is_error and "ok ran" in res.output
+    # a literal cd into a directory where the script is NOT is refused with that base named
+    res = await BashTool().execute({"command": "cd core && bash core/scripts/ok.sh"}, ctx)
+    assert res.is_error and res.data is not None and res.data.get("script_path_missing") is True
+    assert "under" in res.output
+
+
+async def test_bash_preflight_fails_open_where_it_cannot_resolve(tmp_path) -> None:
+    ctx = ToolContext(workspace_root=_script_workspace(tmp_path))
+    # a $VAR path is not checked: the shell's own error, as before
+    res = await BashTool().execute({"command": 'X=/nowhere; bash "$X/core/scripts/nope.sh"'}, ctx)
+    assert res.is_error and res.data is not None and "script_path_missing" not in res.data
+    # a cd to an unexpandable target: not checked
+    res = await BashTool().execute({"command": 'cd "$HOME" && bash scripts/nope.sh'}, ctx)
+    assert res.is_error and res.data is not None and "script_path_missing" not in res.data
+    # a heredoc BODY mentioning a script is text, not an invocation
+    res = await BashTool().execute(
+        {"command": "python3 - <<'PY'\nprint('bash core/scripts/nope.sh')\nPY"}, ctx
+    )
+    assert not res.is_error and "nope.sh" in res.output
+
+
+def test_script_path_missing_predicate(tmp_path) -> None:
+    from zakcode.tools.builtins.bash import _script_path_missing
+
+    root = _script_workspace(tmp_path)
+    assert _script_path_missing("bash core/scripts/ok.sh", root, []) is None
+    assert _script_path_missing("python3 -m pytest tests -q", root, []) is None
+    assert _script_path_missing("bash -c 'echo core/scripts/nope.sh'", root, []) is None
+    # written earlier in the same command: not checked
+    assert (
+        _script_path_missing("echo hi > core/scripts/new.sh && bash core/scripts/new.sh", root, [])
+        is None
+    )
+    # an extra workspace root that holds the script satisfies the check
+    other = tmp_path / "other"
+    (other / "world" / "scripts").mkdir(parents=True)
+    (other / "world" / "scripts" / "efs-ssh.sh").write_text("", encoding="utf-8")
+    assert _script_path_missing("bash world/scripts/efs-ssh.sh 'echo ok'", root, [other]) is None
+    missing = _script_path_missing("python3 core/scripts/aspirations-read-goal.sh g-1-1", root, [])
+    assert (
+        missing is not None and "aspirations-read-goal.sh" in missing and "was not run" in missing
+    )

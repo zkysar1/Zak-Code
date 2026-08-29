@@ -481,6 +481,71 @@ def _tool_typed_as_command(command: str, registry: Any) -> str | None:
     )
 
 
+#: An interpreter (or ``source``/``.``) followed by a RELATIVE script path — at least one
+#: slash, a script extension, no `$`/quote (an unexpandable path is not checked). This is
+#: the shape a Body types when it names a Mind script from memory: `bash core/scripts/x.sh`.
+_SCRIPT_INVOCATION_RE = re.compile(
+    r"(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+)\s*(bash|sh|python3?|source|\.)\s+"
+    r"((?:[\w.\-]+/)+[\w.\-]+\.(?:sh|bash|py))(?=\s|$|[;&|)])"
+)
+#: ``cd <target>`` — the only cwd change this preflight follows (an absolute or
+#: workspace-relative literal; a `$VAR`, `~` or `-` target means "cannot tell": fail open).
+_CD_RE = re.compile(r"(?:^|[;&|(]\s*)cd\s+([^\s;&|)]+)")
+
+
+def _cwd_before(prefix: str, root: Path) -> Path | None:
+    """The directory a relative path resolves against after the ``cd``s in ``prefix``."""
+    cds = list(_CD_RE.finditer(prefix))
+    if not cds:
+        return root
+    target = cds[-1].group(1).strip("\"'")
+    if target.startswith(("$", "~", "-")):
+        return None
+    p = Path(target)
+    return p if p.is_absolute() else root / p
+
+
+def _script_path_missing(command: str, root: Path, extra_roots: list[Path]) -> str | None:
+    """The refusal for a script invocation naming a file that does not exist, else None.
+
+    Measured 2026-08-29 (zc-03, eight Bodies, 24 h): 13 of 340 `bash|python3 <path>`
+    invocations named a script that does not exist — `core/scripts/recurring-goal-detectors.sh`,
+    `core/scripts/aspirations-read-goal.sh`, `core/scripts/worker-close-unit.sh` — and 5 of
+    them piped the output (`… 2>&1 | python3 -c "json.loads(…)"`), so bash's own "No such
+    file" went down the pipe, the parser raised JSONDecodeError, and the ENOENT hint
+    (ADR-0097) that answers exactly this never saw the frame it keys on. Checking the path
+    BEFORE running costs one `stat` and cannot be swallowed by a pipe; the refusal says
+    nothing ran and carries the same lead the post-run hint would have.
+
+    Fail-open by construction: a path this preflight cannot resolve (a `$VAR`, a `cd` to
+    an unexpandable target, a heredoc body) is not checked. A file written earlier in the
+    SAME command (`… > x.sh && bash x.sh`) is not checked either.
+    """
+    head = command.split("<<", 1)[0]
+    for m in _SCRIPT_INVOCATION_RE.finditer(head):
+        interp, path = m.group(1), m.group(2)
+        before = head[: m.start()]
+        base = _cwd_before(before, root)
+        if base is None or re.search(r">\s*" + re.escape(path), before):
+            continue
+        candidates = [base / path, *(Path(r) / path for r in extra_roots)]
+        if any(_exists(c) for c in candidates):
+            continue
+        where = f"'{path}' does not exist" + ("" if base == root else f" under {base}")
+        lead = _enoent_fix(f"bash: {path}: No such file or directory", base, list(extra_roots))
+        return f"{where}, so `{interp} {path}` was not run — nothing in this command ran. " + (
+            lead or "`ls` the directory before guessing another name."
+        )
+    return None
+
+
+def _exists(p: Path) -> bool:
+    try:
+        return p.exists()
+    except OSError:
+        return False
+
+
 class BashTool(Tool):
     """Execute an arbitrary shell command with the workspace as the cwd."""
 
@@ -521,6 +586,13 @@ class BashTool(Tool):
         if typed is not None:
             return ToolResult.error(
                 typed, data={"command": command, "tool_typed_as_command": True}, fix=typed
+            )
+        missing = _script_path_missing(
+            command, Path(str(ctx.workspace_root)), list(ctx.extra_workspace_roots)
+        )
+        if missing is not None:
+            return ToolResult.error(
+                missing, data={"command": command, "script_path_missing": True}, fix=missing
             )
 
         # ``bool`` is an ``int`` subclass; treat True/False as "no timeout given".
