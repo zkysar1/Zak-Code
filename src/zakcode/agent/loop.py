@@ -1349,6 +1349,10 @@ class AgentLoop:
         #: every stop has no idle prompt; measured 2026-08-29: the reducer ran a 6h-old
         #: build through five deploys).
         self.restart_continuation: str | None = None
+        #: Which boundary set ``restart_continuation`` aside: ``"stop-hook"`` (ADR-0099) or
+        #: ``"skill"`` (ADR-0101, a lone ``use_skill`` re-entry). The fresh process words its
+        #: preface and the operator notice from this, so the record says what happened.
+        self.restart_boundary: str | None = None
         #: Where a buffered call's retry notice goes while a streaming turn is waiting on
         #: it (ADR-0100). ``_complete_with_retry`` has no event channel of its own — it
         #: returns a value, it cannot yield — so the streaming path installs a sink for
@@ -4042,6 +4046,63 @@ class AgentLoop:
         if self.budget is not None:
             self.budget.refund(1)
 
+    def _restart_at_skill_boundary(
+        self, tool_calls: list[ToolCall]
+    ) -> list[ToolResultBlock] | None:
+        """Take a newer build at a loop's skill re-entry (ADR-0101); None when not one.
+
+        A perpetual loop re-enters itself with a lone ``use_skill`` call — the body that
+        just ended asked for the next one. Between that ending and the next body loading
+        nothing is in flight, the same kind of boundary ADR-0099 restarts at; unlike a
+        Stop-hook veto it is crossed EVERY unit, because a healthy loop never tries to
+        stop (measured 2026-08-29: 0 of 8 Bodies took a deploy in 50 minutes — every hook
+        sat unvetoed behind a loop that kept re-entering). So when this batch is exactly
+        that call and ``install_changed()`` reports a newer install, the call is answered
+        UNEXECUTED — an ``is_error`` result that says why, keeping the transcript
+        replayable — the iteration is refunded, and the continuation set aside for the
+        restarted process asks it to make the same call. The caller ends the turn with
+        stop reason ``restart``; the REPL's idle restart (ADR-0034) then execs the new
+        build. Any other batch returns None and executes as usual: work in flight is
+        never abandoned for a restart.
+        """
+        if len(tool_calls) != 1 or tool_calls[0].name != "use_skill":
+            return None
+        if install_changed() is None:
+            return None
+        call = tool_calls[0]
+        name = str(call.arguments.get("name") or "").strip().lstrip("/")
+        if not name:
+            return None  # an invalid call: the tool refuses it as usual
+        skill_args = str(call.arguments.get("args") or "").strip()
+        shown = f'use_skill(name="{name}"' + (f', args="{skill_args}")' if skill_args else ")")
+        blocks = [
+            ToolResultBlock(
+                tool_use_id=call.id,
+                output=(
+                    "Not executed: a newer zakcode build is installed, so this session is "
+                    "restarting into it at this skill boundary; the restarted process makes "
+                    f"this {shown} call first (ADR-0101)."
+                ),
+                is_error=True,
+                data={"restart": True},
+            )
+        ]
+        self.session.add_message(Message.tool_results(blocks))
+        self.restart_continuation = (
+            f"Call {shown} now. That call was not executed: a newer zakcode build was "
+            "installed and this session restarted into it at that skill boundary. Nothing "
+            "else was lost."
+        )
+        self.restart_boundary = "skill"
+        self._refund_iteration()  # the call never ran — no work happened
+        self._note(
+            "intervention",
+            "newer build installed — restarting at the skill boundary",
+            kind="restart",
+        )
+        self._persist()
+        return blocks
+
     async def _completion_critic(self, request: str, claimed_result: str) -> tuple[bool, str]:
         """Independent fresh-context review of a finishing turn (the completion-review gate).
 
@@ -4329,6 +4390,7 @@ class AgentLoop:
             # Honouring the veto instead would keep this stale process running for as long
             # as the hook keeps vetoing, which for a perpetual loop is forever.
             self.restart_continuation = result.continuation_prompt or "Continue."
+            self.restart_boundary = "stop-hook"
             logger.info(
                 "TURN_END hook vetoed stop_reason=%r but a newer build is installed — "
                 "ending the turn so the REPL restarts into it with the continuation",
@@ -5500,6 +5562,12 @@ class AgentLoop:
                 repeat_count = 0
                 stuck.reset()
                 continue
+
+            # A lone use_skill is the loop's re-entry: a newer build is taken there
+            # (ADR-0101) — see the streaming twin.
+            if self._restart_at_skill_boundary(result.tool_calls) is not None:
+                stop_reason = "restart"
+                break
 
             # Each call runs through the permission + hook gate (a denial, veto, or
             # tool error becomes an error result fed back so the model can recover —
@@ -6975,6 +7043,27 @@ class AgentLoop:
                     stuck.reset()
                     yield AgentStatus(message="plan-first: plan the task before editing")
                     continue
+
+                # A lone use_skill is the loop's re-entry: a newer build is taken THERE
+                # (ADR-0101). The call is answered unexecuted, the turn ends, and the
+                # REPL's idle restart execs the new build, which makes the call itself.
+                restart_blocks = self._restart_at_skill_boundary(tool_calls)
+                if restart_blocks is not None:
+                    for call, block in zip(tool_calls, restart_blocks, strict=True):
+                        yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
+                        yield AgentToolResult(
+                            tool_use_id=block.tool_use_id,
+                            output=block.output,
+                            is_error=block.is_error,
+                            data=block.data,
+                            artifacts=block.artifacts,
+                        )
+                    yield AgentStatus(
+                        message="update installed — restarting at the skill boundary; the "
+                        "session resumes with the same skill call (ADR-0101)"
+                    )
+                    stop_reason = "restart"
+                    break
 
                 # Execute each call sequentially through the SAME gate as the buffered
                 # path (_execute_tool_call), surfacing call + result events live. (The

@@ -20,7 +20,7 @@ import pytest
 import zakcode
 from zakcode.agent.loop import DOOM_LOOP_THRESHOLD, AgentLoop
 from zakcode.config import load_settings
-from zakcode.events import AgentDone, AgentStatus
+from zakcode.events import AgentDone, AgentStatus, AgentToolResult
 from zakcode.hooks import TurnEndPayload, TurnEndResult
 from zakcode.messages import Message
 from zakcode.providers.base import (
@@ -80,9 +80,24 @@ class EchoTool(Tool):
         return ToolResult.ok(output=str(args.get("text", "")))
 
 
-def _registry() -> ToolRegistry:
+class UseSkillStub(Tool):
+    """Stands in for the real ``use_skill`` (which needs a resolver): counts executions."""
+
+    spec = ToolSpec(name="use_skill", description="Load a skill by name.")
+
+    def __init__(self) -> None:
+        self.executed = 0
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.executed += 1
+        return ToolResult.ok(output=f"[skill body of {args.get('name')}]")
+
+
+def _registry(*extra: Tool) -> ToolRegistry:
     reg = ToolRegistry()
     reg.register(EchoTool())
+    for tool in extra:
+        reg.register(tool)
     return reg
 
 
@@ -92,12 +107,13 @@ def _make_loop(
     *,
     max_iterations: int = 10,
     turn_end_vetoable: bool = True,
+    registry: ToolRegistry | None = None,
     **settings_over: Any,
 ) -> AgentLoop:
     settings = load_settings(workspace_root=tmp_path, **settings_over)
     return AgentLoop(
         provider,
-        _registry(),
+        registry if registry is not None else _registry(),
         Session(cwd=str(tmp_path), model="test/model"),
         settings=settings,
         max_iterations=max_iterations,
@@ -209,6 +225,93 @@ async def test_turn_end_veto_is_deferred_across_a_build_restart(
     loop2.hook_manager.register_turn_end(hook2)
     result2 = await loop2.arun_turn("hi")
     assert result2.iterations == 2 and provider2.calls == 2
+    assert loop2.restart_continuation is None
+
+
+def _re_entry(call_id: str, **arguments: str) -> LLMResult:
+    """A perpetual loop's unit boundary: the lone use_skill call that loads the next body."""
+    return LLMResult(tool_calls=[ToolCall(id=call_id, name="use_skill", arguments=arguments)])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_lone_use_skill_call_takes_a_newer_build_at_the_skill_boundary(
+    monkeypatch, tmp_path: Path, streaming: bool
+) -> None:
+    """ADR-0101: a healthy perpetual loop never tries to stop, so ADR-0099's Stop-hook
+    boundary never comes (measured 2026-08-29: 0 of 8 Bodies took a deploy in 50 min).
+    The boundary it crosses every unit is the lone use_skill re-entry: with a newer build
+    installed, that call is answered unexecuted, the turn ENDS with stop reason
+    ``restart`` (no hook runs — nothing to veto), and the continuation set aside for the
+    restarted process is the same call."""
+    import zakcode.agent.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "install_changed", lambda: ("old-build", "new-build"))
+    stub = UseSkillStub()
+    provider = ScriptedProvider(
+        [_re_entry("c1", name="worker-loop", args="loop"), LLMResult(text="never reached")]
+    )
+    loop = _make_loop(provider, tmp_path, registry=_registry(stub))
+    hook = RecordingHook([_veto("keep looping")])
+    loop.hook_manager.register_turn_end(hook)
+    if streaming:
+        events = [ev async for ev in loop.astream_turn("hi")]
+        stop_reason = [ev for ev in events if isinstance(ev, AgentDone)][-1].stop_reason
+        results = [ev for ev in events if isinstance(ev, AgentToolResult)]
+        assert [r.tool_use_id for r in results] == ["c1"] and results[0].is_error
+        statuses = [ev.message for ev in events if isinstance(ev, AgentStatus)]
+        assert any("restarting at the skill boundary" in s for s in statuses)
+    else:
+        stop_reason = (await loop.arun_turn("hi")).stop_reason
+    assert stop_reason == "restart"
+    assert provider.calls == 1 and stub.executed == 0
+    assert hook.payloads == []  # not a vetoable break: the Stop hook never ran
+    assert loop.restart_boundary == "skill"
+    assert loop.restart_continuation is not None
+    assert loop.restart_continuation.startswith(
+        'Call use_skill(name="worker-loop", args="loop") now.'
+    )
+    # The un-executed call is answered, so the transcript replays on the new build.
+    answered = [
+        b
+        for m in loop.session.messages
+        for b in m.blocks
+        if getattr(b, "type", "") == "tool_result"
+    ]
+    assert [b.tool_use_id for b in answered] == ["c1"]
+    assert answered[0].is_error and answered[0].data == {"restart": True}
+    assert "ADR-0101" in answered[0].output
+
+
+@pytest.mark.asyncio
+async def test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Two positive controls on the same fixture: with no newer build the re-entry loads
+    the skill as always; with a newer build but other work in the batch, the batch runs —
+    work in flight is never abandoned for a restart."""
+    import zakcode.agent.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "install_changed", lambda: None)
+    stub = UseSkillStub()
+    provider = ScriptedProvider([_re_entry("c1", name="worker-loop"), _TEXT_DONE])
+    loop = _make_loop(provider, tmp_path, registry=_registry(stub))
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed" and stub.executed == 1
+    assert loop.restart_continuation is None and loop.restart_boundary is None
+
+    monkeypatch.setattr(loop_module, "install_changed", lambda: ("old-build", "new-build"))
+    stub2 = UseSkillStub()
+    mixed = LLMResult(
+        tool_calls=[
+            ToolCall(id="c2", name="use_skill", arguments={"name": "worker-loop"}),
+            ToolCall(id="c3", name="echo", arguments={"text": "still working"}),
+        ]
+    )
+    provider2 = ScriptedProvider([mixed, _TEXT_DONE])
+    loop2 = _make_loop(provider2, tmp_path, registry=_registry(stub2))
+    result2 = await loop2.arun_turn("hi")
+    assert result2.stop_reason == "completed" and stub2.executed == 1
     assert loop2.restart_continuation is None
 
 

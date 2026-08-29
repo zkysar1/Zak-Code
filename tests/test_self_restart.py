@@ -307,6 +307,52 @@ def test_restart_kick_prefers_the_carried_continuation(tmp_path: Path) -> None:
     assert cli._restart_kick(open_plan, restarted=None, carried="ignored") is None
 
 
+# ── a restart taken at a skill re-entry carries the call it did not make (ADR-0101) ──
+
+
+def test_restart_exports_the_boundary_beside_the_continuation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boundary that set the continuation aside rides along with it, so the fresh
+    process words the restart honestly; a carry with no boundary recorded is a Stop-hook
+    carry (ADR-0099), and a stale boundary is cleared with the continuation."""
+    agent, _store = _agent(tmp_path)
+    agent.loop.restart_continuation = 'Call use_skill(name="worker-loop") now.'
+    agent.loop.restart_boundary = "skill"
+    monkeypatch.setenv("ZAKCODE_RESTART_CONTINUATION", "stale from an earlier restart")
+    monkeypatch.setenv("ZAKCODE_RESTART_BOUNDARY", "stale")
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: None)
+    monkeypatch.setattr(cli.sys, "argv", ["zakcode", "cli", "-s", "stale-id"])
+    cli._restart_into_new_build(_console(), agent)
+    assert os.environ["ZAKCODE_RESTART_CONTINUATION"].startswith("Call use_skill(")
+    assert os.environ["ZAKCODE_RESTART_BOUNDARY"] == "skill"
+    agent.loop.restart_boundary = None
+    cli._restart_into_new_build(_console(), agent)
+    assert os.environ["ZAKCODE_RESTART_BOUNDARY"] == "stop-hook"
+    agent.loop.restart_continuation = None
+    cli._restart_into_new_build(_console(), agent)
+    assert "ZAKCODE_RESTART_BOUNDARY" not in os.environ
+    assert "ZAKCODE_RESTART_CONTINUATION" not in os.environ
+
+
+def test_restart_kick_words_a_skill_boundary_restart(tmp_path: Path) -> None:
+    """The preface says a skill call did not run — not that a Stop hook asked to continue
+    — and ends on the call itself; the Stop-hook wording is unchanged for its boundary."""
+    complete = _unattended_agent(tmp_path, statuses=("done", "done"))
+    carried = 'Call use_skill(name="worker-loop") now.'
+    line = cli._restart_kick(complete, restarted="new-build", carried=carried, boundary="skill")
+    assert line is not None
+    assert line.startswith("[harness] this session was restarted into build new-build")
+    assert "skill boundary" in line and "Stop hook" not in line
+    assert line.endswith(carried)
+    hook_line = cli._restart_kick(
+        complete, restarted="new-build", carried="invoke the loop again", boundary="stop-hook"
+    )
+    assert hook_line is not None and "Stop hook" in hook_line
+    assert "skill boundary" not in hook_line
+
+
 def test_no_continuation_when_attended_or_nothing_is_open(tmp_path: Path) -> None:
     attended = _unattended_agent(tmp_path, unattended=False)
     assert cli._unattended_continuation(attended, restarted="new-build", stop_reason=None) is None
