@@ -23,7 +23,16 @@ _KNOWLEDGE_SECTIONS = ("tree", "hypotheses", "guardrails", "lessons")
 
 
 def _empty_bundle() -> dict[str, Any]:
-    return {"counts": {}, "tree": [], "hypotheses": [], "guardrails": [], "lessons": []}
+    # `self` is an OBJECT, not a list, and is deliberately absent from
+    # _KNOWLEDGE_SECTIONS above — see the coercion in read_knowledge_bundle.
+    return {
+        "counts": {},
+        "tree": [],
+        "hypotheses": [],
+        "guardrails": [],
+        "lessons": [],
+        "self": {},
+    }
 
 
 #: Caps for the lean-agent raw-note fallback (g-335-191): a short sampler ``summary``
@@ -205,6 +214,17 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
         for section in _KNOWLEDGE_SECTIONS:
             val = data.get(section)
             out[section] = val if isinstance(val, list) else []
+        # `self` is the agent's projected identity — an OBJECT ({} or
+        # {purpose, created, last_updated}), NOT a list, because emptiness is the
+        # signal: "no identity published" vs "published and blank" (guard-5493).
+        # THIS ASSIGNMENT MUST STAY BELOW THE LOOP. The loop coerces every
+        # _KNOWLEDGE_SECTIONS member to a list, so running last is what makes this
+        # authoritative — registering `self` up there is then harmless, but hoisting
+        # this above the loop while registering it flattens the object to [] and the
+        # route serves empty forever. Both orders were mutation-tested; see the
+        # three-state table in tests/test_server_knowledge_self.py.
+        self_val = data.get("self")
+        out["self"] = self_val if isinstance(self_val, dict) else {}
     if not out["tree"]:
         out["tree"] = _read_raw_tree(workspace_root)
     if not out["hypotheses"]:

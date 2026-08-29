@@ -1408,6 +1408,28 @@ def create_app(
         items = [g for g in bundle["guardrails"] if isinstance(g, dict)]
         return {"guardrails": items, "count": len(items)}
 
+    @app.get("/knowledge/self")
+    def knowledge_self() -> dict[str, Any]:
+        """The agent's projected identity: {} or {purpose, created, last_updated}.
+
+        An OBJECT, not a list — and EMPTINESS IS THE SIGNAL. ``{}`` means "no
+        identity published"; a populated object means published. So this route
+        does NOT 404 on empty: collapsing the two would tell a caller the route
+        is absent when the answer is "nothing is published yet" (guard-5493).
+        ``published`` states which case it is without making the caller infer it
+        from truthiness, the same way the sibling routes carry a derived
+        ``count``.
+
+        Like every route here it serves the already-filtered + redacted bundle
+        verbatim and holds NO projection logic of its own: the cut is made at the
+        source by the Mind's KnowledgeProjection (PEARL §10.3), whose allowlist is
+        the prose before the first '##' plus two dates. Re-filtering identity
+        content here would be a second, divergent redactor — a bug, not defence.
+        """
+        bundle = read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        identity = bundle["self"] if isinstance(bundle.get("self"), dict) else {}
+        return {"self": identity, "published": bool(identity)}
+
     @app.get("/knowledge/export")
     def knowledge_export() -> dict[str, Any]:
         """The whole projected base as one downloadable bundle (PEARL §10.5).
