@@ -4118,3 +4118,37 @@ measured case — and pays index lines for the rest. Pinned in
 `tests/test_rules_always_apply.py` (flag spellings, body-in-full vs one-line siblings,
 no-flag byte-identity, per-file and total caps with the omission note, index lines still
 fitting beside pins, full-render priority).
+
+## ADR-0106: a script path that does not exist is refused before the command runs
+
+**Context.** Measured on the coach fleet (zc-03, eight Bodies, 24 h to 2026-08-29 23:20):
+340 `bash|python3 <relative path>` invocations, 13 naming a script that does not exist —
+`core/scripts/recurring-goal-detectors.sh`, `core/scripts/aspirations-read-goal.sh`,
+`core/scripts/worker-close-unit.sh`, `core/scripts/deadman-update.sh` — every one a name
+composed from memory. Five of the 13 piped the output (`… 2>&1 | python3 -c
+"json.loads(sys.stdin.read())"`): bash's own "No such file or directory" went down the pipe,
+the parser raised `JSONDecodeError: Expecting value`, and the ENOENT hint (ADR-0097) that
+answers exactly this shape never saw the frame it keys on. The reducer read that traceback
+as a JSON bug in a script that does not exist. ADR-0093 already showed the same laundering
+for interpreter mismatches; a pipe hides any post-run signal.
+
+**Decision.** Before running, the bash tool scans the command (up to its first heredoc) for
+an interpreter or `source` followed by a relative script path (a slash, a `.sh`/`.bash`/`.py`
+extension, no `$`/quote), resolves it against the workspace root — or the last literal
+`cd` target before it — and every extra workspace root, and refuses when the file does not
+exist: "`<path>` does not exist, so `bash <path>` was not run — nothing in this command
+ran", carrying the same lead the post-run hint would have (the sibling names, the
+wrong-prefix hit, the first missing component). Fail-open by construction: a `$VAR` path,
+a `cd` to a `$VAR`/`~`/`-` target, a heredoc body, or a file written earlier in the same
+command is not checked and runs as before.
+
+**Alternatives rejected.** Teaching the ENOENT hint to read through pipes (it cannot: the
+frame is consumed by the next stage). Wrapping every command in `set -o pipefail` (the
+error text still never reaches the tool). Refusing all pipes (most pipes are fine).
+
+**Consequences.** A guessed script costs one refusal with a lead instead of a run, a
+parser traceback and a wrong diagnosis. The one shape it can refuse wrongly — a script
+created by an earlier stage of the same command that is not a redirection (`git clone …
+&& bash repo/run.sh`) — costs one split command. Pinned in `tests/test_builtins.py`
+(refusal with lead, pipe never runs, existing script and literal `cd` run, `$VAR`/heredoc
+fail open, same-command write skipped, extra root honoured).
