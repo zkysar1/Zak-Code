@@ -17,6 +17,7 @@ from zakcode.tools.builtins.office import CreateDocxTool, CreateXlsxTool, ReadDo
 from zakcode.tools.builtins.pdf import CreatePdfTool, ReadPdfTool
 from zakcode.tools.builtins.powershell import PowerShellTool
 from zakcode.tools.builtins.read_file import ReadFileTool
+from zakcode.tools.builtins.schedule_wakeup import ScheduleWakeupTool
 from zakcode.tools.builtins.secret_names import SecretNamesTool
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.tools.builtins.web_fetch import WebFetchTool
@@ -60,6 +61,8 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(SaveImageTool(), aliases=["image"])
     registry.register(CreateChartImageTool(), aliases=["chart"])
     registry.register(UpdatePlanTool(), aliases=["plan", "todo"])
+    # Claude Code's name too (ADR-0094): a Mind's loop calls ScheduleWakeup by that name.
+    registry.register(ScheduleWakeupTool(), aliases=["ScheduleWakeup", "schedulewakeup", "wakeup"])
     registry.register(BashTool(), aliases=["sh", "shell"])
     registry.register(PowerShellTool(), aliases=["pwsh"])
     web_allowlist = settings.web_allowed_domains if settings else None

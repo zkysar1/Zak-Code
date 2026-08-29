@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field, model_validator
 from zakcode.artifacts import ArtifactRef
 from zakcode.config import PermissionTier
 from zakcode.tasks import TaskNetwork
+from zakcode.wakeup import WakeupSlot
 
 logger = logging.getLogger("zakcode.tools")
 
@@ -291,6 +292,10 @@ class ToolContext(BaseModel):
     #: the parent's originating turn). Each loop stamps its own; empty for a loop that builds a
     #: bare context, in which case the resolver falls back to its session's recent user text.
     caller_query: str = ""
+    #: The session's one scheduled wake-up (ADR-0094) — the seam the ``schedule_wakeup``
+    #: tool arms and cancels through; the REPL's idle wait fires it. ``None`` for a bare
+    #: loop that holds no session, so the tool returns a clean error rather than crashing.
+    wakeup_slot: WakeupSlot | None = None
 
     @property
     def all_workspace_roots(self) -> list[Path]:

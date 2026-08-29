@@ -233,6 +233,7 @@ _CLAUDE_CODE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "web_fetch": ("WebFetch",),
     "task": ("Task",),
     "update_plan": ("TodoWrite",),
+    "schedule_wakeup": ("ScheduleWakeup",),
 }
 
 #: Argument keys renamed on the wire so a Claude-Code hook reads the shape it was written

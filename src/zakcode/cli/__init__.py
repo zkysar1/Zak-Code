@@ -1043,6 +1043,7 @@ class _InputMux:
         keyboard: bool = True,
         idle_probe: Callable[[], bool] | None = None,
         inject: Callable[[str], None] | None = None,
+        wakeup_probe: Callable[[], str | None] | None = None,
     ) -> None:
         from zakcode.session.say_inbox import (
             busy_elsewhere,
@@ -1075,6 +1076,10 @@ class _InputMux:
         #: with ``("restart", None)`` so the REPL can hand the session to a fresh process.
         #: Never consulted mid-turn (a permission prompt is not an idle boundary).
         self._idle_probe = idle_probe
+        #: Asked while the REPL is idle (ADR-0094): a due wake-up's line ends the wait as
+        #: ``("harness", line)`` — the session's own scheduled prompt, delivered exactly where
+        #: a typed line would be. Never consulted mid-turn: a wake-up fires at a prompt only.
+        self._wakeup_probe = wakeup_probe
         self._idle_probe_every = 5.0
         # First probe one interval in, not on the first idle poll: a restart at the very
         # first prompt would race whatever is still settling around a fresh process (and
@@ -1187,6 +1192,13 @@ class _InputMux:
                         self._idle_probe_at = now
                         if self._idle_probe():
                             return ("restart", None)
+                # A due wake-up is the session's own prompt (ADR-0094): it fires only at an
+                # idle prompt that nothing typed or said has claimed first, and stands back
+                # like a say while another process's turn owns the session.
+                if idle and not standing_back and self._wakeup_probe is not None:
+                    woke = self._wakeup_probe()
+                    if woke is not None:
+                        return ("harness", woke)
                 continue
             if got[0] == "eof":
                 self._eof = True
@@ -1210,7 +1222,13 @@ class _InputMux:
         try:
             got = self.queue.get_nowait()
         except queue.Empty:
-            return ("eof", None) if self._eof else None
+            if self._eof:
+                return ("eof", None)
+            if not standing_back and self._wakeup_probe is not None:
+                woke = self._wakeup_probe()  # a due wake-up is already here too (ADR-0094)
+                if woke is not None:
+                    return ("harness", woke)
+            return None
         if got[0] == "eof":
             self._eof = True
         return got
@@ -2612,11 +2630,19 @@ def chat(
     inbox_path = say_path(agent.settings.workspace_root)
     interrupt_fp = interrupt_path(agent.settings.workspace_root)
     take_interrupt(interrupt_fp)  # a stop signal predating the session has nothing to stop
+
     # Inside a cockpit pane the say box is the ONE door: the pane's own keyboard
     # is not read at all, so the box (and the file contract behind it — remote
     # `zakcode say`, POST /say) is canonically the only way anything reaches
     # this session. Everywhere else the keyboard is the local door into the
     # same mux. Ctrl-C stays signal-driven and works in both.
+    def _due_wakeup() -> str | None:
+        # ADR-0094: a wake-up the model armed with schedule_wakeup fires here, at the idle
+        # prompt, as the session's own line. Late-bound through `agent` (rebuilt on /model
+        # and /resume); an agent that holds no loop — a stand-in — holds no wake-up either.
+        slot = getattr(getattr(agent, "loop", None), "wakeup_slot", None)
+        return None if slot is None else slot.take_due()
+
     mux = _InputMux(
         inbox_path,
         interrupt_fp,
@@ -2629,6 +2655,7 @@ def chat(
         # on the same checkout would consume first. Late-bound: `agent` is rebuilt on
         # /model and /resume below, and the mux must follow it.
         inject=lambda text: agent.inject_user_line(text),
+        wakeup_probe=_due_wakeup,
     )
     repl_mux.append(mux)
 

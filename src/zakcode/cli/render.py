@@ -94,6 +94,7 @@ _DISPLAY_NAME = {
     "todo_write": "Todo",
     "update_plan": "Todo",
     "task": "Task",
+    "schedule_wakeup": "WakeUp",
 }
 
 #: Footer label per ``done.stop_reason`` (``{dash}`` resolves per console so the

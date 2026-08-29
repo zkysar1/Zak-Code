@@ -254,6 +254,7 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "web_fetch",
         "secret_names",
         "update_plan",
+        "schedule_wakeup",
         "deep_think",
     }
     # Aliases resolve to the canonical tools (M1 added "edit" -> edit_file).
@@ -442,6 +443,22 @@ async def test_bash_python_on_a_shell_script_names_the_interpreter(tmp_path) -> 
     res = await BashTool().execute({"command": "python3 doit.sh --a"}, ctx)
     assert res.is_error
     assert res.fix is not None and "bash doit.sh" in res.fix
+
+
+async def test_bash_a_pipe_that_hides_the_exit_code_still_names_the_interpreter(tmp_path) -> None:
+    """``python3 x.sh … | tail -40`` exits 0 — tail's status — so the hint chain never ran;
+    the reducer read the SyntaxError as a broken script again, the day the hint shipped
+    (2026-08-29). The mismatched command plus the interpreter's error text is the signal."""
+    script = tmp_path / "doit.sh"
+    script.write_text('case "$1" in\n  --a) echo a ;;\nesac\n', encoding="utf-8")
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": "python3 doit.sh --a 2>&1 | tail -40"}, ctx)
+    assert res.is_error
+    assert res.fix is not None and "bash doit.sh" in res.fix and "pipe's" in res.fix
+    assert res.data is not None and res.data["exit_code"] == 0
+    # A pipe on a command that ran fine is still fine.
+    ok = await BashTool().execute({"command": "bash doit.sh --a | tail -1"}, ctx)
+    assert not ok.is_error and ok.output.startswith("a\n")
 
 
 def test_locate_basename_is_bounded_and_prunes(tmp_path) -> None:
