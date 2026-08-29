@@ -3752,6 +3752,17 @@ prune every dot-dir, so on a Mind deployment neither hint could see `.mind-data/
 directory the model was guessing at. Stdin markers and apport's `-c` artefact are never a
 file the model meant.
 
+Precision, from the live smoke on zc-03 the same day: an exact hit also names the family
+beside it sharing the leading token (`core/scripts/reasoning-bank.py` found, and
+`reasoning-bank-add.sh` / `reasoning-bank-read.sh` beside it — the wrapper is what the
+model wanted; the module is a silent no-op as a script). When the guessed path's
+DIRECTORY exists and the file does not, the hint is the directory's own siblings with
+the same leading token (`wm-list.sh` → `wm-read.sh, wm-set.sh`), never the global token
+match (which offered `history-list.sh` and `domain-term-blocklist.txt` on "list"); and
+with no such sibling it is silent — a deliberate check of an optional file
+(`cat <session>/iteration-checkpoint.json`) is not a wrong guess, and the same-named
+file under another agent's directory is noise, not a lead.
+
 **Alternatives rejected.** Rewriting the command's cwd for the model — the guess is the
 problem, not the cwd. Hinting on every ENOENT with a generic "list the directory first" —
 a hint with no lead is noise on the optional-file checks (`cat …/iteration-checkpoint.json`)
@@ -3762,4 +3773,7 @@ the loop makes deliberately.
 `test_bash_enoent_offers_the_nearest_names_for_an_invented_script`,
 `test_bash_enoent_with_no_lead_gets_no_fix`,
 `test_enoent_fix_predicate_reads_every_measured_shape`,
-`test_locate_basename_sees_hidden_data_dirs_but_not_vcs_or_caches`).
+`test_locate_basename_sees_hidden_data_dirs_but_not_vcs_or_caches`,
+`test_bash_enoent_typo_in_a_real_directory_names_its_siblings`,
+`test_bash_enoent_optional_file_in_a_real_directory_is_silent`,
+`test_bash_enoent_exact_hit_lists_the_family_beside_it`).

@@ -287,16 +287,42 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
     if not name or name in _NOT_A_FILE or name.startswith("<"):
         return None
     roots = [Path(root), *(Path(r) for r in extra_roots)]
-    hits: list[str] = []
+    found: list[tuple[Path, str]] = []  # (root, workspace-relative hit)
     for r in roots:
-        for rel in _locate_all(r, name):
-            hits.append(rel if r == roots[0] else (r / rel).as_posix())
-    if hits:
+        found.extend((r, rel) for rel in _locate_all(r, name))
+    parent = _existing_parent(path, roots)
+    # A hit that ENDS with the guessed path is a wrong-prefix guess (`world/x.yaml` for
+    # `.mind-data/world/x.yaml`); a same-named file in an unrelated directory is only a
+    # lead when the guessed directory does not exist at all. When the directory is real,
+    # the file under another agent's dir is noise, not a lead.
+    guess = Path(path).as_posix().lstrip("./")
+    found.sort(key=lambda fr: not (fr[1] == guess or fr[1].endswith("/" + guess)))
+    wrong_prefix = bool(found) and (
+        parent is None or found[0][1] == guess or found[0][1].endswith("/" + guess)
+    )
+    if wrong_prefix:
+        # Its neighbours with the same leading token are usually the family the model
+        # wanted (`reasoning-bank.py` found beside `reasoning-bank-add.sh`).
+        hits = [rel if r == roots[0] else (r / rel).as_posix() for r, rel in found]
+        first_root, first_rel = found[0]
+        kin = _prefix_siblings((first_root / first_rel).parent, name)
+        kin_note = f" (similar names there: {', '.join(kin[:5])})" if kin else ""
         return (
             f"'{path}' does not exist from the workspace root, but a file named '{name}' "
-            f"does: {', '.join(hits[:3])} — use that path (or `cd` there first) instead of "
-            "guessing another."
+            f"does: {', '.join(hits[:3])}{kin_note} — use that path (or `cd` there first) "
+            "instead of guessing another."
         )
+    if parent is not None:
+        # The directory is real and the file is not: a typo'd name (its siblings share
+        # the leading token: `wm-list.sh` beside `wm-read.sh`), or a deliberate check
+        # of an optional file — which gets no hint, because there is no lead.
+        kin = _prefix_siblings(parent, name)
+        if kin:
+            return (
+                f"'{path}' does not exist; that directory holds "
+                f"{', '.join(kin[:5])} — use one of those instead of inventing a name."
+            )
+        return None
     by_name, _ = suggest(path, roots[0], roots[1:], soft=True)
     if by_name:
         return (
@@ -305,6 +331,34 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
             "directory before inventing a third."
         )
     return None
+
+
+_TOKEN_SPLIT_RE = re.compile(r"[-_.]")
+
+
+def _existing_parent(path: str, roots: list[Path]) -> Path | None:
+    """The missing path's parent directory, if it exists (absolute, or under a root)."""
+    p = Path(path)
+    candidates = [p.parent] if p.is_absolute() else [r / p.parent for r in roots]
+    for c in candidates:
+        try:
+            if c.is_dir():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _prefix_siblings(directory: Path, name: str) -> list[str]:
+    """Files in ``directory`` sharing ``name``'s leading token (`wm` of `wm-list.sh`)."""
+    token = _TOKEN_SPLIT_RE.split(name, 1)[0].lower()
+    if len(token) < 2:
+        return []
+    try:
+        entries = sorted(e.name for e in directory.iterdir() if e.is_file())
+    except OSError:
+        return []
+    return [e for e in entries if e.lower().startswith(token) and e != name]
 
 
 class BashTool(Tool):
