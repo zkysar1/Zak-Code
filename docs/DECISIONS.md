@@ -3264,3 +3264,54 @@ ladder's length, not a retry count. Pinned by `tests/test_compact.py` (the three
 `tests/test_resilience_context.py` (`test_a_second_overflow_elides_without_the_model`,
 `test_a_transcript_nothing_can_summarize_is_elided_within_the_same_overflow`,
 `test_streaming_second_overflow_elides_and_says_so`).
+
+## ADR-0084: A skill is paged to a size budget, at whatever markers it has
+
+**Context.** ADR-0067 paged a skill by its step-like `##` headings and delivered
+everything else — the preamble and every non-step `##` section — up front with page 1.
+Measured 2026-08-29 against a Mind deployment's 55 skills: nine of its largest were
+delivered WHOLE because they carry no step-like `##` heading at all — `/worker-loop`
+(84 KB: one fenced pseudocode block with 23 `# Phase N` comments, loaded on every
+worker unit), `/aspirations-spark` (116 KB, run on every goal), `/aspirations-evolve`
+(88 KB), `/aspirations-consolidate` (78 KB), `/start` and `/tree` (63 KB each), the
+loop itself (54 KB), `/aspirations-state-update` (52 KB), `/review-hypotheses` (51 KB,
+whose 21 `### Step` headings sit under non-step `## Mode` headings). `/reflect` paged,
+but with 44 KB of "front" — its procedures live under `## Mode Routing`. And a paged
+skill past the 40-step cap folded the rest into one page: `/aspirations-precheck`'s was
+64 KB. A 27B on a 131k window filled its context in two iterations and compacted every
+goal; the reducer spent an hour re-running `/boot`.
+
+**Decision.** One outline behind both the skeleton (ADR-0062) and the pages, read to a
+**page budget** (`PAGE_BUDGET_CHARS`, 12,000 — three to four thousand tokens). The body
+is partitioned at every `##` heading outside a fence. A step-like section is a page —
+one when it fits the budget, else cut at its deeper ordered-work markers (step-like
+`###` headings and bold `**Step N**` lead-ins, then fenced column-0 `# Phase N`
+comments), then at any heading, then at paragraph breaks packed to the budget ("Title
+(2/5)"). The preamble and a documentation section travel up front when they fit and
+hold no marker; one that HOLDS markers is a container — its intro goes up front and
+each marker opens a page (`## The loop` → 23 phase pages; `## Mode 1` → its steps); one
+over the budget with no markers is paged at its headings, then paragraphs. A cut inside
+a fence is re-fenced on both sides, so every page is markdown on its own. Page `k` is
+skeleton step `k` by construction; markers inside a page that was not cut are its
+sub-steps, as before. The step cap rises to 60. Measured on the same corpus: worker-loop
+23 pages (first delivery 19 KB, largest page 9.7 KB), spark 27 (first 2.9 KB), the loop
+19, evolve 15, consolidate 9, start 13, precheck 55 unfolded (largest 11.6 KB), boot 26.
+
+**Alternatives rejected.** Restructuring the skills (twenty of them, in a framework the
+harness does not own, and the next one written the same way pages the same way).
+Paging only bodies over the budget (a sectioned skill has paged since ADR-0067 and
+every loop test rests on it; the budget bounds a page, it does not decide paging). A
+page hint that lets the model skip ahead (it already can — `update_plan` is full-replace
+and `_current_page` follows the first open step). Bounding the front the same way
+(deferred: `/tree`'s eighteen router sections each fit and stay up front, 35 KB — the
+one shape still worth a decision).
+
+**Consequences.** Small models read the largest Mind skills a section at a time; the
+most skill text in context at once is the front plus one page. More pages mean more
+`update_plan` round-trips per skill — the price of the bound, and the plan the model
+keeps anyway. A body that never fits — one paragraph over the window — still ends the
+turn loudly (ADR-0066). Pinned by `tests/test_skill_paging.py`
+(`test_bold_lead_ins_and_fenced_phase_comments_page_too`,
+`test_a_section_over_the_budget_is_cut_at_its_markers_then_headings_then_paragraphs`,
+`test_a_documentation_section_holding_steps_is_a_container`) and the existing skeleton
+and paging suites, whose expectations did not move.

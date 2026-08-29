@@ -115,9 +115,9 @@ def test_titles_are_cleaned_and_trimmed() -> None:
 
 
 def test_caps_fold_the_rest_into_one_closing_step() -> None:
-    body = "".join(f"## Step {i}\n" for i in range(1, 46))
+    body = "".join(f"## Step {i}\n" for i in range(1, 66))
     steps = skill_skeleton(body, skill="big")
-    assert len(steps) == 40
+    assert len(steps) == 60
     assert steps[-1].title == "Remaining sections of /big (6 more)"
     assert steps[-1].note.startswith("from /big;")
     body = "## Phase 1\n" + "".join(f"### 1.{i}\n" for i in range(1, 16))
