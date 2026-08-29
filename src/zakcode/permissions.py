@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import posixpath
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -158,9 +159,29 @@ _MODE_LOOSENESS: dict[PermissionMode, int] = {
 # confirmation prompt (a hard deny in ``deny``/``autonomous`` mode), regardless of the tier verdict.
 # In CODE (not DANGEROUS_PATTERNS) to stay ReDoS-proof -- see _is_dangerous_recursive_rm.
 def _names_root_or_home(arg: str) -> bool:
-    """True if an ``rm`` target names an absolute (``/``…), home (``~``), or ``$HOME`` path."""
-    a = arg.lstrip("'\"")
-    return a.startswith(("/", "~")) or a.startswith("$HOME") or a.startswith("${HOME}")
+    """True if an ``rm`` target names the filesystem ROOT, a TOP-LEVEL directory or a HOME.
+
+    ``/``, ``/*``, ``/etc``, ``/etc/*``, ``/opt/..``, ``~``, ``~user``, ``~/*``, ``$HOME``,
+    ``${HOME}``, ``/root`` and ``/home/<user>`` (each with an optional trailing ``/`` or ``/*``)
+    are the footgun. A DEEPER absolute or home-relative path — ``/opt/app/build``, ``/tmp/x``,
+    ``~/.cache/pip``, ``$HOME/tmp`` — is an ordinary target (ADR-0085): the workspace, temp and
+    cache directories an agent legitimately cleans are absolute paths, and flagging every
+    ``/…`` hard-denied all of them in ``autonomous`` mode. Pure string work, no filesystem.
+    """
+    a = arg.strip("'\"")
+    if a.startswith(("~", "$HOME", "${HOME}")):
+        head, _, rest = a.partition("/")
+        if head.startswith("~") or head in ("$HOME", "${HOME}"):
+            return rest.strip("/") in ("", "*")
+        return False  # $HOMEDIR/x and the like: not the home variable
+    if not a.startswith("/"):
+        return False
+    parts = [p for p in posixpath.normpath(a).split("/") if p]
+    if parts and parts[-1] == "*":
+        parts.pop()
+    if len(parts) <= 1:
+        return True  # "/", "/*", "/etc", "/etc/*", "/root"
+    return parts[0] == "home" and len(parts) == 2  # "/home/<user>", "/home/<user>/*"
 
 
 def _is_dangerous_recursive_rm(command: str) -> bool:
