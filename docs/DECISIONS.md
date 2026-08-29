@@ -3670,3 +3670,36 @@ that arms one and finds it on disk; and the REPL door — a due wake-up from bot
 blocking and the non-blocking wait, never at a mid-turn consumer, and never ahead of a
 typed line. The `ToolContext` gains a `wakeup_slot` seam (None outside a session, where the
 tool errors cleanly).
+
+## ADR-0095: A page without a marker finds its step by the words they share
+
+**Context.** ADR-0092 keyed a rewritten step to its page by the seeded title verbatim or by
+the page's marker token (`Phase 0.5`, `Step 3`). A page whose heading is a branch name —
+`/start`'s `RUNNING + requested mode is autonomous`, `IDLE (agent-state contains "IDLE")
+(2/3)` — has no marker, so the moment the model paraphrases the title (`RUNNING +
+autonomous mode`, `IDLE (2/3)`) nothing matches it. Measured 2026-08-29 on three of four
+fresh sessions (coach-w, coach-w2, the reducer): every `/start` page stood matched by
+nothing, the loop read each as a section dropped before it was held, and all six pages
+were delivered one per turn — the cancelled branches included — while the session settled
+none of them; the fourth session had kept the seeded titles and was fine. Across coach's
+39 paged skills, 60 of 210 pages carried no marker, a third of those because the id had a
+letter prefix (`Step B2.5`, `Phase GS-1`, `Phase S4.6`) the marker regex refused.
+
+**Decision.** Two things. The marker regex accepts a short letter prefix on the id. And a
+third matching pass: a step no page took by title or marker goes to the page whose title —
+or a section packed into it, the best one counting — shares the most telling words with
+it (lower-cased, three characters or more so `1/3` and `0.5` count, minus the words almost
+any title carries and the marker words themselves), the first page on a tie; a share
+counts only when it is at least two words or every telling word the step has. Each step
+still belongs to one page, and the title and marker passes still come first.
+
+**Alternatives rejected.** Requiring the model to keep the seeded titles — it will not,
+and the fix is about a rewrite that happened. Seeding a synthetic marker into branch-named
+headings — the marker would be invisible in the skill text the model reads and would
+vanish in the same rewrite. Matching on any shared word — `mode`, `agent`, `phase` would
+pull steps of other skills onto a page, and one stolen `in_progress` step moves a skill's
+frontier; the two-word floor and the stop list are the guard.
+
+**Consequences.** Pinned in `tests/test_skill_paging.py`
+(`test_a_lettered_step_id_is_a_marker`, `test_overlap_finds_the_page_a_paraphrase_means`,
+`test_a_paraphrased_branch_plan_delivers_no_page_the_model_closed`).

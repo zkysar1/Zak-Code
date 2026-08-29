@@ -512,7 +512,7 @@ def _heading_title(line: str) -> str:
 
 
 _BARE_STEP_MARKER_RE = re.compile(
-    r"^(?:phase|step|lane|stage|part|task)\s+\d[\w.]*\s*[:.)\-—–]*\s*$", re.I
+    r"^(?:phase|step|lane|stage|part|task)\s+(?:[a-z]{1,3}-?)?\d[\w.-]*\s*[:.)\-—–]*\s*$", re.I
 )
 
 
@@ -584,8 +584,11 @@ _ANY_HEADING_RE = re.compile(r"^#{2,4}\s+\S")
 #: The leading ordered-work token of a section title — ``Step 0.7``, ``Phase -3``, ``Lane 1``,
 #: ``3.`` — the part a model keeps when it rewrites the step ("Step 0.5 + 0.6: …"), so a page
 #: can still find its step after the plan has been reshaped.
+#: A step id may carry a short letter prefix (``Step B2.5``, ``Phase GS-1``, ``Phase S4.6``):
+#: measured 2026-08-29 over coach's 39 paged skills, 60 of 210 pages had no marker, and
+#: the lettered ids were a third of them (ADR-0095).
 _SECTION_MARKER_RE = re.compile(
-    r"^(?:(phase|step|lane|stage|part|task)\s+(-?\d[\w.]*)|(\d+)[.)])", re.I
+    r"^(?:(phase|step|lane|stage|part|task)\s+(-?(?:[a-z]{1,3}-?)?\d[\w.-]*)|(\d+)[.)])", re.I
 )
 #: The header every delivered page opens with — and the marker the loop reads back from the
 #: transcript to learn how far a skill was paged before a restart.
@@ -910,6 +913,65 @@ def bare_title(title: str) -> str:
     return _TITLE_MARKER_RE.sub("", title)
 
 
+#: Words almost any title carries — they cannot tell one page from another. The marker
+#: words are here because a marker is matched as a marker (:meth:`SkillPage.matches`).
+_TITLE_STOP_WORDS = frozenset(
+    {
+        # fmt: off
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "into",
+        "only",
+        "when",
+        "then",
+        "else",
+        "not",
+        "any",
+        "all",
+        "its",
+        "are",
+        "was",
+        "more",
+        "via",
+        "per",
+        "each",
+        "one",
+        "two",
+        "how",
+        "what",
+        "which",
+        "does",
+        "done",
+        "step",
+        "steps",
+        "phase",
+        "phases",
+        "lane",
+        "stage",
+        "part",
+        "task",
+        "section",
+        # fmt: on
+    }
+)
+
+
+def _title_tokens(title: str) -> frozenset[str]:
+    """The words of a title that can tell it from another: lower-cased, three characters or
+    more (``1/3`` and ``0.5`` count — they tell a split page's parts apart), minus the words
+    almost any title carries."""
+    return frozenset(
+        token
+        for token in re.findall(r"[\w./-]+", title.lower())
+        if len(token) >= 3 and token not in _TITLE_STOP_WORDS
+    )
+
+
 @dataclass(frozen=True)
 class SkillPage:
     """One page of a skill: the text the loop hands over when the plan reaches its step."""
@@ -934,6 +996,22 @@ class SkillPage:
             if not exact and marker and re.search(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", norm):
                 return True
         return False
+
+    def overlap(self, step_title: str) -> int:
+        """How many telling words a plan step's title shares with this page's title — or
+        with a section packed into it, the best one counting — when that is at least two
+        words, or every telling word the step has; else ``0``. A page whose heading is a
+        branch name ("RUNNING + requested mode is autonomous", "IDLE (…) (2/3)") carries no
+        marker, so a paraphrase of it ("RUNNING + autonomous mode", "IDLE (2/3)") can be
+        found no other way (ADR-0095)."""
+        step = _title_tokens(bare_title(step_title))
+        if not step:
+            return 0
+        best = max(
+            len(step & _title_tokens(title))
+            for title, _ in ((self.title, self.marker), *self.sections)
+        )
+        return best if best >= 2 or best == len(step) else 0
 
 
 @dataclass(frozen=True)
