@@ -113,6 +113,46 @@ def _python_inline_fix(command: str, output: str) -> str | None:
     )
 
 
+#: A script fed to the wrong interpreter (ADR-0093): ``python3 x.sh`` / ``py -3 x.sh`` (a shell
+#: script parsed as Python) or ``bash x.py`` / ``sh x.py`` (Python run as shell). The script
+#: must be the first non-option argument, as a bare path with the mismatched extension — an
+#: inline ``-c "…"`` program (``-c`` is excluded from the options run) or a script passed
+#: later (``python3 tool.py x.sh``) never matches.
+_PY_ON_SHELL_RE = re.compile(
+    r"(?:^|[\s;&|(])(?:python[0-9.]*|py)(?:\s+-[^c\s]\S*)*\s+([\w./\\-]+\.sh)(?=$|[\s;&|)])"
+)
+_SHELL_ON_PY_RE = re.compile(
+    r"(?:^|[\s;&|(])(?:bash|sh|zsh|dash)(?:\s+-[^c\s]\S*)*\s+([\w./\\-]+\.py)(?=$|[\s;&|)])"
+)
+
+
+def _interpreter_mismatch_fix(command: str) -> str | None:
+    """A remedy hint when a script was run through the wrong interpreter, else None.
+
+    Python parsing a shell script reports a SyntaxError at the first ``case`` arm or
+    ``fi`` — a traceback that reads like a broken script, not a wrong command. Measured
+    2026-08-29 (coach reducer): ``python3 core/scripts/aspirations-update-goal.sh …`` four
+    times verbatim, each a SyntaxError on the .sh's line 65, until the stuck guard limited
+    the turn to read-only tools and the iteration's state update never ran. Naming the
+    interpreter breaks that loop; nothing else in the output does.
+    """
+    py_on_shell = _PY_ON_SHELL_RE.search(command)
+    if py_on_shell:
+        path = py_on_shell.group(1)
+        return (
+            f"{path} is a shell script; Python parsed it as Python (that is the SyntaxError). "
+            f"Run it as `bash {path} …` with the same arguments."
+        )
+    shell_on_py = _SHELL_ON_PY_RE.search(command)
+    if shell_on_py:
+        path = shell_on_py.group(1)
+        return (
+            f"{path} is a Python file; the shell ran it as shell. "
+            f"Run it as `python3 {path} …` with the same arguments."
+        )
+    return None
+
+
 def _posix_exit_fix(command: str, output: str, exit_code: int, root: Path) -> str | None:
     """A remedy hint for the two classic script-invocation failures, else None.
 
@@ -228,7 +268,8 @@ class BashTool(Tool):
         }
         if exit_code != 0:
             fix = (
-                _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
+                _interpreter_mismatch_fix(command)
+                or _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
                 or _python_inline_fix(command, output)
                 or _windows_shell_fix(command, output)
             )

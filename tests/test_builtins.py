@@ -410,6 +410,40 @@ def test_python_inline_fix_predicate() -> None:
     assert _python_inline_fix("python3 -c 'print(1)'", "NameError: boom") is None
 
 
+def test_interpreter_mismatch_fix_predicate() -> None:
+    from zakcode.tools.builtins.bash import _interpreter_mismatch_fix as fix
+
+    # A shell script fed to Python — the reducer's verbatim shape (2026-08-29), the py
+    # launcher, options before the path, a cd/env prefix.
+    hint = fix("cd /w && MIND_AGENT=coach python3 core/scripts/aspirations-update-goal.sh --a b")
+    assert hint is not None and "bash core/scripts/aspirations-update-goal.sh" in hint
+    assert fix("py -3 core/scripts/x.sh") is not None
+    assert fix("python3 -u ./x.sh; echo done") is not None
+    # Python fed to a shell.
+    hint = fix("bash tools/check.py --fast")
+    assert hint is not None and "python3 tools/check.py" in hint
+    assert fix("sh -x tools/check.py") is not None
+    # Never on an inline program, a script passed later, the right interpreter, or a
+    # module run.
+    assert fix("python3 -c \"print(open('x.sh').read())\"") is None
+    assert fix("python3 tool.py x.sh") is None
+    assert fix("bash core/scripts/x.sh && python3 tool.py") is None
+    assert fix("python3 -m pytest tests/x.sh") is None
+    assert fix('bash -c "python3 x.py"') is None
+
+
+@pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
+async def test_bash_python_on_a_shell_script_names_the_interpreter(tmp_path) -> None:
+    """``python3 x.sh`` fails with a SyntaxError that reads like a broken script; the hint
+    names the real fix — the reducer retried the identical command four times (2026-08-29)."""
+    script = tmp_path / "doit.sh"
+    script.write_text('case "$1" in\n  --a) echo a ;;\nesac\n', encoding="utf-8")
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": "python3 doit.sh --a"}, ctx)
+    assert res.is_error
+    assert res.fix is not None and "bash doit.sh" in res.fix
+
+
 def test_locate_basename_is_bounded_and_prunes(tmp_path) -> None:
     from zakcode.tools.builtins.bash import _locate_basename
 
