@@ -71,9 +71,7 @@ def _client(workspace: Path) -> TestClient:
 
 
 def _seed_bundle(workspace: Path, payload: dict) -> None:
-    (workspace / ".knowledge-bundle.json").write_text(
-        json.dumps(payload), encoding="utf-8"
-    )
+    (workspace / ".knowledge-bundle.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 _PUBLISHED = {
