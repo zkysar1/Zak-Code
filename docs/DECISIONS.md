@@ -3239,7 +3239,11 @@ outcome — what was compacted, or why nothing could be — is recorded in words
 `AgentLoop.last_compaction`, on the turn trace, in the streaming status line, in the
 terminal `provider_error` message, and in the `/compact` command's reply. The
 turn-start check that used to swallow a failed summarization now returns a notice
-saying so.
+saying so. (3) The summarizer's calls run under the loop's one retry policy
+(`_complete_with_retry`, the same `retry_after`-aware backoff the main call gets): the
+first field run of (2) named the cause — "summarizer failed (RateLimited: qwen35a-gpu2
+…)" — a busy pod's 429 that the main call would have waited out and the summarizer,
+calling the provider directly, turned into a failed compaction.
 
 **Alternatives rejected.** A larger `preserve_recent` or a smaller one (the tail was
 the overflow in the field case; no fixed size fits both a chatty exchange and an 87 KB
