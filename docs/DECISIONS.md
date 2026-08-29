@@ -3844,3 +3844,42 @@ are shared with a harness that calls the tool by exactly that spelling.
 (`test_bash_refuses_a_tool_written_as_a_shell_call_and_names_the_tool`,
 `test_bash_still_runs_ordinary_commands_and_shell_functions`,
 `test_bash_without_a_registry_skips_the_check`, `test_tool_typed_as_command_predicate`).
+
+## ADR-0099: A perpetual loop takes a build update at its next Stop-hook boundary
+
+**Context.** ADR-0034 restarts a session into a newly installed build "at the next idle
+prompt". A perpetual-loop deployment never has one: its Stop hook vetoes every turn end
+and the loop re-enters, so the whole autonomous session is one turn (ADR-0048). Measured
+2026-08-29 on zc-03: the fleet's reducer (started 11:02) and one worker (11:34) were still
+running a build from before ADR-0093, ADR-0097 and ADR-0098 at 16:30 — five `zakcode
+update`s had landed, every fix aimed at exactly those sessions, and none had reached
+them. Workers that happened to park (an idle prompt) took the update within a minute;
+the process that owns the queue never will. A census of the reducer's 40 post-deploy
+failed commands found the interpreter, ENOENT and typed-tool hints all absent — the
+process was simply old.
+
+**Decision.** At a vetoable break site, when a TURN_END hook vetoes AND `install_changed()`
+reports a newer install, the loop does not honour the veto in this process: it records
+the hook's continuation prompt (`AgentLoop.restart_continuation`) and lets the turn end
+with its original stop reason. Nothing is in flight at that point — it is the same
+boundary a veto would have re-entered from — so the REPL reaches its idle prompt, the
+ADR-0034 probe fires, and `_restart_into_new_build` exports the recorded continuation as
+`ZAKCODE_RESTART_CONTINUATION` beside `ZAKCODE_RESTARTED_INTO`. The fresh process
+(`_restart_kick`) delivers that continuation verbatim as the session's first input, under
+a one-line harness preface saying the restart happened at a Stop-hook boundary; only a
+restart with nothing carried falls back to the ADR-0090 open-plan kick. The carried line
+is what makes this safe: a loop whose plan happened to be complete at the boundary gets
+no ADR-0090 kick and would otherwise sit at the prompt forever.
+
+**Alternatives rejected.** Restarting mid-turn at an iteration boundary — tool results in
+flight, and the session document is only consistent at message boundaries. Killing and
+relaunching the reducer by hand at each deploy (the operator's actual workaround) — it
+parks every worker for the reducer's downtime and needs a human each time. Making the
+veto continue on the old build and restarting "later" — later never comes.
+
+**Consequences.** Every deploy now reaches a perpetual loop within one iteration, so a
+fleet test measures the code that was shipped. A dev checkout never trips
+`install_changed()` (no install marker), so tests and local runs are unaffected. Pinned
+by `tests/test_turn_end_loop.py::test_turn_end_veto_is_deferred_across_a_build_restart`
+and `tests/test_self_restart.py` (`test_restart_kick_prefers_the_carried_continuation`,
+`test_restart_exports_the_carried_continuation`).

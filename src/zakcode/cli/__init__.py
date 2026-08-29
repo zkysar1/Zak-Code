@@ -845,6 +845,26 @@ def _unattended_continuation(
     )
 
 
+def _restart_kick(agent: Any, *, restarted: str | None, carried: str | None) -> str | None:
+    """The line that continues a session a build restart put back at the prompt, or None.
+
+    A restart taken at a Stop-hook boundary (ADR-0099) carries the hook's own continuation
+    prompt across the exec; delivering it verbatim resumes the loop exactly where the hook
+    pointed, whatever the plan's state — a loop whose plan happened to be complete at that
+    boundary would otherwise sit at the prompt forever. Any other restart falls back to
+    the open-plan kick (ADR-0090). Not a restart at all: nothing.
+    """
+    if restarted is None:
+        return None
+    if carried:
+        return (
+            f"[harness] this session was restarted into build {restarted} (a zakcode update) "
+            "at a turn boundary where a Stop hook had asked it to continue. Nothing was "
+            f"lost; do exactly what it asked:\n{carried}"
+        )
+    return _unattended_continuation(agent, restarted=restarted, stop_reason=None)
+
+
 def _continue_after_collapse(
     console: Console, agent: Any, mux: _InputMux, done: Any, kicks: int
 ) -> int:
@@ -928,6 +948,14 @@ def _restart_into_new_build(console: Console, agent: Any) -> None:
     # The fresh process learns it is a restart, not a human's resume (ADR-0090): an
     # unattended session then continues its open plan instead of idling at the prompt.
     os.environ["ZAKCODE_RESTARTED_INTO"] = new or "new build"
+    # A Stop hook's continuation the loop set aside for this restart (ADR-0099) rides
+    # along, so the fresh process resumes exactly where the hook pointed — never a stale
+    # one from an earlier restart.
+    carried = getattr(getattr(agent, "loop", None), "restart_continuation", None)
+    if carried:
+        os.environ["ZAKCODE_RESTART_CONTINUATION"] = carried
+    else:
+        os.environ.pop("ZAKCODE_RESTART_CONTINUATION", None)
     sys.stdout.flush()
     sys.stderr.flush()
     try:
@@ -2580,6 +2608,8 @@ def chat(
     # Set by the process that exec'd into this one (ADR-0034) — popped so a later restart
     # cannot inherit it.
     restarted = os.environ.pop("ZAKCODE_RESTARTED_INTO", None)
+    # The Stop-hook continuation the previous process set aside for this restart (ADR-0099).
+    carried = os.environ.pop("ZAKCODE_RESTART_CONTINUATION", None)
 
     # Headless one-shot (`-p/--prompt`): run a single task, no REPL, and exit with a code that
     # reflects the outcome (0 = completed cleanly, non-zero otherwise) so it composes in scripts.
@@ -2662,16 +2692,15 @@ def chat(
     # ADR-0090: an unattended session (nobody types) that a restart put back at the prompt
     # with plan steps open continues its plan; `kicks` bounds the same for collapsed turns.
     kicks = 0
-    kick = (
-        _unattended_continuation(agent, restarted=restarted, stop_reason=None)
-        if restarted is not None
-        else None
-    )
+    kick = _restart_kick(agent, restarted=restarted, carried=carried)
     if kick is not None:
         notice_info(
             console,
-            f"unattended session with plan steps open {GLYPHS['dash']} continuing after the "
-            "restart (ADR-0090)",
+            f"restarted at a Stop-hook boundary {GLYPHS['dash']} delivering the hook's "
+            "continuation (ADR-0099)"
+            if carried
+            else f"unattended session with plan steps open {GLYPHS['dash']} continuing after "
+            "the restart (ADR-0090)",
         )
         mux.queue.put(("harness", kick))
 

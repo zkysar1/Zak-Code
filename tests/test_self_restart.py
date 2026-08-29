@@ -268,6 +268,45 @@ def test_a_collapsed_turn_continues_and_any_other_end_does_not(tmp_path: Path) -
         assert cli._unattended_continuation(agent, restarted=None, stop_reason=reason) is None
 
 
+# ── a restart taken at a Stop-hook boundary carries the hook's continuation (ADR-0099) ──
+
+
+def test_restart_exports_the_carried_continuation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loop set the hook's continuation aside; the exec'ing process exports it beside
+    the restart marker — and clears a stale one when nothing was carried."""
+    agent, _store = _agent(tmp_path)
+    agent.loop.restart_continuation = "invoke the loop again"
+    monkeypatch.setenv("ZAKCODE_RESTART_CONTINUATION", "stale from an earlier restart")
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: None)
+    monkeypatch.setattr(cli.sys, "argv", ["zakcode", "cli", "-s", "stale-id"])
+    cli._restart_into_new_build(_console(), agent)
+    assert os.environ["ZAKCODE_RESTARTED_INTO"] == "new-build"
+    assert os.environ["ZAKCODE_RESTART_CONTINUATION"] == "invoke the loop again"
+    # Nothing carried this time: the stale export must not survive into the new process.
+    agent.loop.restart_continuation = None
+    cli._restart_into_new_build(_console(), agent)
+    assert "ZAKCODE_RESTART_CONTINUATION" not in os.environ
+
+
+def test_restart_kick_prefers_the_carried_continuation(tmp_path: Path) -> None:
+    """The carried line resumes the loop whatever the plan's state — a complete plan gets
+    no ADR-0090 kick and would otherwise idle forever; without a carried line the
+    open-plan kick stands, and a non-restart gets nothing."""
+    complete = _unattended_agent(tmp_path, statuses=("done", "done"))
+    line = cli._restart_kick(complete, restarted="new-build", carried="invoke the loop again")
+    assert line is not None
+    assert line.startswith("[harness] this session was restarted into build new-build")
+    assert "Stop hook" in line and line.endswith("invoke the loop again")
+    assert cli._restart_kick(complete, restarted="new-build", carried=None) is None
+    open_plan = _unattended_agent(tmp_path)
+    fallback = cli._restart_kick(open_plan, restarted="new-build", carried=None)
+    assert fallback is not None and "2 of 3 plan steps are still open" in fallback
+    assert cli._restart_kick(open_plan, restarted=None, carried="ignored") is None
+
+
 def test_no_continuation_when_attended_or_nothing_is_open(tmp_path: Path) -> None:
     attended = _unattended_agent(tmp_path, unattended=False)
     assert cli._unattended_continuation(attended, restarted="new-build", stop_reason=None) is None

@@ -118,7 +118,7 @@ from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_c
 from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate
-from zakcode.build_info import running_build
+from zakcode.build_info import install_changed, running_build
 from zakcode.config import PermissionTier, Settings, load_settings
 from zakcode.events import (
     AgentDone,
@@ -1341,6 +1341,14 @@ class AgentLoop:
         # with an "[already loaded]" pointer, that re-entry is a dead loop. ``None`` (bare
         # loop, sub-agents) = nothing to reset.
         self._turn_end_veto_reset = turn_end_veto_reset
+        #: The continuation a Stop hook asked for at a turn boundary where a newer build was
+        #: already installed (ADR-0099). The veto is not honoured in THIS process: the turn
+        #: ends, the REPL's idle restart (ADR-0034) execs the new build, and the fresh
+        #: process delivers this line as the session's next input — so a perpetual loop
+        #: takes a deploy at its next turn boundary instead of never (a loop that vetoes
+        #: every stop has no idle prompt; measured 2026-08-29: the reducer ran a 6h-old
+        #: build through five deploys).
+        self.restart_continuation: str | None = None
         # Mid-turn say delivery (ADR-0051): when True — the MAIN loop only, wired by the
         # Agent — every iteration boundary polls the workspace say inbox and folds a
         # pending message into the conversation as a user message, so input reaches the
@@ -4262,6 +4270,19 @@ class AgentLoop:
             logger.warning("TURN_END hook run failed; allowing the stop", exc_info=True)
             return None
         if not result.vetoed:
+            return None
+        if install_changed() is not None:
+            # ADR-0099: a newer build is installed and the hook wants the loop to go on. Let
+            # the turn END here — nothing is in flight — so the REPL restarts into that
+            # build (ADR-0034) and hands the hook's own continuation to the fresh process.
+            # Honouring the veto instead would keep this stale process running for as long
+            # as the hook keeps vetoing, which for a perpetual loop is forever.
+            self.restart_continuation = result.continuation_prompt or "Continue."
+            logger.info(
+                "TURN_END hook vetoed stop_reason=%r but a newer build is installed — "
+                "ending the turn so the REPL restarts into it with the continuation",
+                stop_reason,
+            )
             return None
         logger.info(
             "TURN_END hook vetoed stop_reason=%r (veto %d this turn)",
