@@ -179,6 +179,40 @@ async def test_turn_end_hook_vetoes_completed_once(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_end_veto_is_deferred_across_a_build_restart(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """ADR-0099: a Stop hook vetoes while a newer build is installed — the turn ENDS (no
+    re-entry in this stale process) and the hook's continuation is set aside for the
+    restarted process. A perpetual loop otherwise never reaches the idle prompt where
+    ADR-0034 restarts it: measured 2026-08-29, the reducer ran a 6h-old build through
+    five deploys."""
+    import zakcode.agent.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "install_changed", lambda: ("old-build", "new-build"))
+    hook = RecordingHook([_veto("invoke the loop again"), None])
+    provider = ScriptedProvider([_TEXT_DONE, LLMResult(text="never reached")])
+    loop = _make_loop(provider, tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    assert result.iterations == 1  # the veto did NOT re-enter the loop
+    assert provider.calls == 1
+    assert loop.restart_continuation == "invoke the loop again"
+    users = [m.text for m in loop.session.messages if m.role == "user"]
+    assert not [t for t in users if "invoke the loop" in t]
+    # Positive control, same fixture: with no newer build the veto re-enters as always.
+    monkeypatch.setattr(loop_module, "install_changed", lambda: None)
+    hook2 = RecordingHook([_veto("go on"), None])
+    provider2 = ScriptedProvider([_TEXT_DONE, LLMResult(text="went on")])
+    loop2 = _make_loop(provider2, tmp_path)
+    loop2.hook_manager.register_turn_end(hook2)
+    result2 = await loop2.arun_turn("hi")
+    assert result2.iterations == 2 and provider2.calls == 2
+    assert loop2.restart_continuation is None
+
+
+@pytest.mark.asyncio
 async def test_turn_end_vetoes_are_unbounded(tmp_path: Path) -> None:
     """No per-turn veto cap (no-knobs ruling): the hook is consulted at EVERY vetoable
     stop and is itself in charge of standing down (here: after three vetoes)."""
