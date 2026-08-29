@@ -8,6 +8,7 @@ import pytest
 
 from zakcode.agent.compact import (
     CONTINUATION_NOTE,
+    ELISION_MARKER,
     SUMMARY_MARKER,
     CompactionConfig,
     Compactor,
@@ -148,3 +149,54 @@ def test_lone_summary_is_not_recompacted() -> None:
         assert second.compacted is False
 
     asyncio.run(scenario())
+
+
+# ── model-free elision (ADR-0083) ────────────────────────────────────────────────
+
+
+def _tool_pair(tool_id: str, output: str) -> list[Message]:
+    return [
+        Message(role="assistant", blocks=[ToolUseBlock(id=tool_id, name="read", input={})]),
+        Message.tool_results([ToolResultBlock(tool_use_id=tool_id, output=output)]),
+    ]
+
+
+def _output(message: Message) -> str:
+    block = message.blocks[0]
+    assert isinstance(block, ToolResultBlock)
+    return block.output
+
+
+def test_elide_replaces_long_old_tool_outputs_and_keeps_the_tail() -> None:
+    msgs = [
+        Message.user("start"),
+        *_tool_pair("t1", "x" * 5000),
+        *_tool_pair("t2", "short"),
+        Message.user("then"),
+        *_tool_pair("t3", "y" * 5000),  # in the preserved tail
+    ]
+    c = Compactor(CompactionConfig(preserve_recent=3))
+    result = c.elide(msgs)
+    assert result.compacted is True and result.summarized_count == 1
+    assert _output(result.messages[2]).startswith(ELISION_MARKER)
+    assert "5,000 characters dropped" in _output(result.messages[2])
+    assert _output(result.messages[4]) == "short"
+    assert _output(result.messages[-1]) == "y" * 5000
+    assert _output(msgs[2]) == "x" * 5000  # the input list is never mutated
+
+
+def test_elide_everything_reaches_the_tail_and_is_idempotent() -> None:
+    msgs = [Message.user("start"), *_tool_pair("t1", "x" * 5000), *_tool_pair("t2", "y" * 5000)]
+    c = Compactor(CompactionConfig(preserve_recent=2))
+    everything = c.elide(msgs, keep_recent=0)
+    assert everything.compacted is True and everything.summarized_count == 2
+    assert _output(everything.messages[2]).startswith(ELISION_MARKER)
+    assert _output(everything.messages[4]).startswith(ELISION_MARKER)
+    again = c.elide(everything.messages, keep_recent=0)
+    assert again.compacted is False and again.messages == everything.messages
+
+
+def test_elide_reports_nothing_to_do_on_a_plain_transcript() -> None:
+    msgs = _convo(4)
+    result = Compactor(CompactionConfig()).elide(msgs, keep_recent=0)
+    assert result.compacted is False and result.messages == msgs

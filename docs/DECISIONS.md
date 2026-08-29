@@ -3211,3 +3211,52 @@ where it is. Small models stop re-running finished skills after compaction. Pinn
 `test_summary_drops_the_model_s_tool_call_and_thinking_markup`,
 `test_summary_carries_the_harness_position_note`,
 `test_position_note_is_empty_without_a_plan_or_pages`).
+
+## ADR-0083: Overflow recovery is a two-rung ladder, and a failed compaction is said out loud
+
+**Context.** A context overflow is recovered by force-compacting and retrying the call
+(ADR-0074). Compaction had one strategy — a summary written by the model — and one
+silent failure mode: the summarize call is itself a model call, and when it failed
+(`compact_now` caught the exception and returned False) the only record was a
+`logging.warning` on the `zakcode` logger, which carries a `NullHandler`. Measured
+2026-08-29 (coach, zc-03, a worker Body on a 131k window): the request overflowed at
+137,486 tokens, two minutes passed, and the session ended "stopping: provider error"
+with no compaction line at all; every later "continue" re-died the same way, because
+the transcript on disk was unchanged. The last tool result was an 87 KB skill load — a
+tail six messages long that no summary could get under the window even when the
+summarizer worked. Nothing in the pane, the log, or the transcript said why.
+
+**Decision.** (1) The recovery is a ladder of two rungs, one per `_MAX_CONTEXT_RECOVERY`
+attempt, and every rung is tried before the turn gives up. Rung one summarizes the old
+region (ADR-0022/0082); if the summarizer raises, the old region's long tool outputs
+are elided instead — a stub naming the dropped size — and the attempt still counts as
+a compaction. Rung two, `elide_now`, elides every long tool output in the WHOLE
+transcript, preserved tail included. It needs no model, so it cannot fail the way rung
+one can (a busy pod, a provider error, an overflow of its own); the model re-runs a
+tool whose output it still needs. When rung one cannot shrink anything (nothing old
+enough), the ladder climbs to rung two within the same overflow. (2) Every compaction
+outcome — what was compacted, or why nothing could be — is recorded in words on
+`AgentLoop.last_compaction`, on the turn trace, in the streaming status line, in the
+terminal `provider_error` message, and in the `/compact` command's reply. The
+turn-start check that used to swallow a failed summarization now returns a notice
+saying so.
+
+**Alternatives rejected.** A larger `preserve_recent` or a smaller one (the tail was
+the overflow in the field case; no fixed size fits both a chatty exchange and an 87 KB
+tool result). Truncating tool outputs at capture time (a cap already exists; the
+overflow came from legitimate outputs the model needed at the time). Retrying the
+summarizer (two minutes per attempt on a busy pod, and it fails for reasons a retry
+does not fix). Logging harder (a logger with no handler is not a channel; the outcome
+belongs where the operator is looking).
+
+**Consequences.** A session with a compactor can always be brought back under the
+window: summary first, elision second, and the transcript is never left as it was after
+a failed attempt. Elision loses old tool outputs, which the model can regenerate; a
+summary loses less, which is why it is rung one. `_MAX_CONTEXT_RECOVERY` is now the
+ladder's length, not a retry count. Pinned by `tests/test_compact.py` (the three
+`test_elide_*` tests), `tests/test_compact_loop.py`
+(`test_compact_now_elides_old_tool_outputs_when_the_summarizer_fails`,
+`test_elide_now_reaches_the_tail`, `test_maybe_compact_says_when_compaction_failed`) and
+`tests/test_resilience_context.py` (`test_a_second_overflow_elides_without_the_model`,
+`test_a_transcript_nothing_can_summarize_is_elided_within_the_same_overflow`,
+`test_streaming_second_overflow_elides_and_says_so`).

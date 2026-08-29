@@ -85,9 +85,11 @@ class OverflowProvider(Provider):
 class StubCompactor:
     """A compactor whose force-compaction always (or never) shrinks the transcript."""
 
-    def __init__(self, *, succeeds: bool = True) -> None:
+    def __init__(self, *, succeeds: bool = True, elides: bool | None = None) -> None:
         self._succeeds = succeeds
+        self._elides = succeeds if elides is None else elides
         self.compact_calls = 0
+        self.elide_calls = 0
 
     def should_compact(self, messages: list[Message], **kw: Any) -> bool:
         # Turn-start auto-compaction is a no-op in these tests; only the forced
@@ -101,6 +103,13 @@ class StubCompactor:
         # Shrink to just the last message so a retry sees a smaller transcript.
         kept = list(messages[-1:]) if self._succeeds else list(messages)
         return SimpleNamespace(compacted=self._succeeds, messages=kept)
+
+    def elide(self, messages: list[Message], *, keep_recent: int | None = None) -> Any:
+        from types import SimpleNamespace
+
+        self.elide_calls += 1
+        kept = list(messages[-1:]) if self._elides else list(messages)
+        return SimpleNamespace(compacted=self._elides, messages=kept, summarized_count=1)
 
 
 def _make_loop(provider: Provider, compactor: Any | None = None, **kw: Any) -> AgentLoop:
@@ -140,6 +149,9 @@ def test_context_overflow_unrecoverable_ends_gracefully() -> None:
     assert result.degraded
     assert "too long" in result.error
     assert provider.calls == 1  # no retry once compaction reports it can't help
+    # Both rungs were tried within the one overflow, and the error says so (ADR-0083).
+    assert (compactor.compact_calls, compactor.elide_calls) == (1, 1)
+    assert "(recovery: nothing left to elide; 0/2 attempts)" in result.error
 
 
 def test_context_overflow_no_compactor_is_terminal() -> None:
@@ -159,7 +171,33 @@ def test_context_overflow_recovery_is_bounded() -> None:
     assert result.stop_reason == "provider_error"
     # initial call + _MAX_CONTEXT_RECOVERY retries, then it gives up
     assert provider.calls == _MAX_CONTEXT_RECOVERY + 1
-    assert compactor.compact_calls == _MAX_CONTEXT_RECOVERY
+    # One rung per attempt (ADR-0083): summarize, then the model-free elision.
+    assert (compactor.compact_calls, compactor.elide_calls) == (1, 1)
+
+
+def test_a_second_overflow_elides_without_the_model() -> None:
+    """Rung two (ADR-0083): the retry after a summarize-compaction still overflows — the
+    kept tail itself is too big — and the model-free elision recovers it."""
+    provider = OverflowProvider(overflows=2)
+    compactor = StubCompactor(succeeds=True)
+    loop = _make_loop(provider, compactor)
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 3
+    assert (compactor.compact_calls, compactor.elide_calls) == (1, 1)
+
+
+def test_a_transcript_nothing_can_summarize_is_elided_within_the_same_overflow() -> None:
+    """Rung one cannot help (nothing old enough); the ladder climbs to elision at once
+    instead of giving up — the shape that killed a worker Body whose last tool result
+    was an 87 KB skill load (coach, 2026-08-29)."""
+    provider = OverflowProvider(overflows=1)
+    compactor = StubCompactor(succeeds=False, elides=True)
+    loop = _make_loop(provider, compactor)
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 2
+    assert (compactor.compact_calls, compactor.elide_calls) == (1, 1)
 
 
 def test_context_overflow_never_triggers_model_failover() -> None:
@@ -221,7 +259,24 @@ def test_streaming_context_overflow_compacts_and_retries() -> None:
     assert compactor.compact_calls == 1
     # the compacted-and-retrying status surfaced on the stream, with before → after counts
     statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
-    assert any("context window exceeded; compacted" in s and "and retrying" in s for s in statuses)
+    assert any(
+        s.startswith("context window exceeded; compacted ") and s.endswith("— retrying (1/2)")
+        for s in statuses
+    )
+
+
+def test_streaming_second_overflow_elides_and_says_so() -> None:
+    provider = OverflowProvider(overflows=2)
+    compactor = StubCompactor(succeeds=True)
+    loop = _make_loop(provider, compactor)
+    events = asyncio.run(_collect(loop, "hi"))
+    assert events[-1].stop_reason == "completed"
+    assert provider.calls == 3
+    assert (compactor.compact_calls, compactor.elide_calls) == (1, 1)
+    statuses = [ev.message for ev in events if type(ev).__name__ == "AgentStatus"]
+    assert any(
+        s.startswith("context window exceeded; elided 1 long tool output(s)") for s in statuses
+    )
 
 
 def test_streaming_context_overflow_unrecoverable_is_terminal() -> None:
@@ -252,7 +307,7 @@ def test_streaming_context_overflow_recovery_is_bounded() -> None:
     assert done.stop_reason == "provider_error"
     # initial call + _MAX_CONTEXT_RECOVERY retries, then it gives up
     assert provider.calls == _MAX_CONTEXT_RECOVERY + 1
-    assert compactor.compact_calls == _MAX_CONTEXT_RECOVERY
+    assert (compactor.compact_calls, compactor.elide_calls) == (1, 1)
 
 
 def test_streaming_context_overflow_never_triggers_model_failover() -> None:

@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel
 
-from zakcode.messages import Message
+from zakcode.messages import Message, ToolResultBlock
 
 #: Prefix that marks a system message as a compaction summary (used to detect and
 #: fold a prior summary on re-compaction).
@@ -35,6 +35,17 @@ CONTINUATION_NOTE = (
     "\n\n(The text above is an automated summary of earlier conversation, compacted to "
     "stay within the context window. Continue the task from this point.)"
 )
+
+#: A tool output longer than this is dropped by the model-free compaction (ADR-0083).
+ELIDE_MIN_CHARS = 2000
+#: Prefix of the stub that replaces an elided tool output — how a stub is recognised.
+ELISION_MARKER = "[tool output elided at compaction"
+
+
+def elision_note(chars: int) -> str:
+    """The stub left in place of a dropped tool output."""
+    return f"{ELISION_MARKER} — {chars:,} characters dropped; re-run the tool if you need it]"
+
 
 #: A function that counts tokens for a list of messages (e.g. ``provider.count_tokens``).
 CountTokens = Callable[[list[Message]], int]
@@ -88,7 +99,7 @@ class Compactor:
         threshold = int(context_window * self.config.threshold_fraction)
         return count_tokens(messages) > threshold
 
-    def _split_index(self, messages: list[Message]) -> int:
+    def _split_index(self, messages: list[Message], keep: int | None = None) -> int:
         """Index where the preserved "recent" tail begins.
 
         Returns 0 if there is nothing old enough to summarize. Never returns an index
@@ -96,7 +107,8 @@ class Compactor:
         request), so the boundary is walked backwards past any leading tool message.
         """
         n = len(messages)
-        keep = self.config.preserve_recent
+        if keep is None:
+            keep = self.config.preserve_recent
         if n <= keep:
             return 0
         idx = n - keep
@@ -127,3 +139,37 @@ class Compactor:
             summary=summary_text,
             summarized_count=len(old),
         )
+
+    def elide(self, messages: list[Message], *, keep_recent: int | None = None) -> CompactionResult:
+        """Model-free compaction (ADR-0083): replace every long tool output with a stub.
+
+        The fallback for when the summarizer cannot run — it needs no model, so it cannot
+        fail the way a summarize call can (a provider error, an overflow of its own, a
+        busy pod). Tool outputs are the bulk of any long transcript and the one part the
+        model can regenerate by re-running the tool; the conversation's own words stay.
+        ``keep_recent`` defaults to the preserved tail, which is left verbatim; ``0``
+        reaches the tail too — for a transcript whose LAST tool result is what overflows
+        the window. Idempotent: a stub is never elided again. ``summarized_count`` is how
+        many outputs were dropped; ``compacted`` is False when nothing was long enough.
+        """
+        keep = self.config.preserve_recent if keep_recent is None else keep_recent
+        end = self._split_index(messages, keep) if keep > 0 else len(messages)
+        out: list[Message] = []
+        dropped = 0
+        for index, message in enumerate(messages):
+            blocks = list(message.blocks)
+            changed = False
+            if index < end:
+                for i, block in enumerate(blocks):
+                    if (
+                        isinstance(block, ToolResultBlock)
+                        and len(block.output) > ELIDE_MIN_CHARS
+                        and not block.output.startswith(ELISION_MARKER)
+                    ):
+                        blocks[i] = block.model_copy(
+                            update={"output": elision_note(len(block.output))}
+                        )
+                        changed = True
+                        dropped += 1
+            out.append(message.model_copy(update={"blocks": blocks}) if changed else message)
+        return CompactionResult(compacted=dropped > 0, messages=out, summarized_count=dropped)

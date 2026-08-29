@@ -64,7 +64,8 @@ Stop conditions
   a :class:`~zakcode.providers.base.ContextWindowExceeded` is recovered by
   force-compacting and retrying the same call in place, up to ``_MAX_CONTEXT_RECOVERY``
   consecutive times per CALL (parity #1b; ADR-0074 — the bound was per turn, and a
-  runner's 131-iteration turn spent it); any other
+  runner's 131-iteration turn spent it) — first by summarizing, then by eliding long
+  tool outputs with no model at all (ADR-0083); any other
   :class:`~zakcode.providers.base.ProviderError` is
   terminal immediately (after any one-shot model failover). Either way the TURN ends
   gracefully — session persisted at a message boundary, ``TurnResult.error`` carrying
@@ -253,10 +254,12 @@ _REJECTION_RETRY_TEMP_FLOOR = 0.5
 _REJECTION_RETRY_TEMP_STEP = 0.3
 
 #: How many times ONE provider call may recover from a :class:`ContextWindowExceeded` by
-#: force-compacting and retrying in place (parity #1b/#9). Bounded so an un-compactable
-#: session (nothing old enough to summarize) fails gracefully as ``provider_error``
-#: instead of looping. The recovery does NOT draw an iteration unit — it is the same
-#: logical call, retried on a smaller transcript. Per CALL, not per turn (ADR-0074): a
+#: force-compacting and retrying in place (parity #1b/#9) — the length of the recovery
+#: ladder (ADR-0083): rung one summarizes, rung two elides every long tool output with no
+#: model at all. Bounded so a session nothing can shrink fails gracefully as
+#: ``provider_error`` instead of looping. The recovery does NOT draw an iteration unit —
+#: it is the same logical call, retried on a smaller transcript. Per CALL, not per turn
+#: (ADR-0074): a
 #: runner's whole session is one turn, and two recoveries that each bought thirty more
 #: iterations are not a loop — measured 2026-08-28 (coach, 131k window): the third
 #: overflow of a 142-minute turn found the per-turn count spent and ended the session.
@@ -1375,6 +1378,9 @@ class AgentLoop:
         # M8: optional context compactor. When set, the loop auto-compacts the session
         # before each turn once it exceeds the provider's context-window threshold.
         self.compactor = compactor
+        #: What the last compaction did, in words (ADR-0083) — the overflow recovery and
+        #: the ``/compact`` command surface it, so a failed summarizer is never silent.
+        self.last_compaction = ""
         # Reliability scaffolding is ALWAYS ON and self-arming — it is not configurable
         # (one way of doing things). Write-grounding (read a written file back so a weak
         # model can't hallucinate the write) fires after any successful write; it no-ops
@@ -1696,11 +1702,14 @@ class AgentLoop:
     async def _maybe_compact(self) -> str | None:
         """Auto-compact the session if a compactor is set and the threshold is exceeded.
 
-        Best-effort: summarization failures are swallowed so a turn never dies because
-        compaction couldn't run (the turn just proceeds with the full history). Returns a
-        short user-facing notice when a compaction actually happened (``None`` otherwise)
-        so the streaming path can surface it — a silent transcript rewrite reads as
-        memory loss to an operator watching the session.
+        Best-effort: a turn never dies because compaction couldn't run (the turn proceeds
+        with the full history) — but the failure is SAID, not swallowed (ADR-0083): the
+        loop's logger has no handler, so the warning that used to go here reached nobody
+        while a session died of the very overflow this check exists to prevent (coach,
+        2026-08-29). Returns a short user-facing notice when a compaction happened or
+        failed (``None`` when the threshold was not reached) so the streaming path can
+        surface it — a silent transcript rewrite reads as memory loss to an operator
+        watching the session.
         """
         if self.compactor is None:
             return None
@@ -1712,35 +1721,11 @@ class AgentLoop:
         ):
             return None
         # Let a host serialize learning/state before the transcript is compacted.
-        await self._fire_lifecycle(
-            HookEvent.PRE_COMPACT,
-            {
-                "session_summary": {
-                    "session_id": self.session.id,
-                    "message_count": len(self.session.messages),
-                },
-            },
-            trigger="auto",
-        )
-        before = len(self.session.messages)
-        try:
-            result = await self.compactor.compact(
-                self.session.messages, summarize=self._summarize_for_compaction
-            )
-        except Exception:  # noqa: BLE001 — compaction is best-effort; never break a turn
-            logging.getLogger(__name__).warning(
-                "compaction failed; continuing with full history", exc_info=True
-            )
-            return None
-        if not result.compacted:
-            return None
-        self._adopt_compacted(result.messages)
-        # Claude Code parity: SessionStart(source="compact") right after each compaction —
-        # the seam a framework's post-compact state-restore automation plugs into.
-        await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
-        notice = f"context near the window — compacted {before} → {len(result.messages)} messages"
-        self._note("intervention", notice, kind="compaction")
-        return notice
+        await self._fire_pre_compact("auto")
+        compacted, outcome = await self._compact_or_elide()
+        if not compacted:
+            return f"compaction failed — {outcome}; continuing with the full history"
+        return f"context near the window — {outcome}"
 
     def _adopt_compacted(self, messages: list[Message]) -> None:
         """Install a compacted transcript and drop every cache keyed to the old one.
@@ -1803,12 +1788,77 @@ class AgentLoop:
         in-turn :class:`ContextWindowExceeded` recovery (``trigger="auto"`` — for a
         PreCompact hook, an overflow recovery is an automatic compaction, not an operator
         request). Returns True if the transcript was compacted; False when no compactor
-        is set, nothing was old enough to summarize, or summarization itself failed (the
-        recovery path then degrades to its graceful ``provider_error`` terminal instead
-        of dying on an exception raised inside an ``except`` handler).
+        is set or nothing could be shrunk. A failed summarizer is no longer a False by
+        itself: its old tool outputs are elided instead (ADR-0083), and
+        :attr:`last_compaction` says which happened. Never raises.
         """
         if self.compactor is None:
             return False
+        await self._fire_pre_compact(trigger)
+        compacted, _ = await self._compact_or_elide()
+        return compacted
+
+    async def elide_now(self, *, trigger: str = "auto") -> bool:
+        """Model-free compaction of the WHOLE transcript, preserved tail included (ADR-0083).
+
+        The second rung of the overflow-recovery ladder: after a summarize-compaction the
+        retry can still overflow when the kept tail itself is too big — measured
+        2026-08-29 (coach, zc-03): an 87 KB skill load was the last tool result, six
+        messages could not be summarized past, and every "continue" re-died at 137k
+        tokens. Dropping the long tool outputs needs no model, so this rung cannot fail
+        the way the first can; the model re-runs a tool whose output it still needs.
+        """
+        if self.compactor is None:
+            return False
+        await self._fire_pre_compact(trigger)
+        before = len(self.session.messages)
+        result = self.compactor.elide(self.session.messages, keep_recent=0)
+        if not result.compacted:
+            self._record_compaction("nothing left to elide", compacted=False)
+            return False
+        await self._install_compaction(
+            result.messages,
+            f"elided {result.summarized_count} long tool output(s) across all {before} messages",
+        )
+        return True
+
+    async def _compact_or_elide(self) -> tuple[bool, str]:
+        """Summarize the old region; if the summarizer fails, elide its long tool outputs
+        instead (ADR-0083). Returns ``(compacted, what happened)``; the outcome is also
+        recorded on :attr:`last_compaction` and the turn trace, so a failure is never
+        silent.
+        """
+        assert self.compactor is not None
+        before = len(self.session.messages)
+        failure = ""
+        try:
+            result = await self.compactor.compact(
+                self.session.messages, summarize=self._summarize_for_compaction
+            )
+        except Exception as exc:  # noqa: BLE001 — the summarizer is a model call; it can fail
+            failure = f"{type(exc).__name__}: {str(exc)[:160]}"
+            logging.getLogger(__name__).warning(
+                "compaction summarizer failed; eliding tool outputs instead", exc_info=True
+            )
+            result = self.compactor.elide(self.session.messages)
+        if not result.compacted:
+            outcome = (
+                f"summarizer failed ({failure}) and no long tool output to elide"
+                if failure
+                else "nothing old enough to compact"
+            )
+            self._record_compaction(outcome, compacted=False)
+            return False, outcome
+        outcome = f"compacted {before} → {len(result.messages)} messages"
+        if failure:
+            outcome = (
+                f"summarizer failed ({failure}); elided {result.summarized_count} long "
+                f"tool output(s) instead — {outcome}"
+            )
+        await self._install_compaction(result.messages, outcome)
+        return True, outcome
+
+    async def _fire_pre_compact(self, trigger: str) -> None:
         await self._fire_lifecycle(
             HookEvent.PRE_COMPACT,
             {
@@ -1819,18 +1869,26 @@ class AgentLoop:
             },
             trigger=trigger,
         )
-        try:
-            result = await self.compactor.compact(
-                self.session.messages, summarize=self._summarize_for_compaction
-            )
-        except Exception:  # noqa: BLE001 — a failed forced compaction reports False, never raises
-            logging.getLogger(__name__).warning("forced compaction failed", exc_info=True)
-            return False
-        if result.compacted:
-            self._adopt_compacted(result.messages)
-            # Claude Code parity: SessionStart(source="compact") after each compaction.
-            await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
-        return result.compacted
+
+    async def _install_compaction(self, messages: list[Message], outcome: str) -> None:
+        self._adopt_compacted(messages)
+        # Claude Code parity: SessionStart(source="compact") right after each compaction —
+        # the seam a framework's post-compact state-restore automation plugs into.
+        await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
+        self._record_compaction(outcome, compacted=True)
+
+    def _record_compaction(self, outcome: str, *, compacted: bool) -> None:
+        self.last_compaction = outcome
+        self._note("intervention", outcome, kind="compaction", compacted=compacted)
+
+    async def _recover_context(self, attempt: int) -> bool:
+        """One rung of the overflow-recovery ladder (ADR-0083), by attempt number: the
+        first summarizes (eliding old tool outputs if the summarizer fails); the second
+        elides every long tool output, tail included — model-free, so it cannot fail the
+        way the first can. ``_MAX_CONTEXT_RECOVERY`` is the ladder's length."""
+        if attempt == 0 and await self.compact_now(trigger="auto"):
+            return True
+        return await self.elide_now(trigger="auto")
 
     def _grant_iteration(self, iterations_done: int) -> bool:
         """Whether the loop may run another iteration (and reserve it if so).
@@ -4273,11 +4331,11 @@ class AgentLoop:
                     # one logical call on a smaller transcript, not a new iteration, so it
                     # draws no iteration/budget unit. Caught ABOVE ``ProviderError`` (it
                     # subclasses it) so a context overflow never reaches the failover
-                    # branch below. Bounded by ``_MAX_CONTEXT_RECOVERY``; if compaction
-                    # cannot help (nothing old enough to summarize, or the cap is hit) it
-                    # falls through to the same graceful provider_error terminal.
-                    if context_recoveries < _MAX_CONTEXT_RECOVERY and await self.compact_now(
-                        trigger="auto"
+                    # branch below. Bounded by ``_MAX_CONTEXT_RECOVERY`` — the ladder's
+                    # length (ADR-0083); if no rung can help it falls through to the same
+                    # graceful provider_error terminal, naming what was tried.
+                    if context_recoveries < _MAX_CONTEXT_RECOVERY and await self._recover_context(
+                        context_recoveries
                     ):
                         context_recoveries += 1
                         # Rebuild the message list from the now-compacted session — the
@@ -4300,7 +4358,10 @@ class AgentLoop:
                         )
                         continue
                     stop_reason = "provider_error"
-                    turn_error = str(exc)
+                    turn_error = (
+                        f"{exc} (recovery: {self.last_compaction or 'no compactor'}; "
+                        f"{context_recoveries}/{_MAX_CONTEXT_RECOVERY} attempts)"
+                    )
                     logger.error(
                         "turn aborted: context window exceeded, compaction could not recover: %s",
                         turn_error,
@@ -5643,7 +5704,7 @@ class AgentLoop:
                         if (
                             not received_any
                             and context_recoveries < _MAX_CONTEXT_RECOVERY
-                            and await self.compact_now()
+                            and await self._recover_context(context_recoveries)
                         ):
                             context_recoveries += 1
                             # Rebuild from the compacted session (the prior call_messages
@@ -5661,12 +5722,15 @@ class AgentLoop:
                             )
                             yield AgentStatus(
                                 message=(
-                                    "context window exceeded; compacted "
-                                    f"{before} → {len(call_messages)} messages and retrying"
+                                    f"context window exceeded; {self.last_compaction} — "
+                                    f"retrying ({context_recoveries}/{_MAX_CONTEXT_RECOVERY})"
                                 )
                             )
                             continue
-                        provider_failure = str(exc)
+                        provider_failure = (
+                            f"{exc} (recovery: {self.last_compaction or 'no compactor'}; "
+                            f"{context_recoveries}/{_MAX_CONTEXT_RECOVERY} attempts)"
+                        )
                     except ProviderError as exc:
                         # Runtime model failover (PKG-AUTO), streaming twin: only
                         # before any event reached the client — a later retry would
