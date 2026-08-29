@@ -100,6 +100,7 @@ import os
 import random
 import re
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -1270,6 +1271,9 @@ class AgentLoop:
         # must never set this: they would steal the user's message into a child
         # conversation. Consumption is exactly-once (read_say deletes).
         self._consume_say_inbox = consume_say_inbox
+        #: Lines the operator typed at THIS process's REPL mid-turn (ADR-0078) — delivered
+        #: at the next iteration boundary ahead of the workspace say slot, never via it.
+        self._typed_lines: deque[str] = deque()
         # Typed-skill says (ADR-0073): ``(name, args) -> awaitable SkillInvocation`` — the
         # Agent wires its ``compose_skill_turn``, the SAME composition the REPL runs for a
         # typed ``/<skill>``, so a slash say delivered mid-turn runs the skill (command
@@ -3807,14 +3811,15 @@ class AgentLoop:
         ``_SAY_PATIENCE`` boundaries, whichever comes first. A turn with no plan (or a
         finished one) delivers immediately, the ADR-0051 behavior.
         """
-        if not self._consume_say_inbox:
+        typed = bool(self._typed_lines)
+        if not typed and not self._consume_say_inbox:
             return None
         network = self.session.task_network
         finished, _total = network.progress()
         step_seam = finished > self._say_prev_finished
         self._say_prev_finished = finished  # every boundary, so the delta is boundary-local
         path = say_path(self.workspace_root)
-        if not say_pending(path):
+        if not typed and not say_pending(path):
             self._say_waited = 0
             return None
         mid_step = (
@@ -3829,19 +3834,42 @@ class AgentLoop:
                 )
             self._say_waited += 1
             return None
-        text = read_say(path)
+        if typed:
+            # ADR-0078: the operator's own keyboard, ahead of the workspace slot — this
+            # line was typed at THIS session and never touched the file.
+            text: str | None = self._typed_lines.popleft()
+            source = "the keyboard"
+        else:
+            text = read_say(path)
+            source = "the say inbox"
         self._say_waited = 0
         if text is None:
             return None
         if text.startswith("/") and self._compose_skill is not None:
-            return await self._deliver_midturn_skill(text)
+            return await self._deliver_midturn_skill(text, source=source)
         self.session.add_message(Message.user(_MIDTURN_SAY_FRAME.format(text=text)))
         self._persist()
-        self._note("intervention", "user message delivered mid-turn from the say inbox", kind="say")
-        logger.info("say inbox: delivered a user message mid-turn (%d chars)", len(text))
+        self._note("intervention", f"user message delivered mid-turn from {source}", kind="say")
+        logger.info("%s: delivered a user message mid-turn (%d chars)", source, len(text))
         return text
 
-    async def _deliver_midturn_skill(self, text: str) -> str | None:
+    def inject_user_line(self, text: str) -> None:
+        """Queue a line the operator typed into THIS process's REPL while its turn runs.
+
+        Delivered at the next iteration boundary exactly like a say (same frame, same
+        ADR-0052 step-seam hold), but in-process (ADR-0078): the workspace say slot is a
+        FILE shared by every session on the workspace, so routing the keyboard through it
+        handed a line typed at one cockpit to whichever sibling polled the slot first.
+        Measured 2026-08-29 on a four-session Mind (coach, zc-03): the reducer consumed
+        an instruction typed at a worker and executed a goal it did not hold; a line
+        typed at another worker vanished. The slot stays the door for OTHER producers
+        (``zakcode say``, ``POST /say``). Safe to call from the stdin pump thread.
+        """
+        self._typed_lines.append(text)
+
+    async def _deliver_midturn_skill(
+        self, text: str, *, source: str = "the say inbox"
+    ) -> str | None:
         """A say that is a typed ``/<skill> [args]`` RUNS the skill (ADR-0073).
 
         The message is what the REPL composes for a typed slash — the command-expansion
@@ -3862,9 +3890,7 @@ class AgentLoop:
         if not getattr(result, "invoked", False):
             self.session.add_message(Message.user(_MIDTURN_SAY_FRAME.format(text=text)))
             self._persist()
-            self._note(
-                "intervention", "user message delivered mid-turn from the say inbox", kind="say"
-            )
+            self._note("intervention", f"user message delivered mid-turn from {source}", kind="say")
             return text
         refused = getattr(result, "denied_reason", None) or getattr(result, "error", None)
         turn_text = getattr(result, "turn_text", None)

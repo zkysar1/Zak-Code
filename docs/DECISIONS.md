@@ -3042,3 +3042,38 @@ whose estimate is tiny but whose usage reports 90% of the window compacts on the
 the first call in both twins; the floor never lowers a larger estimate; a compaction
 forgets it; an out-of-range index is ignored; the fields round-trip through the session
 document and an older document loads without them.
+
+## ADR-0078: A line typed at a session's own REPL reaches that session, in-process
+
+**Context.** ADR-0073 made a line typed mid-turn reach the running turn by writing it to
+the workspace say inbox — the single-slot FILE the loop polls at every iteration boundary
+(ADR-0051). That is one door for the whole workspace: `zakcode say`, `POST /say`, and the
+keyboard all landed in the same slot, and the slot is consumed by whichever loop on the
+workspace reaches a boundary first. One runner per workspace was the unstated premise. A
+Mind on Zak Code breaks it: a reducer and its worker Bodies are four sessions of one agent
+in one checkout. Measured 2026-08-29 (coach, zc-03): an instruction typed at a worker
+("your claim of g-005-05 succeeded — it is your own session id") was consumed by the
+reducer, which then announced "g-005-05 is already claimed by my session" and built it
+without holding the claim; a line typed at another worker never appeared in any transcript.
+Two goals were double-executed by sessions that could not see each other's keystrokes.
+
+**Decision.** The keyboard is in-process. `_InputMux` hands a mid-turn line to the running
+agent (`Agent.inject_user_line`), which delivers it at the next iteration boundary exactly
+as a say is delivered — same frame, same ADR-0052 step-seam hold, same typed-`/skill`
+dispatch — ahead of the workspace slot and without touching the file. The say inbox stays
+the door for producers OUTSIDE the process, where "which session" is genuinely the
+operator's problem to state. A mux with no agent attached (a thin `--server` REPL, whose
+turn runs elsewhere) keeps the file path as its fallback.
+
+**Alternatives rejected.** A per-session say file (external producers would have to
+discover session ids, and the workspace slot's exactly-once contract would fragment); a
+"busy elsewhere" stand-back for mid-turn consumers like ADR-0060's idle one (every session
+is busy on a Mind; the line still goes to the wrong one); telling operators not to type at
+workers (the keystroke is the highest-bandwidth channel there is, and nothing told them it
+could be misdelivered).
+
+**Consequences.** What you type at a cockpit reaches that cockpit's agent, and only it.
+Pinned by `tests/test_cli_chat.py` (the mux injects and never writes the slot; a mux with
+no agent still does) and `tests/test_loop_say.py` (an injected line is framed, persisted
+and seen by the next provider call; two loops on one workspace cannot receive each
+other's lines; a line is consumed exactly once).

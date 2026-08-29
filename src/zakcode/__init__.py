@@ -1824,6 +1824,17 @@ class Agent:
             self._shared_budget.reset()  # the pool is per-TURN-tree, not per-Agent
         return self.loop.astream_turn(user_text)
 
+    def inject_user_line(self, text: str) -> None:
+        """Hand a line typed at THIS agent's own REPL to its running turn (ADR-0078).
+
+        Delivered at the next iteration boundary exactly like a say — same frame, same
+        step-seam hold, same typed-``/skill`` dispatch — but in-process, so it can only
+        reach this agent. The workspace say inbox stays the door for producers outside
+        the process; several sessions may share one workspace, and that slot cannot
+        tell which of them a keystroke was meant for.
+        """
+        self.loop.inject_user_line(text)
+
     async def connect_mcp(self) -> DiscoveryReport | None:
         """Spawn configured MCP servers and register their tools into the registry.
 

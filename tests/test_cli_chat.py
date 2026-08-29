@@ -1795,7 +1795,31 @@ def _wait_for(predicate, timeout: float = 5.0) -> bool:
     return predicate()
 
 
-def test_typed_line_mid_turn_goes_to_the_say_inbox(monkeypatch, tmp_path) -> None:
+def test_typed_line_mid_turn_is_injected_into_this_process_agent(monkeypatch, tmp_path) -> None:
+    """ADR-0078: the keyboard reaches THIS session's running turn in-process. The workspace
+    say slot is a file every session on the workspace polls, so a line typed at one cockpit
+    used to land on whichever sibling reached an iteration boundary first (measured on a
+    four-session Mind: the reducer consumed a worker's instruction)."""
+    import threading
+
+    from zakcode.cli import _InputMux
+    from zakcode.session import say_inbox as si
+
+    gate = threading.Event()
+    _feed_lines(monkeypatch, ["/stop coach"], gate)
+    injected: list[str] = []
+    mux = _InputMux(si.say_path(tmp_path), si.interrupt_path(tmp_path), inject=injected.append)
+    mux.turn_active = True
+    gate.set()
+    assert _wait_for(lambda: injected == ["/stop coach"])
+    assert not si.say_pending(si.say_path(tmp_path))  # never touched the shared slot
+    assert mux.queue.empty()  # not parked for a prompt the runner never reaches
+
+
+def test_typed_line_mid_turn_falls_back_to_the_say_inbox_without_an_agent(
+    monkeypatch, tmp_path
+) -> None:
+    """A mux with no agent attached (the turn runs elsewhere) keeps the file door."""
     import threading
 
     from zakcode.session import say_inbox as si
@@ -1807,7 +1831,7 @@ def test_typed_line_mid_turn_goes_to_the_say_inbox(monkeypatch, tmp_path) -> Non
     gate.set()
     assert _wait_for(lambda: si.say_pending(si.say_path(tmp_path)))
     assert si.read_say(si.say_path(tmp_path)) == "/stop coach"
-    assert mux.queue.empty()  # not parked for a prompt the runner never reaches
+    assert mux.queue.empty()
 
 
 def test_typed_line_idle_or_repl_command_stays_on_the_queue(monkeypatch, tmp_path) -> None:

@@ -974,6 +974,7 @@ class _InputMux:
         *,
         keyboard: bool = True,
         idle_probe: Callable[[], bool] | None = None,
+        inject: Callable[[str], None] | None = None,
     ) -> None:
         from zakcode.session.say_inbox import (
             busy_elsewhere,
@@ -990,11 +991,15 @@ class _InputMux:
         self.inbox = inbox
         self.interrupt_fp = interrupt_fp
         #: True while a turn runs in THIS process (the REPL sets it around each turn). A
-        #: line typed then is a message for the running agent, so it goes through the say
-        #: inbox — the one contract the loop polls at every iteration boundary (ADR-0051)
-        #: — instead of waiting in the queue for a turn end that a runner never reaches
-        #: (ADR-0073: an operator's ``/stop`` sat unread in a live runner's queue).
+        #: line typed then is a message for the running agent, handed to it in-process
+        #: (``inject`` → ``Agent.inject_user_line``, ADR-0078) and folded in at the next
+        #: iteration boundary (ADR-0051) instead of waiting in the queue for a turn end
+        #: that a runner never reaches (ADR-0073: an operator's ``/stop`` sat unread in a
+        #: live runner's queue). Without an agent attached the say inbox FILE is the
+        #: fallback door — shared by every session on the workspace, so never the first
+        #: choice for the keyboard.
         self.turn_active = False
+        self._inject = inject
         #: The workspace's busy marker (ADR-0060): while a turn runs in ANOTHER process,
         #: this idle REPL leaves the inbox to it — a say is for the agent doing the work.
         self._busy_marker = busy_path(inbox.parent)
@@ -1043,14 +1048,21 @@ class _InputMux:
         """Hand a typed line to whoever can act on it now (ADR-0073).
 
         Idle REPL, an empty line, or a REPL command (``/help``, ``/exit`` …): the queue,
-        read at the prompt. A turn running in this process: the say inbox, which the loop
-        folds into the conversation at its next iteration boundary — a typed ``/stop`` on a
-        runner whose turn never ends therefore RUNS instead of waiting for the prompt that
-        never comes. A slot still busy after the wait falls back to the queue, so no line
-        is ever lost; a turn that ends meanwhile releases the line to the prompt at once.
+        read at the prompt. A turn running in this process: the running agent itself
+        (``inject``, ADR-0078), which folds the line into the conversation at its next
+        iteration boundary — a typed ``/stop`` on a runner whose turn never ends therefore
+        RUNS instead of waiting for the prompt that never comes. Only a mux with no agent
+        attached (a thin ``--server`` REPL, whose turn runs elsewhere) writes the line to
+        the workspace say inbox instead; that slot is a FILE every session on the
+        workspace polls, which is how a line typed at one cockpit reached a sibling
+        session. A slot still busy after the wait falls back to the queue, so no line is
+        ever lost; a turn that ends meanwhile releases the line to the prompt at once.
         """
         if not self.turn_active or not line.strip() or _is_repl_command(line):
             self.queue.put(("line", line))
+            return
+        if self._inject is not None:
+            self._inject(line)
             return
         deadline = time.monotonic() + self._INBOX_WAIT_SECONDS
         while self.turn_active:
@@ -2541,6 +2553,11 @@ def chat(
         # ADR-0034: a `zakcode update` that lands while this REPL sits idle restarts it
         # into the new build (resuming this session) instead of leaving it on stale code.
         idle_probe=lambda: install_changed() is not None,
+        # ADR-0078: a line typed while THIS session's turn runs goes to THIS session's
+        # agent, in-process — never to the workspace say slot, which any sibling session
+        # on the same checkout would consume first. Late-bound: `agent` is rebuilt on
+        # /model and /resume below, and the mux must follow it.
+        inject=lambda text: agent.inject_user_line(text),
     )
     repl_mux.append(mux)
 
