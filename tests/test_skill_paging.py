@@ -1229,3 +1229,148 @@ def test_a_token_two_sections_share_maps_a_step_to_the_first_page(tmp_path: Path
         "pending",
     ]
     assert loop._skill_pages_delivered["shared"] == {1, 2}
+
+
+# ── ADR-0095: a page without a marker ────────────────────────────────────────
+
+
+LETTERED = """# /lettered — step ids with a letter prefix are markers
+
+## Step B2.5: Signal-Gated Goal Generation
+
+Generate goals only on a signal. Then read the signal log before you file any of them, and
+record the count you filed beside the signal that licensed it.
+
+## Phase GS-1: Iteration Checkpoint Recovery
+
+Recover the checkpoint. Then verify every obligation it lists before moving on, and note
+which of them the interrupted iteration had already met.
+
+## Phase S4.6: Skill Discovery Audit
+
+Audit the skills. Then record the gaps you found in the registry before closing, and name
+the goal each gap should be filed under.
+"""
+
+
+def test_a_lettered_step_id_is_a_marker() -> None:
+    """coach's skills: 60 of 210 pages had no marker, a third of them ``Step B2.5`` /
+    ``Phase GS-1`` / ``Phase S4.6`` ids the regex refused (2026-08-29)."""
+    pages = skill_pages(LETTERED, skill="lettered")
+    assert pages is not None and pages.count == 3
+    assert [page.marker for page in pages.pages] == ["step b2.5", "phase gs-1", "phase s4.6"]
+    # A rewrite that keeps the id finds its page by it, and ids do not bleed into each other.
+    assert pages.pages[1].matches("Phase GS-1 — recover, then verify")
+    assert not pages.pages[0].matches("Phase GS-1 — recover, then verify")
+    assert not pages.pages[1].matches("Phase GS-10: something else")
+
+
+def test_overlap_finds_the_page_a_paraphrase_means() -> None:
+    """/start's pages as coach has them: branch names, no marker, a section split in three."""
+    idle = 'IDLE (agent-state contains "IDLE")'
+    pages = [
+        SkillPage(
+            1,
+            "Step 0: Load Conventions (+6 more)",
+            "step 0",
+            "",
+            (
+                ("Step 0: Load Conventions", "step 0"),
+                ("Step 1.5: UNINITIALIZED Drift-Warning Probe", "step 1.5"),
+                ('RUNNING (agent-state contains "RUNNING")', ""),
+            ),
+        ),
+        SkillPage(2, "RUNNING + requested mode is autonomous (or no --mode flag)", "", ""),
+        SkillPage(3, "RUNNING + requested mode is reader or assistant (Observer Session)", "", ""),
+        SkillPage(4, f"{idle} (1/3)", "", ""),
+        SkillPage(5, f"{idle} (2/3)", "", ""),
+        SkillPage(
+            6,
+            f"{idle} (3/3) (+1 more)",
+            "",
+            "",
+            ((f"{idle} (3/3)", ""), ("UNINITIALIZED (agent-state doesn't exist)", "")),
+        ),
+    ]
+
+    def best(title: str) -> int | None:
+        scores = [page.overlap(title) for page in pages]
+        return scores.index(max(scores)) + 1 if max(scores) else None
+
+    # The split parts are told apart by their (k/n); the branches by their own words.
+    assert best("IDLE (1/3)") == 4
+    assert best("IDLE (2/3)") == 5
+    assert best("IDLE (3/3) — from /start") == 6  # a folded marker is stripped first (ADR-0092)
+    assert best("RUNNING + autonomous mode") == 2
+    assert best("RUNNING + reader/assistant (Observer Session)") == 3
+    # A marker word alone, or another skill's step, is no page's.
+    assert best("phase") is None
+    assert best("Step") is None
+    assert best("Phase 0.5: REDUCER-LIVENESS POLL") is None
+    assert best("Phase 1 — SELECT (reuse the existing scorer)") is None
+    # One shared word is not enough unless it is all the step says.
+    assert best("RUNNING branch entry") is None
+    assert best("UNINITIALIZED") == 1  # a tie goes to the first page
+
+
+BRANCHES = """# /branches — branch-named sections carry no marker
+
+## RUNNING + requested mode is autonomous (or no --mode flag)
+
+Resume the loop. Then confirm the runner token before any unit is claimed by this body,
+and record the token fingerprint in the session's working memory.
+
+## RUNNING + requested mode is reader or assistant (Observer Session)
+
+Open an observer session. Then read the handoff before answering the operator's question,
+and never write to the agent's state from this session.
+
+## IDLE (agent-state contains "IDLE")
+
+Start the agent. Then write the binding before the first prime of the session begins, and
+verify the binding resolves to this agent before the loop starts.
+
+## UNINITIALIZED (agent-state absent)
+
+Initialise the agent. Then write the self file before anything else is created here, and
+ask the operator for the agent's purpose before the first goal.
+"""
+
+
+def test_a_paraphrased_branch_plan_delivers_no_page_the_model_closed(tmp_path: Path) -> None:
+    """coach-w, coach-w2 and the reducer (2026-08-29): the RUNNING branch done, the other
+    three cancelled, every title paraphrased and every note dropped — and all of /start's
+    pages arrived one per turn, the cancelled ones included, with none of them settled."""
+    rewrite = [
+        {"title": "RUNNING + autonomous mode", "status": "done", "note": "Agent was RUNNING"},
+        {
+            "title": "RUNNING + reader/assistant (Observer Session)",
+            "status": "cancelled",
+            "note": "Requested mode was autonomous",
+        },
+        {"title": "IDLE", "status": "cancelled", "note": "Agent was RUNNING, not IDLE"},
+        {"title": "UNINITIALIZED", "status": "cancelled", "note": "Agent existed"},
+        {
+            "title": "Phase 0.5: REDUCER-LIVENESS POLL",
+            "status": "in_progress",
+            "note": "poll the reducer",
+        },
+    ]
+
+    def script(call: int, messages: list[Message]) -> LLMResult:
+        if call == 1:
+            return _use(name="branches")
+        if call == 2:
+            return _plan(rewrite)
+        return LLMResult(text="done")
+
+    pages = skill_pages(BRANCHES, skill="branches")
+    assert pages is not None and pages.count == 4
+    loop = _loop(_ScriptByCall(script), tmp_path, bodies={"branches": BRANCHES})
+    asyncio.run(loop.arun_turn("run /branches"))
+    assert _notes(loop, "skill_page") == []  # nothing past page 1 was delivered
+    assert _notes(loop, "skill_sections_restored") == []
+    assert _notes(loop, "skill_sections_reopened") == []
+    assert loop.session.skill_pages_settled == {"branches": [1, 2, 3, 4]}
+    assert loop.current_skill_page("branches") is None
+    assert [t.title for t in loop.session.task_network.tasks] == [t["title"] for t in rewrite]

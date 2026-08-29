@@ -2644,6 +2644,21 @@ class AgentLoop:
                         continue
                     slot.append(step)
                     taken.add(id(step))
+        # A page with no marker — a branch-named heading — and a paraphrased step: the page
+        # sharing the most telling words with the step takes it, the first on a tie.
+        # Measured 2026-08-29 on three of four fresh sessions (coach-w, coach-w2, the
+        # reducer): /start's five branch pages carry no marker and the rewrite kept none of
+        # the seeded titles ("IDLE (1/3)", "RUNNING + autonomous mode"), so every page stood
+        # matched by nothing and all six were delivered, cancelled branches included, while
+        # the plan settled none of them (ADR-0095).
+        for step in candidates:
+            if id(step) in taken:
+                continue
+            scores = [page.overlap(step.title) for page in pages.pages]
+            best = max(scores)
+            if best > 0:
+                matched[scores.index(best)].append(step)
+                taken.add(id(step))
         return matched
 
     def _reopen_unseen_done(self, name: str, pages: SkillPages) -> list[tuple[int, Task]]:
