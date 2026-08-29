@@ -266,8 +266,6 @@ _MAX_CONTEXT_RECOVERY = 2
 #: of the summarizer's window (headroom for the instruction + the summary itself). Above it,
 #: the summarize call would risk the very overflow compaction exists to fix — the reactive
 #: recovery path fires only AFTER an overflow, so its input is oversized BY CONSTRUCTION —
-#: and the history is rendered to text and summarized in bounded slices instead.
-_SUMMARY_SINGLE_CALL_FRACTION = 0.7
 #: Slice budget for the chunked summarize path, as a fraction of the summarizer's window.
 _SUMMARY_CHUNK_FRACTION = 0.5
 #: Conservative chars-per-token floor for slicing rendered text without a tokenizer pass
@@ -1589,9 +1587,13 @@ class AgentLoop:
 
         Overflow-proof by construction: the reactive recovery path compacts only AFTER a
         :class:`ContextWindowExceeded`, so the messages handed here can exceed the
-        summarizer's own window. While they fit :data:`_SUMMARY_SINGLE_CALL_FRACTION` of
-        it they go raw in one call (the common case, unchanged); above that they are
-        rendered to text, summarized in bounded slices, and the part-summaries folded.
+        summarizer's own window. The transcript is rendered to text (ADR-0082) and sized by
+        CHARACTERS at :data:`_SUMMARY_CHARS_PER_TOKEN` — the same budget the slices use —
+        never by ``count_tokens``: a local model's counter is a guess, and the guess is
+        what let the recovery's own summarize call overflow the window it was summarizing
+        FOR (coach, 2026-08-29, twice: "request (131297 tokens) exceeds 131072", no
+        compaction line, "stopping: provider error"). Under one slice budget it goes in
+        one call; above it, in bounded slices whose part-summaries are folded.
         """
         instruction = (
             "You are compacting a long conversation to fit a context window. Summarize "
@@ -1607,15 +1609,14 @@ class AgentLoop:
         # 2026-08-29 (a 27B reducer, 131k window): the "summary" was its own last reply
         # plus a text-format tool call, and the session re-ran a skill it had finished.
         rendered = self._render_for_summary(messages)
-        whole = Message.user(_SUMMARY_PROMPT + rendered)
-        if summarizer.count_tokens([whole]) <= int(window * _SUMMARY_SINGLE_CALL_FRACTION):
+        chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
+        if len(rendered) <= chunk_chars:
             result = await summarizer.acomplete(
-                [whole],
+                [Message.user(_SUMMARY_PROMPT + rendered)],
                 system=instruction,
                 prompt_cache_key=f"zakcode/{self.session.id}",
             )
             return self._finish_summary(result.text)
-        chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
         slices = [rendered[i : i + chunk_chars] for i in range(0, len(rendered), chunk_chars)]
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
