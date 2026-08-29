@@ -524,6 +524,65 @@ def test_enoent_fix_predicate_reads_every_measured_shape(tmp_path) -> None:
     assert _enoent_fix("all good\n", root, []) is None
 
 
+# ── a TOOL typed as a shell command (ADR-0098, 2026-08-29) ────────────────────
+
+
+def _registry_ctx(tmp_path: Path) -> ToolContext:
+    from zakcode.tools.builtins.default_registry import default_registry
+
+    return ToolContext(workspace_root=tmp_path, tool_registry=default_registry())
+
+
+async def test_bash_refuses_a_tool_written_as_a_shell_call_and_names_the_tool(tmp_path) -> None:
+    """The Bodies typed the loop's deadman net — `ScheduleWakeup(prompt=…, delaySeconds=600)`
+    — into the bash tool, five times in one session (zc-03, 2026-08-29): a shell syntax
+    error and a lost turn each, then no real call at all. Refuse it BEFORE running, with
+    the tool's real name and parameters."""
+    ctx = _registry_ctx(tmp_path)
+    res = await BashTool().execute(
+        {"command": "ScheduleWakeup(prompt='<<autonomous-loop-dynamic>>', delaySeconds=600)"}, ctx
+    )
+    assert res.is_error
+    assert res.data is not None and res.data.get("tool_typed_as_command") is True
+    assert "[exit code" not in res.output  # nothing ran
+    assert "schedule_wakeup" in res.output
+    assert "prompt" in res.output and "delaySeconds" in res.output
+    assert res.fix is not None and "schedule_wakeup" in res.fix
+
+
+async def test_bash_still_runs_ordinary_commands_and_shell_functions(tmp_path) -> None:
+    ctx = _registry_ctx(tmp_path)
+    # A shell function definition has nothing between its parens: not a tool call.
+    res = await BashTool().execute({"command": "greet() { echo hi; }; greet"}, ctx)
+    assert not res.is_error and "hi" in res.output
+    # A tool name mid-command is just text.
+    res = await BashTool().execute({"command": "echo 'ScheduleWakeup(prompt=x)'"}, ctx)
+    assert not res.is_error and "ScheduleWakeup" in res.output
+    # An unknown name in call syntax is left to the shell (and its own error).
+    res = await BashTool().execute({"command": "Frobnicate(prompt='x')"}, ctx)
+    assert res.is_error and res.data is not None and "tool_typed_as_command" not in res.data
+
+
+async def test_bash_without_a_registry_skips_the_check(tmp_path) -> None:
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": "ScheduleWakeup(prompt='x', delaySeconds=60)"}, ctx)
+    assert res.is_error  # the shell's own syntax error, as before
+    assert res.data is not None and "tool_typed_as_command" not in res.data
+
+
+def test_tool_typed_as_command_predicate() -> None:
+    from zakcode.tools.builtins.bash import _tool_typed_as_command
+    from zakcode.tools.builtins.default_registry import default_registry
+
+    reg = default_registry()
+    assert _tool_typed_as_command("ScheduleWakeup(prompt='x')", reg) is not None
+    assert _tool_typed_as_command("  wakeup(prompt='x')", reg) is not None  # alias
+    assert _tool_typed_as_command("schedule_wakeup(prompt='x')", reg) is not None
+    assert _tool_typed_as_command("ScheduleWakeup()", reg) is None  # no arguments: not a call
+    assert _tool_typed_as_command("ls -la", reg) is None
+    assert _tool_typed_as_command("ScheduleWakeup(prompt='x')", None) is None
+
+
 def test_locate_basename_sees_hidden_data_dirs_but_not_vcs_or_caches(tmp_path) -> None:
     from zakcode.tools.builtins.bash import _locate_basename
 

@@ -4497,6 +4497,7 @@ class AgentLoop:
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
+            tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
         )
@@ -5694,6 +5695,7 @@ class AgentLoop:
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
+            tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
         )

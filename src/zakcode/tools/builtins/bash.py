@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from zakcode._subprocess import find_bash
 from zakcode.config import PermissionTier
@@ -361,6 +362,42 @@ def _prefix_siblings(directory: Path, name: str) -> list[str]:
     return [e for e in entries if e.lower().startswith(token) and e != name]
 
 
+#: ``Name(arg…`` at the very start of a command: a tool CALL written as shell. A shell
+#: function definition (``name() {``) has nothing between the parens and does not match.
+_CALL_SYNTAX_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*[^)\s]")
+
+
+def _tool_typed_as_command(command: str, registry: Any) -> str | None:
+    """The refusal for a registered tool written as a shell call, else None.
+
+    Measured 2026-08-29 (zc-03, eight Bodies on a 27B local model): the loop's skills
+    show the deadman net as ``ScheduleWakeup(prompt=…, delaySeconds=600)``, and the
+    Bodies typed exactly that into the bash tool — five times in one session, each a
+    shell syntax error and a lost turn, followed by "that needs to be a direct tool
+    call" and then no call at all: zero ``schedule_wakeup`` invocations fleet-wide, so
+    the net was never armed. The registry knows the name (and the Claude-Code-shaped
+    alias); the bash tool can say so BEFORE running anything, with the tool's real
+    name and its parameters, instead of letting bash report a syntax error.
+    """
+    m = _CALL_SYNTAX_RE.match(command)
+    if m is None or registry is None:
+        return None
+    typed = m.group(1)
+    try:
+        tool = registry.get(typed)
+        if tool is None or not registry.is_active(tool.name):
+            return None
+        params = list((getattr(tool.spec, "parameters", None) or {}).get("properties", {}))
+    except Exception:  # noqa: BLE001 - a hint on the error path never raises
+        return None
+    shape = "{" + ", ".join(params) + "}" if params else "its arguments"
+    return (
+        f"`{typed}(…)` is the `{tool.spec.name}` TOOL written as a shell command; bash "
+        f"cannot run it and nothing was run. Call the `{tool.spec.name}` tool directly "
+        f"with {shape}."
+    )
+
+
 class BashTool(Tool):
     """Execute an arbitrary shell command with the workspace as the cwd."""
 
@@ -396,6 +433,12 @@ class BashTool(Tool):
         command = args.get("command")
         if not isinstance(command, str) or not command.strip():
             return ToolResult.error("'command' is required and must be a non-empty string.")
+
+        typed = _tool_typed_as_command(command, ctx.tool_registry)
+        if typed is not None:
+            return ToolResult.error(
+                typed, data={"command": command, "tool_typed_as_command": True}, fix=typed
+            )
 
         # ``bool`` is an ``int`` subclass; treat True/False as "no timeout given".
         timeout = args.get("timeout")
