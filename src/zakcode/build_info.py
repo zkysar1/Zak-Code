@@ -156,12 +156,21 @@ def install_changed() -> tuple[str, str] | None:
     this process loaded — i.e. a ``zakcode update`` (or any reinstall) landed while the
     process was running — else ``None``. Keyed on the install marker, not the label, so a
     dev checkout whose HEAD moves without a reinstall never trips it.
+
+    A git install reinstalled at the SAME commit is the one marker move that changes no
+    code (ADR-0103): the process adopts the new marker and reports nothing, so the fleet
+    is not restarted for it. A local-path install keeps the marker-only rule — its label is
+    a checkout HEAD, and a reinstall at the same HEAD can still carry uncommitted edits.
     """
+    global _RUNNING_IDENTITY
     running_label, running_marker = _RUNNING_IDENTITY
     if running_marker is None:
         return None  # no installed distribution to compare against
     installed_label, installed_marker = install_identity()
     if installed_marker is None or installed_marker == running_marker:
+        return None
+    if installed_label and installed_label == running_label and _commit_of(_read_direct_url()):
+        _RUNNING_IDENTITY = (running_label, installed_marker)  # same code; nothing to apply
         return None
     return (running_label, installed_label)
 

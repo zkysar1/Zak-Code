@@ -4015,3 +4015,32 @@ a wake-up armed on a veto is a net behind the continuation. Pinned in
 `tests/test_turn_end.py` (the JSON shapes, clamp, cancel, malformed, first-wins) and
 `tests/test_turn_end_loop.py` (the slot is held on the session after an allowed end, a cancel
 drops a held one, a veto carries one).
+
+## ADR-0103: A git install reinstalled at the same commit is not an update
+
+**Context.** ADR-0034 keys the update probe on the install marker (the mtime of
+`direct_url.json`) rather than the build label, so a dev checkout whose HEAD moves without a
+reinstall never trips it — and it accepted, as "harmless", that a no-op reinstall of the same
+commit restarts once too. Measured on a live fleet 2026-08-29: a `zakcode update` that
+resolved to the commit already installed moved the marker, and every session on that build
+took the restart at its next boundary — six Bodies, "build a575b462851e reinstalled", each
+re-priming a 23-page loop on a saturated pod for code that had not changed. Harmless per
+session; a fleet-wide stall per no-op update. The same event also contaminated the ADR-0101
+measurement: four of the "restarted within 30 min" tallies were this restart, not the
+upgrade.
+
+**Decision.** `install_changed` keeps the marker as its key. When the marker has moved but
+the installed label equals the running label AND the install is a git install (the label is
+a recorded commit, so equal labels mean equal code), the process adopts the new marker and
+reports no change. A local-path install keeps the marker-only rule: its label is a checkout
+HEAD, and a reinstall at the same HEAD can carry uncommitted edits.
+
+**Alternatives rejected.** Keying the probe on the label (ADR-0034's reasons stand — a
+local-path install may record no commit, and a moving dev HEAD is not an install). Comparing
+installed file hashes (a second install-time artefact to maintain for a case the commit
+already decides). Leaving it (the cost is per fleet per update, and updates are the point).
+
+**Consequences.** `zakcode update` at an already-installed commit is silent for running
+sessions; the "build X reinstalled" banner remains reachable only for local-path installs.
+Pinned in `tests/test_self_restart.py` (same-commit git reinstall adopts the marker and stays
+quiet, a later real update still reports; local-path same-HEAD reinstall still restarts).

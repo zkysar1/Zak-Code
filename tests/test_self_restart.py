@@ -77,6 +77,39 @@ def test_install_changed_keys_on_the_reinstall_marker(monkeypatch: pytest.Monkey
     assert bi.install_changed() is None
 
 
+def test_a_git_install_reinstalled_at_the_same_commit_is_not_a_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADR-0103. Measured 2026-08-29: a `zakcode update` that resolved to the commit already
+    # installed moved the marker, and six Bodies restarted into the build they were
+    # already running. Same commit, same code — adopt the marker, report nothing.
+    monkeypatch.setattr(bi, "_RUNNING_IDENTITY", ("aaa", 100.0))
+    monkeypatch.setattr(bi, "install_identity", lambda: ("aaa", 200.0))
+    monkeypatch.setattr(
+        bi, "_read_direct_url", lambda: {"vcs_info": {"vcs": "git", "commit_id": "a" * 40}}
+    )
+    assert bi.install_changed() is None
+    assert bi._RUNNING_IDENTITY == ("aaa", 200.0)  # adopted, so the probe stays quiet
+    assert bi.install_changed() is None
+    # A LATER real update from that adopted state still reports normally.
+    monkeypatch.setattr(bi, "install_identity", lambda: ("bbb", 300.0))
+    assert bi.install_changed() == ("aaa", "bbb")
+
+
+def test_a_local_path_install_reinstalled_at_the_same_head_still_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Positive control for the rule above: a local-path install's label is a checkout
+    # HEAD, and a reinstall at the same HEAD can carry uncommitted edits — marker-only.
+    monkeypatch.setattr(bi, "_RUNNING_IDENTITY", ("aaa", 100.0))
+    monkeypatch.setattr(bi, "install_identity", lambda: ("aaa", 200.0))
+    monkeypatch.setattr(
+        bi, "_read_direct_url", lambda: {"dir_info": {}, "url": "file:///src/zak-code"}
+    )
+    assert bi.install_changed() == ("aaa", "aaa")
+    assert bi._RUNNING_IDENTITY == ("aaa", 100.0)
+
+
 def test_install_changed_is_inert_without_an_installed_distribution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
