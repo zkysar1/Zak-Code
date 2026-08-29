@@ -81,20 +81,39 @@ def _split_frontmatter(text: str) -> tuple[dict[str, str], str]:
             continue
         key, _, value = line.partition(":")
         key = key.strip().lower()
-        if key in ("name", "description"):
+        if key in ("name", "description", "alwaysapply"):
             meta[key] = value.strip().strip("\"'")
     body = "\n".join(lines[end + 1 :]).strip()
     return meta, body
 
 
-class Rule:
-    """One discovered always-on rule: a ``name`` and a Markdown ``content`` body."""
+def _truthy(value: str | None) -> bool:
+    """A frontmatter flag: ``true`` / ``yes`` / ``1`` (any case) — anything else is off."""
+    return (value or "").strip().lower() in ("true", "yes", "1")
 
-    def __init__(self, name: str, content: str, path: Path, *, description: str = "") -> None:
+
+class Rule:
+    """One discovered always-on rule: a ``name`` and a Markdown ``content`` body.
+
+    ``always_apply`` is the Cursor ``alwaysApply:`` frontmatter flag (ADR-0105): the
+    rule's FULL body rides in the prompt even under the lean index, and it is folded
+    first under the full render, so the budget can never drop it behind a sibling.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        content: str,
+        path: Path,
+        *,
+        description: str = "",
+        always_apply: bool = False,
+    ) -> None:
         self.name = name
         self.content = content
         self.path = path
         self.description = description
+        self.always_apply = always_apply
 
 
 class RuleRegistry:
@@ -119,13 +138,34 @@ class RuleRegistry:
     def __len__(self) -> int:
         return len(self._rules)
 
+    def _ordered(self) -> list[Rule]:
+        """Discovery order, with ``always_apply`` rules first (ADR-0105).
+
+        Both renders fold rules front-to-back until the budget is reached, so order IS
+        priority: a rule the operator pinned must be considered before any sibling that
+        merely sorts earlier by name.
+        """
+        pinned = [r for r in self._rules.values() if r.always_apply]
+        rest = [r for r in self._rules.values() if not r.always_apply]
+        return pinned + rest
+
+    @staticmethod
+    def _body_block(rule: Rule) -> str:
+        """``## name`` plus the body capped at :data:`MAX_RULE_FILE_CHARS`; ``""`` if blank."""
+        content = rule.content.strip()
+        if not content:
+            return ""
+        if len(content) > MAX_RULE_FILE_CHARS:
+            content = content[:MAX_RULE_FILE_CHARS]
+        return f"## {rule.name}\n{content}"
+
     def render(self) -> str:
         """Render all rules as one prompt block for the stable tier (``""`` if none).
 
         Bounded by :data:`MAX_RULE_FILE_CHARS` per rule and
         :data:`MAX_RULES_TOTAL_CHARS` overall, so a large rules directory cannot
         blow the context window; rules beyond the budget are dropped (a note records
-        how many).
+        how many). ``always_apply`` rules are folded first, so the budget drops them last.
         """
         if not self._rules:
             return ""
@@ -137,13 +177,10 @@ class RuleRegistry:
         note_slack = 80
         total = len(header) + 2  # header + the "\n\n" before the body
         dropped = 0
-        for rule in self._rules.values():
-            content = rule.content.strip()
-            if not content:
+        for rule in self._ordered():
+            block = self._body_block(rule)
+            if not block:
                 continue
-            if len(content) > MAX_RULE_FILE_CHARS:
-                content = content[:MAX_RULE_FILE_CHARS]
-            block = f"## {rule.name}\n{content}"
             sep = 2 if blocks else 0  # the "\n\n" join separator before this block
             if total + sep + len(block) > MAX_RULES_TOTAL_CHARS - note_slack:
                 dropped += 1
@@ -190,7 +227,30 @@ class RuleRegistry:
         note_slack = 80
         total = len(header) + 2  # header + the "\n\n" before the body
         dropped = 0
-        for rule in self._rules.values():
+        # ADR-0105: a rule pinned with ``alwaysApply: true`` keeps its FULL body under the
+        # lean index — the index tells the model to fetch a body on demand, and a small
+        # model measured over an hour of fleet turns never did (0 read_rule calls), so the
+        # rules an operator cannot afford to lose ride in full, ahead of the index, within
+        # the same budget. Every other rule stays one line.
+        pinned_header = "Pinned rules (full text — always apply these):"
+        pinned_blocks: list[str] = []
+        if any(rule.always_apply for rule in self._rules.values()):
+            total += len(pinned_header) + 2 + 2  # its heading + "\n\n", and the join to the index
+        for rule in self._ordered():
+            if not rule.always_apply:
+                continue
+            block = self._body_block(rule)
+            if not block:
+                continue
+            sep = 2 if pinned_blocks else 0
+            if total + sep + len(block) > MAX_RULES_TOTAL_CHARS - note_slack:
+                dropped += 1
+                continue
+            pinned_blocks.append(block)
+            total += sep + len(block)
+        for rule in self._ordered():
+            if rule.always_apply:
+                continue
             summary = (rule.description or "").strip()
             if not summary:
                 first = next((ln.strip() for ln in rule.content.splitlines() if ln.strip()), "")
@@ -208,12 +268,16 @@ class RuleRegistry:
                 continue
             lines.append(line)
             total += sep + len(line)
-        if not lines:
+        if not lines and not pinned_blocks:
             return ""
         body = "\n".join(lines)
         if dropped:
             body += f"\n[{dropped} further rule(s) omitted: rules index budget reached]"
-        return f"{header}\n\n{body}"
+        index = f"{header}\n\n{body}" if lines else body
+        if pinned_blocks:
+            pinned = f"{pinned_header}\n\n" + "\n\n".join(pinned_blocks)
+            return f"{pinned}\n\n{index}" if index else pinned
+        return index
 
 
 def discover_rule_dir(rules_dir: str | Path) -> tuple[list[Rule], dict[str, str]]:
@@ -242,7 +306,15 @@ def discover_rule_dir(rules_dir: str | Path) -> tuple[list[Rule], dict[str, str]
             logger.warning("skipping rule file %s: %s", entry, exc)
             continue
         name = meta.get("name") or entry.stem
-        rules.append(Rule(name, content, entry, description=meta.get("description", "")))
+        rules.append(
+            Rule(
+                name,
+                content,
+                entry,
+                description=meta.get("description", ""),
+                always_apply=_truthy(meta.get("alwaysapply")),
+            )
+        )
     return rules, errors
 
 

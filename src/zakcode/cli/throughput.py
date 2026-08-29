@@ -313,7 +313,7 @@ def render(report: Report, console: Console) -> None:
             pad_edge=False,
             header_style="banner.label",
         )
-        table.add_column("session", no_wrap=True)
+        table.add_column("session", no_wrap=True, min_width=8)
         for column in (
             "turns",
             "p50 lat",

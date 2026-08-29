@@ -4083,3 +4083,38 @@ from the preceding message, idle gaps excluded, tail alignment of usages, window
 mtime then by turn time, a corrupt document skipped by name, the zds block read for the
 configured model, an unreachable router degrading to a note without the secret, the
 queue-factor warning).
+
+## ADR-0105: `alwaysApply: true` keeps a rule's full body under the lean rules index
+
+**Context.** A Mind ships 216 KB of rules in 34 files. Under the full render
+(`MAX_RULES_TOTAL_CHARS` 32 KB, 8 KB per file) only the first seven by name reach the
+prompt and 27 are dropped with a one-line note; the coach fleet therefore runs
+`ZAKCODE_LEAN_RULES=true`, the index of name + summary + path with `read_rule` on demand.
+Measured 2026-08-29 over one hour of eight live sessions on a 35B model: 252 assistant
+turns, 207 `bash`, 59 `update_plan`, 33 `read_file` — and **zero** `read_rule`. Every
+behavioural rule the Mind carries was, in practice, absent from every turn, and the
+summary line the index showed was the rule's TITLE ("Verify Before Assuming"), because
+no rule carried a `description:`. The Mind's fix for the second half is a one-line
+imperative `description:` on every rule (the index shows it; Claude Code ignores it).
+This ADR is the first half: a way for the operator to say "these few rules ride in full,
+whatever the model chooses to read".
+
+**Decision.** The Cursor front-matter flag `alwaysApply: true` (any case; `true`/`yes`/
+`1`) marks a rule pinned. Under the lean index, pinned rules render their full body
+(capped at `MAX_RULE_FILE_CHARS`) in a "Pinned rules (full text — always apply these)"
+block ahead of the index, and are not also indexed; every other rule stays one line.
+Under the full render, pinned rules are folded FIRST, so the budget drops them last
+rather than by alphabetical accident. One budget bounds both renders as before; a pinned
+rule that does not fit is counted in the existing omission note. Without the flag both
+renders are byte-identical to before.
+
+**Alternatives rejected.** Raising the budgets (the 35B's window is the constraint the
+budgets protect). Making the model read rules (measured: it does not). Pinning by name
+in settings (the rule file is where the operator already edits; the flag travels with
+it across deployments and is Cursor's own vocabulary).
+
+**Consequences.** A Mind chooses its always-on core — four rules at ~23 KB in the
+measured case — and pays index lines for the rest. Pinned in
+`tests/test_rules_always_apply.py` (flag spellings, body-in-full vs one-line siblings,
+no-flag byte-identity, per-file and total caps with the omission note, index lines still
+fitting beside pins, full-render priority).
