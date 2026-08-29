@@ -393,8 +393,9 @@ def _mind_workspace(tmp_path: Path) -> Path:
     .git/ that must never be offered as a lead."""
     scripts = tmp_path / "core" / "scripts"
     scripts.mkdir(parents=True)
-    for name in ("reasoning-bank-add.sh", "reasoning-bank-read.sh"):
+    for name in ("reasoning-bank-add.sh", "reasoning-bank-read.sh", "wm-read.sh", "wm-set.sh"):
         (scripts / name).write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+    (scripts / "history-list.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     world = tmp_path / ".mind-data" / "world"
     world.mkdir(parents=True)
     (world / "forged-skills.yaml").write_text("skills: []\n", encoding="utf-8")
@@ -415,6 +416,11 @@ async def test_bash_enoent_names_where_the_file_actually_is(tmp_path) -> None:
     assert res.fix is not None
     assert ".mind-data/world/forged-skills.yaml" in res.fix
     assert ".git/" not in res.fix
+    # A stray `world/` dir at the root does not silence it: the hit ENDS with the guess,
+    # which is the wrong-prefix signature, not an optional-file check.
+    (tmp_path / "world").mkdir()
+    res = await BashTool().execute({"command": "cat world/forged-skills.yaml"}, ctx)
+    assert res.fix is not None and ".mind-data/world/forged-skills.yaml" in res.fix
 
 
 async def test_bash_enoent_offers_the_nearest_names_for_an_invented_script(tmp_path) -> None:
@@ -439,6 +445,51 @@ async def test_bash_enoent_with_no_lead_gets_no_fix(tmp_path) -> None:
     )
     assert res.is_error
     assert res.fix is None
+
+
+async def test_bash_enoent_typo_in_a_real_directory_names_its_siblings(tmp_path) -> None:
+    """`bash core/scripts/wm-list.sh`: the directory is real, the name is invented. The
+    family sharing its leading token (wm-read.sh, wm-set.sh) is the answer — not the
+    global token match (`history-list.sh` on 'list') the live smoke on zc-03 produced."""
+    ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
+    res = await BashTool().execute({"command": "bash core/scripts/wm-list.sh"}, ctx)
+    assert res.is_error
+    assert res.fix is not None
+    assert "wm-read.sh" in res.fix and "wm-set.sh" in res.fix
+    assert "history-list.sh" not in res.fix
+
+
+async def test_bash_enoent_optional_file_in_a_real_directory_is_silent(tmp_path) -> None:
+    """A deliberate check of an optional file (`cat <session>/iteration-checkpoint.json`)
+    in a directory that exists, with nothing similar beside it, gets NO hint — the
+    same-named file under another agent's dir is not a lead, it is noise."""
+    root = _mind_workspace(tmp_path)
+    (root / "agents" / "coach" / "session").mkdir(parents=True)
+    (root / "agents" / "alpha" / "session").mkdir(parents=True)
+    (root / "agents" / "alpha" / "session" / "iteration-checkpoint.json").write_text("{}")
+    ctx = ToolContext(workspace_root=root)
+    res = await BashTool().execute(
+        {"command": "cat agents/coach/session/iteration-checkpoint.json"}, ctx
+    )
+    assert res.is_error
+    assert res.fix is None
+
+
+async def test_bash_enoent_exact_hit_lists_the_family_beside_it(tmp_path) -> None:
+    """`python3 world/scripts/reasoning-bank.py add` when a `reasoning-bank.py` module
+    does exist under core/scripts: the hit is named AND its siblings sharing the
+    leading token, because the wrapper (`reasoning-bank-add.sh`) is what the model
+    wanted — the module itself is a silent no-op when run as a script."""
+    root = _mind_workspace(tmp_path)
+    (root / "core" / "scripts" / "reasoning-bank.py").write_text("x = 1\n", encoding="utf-8")
+    ctx = ToolContext(workspace_root=root)
+    res = await BashTool().execute(
+        {"command": "python3 world/scripts/reasoning-bank.py add --entry x"}, ctx
+    )
+    assert res.is_error
+    assert res.fix is not None
+    assert "core/scripts/reasoning-bank.py" in res.fix
+    assert "reasoning-bank-add.sh" in res.fix and "reasoning-bank-read.sh" in res.fix
 
 
 def test_enoent_fix_predicate_reads_every_measured_shape(tmp_path) -> None:
