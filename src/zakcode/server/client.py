@@ -8,7 +8,7 @@ exact same renderer can display a local or a remote turn. That symmetry is what 
 parity test pins down.
 
 The client is transport-injectable: pass an ``httpx.AsyncClient`` (e.g. one backed
-by ``httpx.ASGITransport`` for hermetic tests, or a real one for ``zakcode serve``).
+by ``httpx.ASGITransport`` for hermetic tests, or a real one for ``zakcode webapp``).
 With none, it lazily creates a real client bound to ``base_url``.
 """
 

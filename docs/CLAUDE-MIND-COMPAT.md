@@ -1,6 +1,6 @@
 # Claude-Mind ↔ Zak Code — Compatibility Map
 
-*Empirical, code-grounded. **Last verified against `main` 2026-08-20** — every ✅ below names the
+*Empirical, code-grounded. **Last verified against `main` 2026-08-29** — every ✅ below names the
 code or test that proves it; re-verify the date before planning against this file.*
 
 > **Why the date is the first thing you read:** the 2026-06-22 revision of this map listed seven
@@ -15,7 +15,7 @@ code or test that proves it; re-verify the date before planning against this fil
 **Claude-Mind runs on Zak Code.** The bridge is built and generically tested: skills, the
 perpetual loop, hooks, permissions, statusLine, output-styles, and the transcript projection all
 carry over. Deploying a Mind is a **configuration exercise, not an adapter project**:
-clone the Mind repo, run `zakcode chat` inside it, answer the folder-trust prompt once, and the
+clone the Mind repo, run `zakcode cli` inside it, answer the folder-trust prompt once, and the
 `Stop → TURN_END` loop engine does the rest. First proven live on a GCE deployment 2026-08-19
 (Vertex AI Gemini via ADC — no Anthropic dependency anywhere in the stack).
 
@@ -51,7 +51,7 @@ clone the Mind repo, run `zakcode chat` inside it, answer the folder-trust promp
 | Vertex/Gemini inference for a Google-cloud Mind | `zakcode[google]` extra + ADC (metadata-server auth, no key file); missing-extra failures name the install command | CONFIG.md "Recipe: Vertex AI" |
 | Block-form frontmatter (`triggers:` + `- "/start"` lines) | The YAML spelling real Mind skills actually use — 60 of 78 in a live tree — parses as lists (2026-08-20; previously silently empty, degrading trigger routing and the extras-preservation promise) | `test_parse_frontmatter_block_style_lists`; `test_block_style_triggers_route_the_slash` |
 | **Served** boots — `/start <agent> --mode assistant` written to the say inbox (or POSTed to `/chat`, `/chat/stream`) | Every server door dispatches a leading slash through the SAME compose path + provenance frame as the CLI (2026-08-27, ADR-0037). Denied/unreadable runs NO turn (`/chat` 403/500; stream + watch bus get `status` + `done(skill_refused)`); unknown `/token` stays prose. Before this the served doors passed raw text, so a headless Mind (systemd `mind-serve@`, no terminal) could never run its own boot command. Once the ceremony turn ENDS the stored message keeps the frame and drops the ~23k-token body (ADR-0045), so a resumed session does not re-pay every boot it ever ran | `test_server_slash_dispatch.py`; `test_skill_turn_body_is_elided_once_the_turn_ends` |
-| Cron/systemd one-shot boots (`chat -p "/start sera"`) | The one-shot path dispatches slash skills through the SAME compose path + provenance frame as the REPL (2026-08-20, closes #148). A denied/unreadable skill exits 1 — a scripted boot fails loudly, never silently sends its slash line to the model as prose; an unknown `/token` (or a thin `--server` agent) falls through as plain text | `test_chat_headless_slash_dispatches_the_skill` + denied/fallthrough siblings |
+| Cron/systemd one-shot boots (`zakcode cli -p "/start sera"`) | The one-shot path dispatches slash skills through the SAME compose path + provenance frame as the REPL (2026-08-20, closes #148). A denied/unreadable skill exits 1 — a scripted boot fails loudly, never silently sends its slash line to the model as prose; an unknown `/token` (or a thin `--server` agent) falls through as plain text. Verified live 2026-08-29 on a Mind (coach, zc-03): `nohup zakcode cli -w <mind> --dangerously-skip-permissions -p "/start coach --mode reader"` bound an observer session, ran the nested `/prime`, printed the priming summary and EXITED with the turn (11m 28s, 24 iterations, 93% cached) — a cron line is the whole scheduler. The docs said `zakcode chat` for this until then; the command has been `cli` since #204 | `test_chat_headless_slash_dispatches_the_skill` + denied/fallthrough siblings |
 | **A runner's single 142-minute turn survives its own context** | Auto-compaction checks the threshold before EVERY call, not only at turn start, and the overflow compact-then-retry bound is per CALL (ADR-0074) — the per-turn count of two was spent by the third overflow of coach's first loop turn. A paged skill's dropped sections come back WITH an explanation and stop coming back after two restores (ADR-0075) — the silent restore/collapse loop that pushed that turn over its 131k window | `test_resilience_context.py` (per-call bound, mid-turn compaction, both twins), `test_skill_paging.py` (the rail with no page to turn; the third drop) |
 | **A provider blip is a backoff, never a dead loop** | `provider_error` is the one turn end a Stop hook cannot veto, so every transient the provider mapping classifies as terminal kills the perpetual loop outright. A mid-stream `RateLimitError` (RESOURCE_EXHAUSTED) is unwrapped and retried (ADR-0070); a 502 `BadGatewayError` — which litellm does NOT derive from `ServiceUnavailableError` — and ANY 5xx by status code retry under the same 15-minute backoff horizon (ADR-0076). Measured 2026-08-28: coach's reducer died at /boot page 22 on the pod engine's restart, healthy again within the minute | `test_provider.py` (`test_map_error_retries_a_502_however_litellm_names_it`), `test_provider_edge.py` (the mid-stream unwrap) |
 | **The compaction check sees the real prompt size, not a chars/4 guess** | A Mind's transcript is id-dense tool output (goal ids, shas, YAML, JSONL) that tokenizes ~1.6x denser than the local estimate, so ADR-0074's pre-call check stayed silent while the provider reported 129,251 of 131,072 tokens (coach, 2026-08-28) — the turn before had died at 131,297. The check is now floored by the provider's last REPORTED prompt size plus the estimate of only what was appended since, persisted for a resume, forgotten on compaction (ADR-0077) — ~25k tokens of headroom back on this content | `test_resilience_context.py` (`test_the_compaction_check_is_floored_by_what_the_provider_last_measured` + the streaming twin, the floor/forget/round-trip units) |
@@ -74,7 +74,7 @@ clone the Mind repo, run `zakcode chat` inside it, answer the folder-trust promp
 
 1. `uv tool install 'zakcode[google]'` (or plain `zakcode` for non-Vertex providers) — the tool
    is installed ONCE, globally; the Mind clone is a **workspace**, never the tool's source tree.
-2. Clone the Mind repo into its own directory; `cd` there; `zakcode chat`.
+2. Clone the Mind repo into its own directory; `cd` there; `zakcode cli`.
 3. Answer the **workspace hooks** folder-trust prompt (`1` = always) — that single keystroke is
    what used to be the silent `ZAKCODE_SETTINGS_HOOKS` failure.
 4. `/start <agent-name> …` — the skill runs immediately as that turn.

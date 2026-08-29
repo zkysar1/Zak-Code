@@ -363,7 +363,7 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-call wall-clock ceiling (seconds) for one model call.",
     )
-    # ── bounded runs (a run is one `zakcode serve` process; ADR-0039) ──────────────
+    # ── bounded runs (a run is one `zakcode webapp` process; ADR-0039) ─────────────
     # A hosted vessel bills for wall-clock, so an unbounded run is a bill-shock machine:
     # the customer only learns the cap did not hold when the invoice arrives. These three
     # bound the WHOLE run, not a turn — `request_timeout` above caps one model call and
@@ -525,11 +525,11 @@ class Settings(BaseSettings):
     )
 
     # ── Server (HTTP) auth + multi-tenant hardening ──────────────────────────
-    # When set, the FastAPI server (``zakcode serve``) requires every request to carry
+    # When set, the FastAPI server (``zakcode webapp``) requires every request to carry
     # ``Authorization: Bearer <auth_token>``; ``GET /health`` is the only exemption. Browsers
     # (which cannot set a handshake Authorization header) authenticate the WebSocket via the
     # ``Sec-WebSocket-Protocol: bearer, <token>`` subprotocol — NOT a ``?token=`` query param,
-    # which would land in access logs. When unset, the server is unauthenticated and ``serve``
+    # which would land in access logs. When unset, the server is unauthenticated and ``webapp``
     # refuses to bind a non-loopback host without an explicit ``--insecure`` opt-in.
     # ``exclude=True`` keeps the token out of every ``model_dump()`` (e.g. ``GET /config``).
     # NOTE: a token used for browser WebSocket auth must contain NO commas or whitespace — the

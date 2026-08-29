@@ -27,24 +27,37 @@ from zakcode.session.store import Session, SessionStore
 # ── _restart_args (pure) ─────────────────────────────────────────────────────
 
 
-def test_restart_args_pins_the_session_and_names_the_chat_command() -> None:
-    assert _restart_args([], "abc") == ["chat", "--session", "abc"]
-    assert _restart_args(["--model", "m"], "abc") == ["chat", "--model", "m", "--session", "abc"]
-    assert _restart_args(["chat", "-s", "old", "--model", "m"], "abc") == [
-        "chat",
+def test_restart_args_pins_the_session_and_names_the_cli_command() -> None:
+    # The inserted name must be a command Typer HAS: the REPL command is ``cli`` (renamed
+    # from ``chat`` in #204). This test pinned the old name for a while, so a bare-``zakcode``
+    # REPL self-restarted into ``zakcode chat --session …`` — a usage error, not a resume.
+    assert _restart_args([], "abc") == ["cli", "--session", "abc"]
+    assert _restart_args(["--model", "m"], "abc") == ["cli", "--model", "m", "--session", "abc"]
+    assert _restart_args(["cli", "-s", "old", "--model", "m"], "abc") == [
+        "cli",
         "--model",
         "m",
         "--session",
         "abc",
     ]
-    assert _restart_args(["chat", "--session=old"], "abc") == ["chat", "--session", "abc"]
-    assert _restart_args(["chat", "--session", "old", "-w", "/w"], "abc") == [
-        "chat",
+    assert _restart_args(["cli", "--session=old"], "abc") == ["cli", "--session", "abc"]
+    assert _restart_args(["cli", "--session", "old", "-w", "/w"], "abc") == [
+        "cli",
         "-w",
         "/w",
         "--session",
         "abc",
     ]
+
+
+def test_restart_args_names_a_command_the_cli_actually_registers() -> None:
+    # Positive control for the rename class: whatever ``_restart_args`` inserts must be a
+    # registered command name, or the exec'd process dies at argument parsing.
+    from typer.main import get_command
+
+    registered = set(get_command(cli.app).commands)  # the click group: names as Typer builds them
+    assert "cli" in registered and "chat" not in registered
+    assert _restart_args([], "abc")[0] in registered
 
 
 # ── install_changed (the probe) ──────────────────────────────────────────────
