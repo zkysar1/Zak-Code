@@ -165,6 +165,14 @@ class Session(BaseModel):
     #: the pre-#32 behavior).
     plan_signature: str = ""
     plan_idle_turns: int = 0
+    #: Skill paging (ADR-0067 / ADR-0086): per lower-cased skill name, the pages of that skill
+    #: the model has HELD — page 1 at the load, later pages as the plan reached them. A section
+    #: is finished only once its page was held, so the record must outlive a restart (ADR-0034
+    #: execs a new process) and a compaction (the page headers leave the transcript with the
+    #: messages they rode in). Schema v1 stays append-only: an OLDER build drops the field and
+    #: the loop falls back to the headers still in the transcript plus the sections the plan
+    #: has taken up (fails SAFE — nothing already closed is reopened after the fact).
+    skill_pages_delivered: dict[str, list[int]] = Field(default_factory=dict)
     #: Resume safety (ADR-0033): the build (``build_info.build_commit()``) that last SAVED this
     #: document, and how its last turn ended (the ``stop_reason``). A resume reads both: a
     #: transcript written by another build — or one whose last turn collapsed (gave_up /
