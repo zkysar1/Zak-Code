@@ -16,6 +16,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from zakcode.agent.loop import AgentLoop, _composed_skill_body
 from zakcode.events import AgentDone, AgentEvent, AgentStatus, AgentTaskUpdate
 from zakcode.messages import Message
@@ -57,6 +59,8 @@ Some intro prose that mentions /fresh-eyes-code in passing.
 ## Return Protocol
 
 ## Phase Final: Summary
+
+Print what was encoded and what was skipped, then stop; nothing else is owed.
 """
 
 FRAME = (
@@ -264,10 +268,15 @@ def _user_texts(messages: list[Message]) -> list[str]:
     return [m.text or "" for m in messages if m.role == "user"]
 
 
-def test_typed_skill_turn_starts_from_its_sections(tmp_path: Path) -> None:
+def test_typed_skill_turn_starts_from_its_sections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def script(n: int, messages: list[Message]) -> LLMResult:
         return _finish_plan() if n == 1 else LLMResult(text="done")
 
+    # ENCODE's sections would pack into one page and arrive whole (ADR-0088); a 130-char
+    # budget keeps it the five-page skill this test is about.
+    monkeypatch.setattr("zakcode.tasks.PAGE_BUDGET_CHARS", 130)
     provider = _ScriptByCall(script)
     loop = _loop(provider, tmp_path, {"encode-session": ENCODE})
     result = asyncio.run(loop.arun_turn(FRAME + ENCODE))
@@ -414,7 +423,10 @@ def test_a_step_the_model_already_broke_down_is_left_alone(tmp_path: Path) -> No
 # ── the tool's hint matches what the loop did ─────────────────────────────────────
 
 
-async def test_use_skill_names_the_seeded_sections_in_its_hint(tmp_path: Path) -> None:
+async def test_use_skill_names_the_seeded_sections_in_its_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("zakcode.tasks.PAGE_BUDGET_CHARS", 130)  # keep ENCODE five pages
     ctx = ToolContext(workspace_root=tmp_path, skill_resolver=_Resolver({"e": ENCODE}))  # type: ignore[arg-type]
     res = await UseSkillTool().execute({"name": "e"}, ctx)
     assert res.is_error is False
@@ -422,3 +434,16 @@ async def test_use_skill_names_the_seeded_sections_in_its_hint(tmp_path: Path) -
     assert res.data == {"skill": "e", "decompose": True, "sections": 5, "paged": True, "page": 1}
     assert res.hint and "5 numbered sections are now steps in your plan" in res.hint
     assert "use_skill" in res.hint  # the chaining nudge survives
+
+
+async def test_a_skill_that_packs_into_one_page_arrives_whole_with_its_steps(
+    tmp_path: Path,
+) -> None:
+    """ADR-0088: under the production budget ENCODE's five sections share one page, so
+    the whole body arrives at once — and its sections are still the plan's steps."""
+    ctx = ToolContext(workspace_root=tmp_path, skill_resolver=_Resolver({"e": ENCODE}))  # type: ignore[arg-type]
+    res = await UseSkillTool().execute({"name": "e"}, ctx)
+    assert res.is_error is False
+    assert res.data == {"skill": "e", "decompose": True, "sections": 5}
+    assert "## Phase Final: Summary" in res.output and "— page 1 of" not in res.output
+    assert res.hint and "5 numbered sections are now steps in your plan" in res.hint

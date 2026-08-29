@@ -15,6 +15,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from zakcode.agent.compact import ELISION_MARKER, CompactionConfig, Compactor
 from zakcode.agent.loop import AgentLoop
 from zakcode.hooks import HookEvent, LifecyclePayload
@@ -92,10 +94,20 @@ def test_summary_drops_the_model_s_tool_call_and_thinking_markup(tmp_path: Path)
     assert text == "Phase 3 complete. Loaded 2 tree nodes.\n\nUnfinished: the aspirations loop."
 
 
-def test_summary_carries_the_harness_position_note(tmp_path: Path) -> None:
+def test_summary_carries_the_harness_position_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zakcode import tasks
     from zakcode.tasks import skill_pages, skill_skeleton
 
-    body = "# Boot\n\nintro\n\n## Step 1: Alpha\nA\n\n## Step 2: Beta\nB\n\n## Step 3: Gamma\nC\n"
+    # Sections this small would pack into one page (ADR-0088); a 100-char budget keeps
+    # the three-page shape the position note is about.
+    monkeypatch.setattr(tasks, "PAGE_BUDGET_CHARS", 100)
+    a, b, c = "alpha " * 10, "beta " * 12, "gamma " * 10
+    body = (
+        f"# Boot\n\nintro\n\n## Step 1: Alpha\n\n{a}\n\n## Step 2: Beta\n\n{b}\n\n"
+        f"## Step 3: Gamma\n\n{c}\n"
+    )
     provider = _SummarizerProvider(["the summary"], tokens=100)
     loop = _loop(provider, tmp_path)
     steps = skill_skeleton(body, skill="boot")

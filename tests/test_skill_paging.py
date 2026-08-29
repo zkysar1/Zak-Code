@@ -14,6 +14,9 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from zakcode import tasks
 from zakcode.agent.loop import AgentLoop
 from zakcode.events import AgentEvent, AgentStatus
 from zakcode.messages import Message, ToolResultBlock
@@ -44,11 +47,11 @@ Stays inside page 1.
 
 ## Step 2: Second
 
-Do the second thing.
+Do the second thing. Then check the second result before you go on to the next.
 
 ## Step 3: Third
 
-Do the third thing.
+Do the third thing. Then check the third result before you call the work done.
 
 ## Return Protocol
 
@@ -57,6 +60,16 @@ End with a tool call.
 
 FRAME = "<command-message>demo is running</command-message>\n<command-name>/demo</command-name>\n\n"
 MARK = "from /demo; done when this section has been carried out"
+
+
+@pytest.fixture(autouse=True)
+def _small_page_budget(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bodies here are a few hundred bytes: under the production budget they pack into
+    one page and are delivered whole (ADR-0088). A 100-char budget keeps each of DEMO's
+    sections its own page, as the paging contract tests need; ``real_page_budget`` opts a
+    test out (the budget-cutting and packing tests measure against the real one)."""
+    if request.node.get_closest_marker("real_page_budget") is None:
+        monkeypatch.setattr(tasks, "PAGE_BUDGET_CHARS", 100)
 
 
 # ── the pure splitter ─────────────────────────────────────────────────────────────
@@ -96,7 +109,11 @@ def test_fewer_than_two_sections_is_delivered_whole() -> None:
 def test_bold_lead_ins_and_fenced_phase_comments_page_too() -> None:
     # ADR-0084: the control skills' bold checklist and a loop skill's fenced pseudocode
     # markers are sections — /start (63 KB) and /worker-loop (84 KB) were delivered whole.
-    bold = skill_pages("# x\n\n**Step 1**: bold only.\n\n**Step 2**: still bold.\n", skill="x")
+    filler = "x " * 30
+    bold = skill_pages(
+        f"# x\n\n**Step 1**: bold only.\n\n{filler}\n\n**Step 2**: still bold.\n\n{filler}\n",
+        skill="x",
+    )
     assert bold is not None and [p.title for p in bold.pages] == [
         "Step 1: bold only",
         "Step 2: still bold",
@@ -125,6 +142,7 @@ def _paragraphs(n: int) -> str:
     return "\n\n".join(f"{filler} {i}" for i in range(n))
 
 
+@pytest.mark.real_page_budget
 def test_a_section_over_the_budget_is_cut_at_its_markers_then_headings_then_paragraphs() -> None:
     from zakcode.tasks import PAGE_BUDGET_CHARS
 
@@ -137,42 +155,80 @@ def test_a_section_over_the_budget_is_cut_at_its_markers_then_headings_then_para
     pages = skill_pages(body, skill="big")
     assert pages is not None
     assert [p.title for p in pages.pages] == [
-        "Step 1: Cut at sub-steps",  # the section's own intro, before its first sub-step
-        "Step 1.1: first",
+        # The section's own intro (before its first sub-step) and Step 1.1 share a page —
+        # consecutive small pieces pack to the budget (ADR-0088).
+        "Step 1: Cut at sub-steps (+1 more)",
         "Step 1.2: second (1/2)",  # a sub-step over the budget: paragraphs, packed
         "Step 1.2: second (2/2)",
         "Notes A",  # no ordered-work marker inside Step 2: any heading cuts it
-        "Notes B",
-        "Step 3: Small",
+        "Notes B (+1 more)",  # Notes B and the small Step 3 fit one page together
     ]
-    assert [p.marker for p in pages.pages] == [
-        "step 1",
-        "step 1.1",
-        "step 1.2",
-        "step 1.2",
-        "",
-        "",
-        "step 3",
-    ]
+    assert [p.marker for p in pages.pages] == ["step 1", "step 1.2", "step 1.2", "", ""]
+    assert pages.pages[0].sections == (
+        ("Step 1: Cut at sub-steps", "step 1"),
+        ("Step 1.1: first", "step 1.1"),
+    )
+    assert pages.pages[4].matches("Step 3: Small") and pages.pages[4].matches("step 3 (tiny)")
     assert all(len(p.text) <= PAGE_BUDGET_CHARS for p in pages.pages)
     # A part keeps its heading with its first paragraph — never a page of just the title.
-    assert pages.pages[2].text.startswith("### Step 1.2: second\n\nlorem ipsum")
-    assert pages.pages[3].text.startswith("lorem ipsum")
+    assert pages.pages[1].text.startswith("### Step 1.2: second\n\nlorem ipsum")
+    assert pages.pages[2].text.startswith("lorem ipsum")
     assert pages.front == "# /big"
-    assert [t.title for t in skill_skeleton(body, skill="big")] == [p.title for p in pages.pages]
+    steps = skill_skeleton(body, skill="big")
+    assert [t.title for t in steps] == [p.title for p in pages.pages]
+    # A packed page's sections are its step's sub-steps.
+    assert [c.title for c in steps[0].children] == ["Step 1: Cut at sub-steps", "Step 1.1: first"]
+    assert [c.title for c in steps[4].children] == ["Notes B", "Step 3: Small"]
+
+
+@pytest.mark.real_page_budget
+def test_small_consecutive_sections_share_a_page() -> None:
+    """ADR-0088: a page costs a model turn to deliver, so consecutive sections pack to the
+    budget — measured on a Mind's 131 skills: 976 pages, 321 deliveries. Any packed
+    section names the page; the sections are the step's sub-steps; a skill that packs
+    into ONE page is delivered whole, its sections still the plan's steps."""
+    body = (
+        "# /p\n\n"
+        + "\n\n".join(f"## Step {k}: {t}\n\n{_paragraphs(4)}" for k, t in enumerate("ABCDEF", 1))
+        + "\n"
+    )
+    pages = skill_pages(body, skill="p")
+    assert pages is not None and pages.count == 2
+    assert [p.title for p in pages.pages] == ["Step 1: A (+3 more)", "Step 5: E (+1 more)"]
+    assert pages.header(1) == "[/p — page 1 of 2: Step 1: A (+3 more)]"
+    assert pages.pages[0].matches("Step 3: C") and pages.pages[0].matches("step 4 — rewritten")
+    assert not pages.pages[0].matches("Step 5: E") and pages.pages[1].matches("Step 6: F")
+    assert "## Step 4: D" in pages.pages[0].text and "## Step 5: E" not in pages.pages[0].text
+    steps = skill_skeleton(body, skill="p")
+    assert [t.title for t in steps] == [p.title for p in pages.pages]
+    assert steps[0].kind == "compound"
+    assert [c.title for c in steps[0].children] == [
+        "Step 1: A",
+        "Step 2: B",
+        "Step 3: C",
+        "Step 4: D",
+    ]
+    # DEMO's three short sections pack into one page: delivered whole, three plan steps.
+    assert skill_pages(DEMO, skill="demo") is None
+    assert [t.title for t in skill_skeleton(DEMO, skill="demo")] == [
+        "Step 1: First",
+        "Step 2: Second",
+        "Step 3: Third",
+    ]
 
 
 def test_a_documentation_section_holding_steps_is_a_container() -> None:
     # /review-hypotheses: 21 `### Step` headings under `## Mode 1/2/3` — non-step `##`
     # headings that used to send the whole 51 KB up front.
+    load, judge = "load " * 16, "judge " * 13
     body = (
         "# /modes\n\n## Syntax\n\n`/modes --resolve`\n\n## Mode 1: Resolve\n\n"
         "How resolving works.\n\n"
-        "### Step 1: Load\n\nload\n\n### Step 2: Judge\n\njudge\n\n## Return Protocol\n\nend\n"
+        f"### Step 1: Load\n\n{load}\n\n### Step 2: Judge\n\n{judge}\n\n## Return Protocol\n\nend\n"
     )
     pages = skill_pages(body, skill="modes")
     assert pages is not None and [p.title for p in pages.pages] == ["Step 1: Load", "Step 2: Judge"]
-    assert pages.pages[0].text == "### Step 1: Load\n\nload"
+    assert pages.pages[0].text == f"### Step 1: Load\n\n{load.rstrip()}"
     # The container's own intro travels up front with the other documentation, in order.
     assert pages.front == (
         "# /modes\n\n## Syntax\n\n`/modes --resolve`\n\n## Mode 1: Resolve\n\nHow resolving works."
@@ -185,14 +241,16 @@ def test_a_documentation_section_holding_steps_is_a_container() -> None:
 
 
 def test_fenced_headings_never_split_a_page() -> None:
-    body = "## Step 1: A\n\n```\n## Step 2: inside a fence\n```\n\n## Step 2: B\n\nreal\n"
+    filler = "x " * 20
+    fence = "```\n## Step 2: inside a fence\n```"
+    body = f"## Step 1: A\n\n{filler}\n\n{fence}\n\n## Step 2: B\n\n{filler}\n"
     pages = skill_pages(body, skill="x")
     assert pages is not None and pages.count == 2
     assert "inside a fence" in pages.pages[0].text
 
 
 def test_pages_fold_past_the_skeleton_cap_exactly_like_the_skeleton() -> None:
-    body = "\n".join(f"## Step {i}: S{i}\n\nbody {i}\n" for i in range(1, 66))
+    body = "\n".join(f"## Step {i}: S{i}\n\n{'body ' * 12}\n" for i in range(1, 66))
     pages = skill_pages(body, skill="big")
     steps = skill_skeleton(body, skill="big")
     assert pages is not None and pages.count == len(steps) == 60
@@ -515,10 +573,17 @@ def test_fit_report_names_the_largest_section() -> None:
     assert "largest section" in fits[0].describe()
 
 
-def test_a_paged_load_without_a_whole_body_is_named_not_hidden(tmp_path: Path) -> None:
+@pytest.mark.real_page_budget
+def test_a_paged_load_without_a_whole_body_is_named_not_hidden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A resolver that delivers page 1 but cannot hand the loop the whole body would leave a
     one-step plan and a skill that never turns a page — the loop says so in the trace."""
-    pages = skill_pages(DEMO, skill="demo")
+    # DEMO pages only under a small budget; the loop then reads page 1's text under the
+    # real one, where it is a single section (front matter and all).
+    with monkeypatch.context() as small:
+        small.setattr(tasks, "PAGE_BUDGET_CHARS", 100)
+        pages = skill_pages(DEMO, skill="demo")
     assert pages is not None
 
     class _PageOnlyResolver(_Resolver):

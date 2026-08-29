@@ -102,7 +102,9 @@ def test_a_slash_line_typed_as_text_runs_the_skill(tmp_path: Path) -> None:
     uses = [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolUseBlock)]
     assert uses and uses[0].name == "use_skill" and uses[0].input == {"name": "boot"}
     (res,) = _use_skill_results(loop)
-    assert res.tool_use_id == uses[0].id and "[/boot — page 1 of 2: Step 1: Status]" in res.output
+    # Two short sections pack into one page (ADR-0088): the whole body arrives at once.
+    assert res.tool_use_id == uses[0].id and "Print status." in res.output
+    assert "Prime." in res.output and "— page 1 of" not in res.output
     assert [t.title for t in loop.session.task_network.tasks] == ["Step 1: Status", "Step 2: Prime"]
 
 
@@ -149,7 +151,7 @@ def test_streaming_twin_routes_and_announces(tmp_path: Path) -> None:
         isinstance(ev, AgentStatus) and "'/boot' typed as text" in ev.message for ev in events
     )
     (res,) = _use_skill_results(loop)
-    assert "[/boot — page 1 of 2" in res.output
+    assert "Print status." in res.output and "Prime." in res.output
 
 
 def test_the_trace_is_checkpointed_every_iteration(tmp_path: Path) -> None:
