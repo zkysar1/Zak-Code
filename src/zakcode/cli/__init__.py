@@ -809,8 +809,10 @@ def _restart_args(argv: list[str], session_id: str) -> list[str]:
     to ``session_id`` — any ``-s``/``--session`` already present is replaced — so the fresh
     process resumes exactly this conversation with every other option intact.
 
-    A bare ``zakcode`` (the root callback) takes no chat options, so the ``chat`` command is
-    named explicitly whenever the original invocation did not name a command.
+    A bare ``zakcode`` (the root callback) takes no chat options, so the ``cli`` command is
+    named explicitly whenever the original invocation did not name a command. (The command
+    was ``chat`` until #204 renamed it; inserting the old name made every bare-``zakcode``
+    self-restart exec a command Typer no longer has.)
     """
     out: list[str] = []
     skip = False
@@ -825,7 +827,7 @@ def _restart_args(argv: list[str], session_id: str) -> list[str]:
             continue
         out.append(arg)
     if not out or out[0].startswith("-"):
-        out.insert(0, "chat")
+        out.insert(0, "cli")
     return [*out, "--session", session_id]
 
 
@@ -2215,7 +2217,7 @@ def _run_one_shot(
 ) -> int:
     """Run ONE streamed turn and return a shell exit code: 0 if it completed cleanly, 1 otherwise
     (max-iterations, budget, provider/server error, stuck, ...). The loop is torn down before
-    returning. Used by ``chat -p`` for non-interactive / scripted runs; a one-shot must yield a
+    returning. Used by ``cli -p`` for non-interactive / scripted runs; a one-shot must yield a
     code, never a traceback.
     """
     renderer = StreamRenderer(console=console)

@@ -217,7 +217,7 @@ no agent logic.
 | `zakcode info` | show resolved config + detected providers (never prints secrets) |
 | `zakcode version` | print the version |
 
-Key `chat` flags: `--provider` / `--model` (override the model), `--server <url>` (drive a
+Key `cli` flags: `--provider` / `--model` (override the model), `--server <url>` (drive a
 remote server), `--skill-dir <dir>` (load an external skill directory), and `--extra-root
 <dir>` (grant the file tools an **additional trusted root to read _and write_ under** — a
 sandbox-widening flag; see [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) §4).

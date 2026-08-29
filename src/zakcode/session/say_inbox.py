@@ -4,10 +4,10 @@ A "say" is a single pending user message stored at ``<workspace>/.say``. Every
 producer and every consumer in the system speaks this file, so "send a message to
 the agent" means exactly one thing regardless of transport or interface:
 
-- ``POST /say`` on ``zakcode serve`` writes it (the web/watch surface's talk seam).
+- ``POST /say`` on ``zakcode webapp`` writes it (the web/watch surface's talk seam).
 - ``zakcode say`` and the cockpit's say box write it (terminal surfaces).
 - The serve driver consumes it between autonomous turns.
-- ``zakcode chat`` consumes it between interactive turns (cockpit/say-inbox mode).
+- ``zakcode cli`` consumes it between interactive turns (cockpit/say-inbox mode).
 
 Semantics (shared by all of the above):
 

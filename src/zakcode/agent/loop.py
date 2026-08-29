@@ -1529,7 +1529,7 @@ class AgentLoop:
     async def aclose(self) -> None:
         """Release loop-owned resources (the egress proxy listener). A no-op when egress is off.
 
-        Important on a long-lived event loop (``zakcode serve``), where the OS does not reclaim the
+        Important on a long-lived event loop (``zakcode webapp``), where the OS does not reclaim the
         listener until process exit — call it when an agent/sub-agent is done so the socket (and
         any in-flight tunnels) are torn down promptly. Safe to call more than once.
         """
@@ -5861,7 +5861,7 @@ class AgentLoop:
                     # is a silent give-up — nudge for a real answer (bounded), then end
                     # honestly as gave_up (degraded, vetoable) instead of "done". A composed
                     # /<skill> turn is a SEQUENCE, so its silence is never a clean finish even
-                    # after prior text (ADR-0042) — THIS path is the one `zakcode serve` runs
+                    # after prior text (ADR-0042) — THIS path is the one `zakcode webapp` runs
                     # (say consumer + /chat/stream); #244 rail'd only arun_turn, measured on
                     # the served /start of 2026-08-27 boot D (generic nudge, not the skill one).
                     # Reasoning overflow (ADR-0056), streaming twin — see _run_turn.

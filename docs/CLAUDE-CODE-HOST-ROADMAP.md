@@ -99,7 +99,7 @@ moves fast with no hard omni dependency. Each item is a generic capability.
 | **Daemon startup** | **⟂ boundary call:** the host does **not** manage claude-mind's `mind_api` daemon. The Mind starts it via a `SessionStart` hook the host **already fires**. Host work = none; Mind config = one settings entry. | Mind-side config | — |
 | **Tolerate transcript gap** | First run is always "fresh", so the transcript view (Phase 2) isn't on the critical path; the Mind's stop-hook already gets `last_assistant_message` directly. Fail-open. | — | — |
 
-**Milestone:** `zakcode chat` in a fresh `aliens/` folder → `/start aliens` → the Mind boots, picks a
+**Milestone:** `zakcode cli` in a fresh `aliens/` folder → `/start aliens` → the Mind boots, picks a
 goal, researches, and the loop re-enters itself. We watch it actually do research. **Proof the engine
 works on Zak Code.**
 

@@ -303,7 +303,7 @@ class SlashDispatch:
     """Outcome of :func:`dispatch_slash` — the SERVER twin of the CLI's ``_skill_command_turn``.
 
     ``handled`` is True iff the text named a discovered skill; non-slash text and an unknown
-    ``/token`` are NOT handled and run as prose, exactly like ``chat -p`` / the REPL. When
+    ``/token`` are NOT handled and run as prose, exactly like ``cli -p`` / the REPL. When
     handled, ``turn_text`` is the composed, provenance-framed turn to run — or ``None`` when
     the skill was refused (``user-invocable: false``) or unreadable, with ``refusal`` naming
     which (``"denied"`` / ``"error"``) and ``notice`` the human-facing reason. A refused skill
@@ -410,7 +410,7 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
     """Build the production factory: a real :class:`~zakcode.Agent` per request, running a MIND.
 
     Each request's agent loads the env's MIND from ``settings.workspace_root`` — the operator
-    identity (``self.md``), always-on rules, and skills — so ``zakcode serve`` behaves like the
+    identity (``self.md``), always-on rules, and skills — so ``zakcode webapp`` behaves like the
     CLI. The topology is one container per customer env, selected by the workspace root;
     sub-agents / MCP / plugins are deliberately NOT enabled here (a separate posture decision,
     out of scope for the connection substrate). Compaction IS enabled (ADR-0043): a served
@@ -603,7 +603,7 @@ def create_app(
 
     ``on_run_end`` is the BOUNDED-RUN seam (ADR-0039): awaited once with the stop reason
     (``"duration_cap"`` / ``"stopped"``) after the run's final digest turn. The app owns
-    WHEN a run ends; the caller owns what that means — ``zakcode serve`` uses it to bring
+    WHEN a run ends; the caller owns what that means — ``zakcode webapp`` uses it to bring
     the server down so the vessel stops billing. Omitted, the run is unbounded and this is
     inert, which is the in-process/embedded default.
     """

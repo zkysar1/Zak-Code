@@ -454,7 +454,7 @@ def say(
     url: Annotated[
         str | None,
         typer.Option(
-            "--url", help="POST to a zakcode serve daemon's /say instead of the local inbox."
+            "--url", help="POST to a zakcode webapp daemon's /say instead of the local inbox."
         ),
     ] = None,
     ledger: Annotated[Path | None, typer.Option("--ledger", help="Ledger JSONL path.")] = None,
