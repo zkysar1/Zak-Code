@@ -3883,3 +3883,46 @@ fleet test measures the code that was shipped. A dev checkout never trips
 by `tests/test_turn_end_loop.py::test_turn_end_veto_is_deferred_across_a_build_restart`
 and `tests/test_self_restart.py` (`test_restart_kick_prefers_the_carried_continuation`,
 `test_restart_exports_the_carried_continuation`).
+
+## ADR-0100: A rate-limit wait is said while it happens, and the server's retry hint is read
+
+**Context.** Measured 2026-08-29 on zc-03, right after the ADR-0099 cycle: the fleet's
+reducer echoed its restart kick and then went dark for 17 minutes — no provider socket, no
+event, no log line, main thread idle in `select`. py-spy put the turn inside
+`_run_streamed_turn`; the pod's journal held the explanation: the resumed 430 KB session
+needed compaction, the summarizer's first call met a pod at capacity (4 engines ×
+`MAX_INFLIGHT=3`, eight sessions plus subagents), and `_complete_with_retry` waited the 429s
+out — correctly, per ADR-0083 — for the full 900 s horizon before "summarizer failed"
+printed. Two defects compounded. (1) The buffered retry loop returns a value, so from a
+streaming turn its `logger.warning` (no handler) was the only trace; an operator reading
+the session had a dead process. (2) The pod answers every capacity 429 with
+`Retry-After: 2`, and litellm re-raises it as a `RateLimitError` whose synthetic
+`response.headers` are EMPTY — the upstream headers ride on `litellm_response_headers`,
+which `_extract_retry_after` never read. Every 429 therefore fell to the capped exponential
+backoff and polled every 30–60 s (the journal showed exactly that cadence), while seven
+workers re-calling the instant their previous call returned took each freed slot. The pod
+was never idle; the reducer lost a lottery it was told not to play.
+
+**Decision.** Two changes, one per defect. `_extract_retry_after` reads
+`litellm_response_headers` first, then `headers`, then `response.headers` — the server's
+hint now reaches `_retry_delay`, so a capacity 429 is re-polled at the interval the server
+asked for. And the streaming path runs `_maybe_compact` as a task under
+`_statuses_until`, which installs `AgentLoop._status_sink` for the duration and relays each
+retry notice from `_complete_with_retry` as an `AgentStatus` the moment it is logged
+("provider rate-limited; retrying in 2.0s (14s into the 900s backoff budget)"). The sink is
+None outside that window (a notice then goes to the logger only, as before); a compaction
+still pending when the consumer stops iterating is cancelled with the turn.
+
+**Alternatives rejected.** Making `_complete_with_retry` an async generator — every buffered
+caller would change shape for one consumer. Shortening the horizon on a local pod — the
+wait was right; the silence and the cadence were wrong. Fixing only the client — the pod
+now owns the queue too (zds-inference-server v0.8.0's FIFO admission line), so a 429 is
+rarer; this ADR is what happens when one arrives anyway.
+
+**Consequences.** A summarizer wait is visible from its first retry, and a `Retry-After`
+from any OpenAI-compatible server is honoured through litellm. Pinned by
+`tests/test_provider.py` (`test_rate_limit_mapping_reads_litellm_response_headers`,
+`test_extract_retry_after_prefers_litellm_headers_over_the_synthetic_response`) and
+`tests/test_compact_loop.py`
+(`test_a_streaming_turn_says_the_summarizer_is_waiting_on_a_rate_limit`,
+`test_statuses_until_cancels_a_compaction_the_turn_abandoned`), each mutation-proved.

@@ -806,8 +806,21 @@ class LiteLLMProvider(Provider):
         """Pull a server-suggested retry delay (seconds) off an exception.
 
         Checks the common ``retry_after`` attribute first, then a numeric
-        ``Retry-After`` header on an attached ``response`` (openai/httpx shape).
-        Anything non-numeric is ignored so this never raises.
+        ``Retry-After`` header — on ``litellm_response_headers`` BEFORE the
+        attached ``response`` (openai/httpx shape). Anything non-numeric is
+        ignored so this never raises.
+
+        The order is load-bearing (ADR-0100). litellm re-raises a provider's 429
+        as its own ``RateLimitError`` carrying a SYNTHETIC ``response`` whose
+        headers are EMPTY; the upstream headers ride on
+        ``litellm_response_headers`` instead. Measured 2026-08-29 against a fake
+        OpenAI-compatible server answering ``429 Retry-After: 2``: ``response.headers
+        == {}`` and ``litellm_response_headers == {'retry-after': '2', ...}``, for
+        both the buffered and the streaming call. Reading only ``response`` meant
+        every 429 from the fleet's own pod — which asks for a 2 s retry — fell to
+        the capped exponential backoff and polled every 30-60 s, which is how the
+        Mind reducer lost a 900 s race for a slot to seven workers (the pod's
+        journal showed exactly that cadence).
         """
         candidate = getattr(exc, "retry_after", None)
         if isinstance(candidate, bool):  # bool is an int subclass — reject it
@@ -816,17 +829,23 @@ class LiteLLMProvider(Provider):
             return float(candidate)
 
         response = getattr(exc, "response", None)
-        headers = getattr(response, "headers", None)
-        if headers is not None:
+        for headers in (
+            getattr(exc, "litellm_response_headers", None),
+            getattr(exc, "headers", None),
+            getattr(response, "headers", None),
+        ):
+            if headers is None:
+                continue
             try:
                 raw = headers.get("retry-after")
             except Exception:
                 raw = None
-            if raw is not None:
-                try:
-                    return float(raw)
-                except (TypeError, ValueError):
-                    return None
+            if raw is None:
+                continue
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
         return None
 
     @classmethod
