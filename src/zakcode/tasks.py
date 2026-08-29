@@ -875,7 +875,8 @@ class SkillPages:
             if index == self.count
             else (
                 f"When this section is done, mark its step done with update_plan (send the "
-                f"whole plan) and section {index + 1} of {self.count} arrives in the next message."
+                f"whole plan); section {index + 1} of {self.count} arrives in the reply to that "
+                "call — nothing arrives on its own."
             )
         )
         return f"{self.header(index)}\n{page.text.rstrip()}\n\n{after}"
