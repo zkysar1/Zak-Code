@@ -556,6 +556,12 @@ def test_enoent_regexes_capture_the_coreutils_and_grep_shapes() -> None:
     )
     assert captured("stat: cannot statx 'w/x.yaml': No such file or directory") == "w/x.yaml"
     assert captured("rm: cannot remove 'w/x.yaml': No such file or directory") == "w/x.yaml"
+    # Newer coreutils quote the path in the plain frame too (Git Bash on Windows CI).
+    q = "C:/Users/r/AppData/Local/Temp/ws/world/forged-skills.yaml"
+    assert captured(f"cat: '{q}': No such file or directory") == q
+    assert captured("cat: /tmp/ws/world/forged-skills.yaml: No such file or directory") == (
+        "/tmp/ws/world/forged-skills.yaml"
+    )
 
 
 async def test_bash_enoent_invented_prefix_names_the_real_directory(tmp_path) -> None:
