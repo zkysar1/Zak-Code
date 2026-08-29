@@ -3259,8 +3259,10 @@ def serve(
 # Registered at the bottom so cockpit's lazy imports back into this module (banner
 # helpers) always find a fully initialized package.
 from zakcode.cli.cockpit import register_cockpit_commands  # noqa: E402
+from zakcode.cli.throughput import register_throughput_command  # noqa: E402
 
 register_cockpit_commands(app)
+register_throughput_command(app)
 
 
 def main() -> None:

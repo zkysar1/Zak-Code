@@ -4044,3 +4044,42 @@ already decides). Leaving it (the cost is per fleet per update, and updates are 
 sessions; the "build X reinstalled" banner remains reachable only for local-path installs.
 Pinned in `tests/test_self_restart.py` (same-commit git reinstall adopts the marker and stays
 quiet, a later real update still reports; local-path same-HEAD reinstall still restarts).
+
+## ADR-0104: `zakcode throughput` reads where the fleet's turn time goes
+
+**Context.** "Are we bottlenecked, and on what?" was answered on 2026-08-29 by hand: the
+eight coach sessions' documents read with an ad-hoc script — event-time gaps between each
+assistant message and the message before it, paired with the usage record from the tail —
+and the router's `/v1/models` listing read for its `zds` block. The answer drove a hardware
+decision: four engine slots, seven to eight requests in flight all evening, a p50 turn of
+~55 s of which ~10 s was decode at the engines' ~30 tok/s, prefix cache hitting 95–99 % so
+the 60–104k-token prompts cost ~1.5k uncached tokens a turn, and the container itself idle
+(1.9 of 8 GB, load 8.5 on 20 vCPUs). Every number was already in files the CLI writes; none
+was readable from the CLI. The next such question would be reconstructed the same way, or
+guessed — and the guess on the table ("more RAM on the box", "shrink the prompts") was
+wrong both times.
+
+**Decision.** A read-only `zakcode throughput [--hours N] [--store DIR] [--json]
+[--no-router]`. Per session with a turn inside the window: turns, p50/p90 latency, median
+output and prompt tokens, prefix-cache hit share, median output tokens per second. A turn's
+latency is the gap from the message BEFORE the assistant message (the prompt or tool result
+it answered) to the assistant message — queue + prefill + decode, what an operator waits
+for; a gap over 30 min is an idle session, not a turn. Usage records align to assistant
+messages from the tail, so an interrupted older call drops its oldest record rather than
+shifting every pairing. The router line is the configured endpoint's `zds` block (engines,
+slots, in flight, available) and the ratio in flight / slots, read as a queue factor. A
+foreign or unreachable endpoint is a one-line note naming the failure class; the key and the
+URL are never printed.
+
+**Alternatives rejected.** Recording latency on the usage record at call time (a schema
+change to answer a question the timestamps already answer). A `/metrics` endpoint on the
+router (a second source to keep in step with the listing, for a number the listing
+carries). Reporting only totals (the bottleneck was visible per session — one session at
+17 tok/s beside seven at 2–6 — and invisible in the sum).
+
+**Consequences.** The measurement above is one command, on any box that holds the session
+store; `--json` feeds it to a monitor. Pinned in `tests/test_cli_throughput.py` (latency
+from the preceding message, idle gaps excluded, tail alignment of usages, window by file
+mtime then by turn time, a corrupt document skipped by name, the zds block read for the
+configured model, an unreachable router degrading to a note without the secret, the
+queue-factor warning).
