@@ -315,6 +315,56 @@ async def test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call(
     assert loop2.restart_continuation is None
 
 
+class UpdatePlanStub(Tool):
+    """Stands in for the plan bookkeeping tool: counts executions, never errors."""
+
+    spec = ToolSpec(name="update_plan", description="Update the plan.")
+
+    def __init__(self) -> None:
+        self.executed = 0
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.executed += 1
+        return ToolResult.ok(output="Current plan (1/2 steps done)")
+
+
+@pytest.mark.asyncio
+async def test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """ADR-0101 amendment: the common re-entry pairs update_plan with use_skill in one
+    batch (measured live: 1 of 7 workers, which would otherwise never restart). The plan
+    update EXECUTES here — its result lands beside the unexecuted skill call — and the
+    turn still ends in a restart carrying the skill call."""
+    import zakcode.agent.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "install_changed", lambda: ("old-build", "new-build"))
+    skill, plan = UseSkillStub(), UpdatePlanStub()
+    paired = LLMResult(
+        tool_calls=[
+            ToolCall(id="p1", name="update_plan", arguments={"tasks": []}),
+            ToolCall(id="s1", name="use_skill", arguments={"name": "worker-loop"}),
+        ]
+    )
+    provider = ScriptedProvider([paired, LLMResult(text="never reached")])
+    loop = _make_loop(provider, tmp_path, registry=_registry(skill, plan))
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "restart"
+    assert plan.executed == 1 and skill.executed == 0
+    assert loop.restart_boundary == "skill"
+    assert loop.restart_continuation is not None
+    assert loop.restart_continuation.startswith('Call use_skill(name="worker-loop") now.')
+    answered = {
+        b.tool_use_id: b
+        for m in loop.session.messages
+        for b in m.blocks
+        if getattr(b, "type", "") == "tool_result"
+    }
+    assert set(answered) == {"p1", "s1"}
+    assert not answered["p1"].is_error and "Current plan" in answered["p1"].output
+    assert answered["s1"].is_error and answered["s1"].data == {"restart": True}
+
+
 @pytest.mark.asyncio
 async def test_turn_end_vetoes_are_unbounded(tmp_path: Path) -> None:
     """No per-turn veto cap (no-knobs ruling): the hook is consulted at EVERY vetoable

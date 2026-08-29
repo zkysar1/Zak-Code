@@ -3969,3 +3969,15 @@ the code that was shipped. Pinned by `tests/test_turn_end_loop.py`
 `test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call`) and
 `tests/test_self_restart.py` (`test_restart_exports_the_boundary_beside_the_continuation`,
 `test_restart_kick_words_a_skill_boundary_restart`), each mutation-proved.
+
+**Amendment (same evening, measured live).** Within 30 minutes of a marker change on
+zc-03, 6 of 7 workers restarted at their first skill boundary and re-invoked
+`/worker-loop` in the fresh process. The seventh paired its `use_skill(worker-loop)` with
+an `update_plan` in the same batch and executed as before — correct under the rule as
+written, and the COMMON shape of a re-entry (mark the last step done, load the next
+body); a Body that always pairs them would never restart, the same class of gap this ADR
+closed. A batch of exactly one `use_skill` plus nothing but `update_plan` calls
+(`_SKILL_BOUNDARY_COMPANIONS`) is therefore a boundary too: the plan updates run here
+(local session state, no model call, persisted at the same message boundary) and the
+skill call is answered unexecuted. Any other companion still exempts the batch. Pinned by
+`test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first`.
