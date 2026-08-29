@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import statistics
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -248,17 +249,32 @@ def build_report(
     return report
 
 
+def _configured_models(settings: Any) -> tuple[str, tuple[str, ...]]:
+    """The configured model and, under ``zakpick``, the concrete models its categories name.
+
+    ``zakpick`` is a router inside Zak-Code, not a model any endpoint lists; the slot block
+    that answers for it belongs to whatever ``zakpick_models`` assigns per category.
+    """
+    model = str(settings.default_model)
+    if model.strip().lower() != "zakpick":
+        return model, ()
+    return model, tuple(sorted({str(m.model) for m in settings.zakpick_models.values()}))
+
+
 def fetch_capacity(
     api_base: str | None,
     api_key: str | None,
     model: str,
     *,
     timeout: float = CAPACITY_TIMEOUT,
+    resolved: Sequence[str] = (),
 ) -> Capacity:
     """The ``zds`` slot block for ``model`` from the endpoint's ``/models`` listing.
 
-    Never raises and never echoes the key or the base URL: an unreachable or foreign
-    server is a one-line ``detail`` naming the failure class, not a traceback.
+    ``resolved`` names the concrete models a pseudo-model such as ``zakpick`` stands for;
+    the first listed block matching any of them answers. Never raises and never echoes
+    the key or the base URL: an unreachable or foreign server is a one-line ``detail``
+    naming the failure class, not a traceback.
     """
     if not api_base:
         return Capacity(ok=False, detail="no api_base configured — nothing to ask")
@@ -271,7 +287,11 @@ def fetch_capacity(
     entries = listing.get("data") if isinstance(listing, dict) else listing
     if not isinstance(entries, list):
         return Capacity(ok=False, detail="/models listing has no data array")
-    wanted = {model.strip().lower(), _strip_provider_prefix(model.strip()).lower()}
+    wanted = {
+        form
+        for name in (model, *resolved)
+        for form in (name.strip().lower(), _strip_provider_prefix(name.strip()).lower())
+    }
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -292,7 +312,8 @@ def fetch_capacity(
             capacity_available=_zds_int(zds, "capacity_available"),
             max_inflight_total=_zds_int(zds, "max_inflight_total"),
         )
-    return Capacity(ok=False, detail=f"/models lists no zds block for {model!r}")
+    tried = f" (zakpick categories name {', '.join(resolved)})" if resolved else ""
+    return Capacity(ok=False, detail=f"/models lists no zds block for {model!r}{tried}")
 
 
 def _zds_int(zds: dict[str, Any], key: str) -> int | None:
@@ -402,7 +423,8 @@ def throughput(
     capacity: Capacity | None = None
     if not no_router:
         settings = load_settings()
-        capacity = fetch_capacity(settings.api_base, settings.api_key, settings.default_model)
+        model, resolved = _configured_models(settings)
+        capacity = fetch_capacity(settings.api_base, settings.api_key, model, resolved=resolved)
     store = SessionStore(store_dir) if store_dir is not None else SessionStore()
     report = build_report(store, hours=hours, capacity=capacity)
     if as_json:
