@@ -427,6 +427,56 @@ async def test_rate_limit_mapping_carries_retry_after(
     assert info.value.retry_after == 2.5
 
 
+class _LiteLLMShapedRateLimitError(Exception):
+    """litellm's REAL 429 shape (ADR-0100), measured 2026-08-29 against a fake
+    OpenAI-compatible server answering ``429 Retry-After: 2``: no ``retry_after``
+    attribute, a synthetic ``response`` whose ``headers`` are EMPTY, and the
+    upstream headers on ``litellm_response_headers``. Buffered and streaming
+    calls raise the same shape."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.status_code = 429
+        self.response = _SyntheticResponse()
+        self.litellm_response_headers = {"retry-after": "2", "content-type": "application/json"}
+
+
+class _SyntheticResponse:
+    headers: dict[str, str] = {}
+
+
+async def test_rate_limit_mapping_reads_litellm_response_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pod's ``Retry-After: 2`` must reach the loop's retry delay. Before
+    ADR-0100 only ``exc.response.headers`` was read — empty on every litellm
+    429 — so every capacity 429 fell to the capped exponential backoff and
+    polled every 30-60 s; measured in the pod's journal while the Mind reducer
+    lost a 900 s race for a slot to seven workers."""
+    monkeypatch.setattr(lp, "_LiteLLMRateLimitError", _LiteLLMShapedRateLimitError)
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        raise _LiteLLMShapedRateLimitError(
+            "litellm.RateLimitError: OpenAIException - model 'x' at capacity on this pod"
+        )
+
+    monkeypatch.setattr(lp.litellm, "acompletion", fake_acompletion)
+
+    with pytest.raises(RateLimited) as info:
+        await _provider().acomplete([Message.user("x")])
+    assert info.value.retry_after == 2.0
+
+
+def test_extract_retry_after_prefers_litellm_headers_over_the_synthetic_response() -> None:
+    """Positive control for the order: when both carry a value the litellm
+    headers (the real upstream ones) win; a bare ``response`` still works."""
+    exc = _LiteLLMShapedRateLimitError("x")
+    exc.response.headers = {"retry-after": "99"}
+    assert lp.LiteLLMProvider._extract_retry_after(exc) == 2.0
+    del exc.litellm_response_headers
+    assert lp.LiteLLMProvider._extract_retry_after(exc) == 99.0
+
+
 def test_error_mapping_by_class_name_fallback() -> None:
     # When the resolved classes are unavailable, fall back to name matching.
     class AuthenticationError(Exception):

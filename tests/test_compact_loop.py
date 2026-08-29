@@ -164,6 +164,77 @@ def test_the_summarizer_waits_out_a_rate_limit_like_the_main_call(
     assert len(provider.seen) == 3 and len(slept) == 2
 
 
+def test_a_streaming_turn_says_the_summarizer_is_waiting_on_a_rate_limit(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """ADR-0100. The summarizer's retry loop returns a value, so a streaming turn used
+    to show NOTHING for the whole wait — measured 2026-08-29 (coach reducer): 17 minutes
+    with no socket, no event and no line, before "summarizer failed" printed. The
+    streaming path now runs the compaction as a task and relays each retry notice as an
+    AgentStatus WHILE the task is pending — before the compaction outcome, not after."""
+    seen_pending: list[bool] = []
+    # The backoff sleep becomes a handshake: each retry blocks until the consumer has
+    # SEEN its notice. A no-op sleep would let the whole retry loop finish inside one
+    # scheduling slice — a timeline production never has (its sleeps are seconds long)
+    # — and the test could not tell "relayed live" from "dumped at the end".
+    consumer_saw_it = asyncio.Event()
+
+    async def handshake_sleep(delay: float) -> None:
+        consumer_saw_it.clear()
+        await consumer_saw_it.wait()
+
+    monkeypatch.setattr("zakcode.agent.loop.asyncio.sleep", handshake_sleep)
+    provider = _BusyThenSummarizing(busy=2)
+    provider._tokens = 100_000  # over the 8192 window -> _maybe_compact runs the summarizer
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    async def drive() -> tuple[list[str], str | None]:
+        task = asyncio.ensure_future(loop._maybe_compact())
+        notices: list[str] = []
+        async for status in loop._statuses_until(task):
+            seen_pending.append(not task.done())
+            notices.append(status.message)
+            consumer_saw_it.set()
+        return notices, task.result()
+
+    notices, note = asyncio.run(drive())
+    assert len(notices) == 2 and all(
+        n.startswith("provider rate-limited; retrying in") for n in notices
+    )
+    assert "into the 900s backoff budget" in notices[0]
+    assert seen_pending == [True, True], "notices must arrive while the compaction is still running"
+    assert note == "context near the window — compacted 10 → 7 messages"
+    assert loop._status_sink is None, "the sink is scoped to the wait"
+
+
+def test_statuses_until_cancels_a_compaction_the_turn_abandoned(tmp_path: Path) -> None:
+    """A consumer that stops iterating (the turn was cancelled) must not leave the
+    summarizer running against the transcript of a turn that no longer exists."""
+    started = asyncio.Event()
+
+    async def hangs() -> str:
+        started.set()
+        await asyncio.sleep(3600)
+        return "never"
+
+    loop = _loop(_SummarizerProvider(["s"], tokens=100), tmp_path)
+
+    async def drive() -> bool:
+        task = asyncio.ensure_future(hangs())
+        gen = loop._statuses_until(task)
+        pull = asyncio.ensure_future(gen.__anext__())
+        await started.wait()
+        pull.cancel()
+        await asyncio.gather(pull, return_exceptions=True)
+        await gen.aclose()
+        await asyncio.sleep(0)
+        return task.cancelled()
+
+    assert asyncio.run(drive()) is True
+    assert loop._status_sink is None
+
+
 def test_summarize_chunks_an_oversized_history(tmp_path: Path) -> None:
     # count_tokens says the history dwarfs the 8192 window, so the raw single call is
     # off the table; the rendered text (~24k chars) splits into 8192-char slices.

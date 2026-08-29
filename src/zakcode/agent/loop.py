@@ -1349,6 +1349,13 @@ class AgentLoop:
         #: every stop has no idle prompt; measured 2026-08-29: the reducer ran a 6h-old
         #: build through five deploys).
         self.restart_continuation: str | None = None
+        #: Where a buffered call's retry notice goes while a streaming turn is waiting on
+        #: it (ADR-0100). ``_complete_with_retry`` has no event channel of its own — it
+        #: returns a value, it cannot yield — so the streaming path installs a sink for
+        #: the duration of an awaited compaction (``_statuses_until``) and drains it into
+        #: ``AgentStatus`` events as they happen. None outside such a window: the notice
+        #: then goes to the logger only, exactly as before.
+        self._status_sink: Callable[[str], None] | None = None
         # Mid-turn say delivery (ADR-0051): when True — the MAIN loop only, wired by the
         # Agent — every iteration boundary polls the workspace say inbox and folds a
         # pending message into the conversation as a user message, so input reaches the
@@ -1773,6 +1780,44 @@ class AgentLoop:
             "Harness position (authoritative — generated from the plan, not summarized):\n"
             + "\n".join(lines)
         )
+
+    async def _statuses_until(self, task: asyncio.Future[Any]) -> AsyncIterator[AgentStatus]:
+        """Yield the retry notices a buffered call emits while ``task`` runs (ADR-0100).
+
+        The compaction summarizer goes through ``_complete_with_retry``, which waits a
+        pod's 429s out for up to the rate-limit horizon — correct, and INVISIBLE from a
+        streaming turn: the coroutine returns a value, so nothing reaches the client
+        until it is done. Measured 2026-08-29 (coach reducer, a 430 KB resumed session):
+        17 minutes with no provider socket, no event and no log line, read from outside
+        as a dead process, before "summarizer failed" finally printed.
+
+        So the streaming path runs the compaction as a TASK and, while it is pending,
+        installs :attr:`_status_sink` and relays whatever the retry loop says as
+        ``AgentStatus`` events the moment it says it. The sink is cleared on every exit
+        (a notice outside this window goes to the logger only, as before), and a task
+        still pending when the consumer stops iterating — the turn was cancelled — is
+        cancelled with it, so no summarizer keeps rewriting the transcript of a turn
+        that no longer exists. The caller reads ``task.result()`` afterwards; an
+        exception there propagates exactly as the plain ``await`` did.
+        """
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        self._status_sink = queue.put_nowait
+        try:
+            while not task.done():
+                getter: asyncio.Future[str] = asyncio.ensure_future(queue.get())
+                done, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    yield AgentStatus(message=getter.result())
+                    continue
+                getter.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await getter
+            while not queue.empty():
+                yield AgentStatus(message=queue.get_nowait())
+        finally:
+            self._status_sink = None
+            if not task.done():
+                task.cancel()
 
     async def _maybe_compact(self) -> str | None:
         """Auto-compact the session if a compactor is set and the threshold is exceeded.
@@ -3287,6 +3332,12 @@ class AgentLoop:
                     else None
                 )
                 logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
+                # Said, not only logged (ADR-0100): this logger has no handler, so a
+                # 900 s summarizer wait was a session that looked dead — no socket, no
+                # event, no line — until the horizon expired (coach reducer, 2026-08-29).
+                sink = self._status_sink
+                if sink is not None:
+                    sink(f"{reason}; retrying in {delay:.1f}s ({budget})")
                 await asyncio.sleep(delay)
 
     @staticmethod
@@ -5635,7 +5686,10 @@ class AgentLoop:
             await lease.acquire()
         await self._fire_session_start_once()
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
-        compact_note = await self._maybe_compact()
+        compaction = asyncio.ensure_future(self._maybe_compact())
+        async for waiting in self._statuses_until(compaction):  # ADR-0100
+            yield waiting
+        compact_note = compaction.result()
         if compact_note:
             yield AgentStatus(message=compact_note)
         self._reset_stale_or_completed_plan()
@@ -5797,7 +5851,11 @@ class AgentLoop:
                 else:
                     restrict_now = None
                     tool_defs = self.registry.definitions()
-                compact_note = await self._maybe_compact()  # every call, not turn start (ADR-0074)
+                # Every call, not turn start (ADR-0074); waits surfaced live (ADR-0100).
+                compaction = asyncio.ensure_future(self._maybe_compact())
+                async for waiting in self._statuses_until(compaction):
+                    yield waiting
+                compact_note = compaction.result()
                 if compact_note:
                     yield AgentStatus(message=compact_note)
                 system = self._build_system(restrict_now)
