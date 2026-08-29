@@ -3427,3 +3427,43 @@ turn-end veto hook (deployment-specific; it fired here and was not enough).
 proceeds or ends. Pinned in `tests/test_skill_paging.py`: the unattended stop is nudged
 once per section and ends on the second; an attended stop is untouched; the footer wording
 is asserted by the paging-contract test.
+
+## ADR-0088: Consecutive small sections share a page
+
+**Context.** Paging (ADR-0067/0084) bounds what one delivery puts in context, but it also
+fixes the number of model turns a skill costs — one per page, and on the coach pod a turn
+is about three minutes with thinking on. A Mind's skills are mostly SHORT sections (a
+`## Step 0.7` of two paragraphs), so the pager delivered the same text in far more turns
+than the budget required. Measured 2026-08-29 over a Mind's 131 skills: 976 pages —
+`/aspirations-precheck` 55, `/reflect-on-outcome` 47, `/respond` 35, `/seed` 27 for
+10.8 KB that fits one page. The reducer's first iteration on the ADR-0084 build ran over
+an hour and was still paging.
+
+**Decision.** After the outline is cut, consecutive sections that together fit the page
+budget share one page (`_pack`). A section over the budget stays alone (it was already
+cut to fit) and the folded closing page is never packed. A packed page is titled by its
+first section and counts the rest — "Step 1: First (+3 more)"; its sections are the
+skeleton step's sub-steps, and any of them names the page when the model rewrites the
+plan (`SkillPage.sections`, any-of `matches`). A skill that packs into ONE page is not
+paged at all: it is delivered whole and its sections stay the plan's steps
+(`_Outline.paged`). The same corpus after: 321 deliveries — precheck 18,
+reflect-on-outcome 10, respond 7, worker-loop 7, boot 4, seed whole; 44 multi-section
+skills now arrive in one piece.
+
+**Alternatives rejected.** Packing only within a `##` group (keeps the section structure
+visible but cut coach's 701 pages only to 518 — the turn cost is per page, not per
+group). One page per section when a skill packs into a single page (a 27-section, 10 KB
+skill would still cost 27 turns; small skills are the common case). A larger budget
+(raises the largest-page context cost for every skill; packing keeps that bound and cuts
+turns only where sections are small). A per-skill front-matter knob (one way of doing
+things).
+
+**Consequences.** A skill's page count is a function of its section SIZES, not its
+section count, so tests that pinned a page per tiny section shrink the budget to 100
+chars (`test_skill_paging.py` autouse fixture; the `real_page_budget` marker opts out) or
+measure at the real one. The plan for a packed page lists the sections as sub-steps, so a
+Body still sees each named step; the page carries their text in order. Pinned in
+`tests/test_skill_paging.py` (`test_small_consecutive_sections_share_a_page`, the
+splitter test's packed shape), `tests/test_skill_skeleton.py`
+(`test_a_skill_that_packs_into_one_page_arrives_whole_with_its_steps`) and
+`tests/test_slash_text.py` (a typed two-section skill arrives whole).

@@ -621,14 +621,63 @@ class _Unit:
     text: str
     children: list[str] = field(default_factory=list)
     folded: bool = False
+    #: The sections a packed page carries (ADR-0088), ``(title, marker)`` each; empty for
+    #: a page that is one section.
+    sections: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _pack(pages: list[_Unit]) -> list[_Unit]:
+    """Consecutive small sections share a page up to the budget (ADR-0088).
+
+    A page costs a model turn to deliver — on a slow pod, minutes — and a Mind's skills
+    are mostly short sections: measured 2026-08-29 over 131 skills, 976 pages became 321
+    deliveries at the budget (/aspirations-precheck 55 → 18, /boot 26 → 4, /respond
+    35 → 7). A section over the budget stays alone (it was already cut to fit); the
+    folded closing page is never packed. A packed page is titled by its first section and
+    counts the rest; its sections become the skeleton step's sub-steps and any of them
+    names the page when the model rewrites the plan.
+    """
+    out: list[_Unit] = []
+    run: list[_Unit] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        if len(run) == 1:
+            out.append(run[0])
+        else:
+            out.append(
+                _Unit(
+                    f"{run[0].title} (+{len(run) - 1} more)",
+                    run[0].marker,
+                    "\n\n".join(unit.text for unit in run),
+                    [unit.title for unit in run],
+                    sections=[(unit.title, unit.marker) for unit in run],
+                )
+            )
+        run.clear()
+
+    for unit in pages:
+        if unit.folded:
+            flush()
+            out.append(unit)
+            continue
+        if run and sum(len(held.text) + 2 for held in run) + len(unit.text) > PAGE_BUDGET_CHARS:
+            flush()
+        run.append(unit)
+    flush()
+    return out
 
 
 @dataclass
 class _Outline:
-    """The shared reading of a skill body: what travels up front, and the pages in order."""
+    """The shared reading of a skill body: what travels up front, and the pages in order.
+    ``paged`` is False when the whole body packs into one page (ADR-0088): it is then
+    delivered whole, and ``pages`` are its sections — the plan's steps, not pages."""
 
     front: str
     pages: list[_Unit]
+    paged: bool = True
 
 
 class _Body:
@@ -766,8 +815,11 @@ def _outline(body: str, *, skill: str) -> _Outline:
     holds no ordered-work marker; a documentation section that HOLDS markers (a "## The
     loop" fence of ``# Phase`` comments, a "## Mode 1" of ``### Step`` headings) is a
     container: its intro goes up front and each marker opens a page; one over the budget
-    with no markers is paged at its headings, then paragraphs. Past
-    :data:`_MAX_SKELETON_STEPS` pages the rest fold into one closing page.
+    with no markers is paged at its headings, then paragraphs. Consecutive small sections
+    then share a page up to the budget (ADR-0088, :func:`_pack`); a skill that packs into
+    ONE page is not paged at all — it is delivered whole (``paged`` False) and its
+    sections stay the plan's steps. Past :data:`_MAX_SKELETON_STEPS` pages the rest fold
+    into one closing page.
     """
     text = _Body(body)
     heads = [
@@ -813,6 +865,10 @@ def _outline(body: str, *, skill: str) -> _Outline:
         else:
             intro(title, start, end)
 
+    packed = _pack(pages)
+    paged = len(packed) >= 2
+    if paged:
+        pages = packed
     if len(pages) > _MAX_SKELETON_STEPS:
         keep = _MAX_SKELETON_STEPS - 1
         rest = pages[keep:]
@@ -825,7 +881,7 @@ def _outline(body: str, *, skill: str) -> _Outline:
                 folded=True,
             ),
         ]
-    return _Outline(front="\n\n".join(front), pages=pages)
+    return _Outline(front="\n\n".join(front), pages=pages, paged=paged)
 
 
 @dataclass(frozen=True)
@@ -836,16 +892,21 @@ class SkillPage:
     title: str
     marker: str
     text: str
+    #: The sections a packed page carries (ADR-0088), ``(title, marker)`` each; a step
+    #: titled or marked like any of them is this page's.
+    sections: tuple[tuple[str, str], ...] = ()
 
     def matches(self, step_title: str) -> bool:
         """Whether a plan step (possibly rewritten by the model) is this page's step: the
-        seeded title verbatim, or the page's marker token as a whole word in the title."""
+        seeded title verbatim, or the page's marker token as a whole word in the title —
+        for the page itself or any section packed into it."""
         norm = " ".join(step_title.lower().split())
-        if norm == " ".join(self.title.lower().split()):
-            return True
-        if not self.marker:
-            return False
-        return re.search(rf"(?<![\w.]){re.escape(self.marker)}(?![\w.])", norm) is not None
+        for title, marker in ((self.title, self.marker), *self.sections):
+            if norm == " ".join(title.lower().split()):
+                return True
+            if marker and re.search(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", norm):
+                return True
+        return False
 
 
 @dataclass(frozen=True)
@@ -893,10 +954,16 @@ def skill_pages(body: str, *, skill: str) -> SkillPages | None:
     ``k``: both come from :func:`_outline`. Pure: no model, no I/O.
     """
     outline = _outline(body, skill=skill)
-    if len(outline.pages) < 2:
+    if not outline.paged or len(outline.pages) < 2:
         return None
     pages = tuple(
-        SkillPage(index=i + 1, title=unit.title, marker=unit.marker, text=unit.text)
+        SkillPage(
+            index=i + 1,
+            title=unit.title,
+            marker=unit.marker,
+            text=unit.text,
+            sections=tuple(unit.sections),
+        )
         for i, unit in enumerate(outline.pages)
     )
     return SkillPages(skill=skill, front=outline.front, pages=pages)
