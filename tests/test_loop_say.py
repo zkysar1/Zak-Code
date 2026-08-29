@@ -132,6 +132,58 @@ async def test_no_say_pending_changes_nothing(tmp_path: Path) -> None:
     assert [m.text for m in session.messages if m.role == "user"] == ["hi"]
 
 
+class _TypeWhileRunning(Tool):
+    """Simulates the operator typing at THIS session's REPL while its turn runs a tool."""
+
+    spec = ToolSpec(name="type", description="Inject a typed line into the running loop.")
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.loop: AgentLoop | None = None
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        assert self.loop is not None
+        self.loop.inject_user_line(self._text)
+        return ToolResult.ok(output="typed")
+
+
+@pytest.mark.asyncio
+async def test_a_typed_line_reaches_this_loop_in_process(tmp_path: Path) -> None:
+    """ADR-0078: a line typed at the session's own REPL is folded in at the next boundary
+    like a say — framed, persisted, seen by the next provider call — without ever being
+    written to the workspace say slot."""
+    inbox = say_path(tmp_path)
+    typer_tool = _TypeWhileRunning("also check the logs")
+    provider = _Recording([_tool_call("type"), _DONE])
+    loop, session = _loop(provider, tmp_path, tools=[typer_tool])
+    typer_tool.loop = loop
+    result = await loop.arun_turn("do the thing")
+
+    assert result.stop_reason == "completed"
+    assert not say_pending(inbox)  # the shared slot was never involved
+    framed = [m for m in session.messages if m.role == "user" and "also check the logs" in m.text]
+    assert len(framed) == 1
+    assert any("also check the logs" in m.text for m in provider.seen[1] if m.role == "user")
+
+
+@pytest.mark.asyncio
+async def test_a_typed_line_never_reaches_a_sibling_loop_on_the_same_workspace(
+    tmp_path: Path,
+) -> None:
+    """Two sessions share one workspace (a Mind reducer and its worker Bodies). A line
+    typed at A must not be deliverable to B — the failure the file slot produced."""
+    loop_a, session_a = _loop(_Recording([_DONE]), tmp_path)
+    loop_b, session_b = _loop(_Recording([_DONE]), tmp_path)
+    loop_a.inject_user_line("only for A")
+
+    assert await loop_b._deliver_midturn_say() is None
+    assert not any("only for A" in m.text for m in session_b.messages)
+    assert await loop_a._deliver_midturn_say() == "only for A"
+    assert any("only for A" in m.text for m in session_a.messages if m.role == "user")
+    # Consumed exactly once.
+    assert await loop_a._deliver_midturn_say() is None
+
+
 @pytest.mark.asyncio
 async def test_subagent_shape_never_consumes_the_inbox(tmp_path: Path) -> None:
     """A loop built without ``consume_say_inbox`` (the sub-agent construction shape)

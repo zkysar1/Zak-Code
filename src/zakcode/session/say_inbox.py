@@ -8,6 +8,10 @@ the agent" means exactly one thing regardless of transport or interface:
 - ``zakcode say`` and the cockpit's say box write it (terminal surfaces).
 - The serve driver consumes it between autonomous turns.
 - ``zakcode cli`` consumes it between interactive turns (cockpit/say-inbox mode).
+- A line typed at a session's OWN REPL while its turn runs does NOT pass through this
+  file (ADR-0078): it is handed to that session's agent in-process. The file is the door
+  for producers OUTSIDE the process — several sessions can share one workspace, and the
+  slot cannot tell which of them a keystroke was meant for.
 
 Semantics (shared by all of the above):
 
