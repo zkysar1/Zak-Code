@@ -90,6 +90,92 @@ async def test_run_turn_end_shell_allow_nonzero_exit(tmp_path: Path) -> None:
     assert result.vetoed is False
 
 
+async def test_a_turn_end_hook_can_arm_the_wakeup_on_allow(tmp_path: Path) -> None:
+    """ADR-0102: exit 0 + {"wakeup": {"prompt", "delay_seconds"}} = allow + a wake-up to
+    arm, the delay clamped like the tool's (7200 -> 3600)."""
+    body = (
+        "import json, sys\n"
+        'print(json.dumps({"wakeup": {"prompt": "  re-poll now  ", "delay_seconds": 7200}}))\n'
+        "sys.exit(0)\n"
+    )
+    cmd = _script(tmp_path, "arm.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.TURN_END, command=cmd)])
+    result = await mgr.run_turn_end(_te_payload())
+    assert result.vetoed is False
+    assert result.wakeup_prompt == "re-poll now"
+    assert result.wakeup_delay_seconds == 3600
+    assert result.wakeup_cancel is False
+
+
+async def test_a_turn_end_hook_can_arm_the_wakeup_while_vetoing(tmp_path: Path) -> None:
+    """The wake-up rides on a block too (Claude Code's ``delaySeconds`` spelling honoured)."""
+    body = (
+        "import json, sys\n"
+        'print(json.dumps({"decision": "block", "reason": "go on",'
+        ' "wakeup": {"prompt": "net", "delaySeconds": 600}}))\n'
+        "sys.exit(0)\n"
+    )
+    cmd = _script(tmp_path, "arm-block.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.TURN_END, command=cmd)])
+    result = await mgr.run_turn_end(_te_payload())
+    assert result.vetoed is True
+    assert result.continuation_prompt == "go on"
+    assert (result.wakeup_prompt, result.wakeup_delay_seconds) == ("net", 600)
+
+
+async def test_a_turn_end_hook_can_cancel_the_wakeup(tmp_path: Path) -> None:
+    body = 'import json, sys; print(json.dumps({"wakeup": {"cancel": True}})); sys.exit(0)\n'
+    cmd = _script(tmp_path, "cancel.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.TURN_END, command=cmd)])
+    result = await mgr.run_turn_end(_te_payload())
+    assert result.vetoed is False
+    assert result.wakeup_cancel is True
+    assert result.wakeup_prompt == ""
+
+
+async def test_a_malformed_wakeup_is_ignored_not_fatal(tmp_path: Path) -> None:
+    """No key, a non-object, an empty prompt: allow with no wake-up, never an error."""
+    for name, doc in (
+        ("none.py", "{}"),
+        ("str.py", '{"wakeup": "soon"}'),
+        ("empty.py", '{"wakeup": {"prompt": "   "}}'),
+        ("list.py", '{"wakeup": ["x"]}'),
+    ):
+        cmd = _script(tmp_path, name, f"import sys; print('{doc}'); sys.exit(0)\n")
+        mgr = HookManager([HookSpec(event=HookEvent.TURN_END, command=cmd)])
+        result = await mgr.run_turn_end(_te_payload())
+        assert result.vetoed is False, name
+        assert result.touches_wakeup is False, name
+
+
+async def test_the_first_hook_to_touch_the_wakeup_wins(tmp_path: Path) -> None:
+    """An allowing hook's wake-up rides on the result of a LATER vetoing hook, and a later
+    hook cannot replace an earlier one's net."""
+    arm = _script(
+        tmp_path,
+        "first.py",
+        "import json, sys\n"
+        'print(json.dumps({"wakeup": {"prompt": "first", "delay_seconds": 120}}))\n'
+        "sys.exit(0)\n",
+    )
+    veto = _script(
+        tmp_path,
+        "second.py",
+        'import json, sys; print(json.dumps({"decision": "block", "reason": "more",'
+        ' "wakeup": {"prompt": "second", "delay_seconds": 900}})); sys.exit(0)\n',
+    )
+    mgr = HookManager(
+        [
+            HookSpec(event=HookEvent.TURN_END, command=arm),
+            HookSpec(event=HookEvent.TURN_END, command=veto),
+        ]
+    )
+    result = await mgr.run_turn_end(_te_payload())
+    assert result.vetoed is True
+    assert result.continuation_prompt == "more"
+    assert (result.wakeup_prompt, result.wakeup_delay_seconds) == ("first", 120)
+
+
 async def test_run_turn_end_shell_block_native_exit2(tmp_path: Path) -> None:
     """Exit 2 + stdout message = vetoed (native protocol)."""
     body = "import sys; print('continue please'); sys.exit(2)\n"

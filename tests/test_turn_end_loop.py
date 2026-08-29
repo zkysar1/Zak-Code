@@ -178,6 +178,59 @@ async def test_turn_end_hook_allows_completed(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_turn_end_hook_arms_the_session_wakeup_when_it_lets_the_turn_end(
+    tmp_path: Path,
+) -> None:
+    """ADR-0102: the hook that ALLOWS the turn to end can arm the session's wake-up; the
+    slot is held on the session (so it survives a restart) with the clamped delay."""
+    hook = RecordingHook([TurnEndResult(wakeup_prompt="park re-poll", wakeup_delay_seconds=3600)])
+    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    pending = loop.session.pending_wakeup
+    assert pending is not None
+    assert pending.prompt == "park re-poll"
+    assert pending.delay_seconds == 3600
+
+
+@pytest.mark.asyncio
+async def test_a_turn_end_hook_can_cancel_a_held_wakeup(tmp_path: Path) -> None:
+    hook = RecordingHook([TurnEndResult(wakeup_cancel=True)])
+    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path)
+    loop.wakeup_slot.arm("stale net", 600)
+    assert loop.session.pending_wakeup is not None
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    assert loop.session.pending_wakeup is None
+
+
+@pytest.mark.asyncio
+async def test_a_vetoing_hook_still_arms_the_wakeup(tmp_path: Path) -> None:
+    """A net armed on a veto is held while the loop goes on, replacing whatever was there."""
+    hook = RecordingHook(
+        [
+            TurnEndResult(
+                vetoed=True,
+                continuation_prompt="go on",
+                wakeup_prompt="net",
+                wakeup_delay_seconds=600,
+            ),
+            None,
+        ]
+    )
+    provider = ScriptedProvider([_TEXT_DONE, LLMResult(text="done now")])
+    loop = _make_loop(provider, tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    assert result.iterations == 2
+    pending = loop.session.pending_wakeup
+    assert pending is not None and pending.prompt == "net"
+
+
+@pytest.mark.asyncio
 async def test_turn_end_hook_vetoes_completed_once(tmp_path: Path) -> None:
     hook = RecordingHook([_veto("Run the tests before declaring done."), None])
     provider = ScriptedProvider([_TEXT_DONE, LLMResult(text="ran them; done")])

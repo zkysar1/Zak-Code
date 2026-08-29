@@ -3981,3 +3981,37 @@ closed. A batch of exactly one `use_skill` plus nothing but `update_plan` calls
 (local session state, no model call, persisted at the same message boundary) and the
 skill call is answered unexecuted. Any other companion still exempts the batch. Pinned by
 `test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first`.
+
+## ADR-0102: A turn-end hook may arm the session's wake-up
+
+**Context.** The wake-up (ADR-0094) is the primitive a parked worker Body resumes on: its
+loop skill ends the park turn with a `ScheduleWakeup(<re-poll prompt>, 3600)` and nothing
+else, and the harness delivers the prompt at the idle prompt an hour later. That arm is the
+MODEL's to make, and measured across the 26 zc-03 sessions of 2026-08-29 it was made once:
+427 bash calls, 18 skill re-entries, one `schedule_wakeup`. The bash-typed form (ADR-0098's
+refusal) had stopped; the calls did not start. A park that forgets to arm is a close with a
+friendlier name — the Body sits at its prompt until an operator relaunches it, which is the
+outcome parking exists to remove. The Mind's Stop hook already knows the Body is parked (it
+ALLOWS that turn-end on the manifest's `parked` state, and logs the gate), so the one process
+that holds the fact runs at the one moment it matters, and cannot say so.
+
+**Decision.** A TURN_END hook's JSON may carry `"wakeup": {"prompt": …, "delay_seconds": N}`
+(`delaySeconds` read too) to arm the session's wake-up, or `"wakeup": {"cancel": true}` to
+drop a held one. The loop applies it at the Stop-hook seam whether the hook allowed or
+vetoed: same replace-slot and [60, 3600] clamp as the tool, persisted on the session before
+the turn ends. The first hook in the chain to touch the wake-up wins; a later hook's veto
+carries it. Anything malformed — no key, a non-object, an empty prompt — is ignored, never
+an error: the wake-up is a courtesy the loop honours, not a shape it fails on. Claude Code
+ignores the key, so a framework's hook can emit it unconditionally.
+
+**Alternatives rejected.** Making the loop arm a wake-up itself whenever an unattended turn
+ends with plan steps open (the loop cannot tell a park from a pause, and ADR-0090's kick is
+already the answer for restarts and collapses). Teaching the loop the Mind's manifest (the
+harness stays framework-agnostic; the hook is the framework's voice). A new hook event
+(the Stop hook is exactly where a "come back later" belongs).
+
+**Consequences.** A framework can make its re-polls deterministic at zero model cost;
+a wake-up armed on a veto is a net behind the continuation. Pinned in
+`tests/test_turn_end.py` (the JSON shapes, clamp, cancel, malformed, first-wins) and
+`tests/test_turn_end_loop.py` (the slot is held on the session after an allowed end, a cancel
+drops a held one, a veto carries one).

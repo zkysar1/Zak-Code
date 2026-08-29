@@ -30,6 +30,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from zakcode._subprocess import new_group_kwargs, terminate_process_tree
+from zakcode.wakeup import clamp_delay
 
 logger = logging.getLogger("zakcode.hooks")
 
@@ -209,10 +210,56 @@ class TurnEndPayload(BaseModel):
 
 
 class TurnEndResult(BaseModel):
-    """Aggregate result of running TURN_END hooks."""
+    """Aggregate result of running TURN_END hooks.
+
+    ADR-0102: a hook may also arm or cancel the session's wake-up (ADR-0094) — the
+    ``wakeup_*`` fields carry that on allow AND on veto; the loop applies them at the seam.
+    """
 
     vetoed: bool = False
     continuation_prompt: str = ""
+    wakeup_prompt: str = ""
+    wakeup_delay_seconds: int | None = None
+    wakeup_cancel: bool = False
+
+    @property
+    def touches_wakeup(self) -> bool:
+        return self.wakeup_cancel or bool(self.wakeup_prompt)
+
+
+def _wakeup_from_doc(doc: Any) -> dict[str, Any]:
+    """The ADR-0102 wake-up fields of a hook's JSON document, else an empty dict.
+
+    ``{"wakeup": {"prompt": "...", "delay_seconds": N}}`` arms (``delaySeconds``, Claude
+    Code's spelling, is read too; the delay is clamped like the tool's);
+    ``{"wakeup": {"cancel": true}}`` cancels. Anything else — no key, a non-object, an
+    empty prompt — is ignored: a hook's wake-up is a courtesy the loop honours, never a
+    shape it fails on.
+    """
+    if not isinstance(doc, dict):
+        return {}
+    spec = doc.get("wakeup")
+    if not isinstance(spec, dict):
+        return {}
+    if spec.get("cancel") is True:
+        return {"wakeup_cancel": True}
+    prompt = spec.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {}
+    delay = spec.get("delay_seconds", spec.get("delaySeconds"))
+    return {"wakeup_prompt": prompt.strip(), "wakeup_delay_seconds": clamp_delay(delay)}
+
+
+def _carry_wakeup(carried: dict[str, Any], result: TurnEndResult) -> dict[str, Any]:
+    """The wake-up fields to carry across the hook chain: the FIRST hook that says anything
+    about the wake-up wins, so a later hook cannot silently replace an earlier one's net."""
+    if carried or not result.touches_wakeup:
+        return carried
+    return {
+        "wakeup_prompt": result.wakeup_prompt,
+        "wakeup_delay_seconds": result.wakeup_delay_seconds,
+        "wakeup_cancel": result.wakeup_cancel,
+    }
 
 
 #: Claude-Code tool names → the Zak Code tools they map to. A hook ``matcher`` written for Claude
@@ -482,19 +529,26 @@ class HookManager:
 
         In-process hooks run first, then shell hooks. Both can veto (block the turn
         end). ``drop_env`` lists env-var names to scrub from shell-hook children
-        (provider-key hygiene).
+        (provider-key hygiene). A wake-up (ADR-0102) from an earlier, allowing hook
+        rides on the result that ends the chain — the first hook to touch the wake-up
+        wins.
         """
+        carried: dict[str, Any] = {}
         for hook in self.turn_end_hooks:
             result = await self._run_turn_end_in_process(hook, payload)
-            if result is not None and result.vetoed:
-                return result
+            if result is None:
+                continue
+            carried = _carry_wakeup(carried, result)
+            if result.vetoed:
+                return result.model_copy(update=carried)
         for spec in self.shell_hooks:
             if spec.event is not HookEvent.TURN_END:
                 continue
             result = await self._run_turn_end_shell(spec, payload, drop_env=drop_env)
+            carried = _carry_wakeup(carried, result)
             if result.vetoed:
-                return result
-        return TurnEndResult()
+                return result.model_copy(update=carried)
+        return TurnEndResult(**carried)
 
     async def run_turn_end_observers(self, payload: TurnEndPayload) -> None:
         """Run every observe-only TURN_END hook for its side effects (return ignored, errors
@@ -583,20 +637,22 @@ class HookManager:
             # Non-zero (non-2) exit: fail-open.
             return TurnEndResult()
 
-        # Exit 0: check stdout for the Claude Code decision JSON.
+        # Exit 0: check stdout for the Claude Code decision JSON (+ the ADR-0102 wake-up).
         if not text:
             return TurnEndResult()
         try:
             doc = json.loads(text)
         except (json.JSONDecodeError, ValueError):
             return TurnEndResult()
+        wakeup = _wakeup_from_doc(doc)
         if isinstance(doc, dict) and doc.get("decision") == "block":
             reason = doc.get("reason", "Continue.")
             return TurnEndResult(
                 vetoed=True,
                 continuation_prompt=reason if isinstance(reason, str) else "Continue.",
+                **wakeup,
             )
-        return TurnEndResult()
+        return TurnEndResult(**wakeup)
 
     # ── aggregation helpers ───────────────────────────────────────────────────
 

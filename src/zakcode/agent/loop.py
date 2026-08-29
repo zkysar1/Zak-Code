@@ -138,6 +138,7 @@ from zakcode.hooks import (
     LifecyclePayload,
     LLMContextPayload,
     TurnEndPayload,
+    TurnEndResult,
 )
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
@@ -4400,6 +4401,7 @@ class AgentLoop:
         except Exception:  # fail-open: a broken hook must never block the stop
             logger.warning("TURN_END hook run failed; allowing the stop", exc_info=True)
             return None
+        self._apply_hook_wakeup(result)
         if not result.vetoed:
             return None
         if install_changed() is not None:
@@ -4429,6 +4431,29 @@ class AgentLoop:
         if self._turn_end_veto_reset is not None:
             self._turn_end_veto_reset()
         return result.continuation_prompt or "Continue."
+
+    def _apply_hook_wakeup(self, result: TurnEndResult) -> None:
+        """Arm or cancel the session's wake-up on a TURN_END hook's say-so (ADR-0102).
+
+        The hook that lets a turn END is the last thing to run before the session sits at
+        its prompt, so it is the one place a "come back later" can be made deterministic
+        instead of being left to the model: measured 2026-08-29 (zc-03, 26 sessions), the
+        park re-poll a Mind's worker loop asks its Body to arm was armed once. Same
+        replace-slot semantics as the tool; a cancel with nothing held is a no-op.
+        """
+        slot = self.wakeup_slot
+        if result.wakeup_cancel:
+            if slot.cancel():
+                self._note("intervention", "wake-up cancelled by a turn-end hook", kind="wakeup")
+            return
+        if not result.wakeup_prompt:
+            return
+        wakeup = slot.arm(result.wakeup_prompt, result.wakeup_delay_seconds)
+        self._note(
+            "intervention",
+            f"wake-up armed by a turn-end hook: in {wakeup.delay_seconds}s",
+            kind="wakeup",
+        )
 
     def _busy_lease(self) -> BusyLease | None:
         """The busy marker for this turn (ADR-0060) — main loops only.
