@@ -138,6 +138,46 @@ def test_degenerate_arguments_are_vetoed_not_executed(tmp_path: Path) -> None:
     assert loop._turn_struggle is True  # zakpick sees a struggle signal
 
 
+def test_undecodable_arguments_name_the_real_defect(tmp_path: Path) -> None:
+    """ADR-0081: a provider that could not decode the argument JSON hands over ``{"_raw": …}``;
+    the model must hear THAT, not a tool's "'path' is required" about a path it wrote."""
+    raw = '{"path":"out.py","content":"#!/usr/bin/env python3\\nimport json\\n' + "x = 1\\n" * 50
+    loop = _loop(
+        [
+            LLMResult(tool_calls=[ToolCall(id="c1", name="write_file", arguments={"_raw": raw})]),
+            LLMResult(text="understood"),
+        ],
+        tmp_path,
+    )
+    result = asyncio.run(loop.arun_turn("write the script"))
+    assert result.stop_reason == "completed"
+    blocks = _tool_blocks(loop)
+    assert len(blocks) == 1 and blocks[0].is_error is True
+    assert "were not valid JSON" in blocks[0].output
+    assert "cut off by the output limit" in blocks[0].output
+    assert "write_file the first part" in blocks[0].output
+    assert "'path' is required" not in blocks[0].output
+    assert blocks[0].data["undecodable_arguments"] is True and blocks[0].data["cut_off"] is True
+    assert not (tmp_path / "out.py").exists()
+    assert loop._turn_struggle is True
+
+
+def test_undecodable_but_complete_arguments_blame_escaping(tmp_path: Path) -> None:
+    raw = '{"path":"out.py","content":"print("hi")"}'  # unescaped inner quotes
+    loop = _loop(
+        [
+            LLMResult(tool_calls=[ToolCall(id="c1", name="write_file", arguments={"_raw": raw})]),
+            LLMResult(text="understood"),
+        ],
+        tmp_path,
+    )
+    asyncio.run(loop.arun_turn("write the script"))
+    block = _tool_blocks(loop)[0]
+    assert block.is_error is True
+    assert "not escaped" in block.output
+    assert block.data["cut_off"] is False
+
+
 def test_clean_arguments_still_execute(tmp_path: Path) -> None:
     loop = _loop(
         [

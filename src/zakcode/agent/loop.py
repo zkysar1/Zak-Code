@@ -1658,15 +1658,32 @@ class AgentLoop:
             return None
         if not result.compacted:
             return None
-        self.session.messages[:] = result.messages
-        self._forget_prompt_anchor()
-        self._persist()
+        self._adopt_compacted(result.messages)
         # Claude Code parity: SessionStart(source="compact") right after each compaction —
         # the seam a framework's post-compact state-restore automation plugs into.
         await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
         notice = f"context near the window — compacted {before} → {len(result.messages)} messages"
         self._note("intervention", notice, kind="compaction")
         return notice
+
+    def _adopt_compacted(self, messages: list[Message]) -> None:
+        """Install a compacted transcript and drop every cache keyed to the old one.
+
+        The prompt anchor (ADR-0077) measured a prefix that no longer exists. The per-turn
+        skill reload dedup (ADR-0063) is keyed to the same premise — "that body is still in
+        your context THIS turn" — and after a compaction it is not (ADR-0080): a worker
+        Body whose whole night is one turn re-enters its loop skill after every unit, and
+        measured 2026-08-29 (coach, zc-03) the re-entry after a 119 → 7 compaction came
+        back as the "[already loaded] … continue from where you are" pointer with the
+        instructions gone; the Body improvised its close by hand. Forgetting the loads
+        here makes the next use_skill deliver the body again.
+        """
+        self.session.messages[:] = messages
+        self._forget_prompt_anchor()
+        forget = getattr(self._skill_resolver, "forget_loads", None)
+        if callable(forget):
+            forget()
+        self._persist()
 
     def _anchor_prompt(self, prompt_tokens: int) -> None:
         """Remember the provider's REPORTED size of the prompt just sent (ADR-0077).
@@ -1734,9 +1751,7 @@ class AgentLoop:
             logging.getLogger(__name__).warning("forced compaction failed", exc_info=True)
             return False
         if result.compacted:
-            self.session.messages[:] = result.messages
-            self._forget_prompt_anchor()
-            self._persist()
+            self._adopt_compacted(result.messages)
             # Claude Code parity: SessionStart(source="compact") after each compaction.
             await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
         return result.compacted
@@ -2934,6 +2949,40 @@ class AgentLoop:
                 ),
                 is_error=True,
                 data={"tool_not_exposed": True, "tool": call.name},
+            )
+
+        # 0b. Undecodable arguments (ADR-0081). The provider could not decode the call's
+        # argument string and handed over ``{"_raw": <text>}`` (providers/base.py) instead of
+        # raising. Every tool then reads its required field as missing and answers with its
+        # own "'path' is required and must be a string." — true of the dict, false of the
+        # call, and useless to the model, which sent a path (measured 2026-08-29, coach: a
+        # 27B writing a long module in one write_file, the JSON cut off by the output
+        # limit; the model got a message about a field it had plainly written). Name the
+        # real defect and the cheapest remedy before any tool sees the arguments.
+        if set(call.arguments) == {"_raw"}:
+            raw = str(call.arguments.get("_raw") or "")
+            cut_off = not raw.rstrip().endswith("}")
+            why = (
+                "they stop mid-value, so the call was cut off by the output limit"
+                if cut_off
+                else "a quote, backslash or newline inside a string value is not escaped"
+            )
+            if call.name in ("write_file", "edit_file"):
+                remedy = (
+                    "Write the file in pieces: write_file the first part (keep each call "
+                    "well under the output limit), then edit_file to append the rest."
+                )
+            else:
+                remedy = "Retry with shorter, cleanly escaped arguments."
+            self._turn_struggle = True
+            return ToolResultBlock(
+                tool_use_id=call.id,
+                output=(
+                    f"Fix: the arguments for {call.name!r} were not valid JSON, so the call "
+                    f"was not executed ({len(raw)} characters; {why}). {remedy}"
+                ),
+                is_error=True,
+                data={"undecodable_arguments": True, "chars": len(raw), "cut_off": cut_off},
             )
 
         # 0c. Degenerate-argument veto (ADR-0024): the completion-text repetition guard
