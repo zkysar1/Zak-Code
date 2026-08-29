@@ -88,10 +88,99 @@ def test_delivery_carries_the_header_and_the_paging_contract() -> None:
 
 def test_fewer_than_two_sections_is_delivered_whole() -> None:
     assert skill_pages("# x\n\n## Step 1: Only\n\ntext\n", skill="x") is None
-    assert (
-        skill_pages("# x\n\n**Step 1**: bold only.\n\n**Step 2**: still bold.\n", skill="x") is None
-    )
     assert skill_pages("# x\n\n## Syntax\n\n## Chaining\n", skill="x") is None
+    assert skill_pages("Do the thing.\n\nThen the other thing.\n", skill="x") is None
+
+
+def test_bold_lead_ins_and_fenced_phase_comments_page_too() -> None:
+    # ADR-0084: the control skills' bold checklist and a loop skill's fenced pseudocode
+    # markers are sections — /start (63 KB) and /worker-loop (84 KB) were delivered whole.
+    bold = skill_pages("# x\n\n**Step 1**: bold only.\n\n**Step 2**: still bold.\n", skill="x")
+    assert bold is not None and [p.title for p in bold.pages] == [
+        "Step 1: bold only",
+        "Step 2: still bold",
+    ]
+    assert bold.front == "# x"
+    loop = (
+        "# /w\n\nrules\n\n## The loop\n\n```\n# Phase -0.5 — LIGHT PRIME. Two tiers.\n"
+        "prime()\n\n# Phase 1 — SELECT (reuse the scorer)\nselect()\n```\n\n"
+        "## Return Protocol\n\nend\n"
+    )
+    pages = skill_pages(loop, skill="w")
+    assert pages is not None and [p.title for p in pages.pages] == [
+        "Phase -0.5 — LIGHT PRIME",
+        "Phase 1 — SELECT (reuse the scorer)",
+    ]
+    assert [p.marker for p in pages.pages] == ["phase -0.5", "phase 1"]
+    # A cut inside a fence is re-fenced on both sides: every page is markdown on its own.
+    assert pages.pages[0].text == "```\n# Phase -0.5 — LIGHT PRIME. Two tiers.\nprime()\n\n```"
+    assert pages.pages[1].text == "```\n# Phase 1 — SELECT (reuse the scorer)\nselect()\n```"
+    assert "## The loop" in pages.front and "## Return Protocol" in pages.front
+    assert [t.title for t in skill_skeleton(loop, skill="w")] == [p.title for p in pages.pages]
+
+
+def _paragraphs(n: int) -> str:
+    filler = ("lorem ipsum " * 60).strip()  # ~720 chars a paragraph
+    return "\n\n".join(f"{filler} {i}" for i in range(n))
+
+
+def test_a_section_over_the_budget_is_cut_at_its_markers_then_headings_then_paragraphs() -> None:
+    from zakcode.tasks import PAGE_BUDGET_CHARS
+
+    body = (
+        "# /big\n\n## Step 1: Cut at sub-steps\n\nintro\n\n"
+        f"### Step 1.1: first\n\n{_paragraphs(4)}\n\n### Step 1.2: second\n\n{_paragraphs(30)}\n\n"
+        f"## Step 2: Cut at headings\n\n### Notes A\n\n{_paragraphs(10)}\n\n"
+        f"### Notes B\n\n{_paragraphs(10)}\n\n## Step 3: Small\n\ntext\n"
+    )
+    pages = skill_pages(body, skill="big")
+    assert pages is not None
+    assert [p.title for p in pages.pages] == [
+        "Step 1: Cut at sub-steps",  # the section's own intro, before its first sub-step
+        "Step 1.1: first",
+        "Step 1.2: second (1/2)",  # a sub-step over the budget: paragraphs, packed
+        "Step 1.2: second (2/2)",
+        "Notes A",  # no ordered-work marker inside Step 2: any heading cuts it
+        "Notes B",
+        "Step 3: Small",
+    ]
+    assert [p.marker for p in pages.pages] == [
+        "step 1",
+        "step 1.1",
+        "step 1.2",
+        "step 1.2",
+        "",
+        "",
+        "step 3",
+    ]
+    assert all(len(p.text) <= PAGE_BUDGET_CHARS for p in pages.pages)
+    # A part keeps its heading with its first paragraph — never a page of just the title.
+    assert pages.pages[2].text.startswith("### Step 1.2: second\n\nlorem ipsum")
+    assert pages.pages[3].text.startswith("lorem ipsum")
+    assert pages.front == "# /big"
+    assert [t.title for t in skill_skeleton(body, skill="big")] == [p.title for p in pages.pages]
+
+
+def test_a_documentation_section_holding_steps_is_a_container() -> None:
+    # /review-hypotheses: 21 `### Step` headings under `## Mode 1/2/3` — non-step `##`
+    # headings that used to send the whole 51 KB up front.
+    body = (
+        "# /modes\n\n## Syntax\n\n`/modes --resolve`\n\n## Mode 1: Resolve\n\n"
+        "How resolving works.\n\n"
+        "### Step 1: Load\n\nload\n\n### Step 2: Judge\n\njudge\n\n## Return Protocol\n\nend\n"
+    )
+    pages = skill_pages(body, skill="modes")
+    assert pages is not None and [p.title for p in pages.pages] == ["Step 1: Load", "Step 2: Judge"]
+    assert pages.pages[0].text == "### Step 1: Load\n\nload"
+    # The container's own intro travels up front with the other documentation, in order.
+    assert pages.front == (
+        "# /modes\n\n## Syntax\n\n`/modes --resolve`\n\n## Mode 1: Resolve\n\nHow resolving works."
+        "\n\n## Return Protocol\n\nend"
+    )
+    assert [t.title for t in skill_skeleton(body, skill="modes")] == [
+        "Step 1: Load",
+        "Step 2: Judge",
+    ]
 
 
 def test_fenced_headings_never_split_a_page() -> None:
@@ -102,12 +191,12 @@ def test_fenced_headings_never_split_a_page() -> None:
 
 
 def test_pages_fold_past_the_skeleton_cap_exactly_like_the_skeleton() -> None:
-    body = "\n".join(f"## Step {i}: S{i}\n\nbody {i}\n" for i in range(1, 46))
+    body = "\n".join(f"## Step {i}: S{i}\n\nbody {i}\n" for i in range(1, 66))
     pages = skill_pages(body, skill="big")
     steps = skill_skeleton(body, skill="big")
-    assert pages is not None and pages.count == len(steps) == 40
+    assert pages is not None and pages.count == len(steps) == 60
     assert pages.pages[-1].title == steps[-1].title == "Remaining sections of /big (6 more)"
-    assert "## Step 45: S45" in pages.pages[-1].text
+    assert "## Step 65: S65" in pages.pages[-1].text
 
 
 def test_a_page_finds_its_step_after_the_model_rewrote_the_title() -> None:

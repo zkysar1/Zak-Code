@@ -32,7 +32,7 @@ Design rules (mirroring :mod:`zakcode.agent.recipe` / :mod:`zakcode.agent.stuck`
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -497,7 +497,7 @@ _STEP_BOLD_RE = re.compile(
     re.I,
 )
 #: A skeleton never exceeds this many top-level steps; the rest fold into one closing step.
-_MAX_SKELETON_STEPS = 40
+_MAX_SKELETON_STEPS = 60
 #: …nor this many sub-steps under one section (the overflow is counted in the section's note).
 _MAX_SKELETON_CHILDREN = 12
 #: Step titles are the heading text, trimmed to this many characters.
@@ -531,63 +531,56 @@ def _bold_title(line: str) -> str:
 
 
 def skill_skeleton(body: str, *, skill: str) -> list[Task]:
-    """Plan steps from a skill body's numbered sections (ADR-0062) — ``[]`` when it has none.
+    """Plan steps from a skill body's sections (ADR-0062) — ``[]`` when it has none.
 
-    Walks the markdown outside fenced code: a step-like ``##`` heading becomes a top-level
-    step; a step-like ``###`` heading, or a bold ``**Step N …**`` lead-in at line start
-    (ADR-0064), a sub-step of the section it sits in (which becomes ``compound``) — or a
-    step of its own when no section is open; a non-step ``##`` heading closes the current
-    section. Every note opens with the ``from /<skill>`` marker — how the loop recognises a
-    skeleton it already seeded. Pure: no model, no I/O.
+    One step per page of :func:`skill_pages` (the same outline — page ``k`` is always step
+    ``k``): a step-like ``##`` heading; a step-like ``###`` heading, a bold ``**Step N …**``
+    lead-in (ADR-0064) or a fenced ``# Phase N`` comment (ADR-0084) that sits under no
+    step section; and the parts a section over the page budget was cut into. Markers
+    inside a page that was not cut become its sub-steps (the section becomes
+    ``compound``). Every note opens with the ``from /<skill>`` marker — how the loop
+    recognises a skeleton it already seeded. Pure: no model, no I/O.
     """
+    outline = _outline(body, skill=skill)
+    if len(outline.pages) < 2 and not any(unit.marker for unit in outline.pages):
+        return []  # no numbered section anywhere: the plan is the model's own (ADR-0062)
     note = f"from /{skill}; done when this section has been carried out"
     top: list[Task] = []
-    parent: Task | None = None
-    overflow: dict[int, int] = {}
-    fenced = False
-    for line in body.splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
-        match = _STEP_HEADING_RE.match(line)
-        if match is not None:
-            task = Task(title=_heading_title(line), note=note)
-            top_level = len(match.group(1)) == 2
-        elif _STEP_BOLD_RE.match(line):
-            task = Task(title=_bold_title(line), note=note)
-            top_level = False
-        else:
-            if line.startswith("## "):
-                parent = None
-            continue
-        if top_level:
-            top.append(task)
-            parent = task
-        elif parent is None:
-            top.append(task)
-        elif len(parent.children) < _MAX_SKELETON_CHILDREN:
-            parent.children.append(task)
-            parent.kind = "compound"
-        else:
-            overflow[id(parent)] = overflow.get(id(parent), 0) + 1
-    for section in top:
-        extra = overflow.get(id(section))
-        if extra:
-            section.note += f" (+{extra} more sub-sections not listed)"
-    if len(top) > _MAX_SKELETON_STEPS:
-        rest = len(top) - (_MAX_SKELETON_STEPS - 1)
-        top = top[: _MAX_SKELETON_STEPS - 1] + [
-            Task(
-                title=f"Remaining sections of /{skill} ({rest} more)",
-                note=f"from /{skill}; add them to the plan with update_plan as you reach them",
+    for unit in outline.pages:
+        if unit.folded:
+            top.append(
+                Task(
+                    title=unit.title,
+                    note=f"from /{skill}; add them to the plan with update_plan as you reach them",
+                )
             )
-        ]
+            continue
+        task = Task(title=unit.title, note=note)
+        for child in unit.children[:_MAX_SKELETON_CHILDREN]:
+            task.children.append(Task(title=child, note=note))
+            task.kind = "compound"
+        extra = len(unit.children) - _MAX_SKELETON_CHILDREN
+        if extra > 0:
+            task.note += f" (+{extra} more sub-sections not listed)"
+        top.append(task)
     return top
 
 
 # ── skill pages: a sectioned skill delivered one section at a time (ADR-0067) ──────────
+#: The most skill text one page puts in context — ~3–4k tokens on the tokenizers measured
+#: (ADR-0084). A section over this is cut at its deeper ordered-work markers, then at any
+#: heading, then at paragraph breaks; front matter over it is paged the same way. Measured
+#: 2026-08-29 on a Mind deployment: nine of its largest skills (51–116 KB) had no step-like
+#: ``##`` heading and were delivered whole — /worker-loop, 84 KB, on every worker unit.
+PAGE_BUDGET_CHARS = 12_000
+#: An ordered-work marker written as a pseudocode comment at column 0 inside a fenced
+#: block — the shape a Mind's loop skills use ("# Phase -0.5 — LIGHT PRIME …", "# Phase 1 —
+#: SELECT …"): /worker-loop is one fence carrying 23 of these and no heading at all.
+_STEP_FENCED_RE = re.compile(
+    r"^#\s*(?:phase|step|lane|stage|part|task)\s+-?\d[\w.]*(?![\w-])", re.I
+)
+#: Any heading outside a fence — the cut of last resort before paragraph breaks.
+_ANY_HEADING_RE = re.compile(r"^#{2,4}\s+\S")
 #: The leading ordered-work token of a section title — ``Step 0.7``, ``Phase -3``, ``Lane 1``,
 #: ``3.`` — the part a model keeps when it rewrites the step ("Step 0.5 + 0.6: …"), so a page
 #: can still find its step after the plan has been reshaped.
@@ -597,6 +590,9 @@ _SECTION_MARKER_RE = re.compile(
 #: The header every delivered page opens with — and the marker the loop reads back from the
 #: transcript to learn how far a skill was paged before a restart.
 PAGE_HEADER_RE = re.compile(r"\[/(?P<skill>[^\s\]]+) — page (?P<page>\d+) of (?P<count>\d+):")
+#: The cut levels inside a section, shallowest first: step-like ``###`` headings and bold
+#: lead-ins, fenced ``# Phase N`` comments, any heading. Paragraph breaks come after all.
+_CUT_LEVELS = ("sub", "fenced", "heading")
 
 
 def _section_marker(heading: str) -> str:
@@ -609,9 +605,232 @@ def _section_marker(heading: str) -> str:
     return match.group(3)
 
 
+def _fenced_title(line: str) -> str:
+    """The title of a fenced ``# Phase N …`` comment: its first sentence."""
+    text = line.lstrip("#").strip()
+    return _heading_title(re.split(r"\.(?:\s|$)", text, maxsplit=1)[0])
+
+
+@dataclass
+class _Unit:
+    """One page of a skill: its title, marker token, delivered text, and the sub-markers
+    inside it (the skeleton's sub-steps). ``folded`` marks the closing catch-all page."""
+
+    title: str
+    marker: str
+    text: str
+    children: list[str] = field(default_factory=list)
+    folded: bool = False
+
+
+@dataclass
+class _Outline:
+    """The shared reading of a skill body: what travels up front, and the pages in order."""
+
+    front: str
+    pages: list[_Unit]
+
+
+class _Body:
+    """A skill body as lines, with each line's fence state — the walk both projections use."""
+
+    def __init__(self, body: str) -> None:
+        self.lines = body.splitlines()
+        self.state: list[str] = []  # out | open | in | close
+        self.opener: list[str] = []  # the opening fence line of a fenced line's block
+        inside, current = False, ""
+        for line in self.lines:
+            if line.lstrip().startswith(("```", "~~~")):
+                if inside:
+                    self.state.append("close")
+                    self.opener.append(current)
+                    inside, current = False, ""
+                else:
+                    inside, current = True, line
+                    self.state.append("open")
+                    self.opener.append(current)
+            else:
+                self.state.append("in" if inside else "out")
+                self.opener.append(current if inside else "")
+
+    def size(self, start: int, end: int) -> int:
+        return sum(len(line) + 1 for line in self.lines[start:end])
+
+    def blank(self, start: int, end: int) -> bool:
+        return all(not line.strip() for line in self.lines[start:end])
+
+    def text(self, start: int, end: int) -> str:
+        """``lines[start:end]`` as a page: a cut made inside a fence is re-fenced on both
+        sides, so every page is well-formed markdown on its own."""
+        chunk = list(self.lines[start:end])
+        if not chunk:
+            return ""
+        if self.state[start] in ("in", "close"):
+            chunk.insert(0, self.opener[start] or "```")
+        if self.state[end - 1] in ("in", "open"):
+            chunk.append("```")
+        return "\n".join(chunk).rstrip()
+
+    def markers(self, start: int, end: int, level: str) -> list[tuple[int, str, str]]:
+        """``(line, title, marker)`` for every boundary of ``level`` in ``lines[start:end]``."""
+        out: list[tuple[int, str, str]] = []
+        for i in range(start, end):
+            line = self.lines[i]
+            state = self.state[i]
+            if level == "fenced":
+                if state == "in" and _STEP_FENCED_RE.match(line):
+                    title = _fenced_title(line)
+                    out.append((i, title, _section_marker(title)))
+                continue
+            if state != "out":
+                continue
+            if level == "top":
+                match = _STEP_HEADING_RE.match(line)
+                if match is not None and len(match.group(1)) == 2:
+                    out.append((i, _heading_title(line), _section_marker(line)))
+            elif level == "sub":
+                match = _STEP_HEADING_RE.match(line)
+                if match is not None and len(match.group(1)) == 3:
+                    out.append((i, _heading_title(line), _section_marker(line)))
+                elif _STEP_BOLD_RE.match(line):
+                    title = _bold_title(line)
+                    out.append((i, title, _section_marker(title)))
+            elif level == "heading" and _ANY_HEADING_RE.match(line):
+                out.append((i, _heading_title(line), _section_marker(line)))
+        return out
+
+    def unit(self, title: str, marker: str, start: int, end: int) -> _Unit:
+        children = self.markers(start + 1, end, "sub") or self.markers(start + 1, end, "fenced")
+        return _Unit(title, marker, self.text(start, end), [t for _, t, _ in children])
+
+    def bounded(
+        self, title: str, marker: str, start: int, end: int, levels: tuple[str, ...]
+    ) -> list[_Unit]:
+        """``lines[start:end]`` as pages under the budget: one page when it fits; else cut at
+        the first level in ``levels`` with a marker inside (the span's own first line is
+        never a cut), each piece bounded again by the levels after it; paragraphs last."""
+        if self.size(start, end) <= PAGE_BUDGET_CHARS:
+            return [self.unit(title, marker, start, end)]
+        for k, level in enumerate(levels):
+            found = self.markers(start + 1, end, level)
+            if not found:
+                continue
+            cuts = [start, *(i for i, _, _ in found), end]
+            names = [(title, marker), *((t, m) for _, t, m in found)]
+            units: list[_Unit] = []
+            for j, (name, mark) in enumerate(names):
+                piece_start, piece_end = cuts[j], cuts[j + 1]
+                if self.blank(piece_start, piece_end) or (
+                    j == 0 and self.blank(piece_start + 1, piece_end)
+                ):
+                    continue  # a heading with nothing under it before the first cut
+                units.extend(self.bounded(name, mark, piece_start, piece_end, levels[k + 1 :]))
+            return units
+        return self.paragraphs(title, marker, start, end)
+
+    def paragraphs(self, title: str, marker: str, start: int, end: int) -> list[_Unit]:
+        """Cut ``lines[start:end]`` at blank lines and pack the paragraphs up to the budget;
+        a lone paragraph over it stays whole. Parts are titled ``<title> (k/n)``."""
+        breaks = [start]
+        for i in range(start, end - 1):
+            if not self.lines[i].strip() and self.lines[i + 1].strip():
+                breaks.append(i + 1)
+        breaks.append(end)
+        # The span's own title line is not a paragraph: it stays with the text under it.
+        if len(breaks) > 2 and sum(bool(self.lines[i].strip()) for i in range(*breaks[:2])) == 1:
+            del breaks[1]
+        chunks: list[tuple[int, int]] = []
+        chunk_start, size = start, 0
+        for j in range(len(breaks) - 1):
+            para_start, para_end = breaks[j], breaks[j + 1]
+            para = self.size(para_start, para_end)
+            if size and size + para > PAGE_BUDGET_CHARS:
+                chunks.append((chunk_start, para_start))
+                chunk_start, size = para_start, 0
+            size += para
+        chunks.append((chunk_start, end))
+        if len(chunks) == 1:
+            return [self.unit(title, marker, start, end)]
+        return [
+            _Unit(f"{title} ({k}/{len(chunks)})", marker, self.text(s, e))
+            for k, (s, e) in enumerate(chunks, 1)
+        ]
+
+
+def _outline(body: str, *, skill: str) -> _Outline:
+    """Read a skill body once, for both the skeleton and the pages (ADR-0084).
+
+    The body is partitioned at every ``##`` heading outside a fence. A step-like section
+    is pages: one when it fits the budget, else cut at its deeper markers. Anything else
+    — the preamble and each documentation section — travels up front when it fits and
+    holds no ordered-work marker; a documentation section that HOLDS markers (a "## The
+    loop" fence of ``# Phase`` comments, a "## Mode 1" of ``### Step`` headings) is a
+    container: its intro goes up front and each marker opens a page; one over the budget
+    with no markers is paged at its headings, then paragraphs. Past
+    :data:`_MAX_SKELETON_STEPS` pages the rest fold into one closing page.
+    """
+    text = _Body(body)
+    heads = [
+        i for i, line in enumerate(text.lines) if text.state[i] == "out" and line.startswith("## ")
+    ]
+    bounds = [0, *heads, len(text.lines)]
+    front: list[str] = []
+    pages: list[_Unit] = []
+
+    def intro(title: str, start: int, end: int) -> None:
+        if text.blank(start, end):
+            return
+        if text.size(start, end) <= PAGE_BUDGET_CHARS:
+            front.append(text.text(start, end))
+        else:
+            pages.extend(text.bounded(title, "", start, end, ("heading",)))
+
+    for j in range(len(bounds) - 1):
+        start, end = bounds[j], bounds[j + 1]
+        if start == end:
+            continue
+        heading = text.lines[start] if j > 0 else ""
+        match = _STEP_HEADING_RE.match(heading) if heading else None
+        if match is not None and len(match.group(1)) == 2:
+            pages.extend(
+                text.bounded(
+                    _heading_title(heading), _section_marker(heading), start, end, _CUT_LEVELS
+                )
+            )
+            continue
+        title = _heading_title(heading) if heading else f"/{skill}"
+        body_start = start + 1 if heading else start
+        for k, level in enumerate(("sub", "fenced")):
+            inner = text.markers(body_start, end, level)
+            if inner:
+                intro(title, start, inner[0][0])
+                cuts = [*(i for i, _, _ in inner), end]
+                for n, (_, name, mark) in enumerate(inner):
+                    pages.extend(
+                        text.bounded(name, mark, cuts[n], cuts[n + 1], _CUT_LEVELS[k + 1 :])
+                    )
+                break
+        else:
+            intro(title, start, end)
+
+    if len(pages) > _MAX_SKELETON_STEPS:
+        keep = _MAX_SKELETON_STEPS - 1
+        rest = pages[keep:]
+        pages = [
+            *pages[:keep],
+            _Unit(
+                f"Remaining sections of /{skill} ({len(rest)} more)",
+                "",
+                "\n\n".join(unit.text for unit in rest),
+                folded=True,
+            ),
+        ]
+    return _Outline(front="\n\n".join(front), pages=pages)
+
+
 @dataclass(frozen=True)
 class SkillPage:
-    """One top-level section of a skill: the page the loop hands over when the plan reaches it."""
+    """One page of a skill: the text the loop hands over when the plan reaches its step."""
 
     index: int
     title: str
@@ -619,8 +838,8 @@ class SkillPage:
     text: str
 
     def matches(self, step_title: str) -> bool:
-        """Whether a plan step (possibly rewritten by the model) is this section's step: the
-        seeded title verbatim, or the section's marker token as a whole word in the title."""
+        """Whether a plan step (possibly rewritten by the model) is this page's step: the
+        seeded title verbatim, or the page's marker token as a whole word in the title."""
         norm = " ".join(step_title.lower().split())
         if norm == " ".join(self.title.lower().split()):
             return True
@@ -631,9 +850,10 @@ class SkillPage:
 
 @dataclass(frozen=True)
 class SkillPages:
-    """A sectioned skill split for paging (ADR-0067): ``front`` (the preamble and every
-    non-step ``##`` section — the definitions and rules a section relies on) travels with
-    page 1; every top-level step section is a page, in order, one per skeleton step."""
+    """A skill split for paging (ADR-0067): ``front`` (the preamble and every documentation
+    section that fits — the definitions and rules the pages rely on) travels with page 1;
+    every page is a plan step, in order (ADR-0084: one per section, or per part of a
+    section cut to the page budget)."""
 
     skill: str
     front: str
@@ -667,54 +887,18 @@ class SkillPages:
 
 
 def skill_pages(body: str, *, skill: str) -> SkillPages | None:
-    """Split a skill body into pages by its top-level step sections (ADR-0067), or ``None``
-    when it has fewer than two — such a body is delivered whole, as before.
-
-    The same walk as :func:`skill_skeleton` (outside fenced code; a step-like ``##`` heading
-    opens a section; a non-step ``##`` heading is documentation and goes to ``front``), folded
-    past :data:`_MAX_SKELETON_STEPS` exactly as the skeleton folds, so page ``k`` is always
-    skeleton step ``k``. Pure: no model, no I/O.
+    """Split a skill body into pages (ADR-0067/0084), or ``None`` when it has fewer than
+    two — such a body is delivered whole, as before. Page ``k`` is always skeleton step
+    ``k``: both come from :func:`_outline`. Pure: no model, no I/O.
     """
-    lines = body.splitlines()
-    boundaries: list[tuple[int, bool]] = []  # (line index, is a step section)
-    fenced = False
-    for i, line in enumerate(lines):
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if fenced or not line.startswith("## "):
-            continue
-        match = _STEP_HEADING_RE.match(line)
-        boundaries.append((i, match is not None and len(match.group(1)) == 2))
-    if sum(1 for _, is_step in boundaries if is_step) < 2:
+    outline = _outline(body, skill=skill)
+    if len(outline.pages) < 2:
         return None
-    front: list[str] = []
-    sections: list[tuple[str, str, str]] = []
-    preamble = "\n".join(lines[: boundaries[0][0]]).strip()
-    if preamble:
-        front.append(preamble)
-    for j, (start, is_step) in enumerate(boundaries):
-        end = boundaries[j + 1][0] if j + 1 < len(boundaries) else len(lines)
-        chunk = "\n".join(lines[start:end]).rstrip()
-        if is_step:
-            sections.append((_heading_title(lines[start]), _section_marker(lines[start]), chunk))
-        else:
-            front.append(chunk)
-    if len(sections) > _MAX_SKELETON_STEPS:
-        keep = _MAX_SKELETON_STEPS - 1
-        rest = sections[keep:]
-        sections = sections[:keep] + [
-            (
-                f"Remaining sections of /{skill} ({len(rest)} more)",
-                "",
-                "\n\n".join(text for _, _, text in rest),
-            )
-        ]
     pages = tuple(
-        SkillPage(index=i + 1, title=title, marker=marker, text=text)
-        for i, (title, marker, text) in enumerate(sections)
+        SkillPage(index=i + 1, title=unit.title, marker=unit.marker, text=unit.text)
+        for i, unit in enumerate(outline.pages)
     )
-    return SkillPages(skill=skill, front="\n\n".join(front), pages=pages)
+    return SkillPages(skill=skill, front=outline.front, pages=pages)
 
 
 __all__ = [
