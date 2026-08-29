@@ -461,6 +461,49 @@ async def test_bash_a_pipe_that_hides_the_exit_code_still_names_the_interpreter(
     assert not ok.is_error and ok.output.startswith("a\n")
 
 
+_ORIGINAL = (
+    "Traceback (most recent call last):\n"
+    '  File "<string>", line 19, in <module>\n'
+    "AttributeError: 'list' object has no attribute 'get'\n"
+)
+_APPORT = (
+    "Error in sys.excepthook:\n"
+    "Traceback (most recent call last):\n"
+    '  File "/usr/lib/python3/dist-packages/apport_python_hook.py", line 228, '
+    "in partial_apport_excepthook\n"
+    "    return apport_excepthook(binary, exc_type, exc_obj, exc_tb)\n"
+    "           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+    '  File "/usr/lib/python3/dist-packages/apport_python_hook.py", line 114, '
+    "in apport_excepthook\n"
+    '    report["ExecutableTimestamp"] = str(int(os.stat(binary).st_mtime))\n'
+    "FileNotFoundError: [Errno 2] No such file or directory: '/opt/coach-mind/-c'\n"
+    "\n"
+    "Original exception was:\n"
+)
+
+
+def test_apport_excepthook_noise_is_stripped_from_bash_output() -> None:
+    """zc-03, 2026-08-29: 20 of the fleet's 61 tracebacks carried apport's own ~20-line
+    crash plus a re-print of the original — read by a small model as a second error."""
+    from zakcode.tools.builtins.bash import _strip_apport_noise
+
+    # The common shape: original, apport's failure, the original again.
+    assert _strip_apport_noise(_ORIGINAL + _APPORT + _ORIGINAL) == _ORIGINAL
+    # Two inline programs in one command: both blocks go, both originals stay.
+    twice = "one\n" + _ORIGINAL + _APPORT + _ORIGINAL + "two\n" + _ORIGINAL + _APPORT + _ORIGINAL
+    assert _strip_apport_noise(twice) == "one\n" + _ORIGINAL + "two\n" + _ORIGINAL
+    # An original printed only after the block is kept — it is the error.
+    assert _strip_apport_noise("partial output\n" + _APPORT + _ORIGINAL) == (
+        "partial output\n" + _ORIGINAL
+    )
+    # Some other hook's failure is real output.
+    other = _ORIGINAL + _APPORT.replace("apport_python_hook", "my_hook") + _ORIGINAL
+    assert _strip_apport_noise(other) == other
+    # Output without the block is untouched.
+    assert _strip_apport_noise(_ORIGINAL) == _ORIGINAL
+    assert _strip_apport_noise("") == ""
+
+
 def test_locate_basename_is_bounded_and_prunes(tmp_path) -> None:
     from zakcode.tools.builtins.bash import _locate_basename
 

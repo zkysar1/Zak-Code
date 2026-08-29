@@ -130,6 +130,31 @@ _INTERPRETER_ERROR_RE = re.compile(
     r"SyntaxError|IndentationError|syntax error near unexpected token|import: command not found"
 )
 
+#: Ubuntu's apport installs a Python excepthook that itself crashes on an inline program (it
+#: ``stat``s the "binary", which is ``-c``), so every traceback from ``python3 -c`` is followed
+#: by the hook's own ~20-line traceback and, under "Original exception was:", a re-print of
+#: the original. Measured 2026-08-29 (zc-03): 20 of the fleet's 61 tracebacks that day — and a
+#: small model reads the hook's failure as a second, unrelated error (ADR-0096).
+_APPORT_BLOCK_RE = re.compile(
+    r"\nError in sys\.excepthook:\n(?P<hook>(?:.*\n)*?)Original exception was:\n"
+    r"(?P<orig>Traceback \(most recent call last\):\n(?:[ \t].*\n)*.*\n?)?"
+)
+
+
+def _strip_apport_noise(output: str) -> str:
+    """``output`` without apport's excepthook failure — and without the re-print of the
+    original traceback that follows it, when the original already stands above."""
+
+    def cut(found: re.Match[str]) -> str:
+        if "apport_python_hook" not in found.group("hook"):
+            return found.group(0)  # some other hook's failure: real output, kept
+        orig = found.group("orig") or ""
+        if orig.strip() and orig.strip() in output[: found.start()]:
+            orig = ""
+        return "\n" + orig
+
+    return _APPORT_BLOCK_RE.sub(cut, output)
+
 
 def _interpreter_mismatch_fix(command: str) -> str | None:
     """A remedy hint when a script was run through the wrong interpreter, else None.
@@ -252,6 +277,7 @@ class BashTool(Tool):
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to run command: {exc}", data={"command": command})
 
+        output = _strip_apport_noise(output)  # before the budget: the noise must not spend it
         truncated = False
         if len(output) > _MAX_OUTPUT:
             hidden = len(output) - _MAX_OUTPUT
