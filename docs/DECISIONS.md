@@ -3315,3 +3315,37 @@ turn loudly (ADR-0066). Pinned by `tests/test_skill_paging.py`
 `test_a_section_over_the_budget_is_cut_at_its_markers_then_headings_then_paragraphs`,
 `test_a_documentation_section_holding_steps_is_a_container`) and the existing skeleton
 and paging suites, whose expectations did not move.
+
+## ADR-0085: The recursive-rm floor names the root, top-level directories and homes — not every absolute path
+
+**Context.** The catastrophic-command floor's recursive-`rm` check (PERM-03, the
+ReDoS-proof tokeniser) flagged any target that *started with* `/`, `~` or `$HOME`. The
+docstring said "a root or home path"; the predicate said "any absolute path". Under
+`autonomous` mode the floor is a hard deny, so an unattended agent could not
+`rm -rf /opt/coach-mind/yahoo/__pycache__` — measured 2026-08-29 on a Mind worker that
+was refused twice ("recursive remove of a root or home path"), then rewrote its plan to
+"Investigate: why bash keeps failing on cleanup" and spent the rest of its goal on the
+refusal. Every path a Mind agent cleans — its temp store, a worktree, a build dir, a
+cache — is absolute, because the framework resolves everything to absolute paths.
+
+**Decision.** `_names_root_or_home` names exactly the footgun: the filesystem root (`/`,
+`/*`, anything that normalises to it such as `/opt/..`), a top-level directory (`/etc`,
+`/usr/*`, `/root`), and a home (`~`, `~user`, `~/*`, `$HOME`, `${HOME}`, `/home/<user>`,
+`/home/<user>/*`) — each with an optional trailing `/` or `/*`. A deeper absolute or
+home-relative path (`/opt/app/build`, `/tmp/x`, `~/.cache/pip`, `$HOME/tmp`) is an
+ordinary target and follows the tier/mode gate like any other command. Still pure string
+work, still linear, still un-waivable; the glued form (`-rf/etc`, `-rf~`) and every flag
+position keep their coverage. Quotes are stripped from both ends.
+
+**Alternatives rejected.** An operator allowlist for the workspace (a knob, and the
+floor is documented as never-waivable — one way). Keeping "any absolute path" and
+teaching the Mind to use relative paths (its scripts print absolute paths by design, and
+a floor that blocks the normal case is not a floor, it is a bug the agent routes around).
+Depth-based rules such as "fewer than three components" (`/home/user/proj` would be
+flagged while `/opt/x/y` passes — the footgun is *what* the directory is, not how deep).
+
+**Consequences.** Unattended agents clean their own absolute paths without a prompt or a
+denial; `rm -rf /`, `rm -rf ~`, `rm -rf /etc` and the wildcard forms are denied exactly
+as before. Pinned in `tests/test_permissions.py`: the dangerous list gains `~`, `~/*`,
+`/*`, `/home/user/*` and `/opt/..`; the benign list gains ten deep absolute and
+home-relative targets, the glued deep path, and `$HOMEDIR/x` (not the home variable).

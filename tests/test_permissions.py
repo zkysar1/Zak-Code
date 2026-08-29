@@ -94,7 +94,11 @@ def test_unknown_tool_is_fail_closed() -> None:
     "command",
     [
         "rm -rf /",
-        "rm -rf ~/stuff",
+        "rm -rf ~",
+        "rm -rf ~/*",  # the whole home, by wildcard
+        "rm -rf /*",
+        "rm -rf /home/user/*",
+        "rm -rf /opt/..",  # normalises to the root
         "rm -fr /",  # flag order doesn't matter: -fr is still recursive
         "rm -r /etc",  # recursive without -f is still the footgun
         # PERM-03 hardening (Phase 4): a dangerous path at a LATER arg position, capital -R, long
@@ -164,6 +168,22 @@ def test_dangerous_command_hard_denied_in_deny_mode() -> None:
         "rm -rf foo bar",  # two relative targets, no absolute/home -> still benign
         "rm -rf build/ dist/",
         "rm -rf src/a src/b",
+        # ADR-0085: a DEEP absolute or home-relative path is an ordinary target -- the floor names
+        # the root, top-level directories and home directories, not every "/..." (the 2026-08-29
+        # field incident: an unattended agent's `rm -rf /opt/coach-mind/yahoo/__pycache__` was
+        # hard-denied and it spent its goal investigating the refusal).
+        "rm -rf /opt/coach-mind/yahoo/__pycache__",
+        "rm -rf /tmp/x /var/tmp/y",
+        "rm -rf ~/stuff",
+        "rm -rf ~/.cache/pip",
+        "rm -rf $HOME/tmp/build",
+        "rm -rf ${HOME}/.cache",
+        "rm -rf /home/user/proj/build",
+        "rm -rf /root/tmp",
+        "rm -rf -- /opt/app/build",
+        "rm -rf '/opt/app/build'",
+        "rm -rf/opt/app/build",  # glued deep path
+        "rm -rf $HOMEDIR/x",  # not the home variable
     ],
 )
 def test_relative_recursive_rm_not_flagged(command: str) -> None:
