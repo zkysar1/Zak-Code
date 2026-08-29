@@ -1144,6 +1144,13 @@ _DEGRADED_STOP_REASONS = {
 #: twice collapsed into repetition produces more of the same (ADR-0018).
 _VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck", "gave_up"})
 
+#: Tool calls that may share a batch with a ``use_skill`` call without the batch ceasing to
+#: be a skill boundary for a build restart (ADR-0101). Plan bookkeeping mutates only the
+#: session's own plan state and costs no model call, so it runs before the restart and is
+#: persisted at the same message boundary; anything else is work in flight, which a restart
+#: must never abandon.
+_SKILL_BOUNDARY_COMPANIONS = frozenset({"update_plan"})
+
 #: The independent completion critic (the bounded completion-review gate). When a code-changing
 #: turn tries to finish, ``AgentLoop._completion_critic`` runs a SEPARATE, fresh-context judge
 #: (:func:`zakcode.quality.judge.binary_judge`) over the request + the claimed result; it sees no
@@ -4046,47 +4053,59 @@ class AgentLoop:
         if self.budget is not None:
             self.budget.refund(1)
 
-    def _restart_at_skill_boundary(
-        self, tool_calls: list[ToolCall]
+    async def _restart_at_skill_boundary(
+        self, tool_calls: list[ToolCall], ctx: ToolContext, *, restrict_to: set[str] | None
     ) -> list[ToolResultBlock] | None:
         """Take a newer build at a loop's skill re-entry (ADR-0101); None when not one.
 
-        A perpetual loop re-enters itself with a lone ``use_skill`` call — the body that
-        just ended asked for the next one. Between that ending and the next body loading
+        A perpetual loop re-enters itself with a ``use_skill`` call — the body that just
+        ended asked for the next one. Between that ending and the next body loading
         nothing is in flight, the same kind of boundary ADR-0099 restarts at; unlike a
         Stop-hook veto it is crossed EVERY unit, because a healthy loop never tries to
         stop (measured 2026-08-29: 0 of 8 Bodies took a deploy in 50 minutes — every hook
-        sat unvetoed behind a loop that kept re-entering). So when this batch is exactly
-        that call and ``install_changed()`` reports a newer install, the call is answered
-        UNEXECUTED — an ``is_error`` result that says why, keeping the transcript
-        replayable — the iteration is refunded, and the continuation set aside for the
-        restarted process asks it to make the same call. The caller ends the turn with
-        stop reason ``restart``; the REPL's idle restart (ADR-0034) then execs the new
-        build. Any other batch returns None and executes as usual: work in flight is
+        sat unvetoed behind a loop that kept re-entering). So when this batch is that
+        call — alone, or beside nothing but ``update_plan`` bookkeeping (the common shape:
+        mark the last step done, load the next body; measured the same evening, 1 of 7
+        workers paired them and would otherwise have skipped its boundary) — and
+        ``install_changed()`` reports a newer install, the plan updates run here (local
+        session state, no model call, persisted at this message boundary) and the skill
+        call is answered UNEXECUTED — an ``is_error`` result that says why, keeping the
+        transcript replayable — the iteration is refunded, and the continuation set aside
+        for the restarted process asks it to make the same call. The caller ends the turn
+        with stop reason ``restart``; the REPL's idle restart (ADR-0034) then execs the
+        new build. Any other batch returns None and executes as usual: work in flight is
         never abandoned for a restart.
         """
-        if len(tool_calls) != 1 or tool_calls[0].name != "use_skill":
+        skill_calls = [c for c in tool_calls if c.name == "use_skill"]
+        if len(skill_calls) != 1 or any(
+            c.name != "use_skill" and c.name not in _SKILL_BOUNDARY_COMPANIONS for c in tool_calls
+        ):
             return None
         if install_changed() is None:
             return None
-        call = tool_calls[0]
+        call = skill_calls[0]
         name = str(call.arguments.get("name") or "").strip().lstrip("/")
         if not name:
             return None  # an invalid call: the tool refuses it as usual
         skill_args = str(call.arguments.get("args") or "").strip()
         shown = f'use_skill(name="{name}"' + (f', args="{skill_args}")' if skill_args else ")")
-        blocks = [
-            ToolResultBlock(
-                tool_use_id=call.id,
-                output=(
-                    "Not executed: a newer zakcode build is installed, so this session is "
-                    "restarting into it at this skill boundary; the restarted process makes "
-                    f"this {shown} call first (ADR-0101)."
-                ),
-                is_error=True,
-                data={"restart": True},
+        blocks: list[ToolResultBlock] = []
+        for c in tool_calls:
+            if c is not call:
+                blocks.append(await self._execute_tool_call(c, ctx, restrict_to=restrict_to))
+                continue
+            blocks.append(
+                ToolResultBlock(
+                    tool_use_id=call.id,
+                    output=(
+                        "Not executed: a newer zakcode build is installed, so this session "
+                        "is restarting into it at this skill boundary; the restarted process "
+                        f"makes this {shown} call first (ADR-0101)."
+                    ),
+                    is_error=True,
+                    data={"restart": True},
+                )
             )
-        ]
         self.session.add_message(Message.tool_results(blocks))
         self.restart_continuation = (
             f"Call {shown} now. That call was not executed: a newer zakcode build was "
@@ -5565,7 +5584,12 @@ class AgentLoop:
 
             # A lone use_skill is the loop's re-entry: a newer build is taken there
             # (ADR-0101) — see the streaming twin.
-            if self._restart_at_skill_boundary(result.tool_calls) is not None:
+            if (
+                await self._restart_at_skill_boundary(
+                    result.tool_calls, ctx, restrict_to=restrict_now
+                )
+                is not None
+            ):
                 stop_reason = "restart"
                 break
 
@@ -7047,7 +7071,9 @@ class AgentLoop:
                 # A lone use_skill is the loop's re-entry: a newer build is taken THERE
                 # (ADR-0101). The call is answered unexecuted, the turn ends, and the
                 # REPL's idle restart execs the new build, which makes the call itself.
-                restart_blocks = self._restart_at_skill_boundary(tool_calls)
+                restart_blocks = await self._restart_at_skill_boundary(
+                    tool_calls, ctx, restrict_to=restrict_now
+                )
                 if restart_blocks is not None:
                     for call, block in zip(tool_calls, restart_blocks, strict=True):
                         yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
