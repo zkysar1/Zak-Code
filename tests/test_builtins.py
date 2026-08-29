@@ -524,6 +524,117 @@ def test_enoent_fix_predicate_reads_every_measured_shape(tmp_path) -> None:
     assert _enoent_fix("all good\n", root, []) is None
 
 
+def test_enoent_regexes_capture_the_coreutils_and_grep_shapes() -> None:
+    """The four ENOENTs the first deploy of the hint did NOT match (zc-03, 2026-08-29,
+    verbatim shapes): touch, grep, and directory targets — plus the coreutils siblings
+    that print the same `cannot <verb> 'x'` frame."""
+    from zakcode.tools.builtins.bash import _ENOENT_RES
+
+    def captured(out: str) -> str | None:
+        for rx in _ENOENT_RES:
+            m = rx.search(out)
+            if m:
+                return m.group(1)
+        return None
+
+    p = "/opt/mind/.mind-data/agents/coach/sessions/82a/light-prime-done"
+    assert captured(f"touch: cannot touch '{p}': No such file or directory") == p
+    assert captured(f"grep: {p}: No such file or directory") == p
+    assert (
+        captured(
+            "ls: cannot access '/opt/mind/.mind-data/agents/coach/sessions/': "
+            "No such file or directory"
+        )
+        == "/opt/mind/.mind-data/agents/coach/sessions/"
+    )
+    assert (
+        captured(
+            "mkdir: cannot create directory '/opt/mind/.mind-data/agents': "
+            "No such file or directory"
+        )
+        == "/opt/mind/.mind-data/agents"
+    )
+    assert captured("stat: cannot statx 'w/x.yaml': No such file or directory") == "w/x.yaml"
+    assert captured("rm: cannot remove 'w/x.yaml': No such file or directory") == "w/x.yaml"
+
+
+async def test_bash_enoent_invented_prefix_names_the_real_directory(tmp_path) -> None:
+    """`touch /ws/.mind-data/agents/coach/sessions/<sid>/light-prime-done` — measured
+    2026-08-29 (zc-03): a Body invented `.mind-data/agents/...`; `agents/` lives at the
+    workspace root. Nothing anywhere is named light-prime-done (the file was about to be
+    CREATED), so the file search has no lead — the first missing path component does."""
+    root = _mind_workspace(tmp_path)
+    (root / "agents" / "coach" / "sessions" / "abc").mkdir(parents=True)
+    ctx = ToolContext(workspace_root=root)
+    bad = root / ".mind-data" / "agents" / "coach" / "sessions" / "abc" / "light-prime-done"
+    res = await BashTool().execute({"command": f"touch {bad}"}, ctx)
+    assert res.is_error
+    assert res.fix is not None, res.output
+    assert "'.mind-data/agents' is the first missing part" in res.fix
+    assert "a directory named 'agents' does exist: agents" in res.fix
+    assert "light-prime-done" not in res.fix.split("does exist")[1]  # no phantom file lead
+
+
+async def test_bash_enoent_invented_prefix_also_names_same_named_files(tmp_path) -> None:
+    """`grep x /ws/.mind-data/agents/coach/sessions/<sid>/body-manifest.yaml` when another
+    session's manifest exists: the same-named file is the more specific lead and keeps
+    the first word (it is how the reasoning-bank.py family case has always read), and
+    the invented-prefix diagnosis rides beside it."""
+    root = _mind_workspace(tmp_path)
+    other = root / "agents" / "coach" / "sessions" / "xyz"
+    other.mkdir(parents=True)
+    (other / "body-manifest.yaml").write_text("body_state: active\n", encoding="utf-8")
+    ctx = ToolContext(workspace_root=root)
+    bad = root / ".mind-data" / "agents" / "coach" / "sessions" / "abc" / "body-manifest.yaml"
+    res = await BashTool().execute({"command": f"grep -c body_state {bad}"}, ctx)
+    assert res.is_error
+    assert res.fix is not None, res.output
+    assert "agents/coach/sessions/xyz/body-manifest.yaml" in res.fix
+    assert "'.mind-data/agents' is the first missing part" in res.fix
+    assert "a directory named 'agents' does exist: agents" in res.fix
+
+
+async def test_bash_enoent_directory_guessed_at_the_wrong_place(tmp_path) -> None:
+    """`ls world/` on a Mind deployment: no file is named `world`, its parent (the root)
+    exists, and nothing at the root shares its token — the directory itself is the lead."""
+    ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
+    res = await BashTool().execute({"command": "ls world/"}, ctx)
+    assert res.is_error
+    assert res.fix is not None, res.output
+    assert "a directory named 'world' does: .mind-data/world" in res.fix
+
+
+async def test_bash_enoent_absolute_guess_matches_the_real_file(tmp_path) -> None:
+    """An ABSOLUTE wrong-prefix guess (`cat <root>/world/forged-skills.yaml`) must match
+    the hit `.mind-data/world/forged-skills.yaml` the same way the relative form does."""
+    root = _mind_workspace(tmp_path)
+    ctx = ToolContext(workspace_root=root)
+    res = await BashTool().execute({"command": f"cat {root}/world/forged-skills.yaml"}, ctx)
+    assert res.is_error
+    assert res.fix is not None, res.output
+    assert "a file named 'forged-skills.yaml' does: .mind-data/world/forged-skills.yaml" in res.fix
+
+
+def test_first_missing_component_and_guess_relative(tmp_path) -> None:
+    from zakcode.tools.builtins.bash import _first_missing_component, _guess_relative
+
+    root = _mind_workspace(tmp_path)
+    (root / "agents" / "coach").mkdir(parents=True)
+    roots = [root]
+    # Relative: the first component is what is missing.
+    assert _first_missing_component("world/x.yaml", roots) == (root, "world")
+    # Absolute, deep: the anchor is the deepest EXISTING ancestor.
+    p = root / ".mind-data" / "agents" / "coach" / "sessions" / "abc" / "f"
+    assert _first_missing_component(str(p), roots) == (root / ".mind-data", "agents")
+    # Only the leaf missing -> None (that is the sibling branch's case).
+    assert _first_missing_component("agents/coach/nothing.yaml", roots) is None
+    assert _first_missing_component(str(root / "agents" / "coach" / "nothing.yaml"), roots) is None
+    # Guess normalisation: absolute-under-root becomes root-relative; `./` is stripped.
+    assert _guess_relative(str(root / "world" / "x.yaml"), roots) == "world/x.yaml"
+    assert _guess_relative("./world/x.yaml", roots) == "world/x.yaml"
+    assert _guess_relative("/elsewhere/x.yaml", roots) == "/elsewhere/x.yaml"
+
+
 # ── a TOOL typed as a shell command (ADR-0098, 2026-08-29) ────────────────────
 
 
