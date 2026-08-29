@@ -310,7 +310,12 @@ class _ScriptByCall(Provider):
         return Capabilities(supports_tools=True, context_window=32_768)
 
 
-def _loop(provider: Provider, tmp_path: Path, session: Session | None = None) -> AgentLoop:
+def _loop(
+    provider: Provider,
+    tmp_path: Path,
+    session: Session | None = None,
+    bodies: dict[str, str] | None = None,
+) -> AgentLoop:
     registry = ToolRegistry()
     registry.register(UseSkillTool())
     registry.register(UpdatePlanTool())
@@ -320,14 +325,12 @@ def _loop(provider: Provider, tmp_path: Path, session: Session | None = None) ->
         session or Session(cwd=str(tmp_path), model="test"),
         workspace_root=tmp_path,
         max_iterations=10,
-        skill_resolver=_Resolver({"demo": DEMO}),
+        skill_resolver=_Resolver(bodies or {"demo": DEMO}),
     )
 
 
-def _use(call_id: str = "t1") -> LLMResult:
-    return LLMResult(
-        tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": "demo"})]
-    )
+def _use(call_id: str = "t1", name: str = "demo") -> LLMResult:
+    return LLMResult(tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": name})])
 
 
 def _plan(tasks: list[dict[str, Any]], call_id: str = "p1") -> LLMResult:
@@ -1124,3 +1127,105 @@ def test_a_section_cancelled_then_dropped_stays_closed(tmp_path: Path) -> None:
     assert _notes(loop2, "skill_page") == []
     assert [t.title for t in loop2.session.task_network.tasks] == ["Step 1: First"]
     assert loop2.current_skill_page("demo") is None
+
+
+# ── ADR-0092: the marker where the model put it, and one page per step ─────────────
+
+
+def test_a_marker_the_rewrite_folded_into_the_title_still_marks_the_section(
+    tmp_path: Path,
+) -> None:
+    """The plan renders a step as ``title — note``; the model copied that back as the title
+    and wrote its own note — so no step carried the note marker, the seeded structure
+    read as gone, and /start's cancelled branches (no marker token to match on) were
+    delivered as "dropped" one per turn (coach-w2, 2026-08-29). ADR-0092: the marker
+    counts wherever it landed; the closed sections stay closed and no page arrives."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            reasons = ["carried out", "does not apply here", "does not apply here"]
+            statuses = ["done", "cancelled", "cancelled"]
+            return _plan(
+                [
+                    {"title": f"{t['title']} — from /demo", "status": s, "note": why}
+                    for t, s, why in zip(
+                        _seeded("done", "done", "done"), statuses, reasons, strict=True
+                    )
+                ]
+            )
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert [t.title for t in loop._section_steps("demo")] == [
+        "Step 1: First — from /demo",
+        "Step 2: Second — from /demo",
+        "Step 3: Third — from /demo",
+    ]
+    assert _notes(loop, "skill_sections_restored") == []
+    assert _notes(loop, "skill_sections_reopened") == []
+    assert _notes(loop, "skill_page") == []
+    assert len(loop.session.task_network.tasks) == 3
+    assert loop.session.skill_pages_settled == {"demo": [1, 2, 3]}
+    assert loop.current_skill_page("demo") is None
+
+
+SHARED = """# /shared — a later page packs a section that shares an earlier page's token
+
+## Phase 1: Poll
+
+Poll the reducer. Then read the verdict it returned and carry it into the next section.
+
+## Phase 2: Select
+
+Select the next goal. Then read the record you were handed before you claim any unit.
+
+## Phase 3: Close
+
+Close the unit.
+
+## Phase 1 PARK is not a close
+
+Park instead.
+"""
+
+
+def test_a_token_two_sections_share_maps_a_step_to_the_first_page(tmp_path: Path) -> None:
+    """/worker-loop's last page packs "Phase 0.5 PARK …" beside page 3's "Phase 0.5 —
+    REDUCER-LIVENESS POLL"; a rewritten Phase 0.5 step matched BOTH, so closing it reopened
+    the never-held last page and the closure section arrived while the plan stood at
+    SELECT (coach-w2, coach-w, coach-w4 — 2026-08-29). ADR-0092: a step is one page's, the
+    first in order, so the page delivered is the one under way."""
+    pages = skill_pages(SHARED, skill="shared")
+    assert [p.title for p in pages.pages] == [
+        "Phase 1: Poll",
+        "Phase 2: Select",
+        "Phase 3: Close (+1 more)",
+    ]
+    assert [m for _, m in pages.pages[2].sections] == ["phase 3", "phase 1"]
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use(name="shared")
+        if n == 2:  # every title rewritten, every note the model's own
+            return _plan(
+                [
+                    {"title": "Phase 1: Poll — rc=0, reducer live", "status": "done", "note": "ok"},
+                    {"title": "Phase 2: Select a goal", "status": "in_progress", "note": "now"},
+                    {"title": "Phase 3: Close (+1 more)", "status": "pending", "note": "later"},
+                ]
+            )
+        return LLMResult(text="done")
+
+    loop = _loop(_ScriptByCall(script), tmp_path, bodies={"shared": SHARED})
+    asyncio.run(loop.arun_turn("run /shared"))
+    assert _notes(loop, "skill_sections_reopened") == []
+    assert [n["page"] for n in _notes(loop, "skill_page")] == [2]
+    assert [t.status for t in loop.session.task_network.tasks] == [
+        "done",
+        "in_progress",
+        "pending",
+    ]
+    assert loop._skill_pages_delivered["shared"] == {1, 2}

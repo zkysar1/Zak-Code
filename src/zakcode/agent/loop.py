@@ -162,7 +162,15 @@ from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
-from zakcode.tasks import PAGE_HEADER_RE, SkillPage, SkillPages, Task, skill_pages, skill_skeleton
+from zakcode.tasks import (
+    PAGE_HEADER_RE,
+    SkillPage,
+    SkillPages,
+    Task,
+    skill_pages,
+    skill_skeleton,
+    step_skill,
+)
 from zakcode.tools.base import (
     ConcurrencyClass,
     Sampler,
@@ -2306,10 +2314,11 @@ class AgentLoop:
         return out
 
     def _skeleton_in_plan(self, name: str) -> bool:
-        """True when the plan already carries a step seeded from ``/<skill>`` (its note
-        opens with the ``from /<skill>`` marker) — a re-load must not seed twice."""
-        marker = re.compile(rf"^from /{re.escape(name.lower())}(?![a-z0-9_-])")
-        return any(marker.match(task.note.lower()) for task in self._plan_tasks())
+        """True when the plan already carries a step seeded from ``/<skill>`` (the
+        ``from /<skill>`` marker in its note, or folded into its title by a rewrite —
+        ADR-0092) — a re-load must not seed twice."""
+        key = name.lower()
+        return any(step_skill(task.title, task.note) == key for task in self._plan_tasks())
 
     def _plan_step_for_skill(self, name: str) -> Task | None:
         """The first still-open plan step whose title or note names ``/<skill>``, or ``None``
@@ -2488,14 +2497,15 @@ class AgentLoop:
 
     def _section_steps(self, name: str) -> list[Task]:
         """The plan steps seeded from ``/<name>``'s top-level sections, in order: a task
-        whose note opens with the skill's marker and whose parent's does not (sub-steps carry
-        the marker too, and are not pages)."""
-        marker = re.compile(rf"^from /{re.escape(name.lower())}(?![a-z0-9_-])")
+        carrying the skill's marker (in its note, or folded into its title by a rewrite —
+        ADR-0092) whose parent does not (sub-steps carry the marker too, and are not
+        pages)."""
+        key = name.lower()
         out: list[Task] = []
 
         def walk(tasks: list[Task], parent_marked: bool) -> None:
             for task in tasks:
-                marked = marker.match(task.note.lower()) is not None
+                marked = step_skill(task.title, task.note) == key
                 if marked and not parent_marked:
                     out.append(task)
                 walk(task.children, marked)
@@ -2603,20 +2613,33 @@ class AgentLoop:
         ]
 
     def _candidate_steps(self, name: str) -> list[Task]:
-        """Plan steps a page of ``/<name>`` may match: those seeded from it (their note carries
-        its marker) and those owned by no skill — never another skill's sections."""
-        own = re.compile(rf"^from /{re.escape(name.lower())}(?![a-z0-9_-])")
-        any_skill = re.compile(r"^from /")
+        """Plan steps a page of ``/<name>`` may match: those seeded from it (its marker in
+        their note, or folded into their title by a rewrite — ADR-0092) and those owned by no
+        skill — never another skill's sections."""
+        key = name.lower()
         return [
-            task
-            for task in self._plan_tasks()
-            if own.match(task.note.lower()) or not any_skill.match(task.note.lower())
+            task for task in self._plan_tasks() if step_skill(task.title, task.note) in (key, None)
         ]
 
     def _page_matches(self, name: str, pages: SkillPages) -> list[list[Task]]:
-        """Per page, the candidate steps it matches (by title or marker token)."""
+        """Per page, the candidate steps that are its section — each step counted for ONE
+        page: by its verbatim title first (the page's, or a packed section's), else by
+        marker token, the first page in order taking it. A token is not unique: /worker-loop's
+        page 7 packs "Phase 0.5 PARK …" beside page 3's "Phase 0.5 — REDUCER-LIVENESS POLL",
+        and a step matching both reopened page 7 — never held — while the plan stood at
+        page 4, so the closure page arrived at SELECT (measured 2026-08-29, coach-w2, then
+        every worker on the packed build; ADR-0092)."""
         candidates = self._candidate_steps(name)
-        return [[step for step in candidates if page.matches(step.title)] for page in pages.pages]
+        matched: list[list[Task]] = [[] for _ in pages.pages]
+        taken: set[int] = set()
+        for exact in (True, False):
+            for slot, page in zip(matched, pages.pages, strict=True):
+                for step in candidates:
+                    if id(step) in taken or not page.matches(step.title, exact=exact):
+                        continue
+                    slot.append(step)
+                    taken.add(id(step))
+        return matched
 
     def _reopen_unseen_done(self, name: str, pages: SkillPages) -> list[tuple[int, Task]]:
         """Put back to pending the section steps of ``/<name>`` the model marked done without
@@ -2773,9 +2796,9 @@ class AgentLoop:
         the notes still has the skill's titles, which ``_current_page`` matches on."""
         names = list(self._skill_pages)
         for task in self._plan_tasks():
-            match = re.match(r"^from /([a-z0-9][a-z0-9_-]*)", task.note.lower())
-            if match is not None and match.group(1) not in names:
-                names.append(match.group(1))
+            skill = step_skill(task.title, task.note)
+            if skill is not None and skill not in names:
+                names.append(skill)
         return names
 
     def _open_delivered_section(self) -> tuple[str, int, int, str] | None:

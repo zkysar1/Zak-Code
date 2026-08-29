@@ -3560,3 +3560,65 @@ Never restoring a cancelled section's siblings (the siblings were never decided)
 **Consequences.** One more append-only session field (an older build forgets closures and
 falls back to ADR-0075's behavior). Pinned in `tests/test_skill_paging.py`
 (`test_a_section_cancelled_then_dropped_stays_closed`, including the store round-trip).
+
+## ADR-0092: A section step is recognised wherever the model put its marker, and belongs to one page
+
+**Context.** The loop knew a plan step was a skill's section by the `from /<skill>` marker
+its NOTE opens with. The plan renders a step as `title — note`, and a model that copies the
+render into its next `update_plan` folds `— from /<skill>` into the TITLE and writes its
+own note — exactly what every rail asks for ("mark it cancelled with a note saying why").
+After one such rewrite no step carried the note marker, so the seeded structure read as
+gone and every page fell to title matching, which is exact-title-or-marker-token. Two
+failures followed, on every worker (coach-w2, coach-w, coach-w4 — 2026-08-29, builds
+4968c11 and 14252da): `/start`'s branch pages carry no marker token, so its five cancelled
+branches matched nothing and were delivered as "dropped, never held", one per turn; and a
+marker token is not unique — `/worker-loop`'s last page packs "Phase 0.5 PARK …" beside
+page 3's "Phase 0.5 — REDUCER-LIVENESS POLL", so the closed Phase 0.5 step matched both,
+the never-held last page was "reopened", the frontier jumped to it, and the CLOSURE page
+arrived with a rail promising "the first of them is delivered below" while the plan stood
+at SELECT. Three workers, the same turn of the same unit, every time.
+
+**Decision.** `step_skill(title, note)` is the one reader of the marker: the note's opening
+marker, else one a rewrite carried into the title (`— from /<skill>…`, which `bare_title`
+strips before any title comparison). Every consumer — the seeded-structure check, the
+positional page map, the candidate filter, the skills-in-plan scan, the re-seed guard —
+goes through it, so a transcribed plan keeps its seeded structure and page k is step k
+again. And a step is ONE page's: `_page_matches` assigns by verbatim title first (the
+page's, or a packed section's), then by marker token, the first page in order taking the
+step — a token two sections share can no longer reopen a page the step never came from.
+
+**Alternatives rejected.** Rewriting the model's plan on receipt (moving the marker back
+into the note) — the model would see its own plan altered under it, and a marker it can
+see is a marker it can copy again. Refusing plans that drop the marker — the rewrite is
+the sanctioned way to close a section. Making tokens unique at outline time (renumbering
+packed sections) — the token is the section author's, and the model quotes it.
+
+**Consequences.** No schema change; a session from an older build gains the recognition
+on load. Pinned in `tests/test_skill_paging.py`
+(`test_a_marker_the_rewrite_folded_into_the_title_still_marks_the_section`,
+`test_a_token_two_sections_share_maps_a_step_to_the_first_page`) — both fail on the
+previous build.
+
+## ADR-0093: A script run through the wrong interpreter is named as such
+
+**Context.** The reducer ran `python3 core/scripts/aspirations-update-goal.sh …` — a bash
+script through Python — four times verbatim (2026-08-29). Each run was a SyntaxError on
+the script's `case` arm at line 65, a traceback that reads like a broken script rather
+than a wrong command; the stuck guard then limited the turn to read-only tools and the
+iteration's state update never ran. Nothing in the output named the interpreter.
+
+**Decision.** One more remedy hint in the bash tool's failure path, ahead of the others:
+when the command's first non-option argument is a bare `.sh` path under `python`/`py`, or
+a bare `.py` path under `bash`/`sh`, the hint names the file's real interpreter and the
+corrected invocation. Inline `-c` programs and scripts passed as later arguments never
+match.
+
+**Alternatives rejected.** Refusing the command before execution — the file's convention
+is to run and then name the fix (the run is cheap and fails at once), and a refusal would
+need its own exemption path for the rare file whose extension lies. Detecting the
+mismatch from the traceback text alone — the SyntaxError carries the .sh path only
+because Python echoes the filename; the command is the reliable signal.
+
+**Consequences.** Pinned in `tests/test_builtins.py`
+(`test_interpreter_mismatch_fix_predicate`,
+`test_bash_python_on_a_shell_script_names_the_interpreter`).

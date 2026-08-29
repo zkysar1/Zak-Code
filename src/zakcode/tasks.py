@@ -884,6 +884,32 @@ def _outline(body: str, *, skill: str) -> _Outline:
     return _Outline(front="\n\n".join(front), pages=pages, paged=paged)
 
 
+#: The seeded marker where a rewrite tends to put it (ADR-0092). A seeded step's NOTE opens
+#: with ``from /<skill>``; the plan renders a step as ``title — note``, and a model that
+#: copies the render into its next ``update_plan`` folds ``— from /<skill>`` into the TITLE
+#: and writes its own note — the very thing the rails ask for ("mark it cancelled with a
+#: note saying why"). Measured 2026-08-29 (coach-w2, then every worker on the packed build):
+#: after one rewrite no step carried the note marker, so the seeded structure was gone,
+#: every page fell to title matching, /start's cancelled branches (no marker token) were
+#: delivered as "dropped", and a token two sections share reopened the wrong page.
+_NOTE_MARKER_RE = re.compile(r"^from\s+/([a-z0-9][a-z0-9_-]*)(?![a-z0-9_-])", re.I)
+_TITLE_MARKER_RE = re.compile(
+    r"\s+[—–-]+\s*from\s+/([a-z0-9][a-z0-9_-]*)(?![a-z0-9_-]).*$", re.I | re.S
+)
+
+
+def step_skill(title: str, note: str) -> str | None:
+    """The skill a plan step was seeded from (lower-case): the marker its note opens with,
+    else the one a rewrite carried into its title — ``None`` for a step of the model's own."""
+    found = _NOTE_MARKER_RE.match(note) or _TITLE_MARKER_RE.search(title)
+    return found.group(1).lower() if found else None
+
+
+def bare_title(title: str) -> str:
+    """``title`` without a marker a rewrite folded into it (see :func:`step_skill`)."""
+    return _TITLE_MARKER_RE.sub("", title)
+
+
 @dataclass(frozen=True)
 class SkillPage:
     """One page of a skill: the text the loop hands over when the plan reaches its step."""
@@ -896,15 +922,16 @@ class SkillPage:
     #: titled or marked like any of them is this page's.
     sections: tuple[tuple[str, str], ...] = ()
 
-    def matches(self, step_title: str) -> bool:
+    def matches(self, step_title: str, *, exact: bool = False) -> bool:
         """Whether a plan step (possibly rewritten by the model) is this page's step: the
-        seeded title verbatim, or the page's marker token as a whole word in the title —
-        for the page itself or any section packed into it."""
-        norm = " ".join(step_title.lower().split())
+        seeded title verbatim — a marker the rewrite folded into it stripped first — or,
+        unless ``exact``, the page's marker token as a whole word in the title; for the
+        page itself or any section packed into it."""
+        norm = " ".join(bare_title(step_title).lower().split())
         for title, marker in ((self.title, self.marker), *self.sections):
             if norm == " ".join(title.lower().split()):
                 return True
-            if marker and re.search(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", norm):
+            if not exact and marker and re.search(rf"(?<![\w.]){re.escape(marker)}(?![\w.])", norm):
                 return True
         return False
 
