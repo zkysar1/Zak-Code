@@ -273,6 +273,24 @@ _SUMMARY_CHUNK_FRACTION = 0.5
 #: Conservative chars-per-token floor for slicing rendered text without a tokenizer pass
 #: (id-dense code/markdown measures ~2.5 bytes/token; prose ~4 — 2 never overshoots).
 _SUMMARY_CHARS_PER_TOKEN = 2
+#: How the transcript is handed to the summarizer (ADR-0082): one user message of labeled
+#: plain text, so the model summarizes a document instead of continuing a dialogue.
+_SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by role):\n\n"
+#: Markup a model leaks into prose it was asked to write — a Qwen/Hermes text-format tool
+#: call, or thinking tags — which must never survive into a compaction summary.
+_MODEL_MARKUP_RE = re.compile(
+    r"<think>.*?(?:</think>|\Z)|<tool_call>.*?(?:</tool_call>|\Z)|<function=[^>\n]*>.*?(?:</function>|\Z)",
+    re.S,
+)
+_MODEL_MARKUP_LINE_RE = re.compile(r"^\s*</?(?:tool_call|function|parameter)[^>\n]*>\s*$", re.M)
+
+
+def _strip_model_markup(text: str) -> str:
+    """``text`` without thinking / text-format tool-call markup (ADR-0082)."""
+    cleaned = _MODEL_MARKUP_RE.sub("", text)
+    cleaned = _MODEL_MARKUP_LINE_RE.sub("", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
 
 #: Context-proportional ceiling on a SINGLE tool result's model-facing text. Tool-level
 #: caps exist where a tool knows its own shape (read_file's 100KB); this seam-level clamp
@@ -1583,14 +1601,20 @@ class AgentLoop:
         )
         summarizer = self._summarizer_provider or self.provider
         window = summarizer.capabilities().context_window or self._window()
-        if summarizer.count_tokens(messages) <= int(window * _SUMMARY_SINGLE_CALL_FRACTION):
+        # ADR-0082: the transcript always travels as ONE plain user message of labeled
+        # text, never as the raw role-tagged messages. Handed the raw messages, a small
+        # model continues the conversation instead of summarizing it — measured
+        # 2026-08-29 (a 27B reducer, 131k window): the "summary" was its own last reply
+        # plus a text-format tool call, and the session re-ran a skill it had finished.
+        rendered = self._render_for_summary(messages)
+        whole = Message.user(_SUMMARY_PROMPT + rendered)
+        if summarizer.count_tokens([whole]) <= int(window * _SUMMARY_SINGLE_CALL_FRACTION):
             result = await summarizer.acomplete(
-                messages,
+                [whole],
                 system=instruction,
                 prompt_cache_key=f"zakcode/{self.session.id}",
             )
-            return result.text.strip()
-        rendered = self._render_for_summary(messages)
+            return self._finish_summary(result.text)
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
         slices = [rendered[i : i + chunk_chars] for i in range(0, len(rendered), chunk_chars)]
         parts: list[str] = []
@@ -1615,7 +1639,58 @@ class AgentLoop:
                 prompt_cache_key=f"zakcode/{self.session.id}",
             )
             combined = result.text.strip()
-        return combined
+        return self._finish_summary(combined)
+
+    def _finish_summary(self, text: str) -> str:
+        """A model's summary, made safe to resume from (ADR-0082): its tool-call and
+        thinking markup stripped, and the harness's own position note appended."""
+        summary = _strip_model_markup(text)
+        note = self._compaction_position_note()
+        return f"{summary}\n\n{note}" if note else summary
+
+    def _compaction_position_note(self) -> str:
+        """Where the session IS, from the harness's own state — the plan's current step and
+        each paged skill's current section (ADR-0082). Generated, never summarized: a
+        model's summary can misplace the session, and the kept tail may still show an
+        older page's hint; this line is the one a resumed model can trust. Empty when
+        there is no plan and no paged skill. A courtesy — never raises into compaction.
+        """
+        lines: list[str] = []
+        try:
+            tasks = self._plan_tasks()
+            if tasks:
+                closed = sum(1 for t in tasks if t.status in ("done", "cancelled"))
+                current = self.session.task_network.current()
+                where = (
+                    f'current step "{current.title}"'
+                    if current is not None
+                    else "every step closed"
+                )
+                lines.append(f"- plan: {where} ({closed} of {len(tasks)} steps closed)")
+            for name in self._paged_skills_in_plan():
+                pages = self._ensure_skill_pages(name)
+                if pages is None:
+                    continue
+                index = self._current_page(name)
+                if index is None:
+                    lines.append(
+                        f"- /{name}: all {pages.count} sections closed; do not load it again"
+                    )
+                else:
+                    title = pages.pages[index - 1].title
+                    lines.append(
+                        f"- /{name}: on section {index} of {pages.count} ({title}); the next "
+                        "section arrives when that plan step is marked done — do not re-load "
+                        "the skill"
+                    )
+        except Exception:  # noqa: BLE001 — the note is a courtesy; compaction must not fail on it
+            return ""
+        if not lines:
+            return ""
+        return (
+            "Harness position (authoritative — generated from the plan, not summarized):\n"
+            + "\n".join(lines)
+        )
 
     async def _maybe_compact(self) -> str | None:
         """Auto-compact the session if a compactor is set and the threshold is exceeded.

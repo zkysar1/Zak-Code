@@ -3173,3 +3173,41 @@ messages).
 model is told how to split it. Pinned by `tests/test_small_model_containment.py`
 (`test_undecodable_arguments_name_the_real_defect`,
 `test_undecodable_but_complete_arguments_blame_escaping`).
+
+## ADR-0082: A compaction summary is made from rendered text and carries the harness's position
+
+**Context.** The compactor replaces everything but the last six messages with one
+summary the model writes (ADR-0022). The summarizer handed the model the raw
+role-tagged messages when they fit the window. Measured 2026-08-29 (coach, zc-03, a
+27B reducer on a 131k window, 154 → 7 messages): the "summary" was the model's own
+last reply verbatim plus a text-format `<tool_call><function=update_plan>…` block — it
+continued the conversation instead of describing it. The kept tail still held the
+harness hints for `/boot` page 17 and `/prime` page 6 from twelve minutes earlier, so
+the resumed model read the newest hint as its position and re-ran `/boot` from page 17
+— an hour of a five-agent run spent redoing a finished boot. Nothing in the transcript
+told the model where the harness knew it was.
+
+**Decision.** Two changes, one path. (1) The transcript always reaches the summarizer as
+ONE plain user message of role-labeled text (`_render_for_summary`, already the chunked
+path's form) under the compaction instruction — a document to summarize, never a
+dialogue to continue; the raw-messages branch is gone. (2) Every summary is finished by
+the harness: thinking and text-format tool-call markup is stripped, and a **position
+note** generated from the plan and the paging state is appended — the current plan
+step and closed-step count, and for each paged skill its current section ("on section
+22 of 25; the next section arrives when that plan step is marked done — do not re-load
+the skill") or "all sections closed; do not load it again". The note is authoritative
+because it is computed, not summarized; it is empty when there is no plan and no paged
+skill, and it never raises into compaction.
+
+**Alternatives rejected.** Dropping stale page hints from the kept tail (the hints are
+the model's only copy of those sections' text; the note makes them harmless instead).
+Re-delivering the current page after compaction (a second copy of a page the tail may
+still hold; the note points at it instead). A larger `preserve_recent` (the tail was
+not the defect — its meaning was).
+
+**Consequences.** A resumed model reads a real summary and one trustworthy line about
+where it is. Small models stop re-running finished skills after compaction. Pinned by
+`tests/test_compact_loop.py` (`test_summarize_sends_the_rendered_transcript_as_one_user_message`,
+`test_summary_drops_the_model_s_tool_call_and_thinking_markup`,
+`test_summary_carries_the_harness_position_note`,
+`test_position_note_is_empty_without_a_plan_or_pages`).

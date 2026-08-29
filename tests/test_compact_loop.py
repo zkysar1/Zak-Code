@@ -64,14 +64,57 @@ def _history(n: int) -> list[Message]:
     return out
 
 
-def test_summarize_fits_window_in_one_raw_call(tmp_path: Path) -> None:
+def test_summarize_sends_the_rendered_transcript_as_one_user_message(tmp_path: Path) -> None:
+    # ADR-0082: never the raw role-tagged messages — a small model handed those continues
+    # the dialogue instead of summarizing it (measured 2026-08-29, a 27B reducer).
     provider = _SummarizerProvider(["the summary"], tokens=100)
     loop = _loop(provider, tmp_path)
     history = _history(3)
     text = asyncio.run(loop._summarize_for_compaction(history))
     assert text == "the summary"
     assert len(provider.seen) == 1
-    assert provider.seen[0] == history  # raw messages, unchanged common case
+    (sent,) = provider.seen[0]
+    assert sent.role == "user"
+    assert sent.text.startswith("Conversation transcript to summarize")
+    assert "[user]\nquestion 0" in sent.text and "[assistant]\nanswer 2" in sent.text
+
+
+def test_summary_drops_the_model_s_tool_call_and_thinking_markup(tmp_path: Path) -> None:
+    # The field summary: the model's own last reply, then a text-format tool call.
+    leaked = (
+        "<think>should I summarize?</think>Phase 3 complete. Loaded 2 tree nodes.\n"
+        '<tool_call>\n<function=update_plan>\n<parameter=tasks>\n[{"title": "Step 0"}]\n'
+        "</parameter>\n</function>\n</tool_call>\nUnfinished: the aspirations loop."
+    )
+    provider = _SummarizerProvider([leaked], tokens=100)
+    loop = _loop(provider, tmp_path)
+    text = asyncio.run(loop._summarize_for_compaction(_history(2)))
+    assert text == "Phase 3 complete. Loaded 2 tree nodes.\n\nUnfinished: the aspirations loop."
+
+
+def test_summary_carries_the_harness_position_note(tmp_path: Path) -> None:
+    from zakcode.tasks import skill_pages, skill_skeleton
+
+    body = "# Boot\n\nintro\n\n## Step 1: Alpha\nA\n\n## Step 2: Beta\nB\n\n## Step 3: Gamma\nC\n"
+    provider = _SummarizerProvider(["the summary"], tokens=100)
+    loop = _loop(provider, tmp_path)
+    steps = skill_skeleton(body, skill="boot")
+    loop.session.task_network.insert_before(None, steps)
+    steps[0].status = "done"
+    loop._skill_pages["boot"] = skill_pages(body, skill="boot")
+    loop._skill_pages_delivered["boot"] = {1, 2}
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(2)))
+
+    assert text.startswith("the summary\n\nHarness position")
+    assert 'current step "Step 2: Beta" (1 of 3 steps closed)' in text
+    assert "/boot: on section 2 of 3 (Step 2: Beta)" in text
+    assert "do not re-load the skill" in text
+
+
+def test_position_note_is_empty_without_a_plan_or_pages(tmp_path: Path) -> None:
+    loop = _loop(_SummarizerProvider(["s"], tokens=100), tmp_path)
+    assert loop._compaction_position_note() == ""
 
 
 def test_summarize_chunks_an_oversized_history(tmp_path: Path) -> None:
