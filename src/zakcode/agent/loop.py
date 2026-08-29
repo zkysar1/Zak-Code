@@ -1405,6 +1405,11 @@ class AgentLoop:
         self._skill_pages_delivered: dict[str, set[int]] = {
             key: set(pages) for key, pages in session.skill_pages_delivered.items()
         }
+        # The pages whose section the plan closed (ADR-0091): a rewrite that drops one
+        # neither restores nor delivers it.
+        self._skill_pages_settled: dict[str, set[int]] = {
+            key: set(pages) for key, pages in session.skill_pages_settled.items()
+        }
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -2457,6 +2462,19 @@ class AgentLoop:
         self._skill_pages_delivered[key] = pages
         self.session.skill_pages_delivered[key] = sorted(pages)
 
+    def _settle_closed(self, name: str, pages: SkillPages) -> None:
+        """Remember the pages of ``/<name>`` whose section the plan has closed — done (after
+        its page was held; an unseen done was just reopened) or cancelled — for this process
+        and, through the session, for the next one (ADR-0091). A rewrite that drops a closed
+        section later must not put it back or deliver it: the model decided."""
+        key = name.lower()
+        settled = self._skill_pages_settled.setdefault(key, set())
+        closed = {"done", "cancelled"}
+        for page, matched in self._page_steps(name, pages):
+            if matched and all(step.status in closed for step in matched):
+                settled.add(page.index)
+        self.session.skill_pages_settled[key] = sorted(settled)
+
     def _register_skill_load(self, name: str) -> None:
         """A fresh load (either door) delivered page 1: the count for that skill starts over."""
         pages = self._ensure_skill_pages(name)
@@ -2531,6 +2549,7 @@ class AgentLoop:
             frontier = self._plan_frontier(name, pages)
         closed = {"done", "cancelled"}
         held = self._skill_pages_delivered.get(name.lower(), set())
+        settled = self._skill_pages_settled.get(name.lower(), set())
         for page, matched in self._page_steps(name, pages):
             if page.index < frontier:
                 continue  # left behind: the plan is past it
@@ -2538,8 +2557,8 @@ class AgentLoop:
                 if any(step.status not in closed for step in matched):
                     return page.index
                 continue
-            if page.index in held:
-                continue
+            if page.index in held or page.index in settled:
+                continue  # dropped after it was held or closed: the model's decision
             return page.index
         return None
 
@@ -2571,6 +2590,7 @@ class AgentLoop:
         go back to them or cancel them on purpose."""
         closed = {"done", "cancelled"}
         held = self._skill_pages_delivered.get(name.lower(), set())
+        settled = self._skill_pages_settled.get(name.lower(), set())
         return [
             page.title
             for page, matched in self._page_steps(name, pages)
@@ -2578,7 +2598,7 @@ class AgentLoop:
             and (
                 any(step.status not in closed for step in matched)
                 if matched
-                else page.index not in held
+                else page.index not in held and page.index not in settled
             )
         ]
 
@@ -2646,12 +2666,17 @@ class AgentLoop:
             frontier = self._plan_frontier(name, pages)
         matches = self._page_matches(name, pages)
         held = self._skill_pages_delivered.get(name.lower(), set())
-        # Only sections the model never HELD: a delivered page whose step is gone was the
-        # model's to drop (it read the section and decided); an undelivered one was not.
+        settled = self._skill_pages_settled.get(name.lower(), set())
+        # Only sections the model never HELD nor CLOSED: a delivered page whose step is gone
+        # was the model's to drop (it read the section and decided), a closed one was
+        # decided (ADR-0091); an undelivered, undecided one was not.
         missing = [
             page
             for page, matched in zip(pages.pages, matches, strict=True)
-            if page.index >= frontier and page.index not in held and not matched
+            if page.index >= frontier
+            and page.index not in held
+            and page.index not in settled
+            and not matched
         ]
         if not missing:
             return []
@@ -2815,6 +2840,7 @@ class AgentLoop:
                 # The model is at the first section it closed unseen: that page is what it
                 # needs, not the earliest open one behind it.
                 frontier = min(index for index, _ in reopened)
+            self._settle_closed(name, pages)
             restored = self._restore_dropped_sections(name, pages, frontier=frontier)
             rails = [
                 rail
