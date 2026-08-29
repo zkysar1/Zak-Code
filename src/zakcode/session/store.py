@@ -46,6 +46,7 @@ from zakcode.artifacts import ArtifactRef
 from zakcode.messages import Message
 from zakcode.tasks import TaskNetwork
 from zakcode.usage import Usage
+from zakcode.wakeup import Wakeup
 
 #: Highest on-disk schema version this build can write and fully understand.
 CURRENT_SCHEMA_VERSION = 1
@@ -202,6 +203,13 @@ class Session(BaseModel):
     #: SAFE — the pre-ADR-0077 behavior).
     prompt_anchor_tokens: int = 0
     prompt_anchor_index: int = 0
+    #: The one scheduled wake-up (ADR-0094): what the session is told at its next idle
+    #: prompt on or after ``due_at``. Armed by the ``schedule_wakeup`` tool (replace-slot),
+    #: consumed when it fires. Persisted so it survives the ADR-0034 restart into a new
+    #: build — a worker parked with an hourly re-poll must still be re-polled by the process
+    #: that resumes it. Schema v1 stays append-only: an OLDER build drops the field and the
+    #: wake-up is simply lost (fails SAFE — the pre-ADR-0094 behavior, no wake-up at all).
+    pending_wakeup: Wakeup | None = None
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""

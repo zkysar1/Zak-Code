@@ -124,6 +124,11 @@ _PY_ON_SHELL_RE = re.compile(
 _SHELL_ON_PY_RE = re.compile(
     r"(?:^|[\s;&|(])(?:bash|sh|zsh|dash)(?:\s+-[^c\s]\S*)*\s+([\w./\\-]+\.py)(?=$|[\s;&|)])"
 )
+#: What the wrong interpreter says: Python's parse errors on a shell script; a shell's on a
+#: Python file (``import`` is no command; ``def f():`` is a syntax error near ``(``).
+_INTERPRETER_ERROR_RE = re.compile(
+    r"SyntaxError|IndentationError|syntax error near unexpected token|import: command not found"
+)
 
 
 def _interpreter_mismatch_fix(command: str) -> str | None:
@@ -274,4 +279,16 @@ class BashTool(Tool):
                 or _windows_shell_fix(command, output)
             )
             return ToolResult.error(combined, data=data, fix=fix)
+        # Exit 0 can be a trailing pipe's (`python3 x.sh … | tail -40`): the interpreter
+        # choked and `tail` reported success (ADR-0093, measured on the reducer the same day
+        # the hint shipped — the pipe hid the failure the hint was written for). The
+        # mismatched command plus the interpreter's own error text is the signal; the
+        # result is the failure it was.
+        mismatch = _interpreter_mismatch_fix(command)
+        if mismatch and _INTERPRETER_ERROR_RE.search(output):
+            return ToolResult.error(
+                combined,
+                data=data,
+                fix=f"{mismatch} (The exit code 0 is the pipe's, not the script's.)",
+            )
         return ToolResult.ok(combined, data=data)

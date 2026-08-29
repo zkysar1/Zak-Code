@@ -3622,3 +3622,51 @@ because Python echoes the filename; the command is the reliable signal.
 **Consequences.** Pinned in `tests/test_builtins.py`
 (`test_interpreter_mismatch_fix_predicate`,
 `test_bash_python_on_a_shell_script_names_the_interpreter`).
+
+**Amended (same day).** The hint chain ran only on a non-zero exit, and the reducer's next
+attempt was `python3 core/scripts/recurring-close.sh … 2>&1 | tail -40` — exit 0, `tail`'s —
+so the SyntaxError arrived with no hint and was read as a broken script once more. When the
+command matches the mismatch predicate AND the output carries the wrong interpreter's own
+error text (Python's `SyntaxError` / `IndentationError`; a shell's `syntax error near
+unexpected token` / `import: command not found`), the result is the failure it was: an
+error carrying the hint, which also says the 0 was the pipe's. A pipe on a command that ran
+fine is untouched (`test_bash_a_pipe_that_hides_the_exit_code_still_names_the_interpreter`).
+
+## ADR-0094: A session holds one scheduled wake-up, delivered at its idle prompt
+
+**Context.** Claude Code's `ScheduleWakeup` is the primitive a Mind's autonomous loop is
+built on: the reducer arms a "deadman" wake-up (`<<autonomous-loop-dynamic>>`, 600 s)
+before every `Skill(aspirations)` re-entry — it fires only if the re-entry chain breaks —
+and a worker Body that parks because its reducer is gone arms an hourly re-poll. Zak Code
+had no such tool; the calls came back `unknown tool`. Measured on zc-03 (2026-08-29): a
+reducer restart re-minted the runner token, every worker's liveness poll parked, each
+armed its re-poll, and all four Bodies sat dead at their prompts until an operator cycled
+them. The compatibility map had filed `ScheduleWakeup` under "not load-bearing".
+
+**Decision.** A `schedule_wakeup` tool (registered under Claude Code's `ScheduleWakeup`
+too) with Claude Code's contract: ONE wake-up held per session — a new call replaces it,
+`stop=true` cancels it — the delay clamped to [60, 3600] seconds (default 600), and
+delivery at the next idle prompt on or after the due time. The held wake-up is a field of
+the session document (`pending_wakeup`), written on every change through the loop's
+persist, so it survives the ADR-0034 restart into a new build and a `/resume`. The REPL's
+idle wait (`_InputMux`) asks the slot for a due wake-up only when nothing typed or said is
+already there, and stands back while another process's turn owns the session; the line
+arrives as `("harness", …)` — the ADR-0090 door, echoed with the same tag. The sentinel
+prompt fires as an explicit re-enter-the-loop instruction; any other prompt fires as
+`[harness] scheduled wake-up: <prompt>`. Nothing ever fires mid-turn. The hook name map
+carries the new tool so a Mind's `PreToolUse` gate on `ScheduleWakeup` fires on it.
+
+**Alternatives rejected.** A timer thread that injects the prompt when due — it would fire
+mid-turn (a wake-up is a prompt-time event by contract) and add a second writer to the
+session. A queue of wake-ups — Claude Code's is a single replace-slot, and the loop's
+re-arm-every-iteration idiom relies on replacement. Delivering as a `say` — a say is
+someone else's line; the wake-up is the session's own, and the ADR-0090 harness door
+already exists for exactly that.
+
+**Consequences.** Pinned in `tests/test_schedule_wakeup.py`: clamp and default; arm /
+replace / cancel / consume-once; the sentinel line; the session round-trip through the
+store; the tool's outputs and errors; the alias and the hook-name mapping; a scripted turn
+that arms one and finds it on disk; and the REPL door — a due wake-up from both the
+blocking and the non-blocking wait, never at a mid-turn consumer, and never ahead of a
+typed line. The `ToolContext` gains a `wakeup_slot` seam (None outside a session, where the
+tool errors cleanly).

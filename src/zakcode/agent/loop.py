@@ -182,6 +182,7 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.usage import Usage
+from zakcode.wakeup import WakeupSlot
 
 if TYPE_CHECKING:
     from zakcode.sandbox import EgressProxy
@@ -1418,6 +1419,10 @@ class AgentLoop:
         self._skill_pages_settled: dict[str, set[int]] = {
             key: set(pages) for key, pages in session.skill_pages_settled.items()
         }
+        # The session's one scheduled wake-up (ADR-0094): the schedule_wakeup tool arms it
+        # through the tool context; the REPL's idle wait takes it once due. Persisted on
+        # every change so the held wake-up outlives the turn — and the process.
+        self.wakeup_slot = WakeupSlot(session, on_change=self._persist)
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -4478,6 +4483,7 @@ class AgentLoop:
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
+            wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
@@ -5674,6 +5680,7 @@ class AgentLoop:
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
+            wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
