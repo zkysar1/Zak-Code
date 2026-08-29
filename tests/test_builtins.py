@@ -567,7 +567,9 @@ async def test_bash_enoent_invented_prefix_names_the_real_directory(tmp_path) ->
     (root / "agents" / "coach" / "sessions" / "abc").mkdir(parents=True)
     ctx = ToolContext(workspace_root=root)
     bad = root / ".mind-data" / "agents" / "coach" / "sessions" / "abc" / "light-prime-done"
-    res = await BashTool().execute({"command": f"touch {bad}"}, ctx)
+    # as_posix(): bash eats a WindowsPath's backslashes, and `touch C:Usersx` SUCCEEDS
+    # in the cwd (measured on CI, 2026-08-29) — so the absolute form here must be posix.
+    res = await BashTool().execute({"command": f"touch {bad.as_posix()}"}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
     assert "'.mind-data/agents' is the first missing part" in res.fix
@@ -586,7 +588,7 @@ async def test_bash_enoent_invented_prefix_also_names_same_named_files(tmp_path)
     (other / "body-manifest.yaml").write_text("body_state: active\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
     bad = root / ".mind-data" / "agents" / "coach" / "sessions" / "abc" / "body-manifest.yaml"
-    res = await BashTool().execute({"command": f"grep -c body_state {bad}"}, ctx)
+    res = await BashTool().execute({"command": f"grep -c body_state {bad.as_posix()}"}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
     assert "agents/coach/sessions/xyz/body-manifest.yaml" in res.fix
@@ -609,7 +611,9 @@ async def test_bash_enoent_absolute_guess_matches_the_real_file(tmp_path) -> Non
     the hit `.mind-data/world/forged-skills.yaml` the same way the relative form does."""
     root = _mind_workspace(tmp_path)
     ctx = ToolContext(workspace_root=root)
-    res = await BashTool().execute({"command": f"cat {root}/world/forged-skills.yaml"}, ctx)
+    res = await BashTool().execute(
+        {"command": f"cat {root.as_posix()}/world/forged-skills.yaml"}, ctx
+    )
     assert res.is_error
     assert res.fix is not None, res.output
     assert "a file named 'forged-skills.yaml' does: .mind-data/world/forged-skills.yaml" in res.fix
@@ -632,7 +636,10 @@ def test_first_missing_component_and_guess_relative(tmp_path) -> None:
     # Guess normalisation: absolute-under-root becomes root-relative; `./` is stripped.
     assert _guess_relative(str(root / "world" / "x.yaml"), roots) == "world/x.yaml"
     assert _guess_relative("./world/x.yaml", roots) == "world/x.yaml"
-    assert _guess_relative("/elsewhere/x.yaml", roots) == "/elsewhere/x.yaml"
+    # Absolute and outside every root: returned as written, in posix form. Built from the
+    # anchor because `/elsewhere` is not absolute on Windows (no drive).
+    elsewhere = Path(root.anchor) / "elsewhere" / "x.yaml"
+    assert _guess_relative(str(elsewhere), roots) == elsewhere.as_posix()
 
 
 # ── a TOOL typed as a shell command (ADR-0098, 2026-08-29) ────────────────────
