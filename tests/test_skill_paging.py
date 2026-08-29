@@ -17,6 +17,7 @@ from typing import Any
 from zakcode.agent.loop import AgentLoop
 from zakcode.events import AgentEvent, AgentStatus
 from zakcode.messages import Message, ToolResultBlock
+from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
 from zakcode.skills.fit import measure_skill_fit
@@ -82,7 +83,7 @@ def test_delivery_carries_the_header_and_the_paging_contract() -> None:
     assert first.startswith("# /demo — a paged skill")
     assert "[/demo — page 1 of 3: Step 1: First]" in first
     assert "Do the first thing." in first and "Do the second thing." not in first
-    assert "section 2 of 3 arrives in the next message" in first
+    assert "section 2 of 3 arrives in the reply to that call" in first
     assert pages.render(3).endswith("This is the last section.")
 
 
@@ -873,3 +874,76 @@ def test_a_document_saved_before_the_record_takes_its_open_work_as_held(tmp_path
     (note,) = _notes(loop2, "skill_page")
     assert note["page"] == 3
     assert session.skill_pages_delivered == {"demo": [1, 2, 3]}
+
+
+# ── the fourth field run's defect (2026-08-29, coach-w "awaiting section 23") ─────────
+
+
+def _unattended_loop(provider: Provider, tmp_path: Path) -> AgentLoop:
+    """A worker Body: ``--dangerously-skip-permissions``, no one at the prompt."""
+    registry = ToolRegistry()
+    registry.register(UseSkillTool())
+    registry.register(UpdatePlanTool())
+    return AgentLoop(
+        provider,
+        registry,
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        max_iterations=10,
+        skill_resolver=_Resolver({"demo": DEMO}),
+        permission_policy=PermissionPolicy(PermissionMode.BYPASS),
+    )
+
+
+def _section_nudges(messages: list[Message]) -> int:
+    return sum(
+        1
+        for m in messages
+        if m.role == "user" and "is still open, and nothing arrives on its own" in (m.text or "")
+    )
+
+
+def test_an_unattended_turn_does_not_end_on_an_open_section(tmp_path: Path) -> None:
+    """A worker closed its unit and ended its turn "awaiting the final park instruction
+    (section 23) from the harness" — nothing is pushed, and a Body has no one to type
+    (ADR-0087). The stop becomes a nudge, once per section; a second stop ends the turn."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        plans, nudges = _plans_sent(messages), _section_nudges(messages)
+        if plans == 0 and nudges == 0:
+            return LLMResult(text="Section 1 is finished. Awaiting section 2 from the harness.")
+        if plans == 0:
+            return _plan(_seeded("done", "in_progress", "pending"), call_id=f"p{n}")
+        if nudges == 1:
+            return LLMResult(text="Section 2 is finished. Awaiting section 3.")
+        return LLMResult(text="Still waiting for section 3.")
+
+    provider = _ScriptByCall(script)
+    loop = _unattended_loop(provider, tmp_path)
+    asyncio.run(loop.arun_turn("run /demo"))
+    gates = _notes(loop, "section_gate")
+    assert [(g["skill"], g["page"]) for g in gates] == [("demo", 1), ("demo", 2)]
+    nudge = next(
+        t for msgs in provider.seen for t in _user_texts(msgs) if "Section 1 of 3 of /demo" in t
+    )
+    assert "'Step 1: First'" in nudge and "Do not stop to wait for the harness" in nudge
+    assert [n["page"] for n in _notes(loop, "skill_page")] == [2]
+    # Nudged once on section 2, stopped again: the turn ended on the model's words.
+    assert loop.session.messages[-1].role == "assistant"
+    assert "Still waiting" in (loop.session.messages[-1].text or "")
+
+
+def test_an_attended_turn_may_end_on_an_open_section(tmp_path: Path) -> None:
+    """With someone at the prompt the model may stop to talk — the guard is for Bodies."""
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        return LLMResult(text="Which option do you want for section 1?")
+
+    loop = _loop(_ScriptByCall(script), tmp_path)  # no policy: the default asks
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert _notes(loop, "section_gate") == []
+    assert loop.session.messages[-1].role == "assistant"

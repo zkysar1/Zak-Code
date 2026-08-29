@@ -3391,3 +3391,39 @@ normally; a mass-close collapses to ordinary paging instead of an idle worker. P
 cancelled-unseen stays closed; cancelling later sections no longer finishes an unseen one
 (the restore lands in order); held pages survive a restart whose headers were compacted
 away; a pre-record document takes its open work as held.
+
+## ADR-0087: An unattended turn does not end on an open section
+
+**Context.** A paged skill's next section arrives only in the reply to the `update_plan`
+call that closes the current one; nothing is pushed. The page footer said the next section
+"arrives in the next message", and a field model read that as a promise: coach-w closed its
+work unit (`iteration-close.sh` ran) and ended its turn with "Awaiting the final park
+instruction (section 23) from the harness" (coach-w, 2026-08-29 ~08:20). A worker Body has
+no one at the prompt, so that stop is a dead worker — only the coincidence of a build update
+(ADR-0034 restarts at the idle prompt) revived it; the day's earlier stall (coach-w3,
+ADR-0086) ended the same way for a different reason. The existing turn-end veto ("your plan
+still has N open steps") fires once but does not say the one thing the model needs: that
+waiting cannot work.
+
+**Decision.** Two things. The footer now says it: "section k+1 arrives in the reply to that
+call — nothing arrives on its own." And under an unattended permission mode
+(`bypassPermissions`, `autonomous`) a completion with no tool calls while the model HOLDS a
+section it has not closed (its page delivered, its step open) is met with a rail — which
+section is open, that nothing is pushed, close it or carry on, do not stop to wait — and
+the turn continues. Once per section per turn: a second stop on the same section ends the
+turn as before, so a model that has genuinely finished is not trapped. The section chosen
+is the one whose step (or sub-step) is the plan's current step, else the most recently
+paged skill's. Attended modes are untouched: with someone at the prompt, stopping to talk
+is legitimate.
+
+**Alternatives rejected.** Firing in every mode (an interactive user's "which option?" stop
+would be overridden). A text heuristic for "awaiting…" (a matcher over a live corpus; the
+shape of the stall is structural — open section + no tool call — and that is what is keyed
+on). Pushing the next page at turn end (delivers a section the model did not close,
+breaking the one-page-at-a-time contract and the held-page accounting). Relying on the
+turn-end veto hook (deployment-specific; it fired here and was not enough).
+
+**Consequences.** An unattended stop on an open section costs one model turn, then either
+proceeds or ends. Pinned in `tests/test_skill_paging.py`: the unattended stop is nudged
+once per section and ends on the second; an attended stop is untouched; the footer wording
+is asserted by the paging-contract test.

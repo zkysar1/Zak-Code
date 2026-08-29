@@ -140,7 +140,7 @@ from zakcode.hooks import (
     TurnEndPayload,
 )
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
-from zakcode.permissions import PermissionPolicy
+from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import (
     ContextWindowExceeded,
     LLMResult,
@@ -1004,6 +1004,22 @@ def _reopen(task: Task) -> None:
         task.status = "pending"
     for child in task.children:
         _reopen(child)
+
+
+def _section_nudge(skill: str, page: int, count: int, title: str) -> str:
+    """The rail for a turn ending on an open section (ADR-0087): nothing is pushed — the next
+    section rides in the reply to the ``update_plan`` that closes this one."""
+    return (
+        f"Section {page} of {count} of /{skill} ({title!r}) is still open, and nothing arrives "
+        "on its own: the next section comes in the reply to the update_plan call that marks "
+        "this step done. If the section is done, mark its step done now (send the whole plan); "
+        "if it is not, carry on with it. Do not stop to wait for the harness."
+    )
+
+
+def _holds(task: Task, target: Task) -> bool:
+    """Whether ``target`` is ``task`` or one of its descendants (by identity)."""
+    return task is target or any(_holds(child, target) for child in task.children)
 
 
 def _control_rail(text: str) -> str:
@@ -2697,6 +2713,35 @@ class AgentLoop:
                 names.append(match.group(1))
         return names
 
+    def _open_delivered_section(self) -> tuple[str, int, int, str] | None:
+        """The section the model holds and has not closed — ``(skill, page, count, title)`` —
+        preferring the one whose step is the plan's current step, else the most recently
+        paged skill's; ``None`` when no delivered section is open (ADR-0087)."""
+        current_step = self.session.task_network.current()
+        found: list[tuple[str, int, int, str]] = []
+        for name in self._paged_skills_in_plan():
+            pages = self._ensure_skill_pages(name)
+            if pages is None:
+                continue
+            index = self._current_page(name)
+            if index is None or index not in self._skill_pages_delivered.get(name.lower(), set()):
+                continue
+            entry = (name, index, pages.count, pages.pages[index - 1].title)
+            steps = self._page_steps(name, pages)[index - 1][1]
+            if current_step is not None and any(_holds(step, current_step) for step in steps):
+                return entry
+            found.append(entry)
+        return found[-1] if found else None
+
+    def _unattended(self) -> bool:
+        """No one is at the prompt: the session runs under a permission mode that never asks
+        (a worker Body's ``--dangerously-skip-permissions``, or autonomous)."""
+        policy = self.permission_policy
+        return policy is not None and policy.mode in (
+            PermissionMode.BYPASS,
+            PermissionMode.AUTONOMOUS,
+        )
+
     def _count_text(self, text: str) -> int:
         try:
             return int(self.provider.count_tokens([Message.user(text)]))
@@ -4339,6 +4384,7 @@ class AgentLoop:
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
+        section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
@@ -5087,6 +5133,32 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # Open-section guard (ADR-0087): the turn is ending while the model holds a
+                # section it has not closed. Nothing is ever pushed — the next page rides in
+                # the reply to the update_plan that closes this one — so a model that stops
+                # "awaiting the next section" waits forever, and an unattended Body has no
+                # one to type. Once per section per turn; a second stop ends the turn.
+                open_section = self._open_delivered_section() if self._unattended() else None
+                if open_section is not None and open_section[:2] not in section_nudged:
+                    section_nudged.add(open_section[:2])
+                    name, index, count, title = open_section
+                    self._note(
+                        "intervention",
+                        f"turn ending with /{name} section {index}/{count} open — asking for "
+                        "the close or the work",
+                        kind="section_gate",
+                        skill=name,
+                        page=index,
+                        of=count,
+                    )
+                    self.session.add_message(
+                        Message.user(_control_rail(_section_nudge(name, index, count, title)))
+                    )
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
@@ -5508,6 +5580,7 @@ class AgentLoop:
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
+        section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
@@ -6532,6 +6605,32 @@ class AgentLoop:
                         repeat_count = 0
                         stuck.reset()
                         yield AgentStatus(message="turn ended on announced work — asking for it")
+                        continue
+                    # Open-section guard (ADR-0087) — see the buffered twin.
+                    open_section = self._open_delivered_section() if self._unattended() else None
+                    if open_section is not None and open_section[:2] not in section_nudged:
+                        section_nudged.add(open_section[:2])
+                        name, index, count, title = open_section
+                        self._note(
+                            "intervention",
+                            f"turn ending with /{name} section {index}/{count} open — asking "
+                            "for the close or the work",
+                            kind="section_gate",
+                            skill=name,
+                            page=index,
+                            of=count,
+                        )
+                        self.session.add_message(
+                            Message.user(_control_rail(_section_nudge(name, index, count, title)))
+                        )
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message=f"turn ending with /{name} section {index}/{count} open — "
+                            "asking for the close or the work"
+                        )
                         continue
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
