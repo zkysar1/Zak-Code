@@ -19,7 +19,7 @@ from zakcode.agent.compact import ELISION_MARKER, CompactionConfig, Compactor
 from zakcode.agent.loop import AgentLoop
 from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
-from zakcode.providers.base import Capabilities, LLMResult, Provider
+from zakcode.providers.base import Capabilities, LLMResult, Provider, RateLimited
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
 
@@ -115,6 +115,41 @@ def test_summary_carries_the_harness_position_note(tmp_path: Path) -> None:
 def test_position_note_is_empty_without_a_plan_or_pages(tmp_path: Path) -> None:
     loop = _loop(_SummarizerProvider(["s"], tokens=100), tmp_path)
     assert loop._compaction_position_note() == ""
+
+
+class _BusyThenSummarizing(_SummarizerProvider):
+    """Rate-limited for the first ``busy`` calls, then a canned summary — a pod with
+    every slot taken (five agents on four engines, coach 2026-08-29)."""
+
+    def __init__(self, busy: int) -> None:
+        super().__init__(["the summary"], tokens=100)
+        self._busy = busy
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        if len(self.seen) < self._busy:
+            self.seen.append(list(messages))
+            raise RateLimited("qwen35a-gpu2 busy", retry_after=0.0)
+        return await super().acomplete(messages, system=system, tools=tools, **kw)
+
+
+def test_the_summarizer_waits_out_a_rate_limit_like_the_main_call(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # ADR-0083: the summarizer used to call the provider directly, so the first 429 of a
+    # busy pod failed the compaction outright ("summarizer failed (RateLimited: …)").
+    slept: list[float] = []
+
+    async def no_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr("zakcode.agent.loop.asyncio.sleep", no_sleep)
+    provider = _BusyThenSummarizing(busy=2)
+    loop = _loop(provider, tmp_path)
+    text = asyncio.run(loop._summarize_for_compaction(_history(2)))
+    assert text == "the summary"
+    assert len(provider.seen) == 3 and len(slept) == 2
 
 
 def test_summarize_chunks_an_oversized_history(tmp_path: Path) -> None:

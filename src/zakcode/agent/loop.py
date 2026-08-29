@@ -1616,36 +1616,34 @@ class AgentLoop:
         # plus a text-format tool call, and the session re-ran a skill it had finished.
         rendered = self._render_for_summary(messages)
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
-        if len(rendered) <= chunk_chars:
-            result = await summarizer.acomplete(
-                [Message.user(_SUMMARY_PROMPT + rendered)],
-                system=instruction,
-                prompt_cache_key=f"zakcode/{self.session.id}",
+
+        async def ask(prompt: str) -> str:
+            # The loop's one retry policy (ADR-0083): a busy pod's 429 is waited out here
+            # exactly as it is on the main call, instead of failing the compaction.
+            result = await self._complete_with_retry(
+                lambda call_kw: summarizer.acomplete(
+                    [Message.user(prompt)],
+                    system=instruction,
+                    prompt_cache_key=f"zakcode/{self.session.id}",
+                    **call_kw,
+                )
             )
-            return self._finish_summary(result.text)
+            return result.text
+
+        if len(rendered) <= chunk_chars:
+            return self._finish_summary(await ask(_SUMMARY_PROMPT + rendered))
         slices = [rendered[i : i + chunk_chars] for i in range(0, len(rendered), chunk_chars)]
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
-            prompt = f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}"
-            result = await summarizer.acomplete(
-                [Message.user(prompt)],
-                system=instruction,
-                prompt_cache_key=f"zakcode/{self.session.id}",
-            )
-            parts.append(result.text.strip())
+            text = await ask(f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}")
+            parts.append(text.strip())
         combined = "\n\n".join(parts)
         if len(parts) > 1 and len(combined) > chunk_chars:
-            result = await summarizer.acomplete(
-                [
-                    Message.user(
-                        "Fold these part-summaries of one conversation into a single "
-                        "coherent summary:\n\n" + combined
-                    )
-                ],
-                system=instruction,
-                prompt_cache_key=f"zakcode/{self.session.id}",
+            text = await ask(
+                "Fold these part-summaries of one conversation into a single coherent "
+                "summary:\n\n" + combined
             )
-            combined = result.text.strip()
+            combined = text.strip()
         return self._finish_summary(combined)
 
     def _finish_summary(self, text: str) -> str:
@@ -2884,6 +2882,54 @@ class AgentLoop:
         exception unwind an unattended session — with the session persisted at a
         message boundary, so the run is RESUMABLE, never lost.
         """
+
+        async def complete(call_kw: dict[str, Any]) -> LLMResult:
+            if extra_body:
+                call_kw["extra_body"] = extra_body
+            call_started = time.monotonic()
+            result = await self.provider.acomplete(
+                messages,
+                system=system,
+                tools=tools,
+                prompt_cache_key=f"zakcode/{self.session.id}",
+                **call_kw,
+            )
+            # Per-request usage on the decision trace: the one point every
+            # buffered completion passes, so a trace_dir session yields
+            # per-request prompt/completion/latency stats without parsing
+            # transcripts (the streaming path notes at its usage-commit
+            # point). Best-effort like every _note.
+            self._note(
+                "usage",
+                f"{result.usage.prompt_tokens}p+{result.usage.completion_tokens}c tok "
+                f"in {time.monotonic() - call_started:.1f}s",
+                model=self.provider.model_id(),
+                prompt_tokens=result.usage.prompt_tokens,
+                completion_tokens=result.usage.completion_tokens,
+                total_tokens=result.usage.total_tokens,
+                cost_usd=result.usage.cost_usd,
+                latency_s=round(time.monotonic() - call_started, 3),
+            )
+            # The measured size of what was just sent floors the next pre-call
+            # compaction check (ADR-0077).
+            self._anchor_prompt(result.usage.prompt_tokens)
+            return result
+
+        return await self._complete_with_retry(complete)
+
+    async def _complete_with_retry(
+        self, complete: Callable[[dict[str, Any]], Awaitable[LLMResult]]
+    ) -> LLMResult:
+        """Run one buffered completion under the loop's ONE retry policy (audit P0-4).
+
+        ``complete(call_kw)`` performs the request; ``call_kw`` carries the raised
+        temperature of a rejection retry (empty otherwise). Every buffered model call
+        the loop makes goes through here — the main conversation call and the
+        compaction summarizer alike (ADR-0083): the summarizer used to call the provider
+        directly, so the first 429 of a busy pod failed the compaction outright while the
+        very same 429 on the main call would have been waited out. Measured 2026-08-29
+        (coach, five agents on four engines): "summarizer failed (RateLimited: …)".
+        """
         attempt = 0
         interrupt_attempts = 0  # TimedOut / ModelOutputRejected retries (fixed bound)
         rate_limit_started: float | None = None  # wall clock of the first pure 429
@@ -2895,37 +2941,8 @@ class AgentLoop:
             call_kw: dict[str, Any] = (
                 {} if next_temperature is None else {"temperature": next_temperature}
             )
-            if extra_body:
-                call_kw["extra_body"] = extra_body
             try:
-                call_started = time.monotonic()
-                result = await self.provider.acomplete(
-                    messages,
-                    system=system,
-                    tools=tools,
-                    prompt_cache_key=f"zakcode/{self.session.id}",
-                    **call_kw,
-                )
-                # Per-request usage on the decision trace: the one point every
-                # buffered completion passes, so a trace_dir session yields
-                # per-request prompt/completion/latency stats without parsing
-                # transcripts (the streaming path notes at its usage-commit
-                # point). Best-effort like every _note.
-                self._note(
-                    "usage",
-                    f"{result.usage.prompt_tokens}p+{result.usage.completion_tokens}c tok "
-                    f"in {time.monotonic() - call_started:.1f}s",
-                    model=self.provider.model_id(),
-                    prompt_tokens=result.usage.prompt_tokens,
-                    completion_tokens=result.usage.completion_tokens,
-                    total_tokens=result.usage.total_tokens,
-                    cost_usd=result.usage.cost_usd,
-                    latency_s=round(time.monotonic() - call_started, 3),
-                )
-                # The measured size of what was just sent floors the next pre-call
-                # compaction check (ADR-0077).
-                self._anchor_prompt(result.usage.prompt_tokens)
-                return result
+                return await complete(call_kw)
             except RateLimited as exc:
                 # ModelOutputRejected and TimedOut subclass RateLimited for their retry
                 # semantics but keep a small FIXED attempt bound; a pure rate limit
