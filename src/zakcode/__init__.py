@@ -618,7 +618,10 @@ class Agent:
             # name (and lets skills chain). It reads the resolver off the ToolContext, which the
             # loop is handed below; only registered when skills are on, so the default tool
             # surface is unchanged. (Gated identically to the catalog so the two stay consistent.)
-            self.registry.register(UseSkillTool())
+            # Claude Code's name too (the ADR-0094 pattern): a Mind's loop calls
+            # Skill(aspirations) by that name, and the bash tool's typed-as-command refusal
+            # (ADR-0098) resolves it through this alias.
+            self.registry.register(UseSkillTool(), aliases=["Skill"])
             skill_resolver = _SkillToolResolver(self)
 
         # Rules: always-on guidance (bundled + user + project, incl. .claude/rules for
@@ -805,7 +808,7 @@ class Agent:
             if self.skill_registry is not None:
                 from zakcode.tools.builtins.use_skill import UseSkillTool
 
-                child_registry.register(UseSkillTool())
+                child_registry.register(UseSkillTool(), aliases=["Skill"])
             runner = SubAgentRunner(
                 provider=self.provider,
                 registry=child_registry,

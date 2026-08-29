@@ -287,6 +287,11 @@ class ToolContext(BaseModel):
     #: wires it when ``enable_rules``; ``None`` otherwise, so the tool returns a clean
     #: "rules not enabled" error rather than crashing.
     rule_registry: Any | None = None
+    #: The loop's :class:`ToolRegistry`, so the bash tool can recognise a registered tool
+    #: written as a shell command (``ScheduleWakeup(prompt=…)``) and refuse it with the
+    #: tool's real name and parameters instead of running it into a syntax error
+    #: (ADR-0098). ``None`` for a bare context: the check is simply skipped.
+    tool_registry: Any | None = None
     #: The user text that triggered THIS loop's turn — passed to ``use_skill`` so the
     #: ``ON_SKILL_SELECTED`` signal records the *invoking* turn's prompt (the sub-agent's task, not
     #: the parent's originating turn). Each loop stamps its own; empty for a loop that builds a

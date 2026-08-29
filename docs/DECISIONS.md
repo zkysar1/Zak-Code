@@ -3777,3 +3777,36 @@ the loop makes deliberately.
 `test_bash_enoent_typo_in_a_real_directory_names_its_siblings`,
 `test_bash_enoent_optional_file_in_a_real_directory_is_silent`,
 `test_bash_enoent_exact_hit_lists_the_family_beside_it`).
+
+## ADR-0098: A tool written as a shell command is refused before it runs
+
+**Context.** The Mind's loop skills show the deadman net as
+`ScheduleWakeup(prompt="<<autonomous-loop-dynamic>>", delaySeconds=600)` and the parked
+worker's re-poll the same way. On zc-03 (2026-08-29, eight Bodies on a 27B local model)
+the Bodies typed exactly that into the **bash** tool — five times in one session, a shell
+syntax error and a lost turn each — then wrote "The ScheduleWakeup needs to be a direct
+tool call, not a bash command. Let me fix this:" and never called it: a census of every
+transcript touched that day found **zero** `schedule_wakeup` invocations fleet-wide, so
+the net ADR-0094 built was never armed. The registry already knew the name — ADR-0094
+registered the Claude-Code-shaped alias — and bash reported a syntax error instead.
+
+**Decision.** The bash tool receives the loop's `ToolRegistry` on the `ToolContext`
+(`tool_registry`, `None` for a bare context) and, before running anything, matches
+`Name(arg…` at the start of the command against it (name or alias, active tools only).
+A hit is refused as an error carrying the tool's real name and its parameter names
+(`Call the schedule_wakeup tool directly with {prompt, delaySeconds}`), with
+`tool_typed_as_command: true` in the result data. A shell function definition
+(`name() {`) has nothing between its parens and never matches; an unknown name is left
+to the shell. `use_skill` gains the alias `Skill`, the name the Mind's loop uses for its
+re-entry, so `Skill(aspirations)` typed as a command resolves the same way.
+
+**Alternatives rejected.** Rewriting the command into a tool call — the model must learn
+the call shape, and a silent rewrite teaches nothing. A hint after the syntax error —
+the turn is already spent, and the 127/ENOENT hints show the model reads the refusal
+better than the error. Editing every skill page to remove the pseudo-call — the pages
+are shared with a harness that calls the tool by exactly that spelling.
+
+**Consequences.** Pinned in `tests/test_builtins.py`
+(`test_bash_refuses_a_tool_written_as_a_shell_call_and_names_the_tool`,
+`test_bash_still_runs_ordinary_commands_and_shell_functions`,
+`test_bash_without_a_registry_skips_the_check`, `test_tool_typed_as_command_predicate`).
