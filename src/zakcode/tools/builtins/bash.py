@@ -16,6 +16,7 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
+from zakcode.tools.builtins._suggest import suggest
 
 # Default and hard-cap timeouts, in seconds. The default stays short (most commands are quick),
 # but the cap is generous so a real build/test suite (often >60s) can finish with an explicit
@@ -56,33 +57,60 @@ def _windows_shell_fix(command: str, output: str) -> str | None:
 _NOT_FOUND_RE = re.compile(r"(?:line )?\d*:?\s*([^\s:]+): (?:command )?not found")
 #: ``bash: line 1: ./x.sh: Permission denied``.
 _PERM_DENIED_RE = re.compile(r"(?:line )?\d*:?\s*([^\s:]+): Permission denied")
-#: Directories never worth descending into when locating a script by basename.
-_SKIP_DIRS = frozenset({"node_modules", "__pycache__", ".venv", "venv", ".tox", ".mypy_cache"})
+#: Directories never worth descending into when locating a file by basename: VCS,
+#: dependency trees, virtualenvs and tool caches. Other dot-dirs ARE walked — a Mind
+#: deployment keeps its domain data and scripts under a hidden `.mind-data/`, and
+#: pruning every dot-dir left both the 127 hint and the ENOENT hint blind to the very
+#: directory the model was guessing at (measured 2026-08-29, zc-03).
+_SKIP_DIRS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".tox",
+        ".mypy_cache",
+        ".git",
+        ".hg",
+        ".svn",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".cache",
+        ".zakcode",
+    }
+)
 #: Bounded search: depth below the workspace root, and total directories visited.
 _FIND_MAX_DEPTH = 4
 _FIND_MAX_DIRS = 800
 
 
-def _locate_basename(root: Path, name: str) -> str | None:
-    """Workspace-relative path of the first file named ``name``, else None (bounded walk).
+def _locate_all(root: Path, name: str, limit: int = 3) -> list[str]:
+    """Workspace-relative paths of up to ``limit`` files named ``name`` (bounded walk).
 
-    Hidden dirs and dependency trees are pruned, depth and visited-dir count are capped,
-    so the search stays cheap even in a large repo — this only runs on a failed command.
+    VCS/dependency/cache trees are pruned, depth and visited-dir count are capped, so
+    the search stays cheap even in a large repo — this only runs on a failed command.
     """
     if not name or "/" in name or "\\" in name:
-        return None
+        return []
     root = root.resolve()
+    hits: list[str] = []
     for visited, (dirpath, dirnames, filenames) in enumerate(os.walk(root), start=1):
         rel_depth = len(Path(dirpath).relative_to(root).parts)
         if visited > _FIND_MAX_DIRS or rel_depth >= _FIND_MAX_DEPTH:
             dirnames[:] = []
         else:
-            dirnames[:] = sorted(
-                d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
-            )
+            dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
         if name in filenames:
-            return (Path(dirpath) / name).relative_to(root).as_posix()
-    return None
+            hits.append((Path(dirpath) / name).relative_to(root).as_posix())
+            if len(hits) >= limit:
+                break
+    return hits
+
+
+def _locate_basename(root: Path, name: str) -> str | None:
+    """Workspace-relative path of the first file named ``name``, else None."""
+    hits = _locate_all(root, name, limit=1)
+    return hits[0] if hits else None
 
 
 #: An inline-program Python invocation: ``python -c`` / ``python3 -c`` / ``py -3 -c``.
@@ -216,6 +244,69 @@ def _posix_exit_fix(command: str, output: str, exit_code: int, root: Path) -> st
     return None
 
 
+#: The "No such file" shapes shell tools and Python print, each capturing the path the
+#: command named. The earliest match in the output wins.
+_ENOENT_RES = (
+    # python3 x.py
+    re.compile(r"can't open file '([^']+)': \[Errno 2\] No such file or directory"),
+    # a Python program's own open()/read_text()
+    re.compile(r"FileNotFoundError: \[Errno 2\] No such file or directory: '([^']+)'"),
+    # ls
+    re.compile(r"cannot access '([^']+)': No such file or directory"),
+    # pytest
+    re.compile(r"ERROR: file or directory not found: (\S+)"),
+    # bash / cat / cd / head / source ... : `<tool>: <path>: No such file or directory`
+    re.compile(
+        r"(?m)^[\w.\-/]+: (?:line \d+: )?((?:[A-Za-z]:)?[^\s:'\"]+): No such file or directory"
+    ),
+)
+#: Names that are never a file the model meant: stdin markers and apport's `-c` artefact.
+_NOT_A_FILE = frozenset({"-", "-c", "<stdin>", "<string>"})
+
+
+def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
+    """Name where a missing file actually is, or its nearest names — else None.
+
+    Measured 2026-08-29 (zc-03, eight Bodies): 15 of the day's 73 failed commands were
+    ENOENT and every one was a guessed path — `world/scripts/reasoning-bank.py`,
+    `core/scripts/wm-list.sh`, `core/scripts/aspirations-write.sh`, `world/forged-skills.yaml`
+    for `.mind-data/world/forged-skills.yaml` — each followed by the model's own
+    find -> retry ritual, or a second guess. The file tools already answer a not-found
+    with the workspace's closest paths (ADR-0040); a shell command deserves the same
+    answer. No lead, no hint: a genuinely absent file stays a plain error.
+    """
+    best: re.Match[str] | None = None
+    for rx in _ENOENT_RES:
+        m = rx.search(output)
+        if m and (best is None or m.start() < best.start()):
+            best = m
+    if best is None:
+        return None
+    path = best.group(1).rstrip(".,;:")
+    name = Path(path).name
+    if not name or name in _NOT_A_FILE or name.startswith("<"):
+        return None
+    roots = [Path(root), *(Path(r) for r in extra_roots)]
+    hits: list[str] = []
+    for r in roots:
+        for rel in _locate_all(r, name):
+            hits.append(rel if r == roots[0] else (r / rel).as_posix())
+    if hits:
+        return (
+            f"'{path}' does not exist from the workspace root, but a file named '{name}' "
+            f"does: {', '.join(hits[:3])} — use that path (or `cd` there first) instead of "
+            "guessing another."
+        )
+    by_name, _ = suggest(path, roots[0], roots[1:], soft=True)
+    if by_name:
+        return (
+            f"'{path}' does not exist and nothing in the workspace is named '{name}'; "
+            f"closest names: {', '.join(by_name[:5])} — pick one of those or `ls` the "
+            "directory before inventing a third."
+        )
+    return None
+
+
 class BashTool(Tool):
     """Execute an arbitrary shell command with the workspace as the cwd."""
 
@@ -301,6 +392,7 @@ class BashTool(Tool):
             fix = (
                 _interpreter_mismatch_fix(command)
                 or _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
+                or _enoent_fix(output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots)
                 or _python_inline_fix(command, output)
                 or _windows_shell_fix(command, output)
             )

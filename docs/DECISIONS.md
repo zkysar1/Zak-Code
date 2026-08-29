@@ -3727,3 +3727,39 @@ model's to see.
 
 **Consequences.** Pinned in `tests/test_builtins.py`
 (`test_apport_excepthook_noise_is_stripped_from_bash_output`).
+
+## ADR-0097: A shell command's "No such file" names where the file actually is
+
+**Context.** On zc-03 (2026-08-29, eight Bodies on a 27B local model) 15 of the day's 73
+failed shell commands were ENOENT, and every one was a guessed path:
+`world/scripts/reasoning-bank.py` (the writer is `core/scripts/reasoning-bank-add.sh`),
+`core/scripts/wm-list.sh`, `core/scripts/aspirations-write.sh`,
+`.mind-data/world/scripts/tests/test_yahoo_skills_registry.py`, and
+`world/forged-skills.yaml` for `.mind-data/world/forged-skills.yaml`. Each was followed
+by the model's own find → retry ritual, or by a second guess. The file tools already
+answer a not-found with the workspace's closest paths (ADR-0040); the bash tool returned
+the bare `cat: …: No such file or directory` and left the search to the model.
+
+**Decision.** On a non-zero exit the bash tool reads the "No such file" shapes — python's
+`can't open file '…'` and `FileNotFoundError: [Errno 2] … '…'`, `ls: cannot access '…'`,
+pytest's `ERROR: file or directory not found: …`, and `<tool>: <path>: No such file or
+directory` — and, for the earliest one, names where a file by that basename actually is
+under the workspace roots (up to three, workspace-relative), else the closest names from
+ADR-0040's `suggest`, else nothing: a genuinely absent file stays a plain error, no
+speculative hint. The basename locator (shared with the exit-127 hint) now descends into
+hidden data dirs and prunes only VCS, virtualenv, dependency and cache dirs; it used to
+prune every dot-dir, so on a Mind deployment neither hint could see `.mind-data/`, the
+directory the model was guessing at. Stdin markers and apport's `-c` artefact are never a
+file the model meant.
+
+**Alternatives rejected.** Rewriting the command's cwd for the model — the guess is the
+problem, not the cwd. Hinting on every ENOENT with a generic "list the directory first" —
+a hint with no lead is noise on the optional-file checks (`cat …/iteration-checkpoint.json`)
+the loop makes deliberately.
+
+**Consequences.** Pinned in `tests/test_builtins.py`
+(`test_bash_enoent_names_where_the_file_actually_is`,
+`test_bash_enoent_offers_the_nearest_names_for_an_invented_script`,
+`test_bash_enoent_with_no_lead_gets_no_fix`,
+`test_enoent_fix_predicate_reads_every_measured_shape`,
+`test_locate_basename_sees_hidden_data_dirs_but_not_vcs_or_caches`).

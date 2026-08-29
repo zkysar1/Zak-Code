@@ -384,6 +384,105 @@ async def test_bash_126_names_the_chmod_escape(tmp_path) -> None:
     assert res.fix is not None and "chmod +x" in res.fix and "bash ./doit.sh" in res.fix
 
 
+# ── ENOENT hints (2026-08-29) ─────────────────────────────────────────────────
+
+
+def _mind_workspace(tmp_path: Path) -> Path:
+    """The shape of a Mind deployment: framework scripts under core/scripts, the domain's
+    data under a HIDDEN .mind-data/ (which the basename locator used to prune), and a
+    .git/ that must never be offered as a lead."""
+    scripts = tmp_path / "core" / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("reasoning-bank-add.sh", "reasoning-bank-read.sh"):
+        (scripts / name).write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+    world = tmp_path / ".mind-data" / "world"
+    world.mkdir(parents=True)
+    (world / "forged-skills.yaml").write_text("skills: []\n", encoding="utf-8")
+    objects = tmp_path / ".git" / "objects"
+    objects.mkdir(parents=True)
+    (objects / "forged-skills.yaml").write_text("no", encoding="utf-8")
+    return tmp_path
+
+
+async def test_bash_enoent_names_where_the_file_actually_is(tmp_path) -> None:
+    """`cat world/forged-skills.yaml` on a Mind deployment: the file lives at
+    .mind-data/world/forged-skills.yaml. Measured 2026-08-29 (zc-03, eight Bodies): 15 of
+    the day's 73 failed commands were ENOENT, every one a guessed path."""
+    ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
+    res = await BashTool().execute({"command": "cat world/forged-skills.yaml"}, ctx)
+    assert res.is_error
+    assert res.data is not None and res.data["exit_code"] != 0
+    assert res.fix is not None
+    assert ".mind-data/world/forged-skills.yaml" in res.fix
+    assert ".git/" not in res.fix
+
+
+async def test_bash_enoent_offers_the_nearest_names_for_an_invented_script(tmp_path) -> None:
+    """`python3 world/scripts/reasoning-bank.py add …` — no such script anywhere; the real
+    writers are reasoning-bank-add.sh / reasoning-bank-read.sh."""
+    ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
+    res = await BashTool().execute(
+        {"command": "python3 world/scripts/reasoning-bank.py add --entry x"}, ctx
+    )
+    assert res.is_error
+    assert res.fix is not None
+    assert "core/scripts/reasoning-bank-add.sh" in res.fix
+    assert "reasoning-bank.py" in res.fix
+
+
+async def test_bash_enoent_with_no_lead_gets_no_fix(tmp_path) -> None:
+    """A genuinely absent file with nothing similar in the workspace stays a plain error
+    — no speculative hint."""
+    ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
+    res = await BashTool().execute(
+        {"command": "cat agents/coach/session/iteration-checkpoint.json"}, ctx
+    )
+    assert res.is_error
+    assert res.fix is None
+
+
+def test_enoent_fix_predicate_reads_every_measured_shape(tmp_path) -> None:
+    from zakcode.tools.builtins.bash import _enoent_fix
+
+    root = _mind_workspace(tmp_path)
+    shapes = [
+        "python3: can't open file '/opt/mind/.mind-data/world/scripts/reasoning-bank.py': "
+        "[Errno 2] No such file or directory",
+        'Traceback (most recent call last):\n  File "<string>", line 14, in <module>\n'
+        "FileNotFoundError: [Errno 2] No such file or directory: 'world/forged-skills.yaml'",
+        "ls: cannot access 'world/forged-skills.yaml': No such file or directory",
+        "ERROR: file or directory not found: /opt/mind/world/forged-skills.yaml\n\n",
+        "bash: world/forged-skills.yaml: No such file or directory",
+        "cat: world/forged-skills.yaml: No such file or directory",
+        "bash: line 1: ./world/forged-skills.yaml: No such file or directory",
+    ]
+    for out in shapes:
+        assert _enoent_fix(out, root, []) is not None, out
+    nearest = _enoent_fix(shapes[0], root, [])
+    assert nearest is not None and "reasoning-bank-add.sh" in nearest
+    exact = _enoent_fix(shapes[2], root, [])
+    assert exact is not None and ".mind-data/world/forged-skills.yaml" in exact
+    # apport's own crash names '<cwd>/-c' — never a hint about a file called -c.
+    assert (
+        _enoent_fix(
+            "FileNotFoundError: [Errno 2] No such file or directory: '/opt/mind/-c'", root, []
+        )
+        is None
+    )
+    assert _enoent_fix("cat: nothing-like-this.txt: No such file or directory", root, []) is None
+    assert _enoent_fix("all good\n", root, []) is None
+
+
+def test_locate_basename_sees_hidden_data_dirs_but_not_vcs_or_caches(tmp_path) -> None:
+    from zakcode.tools.builtins.bash import _locate_basename
+
+    root = _mind_workspace(tmp_path)
+    assert _locate_basename(root, "forged-skills.yaml") == ".mind-data/world/forged-skills.yaml"
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "bin" / "only-here.sh").write_text("no", encoding="utf-8")
+    assert _locate_basename(root, "only-here.sh") is None
+
+
 @pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
 async def test_bash_python_inline_parse_error_gets_file_hint(tmp_path) -> None:
     """A failed inline ``python -c`` program with a Syntax/IndentationError gets the
