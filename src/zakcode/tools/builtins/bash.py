@@ -143,6 +143,39 @@ def _python_inline_fix(command: str, output: str) -> str | None:
     )
 
 
+#: Script output piped into a Python program: ``… | python3 -c '…'`` / ``… | python3 -``.
+_PIPE_INTO_PY_RE = re.compile(r"\|\s*(?:python[0-9.]*|py)(?=\s|$)")
+#: ``json.loads`` on a first line that is a lone ``[`` or ``{``: the upstream printed a
+#: pretty-printed document (one record over many lines), and the program read one line.
+#: ``char 1`` when the line was stripped, ``line 2 … char 2`` when its newline came along.
+_JSON_FIRST_LINE_RE = re.compile(
+    r"JSONDecodeError: Expecting value: line (?:1 column 2 \(char 1\)|2 column 1 \(char 2\))"
+)
+
+
+def _json_first_line_fix(command: str, output: str) -> str | None:
+    """A remedy hint when a piped-in Python parser choked on the first line of a
+    pretty-printed JSON document, else None.
+
+    Measured 2026-08-30 (zc-03, two sessions): ``aspirations-query.sh … | python3 -c`` and
+    ``goal-selector.sh … | python3 -c`` both died with ``Expecting value: line 1 column 2
+    (char 1)`` — the signature of ``json.loads("[")``: the wrapper prints an indented
+    document, the program parsed it line by line as JSONL. The error names a column, not
+    the cause, so the model reads it as broken output and re-runs the wrapper.
+    """
+    if not _JSON_FIRST_LINE_RE.search(output):
+        return None
+    if not _PIPE_INTO_PY_RE.search(command):
+        return None
+    return (
+        "The parser choked on the FIRST LINE of the piped-in output, which was a lone `[` "
+        "or `{`: the upstream prints a pretty-printed JSON document (one record spread over "
+        "many lines), not JSONL. Parse the whole stream — `json.load(sys.stdin)` — instead "
+        "of `json.loads` per line or on `readline()`; the result may be a list, so index or "
+        "iterate it. The upstream output is fine; do not re-run it."
+    )
+
+
 #: A script fed to the wrong interpreter (ADR-0093): ``python3 x.sh`` / ``py -3 x.sh`` (a shell
 #: script parsed as Python) or ``bash x.py`` / ``sh x.py`` (Python run as shell). The script
 #: must be the first non-option argument, as a bare path with the mismatched extension — an
@@ -693,6 +726,7 @@ class BashTool(Tool):
                 or _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
                 or _enoent_fix(output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots)
                 or _python_inline_fix(command, output)
+                or _json_first_line_fix(command, output)
                 or _windows_shell_fix(command, output)
             )
             return ToolResult.error(combined, data=data, fix=fix)
