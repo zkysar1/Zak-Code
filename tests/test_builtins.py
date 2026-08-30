@@ -775,6 +775,52 @@ async def test_bash_python_inline_parse_error_gets_file_hint(tmp_path) -> None:
     assert "write the program to a file" in res.fix
 
 
+def test_json_first_line_fix_predicate() -> None:
+    """`wrapper.sh | python3 -c` dying on `Expecting value: line 1 column 2 (char 1)` is
+    json.loads on a lone `[`/`{` — the upstream printed a pretty-printed document and the
+    program read it line by line (measured 2026-08-30, zc-03, two sessions)."""
+    from zakcode.tools.builtins.bash import _json_first_line_fix
+
+    err = (
+        'Traceback (most recent call last):\n  File "<string>", line 3, in <module>\n'
+        "json.decoder.JSONDecodeError: Expecting value: line 1 column 2 (char 1)\n"
+    )
+    fix = _json_first_line_fix(
+        "bash core/scripts/aspirations-query.sh --full 2>&1 | python3 -c 'x'", err
+    )
+    assert fix is not None and "json.load(sys.stdin)" in fix and "not JSONL" in fix
+    heredoc = "cat out.json | python3 - <<'PY'\nimport json\nPY"
+    assert _json_first_line_fix(heredoc, err) is not None
+    # The line came with its newline (`for line in sys.stdin`): same lone bracket, shifted.
+    with_newline = "JSONDecodeError: Expecting value: line 2 column 1 (char 2)"
+    assert _json_first_line_fix("bash x.sh | python3 -c 'x'", with_newline) is not None
+    # Not a pipe into Python: the parser's input was not another command's output.
+    assert (
+        _json_first_line_fix("python3 -c 'import json; json.loads(open(\"x\").read())'", err)
+        is None
+    )
+    # A different JSON error position is a different problem.
+    assert (
+        _json_first_line_fix(
+            "bash x.sh | python3 -c 'x'",
+            "JSONDecodeError: Expecting value: line 1 column 1 (char 0)",
+        )
+        is None
+    )
+
+
+async def test_bash_json_first_line_hint_rides_the_error(tmp_path) -> None:
+    """End to end through the tool: the remedy lands in res.fix beside the traceback."""
+    ctx = ToolContext(workspace_root=tmp_path)
+    cmd = (
+        "printf '[\\n  {\"a\": 1}\\n]\\n' | python3 -c "
+        "'import json, sys\nfor line in sys.stdin:\n    json.loads(line)'"
+    )
+    res = await BashTool().execute({"command": cmd}, ctx)
+    assert res.is_error
+    assert res.fix is not None and "json.load(sys.stdin)" in res.fix
+
+
 def test_python_inline_fix_predicate() -> None:
     from zakcode.tools.builtins.bash import _python_inline_fix
 
