@@ -4152,3 +4152,18 @@ created by an earlier stage of the same command that is not a redirection (`git 
 && bash repo/run.sh`) — costs one split command. Pinned in `tests/test_builtins.py`
 (refusal with lead, pipe never runs, existing script and literal `cd` run, `$VAR`/heredoc
 fail open, same-command write skipped, extra root honoured).
+
+**Amendment (#329, 2026-08-30) — leading `VAR=value` assignments are stepped over.** The
+scan anchored the interpreter at a command start, so the fleet's own idiom — `cd … &&
+MIND_AGENT=coach AYOAI_AGENT=coach STORAGE_BACKEND=local bash core/scripts/x.sh`, the
+Mind's hook-injection prefix that every Body copies into every command — was never
+checked. Measured over the same fleet's next 24 h: 165 of 454 script invocations (36 %)
+carried leading assignments, and five of them named a script that does not exist
+(`loop-orchestrator-entry-battery.sh`, `runner-heartbeat-tick.sh`, `goal-scorer.sh`,
+`wm-list.sh`, `parse-flags.sh`) — each a bare 127 the model spent a ~7-minute step on,
+the reducer's first loop entry among them. The regex now accepts any run of `\w+=…`
+tokens between the anchor and the interpreter; an assignment alone, or one followed by a
+non-interpreter (`FOO=1 ls x.sh`), is still not an invocation. Lesson for the next shape:
+when a case a guard was built for still reaches the model, diff the guard's predicate
+against the live command shapes (a 20-line regex census over the session documents)
+before concluding the model was unlucky.
