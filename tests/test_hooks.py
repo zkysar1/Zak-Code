@@ -58,6 +58,33 @@ async def test_in_process_block_vetoes() -> None:
     assert "nope" in result.message
 
 
+async def test_block_reason_leads_the_joined_message() -> None:
+    """An allowing hook's advisory must not stand in front of the veto.
+
+    Measured 2026-08-30 (zc-03): a Mind path hook emitted "[stray-root-advisory] …" on
+    allow, a later hook refused an inline store parse, and the joined text read
+    "Blocked by hook for 'bash': [stray-root-advisory] …; direct store parse refused …"
+    — the model took the advisory for the reason, four times in three hours."""
+
+    def advise(payload: HookPayload) -> HookResult:
+        return HookResult(decision=HookDecision.ALLOW, messages=["[advisory] stray dir"])
+
+    def veto(payload: HookPayload) -> HookResult:
+        return HookResult(decision=HookDecision.BLOCK, messages=["store parse refused"])
+
+    mgr = HookManager(in_process={HookEvent.PRE_TOOL_USE: [advise, veto]})
+    result = await mgr.run(_payload())
+    assert result.blocked
+    assert result.messages == ["store parse refused", "[advisory] stray dir"]
+    assert result.message.startswith("store parse refused")
+
+    # Outside PreToolUse a BLOCK cannot veto (it degrades to WARN) and keeps run order.
+    mgr = HookManager(in_process={HookEvent.POST_TOOL_USE: [advise, veto]})
+    result = await mgr.run(_payload(event=HookEvent.POST_TOOL_USE))
+    assert not result.blocked
+    assert result.messages == ["[advisory] stray dir", "store parse refused"]
+
+
 async def test_in_process_async_hook_supported() -> None:
     async def veto(payload: HookPayload) -> HookResult:
         return HookResult(decision=HookDecision.BLOCK, messages=["async no"])

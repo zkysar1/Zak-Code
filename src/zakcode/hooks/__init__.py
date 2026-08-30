@@ -669,7 +669,16 @@ class HookManager:
         if one is None:
             return (decision, messages, arguments, mutated)
         if one.message:
-            messages.append(one.message)
+            # A PreToolUse BLOCK leads the joined message. The model reads the FIRST
+            # clause as THE reason, and an earlier allowing hook's advisory in front of
+            # the veto reads as the veto itself — measured 2026-08-30 (zc-03): "Blocked by
+            # hook for 'bash': [stray-root-advisory] A literal 'world/' directory exists
+            # …; direct store parse refused: inline Python parsing `journal.jsonl`", four
+            # times in three hours, each read as "blocked by the stray directory".
+            if one.decision is HookDecision.BLOCK and event is HookEvent.PRE_TOOL_USE:
+                messages.insert(0, one.message)
+            else:
+                messages.append(one.message)
         # PostToolUse additionalContext (hook-injected context) accumulates alongside messages so
         # HookManager.run carries it out — the loop reads result.additional_context (not just the
         # single-hook _parse_stdout) and appends it to the tool output.
