@@ -485,6 +485,26 @@ async def test_bash_enoent_typo_in_a_real_directory_names_its_siblings(tmp_path)
     assert "history-list.sh" not in res.fix
 
 
+async def test_bash_enoent_same_words_in_another_order_lead_the_hint(tmp_path) -> None:
+    """`bash core/scripts/blocker-create.sh` when the script is `create-blocker.sh`: the
+    leading-token family (blocker-create-gate.sh, blocker-recheck.sh) is not the answer
+    and used to be the whole hint — measured 2026-08-30 (zc-03), six more commands to
+    find the real file. The reordered name leads, as a pasteable path."""
+    root = _mind_workspace(tmp_path)
+    scripts = root / "core" / "scripts"
+    for name in ("create-blocker.sh", "blocker-create-gate.sh", "blocker-recheck.sh"):
+        (scripts / name).write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+    ctx = ToolContext(workspace_root=root)
+    res = await BashTool().execute(
+        {"command": "bash core/scripts/blocker-create.sh --goal g-006-22"}, ctx
+    )
+    assert res.is_error
+    assert res.fix is not None
+    assert "same words in another order" in res.fix
+    assert res.fix.index("core/scripts/create-blocker.sh") < res.fix.index("blocker-create-gate.sh")
+    assert "blocker-recheck.sh" in res.fix
+
+
 async def test_bash_enoent_optional_file_in_a_real_directory_is_silent(tmp_path) -> None:
     """A deliberate check of an optional file (`cat <session>/iteration-checkpoint.json`)
     in a directory that exists, with nothing similar beside it, gets NO hint — the

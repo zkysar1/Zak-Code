@@ -311,7 +311,18 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
         # the leading token: `wm-list.sh` beside `wm-read.sh`), a directory guessed at
         # the wrong place (`ls world/` for `.mind-data/world`), or a deliberate check of
         # an optional file — which gets no hint, because there is no lead.
-        kin = _prefix_siblings(parent, name)
+        same_words = _reordered_siblings(parent, name)
+        kin = [k for k in _prefix_siblings(parent, name) if k not in same_words]
+        if same_words:
+            # The words are right and the order is not: name the real file FIRST, as a
+            # path the model can paste, and keep the leading-token family as an aside.
+            rel_parent = _guess_relative(str(parent), roots)
+            paths = [f"{rel_parent}/{s}" if rel_parent not in ("", ".") else s for s in same_words]
+            kin_note = f" (other names there: {', '.join(kin[:4])})" if kin else ""
+            return (
+                f"'{path}' does not exist, but the same words in another order do: "
+                f"{', '.join(paths[:3])} — use that exactly as written{kin_note}."
+            )
         if kin:
             return (
                 f"'{path}' does not exist; that directory holds "
@@ -455,6 +466,30 @@ def _prefix_siblings(directory: Path, name: str) -> list[str]:
     except OSError:
         return []
     return [e for e in entries if e.lower().startswith(token) and e != name]
+
+
+def _reordered_siblings(directory: Path, name: str) -> list[str]:
+    """Files in ``directory`` made of exactly ``name``'s words in another order
+    (`create-blocker.sh` for a guessed `blocker-create.sh`).
+
+    Measured 2026-08-30 (zc-03): a Body guessed `core/scripts/blocker-create.sh`; the
+    leading-token family offered `blocker-create-gate.sh`, `blocker-recheck.sh` — none of
+    them the script — and the Body spent six more commands (`ls`, three `grep -rl`, two
+    reads) finding `create-blocker.sh` on its own. Same multiset of tokens, extension
+    included, is a stronger lead than a shared first word and is listed first.
+    """
+    want = sorted(t for t in _TOKEN_SPLIT_RE.split(name.lower()) if t)
+    if len(want) < 2:
+        return []
+    try:
+        entries = sorted(e.name for e in directory.iterdir() if e.is_file())
+    except OSError:
+        return []
+    return [
+        e
+        for e in entries
+        if e != name and sorted(t for t in _TOKEN_SPLIT_RE.split(e.lower()) if t) == want
+    ]
 
 
 #: ``Name(arg…`` at the very start of a command: a tool CALL written as shell. A shell
