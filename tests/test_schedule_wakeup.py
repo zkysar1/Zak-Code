@@ -9,7 +9,10 @@ slot is persisted with the session, and the REPL's idle wait hands the due promp
 
 from __future__ import annotations
 
+import json
+import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +21,13 @@ from zakcode.cli import _InputMux
 from zakcode.hooks import HookEvent, HookPayload, HookSpec, wire_payload
 from zakcode.messages import Message
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
+from zakcode.session.say_inbox import (
+    BUSY_STALE_SECONDS,
+    busy_elsewhere,
+    busy_path,
+    say_pending,
+    write_say,
+)
 from zakcode.session.store import Session, SessionStore
 from zakcode.tools import default_registry
 from zakcode.tools.base import ToolContext, ToolRegistry
@@ -313,3 +323,39 @@ def test_typed_and_said_input_win_over_a_due_wakeup(tmp_path: Path) -> None:
     assert mux.try_input() == ("line", "a human typed this")
     assert slot.pending() is not None  # still held: the person's line went first
     assert mux.try_input() == ("harness", "[harness] scheduled wake-up: later")
+
+
+def test_a_due_wakeup_fires_while_another_process_turn_holds_the_workspace(
+    tmp_path: Path,
+) -> None:
+    # ADR-0094 amendment: the busy marker (ADR-0060) guards the say inbox — ONE slot the
+    # whole workspace shares — not the session's own wake-up. Eight Bodies on one checkout
+    # keep the marker fresh around the clock (zc-03, 2026-08-30: 12/12 samples over 60 s),
+    # so a parked Body that stood back behind it never woke.
+    _, slot = _slot(_Clock(1_000.0))
+    slot.arm(LOOP_SENTINEL, 60)
+    inbox = tmp_path / "say"
+    mux = _InputMux(
+        inbox, tmp_path / "stop", keyboard=False, wakeup_probe=lambda: slot.take_due(now=5_000.0)
+    )
+    assert write_say(inbox, "for the runner")
+    marker = busy_path(tmp_path)
+    foreign = {"pid": os.getpid() + 100_000, "session": "other", "since": time.time()}
+    marker.write_text(json.dumps(foreign) + "\n", encoding="utf-8")
+    assert busy_elsewhere(marker)  # a FRESH marker names another process's turn
+
+    # The say stands back for the turn that owns the inbox (ADR-0060, untouched) — the
+    # session's own wake-up does not: both doors hand it over under the marker.
+    assert mux.try_input() == ("harness", LOOP_LINE)
+    assert say_pending(inbox) and slot.pending() is None
+    slot.arm("poll the reducer", 60)
+    stop = threading.Event()  # bounds the wait: a regression here otherwise spins until the
+    threading.Timer(2.0, stop.set).start()  # marker ages out (120 s) and the say arrives
+    woke = mux.next_input(idle=True, stop=stop)
+    assert woke == ("harness", "[harness] scheduled wake-up: poll the reducer")
+    assert say_pending(inbox)
+
+    # Positive control: the marker is what held the say back — aged out, the say arrives.
+    stale = time.time() - BUSY_STALE_SECONDS - 5
+    os.utime(marker, (stale, stale))
+    assert mux.try_input() == ("say", "for the runner")

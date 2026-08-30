@@ -1120,6 +1120,8 @@ class _InputMux:
         #: Asked while the REPL is idle (ADR-0094): a due wake-up's line ends the wait as
         #: ``("harness", line)`` — the session's own scheduled prompt, delivered exactly where
         #: a typed line would be. Never consulted mid-turn: a wake-up fires at a prompt only.
+        #: Asked even while another process's turn holds the busy marker — that marker
+        #: guards the SHARED say slot, and this session's wake-up is nobody else's to take.
         self._wakeup_probe = wakeup_probe
         self._idle_probe_every = 5.0
         # First probe one interval in, not on the first idle poll: a restart at the very
@@ -1234,9 +1236,13 @@ class _InputMux:
                         if self._idle_probe():
                             return ("restart", None)
                 # A due wake-up is the session's own prompt (ADR-0094): it fires only at an
-                # idle prompt that nothing typed or said has claimed first, and stands back
-                # like a say while another process's turn owns the session.
-                if idle and not standing_back and self._wakeup_probe is not None:
+                # idle prompt that nothing typed or said has claimed first. It does NOT
+                # stand back behind the busy marker: the marker guards the say inbox — ONE
+                # slot the whole workspace shares — while a wake-up is held per session and
+                # no other process can take it. Eight Bodies on one checkout keep the marker
+                # fresh around the clock, and a parked Body that waited behind it never woke
+                # (ADR-0094 amendment).
+                if idle and self._wakeup_probe is not None:
                     woke = self._wakeup_probe()
                     if woke is not None:
                         return ("harness", woke)
@@ -1265,7 +1271,7 @@ class _InputMux:
         except queue.Empty:
             if self._eof:
                 return ("eof", None)
-            if not standing_back and self._wakeup_probe is not None:
+            if self._wakeup_probe is not None:  # never behind the marker (ADR-0094 amendment)
                 woke = self._wakeup_probe()  # a due wake-up is already here too (ADR-0094)
                 if woke is not None:
                     return ("harness", woke)
