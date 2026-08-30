@@ -1072,3 +1072,29 @@ def test_script_path_missing_predicate(tmp_path) -> None:
     assert (
         missing is not None and "aspirations-read-goal.sh" in missing and "was not run" in missing
     )
+
+
+def test_script_path_preflight_steps_over_leading_env_assignments(tmp_path) -> None:
+    """The fleet's dominant shape (36 % of script invocations, measured 2026-08-30):
+    `cd <ws> && VAR=v VAR2=v2 bash core/scripts/x.sh`. The assignments are not a
+    command start, so the anchor alone let every one of these through."""
+    from zakcode.tools.builtins.bash import _script_path_missing
+
+    root = _script_workspace(tmp_path)
+    fleet = (
+        "cd . && MIND_AGENT=coach AYOAI_AGENT=coach STORAGE_BACKEND=local "
+        "bash core/scripts/loop-orchestrator-entry-battery.sh 2>&1; echo RC=$?"
+    )
+    missing = _script_path_missing(fleet, root, [])
+    assert missing is not None and "loop-orchestrator-entry-battery.sh" in missing
+    assert "was not run" in missing
+    # the same prefix on an EXISTING script still runs
+    assert _script_path_missing("MIND_AGENT=coach bash core/scripts/ok.sh", root, []) is None
+    # a value carrying a path or an `=` does not confuse the step-over
+    assert (
+        _script_path_missing("PYTHONPATH=core/scripts X=a=b python3 core/scripts/nope.py", root, [])
+        is not None
+    )
+    # an assignment alone, or one followed by a non-script, is not an invocation
+    assert _script_path_missing("FOO=core/scripts/nope.sh; echo done", root, []) is None
+    assert _script_path_missing("FOO=1 ls core/scripts/nope.sh", root, []) is None

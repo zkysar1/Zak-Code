@@ -629,8 +629,16 @@ def _tool_typed_as_command(command: str, registry: Any) -> str | None:
 #: An interpreter (or ``source``/``.``) followed by a RELATIVE script path — at least one
 #: slash, a script extension, no `$`/quote (an unexpandable path is not checked). This is
 #: the shape a Body types when it names a Mind script from memory: `bash core/scripts/x.sh`.
+#:
+#: Leading ``VAR=value`` assignments are stepped over. They are not decoration on this
+#: fleet: measured 2026-08-30 (zc-03, eight Bodies, 24 h) 165 of 454 script invocations
+#: were ``cd … && MIND_AGENT=coach AYOAI_AGENT=coach STORAGE_BACKEND=local bash
+#: core/scripts/x.sh`` — 36 %, invisible to the start-of-command anchor — and five of them
+#: named a script that does not exist (``loop-orchestrator-entry-battery.sh``,
+#: ``runner-heartbeat-tick.sh``, ``goal-scorer.sh``, ``wm-list.sh``, ``parse-flags.sh``),
+#: each reaching bash as a 127 the model then spent a ~7-minute step on.
 _SCRIPT_INVOCATION_RE = re.compile(
-    r"(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+)\s*(bash|sh|python3?|source|\.)\s+"
+    r"(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+)\s*(?:\w+=[^\s;&|]*\s+)*(bash|sh|python3?|source|\.)\s+"
     r"((?:[\w.\-]+/)+[\w.\-]+\.(?:sh|bash|py))(?=\s|$|[;&|)])"
 )
 #: ``cd <target>`` — the only cwd change this preflight follows (an absolute or
