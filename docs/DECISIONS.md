@@ -3650,7 +3650,8 @@ delivery at the next idle prompt on or after the due time. The held wake-up is a
 the session document (`pending_wakeup`), written on every change through the loop's
 persist, so it survives the ADR-0034 restart into a new build and a `/resume`. The REPL's
 idle wait (`_InputMux`) asks the slot for a due wake-up only when nothing typed or said is
-already there, and stands back while another process's turn owns the session; the line
+already there — and, since the amendment below, without standing back behind another
+process's busy marker (as first shipped it did, and a parked Body never woke); the line
 arrives as `("harness", …)` — the ADR-0090 door, echoed with the same tag. The sentinel
 prompt fires as an explicit re-enter-the-loop instruction; any other prompt fires as
 `[harness] scheduled wake-up: <prompt>`. Nothing ever fires mid-turn. The hook name map
@@ -3670,6 +3671,24 @@ that arms one and finds it on disk; and the REPL door — a due wake-up from bot
 blocking and the non-blocking wait, never at a mid-turn consumer, and never ahead of a
 typed line. The `ToolContext` gains a `wakeup_slot` seam (None outside a session, where the
 tool errors cleanly).
+
+**Amendment (2026-08-30) — the wake-up does not stand back behind the busy marker.** As
+first shipped, the idle wait skipped the wake-up probe whenever ADR-0060's busy marker
+named another process — the same stand-back a say gets. The say slot is ONE file the whole
+workspace shares, so standing back is right for it; a wake-up is held per session and no
+other process can take it, so standing back only starves it. On a shared checkout the
+marker is never stale: measured on zc-03 (2026-08-30 05:36, eight Bodies on
+`/opt/coach-mind`), `.busy` was fresh in 12 of 12 samples over 60 s, refreshed every 30 s
+by whichever sibling was mid-turn, and worker w3 — parked at its prompt with its hourly
+re-poll due at 05:13 — sat unwoken 22 minutes later with the prompt still pending. Every
+parked Body since ADR-0094 shipped waited behind the same marker; the ADR-0090 dead-Body
+finding it was built to end had merely moved. The probe now runs at every idle poll and
+in the non-blocking peek, marker or no marker; the say still stands back. Pinned in
+`tests/test_schedule_wakeup.py`
+(`test_a_due_wakeup_fires_while_another_process_turn_holds_the_workspace`, with the say
+standing back under the same marker as the positive control). Lesson for the next shared
+resource: a stand-back rule written for a slot ONE process can own must not be copied onto
+a thing each process owns for itself — ask who else could take it before yielding.
 
 ## ADR-0095: A page without a marker finds its step by the words they share
 
