@@ -423,6 +423,32 @@ async def test_bash_enoent_names_where_the_file_actually_is(tmp_path) -> None:
     assert res.fix is not None and ".mind-data/world/forged-skills.yaml" in res.fix
 
 
+async def test_bash_wrong_prefix_hint_says_cd_will_not_help(tmp_path) -> None:
+    """Measured 2026-08-30 (zc-03): refused for `bash world/scripts/yahoo/discover.sh`
+    with the lead naming `.mind-data/world/scripts/yahoo/discover.sh`, the Body replied
+    `cd <workspace root> && <same command>` — it read "(or `cd` there first)" as a cwd
+    problem — and only after a second refusal used the path already named. When the
+    guess is the real path minus its leading directory, say exactly that."""
+    root = _mind_workspace(tmp_path)
+    script = root / ".mind-data" / "world" / "scripts" / "yahoo" / "discover.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("echo discovered\n", encoding="utf-8")
+    ctx = ToolContext(workspace_root=root)
+    res = await BashTool().execute({"command": "bash world/scripts/yahoo/discover.sh"}, ctx)
+    assert res.is_error and res.data is not None and res.data.get("script_path_missing") is True
+    assert "missing its leading '.mind-data/'" in res.output
+    assert "'.mind-data/world/scripts/yahoo/discover.sh' exactly as written" in res.output
+    assert "a `cd` will not help" in res.output
+    assert "or `cd` there first" not in res.output
+    # The generic wording survives for a same-named file in an UNRELATED directory.
+    ctx2 = ToolContext(workspace_root=_mind_workspace(tmp_path / "other"))
+    (tmp_path / "other" / "core" / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "other" / "core" / "scripts" / "discover.sh").write_text("", encoding="utf-8")
+    res = await BashTool().execute({"command": "bash tools/discover.sh"}, ctx2)
+    assert res.is_error and "or `cd` there first" in res.output
+    assert "will not help" not in res.output
+
+
 async def test_bash_enoent_offers_the_nearest_names_for_an_invented_script(tmp_path) -> None:
     """`python3 world/scripts/reasoning-bank.py add …` — no such script anywhere; the real
     writers are reasoning-bank-add.sh / reasoning-bank-read.sh."""

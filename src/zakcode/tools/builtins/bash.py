@@ -375,11 +375,23 @@ def _wrong_prefix_hint(
     first_root, first_rel = found[0]
     kin = _prefix_siblings((first_root / first_rel).parent, name)
     kin_note = f" (similar names there: {', '.join(kin[:5])})" if kin else ""
-    return (
+    lead = (
         f"'{path}' does not exist from the workspace root, but a file named '{name}' "
-        f"does: {', '.join(hits[:3])}{kin_note} — use that path (or `cd` there first) "
-        "instead of guessing another."
+        f"does: {', '.join(hits[:3])}{kin_note} — "
     )
+    guess = _guess_relative(path, roots)
+    if first_root == roots[0] and first_rel.endswith("/" + guess):
+        # The guess is the real path minus its leading directory. Say exactly that: the
+        # generic "(or `cd` there first)" read as a cwd problem — measured 2026-08-30
+        # (zc-03): a Body answered this hint with `cd <workspace root> && <same command>`,
+        # was refused again, and only then used the path the hint had already named.
+        prefix = first_rel[: -len(guess) - 1]
+        return lead + (
+            f"that is the same path missing its leading '{prefix}/' — use "
+            f"'{first_rel}' exactly as written; the cwd is already the workspace root, "
+            "so a `cd` will not help."
+        )
+    return lead + "use that path (or `cd` there first) instead of guessing another."
 
 
 def _guess_relative(path: str, roots: list[Path]) -> str:
