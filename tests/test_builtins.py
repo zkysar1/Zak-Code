@@ -821,6 +821,63 @@ async def test_bash_json_first_line_hint_rides_the_error(tmp_path) -> None:
     assert res.fix is not None and "json.load(sys.stdin)" in res.fix
 
 
+def test_module_not_found_fix_predicate(tmp_path) -> None:
+    from zakcode.tools.builtins.bash import _module_not_found_fix as fix
+
+    pkg = tmp_path / ".mind-data" / "world" / "scripts" / "yahoo"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text("X = 1\n", encoding="utf-8")
+    err = 'Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n'
+    # The measured shape: the package lives under a hidden data dir, cwd is the root.
+    hint = fix(err + "ModuleNotFoundError: No module named 'yahoo'", tmp_path, [])
+    assert hint is not None
+    assert ".mind-data/world/scripts/yahoo" in hint
+    assert "cd .mind-data/world/scripts && python3" in hint
+    assert "PYTHONPATH=.mind-data/world/scripts" in hint
+    # A dotted name whose top package exists but whose submodule does not: name what it holds.
+    hint = fix(err + "ModuleNotFoundError: No module named 'yahoo.oauth'", tmp_path, [])
+    assert hint is not None and "has no module 'oauth'" in hint and "client" in hint
+    # A dotted name whose submodule DOES exist gets the run-from hint, not the listing.
+    hint = fix(err + "ModuleNotFoundError: No module named 'yahoo.client'", tmp_path, [])
+    assert hint is not None and "cd .mind-data/world/scripts" in hint
+    # A single-file module counts too.
+    (tmp_path / "tools" / "lib").mkdir(parents=True)
+    (tmp_path / "tools" / "lib" / "helpers.py").write_text("", encoding="utf-8")
+    hint = fix(err + "ModuleNotFoundError: No module named 'helpers'", tmp_path, [])
+    assert hint is not None and "tools/lib/helpers.py" in hint and "cd tools/lib" in hint
+    # A directory with no Python in it is not a package; a genuinely absent package is silent.
+    (tmp_path / "docs" / "requests").mkdir(parents=True)
+    assert fix(err + "ModuleNotFoundError: No module named 'requests'", tmp_path, []) is None
+    assert fix(err + "ModuleNotFoundError: No module named 'nothing_here'", tmp_path, []) is None
+    assert fix("ImportError: cannot import name 'x' from 'yahoo'", tmp_path, []) is None
+
+
+@pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
+async def test_bash_module_not_found_names_the_package_parent(tmp_path) -> None:
+    """`cd <root> && python3 -c "import yahoo"` after the package moved under
+    .mind-data/world/scripts — five times in 24 h on zc-03 (2026-08-30), one identical
+    retry, no hint. The hint names the parent to run from and the PYTHONPATH form."""
+    pkg = tmp_path / ".mind-data" / "world" / "scripts" / "yahoo"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": 'python3 -c "import yahoo.client"'}, ctx)
+    assert res.is_error
+    assert res.fix is not None and "cd .mind-data/world/scripts && python3" in res.fix
+    # Followed as written, the remedy works.
+    res = await BashTool().execute(
+        {"command": 'cd .mind-data/world/scripts && python3 -c "import yahoo; print(1)"'}, ctx
+    )
+    assert not res.is_error
+
+
+async def test_bash_module_not_found_without_a_workspace_package_is_plain(tmp_path) -> None:
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute({"command": 'python3 -c "import surely_not_installed_xyz"'}, ctx)
+    assert res.is_error and res.fix is None
+
+
 def test_python_inline_fix_predicate() -> None:
     from zakcode.tools.builtins.bash import _python_inline_fix
 

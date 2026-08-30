@@ -153,6 +153,71 @@ _JSON_FIRST_LINE_RE = re.compile(
 )
 
 
+_MODULE_NOT_FOUND_RE = re.compile(r"ModuleNotFoundError: No module named '([\w.]+)'")
+
+
+def _importable_dir(path: Path) -> bool:
+    """A directory Python can import as a package: has ``__init__.py`` or any module."""
+    try:
+        return (path / "__init__.py").is_file() or any(
+            p.suffix == ".py" for p in path.iterdir() if p.is_file()
+        )
+    except OSError:
+        return False
+
+
+def _module_not_found_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
+    """Name where a package of that name lives in the workspace, else None.
+
+    Measured 2026-08-30 (zc-03, coach Bodies): five ``ModuleNotFoundError: No module
+    named 'yahoo'`` in 24 h across four sessions — every one ``cd <workspace> && python3
+    …`` after the package had been consolidated under ``.mind-data/world/scripts/yahoo``
+    — and one identical retry, because the error names the module and nothing names the
+    directory Python would have had to be run from. A dotted name whose top package IS
+    found but whose submodule is not gets the package's real module names instead. A
+    genuinely absent package (nothing in the workspace by that name) stays a plain
+    error: install guesses are not this hint's business.
+    """
+    m = _MODULE_NOT_FOUND_RE.search(output)
+    if m is None:
+        return None
+    parts = m.group(1).split(".")
+    top = parts[0]
+    roots = [Path(root), *(Path(r) for r in extra_roots)]
+    hits: list[tuple[Path, str]] = []  # (root, workspace-relative package dir or module file)
+    for r in roots:
+        hits.extend((r, rel) for rel in _locate_all(r, top, dirs=True) if _importable_dir(r / rel))
+        hits.extend((r, rel) for rel in _locate_all(r, f"{top}.py"))
+    if not hits:
+        return None
+    first_root, first_rel = hits[0]
+    if len(parts) > 1 and (first_root / first_rel).is_dir():
+        pkg = first_root / first_rel
+        sub = parts[1]
+        if not ((pkg / f"{sub}.py").is_file() or (pkg / sub).is_dir()):
+            modules = sorted(
+                p.stem for p in pkg.iterdir() if p.suffix == ".py" and p.stem != "__init__"
+            )
+            shown = ", ".join(modules[:8]) or "no modules"
+            return (
+                f"Package '{top}' is at {first_rel} but has no module '{sub}' — it holds: "
+                f"{shown}. Import one of those; do not invent a module name."
+            )
+    shown_hits = [rel if r == roots[0] else (r / rel).as_posix() for r, rel in hits[:3]]
+    parent = Path(shown_hits[0]).parent.as_posix()
+    run_from = (
+        f"`cd {parent} && python3 …`"
+        if parent not in ("", ".")
+        else (f"the workspace root (`cd {roots[0]}`)")
+    )
+    where = f"PYTHONPATH={parent}" if parent not in ("", ".") else f"PYTHONPATH={roots[0]}"
+    return (
+        f"No module named '{top}' on sys.path from this cwd, but the workspace has it: "
+        f"{', '.join(shown_hits)}. Python imports it from its parent directory — run from "
+        f"there ({run_from}) or prefix `{where}`; do not move or copy the package."
+    )
+
+
 def _json_first_line_fix(command: str, output: str) -> str | None:
     """A remedy hint when a piped-in Python parser choked on the first line of a
     pretty-printed JSON document, else None.
@@ -725,6 +790,9 @@ class BashTool(Tool):
                 _interpreter_mismatch_fix(command)
                 or _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
                 or _enoent_fix(output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots)
+                or _module_not_found_fix(
+                    output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots
+                )
                 or _python_inline_fix(command, output)
                 or _json_first_line_fix(command, output)
                 or _windows_shell_fix(command, output)
