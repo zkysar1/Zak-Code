@@ -123,8 +123,17 @@ def test_sidecar_health_suppresses_a_prior_sessions_ending(tmp_path: Path) -> No
     This is the whole reason the marker carries a session id. A bare reason marker is
     write-once and never false — until the next run, when a stale ``duration_cap`` still
     sitting on disk would be read as *this* run's ending and terminate a fresh run at
-    birth. The session fence makes the marker self-invalidating, so no clear-on-start
-    hook is needed and a missed clear cannot strand the next run.
+    birth.
+
+    The fence is necessary and NOT sufficient, and this docstring used to claim
+    otherwise ("so no clear-on-start hook is needed and a missed clear cannot strand the
+    next run"). It self-invalidates across session rotation inside a LIVING server only.
+    Across a reboot of the same persistent workspace both halves come back matching —
+    ``.current-session`` is persistent and only advances at the driver's next iteration —
+    so the comparison below is stale-to-stale and passes. That is g-369-86, and it ended
+    a production world 5.1 minutes after boot. The reboot case is covered by
+    ``test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot`` and by the
+    clear-at-run-start it pins; this test still owns the rotation case.
     """
     (tmp_path / ".current-session").write_text("sess-NEW\n", encoding="utf-8")
     (tmp_path / ".run-stop-reason").write_text("sess-OLD\nduration_cap", encoding="utf-8")
@@ -137,6 +146,70 @@ def test_sidecar_health_suppresses_a_prior_sessions_ending(tmp_path: Path) -> No
     # above would hold vacuously for any always-None implementation.
     (tmp_path / ".run-stop-reason").write_text("sess-NEW\nstopped", encoding="utf-8")
     assert _client(tmp_path).get("/sidecar/health").json()["last_run_stop_reason"] == "stopped"
+
+
+def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(tmp_path: Path) -> None:
+    """A marker that survived a REBOOT must not end the run that just started (g-369-86).
+
+    The session fence cannot catch this on its own, and the gap took down a production
+    world. ``.current-session`` is persistent and only advances at the driver's NEXT
+    iteration, so at boot it still names the session the PREVIOUS run ended on: marker
+    session and current session agree, the fence passes on a stale-to-stale comparison,
+    and the first ``/sidecar/health`` poll of a brand-new run reports ``duration_cap``.
+    Env debc47de died 5.1 minutes after boot on a day whose cap was 7080s.
+
+    Both files are therefore left in the MATCHING state a reboot produces — the exact
+    state the fence is blind to — not the mismatched state the rotation test uses.
+    """
+    (tmp_path / ".current-session").write_text("sess-777\n", encoding="utf-8")
+    (tmp_path / ".run-stop-reason").write_text("sess-777\nduration_cap", encoding="utf-8")
+
+    # Positive control FIRST, and it is what makes this test meaningful: with no run
+    # started, this is precisely the state the session fence green-lights. Without it
+    # the assertion below would hold vacuously for any always-None implementation, and
+    # it is also the literal pre-fix production behaviour.
+    before = _client(tmp_path).get("/sidecar/health").json()
+    assert before["last_run_stop_reason"] == "duration_cap"
+
+    # The reboot: a NEW server comes up on the SAME persistent workspace. Entering the
+    # TestClient context runs the real lifespan, which is what starts the run — so this
+    # exercises the production wiring, not a hand-called helper.
+    with TestClient(_make_app(tmp_path)) as client:
+        body = client.get("/sidecar/health").json()
+        assert body["last_run_stop_reason"] is None, (
+            "a prior run's ending survived a reboot and would terminate this run at "
+            "birth — the g-369-86 production incident"
+        )
+
+    # Assert the CLEANUP itself, not only its visible effect (guard-3218): a reader that
+    # merely suppressed the value would leave the landmine for the next consumer.
+    assert not (tmp_path / ".run-stop-reason").exists()
+
+
+def test_sidecar_health_still_reports_an_ending_from_the_RUNNING_process(
+    tmp_path: Path,
+) -> None:
+    """Clearing at run start must not disarm the signal the env-server depends on.
+
+    The clear above is a change to a SHARED contract — the Java BudgetMeterVerticle
+    polls this field to end the environment when a bounded run finishes, instead of
+    idling ~9.5min until the generic idle-monitor reaps it and marks the run FAILED. So
+    the fix is only correct if an ending written AFTER the run started is still
+    reported; a clear that swallowed those would trade a 5-minute death for a 9.5-minute
+    one and a false failure.
+    """
+    (tmp_path / ".current-session").write_text("sess-777\n", encoding="utf-8")
+    with TestClient(_make_app(tmp_path)) as client:
+        # Re-read rather than assuming: the consumer heals a marker that names a session
+        # the store does not have, and `_current_run_stop_reason` compares "" to None as
+        # equal, so this stays correct whether or not the id survived startup.
+        try:
+            sid = (tmp_path / ".current-session").read_text(encoding="utf-8").strip()
+        except OSError:
+            sid = ""
+        (tmp_path / ".run-stop-reason").write_text(f"{sid}\nduration_cap", encoding="utf-8")
+        body = client.get("/sidecar/health").json()
+        assert body["last_run_stop_reason"] == "duration_cap"
 
 
 def test_sidecar_endpoints_require_bearer_when_auth_configured(tmp_path: Path) -> None:
