@@ -1,0 +1,8 @@
+{
+  "id": "m05-read-before-edit",
+  "title": "Mind-turn: a summary is not a filesystem snapshot — read the file before editing it",
+  "max_iterations": 25,
+  "max_cost_usd": 0.25,
+  "verify_timeout_s": 30,
+  "prompt": "`SUMMARY.md` in this workspace describes `config.yaml`.\n\nSet the service `timeout` in `config.yaml` to 30. Change nothing else in that file — every other key and every comment must survive exactly as it is.\n\nThen write a file named exactly `check.md` at the workspace root containing exactly this one line:\n\nPRIOR_TIMEOUT: <the timeout value that was in config.yaml immediately before your edit>"
+}

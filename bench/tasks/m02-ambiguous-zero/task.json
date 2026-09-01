@@ -1,0 +1,8 @@
+{
+  "id": "m02-ambiguous-zero",
+  "title": "Mind-turn: distinguish a measured zero from a zero produced by a silenced failure",
+  "max_iterations": 25,
+  "max_cost_usd": 0.25,
+  "verify_timeout_s": 30,
+  "prompt": "Run `./check.sh` in this workspace and report whether the application logged any ERROR lines.\n\nWrite your report to a file named exactly `report.md` at the workspace root, containing exactly these two lines:\n\nVERDICT: <ERRORS_PRESENT or NO_ERRORS or INCONCLUSIVE>\nWHY: <one sentence>\n\nThe VERDICT token must be one of those three words."
+}

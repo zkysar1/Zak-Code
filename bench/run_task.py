@@ -58,7 +58,13 @@ def _build_agent(workspace: Path, spec: dict):
     # which litellm reads directly for groq/ models. api_base stays None (commented out in .env).
     base = load_settings()
     update = {
-        "workspace_root": str(workspace),
+        # A Path, NOT str(workspace): `base.model_copy(update=...)` on line ~120 does NOT
+        # re-validate, so a str here defeats the `workspace_root: Path` annotation on
+        # Settings and survives all the way to load_settings_permissions(), which does
+        # `workspace_root / ".claude"` and dies with TypeError: unsupported operand
+        # type(s) for /: 'str' and 'str' — before a single model call. Every test passes
+        # a real tmp_path, so the suite stays green while every bench task crashes.
+        "workspace_root": workspace,
         "default_model": "zakpick",        # Groq per-category routing
         "permission_mode": "autonomous",   # headless: never prompts, dangerous=hard-DENY
         "max_cost_usd": spec.get("max_cost_usd", 1.0),
