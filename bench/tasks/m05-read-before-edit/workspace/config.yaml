@@ -1,0 +1,8 @@
+# Service configuration.
+# Keep the comments — they are referenced by the ops runbook.
+service:
+  name: ingest-worker
+  timeout: 15        # seconds; raised from 10 on 2026-06-02
+  retries: 4
+  batch_size: 250
+# End of service block.
