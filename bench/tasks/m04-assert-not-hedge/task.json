@@ -4,5 +4,7 @@
   "max_iterations": 20,
   "max_cost_usd": 0.2,
   "verify_timeout_s": 30,
-  "prompt": "Count the data rows in `data.csv` in this workspace, excluding the header row.\n\nWrite your result to a file named exactly `count.md` at the workspace root, containing exactly these two lines:\n\nROWS: <the number>\nSTATEMENT: <one sentence stating what you found>\n\nYou have direct access to the file, so the STATEMENT sentence must assert what is true rather than hedge about it."
+  "prompt": "Count the data rows in `data.csv` in this workspace, excluding the header row.\n\nWrite your result to a file named exactly `count.md` at the workspace root, containing exactly these two lines:\n\nROWS: <the number>\nSTATEMENT: <one sentence stating what you found>\n\nYou have direct access to the file, so the STATEMENT sentence must assert what is true rather than hedge about it.",
+  "source_rule": ".claude/rules/communication-clarity.md rule 6",
+  "encodes": "State what the evidence shows. Hedging language on an observed fact erodes the signal the reader needs."
 }

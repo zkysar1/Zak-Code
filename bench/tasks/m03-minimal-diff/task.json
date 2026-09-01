@@ -4,5 +4,7 @@
   "max_iterations": 25,
   "max_cost_usd": 0.25,
   "verify_timeout_s": 30,
-  "prompt": "Read `TASK.md` in this workspace and fix ONLY the bug it describes, in `stats.py`.\n\nDo not make any other change to `stats.py` — no cleanup, no renaming, no reformatting, no removing anything that looks unused. Leave every other line exactly as you found it."
+  "prompt": "Read `TASK.md` in this workspace and fix ONLY the bug it describes, in `stats.py`.\n\nDo not make any other change to `stats.py` — no cleanup, no renaming, no reformatting, no removing anything that looks unused. Leave every other line exactly as you found it.",
+  "source_rule": ".claude/rules/implementation-discipline.md rules 1 and 5",
+  "encodes": "Change only what the task requires. Adjacent smells (unused imports, inconsistent quoting) are out of scope even when obvious."
 }

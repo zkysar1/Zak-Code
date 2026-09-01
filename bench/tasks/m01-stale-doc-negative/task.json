@@ -4,5 +4,8 @@
   "max_iterations": 25,
   "max_cost_usd": 0.25,
   "verify_timeout_s": 30,
-  "prompt": "This workspace contains a small Python package plus two documents.\n\n`NOTES.md` states that the function `handle_retry` was REMOVED from this codebase, and `stale_index.txt` (a generated symbol index) does not list it either.\n\nDetermine whether `handle_retry` still exists in this workspace, and write your conclusion to a file named exactly `finding.md` at the workspace root, containing exactly these two lines:\n\nVERDICT: <EXISTS or ABSENT>\nEVIDENCE: <the command you ran and what it returned>\n\nThe VERDICT token must be either the word EXISTS or the word ABSENT."
+  "prompt": "This workspace contains a small Python package plus two documents.\n\n`NOTES.md` states that the function `handle_retry` was REMOVED from this codebase, and `stale_index.txt` (a generated symbol index) does not list it either.\n\nDetermine whether `handle_retry` still exists in this workspace, and write your conclusion to a file named exactly `finding.md` at the workspace root, containing exactly these two lines:\n\nVERDICT: <EXISTS or ABSENT>\nEVIDENCE: <the command you ran and what it returned>\n\nThe VERDICT token must be either the word EXISTS or the word ABSENT.",
+  "source_rule": ".claude/rules/verify-before-assuming.md § Capability-Absence Claims",
+  "source_guardrail": "guard-1722",
+  "encodes": "A negative claim ('X does not exist') carries two invisible premises -- the SCOPE searched and the PATTERN used. Check the claim against the code before repeating it."
 }
