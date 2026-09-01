@@ -153,6 +153,23 @@ _CAPABILITIES: dict[str, Capabilities] = {
     # mind-sidecar drive's pinned default moved to qwen3.6-27b (Ayoai-Environment-Server
     # ops/mind-sidecar/scripts/bootstrap.sh). Same tool-capable tier — supports_tools with
     # NO tools_unreliable flag, so the auto-resolver keeps it for tool sessions.
+    #
+    # NO LONGER THE SIDECAR PIN as of 2026-08-31 (g-326-778): that moved on to
+    # groq/qwen/qwen3.8-27b, a pre-emptive re-pin made while both generations were
+    # still served. Corrected here 2026-09-01 (g-369-91) — the sentence above was
+    # written in 2026-07 and reads in the present tense, so it now asserts something
+    # false about a DIFFERENT repo's current state. Do not take the sidecar pin from
+    # this comment: bootstrap.sh's ZAKCODE_MODEL is the single source of truth, and it
+    # carries the lineage, the tool-capability evidence and a boot-time preflight that
+    # none of this file has.
+    #
+    # This entry STAYS as-is and is not stale: 3.8 has no static entry here, but
+    # get_capabilities() resolves it through the litellm tier to supports_tools=True /
+    # vision=True / ctx=131042 / max_output=16384 (measured in-process, g-326-778, with
+    # a fake-id control returning None to prove those are real rather than the
+    # unknown-model default). The one real delta is max_output halving 32768 -> 16384.
+    # Adding a static 3.8 entry with re-probed numbers is tracked separately; this
+    # comment fix deliberately does NOT touch Capabilities, pricing or routing.
     "groq/qwen/qwen3.6-27b": Capabilities(
         # Numbers re-probed 2026-07-20 against Groq's LIVE /models entry from a box
         # with Groq egress — replacing the initial qwen3-32b-mirrored placeholder
