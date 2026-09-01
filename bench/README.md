@@ -198,8 +198,26 @@ regression must not block a merge). A separate scheduled workflow,
 
 To compare configurations — e.g. **N-small fan-out vs one big model** (the small-model bet) — dispatch
 the workflow twice with different `model` overrides (or run `poe bench` locally with different
-`ZBENCH_*` / `ZAKCODE_*` env) and diff the two `results/*.json`. A committed time-series dashboard
-across runs is a natural follow-up.
+`ZBENCH_*` / `ZAKCODE_*` env) and diff the two `results/*.json`.
+
+**Do not use `results/` as the series.** `run_suite.py` writes `results/suite-<n>tasks.json`, keyed
+only on the task COUNT, so the next run of the same size overwrites the previous one in place — and
+the directory is gitignored, while the CI path publishes to a run artifact with a retention window.
+Nothing outside the box that ran it can read a prior value, which is precisely what a regression
+needs to be visible against.
+
+One summary row per run is therefore appended to a durable series kept outside this repo, in the
+operator's Mind world: `world/telemetry/bench-runs.jsonl`, written by
+
+```
+world/scripts/bench-run-record.sh --from <results.json> [--lane hosted|local] [--label ...]
+              # --dry-run prints the row and writes nothing; --tail N shows the series
+```
+
+Each row carries the run id (content-derived, so re-ingesting one artifact is legible rather than
+silently doubling the series), date, box, models exercised, pass-rate, cost, tokens, iterations, and
+the per-task `verify_rc` — the held-out oracle's exit code, so a moving pass-rate says *which* task
+moved. That series is the time-series this paragraph used to call a "natural follow-up" (g-306-398).
 
 `ZAKCODE_TOOL_CALLING_MODE` ∈ `auto` | `native` | `text` controls the protocol.
 
