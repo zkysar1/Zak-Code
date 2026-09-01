@@ -1199,13 +1199,28 @@ def create_app(
         when a bounded run finishes, instead of leaving the Java server idling until the
         generic idle-monitor reaps it and marks the run failed (~9.5min, measured).
 
-        SESSION-SCOPED ON PURPOSE. A bare reason marker is write-once and never false —
-        until the NEXT run, when a stale ``duration_cap`` would still be sitting here and
-        would terminate a fresh run at birth (rb-5759: a write-once marker is not
-        liveness). Pairing the reason with the session that produced it makes the marker
-        self-invalidating: the reader below returns it only while that session is still
-        the current one, so no clear-on-start hook is needed and a missed clear cannot
-        strand the next run.
+        SESSION-SCOPED, *AND* CLEARED AT RUN START — and the second half is not
+        belt-and-braces. A bare reason marker is write-once and never false — until the
+        NEXT run, when a stale ``duration_cap`` still sitting here would terminate a
+        fresh run at birth (rb-5759: a write-once marker is not liveness). Pairing the
+        reason with the session that produced it makes the marker self-invalidating
+        ACROSS SESSION ROTATION INSIDE A LIVING SERVER, and this docstring used to
+        conclude from that: "so no clear-on-start hook is needed and a missed clear
+        cannot strand the next run."
+
+        That conclusion was wrong, and it cost a production world (g-369-86, env
+        debc47de, 2026-09-01). The fence compares the marker's session against
+        ``.current-session`` — which is PERSISTENT, and is only advanced by the driver
+        at its next iteration. A reboot of the same workspace therefore resurrects BOTH
+        halves in matching state; the fence passes on a stale-to-stale comparison, and
+        the first ``/sidecar/health`` poll of a brand-new run reports ``duration_cap``.
+        The env-server ended that fresh run 5.1 minutes after boot, on a day whose cap
+        was 7080s. The health surface goes live before the driver's first iteration, so
+        this window is open on EVERY boot — it is not a rare interleaving.
+
+        Hence ``_clear_run_stop_reason`` below, called at run start: a run that is
+        STARTING has by definition not ENDED, so any marker present at that moment
+        belongs to a run that is already over.
 
         Never raises — an unwritable marker must not break a run that has ALREADY ended.
         """
@@ -1215,6 +1230,23 @@ def create_app(
             )
         except OSError:
             logger.warning("could not record run stop reason (%s)", reason)
+
+    def _clear_run_stop_reason() -> None:
+        """Drop any ending left by a PREVIOUS run (g-369-86).
+
+        Called once at run start. The session fence in ``_current_run_stop_reason``
+        cannot cover this case on its own: at boot ``.current-session`` still names the
+        session the previous run ended on, so a stale marker and a stale current-session
+        agree and the fence passes.
+
+        Never raises. A marker that cannot be removed is logged and left in place — the
+        fence then still narrows the exposure to exactly the same-session reboot that
+        produced the incident, so this log line is a signal to act on, not noise.
+        """
+        try:
+            (_workspace_root / ".run-stop-reason").unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("could not clear a prior run's stop reason (%s)", exc)
 
     def _current_run_stop_reason() -> str | None:
         """This run's ending, or None if absent, unreadable, or from a PRIOR session."""
@@ -1838,6 +1870,12 @@ def create_app(
     consumer_tasks: list[asyncio.Task[None]] = []
 
     async def _start_consumer() -> None:
+        # A starting run has by definition not ended, so drop any marker a PREVIOUS run
+        # left behind in this (EFS-persistent) workspace before the health surface can
+        # serve it to the env-server (g-369-86). Lifespan startup completes before the
+        # server accepts requests, so this always precedes the first /sidecar/health
+        # poll — the clear cannot race the reader that the incident turned on.
+        _clear_run_stop_reason()
         consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
 
     def _graceful_stop_budget() -> float:
