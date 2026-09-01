@@ -342,7 +342,8 @@ class Settings(BaseSettings):
     # ruling — the former ``provider_max_retries`` / ZAKCODE_PROVIDER_MAX_RETRIES).
     # The retry policy is fixed in agent/loop.py: a rate-limited call (429 /
     # transient 5xx) retries with jittered exponential backoff, honoring
-    # Retry-After, inside a ~5-minute horizon (_RATE_LIMIT_RETRY_HORIZON) — Google's
+    # Retry-After, inside a 900 s / fifteen-minute horizon (_RATE_LIMIT_RETRY_HORIZON;
+    # ADR-0070 sets the number and ADR-0107 re-affirms it) — Google's
     # dynamic-shared-quota guidance is that a 429 is temporary contention and the
     # remedy is minutes-scale backoff, not a tunable attempt count (a 3-attempt /
     # 6-second budget killed a 42-iteration run in the field). Timeouts and

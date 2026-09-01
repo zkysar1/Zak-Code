@@ -243,8 +243,10 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   escalation only ever switches between the two coder models the user already configured — never a
   model Zak Code chose.
   - **The user owns the consequences.** Zak Code never substitutes a model the user didn't assign: a
-    slow local model on a weak GPU is slow (their choice); a rate-limited or failing cloud model is
-    handled by the existing `fallback_model` seam like any other provider error. Under zakpick
+    slow local model on a weak GPU is slow (their choice); a *failing* cloud model is handled by the
+    existing `fallback_model` seam like any other provider error. A *rate-limited* one is NOT: a 429
+    is contention on a route that still works, so it is waited out on the backoff horizon and never
+    routed to `fallback_model` (ADR-0070, re-affirmed by ADR-0107). Under zakpick
     `model_failover` uses *only* an explicit `fallback_model` (else the turn ends `provider_error`),
     and `model_resolution` stays `None` (no availability re-resolution) — there is no tier-based
     active escalation and no source-masking.
@@ -4186,3 +4188,70 @@ non-interpreter (`FOO=1 ls x.sh`), is still not an invocation. Lesson for the ne
 when a case a guard was built for still reaches the model, diff the guard's predicate
 against the live command shapes (a 20-line regex census over the session documents)
 before concluding the model was unlucky.
+
+## ADR-0107: A rate-limit horizon exhaustion still does not fail over — re-affirmed against a field incident
+
+**Context.** On 2026-09-01 a PROD mind-sidecar (owner-operated, paying customer) died at
+`stop_reason=provider_error`, "481s into the 900s backoff budget", boot plan 0/9. The
+incident report reasoned that failover needs three layers and that the third was the
+primary defect: (1) an OpenAI credential — **present**, resolved from the JVM process
+environment and from `/etc/sysconfig`; (2) a configured `fallback_model` — **absent**,
+`bootstrap.sh` sets `ZAKCODE_DEFAULT_MODEL` and never sets `ZAKCODE_FALLBACK_MODEL`;
+(3) a 429 reaching the failover seam — **absent**, `_call_provider` `raise`s on horizon
+exhaustion and `fallback_model` is never consulted on the rate-limit path.
+
+Layers 1 and 2 are reported correctly. **Layer 3 is not a defect — it is this
+repository's specification**, and the report did not reach the three places that say so:
+
+- `agent/loop.py`, at *both* failover sites, excludes `RateLimited` with the reason
+  inline: "A RateLimited reaching here already exhausted its retry budget — waiting
+  longer, not switching, is its remedy", plus an `isinstance` exclusion held as
+  defense-in-depth "so a reorder can't mis-route it into failover".
+- **ADR-0070** lists "model failover on a mid-stream 429" under *Alternatives rejected*:
+  "a rate limit is contention on THIS route, and the fallback model is the operator's
+  choice for a broken route, not a busy one."
+- `docs/CONFIG.md` defines `fallback_model` as the switch for "a **non-rate-limit**
+  error", and `tests/test_model_auto.py::test_rate_limited_exhaustion_does_not_fail_over`
+  pins it with `# pragma: no cover — must never run` and `assert calls == []  # (spec)`.
+
+**Decision — unchanged, and now stated as a two-path contract.**
+
+| `fallback_model` | on rate-limit horizon exhaustion |
+|---|---|
+| unset | raise; the turn ends `provider_error`, persisted and resumable |
+| **set** | **the same** — raise. A configured fallback is *not* consulted for a 429 |
+
+The distinction that decides it is **busy vs broken**. `fallback_model` is the operator
+saying "if this route is *broken*, use that one." A 429 says the route *works* and is
+*contended*. Routing contention into failover spends the operator's stated remedy for a
+different failure, and does it at the worst moment: a 429 is very often per-*account*
+rather than per-*model*, so the replacement call re-enters the same bucket and the only
+guaranteed effect is that the turn now fails on a model the user did not choose for this
+work. That inverts the repository's standing rule that Zak Code never substitutes a model
+the user did not assign for the situation at hand.
+
+The counter-argument was weighed and is real: after 900 s of unbroken 429s, "wait longer"
+is the remedy that has just been *empirically falsified* for fifteen minutes, and the
+horizon's own premise (transient contention) no longer holds. It loses on consequences
+rather than on principle. The horizon-exhausted stop is **graceful and resumable** — state
+is persisted at a message boundary and the caller sees `provider_error` + degraded
+specifically so an outer harness can wait, retry, or alert. So the cost of not failing
+over is a *resumable pause*, while the cost of failing over wrongly is a turn executed by
+an unintended model, or an identical failure one bucket over. A supervisor that does not
+resume a resumable stop is a supervisor defect, not a loop-contract defect.
+
+**Consequences.** No behaviour change. The exclusion, its two inline rationales, and the
+existing spec test all stand. Two things do change:
+
+1. `tests/test_model_auto.py` now pins **both** paths. The set-`fallback_model` path was
+   previously unpinned, so the contract's more surprising half rested on prose alone.
+2. The one sentence in the zakpick section above that said a "rate-limited **or** failing
+   cloud model is handled by the existing `fallback_model` seam" is corrected. It was the
+   lone document disagreeing with ADR-0070, `CONFIG.md`, the code and the test — 1 against
+   4 — and it is the sentence most likely to have produced this misreading.
+
+**What the incident actually needs**, none of it in this repo: set
+`ZAKCODE_FALLBACK_MODEL` in the sidecar bootstrap so layer 2 is non-empty for the *broken*
+-route case it is genuinely for, and correct `run-loop.sh`'s "No fallback model: this box
+has only a GROQ key", which states a cause the incident falsified. Both land in
+Ayoai-Environment-Server (g-369-89).

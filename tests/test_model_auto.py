@@ -388,6 +388,45 @@ def test_rate_limited_exhaustion_does_not_fail_over(monkeypatch) -> None:
     assert calls == []  # non-rate-limit only (spec)
 
 
+def test_configured_fallback_model_does_not_rescue_a_429(monkeypatch, tmp_path: Path) -> None:
+    """The other half of the contract (ADR-0107): a fallback that WOULD fire, doesn't.
+
+    The sibling above proves a *stub* failover is not called. This proves the real
+    seam is not called either — the agent here has an explicit ``fallback_model``, so
+    ``_model_failover`` is known to return a switch (see
+    ``test_fallback_model_is_the_explicit_failover_override``). A rate limit is
+    contention on a route that still works; ``fallback_model`` is the operator's choice
+    for a BROKEN route, not a busy one, so the horizon-exhausted 429 must still end the
+    turn rather than spend it.
+    """
+    _patch_probe(monkeypatch, FakeProbe({"api/tags": _OLLAMA_UP}))
+
+    def _agent() -> zakcode.Agent:
+        return zakcode.Agent(
+            default_model="auto", fallback_model="openai/gpt-4o-mini", workspace_root=tmp_path
+        )
+
+    # Positive control on a THROWAWAY agent: an agent built this way really does
+    # return a switch for a non-429, so `calls == []` below is a live seam staying
+    # silent, not a dead one. It must not be the same object: _model_failover ENDS
+    # with `self._active_model = new_model`, so running the control on the agent
+    # under test would leave fallback == active and disarm the branch being pinned.
+    assert _agent()._model_failover(RequestFailed("boom")) is not None
+
+    agent = _agent()
+    calls: list[str] = []
+
+    def failover(exc):
+        calls.append(str(exc))
+        return agent._model_failover(exc)
+
+    monkeypatch.setattr("zakcode.agent.loop._RATE_LIMIT_RETRY_HORIZON", 0.0)
+    loop = _make_loop(FailingProvider(RateLimited("429", retry_after=0.0)), failover)
+    result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "provider_error"
+    assert calls == []  # a configured fallback changes nothing on the rate-limit path
+
+
 async def _collect(loop: AgentLoop, text: str) -> list[Any]:
     return [ev async for ev in loop.astream_turn(text)]
 
