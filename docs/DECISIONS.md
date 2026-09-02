@@ -678,6 +678,24 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   screen of garbage; every backend runs at its vendor-intended temperature unless the
   operator says otherwise; `zakcode config` renders "(model default)" for the unset case.
 
+**Amendment (#338, 2026-09-02) — the structured side-call's forced 0.0 is no longer
+unconditional, and `drop_params` is not a reliable stripper.** Decision 1's parenthetical
+("the structured side-call's forced per-call 0.0 for schema extraction is unchanged") and
+decision 2's "`drop_params` drops it where unsupported" both rested on litellm normalising a
+provider-illegal parameter. It does not. OpenAI's gpt-5 reasoning tier accepts ONLY the
+default temperature (1) — any other value is a hard 400 — while litellm's model map flags
+that tier `supports_none_reasoning_effort=True`, which its own gpt-5 param-mapper reads as
+"supports flexible temperature" and forwards the value unchanged. Identical in the deployed
+litellm 1.86.2 and the latest 1.99.0, so a version bump is not the remedy. In production a
+zakpick mix pinned to gpt-5.6-terra/-luna 400'd on every routed call and failed over silently
+to gpt-5-mini — a working fallback suppressed every symptom. Normalisation now happens at our
+own chokepoint, `LiteLLMProvider._build_kwargs`, AFTER the per-call `kw` update, so one site
+covers both the main loop's configured temperature and the structured path's forced 0.
+Consequence for decision 1: on that tier the schema path runs at the backend default and is
+NOT deterministic — local validation plus the bounded repair retries are what make it
+reliable. The no-knobs contract is intact: this is provider-capability normalisation at the
+provider layer, not a vendor special case leaking into the loop.
+
 ## ADR-0019 — A missing optional capability is an executable remedy, not an absence; web egress carries privacy floors
 
 - **Status:** Accepted (shipped, 2026-08-26).
