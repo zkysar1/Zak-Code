@@ -25,10 +25,17 @@ own default (1). The gpt-5-chat family (flexible temperature) is excluded, and
 a gpt-5-named LOCAL model (custom api_base) is left alone.
 """
 
+from typing import Any
+
+import pytest
+
+import zakcode.providers.litellm_provider as lp
+from zakcode.messages import Message
 from zakcode.providers.litellm_provider import (
     LiteLLMProvider,
     _is_openai_gpt5_fixed_temperature_model,
 )
+from zakcode.providers.structured import complete_structured
 
 MSGS = [{"role": "user", "content": "hi"}]
 
@@ -100,3 +107,74 @@ def test_local_gpt5_named_model_untouched() -> None:
     )
     kwargs = p._build_kwargs(MSGS, None)
     assert kwargs["temperature"] == 0.7
+
+
+# ── the integration path: complete_structured -> provider -> the wire ────────
+#
+# Everything above calls ``_build_kwargs`` DIRECTLY, so it pins the HANDLER and
+# not the TRIGGER. Nothing above verifies that ``complete_structured`` actually
+# routes its forced ``temperature=0`` THROUGH that chokepoint rather than
+# reaching ``litellm.acompletion`` by some other path — a future refactor adding
+# a second dispatch route would keep every test above green and regress silently
+# for every gpt-5 caller. These two drive the real seam and assert at the WIRE,
+# which is the only place a bypassing route would still be visible.
+
+
+class _Obj:
+    """Attribute-style stand-in for a litellm response object."""
+
+    def __init__(self, **kw: Any) -> None:
+        self.__dict__.update(kw)
+
+    def model_dump(self) -> dict[str, Any]:
+        return dict(self.__dict__)
+
+
+def _wire_response() -> _Obj:
+    message = _Obj(content='{"a": "x"}', tool_calls=None)
+    return _Obj(
+        choices=[_Obj(message=message, finish_reason="stop")],
+        usage=_Obj(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        _hidden_params={"response_cost": 0.0},
+    )
+
+
+_SCHEMA = {
+    "type": "object",
+    "required": ["a"],
+    "additionalProperties": False,
+    "properties": {"a": {"type": "string"}},
+}
+
+
+async def _wire_kwargs_for(monkeypatch: pytest.MonkeyPatch, model: str) -> dict[str, Any]:
+    """Drive the REAL complete_structured against `model`; return what hit the wire."""
+    captured: dict[str, Any] = {}
+
+    async def fake_acompletion(**kwargs: Any) -> _Obj:
+        captured.update(kwargs)
+        return _wire_response()
+
+    monkeypatch.setattr(lp.litellm, "acompletion", fake_acompletion)
+    provider = LiteLLMProvider(model=model, context_window=400000)
+    await complete_structured(provider, [Message.user("hi")], schema=_SCHEMA)
+    assert captured, "litellm.acompletion was never reached — the test proves nothing"
+    return captured
+
+
+async def test_structured_path_drops_temperature_for_gpt5_at_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = await _wire_kwargs_for(monkeypatch, "openai/gpt-5.6-terra")
+    assert "temperature" not in captured
+
+
+async def test_structured_path_still_sends_temperature_for_a_normal_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The positive control, and it is what makes the assertion above
+    # discriminating rather than vacuous: without it, deleting structured.py's
+    # ``call_kwargs["temperature"] = 0.0`` would leave the gpt-5 test green while
+    # silently retiring schema determinism for every other model.
+    captured = await _wire_kwargs_for(monkeypatch, "openai/gpt-4o-mini")
+    assert captured["temperature"] == 0.0
