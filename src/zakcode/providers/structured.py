@@ -201,11 +201,19 @@ async def complete_structured(
 
     With ``schema=None`` this is a single plain completion (``data=None``, ``valid=True``,
     ``text`` = the raw output). With a schema it requests structured output (``response_format``
-    from :func:`make_response_format`, ``temperature`` forced to 0 for determinism on the
-    schema path), validates via :func:`coerce_structured`, and on failure issues up to
-    ``max_repairs`` corrective retries. After the budget is exhausted it returns ``valid=False``
+    from :func:`make_response_format`, ``temperature`` 0 REQUESTED for determinism on the
+    schema path — see below), validates via :func:`coerce_structured`, and on failure issues up
+    to ``max_repairs`` corrective retries. After the budget is exhausted it returns ``valid=False``
     with the last raw text — it NEVER raises for a validation failure; only a provider error
     propagates. Buffered (acomplete) only — never streams.
+
+    ``temperature=0`` is a REQUEST, not a guarantee. A provider may drop it for a model that
+    rejects it: OpenAI's gpt-5 reasoning tier accepts only the default (1), so
+    :meth:`LiteLLMProvider._build_kwargs` strips a non-default value rather than let the call
+    400 (#338). On those models the schema path runs at the backend default and is NOT
+    deterministic — what makes it reliable is the LOCAL validation plus the bounded repair
+    retries above, never the temperature. Do not add a caller that depends on schema-path
+    determinism without checking the model tier first.
     """
     convo = list(messages)
     usage = Usage()
@@ -237,7 +245,9 @@ async def complete_structured(
             call_kwargs["response_format"] = make_response_format(
                 None if json_object_only else schema
             )
-            call_kwargs["temperature"] = 0.0  # deterministic on the schema path
+            # Determinism REQUESTED, not guaranteed — a provider may drop this for a model
+            # that rejects a non-default temperature (see the docstring above).
+            call_kwargs["temperature"] = 0.0
         result = await provider.acomplete(convo, system=effective_system, **call_kwargs)
         usage = usage + result.usage
         last_text = result.text
