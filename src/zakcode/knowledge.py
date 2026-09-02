@@ -23,8 +23,8 @@ _KNOWLEDGE_SECTIONS = ("tree", "hypotheses", "guardrails", "lessons")
 
 
 def _empty_bundle() -> dict[str, Any]:
-    # `self` is an OBJECT, not a list, and is deliberately absent from
-    # _KNOWLEDGE_SECTIONS above — see the coercion in read_knowledge_bundle.
+    # `self` and `program` are OBJECTS, not lists, and are deliberately absent
+    # from _KNOWLEDGE_SECTIONS above — see the coercion in read_knowledge_bundle.
     return {
         "counts": {},
         "tree": [],
@@ -32,6 +32,7 @@ def _empty_bundle() -> dict[str, Any]:
         "guardrails": [],
         "lessons": [],
         "self": {},
+        "program": {},
     }
 
 
@@ -225,6 +226,13 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
         # three-state table in tests/test_server_knowledge_self.py.
         self_val = data.get("self")
         out["self"] = self_val if isinstance(self_val, dict) else {}
+        # `program` is the same OBJECT-not-list shape as `self` above, and for the
+        # same reason: emptiness is the signal ("nothing published" vs "published
+        # and blank"). It is likewise absent from _KNOWLEDGE_SECTIONS and MUST stay
+        # BELOW the loop — registering it up there and hoisting this would flatten
+        # the object to [] and the route would serve empty forever.
+        program_val = data.get("program")
+        out["program"] = program_val if isinstance(program_val, dict) else {}
     if not out["tree"]:
         out["tree"] = _read_raw_tree(workspace_root)
     if not out["hypotheses"]:
