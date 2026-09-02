@@ -1462,6 +1462,32 @@ def create_app(
         identity = bundle["self"] if isinstance(bundle.get("self"), dict) else {}
         return {"self": identity, "published": bool(identity)}
 
+    @app.get("/knowledge/program")
+    def knowledge_program() -> dict[str, Any]:
+        """The agent's projected PROGRAM: {} or the published shared-purpose region.
+
+        Exact twin of /knowledge/self above, and for the same reasons: an OBJECT
+        rather than a list, EMPTINESS IS THE SIGNAL, and empty is therefore NOT a
+        404 — ``{}`` means "nothing published", which is a different answer from
+        "this route does not exist" (guard-5493). ``published`` states which case
+        it is so a caller never infers it from truthiness.
+
+        Like every route here it serves the already-filtered bundle verbatim and
+        holds NO projection logic: the cut is made at the source by the Mind's
+        KnowledgeProjection (PEARL §10.3). For `program` that cut is a literal
+        marker pair in world/program.md rather than self.md's structural
+        first-'##' rule — program.md has no enforced section structure, so the
+        projection fails CLOSED and publishes {} when no marker is present.
+        Re-deriving any of that here would be a second, divergent redactor.
+
+        NOTE the empty steady state is EXPECTED, not a defect: at the time this
+        route shipped no producer wrote the `program` bundle key and no world
+        carried the markers, so {} is the honest answer for every world.
+        """
+        bundle = read_knowledge_bundle(Path(resolved_settings.workspace_root))
+        program = bundle["program"] if isinstance(bundle.get("program"), dict) else {}
+        return {"program": program, "published": bool(program)}
+
     @app.get("/knowledge/export")
     def knowledge_export() -> dict[str, Any]:
         """The whole projected base as one downloadable bundle (PEARL §10.5).
