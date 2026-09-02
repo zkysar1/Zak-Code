@@ -158,6 +158,28 @@ def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
 
+def _is_openai_gpt5_fixed_temperature_model(model: str) -> bool:
+    """Whether ``model`` is an OpenAI gpt-5 REASONING model that accepts ONLY the
+    default ``temperature`` (1).
+
+    OpenAI rejects any other value with a hard 400 ("temperature does not support
+    0.7 with this model. Only the default (1) value is supported"). litellm cannot
+    be relied on to strip it: its model map flags the gpt-5.6 tier with
+    ``supports_none_reasoning_effort=True``, which its gpt-5 param-mapper reads as
+    "supports flexible temperature", so it FORWARDS the configured value unchanged.
+    Measured against both litellm 1.86.2 (deployed) and 1.99.0 (latest) — both
+    mis-flag it, so a version bump does not fix this. We normalise at the one
+    request-building chokepoint instead (see ``_build_kwargs``).
+
+    The ``gpt-5-chat`` family are ordinary chat models that DO support a flexible
+    temperature, so they are excluded. Versioned chat models such as
+    ``gpt-5.6-chat`` ARE reasoning models and are NOT excluded — matching litellm's
+    own gpt-5 routing predicate.
+    """
+    name = model.split("/")[-1]
+    return name.startswith("gpt-5") and not name.startswith("gpt-5-chat")
+
+
 #: Re-exported from :mod:`zakcode.providers.endpoints`, which is the SINGLE SOURCE OF TRUTH.
 #: The allowlist and the ``local_only`` cost predicate must answer "where does this call
 #: actually go?" identically — a second copy here is how they drift into disagreeing, and a
@@ -1077,6 +1099,21 @@ class LiteLLMProvider(Provider):
             call_kwargs.setdefault("response_format", response_format)
         # Allow per-call overrides (e.g. max_tokens) without re-listing them.
         call_kwargs.update(kw)
+        # OpenAI gpt-5 reasoning models accept ONLY temperature=1; any other value is a
+        # 400. Normalise AFTER the update above so this covers BOTH the main loop's
+        # configured temperature AND the structured path's per-call temperature=0
+        # (structured.py forces 0 for schema determinism, which these models reject).
+        # Drop a non-default value so the backend applies its own default (1) rather than
+        # 400-ing. Skipped when the call reaches a LOCAL server (the same api_base
+        # condition the endpoint-forward above uses) — a gpt-5-named self-hosted model has
+        # no such constraint. litellm's own drop cannot be trusted here; see
+        # _is_openai_gpt5_fixed_temperature_model.
+        if _is_openai_gpt5_fixed_temperature_model(self.model) and not (
+            self.api_base is not None and _model_uses_generic_endpoint(self.model)
+        ):
+            temperature = call_kwargs.get("temperature")
+            if temperature is not None and temperature != 1:
+                call_kwargs.pop("temperature", None)
         return call_kwargs
 
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
