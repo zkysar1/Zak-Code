@@ -126,7 +126,7 @@ jobs:
           grep -q '^src/zakcode/server/app.py$' tarball-contents.txt \
             || { echo "::error::src/zakcode/server/app.py absent from tarball — refusing to publish"; exit 1; }
 
-      - name: Publish to S3 (immutable <sha> + latest pointer + legacy bridge)
+      - name: Publish to S3 (immutable <sha> + latest pointer)
         env:
           BUCKET: ayoai-jar-deployments
           SHA: ${{ github.sha }}
@@ -139,11 +139,10 @@ jobs:
           aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/${SHA}/zak-code-main.tar.gz" --metadata "$META"
           # 2. New canonical channel pointer.
           aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/latest/zak-code-main.tar.gz" --metadata "$META"
-          # 3. Bridge: the location provision-env.sh reads TODAY, so this closes the
-          #    merged!=deployed gap with zero provision-side change. A follow-up leg
-          #    (g-364-42) repoints provision to latest/ and retires this write.
-          aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/mind-sidecar-deployments/artifacts/zak-code-main.tar.gz" --metadata "$META"
-          echo "✅ published sha=${SHA}, latest pointer, and legacy artifacts/ bridge"
+          # The legacy mind-sidecar-deployments/artifacts/ bridge write was retired
+          # here (g-357-10 item 2) once provision-env.sh was repointed to the
+          # zak-code-deployments/latest/ pointer above; it had no remaining reader.
+          echo "✅ published sha=${SHA} and latest pointer"
 
   # Single alert job that runs ONCE after the whole matrix (needs: verify + publish-sidecar),
   # not once per py-version cell. `failure()` here is true iff any verify cell
