@@ -137,6 +137,79 @@ def test_load_settings_stop_failure_skipped(tmp_path: Path) -> None:
     assert "not implemented" in errors["StopFailure"].lower()
 
 
+# ── UserPromptSubmit => skipped, not "unknown" ──────────────────────────
+
+
+def test_load_settings_user_prompt_submit_skipped(tmp_path: Path) -> None:
+    """A real CC event whose firing seam is not designed yet must degrade LOUDLY.
+
+    Until it was listed in ``_SKIP_EVENTS`` it fell through to the unknown-event
+    branch, so a Mind that wires ``UserPromptSubmit`` (claude-mind does) read the
+    same message a typo produces. "Deliberately deferred" and "you misspelled it"
+    are different diagnoses and only one of them is actionable, so the *absence*
+    of "unknown" is asserted beside the presence of the deferral.
+    """
+    _write_settings(
+        tmp_path,
+        {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}},
+    )
+    specs, errors = load_settings_hooks(tmp_path)
+    assert specs == []
+    assert "not implemented" in errors["UserPromptSubmit"].lower()
+    assert "unknown" not in errors["UserPromptSubmit"].lower()
+
+
+# ── a whole claude-mind hooks block loads with zero unknown events ─────────
+
+#: Every event claude-mind wires in its own ``.claude/settings.json``, read from a
+#: live Mind tree (2026-09-03). Pinning the literal set is the point: any of these
+#: that neither registers nor skips is a hook the Mind configured and this host
+#: silently dropped -- the ADR-0025 failure class, one layer up.
+_CLAUDE_MIND_EVENTS = (
+    "PreToolUse",
+    "PostToolUse",
+    "SessionStart",
+    "PreCompact",
+    "Stop",
+    "StopFailure",
+    "UserPromptExpansion",
+    "UserPromptSubmit",
+)
+
+
+def test_claude_mind_hooks_block_yields_no_unknown_events(tmp_path: Path) -> None:
+    """The partition IS the contract: every configured event registers or reports.
+
+    Both halves are asserted together on purpose. "Zero unknown-event errors"
+    alone is satisfied by a loader that drops deferred events on the floor, which
+    is the very failure this pins against; "every event errors" alone is satisfied
+    by a loader that registers nothing.
+    """
+    _write_settings(
+        tmp_path,
+        {
+            "hooks": {
+                ev: [{"hooks": [{"type": "command", "command": "echo hi"}]}]
+                for ev in _CLAUDE_MIND_EVENTS
+            }
+        },
+    )
+    specs, errors = load_settings_hooks(tmp_path)
+
+    unknown = {ev: msg for ev, msg in errors.items() if "unknown" in msg.lower()}
+    assert unknown == {}, f"claude-mind wires events this host does not recognise: {unknown}"
+
+    # The deferral list, spelled out. When a seam below ships, this fails and the
+    # implementer updates it here -- a deferral nobody is forced to retire becomes
+    # permanent, and then the compat doc is lying in the other direction.
+    assert set(errors) == {"StopFailure", "UserPromptExpansion", "UserPromptSubmit"}
+
+    registered = [ev for ev in _CLAUDE_MIND_EVENTS if ev not in errors]
+    assert len(specs) == len(registered), (
+        f"{len(registered)} events reported no error but only {len(specs)} specs loaded"
+    )
+
+
 # ── timeout honored ──────────────────────────────────────────────────────────
 
 

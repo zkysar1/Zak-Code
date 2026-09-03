@@ -107,7 +107,7 @@ works on Zak Code.**
 
 **Shipped:** a Claude-Code-shaped `transcript_path` view, SessionStart `source`, PreCompact `trigger`
 at the payload top level, and PostToolUse `additionalContext` (StopFailure + UserPromptExpansion
-events deferred — see below).
++ UserPromptSubmit events deferred — see below).
 
 Make the host *record and signal* like Claude Code, so the Mind's full machinery (recovery, resume,
 consolidation) works — and so do other CC tools that read transcripts/lifecycle.
@@ -119,6 +119,8 @@ consolidation) works — and so do other CC tools that read transcripts/lifecycl
 | **PreCompact `trigger`** | Surface `trigger` at the stdin top level, matching the contract. | omni | S |
 | **PostToolUse `additionalContext`** | Honor it (a hook injecting post-tool context). ~5 lines. | omni | S |
 | **`StopFailure` + `UserPromptExpansion` events** | Fire these generic events in the loop (crash-recovery + prompt telemetry). | omni | M |
+| **`UserPromptSubmit` event** | Fire at the user-message boundary with the CC stdin contract, and inject the hook's stdout as context for that turn. A real firing seam on turn ENTRY, not a mapping entry. Recognised-and-skipped today (2026-09-03) so a Mind that wires it degrades loudly. | omni | M |
+| **Lifecycle hook stdout as context (SessionStart)** | CC injects a SessionStart hook's stdout into the session context; `HookManager.fire()` is observe-only (returns `None`, stdout "advisory and ignored"). `gather_context()` already collects stdout for `PreLLMCall`, so parity means giving `fire()` a return channel and threading it into prompt assembly — a change to the lifecycle seam's contract. Divergence documented in CLAUDE-MIND-COMPAT.md. | omni | M |
 
 ## Phase 3 — Settings, permissions & presentation (the parity subsystems) — ✅ DONE
 
@@ -150,9 +152,11 @@ Prove the *bonus*, then freeze the contract.
 These were scoped out of the shipped work *on purpose*. They are a small robustness/cosmetic tail —
 none is a loop-blocker, and each is recognised-and-handled today (never silently dropped):
 
-- **`StopFailure` + `UserPromptExpansion` hook events** — real CC events, deferred for **scope**: a
-  non-loop-blocking robustness tail, and firing `StopFailure` would thread the critical
-  turn-finalize path. Both are recognised and skipped **with a warning** today, not silently dropped.
+- **`StopFailure` + `UserPromptExpansion` + `UserPromptSubmit` hook events** — real CC events,
+  deferred for **scope**: a non-loop-blocking robustness tail, and firing `StopFailure` would thread
+  the critical turn-finalize path. All three are recognised and skipped **with a warning** today, not
+  silently dropped. `UserPromptSubmit` joined `_SKIP_EVENTS` on 2026-09-03; before that it was in
+  neither map and returned `unknown event`, the same string a TYPO produces, to a Mind that wires it.
 - **statusLine: cap the command's stdout read** — the status command's output is bounded only by the
   5s timeout today; add an explicit byte cap.
 - **statusLine: the status JSON's model id uses `default_model`** — cosmetic under zakpick/failover
@@ -171,7 +175,7 @@ Faithful ≠ slavish. These are Claude-Code *quirks*, not contracts:
 
 - **Literal `~/.claude/` home** — honor the *concept* (a user-level config dir) at the edge; keep Zak Code's own `~/.zakcode/`. ⟂
 - **The `mind_api` daemon** — claude-mind's own process; the host never manages a plug-in's background services. ⟂
-- **`ScheduleWakeup` tool** — not on the heartbeat path (the loop re-enters via skill chaining); build only if a real plug-in needs timed self-wake.
+- ~~**`ScheduleWakeup` tool** — not on the heartbeat path (the loop re-enters via skill chaining); build only if a real plug-in needs timed self-wake.~~ **SUPERSEDED — shipped as ADR-0094** (`schedule_wakeup`, aliases `ScheduleWakeup`/`wakeup`). The premise was wrong, not merely outdated: a real plug-in DID need timed self-wake, and it was the Mind's deadman net and a parked worker's re-poll — the primitive its resurrection is built on, not a convenience. Kept struck through rather than deleted because this list's whole job is to record what was judged unnecessary, and this row is the one time that judgement cost a live fleet (four parked Bodies dead at their prompts, zc-03 2026-08-29). See the CLAUDE-MIND-COMPAT.md `ScheduleWakeup` row.
 - **`CLAUDE_CODE_AUTO_COMPACT_WINDOW` envs** — plug-ins degrade gracefully without them.
 
 If faithfully speaking the contract ever forces a genuinely bad design into the core, that's a signal
@@ -182,7 +186,7 @@ to expose the capability more cleanly at the edge — and I'll flag it, per "wit
 - **Dev surface (build via PR, omni reviews):** the named compat layer, conformance suite, skill/command
   dispatch + args + `user-invocable`, settings reading/dispatch, the permission-gesture translator,
   statusLine + output-styles, the transcript *projection*, docs, ecosystem proof.
-- **Omni seam-domain (design-sensitive internals):** new hook *events* (StopFailure, UserPromptExpansion),
+- **Omni seam-domain (design-sensitive internals):** new hook *events* (StopFailure, UserPromptExpansion, UserPromptSubmit),
   hook *payload* fields (SessionStart `source`, PreCompact `trigger`, PostToolUse `additionalContext`),
   the SessionStore side of the transcript view, the permission-policy core seam.
 - **Mind-side (config, not host):** starting `mind_api` via a SessionStart hook; any Mind-specific paths.
