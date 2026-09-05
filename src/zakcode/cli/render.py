@@ -34,6 +34,7 @@ Two subtle pieces:
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import cast
@@ -56,6 +57,11 @@ from zakcode.events import (
     AgentUsage,
 )
 from zakcode.usage import Usage
+
+#: A plan checklist ROW — "[x] 1 design", "[ ] 2.1 implement" — as opposed to any other
+#: bracketed line a plan tool's output may carry (a hook's "[plan-completion-verdict] …" tag).
+#: Only rows decide whether a finished plan collapses (ADR-0108 / ADR-0110).
+_GLYPH_ROW_RE = re.compile(r"^\[[ x~!-]\] \d")
 
 _FENCE = "```"
 
@@ -539,7 +545,9 @@ class StreamRenderer:
             # completed checklist does not linger under the answer (ADR-0108). The real
             # update_plan render is indented and carries a "Current plan (F/T …)" header,
             # so judge the glyph rows only; a partial plan renders every row as before.
-            steps = [ln.strip() for ln in lines if ln.strip().startswith("[")]
+            # Glyph rows only: a bracketed provenance tag ("[plan-completion-verdict] …") in
+            # this list kept a finished plan from collapsing (measured 2026-09-05, ADR-0110).
+            steps = [ln.strip() for ln in lines if _GLYPH_ROW_RE.match(ln.strip())]
             if steps and all(s.startswith(("[x] ", "[-] ")) for s in steps):
                 collapsed = f"complete {g['dot']} {_plural(len(steps), 'step')}"
                 return Text(collapsed, style="result.summary"), []

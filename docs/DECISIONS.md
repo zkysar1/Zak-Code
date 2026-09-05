@@ -4378,3 +4378,91 @@ forge, notify, aspiration are not everyday words. Tests: `tests/test_user_only_s
 (flag → catalog, prompt, tool refusal, classifier, seeding) and
 `tests/test_skill_anchor_prose.py` (the incident string, the generic-name floor, the
 reference shapes).
+
+---
+
+## ADR-0110: The plan is the goal's record, and deep work does not start without one
+
+**Context.** Operator directive, 2026-09-05: "the todo list is so critical, or else small
+models get lost … it is really the only thing keeping it on rails" — and, watching a
+compliance workspace on a quick-route model, "I have not seen [it] make one in an entire
+session". Two measurements framed the fix. First, the plan WAS being authored where the model
+was strong (one autonomous deployment: 1,434 `update_plan` calls in one log) and not where it
+was weak: the missing plans were turns where the model narrated its future work in prose
+("I'll now check X, then Y") instead of steps, so no gate had anything to hold — the plan
+substrate was self-arming only if the model armed it. Second, even an authored plan was a
+CHECKLIST, not a record: a step carried a title, a status and a done-condition, and nothing
+about what it DID. `update_plan` is full-replace, so whatever the harness knew about a step
+vanished on the model's next edit; the re-injected plan told a model that had lost its
+context WHERE it was but not what the request had been, what the last step found, or what
+the current one had already tried. The two defects compound on exactly the models the
+substrate exists for: a small model that plans badly then forgets what it did is the one
+that goes off the rails.
+
+**Decision.** Four seams, all harness-side; the model's contract (`update_plan`,
+full-replace) is unchanged except for one optional field.
+
+1. *The plan knows what it is for.* `TaskNetwork.context.request` is set by the loop when a
+   turn begins on an empty network (verbatim, clipped to 600 chars; a typed skill turn
+   anchors the command, not the pasted body) and survives every full-replace. The
+   re-injected plan is headed `Goal: <request>`; the ADR-0108 completion line quotes it;
+   the compaction position note carries it; `AgentTaskUpdate.request` exposes it.
+
+2. *Every step keeps what it did and what it produced.* `Task.evidence` is attached by the
+   harness at the single tool-execution seam: the step that is current BEFORE a call runs
+   owns one compact line (`<tool> <what> ✓|✗`, bounded to 12 per step); plan tools never
+   count as evidence. `Task.outcome` is the model's one-line "what this produced", set on
+   close through a new optional `update_plan` field; a leaf closed without one takes its
+   last evidence line, so a closed step never reads as "done, no record". The render shows
+   a closed step's outcome where an open step shows its done-condition.
+   `TaskNetwork.replace_from_author` carries evidence / outcome / origin across the full
+   replace by step TITLE (the one thing a model preserves across an edit; ids shift), and
+   logs every leaf's start and close.
+
+3. *The plan has a history that outlives its steps.* `TaskNetwork.log` is a bounded
+   (200-event, fold count kept) chronological record — `authored`, `step` (`old -> new — outcome`),
+   `seeded`, `cleared`, `reset` — written by every writer of the network (the tool, the
+   skill-skeleton and investigation seeders, the turn-start reset). A turn-start reset now
+   clears the TASKS and keeps the log, summarising what the finished plan achieved. The
+   plan reminder appends the plan's short-term memory beneath the checklist: `Step N so
+   far: <last evidence>` and `Previously closed: <step> — <outcome>` (read from the log,
+   which is chronological where document order is not), and the compaction note carries the
+   last three closures and the current step's evidence.
+
+4. *Deep work does not start without a plan.* The plan-first gate (R5, previously opt-in
+   `require_plan`) is on by default for DEEP turns — the difficulty classifier's verdict when
+   zakpick has produced one, else the same length heuristic it routes on — and
+   `require_plan` now means "extend it to every turn". Read-only investigation is never
+   gated. After two withheld batches the harness no longer fails open into nothing: it
+   plants a **request anchor** — one `in_progress` step that IS the request (`origin`
+   `harness`, `anchor` true) — so the action runs against a plan that records its evidence
+   and outcome and the plan gate still holds the turn until the request is answered. At the
+   conclusion the anchor closes with the conclusion's first line as its outcome, but only
+   when it is the ONLY open step: a model-authored open step is never closed on the model's
+   behalf.
+
+Also folded in: the CLI's finished-plan collapse (ADR-0108) matched any bracketed line as a
+step, so a hook's `[plan-completion-verdict] …` tag in the tool output kept a finished plan
+from collapsing (measured the same day in a Mind workspace); it now matches glyph rows only.
+
+**Alternatives considered.** Per-id patch operations for the plan (add / mark / search
+tools) — rejected: the full-replace contract is what keeps weak models robust, and every
+"what did I do" query the operator asked for is answered better by the harness recording
+than by the model remembering to call a search tool. A model-side "history" field in
+`update_plan` — rejected: the model is the party that loses context; the record must be
+written by the party that does not. Gating on `require_plan` only — rejected: the turns
+that most need a plan are on the models least likely to opt in.
+
+**Consequences.** A step is now a small ledger: title, done-condition, the calls it made,
+what it produced; the plan is a small journal of the goal, and both are re-read on every
+iteration and across compaction without the model spending a tool call. Deep work always
+has a plan to record against, authored by the model when it will and anchored by the
+harness when it will not, and the ADR-0108 verdict rail now knows the request it must
+answer. Costs: a longer plan reminder (bounded — evidence 12 lines/step, log 200 events,
+lines 160 chars); the persisted `TaskNetwork` grows three fields (`context`, `log`,
+`log_folded`) and `Task` four (`origin`, `anchor`, `outcome`, `evidence`), every one
+defaulted, so the session schema is unchanged (v1, append-only; an older build ignores the
+unknown keys, fail-safe). Tests: `tests/test_plan_ledger.py` (carry-over,
+outcome fill, chronological closures, log bound, harness seeding, the anchor lifecycle on
+the buffered path, evidence attachment and the reminder's memory lines) and the collapse
+regression in `tests/test_render.py`.

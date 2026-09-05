@@ -516,6 +516,31 @@ async def test_render_todo_collapses_a_complete_plan() -> None:
 
 
 @pytest.mark.asyncio
+async def test_render_todo_collapse_ignores_bracketed_tags_that_are_not_rows() -> None:
+    # ADR-0110: only glyph ROWS decide the collapse. A hook's "[plan-completion-verdict] …"
+    # provenance tag in the tool output used to count as an open step and kept the finished
+    # plan on screen (measured 2026-09-05 in a Mind workspace).
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentToolCall(id="td", name="update_plan", arguments={}),
+        AgentToolResult(
+            tool_use_id="td",
+            output=(
+                "Current plan (2/2 steps done):\n  [x] 1 design — the shape is settled\n"
+                "  [x] 2 implement — landed\n\n[plan-completion-verdict] answer the request"
+            ),
+            is_error=False,
+        ),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert "complete" in out
+    assert "2 steps" in out
+    assert "design" not in out
+
+
+@pytest.mark.asyncio
 async def test_render_error_restructures_with_detail_cap() -> None:
     # └ ✗ first-line receipt + at most 8 full-brightness detail rows behind the rail.
     renderer, buffer = _make_renderer()

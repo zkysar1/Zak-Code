@@ -164,10 +164,14 @@ from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensi
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import (
+    MAX_LINE_CHARS,
+    MAX_REQUEST_CHARS,
     PAGE_HEADER_RE,
+    PlanContext,
     SkillPage,
     SkillPages,
     Task,
+    clip,
     skill_pages,
     skill_skeleton,
     step_skill,
@@ -971,9 +975,33 @@ _MAX_PLAN_IDLE_TURNS = 3
 #: line is part of the rail's meaning, like the gates' one-nudge-per-turn bounds.
 _PLAN_JUDGE_SILENCE = 0.8
 
-#: How many times the plan-first gate (R5, opt-in) may withhold a mutating batch to demand a plan
-#: before letting it through anyway (fail-open). Bounded so ``require_plan`` can never deadlock.
+#: How many times the plan-first gate may withhold a mutating batch to demand a plan before the
+#: harness anchors the request itself as the plan and lets the action run (ADR-0110). On by
+#: default for DEEP work (the difficulty verdict, else the length heuristic); ``require_plan``
+#: extends it to every turn. Bounded so it can never deadlock.
 _MAX_PLAN_FIRST_NUDGES = 2
+
+#: Tool names that edit the plan itself: their calls are never recorded as a step's evidence
+#: (ADR-0110) — the plan's own bookkeeping is not work the step did.
+_PLAN_TOOLS = frozenset({"update_plan", "plan", "todo"})
+
+#: Argument keys, in preference order, whose value best says what a tool call touched — the one
+#: detail an evidence line carries beside the tool name and the outcome mark.
+_EVIDENCE_ARGS = ("path", "file_path", "command", "pattern", "query", "name", "url", "prompt")
+
+
+def _evidence_line(call: ToolCall, block: ToolResultBlock) -> str:
+    """One compact line for a step's evidence (ADR-0110): ``<tool> <what> ✓|✗``."""
+    args = call.arguments if isinstance(call.arguments, dict) else {}
+    detail = ""
+    for key in _EVIDENCE_ARGS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            detail = clip(value, 70)
+            break
+    mark = "✗" if block.is_error else "✓"
+    return " ".join(part for part in (call.name, detail, mark) if part)
+
 
 logger = logging.getLogger(__name__)
 
@@ -1807,6 +1835,17 @@ class AgentLoop:
                     else "every step closed"
                 )
                 lines.append(f"- plan: {where} ({closed} of {len(tasks)} steps closed)")
+                # ADR-0110: WHERE alone leaves a resumed model re-deriving WHAT — the request it
+                # serves, what the last steps produced, what the current one has done so far.
+                network = self.session.task_network
+                if network.context.request:
+                    lines.append(f"- request: {network.context.request}")
+                for step in network.recent_closed(3):
+                    what = step.outcome or step.note
+                    tail = f" — {what}" if what else ""
+                    lines.append(f"- closed: {step.id} {clip(step.title, 60)}{tail}")
+                if current is not None and current.evidence:
+                    lines.append("- current step so far: " + "; ".join(current.evidence[-3:]))
             for name in self._paged_skills_in_plan():
                 pages = self._ensure_skill_pages(name)
                 if pages is None:
@@ -2147,6 +2186,14 @@ class AgentLoop:
         session = self.session
         network = session.task_network
         if network.is_empty() or network.is_complete():
+            if network.tasks:
+                # ADR-0110: the finished plan leaves the board, not the record.
+                finished, total = network.progress()
+                network.record(
+                    "reset",
+                    detail=f"completed {finished}/{total}: "
+                    + "; ".join(clip(t.title, 40) for t in network.leaves()[:6]),
+                )
             network.tasks = []  # no-op when already empty; clears a finished plan
             session.plan_idle_turns = 0
             session.plan_signature = ""
@@ -2159,9 +2206,30 @@ class AgentLoop:
             session.plan_idle_turns = 0
             session.plan_signature = signature
         if session.plan_idle_turns >= _MAX_PLAN_IDLE_TURNS:
+            network.record(
+                "reset",
+                detail=f"abandoned after {session.plan_idle_turns} idle turn-starts: "
+                + "; ".join(clip(t.title, 40) for t in network.actionable_remaining()[:6]),
+            )
             network.tasks = []
             session.plan_idle_turns = 0
             session.plan_signature = ""
+
+    def _anchor_request(self, user_text: str) -> None:
+        """Remember what a fresh plan is FOR (ADR-0110).
+
+        On an EMPTY network the turn's request becomes the plan's context — verbatim, clipped
+        — so every later reader (the re-injected plan, the compaction note, a resumed session,
+        a UI) can re-read the ask without scrolling for it. An unfinished plan carried over from
+        an earlier turn keeps the request that started it. A typed skill turn anchors the
+        command, not the pasted body.
+        """
+        network = self.session.task_network
+        if not network.is_empty():
+            return
+        skill = _composed_skill_name(user_text)
+        headline = f"/{skill} (typed skill turn)" if skill else user_text
+        network.context = PlanContext(request=clip(headline, MAX_REQUEST_CHARS))
 
     def _plan_reminder(self) -> Message | None:
         """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
@@ -2169,23 +2237,33 @@ class AgentLoop:
         rendered = network.render()
         if not rendered:
             return None
+        request = network.context.request
         if network.is_complete():
             # ADR-0108: the call after the last step closes is the one that must produce the
             # ANSWER. Handing it the finished checklist as its highest-salience message is
             # what made small models narrate the plan's state instead ("all steps are
             # complete, no further action is needed"). One line, pointing at the deliverable;
-            # the network itself stays intact for the UIs and the next turn's reset.
+            # the network itself stays intact for the UIs and the next turn's reset. The
+            # request rides along (ADR-0110) so "the original request" needs no scrolling.
             finished, total = network.progress()
+            ask = f' The original request was: "{request}".' if request else ""
             return Message.user(
                 f"[plan] Plan complete ({finished}/{total} steps done); the checklist is no "
-                "longer shown. Answer the user's original request now — lead with the "
+                f"longer shown.{ask} Answer the user's original request now — lead with the "
                 "conclusion or verdict, then the evidence the steps produced."
             )
         body = (
             "[plan] Harness-tracked plan for the current goal. Keep it current with the "
-            "update_plan tool: mark a step done and the next in_progress as you finish each, "
-            "and decompose any step that turns out to be several actions.\n\n" + rendered
+            "update_plan tool: mark a step done (with its outcome) and the next in_progress "
+            "as you finish each, and decompose any step that turns out to be several "
+            "actions.\n\n"
         )
+        if request:
+            body += f"Goal: {request}\n\n"
+        body += rendered
+        memory = self._plan_memory_lines()
+        if memory:
+            body += "\n\n" + "\n".join(memory)
         undecomposed = network.undecomposed()
         if undecomposed:
             titles = ", ".join(f"{t.id} ({t.title})" for t in undecomposed[:3])
@@ -2199,6 +2277,26 @@ class AgentLoop:
             # Structural quality (ADR-0050), minus the undecomposed item already noted above.
             body += f"\n\nPlan quality {round(quality * 100)}%: " + "; ".join(extra[:2]) + "."
         return Message.user(body)
+
+    def _plan_memory_lines(self) -> list[str]:
+        """The plan's short-term memory beside the checklist (ADR-0110).
+
+        Two facts a model that lost its context needs first: what the CURRENT step has done so
+        far (its last evidence lines) and what the LAST CLOSED step produced (its outcome). A
+        step's evidence is the harness's record of the tool calls that ran while it was
+        current, so this is "what did I just do", answered from state rather than from a
+        transcript that compaction may have folded. Empty when there is nothing to say.
+        """
+        network = self.session.task_network
+        lines: list[str] = []
+        current = network.current()
+        if current is not None and current.evidence:
+            lines.append(f"Step {current.id} so far: " + "; ".join(current.evidence[-3:]))
+        last = network.last_closed()
+        if last is not None and last is not current:
+            what = last.outcome or last.note or "(no outcome recorded)"
+            lines.append(f"Previously closed: {last.id} {clip(last.title, 60)} — {what}")
+        return lines
 
     def _task_update_event(self) -> AgentTaskUpdate | None:
         """A :class:`AgentTaskUpdate` for the current plan, or ``None`` when no plan exists."""
@@ -2214,6 +2312,7 @@ class AgentLoop:
             finished=finished,
             total=total,
             complete=network.is_complete(),
+            request=network.context.request,
             quality=quality,
         )
 
@@ -2494,11 +2593,14 @@ class AgentLoop:
             return []  # no numbered sections: nothing to seed
         network = self.session.task_network
         if anchor is not None:
+            for step in steps:
+                step.origin = "harness"
             anchor.children = steps
             anchor.kind = "compound"
             network.normalize()
+            network.record("seeded", step=anchor, detail=f"/{skill}: {len(steps)} sections")
         else:
-            network.insert_before(None, steps)
+            network.insert_before(None, steps, reason=f"/{skill}: {len(steps)} sections")
         seeded.add(key)
         self._note(
             "intervention",
@@ -3149,10 +3251,13 @@ class AgentLoop:
             note = f"{reason} /{name} — invoke it via use_skill"
             if advisory:
                 note += ", or mark this step cancelled if the request did not ask for it"
-            network.tasks.append(Task(title=f"run /{name}", kind="primitive", note=note))
+            network.tasks.append(
+                Task(title=f"run /{name}", kind="primitive", note=note, origin="harness")
+            )
             seeded.append(name)
         if seeded:
             network.normalize()
+            network.record("seeded", detail="skill steps: " + ", ".join(f"/{n}" for n in seeded))
         return seeded
 
     def _adopt_implied_skill(self, name: str, requested: list[str]) -> bool:
@@ -3457,7 +3562,14 @@ class AgentLoop:
         plan_shape = (
             self.session.task_network.structure_signature() if call.name == "update_plan" else None
         )
+        # ADR-0110: the step that is current BEFORE the call runs owns its evidence — an
+        # update_plan in the same batch may move the frontier, and the plan's own bookkeeping
+        # is never evidence of work.
+        network = self.session.task_network
+        owner = None if call.name in _PLAN_TOOLS or network.is_empty() else network.current()
         block = await self._execute_tool_call_gated(call, ctx, restrict_to=restrict_to)
+        if owner is not None and network.contains(owner):
+            network.attach_evidence(owner, _evidence_line(call, block))
         if block.is_error:
             self._turn_tool_errors += 1
         if call.name in _SEARCH_TOOLS or (call.name == "read_file" and not block.is_error):
@@ -4011,14 +4123,95 @@ class AgentLoop:
         tool = self.registry.get(call.name)
         return tool is None or tool.spec.required_permission is not PermissionTier.READ_ONLY
 
-    def _plan_first_blocks(self, calls: list[ToolCall]) -> bool:
-        """True when the opt-in plan-first gate should withhold this batch: ``require_plan`` is on,
-        no plan exists yet, and the batch contains a mutating call."""
+    def _plan_first_blocks(self, calls: list[ToolCall], *, deep: bool = False) -> bool:
+        """True when the plan-first gate should withhold this batch (ADR-0110): the work is DEEP
+        (or ``require_plan`` extends the gate to every turn), no plan exists yet, and the batch
+        contains a mutating call. Read-only investigation is never gated."""
         return (
-            self.settings.require_plan
+            (deep or self.settings.require_plan)
             and self.session.task_network.is_empty()
             and any(self._is_mutating(c) for c in calls)
         )
+
+    def _turn_is_deep(self, user_text: str, hint: str | None) -> bool:
+        """Whether this turn is multi-step work, by the routing verdict (ADR-0110).
+
+        The difficulty classifier's SCOPE verdict when one has landed; otherwise the same
+        length heuristic zakpick routes on. Struggle never latches here: a struggling quick
+        turn is routed to the deep coder, not retro-fitted with a plan gate mid-turn.
+        """
+        hinted: Literal["quick_code", "deep_code"] | None = None
+        if hint == "quick_code":
+            hinted = "quick_code"
+        elif hint == "deep_code":
+            hinted = "deep_code"
+        return (
+            classify_main_turn(
+                last_user_len=len(user_text),
+                context_frac=0.0,
+                signal_latched=False,
+                difficulty_hint=hinted,
+            )
+            == "deep_code"
+        )
+
+    def _seed_request_anchor(self, user_text: str) -> Task | None:
+        """Plant the harness's REQUEST ANCHOR (ADR-0110).
+
+        Deep work is about to change the workspace and the model has declined to plan through
+        the gate's nudges. Rather than let the action run against nothing, the harness makes
+        the request itself the plan: one ``in_progress`` step, so the work still has a plan to
+        record against (evidence, outcome, history) and the plan gate still holds the turn
+        until the ask is answered. The model may refine it into real steps at any time; if it
+        never does, :meth:`_close_request_anchor` closes it at the conclusion. ``None`` when a
+        plan already exists.
+        """
+        network = self.session.task_network
+        if not network.is_empty():
+            return None
+        if not network.context.request:
+            self._anchor_request(user_text)
+        step = Task(
+            title=clip(network.context.request or user_text, 100),
+            status="in_progress",
+            anchor=True,
+            note=(
+                "the request itself (harness anchor) — refine it into steps with update_plan "
+                "as you go; mark it done when the request is fully answered"
+            ),
+        )
+        network.insert_before(None, [step], reason="request anchor: deep work began without a plan")
+        self._note("intervention", "request anchored: deep work began without a plan", kind="plan")
+        return step
+
+    def _close_request_anchor(self, text: str) -> bool:
+        """At a conclusion, close the request anchor when it is the ONLY open step (ADR-0110).
+
+        The model never authored a plan of its own, so nothing of its own is owed; the anchor's
+        outcome becomes the conclusion's first line and the record stays. A model-authored open
+        step is never closed here — that is the plan gate's business. Returns True when a step
+        was closed.
+        """
+        network = self.session.task_network
+        remaining = network.actionable_remaining()
+        if not text or not text.strip() or not remaining:
+            return False
+        if not all(step.anchor and step.origin == "harness" for step in remaining):
+            return False
+        headline = clip(text.strip().splitlines()[0], MAX_LINE_CHARS)
+        for step in remaining:
+            step.status = "done"
+            if not step.outcome:
+                step.outcome = headline
+            network.record(
+                "step",
+                step=step,
+                detail=f"in_progress -> done — {step.outcome} (closed by the harness at the "
+                "conclusion)",
+            )
+        network.normalize()
+        self._note("intervention", "request anchor closed at the conclusion", kind="plan")
+        return True
 
     def _is_read_only_safe(self, call: ToolCall) -> bool:
         """Whether ``call`` may join a concurrent batch.
@@ -4670,6 +4863,7 @@ class AgentLoop:
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
+        self._anchor_request(user_text)  # ADR-0110: a fresh plan knows what it is for
         self.session.add_message(Message.user(user_text))
         # Contested-claim rail (ADR-0040): the operator disputes the previous answer — ask for
         # the re-measurement up front, before the apology reflex gets a first token.
@@ -5173,6 +5367,8 @@ class AgentLoop:
                 # finish. Nudge the model to complete them (or mark them done/cancelled);
                 # bounded by _MAX_PLAN_NUDGES so a deliberate finish can never deadlock — past
                 # the cap the turn completes but is flagged degraded (plan left unresolved).
+                # A harness request anchor that is the only open step closes here (ADR-0110).
+                self._close_request_anchor(result.text)
                 plan_nudge = self._plan_gate_nudge(ignore=investigation_steps)
                 if plan_nudge is not None:
                     # A nudge that produced NO progress (the model answered with text only
@@ -5674,37 +5870,41 @@ class AgentLoop:
                 self._persist()
                 break
 
-            # Plan-first gate (R5, opt-in): withhold a mutating batch until a plan exists, so the
-            # model plans before it acts. Bounded by _MAX_PLAN_FIRST_NUDGES then fails open (the
-            # action runs) so it can never deadlock. Read-only investigation is never gated.
-            if (
-                self._plan_first_blocks(result.tool_calls)
-                and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
+            # Plan-first gate (ADR-0110): DEEP work — the routing verdict, else the length
+            # heuristic; ``require_plan`` extends it to every turn — may not change the
+            # workspace before a plan exists. Bounded by _MAX_PLAN_FIRST_NUDGES; past the cap
+            # the harness anchors the request as the plan and the action runs (fail-open, with
+            # a record). Read-only investigation is never gated.
+            if self._plan_first_blocks(
+                result.tool_calls, deep=self._turn_is_deep(user_text, base_difficulty)
             ):
-                plan_first_nudges += 1
-                self._note("intervention", "plan the task before editing", kind="plan_first")
-                self.session.add_message(
-                    _unexecuted_tool_results(
-                        result.tool_calls,
-                        "Not executed: lay out a plan with update_plan before making changes "
-                        "(plan-first is enabled).",
-                        "plan_first",
-                    )
-                )
-                self.session.add_message(
-                    Message.user(
-                        _control_rail(
-                            "Before editing, break this multi-step task into steps with "
-                            "update_plan, then proceed."
+                if plan_first_nudges < _MAX_PLAN_FIRST_NUDGES:
+                    plan_first_nudges += 1
+                    self._note("intervention", "plan the task before editing", kind="plan_first")
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            result.tool_calls,
+                            "Not executed: this is multi-step work — lay out a plan with "
+                            "update_plan before making changes.",
+                            "plan_first",
                         )
                     )
-                )
-                self._refund_iteration()  # the batch never executed — no work happened
+                    self.session.add_message(
+                        Message.user(
+                            _control_rail(
+                                "Before editing, break this multi-step task into steps with "
+                                "update_plan, then proceed."
+                            )
+                        )
+                    )
+                    self._refund_iteration()  # the batch never executed — no work happened
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
+                self._seed_request_anchor(user_text)
                 self._persist()
-                last_signature = None
-                repeat_count = 0
-                stuck.reset()
-                continue
 
             # A lone use_skill is the loop's re-entry: a newer build is taken there
             # (ADR-0101) — see the streaming twin.
@@ -5909,6 +6109,7 @@ class AgentLoop:
         if compact_note:
             yield AgentStatus(message=compact_note)
         self._reset_stale_or_completed_plan()
+        self._anchor_request(user_text)  # ADR-0110 — see _run_turn (buffered twin)
         self.session.add_message(Message.user(user_text))
         # Contested-claim rail (ADR-0040) — see _run_turn (buffered twin).
         if _contests_prior_claim(user_text) and self._previous_assistant_text():
@@ -6670,7 +6871,8 @@ class AgentLoop:
                         continue
                     # Plan gate (streaming twin of the buffered path): don't quietly finish
                     # with open plan steps; nudge, bounded by _MAX_PLAN_NUDGES, then complete
-                    # (degraded) rather than deadlock.
+                    # (degraded) rather than deadlock. The request anchor closes here (ADR-0110).
+                    self._close_request_anchor(assistant_text)
                     plan_nudge = self._plan_gate_nudge(ignore=investigation_steps)
                     if plan_nudge is not None:
                         # No-progress guard — see the buffered path: an unchanged plan after
@@ -7185,37 +7387,43 @@ class AgentLoop:
                     yield AgentStatus(message="stopping: repeated identical tool calls")
                     break
 
-                # Plan-first gate (R5, opt-in; streaming twin): withhold a mutating batch until a
-                # plan exists. Bounded -> fails open. Read-only investigation is never gated.
-                if (
-                    self._plan_first_blocks(tool_calls)
-                    and plan_first_nudges < _MAX_PLAN_FIRST_NUDGES
+                # Plan-first gate (ADR-0110; streaming twin): deep work may not change the
+                # workspace before a plan exists. Bounded; past the cap the request is anchored
+                # as the plan and the action runs. Read-only investigation is never gated.
+                if self._plan_first_blocks(
+                    tool_calls, deep=self._turn_is_deep(user_text, base_difficulty)
                 ):
-                    plan_first_nudges += 1
-                    self._note("intervention", "plan the task before editing", kind="plan_first")
-                    self.session.add_message(
-                        _unexecuted_tool_results(
-                            tool_calls,
-                            "Not executed: lay out a plan with update_plan before making changes "
-                            "(plan-first is enabled).",
-                            "plan_first",
+                    if plan_first_nudges < _MAX_PLAN_FIRST_NUDGES:
+                        plan_first_nudges += 1
+                        self._note(
+                            "intervention", "plan the task before editing", kind="plan_first"
                         )
-                    )
-                    self.session.add_message(
-                        Message.user(
-                            _control_rail(
-                                "Before editing, break this multi-step task into steps with "
-                                "update_plan, then proceed."
+                        self.session.add_message(
+                            _unexecuted_tool_results(
+                                tool_calls,
+                                "Not executed: this is multi-step work — lay out a plan with "
+                                "update_plan before making changes.",
+                                "plan_first",
                             )
                         )
-                    )
-                    self._refund_iteration()
+                        self.session.add_message(
+                            Message.user(
+                                _control_rail(
+                                    "Before editing, break this multi-step task into steps with "
+                                    "update_plan, then proceed."
+                                )
+                            )
+                        )
+                        self._refund_iteration()
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="plan-first: plan the task before editing")
+                        continue
+                    self._seed_request_anchor(user_text)
                     self._persist()
-                    last_signature = None
-                    repeat_count = 0
-                    stuck.reset()
-                    yield AgentStatus(message="plan-first: plan the task before editing")
-                    continue
+                    yield AgentStatus(message="plan anchored to the request")
 
                 # A lone use_skill is the loop's re-entry: a newer build is taken THERE
                 # (ADR-0101). The call is answered unexecuted, the turn ends, and the
