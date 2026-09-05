@@ -24,6 +24,7 @@ from zakcode.events import (
     AgentDone,
     AgentEvent,
     AgentStatus,
+    AgentTaskUpdate,
     AgentTextDelta,
     AgentToolCall,
     AgentToolResult,
@@ -538,6 +539,41 @@ async def test_render_todo_collapse_ignores_bracketed_tags_that_are_not_rows() -
     assert "complete" in out
     assert "2 steps" in out
     assert "design" not in out
+
+
+@pytest.mark.asyncio
+async def test_render_draws_a_harness_plan_change_once() -> None:
+    # ADR-0112: a plan the harness changed (a request anchor, a skill skeleton) arrives as a
+    # task_update with no tool call. It draws as a detached "Plan · N items" receipt with the
+    # same glyph-mapped rows — once; a repeat of the same rows stays silent.
+    renderer, buffer = _make_renderer()
+    plan = "Current plan (0/1 steps done):\n  [~] 1 Audit the pipeline — the request itself"
+    events: list[AgentEvent] = [
+        AgentTaskUpdate(plan=plan, finished=0, total=1),
+        AgentTaskUpdate(plan=plan, finished=0, total=1),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert "Plan" in out and "2 items" in out  # header row + the step row
+    assert out.count("Audit the pipeline") == 1
+
+
+@pytest.mark.asyncio
+async def test_render_task_update_repeating_the_todo_result_is_silent() -> None:
+    # The loop emits a task_update at the next iteration for a plan the model just authored
+    # through update_plan; the Todo receipt already showed it, so the update draws nothing.
+    renderer, buffer = _make_renderer()
+    plan = "Current plan (0/2 steps done):\n  [~] 1 design\n  [ ] 2 implement"
+    events: list[AgentEvent] = [
+        AgentToolCall(id="td", name="update_plan", arguments={}),
+        AgentToolResult(tool_use_id="td", output=plan, is_error=False),
+        AgentTaskUpdate(plan=plan, finished=0, total=2),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert out.count("design") == 1 and "Plan" not in out
 
 
 @pytest.mark.asyncio

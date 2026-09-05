@@ -25,7 +25,7 @@ from zakcode.tasks import (
     MAX_REQUEST_CHARS,
     Task,
     TaskNetwork,
-    clip,
+    clip_ends,
 )
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -269,9 +269,11 @@ async def test_deep_turn_that_never_plans_gets_the_request_anchored_and_closed()
     # Closed at the conclusion, with the conclusion's first line as its outcome.
     assert anchor.status == "done"
     assert anchor.outcome == "Result: the loader now validates every setting at startup."
-    # The request is anchored verbatim up to the bound (an ellipsis marks the cut).
-    assert net.context.request == clip(_DEEP_REQUEST, MAX_REQUEST_CHARS)
-    assert net.context.request.endswith("…") and len(net.context.request) == MAX_REQUEST_CHARS
+    # The request is anchored verbatim up to the bound, keeping its head AND its tail — the
+    # constraints at the end of a long ask survive the cut (ADR-0112).
+    assert net.context.request == clip_ends(_DEEP_REQUEST, MAX_REQUEST_CHARS)
+    assert " … " in net.context.request and len(net.context.request) == MAX_REQUEST_CHARS
+    assert net.context.request.endswith("names the replacement.")
     kinds = [e.kind for e in net.log]
     assert "seeded" in kinds and kinds[-1] == "step"
     assert "closed by the harness" in net.log[-1].detail

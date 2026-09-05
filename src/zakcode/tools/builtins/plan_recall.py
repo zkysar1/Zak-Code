@@ -29,6 +29,33 @@ _MAX_HITS = 40
 
 _GLYPH = {"pending": " ", "in_progress": "~", "done": "x", "blocked": "!", "cancelled": "-"}
 
+#: Tools whose evidence line names a file the step CHANGED (their first argument is the path)
+#: — the overview's "Files changed" line is read off these (ADR-0112).
+_FILE_TOOLS = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "create_docx",
+        "create_xlsx",
+        "create_pdf",
+        "save_image",
+        "create_chart_image",
+    }
+)
+
+
+def _files_changed(leaves: list[Task]) -> list[str]:
+    """Distinct paths the plan's steps wrote or edited successfully, in first-seen order."""
+    seen: list[str] = []
+    for task in leaves:
+        for line in task.evidence:
+            parts = line.split(" ")
+            if len(parts) >= 3 and parts[0] in _FILE_TOOLS and parts[-1] == "✓":
+                path = " ".join(parts[1:-1])
+                if path and path not in seen:
+                    seen.append(path)
+    return seen
+
 
 def _event_line(event: PlanEvent) -> str:
     when = event.at[11:19] if len(event.at) >= 19 else event.at
@@ -38,7 +65,7 @@ def _event_line(event: PlanEvent) -> str:
     return f"{head}: {event.detail}" if event.detail else head
 
 
-def _overview(network: TaskNetwork, last: int) -> str:
+def _overview(network: TaskNetwork, last: int | None) -> str:
     lines = [_request_line(network), ""]
     leaves = network.leaves()
     if leaves:
@@ -54,11 +81,30 @@ def _overview(network: TaskNetwork, last: int) -> str:
             )
     else:
         lines.append("Steps: none on the board right now.")
-    events = network.log[-last:] if last > 0 else []
+    files = _files_changed(leaves)
+    if files:
+        more = f" … +{len(files) - 12} more" if len(files) > 12 else ""
+        lines.append(f"Files changed ({len(files)}): " + ", ".join(files[:12]) + more)
+    log = network.log
+    if last is None:
+        # This plan's history: the log outlives plans (a turn-start reset keeps it), so scope
+        # to the events since the last reset unless the model asked for a count (ADR-0112).
+        start = 0
+        for index in range(len(log) - 1, -1, -1):
+            if log[index].kind == "reset":
+                start = index + 1
+                break
+        scope = log[start:]
+        events = scope[-_DEFAULT_LAST:]
+        older = f"; {start} from earlier plans" if start else ""
+        label = f"History (this plan: last {len(events)} of {len(scope)}{older}"
+    else:
+        events = log[-last:] if last > 0 else []
+        label = f"History (last {len(events)} of {len(log)}"
     if events:
         lines.append("")
-        folded = f" ({network.log_folded} older folded)" if network.log_folded else ""
-        lines.append(f"History (last {len(events)} of {len(network.log)}{folded}):")
+        folded = f"; {network.log_folded} older folded" if network.log_folded else ""
+        lines.append(f"{label}{folded}):")
         lines.extend(f"  {_event_line(e)}" for e in events)
     lines.append("")
     lines.append(
@@ -148,8 +194,9 @@ class PlanRecallTool(Tool):
                 "last": {
                     "type": "integer",
                     "description": (
-                        f"How many recent history events the overview shows (default "
-                        f"{_DEFAULT_LAST}, at most {_MAX_LAST})."
+                        f"How many recent history events the overview shows, across every "
+                        f"plan this session kept (at most {_MAX_LAST}). Omit it to see the "
+                        f"current plan's own history (its last {_DEFAULT_LAST} events)."
                     ),
                 },
             },
@@ -184,7 +231,7 @@ class PlanRecallTool(Tool):
         if isinstance(raw_query, str) and raw_query.strip():
             return ToolResult.ok(_search(network, raw_query.strip()), data=data)
         raw_last = args.get("last")
-        last = _DEFAULT_LAST
+        last: int | None = None
         if isinstance(raw_last, int) and not isinstance(raw_last, bool):
             last = max(0, min(raw_last, _MAX_LAST))
         return ToolResult.ok(_overview(network, last), data=data)
