@@ -519,6 +519,64 @@ def _anchor_stems(text: str) -> set[str]:
     }
 
 
+#: Everyday action/state words that double as skill names (``start``, ``stop``, ``test``,
+#: ``review``…). They occur in ordinary sentences about anything at all — "lets start from
+#: scratch" (2026-09-05, seeded a Mind's user-only ``/start``, which the plan gate then made
+#: the model run) — so a NAME built only from these words does not anchor on a shared stem:
+#: the request must reference it AS a skill (:func:`_references_skill`) or the description
+#: rule must carry it. Words under 4 chars never anchor anyway. A distinctive activity
+#: (research, forge, notify, deploy) is not here and still anchors on its stem (ADR-0109).
+_GENERIC_NAME_WORDS = frozenset(
+    [
+        "start", "stop", "begin", "finish", "continue", "resume", "restart", "reset",
+        "clear", "open", "close", "check", "test", "review", "build", "update", "create",
+        "make", "remove", "delete", "save", "load", "read", "write", "search", "find",
+        "show", "list", "help", "plan", "think", "status", "verify", "debug", "explain",
+        "report", "note", "notes", "watch", "wait", "retry", "undo", "copy", "move",
+        "rename", "format", "sync", "refresh", "reload", "restore", "import", "export",
+        "print", "edit", "view", "fetch", "send", "answer", "reply", "respond", "focus",
+        "mode", "switch", "stage", "step", "next", "back", "apply", "learn", "evaluate",
+        "score", "sort", "filter", "count", "measure", "done", "complete", "cancel",
+        "abort", "exit", "quit", "init", "setup", "install", "commit", "push", "pull",
+        "merge", "release", "ship", "work", "task",
+    ]
+)  # fmt: skip
+_INVOKE_VERBS = r"(?:run|use|invoke|call|execute|launch|trigger|fire)"
+
+
+def _name_is_generic(name: str) -> bool:
+    """True when EVERY content word of the skill's name is an everyday word — judged on the
+    name's WHOLE words, never on the 4-char stems the anchor compares: stems collide
+    (``reset`` / ``research`` → ``rese``), and a stem test would strip distinctive names of
+    the anchor they have always had. ``create-aspiration`` is not generic (``aspiration``);
+    ``start``, ``reset`` and ``test-report`` are.
+    """
+    words = [
+        tok
+        for tok in _ANCHOR_TOKEN_RE.findall(name.lower().replace("-", " ").replace("_", " "))
+        if len(tok) >= 4 and tok not in _ANCHOR_STOPWORDS
+    ]
+    return bool(words) and all(tok in _GENERIC_NAME_WORDS for tok in words)
+
+
+def _references_skill(request: str, name: str) -> bool:
+    """True when the request names the skill AS a skill: a ``/name`` token, "<name> skill" /
+    "<name> command", or an invocation verb in front of it ("run the notifier"). Hyphens,
+    underscores and spaces in a multi-word name are interchangeable. Case-insensitive.
+    """
+    tokens = [re.escape(t) for t in re.split(r"[-_\s]+", name.strip().lower()) if t]
+    if not tokens:
+        return False
+    nm = r"[-_ ]?".join(tokens)
+    text = request.lower()
+    patterns = (
+        rf"(?<![\w/])/{nm}\b",
+        rf"\b{nm}\s+(?:skill|command)s?\b",
+        rf"\b{_INVOKE_VERBS}\s+(?:(?:the|a|an|your|my|our|that|this)\s+)?/?{nm}\b",
+    )
+    return any(re.search(p, text) for p in patterns)
+
+
 def implied_skill_anchored(request: str, name: str, description: str = "") -> bool:
     """True when the request shares at least one content word with the skill's name or
     description (ADR-0036) — the deterministic floor under the classifier's "never guess".
@@ -530,16 +588,21 @@ def implied_skill_anchored(request: str, name: str, description: str = "") -> bo
     skill is dropped rather than seeded. Stems are 4-char prefixes so inflection
     (forging/forge, aspirations/aspiration) still anchors.
 
-    The NAME anchors on one shared stem. A DESCRIPTION is prose, and one shared word with
-    prose is a topic overlap, not a request to run the skill: "go actually try to FETCH some
-    of those" seeded ``/research`` off a description's "fetch" (2026-08-27), and the turn
-    that followed never touched a tool. Two distinct description stems are required
-    (ADR-0040) — "send the operator a message" still anchors a skill described that way.
+    The NAME anchors on one shared stem — unless the name is made of everyday words
+    (:func:`_name_is_generic`, ADR-0109): "lets start from scratch" shares ``star`` with a
+    skill named ``start`` and is not asking to run it. Such a name anchors only when the
+    request references it AS a skill (:func:`_references_skill`) or the description rule
+    carries it. A DESCRIPTION is prose, and one shared word with prose is a topic overlap,
+    not a request to run the skill: "go actually try to FETCH some of those" seeded
+    ``/research`` off a description's "fetch" (2026-08-27), and the turn that followed never
+    touched a tool. Two distinct description stems are required (ADR-0040) — "send the
+    operator a message" still anchors a skill described that way.
     """
     asked = _anchor_stems(request)
     if not asked:
         return False
-    if asked & _anchor_stems(name):
+    shared = asked & _anchor_stems(name)
+    if shared and (not _name_is_generic(name) or _references_skill(request, name)):
         return True
     return len(asked & _anchor_stems(description)) >= 2
 

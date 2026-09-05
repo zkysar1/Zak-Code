@@ -154,6 +154,17 @@ class Skill:
         return self.frontmatter.description
 
     @property
+    def model_invocable(self) -> bool:
+        """False when the frontmatter carries Claude Code's ``disable-model-invocation: true``
+        (ADR-0109): the OPERATOR alone may run this skill — a framework's control commands
+        (start/stop an agent). Such a skill is kept out of every seam the model reaches
+        (the ``use_skill`` catalog and tool, the classifier's catalog, plan seeding); the
+        human ``/<name>`` path is untouched. Absent or any other value → invocable.
+        """
+        flag = self.frontmatter.extras.get("disable_model_invocation", "")
+        return str(flag).strip().lower() not in ("true", "yes", "1")
+
+    @property
     def directory(self) -> Path:
         """The skill's directory (where its L2 resource files live)."""
         return self.path.parent
@@ -220,6 +231,19 @@ class SkillRegistry:
         """L0: ``(name, description)`` for every skill, in registration order."""
         return [(s.name, s.description) for s in self._skills.values()]
 
+    def model_catalog(self) -> list[tuple[str, str]]:
+        """L0 for the skills the MODEL may run (ADR-0109) — the catalog the system prompt and
+        the classify side-call see. User-only skills (``disable-model-invocation: true``) are
+        omitted, so the model is never offered, never nudged toward, and never implied into a
+        skill ``use_skill`` would refuse. The operator-facing ``/skills`` listing keeps
+        :meth:`catalog`: they CAN type those.
+        """
+        return [(s.name, s.description) for s in self._skills.values() if s.model_invocable]
+
+    def user_only_names(self) -> list[str]:
+        """Names of the skills the operator alone may run (``disable-model-invocation: true``)."""
+        return [s.name for s in self._skills.values() if not s.model_invocable]
+
     def render_catalog(self) -> str:
         """Render the L0 catalog as a compact prompt block (empty string if none).
 
@@ -234,9 +258,21 @@ class SkillRegistry:
             "loads its full instructions, which you then follow. A skill's steps may tell "
             "you to use another skill (they chain). Each entry shows the exact call to make:",
         ]
-        for name, desc in self.catalog():
+        for name, desc in self.model_catalog():
             call = f'use_skill(name="{name}")'
             lines.append(f"- {call} — {desc}" if desc else f"- {call}")
+        user_only = self.user_only_names()
+        if user_only:
+            # ADR-0109: named so the model can point the operator at them, never offered as
+            # a use_skill call — the tool refuses them and a plan step for one only holds the
+            # turn open (field 2026-09-05: "lets start from scratch" ran a Mind's /start).
+            lines.append(
+                "User-only commands ("
+                + ", ".join(f"/{n}" for n in user_only)
+                + "): the operator types these in their terminal. use_skill refuses them, so "
+                "never call, plan, or seed one — if a request seems to need it, say so and let "
+                "the operator type it."
+            )
         # Invocation provenance (the other half of user-invocable enforcement): the runtime
         # composes a <command-name> frame ONLY for a human-typed slash, so this contract line
         # is what lets a skill that forbids model self-invocation run when the USER asks.

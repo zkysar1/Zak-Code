@@ -3119,24 +3119,37 @@ class AgentLoop:
             return []
         return self._seed_skill_steps(refs, reason="the request explicitly asked for")
 
-    def _seed_skill_steps(self, names: list[str], *, reason: str) -> list[str]:
+    def _user_only_skills(self) -> set[str]:
+        """Lower-cased names of the skills the operator alone may run (ADR-0109 —
+        ``disable-model-invocation: true``). Never seeded as plan steps: ``use_skill``
+        refuses them, so a step for one can only hold the turn open until the model tries.
+        """
+        getter = getattr(self._skill_resolver, "user_only_names", None)
+        if getter is None:
+            return set()
+        return {str(n).lower() for n in getter()}
+
+    def _seed_skill_steps(
+        self, names: list[str], *, reason: str, advisory: bool = False
+    ) -> list[str]:
         """Append one ``run /<skill>`` plan step per name the plan does not already mention.
 
         Shared by the compound-request seeder above and the classifier-implied skill
-        (ADR-0035). Appends to any existing plan (never replaces). Returns the names seeded.
+        (ADR-0035). Appends to any existing plan (never replaces). User-only skills are
+        skipped (ADR-0109). ``advisory`` marks a HARNESS GUESS: the note tells the model it
+        may cancel the step when the request did not ask for the skill — the plan gate
+        otherwise reads a seeded step as the user's own ask. Returns the names seeded.
         """
         network = self.session.task_network
+        user_only = self._user_only_skills()
         seeded: list[str] = []
         for name in names:
-            if self._plan_mentions_skill(name):
+            if name.lower() in user_only or self._plan_mentions_skill(name):
                 continue
-            network.tasks.append(
-                Task(
-                    title=f"run /{name}",
-                    kind="primitive",
-                    note=f"{reason} /{name} — invoke it via use_skill",
-                )
-            )
+            note = f"{reason} /{name} — invoke it via use_skill"
+            if advisory:
+                note += ", or mark this step cancelled if the request did not ask for it"
+            network.tasks.append(Task(title=f"run /{name}", kind="primitive", note=note))
             seeded.append(name)
         if seeded:
             network.normalize()
@@ -3146,11 +3159,20 @@ class AgentLoop:
         """Hold the turn to a skill the request IMPLIES (ADR-0035) — named by the classify
         side-call rather than a ``/slash`` token: arm the coverage backstop (``requested``)
         and seed a plan step, exactly what a typed ``/name`` gets. Returns True when the
-        plan gained a step (False when it already mentioned the skill).
+        plan gained a step (False when it already mentioned the skill, or the skill is
+        user-only — ADR-0109 — in which case the backstop is not armed either).
         """
+        if name.lower() in self._user_only_skills():
+            return False
         if name not in requested:
             requested.append(name)
-        return bool(self._seed_skill_steps([name], reason="the request implies (classified)"))
+        return bool(
+            self._seed_skill_steps(
+                [name],
+                reason="the request seems to imply (a harness guess from its wording)",
+                advisory=True,
+            )
+        )
 
     @staticmethod
     def _harvest_skill_invocations(
