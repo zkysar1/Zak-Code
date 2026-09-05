@@ -4528,3 +4528,39 @@ batch anyway — the replacement record keeps their first batch. Tests:
 `tests/test_plan_recall.py` (overview / step / query / bad step, eager anchoring on a
 read-only first batch, the anchor-only mutate gate, the replacement record, the reminder's
 recall hint absent — the tool is discovered from the catalog and the prompt).
+
+---
+
+## ADR-0112: Harness plan changes are visible, the request keeps both ends, the record scopes to the plan
+
+**Context.** Three fidelity gaps found reading ADR-0110/0111 back against the directive
+that motivated them ("I have not seen [it] make a plan in an entire session").
+(1) The CLI rendered a plan only as an `update_plan` tool receipt. A request anchor, a
+skill skeleton (ADR-0062) or an investigation splice (ADR-0057) changes the plan with no
+tool call, and the loop's `task_update` event — emitted at the next iteration whenever the
+rendered plan changed — was consumed by the server projection and ignored by the terminal
+client. So exactly the plans the harness plants for a model that will not plan were the
+plans the operator could not see. (2) The request anchor was a head-only clip: a long
+request's constraints ("do not change any code", "keep the module path stable") sit at
+its END, and the 600-char cut dropped them. (3) `plan_recall`'s overview showed the last
+eight events of a log that deliberately outlives plans (a turn-start reset keeps it), so on
+a long session the "recent history" was the previous goal's.
+
+**Decision.** (1) `StreamRenderer` handles `AgentTaskUpdate`: a plan whose glyph rows
+differ from the last plan drawn renders as a detached `└ Plan · N items` receipt with the
+same glyph-mapped rows; the identity is the joined glyph rows (`_plan_key`), recorded from
+both an `update_plan` receipt and a prior update, so a `task_update` repeating the plan
+just drawn stays silent and a model-authored plan is never shown twice. (2) The anchor
+uses `clip_ends` — two thirds head, one third tail, `` … `` between — so both the ask
+and its constraints survive; the 600-char bound is unchanged. (3) The overview's history
+defaults to THIS plan's events (since the last `reset`), naming how many earlier-plan
+events exist; `last: N` widens to the whole session's record. The overview also lists
+`Files changed (N)`, read off the evidence lines of the file-writing tools — the
+"what did I change" question answered without a search.
+
+**Consequences.** Every plan the harness plants is now on screen the iteration after it
+lands; a resumed or compacted model reads a request that still ends with its constraints;
+`plan_recall` answers for the plan in hand by default. Tests: `tests/test_render.py`
+(a harness plan draws once; a repeat of the Todo receipt is silent),
+`tests/test_plan_recall.py` (scoped vs widened history, files changed),
+`tests/test_plan_ledger.py` (head+tail anchor).

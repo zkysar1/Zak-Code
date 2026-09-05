@@ -72,9 +72,27 @@ async def test_overview_lists_request_steps_outcomes_and_recent_history(tmp_path
     assert "Request: make the loader validate settings" in out
     assert "[x] 1 read the loader — two entry points, one shared · 2 tool call(s)" in out
     assert "[~] 2 add validation — invalid config raises · 2 tool call(s)" in out
-    assert "History (last" in out
+    assert "Files changed (1): app/config.py" in out  # the failed pytest is not a file
+    assert "History (this plan: last" in out
     assert "authored" in out and "in_progress -> done — two entry points, one shared" in out
     assert result.data == {"steps": 2, "events": len(_network().log), "folded": 0}
+
+
+@pytest.mark.asyncio
+async def test_overview_history_is_scoped_to_the_current_plan_unless_asked(tmp_path: Path) -> None:
+    # The log outlives plans: a turn-start reset keeps it. Without `last` the overview shows
+    # this plan's own events; `last` widens to the whole session's record (ADR-0112).
+    net = _network()
+    net.record("reset", detail="completed 2/2: read the loader; add validation")
+    net.tasks = []
+    net.normalize()
+    net.context = PlanContext(request="now document it")
+    net.replace_from_author([Task(title="write the docs", status="in_progress")])
+    scoped = (await PlanRecallTool().execute({}, _ctx(tmp_path, net))).output
+    assert "History (this plan: last 1 of 1; " in scoped and "from earlier plans" in scoped
+    assert "two entry points" not in scoped  # the earlier plan's closure is out of scope
+    widened = (await PlanRecallTool().execute({"last": 60}, _ctx(tmp_path, net))).output
+    assert "History (last" in widened and "two entry points, one shared" in widened
 
 
 @pytest.mark.asyncio

@@ -121,7 +121,12 @@ All content sits on this grid; nothing else exists:
     middle-squeezed at 64 chars; the full text is in the auto-opened card body.)
 11. **Todo results glyph-map.** Lines beginning `[x] ` render as `✓ ` (`todo.done`) +
     text, lines beginning `[ ] ` as `○ ` (`todo.open`) + text; all other lines pass
-    through untouched.
+    through untouched. **Harness plan changes draw too (ADR-0112):** a `task_update`
+    event whose checklist rows differ from the last Todo drawn (from an `update_plan`
+    result or a prior update) renders as a detached `└ Plan · N items` receipt with the
+    same glyph-mapped rows — a request anchor, a skill skeleton or an investigation splice
+    is visible without a tool call. A `task_update` that repeats the plan just drawn stays
+    silent, so a model-authored plan is never shown twice.
 12. **Boxes only twice.** Welcome box and permission panel, both `ROUNDED`, width
     `max(24, min(terminal_width − 4, 60))`, padding `(1, 2)`, indented to col 2.
     Inside the welcome box, kv values longer than `panel_width − 20` are

@@ -75,6 +75,22 @@ def clip(text: str, limit: int) -> str:
     return flat if len(flat) <= limit else flat[: max(0, limit - 1)] + "…"
 
 
+def clip_ends(text: str, limit: int) -> str:
+    """One line of ``text`` cut to ``limit`` characters keeping its HEAD and its TAIL.
+
+    For the request anchor (ADR-0112): the ask and its constraints ("do not change any code",
+    "keep the public path stable") tend to sit at opposite ends of a long request, and a
+    head-only cut silently drops the second. Two thirds head, one third tail, `` … `` between.
+    """
+    flat = " ".join(str(text).split())
+    if len(flat) <= limit:
+        return flat
+    keep = max(0, limit - 3)  # room for the " … " seam
+    head = (keep * 2) // 3
+    tail = keep - head
+    return flat[:head] + " … " + flat[-tail:] if tail else flat[:head] + " …"
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 

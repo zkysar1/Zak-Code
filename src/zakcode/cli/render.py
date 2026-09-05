@@ -50,6 +50,7 @@ from zakcode.events import (
     AgentDone,
     AgentEvent,
     AgentStatus,
+    AgentTaskUpdate,
     AgentTextDelta,
     AgentThinkingDelta,
     AgentToolCall,
@@ -62,6 +63,13 @@ from zakcode.usage import Usage
 #: bracketed line a plan tool's output may carry (a hook's "[plan-completion-verdict] …" tag).
 #: Only rows decide whether a finished plan collapses (ADR-0108 / ADR-0110).
 _GLYPH_ROW_RE = re.compile(r"^\[[ x~!-]\] \d")
+
+
+def _plan_key(lines: list[str]) -> str:
+    """The checklist's glyph rows joined — the identity of a drawn plan (ADR-0112), shared by
+    an ``update_plan`` result and a ``task_update`` so the same plan is never drawn twice."""
+    return "\n".join(ln.strip() for ln in lines if _GLYPH_ROW_RE.match(ln.strip()))
+
 
 _FENCE = "```"
 
@@ -303,6 +311,9 @@ class StreamRenderer:
         #: The most recent turn's terminal event (set by render()); the REPL reads it for
         #: post-turn signals like the zakpick advisory. None before the first turn.
         self.last_done: AgentDone | None = None
+        #: Glyph rows of the last plan drawn — from an update_plan result or a task_update —
+        #: so a harness plan change is drawn once and a repeat stays silent (ADR-0112).
+        self._last_plan_key = ""
 
     async def render(self, events: AsyncIterator[AgentEvent]) -> AgentDone | None:
         """Consume ``events``, render them, and return the final ``AgentDone`` (or None)."""
@@ -322,6 +333,8 @@ class StreamRenderer:
                 self._on_tool_call(event)
             elif isinstance(event, AgentToolResult):
                 self._on_tool_result(event)
+            elif isinstance(event, AgentTaskUpdate):
+                self._on_task_update(event)
             elif isinstance(event, AgentStatus):
                 self._on_status(event)
             elif isinstance(event, AgentUsage):
@@ -451,6 +464,8 @@ class StreamRenderer:
         duration = "" if started is None else _fmt_duration(self._clock() - started)
         output = str(event.output)
         lines = output.splitlines()
+        if name == "Todo" and not event.is_error:
+            self._last_plan_key = _plan_key(lines)
 
         summary, rows = self._synthesize_result(name, lines, is_error=event.is_error)
         if not attached:
@@ -474,6 +489,39 @@ class StreamRenderer:
         if rows:
             bar_style = "tool.bar.err" if event.is_error else "tool.bar"
             self._out(rail(self.console, rows, bar_style=bar_style))
+        self._last_block = "tool"
+
+    def _on_task_update(self, event: AgentTaskUpdate) -> None:
+        """Draw a plan the HARNESS changed (ADR-0112).
+
+        The Todo block normally rides an ``update_plan`` tool result. A request anchor, a
+        skill skeleton or an investigation splice changes the plan with no tool call, and
+        until this branch existed the CLI showed nothing for them — "I have not seen it make
+        a plan all session" while the loop was planting one on every deep turn. Deduplicated
+        on the checklist's glyph rows, so a ``task_update`` that repeats the plan just drawn
+        from an ``update_plan`` result stays silent.
+        """
+        lines = event.plan.splitlines()
+        key = _plan_key(lines)
+        if not key or key == self._last_plan_key:
+            return
+        self._last_plan_key = key
+        self._flush_remaining_text()
+        self._gap()
+        summary, rows = self._synthesize_result("Todo", lines, is_error=False)
+        head = Text.assemble(("Plan ", "result.summary"), (self._g["dot"] + " ", "result.summary"))
+        head.append_text(summary)
+        self._out(
+            block(
+                self.console,
+                head,
+                marker=self._g["elbow"],
+                marker_style="result.connector",
+                indent=4,
+            )
+        )
+        if rows:
+            self._out(rail(self.console, rows, bar_style="tool.bar"))
         self._last_block = "tool"
 
     def _synthesize_result(

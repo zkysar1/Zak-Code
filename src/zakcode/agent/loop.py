@@ -172,6 +172,7 @@ from zakcode.tasks import (
     SkillPages,
     Task,
     clip,
+    clip_ends,
     skill_pages,
     skill_skeleton,
     step_skill,
@@ -2230,7 +2231,8 @@ class AgentLoop:
             return
         skill = _composed_skill_name(user_text)
         headline = f"/{skill} (typed skill turn)" if skill else user_text
-        network.context = PlanContext(request=clip(headline, MAX_REQUEST_CHARS))
+        # Head AND tail (ADR-0112): a long request's constraints live at its end.
+        network.context = PlanContext(request=clip_ends(headline, MAX_REQUEST_CHARS))
 
     def _plan_reminder(self) -> Message | None:
         """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
