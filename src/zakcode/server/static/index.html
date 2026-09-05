@@ -884,6 +884,9 @@
             const done = (ev.finished || 0) + "/" + (ev.total || 0);
             box.appendChild(el("div", "", "✓ plan complete — " + done + " steps"));
           } else {
+            // The request the plan serves rides above the checklist (ADR-0113), the way
+            // the loop's own re-injected plan is headed — a reader sees what the steps are FOR.
+            if (ev.request) box.appendChild(el("div", "", "Goal: " + ev.request));
             (ev.plan || "").split("\n").forEach((line) => box.appendChild(el("div", "", line)));
           }
           add(row("plan", el("span", "", "☰"), box));

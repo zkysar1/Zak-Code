@@ -126,7 +126,8 @@ All content sits on this grid; nothing else exists:
     result or a prior update) renders as a detached `└ Plan · N items` receipt with the
     same glyph-mapped rows — a request anchor, a skill skeleton or an investigation splice
     is visible without a tool call. A `task_update` that repeats the plan just drawn stays
-    silent, so a model-authored plan is never shown twice.
+    silent, so a model-authored plan is never shown twice. (Web: the plan row is headed
+    `Goal: <request>` when the update carries the request the plan serves — ADR-0113.)
 12. **Boxes only twice.** Welcome box and permission panel, both `ROUNDED`, width
     `max(24, min(terminal_width − 4, 60))`, padding `(1, 2)`, indented to col 2.
     Inside the welcome box, kv values longer than `panel_width − 20` are

@@ -101,7 +101,8 @@ class PlanEvent(BaseModel):
     ``kind`` is one of ``authored`` (the model laid out or reshaped the plan), ``step`` (a
     step's status moved — ``detail`` carries ``old -> new`` and the outcome), ``seeded`` (the
     harness added steps: a skill skeleton, an investigation, the request anchor), ``cleared``
-    (the model emptied the plan) or ``reset`` (the loop dropped a finished or abandoned plan at
+    (the model emptied the plan), ``dropped`` (a full replace left an OPEN step out — ADR-0113)
+    or ``reset`` (the loop dropped a finished or abandoned plan at
     a turn start — ``detail`` summarises what it achieved). The log is what makes the plan a
     RECORD and not only a checklist: "what did I do a few steps ago" is answered here after the
     conversation that did it has been compacted away.
@@ -305,10 +306,33 @@ class TaskNetwork(BaseModel):
         for task in self._iter():
             prior_by_title.setdefault(self._title_key(task.title), task)
         prior_titles = [self._title_key(t.title) for t in self._iter()]
-        prior_anchors = [t for t in self.leaves() if t.anchor]
+        prior_leaves = self.leaves()
+        prior_anchors = [t for t in prior_leaves if t.anchor]
         self.tasks = tasks
         advisories = self.normalize()
         new_titles = {self._title_key(t.title) for t in self._iter()}
+        # ADR-0113: a full-replace that silently DROPS open work is the small-model failure
+        # the contract invites (resend the plan, forget a step). Record each dropped open leaf
+        # and say so in the tool result, so the author can resend it or mean it.
+        dropped = [
+            t
+            for t in prior_leaves
+            if t.status not in _TERMINAL
+            and not t.anchor
+            and self._title_key(t.title) not in new_titles
+        ]
+        for task in dropped:
+            self.record(
+                "dropped",
+                step=task,
+                detail=f"open step dropped by a full replace ({task.status}): {task.title}",
+            )
+        if dropped:
+            named = "; ".join(f"'{clip(t.title, 60)}' ({t.status})" for t in dropped[:6])
+            advisories.append(
+                f"dropped open step(s) not in this plan: {named} — resend them if that was "
+                "not intended."
+            )
         for anchor in prior_anchors:
             if self._title_key(anchor.title) not in new_titles:
                 # ADR-0111: the model's own plan supersedes the harness's request anchor. The
