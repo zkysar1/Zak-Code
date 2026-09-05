@@ -4323,3 +4323,58 @@ On a Mind workspace the hint, the one-line reminder and the Mind's own PostToolU
 all fire at the same moment — redundant by design, since each covers a workspace the others
 do not. Tests: `tests/test_plan_verdict.py` (all four pieces, both paths, matcher
 surgicality) and `test_render_todo_collapses_a_complete_plan`.
+
+## ADR-0109: A user-only skill is invisible to the model's seams; a common word is not a skill reference
+
+**Context.** Field transcript 2026-09-05, a Mind workspace on a quick-route model: the
+operator typed "ok, clear that plan, and lets start from scratch". The classify side-call
+(ADR-0035) answered `skill: "start"`; the deterministic anchor (ADR-0036) accepted it, because
+the request shares the stem `star` with a skill NAMED `start`; `_adopt_implied_skill` seeded
+`run /start` and armed the backstop; the model said "I have cleared the plan" and the plan gate
+refused that finish ("plan has open steps; continuing"); the model obeyed and ran
+`use_skill(start)` — the Mind's start-an-agent control command, whose own description says
+"USER-ONLY — Claude must NEVER invoke /start" — which seeded six more steps before the operator
+hit Ctrl-C. Two roots, not one. (1) The anchor's NAME rule cannot tell "start from scratch"
+from "start the agent": for a skill named by an everyday verb the shared stem is present in
+sentences about anything. (2) Zak Code had no notion of a skill the MODEL must not invoke:
+`user-invocable: false` (honored since the CLI path) guards the HUMAN command door of an
+internal skill; a control command is the mirror image — human-only — and the framework
+declared it in prose alone, so it was in the classifier's catalog, seedable as a step, listed
+as `use_skill(name="start")` in the system prompt, and loadable through `use_skill`. A wrong
+implied skill was supposed to cost "one plan step the model can cancel with a sentence"
+(ADR-0035); the plan gate made a small model execute it instead.
+
+**Decision.** Honor Claude Code's `disable-model-invocation: true` (`Skill.model_invocable`):
+such a skill is omitted from `SkillRegistry.model_catalog()` — the catalog the system prompt
+and the classify side-call see (the operator-facing `/skills` list keeps `catalog()`; they can
+type them) — and named in the prompt under "User-only commands … never call, plan, or seed
+one"; `use_skill` refuses it (`_load_skill_body(source="tool")` returns a `denied_reason`
+telling the model to say so and let the operator type it; the `/name` command path is
+untouched); and the loop's seeders skip it (`_seed_skill_steps`, `_adopt_implied_skill` — the
+backstop is not armed either). The anchor's NAME rule gains a floor of its own: when the
+skill's name is made only of everyday words (`_name_is_generic` over `_GENERIC_NAME_WORDS` —
+start, stop, test, review, …; judged on whole words, because 4-char stems collide:
+`reset`/`research`), the name anchors only if the request references it AS a skill
+(`_references_skill`: a `/name` token, "<name> skill|command", or an invocation verb in front
+of it) — else the two-stem description rule decides, as before. A classifier-implied step's note now says it is a harness
+guess the model may cancel when the request did not ask for the skill. The Mind marks its
+control skills (`start`, `stop`, `open-questions`) with the flag on its side.
+
+**Alternatives rejected.** Detecting user-only skills from their prose ("USER-ONLY",
+"must never invoke") — brittle, and Claude Code already defines the field. Dropping the
+implied-skill seeding entirely — ADR-0035's incident ("finish forging this skill" collapsed
+without reading the skill) is real; the seams keep the seed and remove its two failure modes.
+Making harness-seeded steps invisible to the plan gate — that removes the very hold ADR-0035
+exists to provide; the advisory note plus the generic-name floor keeps the hold for a genuine
+ask and hands a wrong guess back to the model. A lexical grammar of "requests" in place of the
+classifier — the false-positive class ADR-0026 closed.
+
+**Consequences.** On a framework that carries the flag, no path leads from the model to a
+control command: not the catalog, not a nudge, not a plan step, not the tool. Skills named
+by everyday words need a reference shape or two description words to be implied; "lets test
+this" no longer conscripts a `/test`, while "run the test skill" and "review the pull request
+for regressions" (two description stems) still do. Existing anchors keep working — research,
+forge, notify, aspiration are not everyday words. Tests: `tests/test_user_only_skills.py`
+(flag → catalog, prompt, tool refusal, classifier, seeding) and
+`tests/test_skill_anchor_prose.py` (the incident string, the generic-name floor, the
+reference shapes).

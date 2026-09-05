@@ -278,6 +278,9 @@ class _Registry:
     def catalog(self) -> list[tuple[str, str]]:
         return list(CATALOG)
 
+    def model_catalog(self) -> list[tuple[str, str]]:
+        return list(CATALOG)  # ADR-0109: the side-call sees the model-invocable catalog
+
 
 @pytest.mark.asyncio
 async def test_agent_side_call_names_a_catalogued_skill(
@@ -302,6 +305,9 @@ async def test_agent_side_call_drops_an_unanchored_guess(
     class _Registry2:
         def catalog(self) -> list[tuple[str, str]]:
             return [*CATALOG, ("create-aspiration", "Create a new aspiration in the queue")]
+
+        def model_catalog(self) -> list[tuple[str, str]]:
+            return self.catalog()
 
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
     monkeypatch.setattr(agent, "skill_registry", _Registry2())

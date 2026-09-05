@@ -239,6 +239,11 @@ class _SkillToolResolver:
         registry = self._agent.skill_registry
         return registry.names() if registry is not None else []
 
+    def user_only_names(self) -> list[str]:
+        # ADR-0109: the loop never seeds a plan step for a skill the model cannot run.
+        registry = self._agent.skill_registry
+        return registry.user_only_names() if registry is not None else []
+
     async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         # ``query`` is the INVOKING turn's prompt (a sub-agent's task, not the parent's), so the
         # signal is attributed to the actual caller even though the resolver is the parent's.
@@ -1470,7 +1475,11 @@ class Agent:
         if not should_consult_classifier(user_text, context_frac):
             return DifficultyVerdict("deep_code")  # long / large-context -> capable coder, no call
         provider, model = self._resolve_task_provider("classify")
-        skills = self.skill_registry.catalog() if self.skill_registry is not None else []
+        # model_catalog, not catalog (ADR-0109): a user-only skill must never be implied —
+        # the plan step it seeds is one the model cannot execute, and the plan gate would hold
+        # the turn open until it tried (field 2026-09-05: a Mind's /start ran on "lets start
+        # from scratch").
+        skills = self.skill_registry.model_catalog() if self.skill_registry is not None else []
         try:
             # json_OBJECT mode (native JSON), NOT json_schema: litellm implements a json_schema
             # response_format on Groq via FUNCTION CALLING, and Groq's open models (incl. the
@@ -1564,6 +1573,18 @@ class Agent:
                 denied_reason=(
                     f"{skill.name} is not user-invocable — it runs internally "
                     "(another skill invokes it), so it can't be started by typing it."
+                ),
+            )
+        # The mirror image (ADR-0109): ``disable-model-invocation: true`` marks a skill the
+        # OPERATOR alone may run — a framework's control commands (start/stop an agent). Refuse
+        # the model's tool path; the human ``/<name>`` path is untouched.
+        if source == "tool" and not skill.model_invocable:
+            return SkillLoad(
+                found=True,
+                name=skill.name,
+                denied_reason=(
+                    f"/{skill.name} is user-only (disable-model-invocation): the operator types "
+                    "it in their terminal; it cannot be run from here. Tell them — do not retry."
                 ),
             )
         if source == "tool":
