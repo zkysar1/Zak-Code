@@ -35,6 +35,16 @@ _PLANNED_HINT = (
     "done and move on, or to refine the plan as you learn more."
 )
 
+#: Verdict rail (ADR-0108): the call that closes the LAST step is the one moment the harness
+#: knows the plan is done, and until this hint existed it said nothing — an open plan got a
+#: next-step rail, a finished one got silence, and a small model filled the silence with "the
+#: plan is complete, no further action is needed" instead of the answer the user asked for.
+_COMPLETE_HINT = (
+    "Plan complete — every step is terminal. The plan was the means, not the deliverable: do "
+    "not report that it is finished. Re-read the user's original request and answer it — lead "
+    "with the conclusion or verdict, then the evidence the steps produced."
+)
+
 
 def _task_schema(depth: int) -> dict[str, Any]:
     """JSON schema for one task node, nesting ``subtasks`` to ``depth`` levels."""
@@ -192,7 +202,7 @@ class UpdatePlanTool(Tool):
                 "deficiencies": deficiencies,
                 "complete": network.is_complete(),
             },
-            hint=None if network.is_complete() else _PLANNED_HINT,
+            hint=_COMPLETE_HINT if network.is_complete() else _PLANNED_HINT,
         )
 
 

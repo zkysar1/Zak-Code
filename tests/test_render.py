@@ -494,6 +494,28 @@ async def test_render_todo_glyph_mapping() -> None:
 
 
 @pytest.mark.asyncio
+async def test_render_todo_collapses_a_complete_plan() -> None:
+    # A finished checklist (every step done or cancelled) collapses to one summary line so
+    # the completed plan does not linger under the answer (ADR-0108); the real update_plan
+    # render is indented and carries a header, which the collapse tolerates.
+    renderer, buffer = _make_renderer()
+    events: list[AgentEvent] = [
+        AgentToolCall(id="td", name="update_plan", arguments={}),
+        AgentToolResult(
+            tool_use_id="td",
+            output="Current plan (2/2 steps done):\n  [x] 1 design\n  [-] 2 implement — dropped",
+            is_error=False,
+        ),
+        AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+    ]
+    await renderer.render(_astream(events))
+    out = buffer.getvalue()
+    assert "complete" in out
+    assert "2 steps" in out
+    assert "design" not in out  # the finished rows are not re-listed
+
+
+@pytest.mark.asyncio
 async def test_render_error_restructures_with_detail_cap() -> None:
     # └ ✗ first-line receipt + at most 8 full-brightness detail rows behind the rail.
     renderer, buffer = _make_renderer()

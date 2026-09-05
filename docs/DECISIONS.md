@@ -4273,3 +4273,53 @@ existing spec test all stand. Two things do change:
 -route case it is genuinely for, and correct `run-loop.sh`'s "No fallback model: this box
 has only a GROQ key", which states a cause the incident falsified. Both land in
 Ayoai-Environment-Server (g-369-89).
+
+## ADR-0108: a finished plan yields the verdict, not "plan finished"
+
+**Context.** Field report, 2026-09-05, from an operator working with Zak Code: after the
+agent finishes a plan "all it says is *plan finished*"; it does not clear the plan; it gives
+no conclusion or verdict. The closing paragraph of the ADR-0026 incident — "The plan shows all
+3 steps are complete … No further action is needed", sent five times — is the same shape.
+Reading the loop, this is not one gap but four that line up at the moment the last step
+closes. (1) `update_plan` returned `hint=None` on a complete plan: an OPEN plan gets a
+next-step rail, a FINISHED one got silence. (2) `_plan_reminder` re-injected the whole
+finished checklist ("Current plan (3/3 steps done) … Keep it current with update_plan") as
+the LAST, highest-salience message of the very call that should produce the answer — a small
+model narrates what it is looking at. (3) No completion gate catches a bare status: the plan
+gate returns `None` once the plan is complete, the false-done guard (ADR-0024) needs
+future-intent verbs, the missing-conclusion gate (ADR-0040) is specific to "could not find
+X". (4) The finished plan is dropped only at the NEXT turn start
+(`_reset_stale_or_completed_plan`), so every UI shows the full completed checklist through
+the closing message. The plan was the means; the user asked a question; nothing in the loop
+said so at the one moment it mattered.
+
+**Decision.** Four surgical pieces, one per gap. (1) `update_plan` returns `_COMPLETE_HINT`
+when the post-update network is complete: do not report that the plan is finished; re-read
+the original request and answer it, conclusion first. (2) `_plan_reminder` replaces the
+finished checklist with ONE line — "Plan complete (F/T steps done); the checklist is no
+longer shown. Answer the user's original request now" — while `network.tasks` stays intact.
+(3) A plan-verdict rail beside the false-done guard, on both turn paths: a completion with
+text, a complete plan, a tail that reports the plan's status (`_ends_on_plan_status`, judged
+on the last 400 characters, one clause, no sentence punctuation between the noun and the
+status word) and a length of at most 600 characters is asked ONCE for the verdict
+(`_VERDICT_NUDGE`); a completion that already carries its conclusion says so and finishes.
+(4) A complete plan collapses to a single line in both renderers — the terminal Todo block
+("complete · N steps") and the web client's plan row ("✓ plan complete — F/T steps").
+
+**Alternatives rejected.** Emptying `network.tasks` at turn end: it breaks the post-turn
+introspection the eval probe (`evals/probes.py`, decomposed-plan case) and
+`test_completed_plan_is_reset_at_next_turn_start` rely on, and buys nothing — the turn-start
+reset already guarantees a finished plan never reaches the next turn; the two places it
+actually lingered were the model's context (piece 2) and the UIs (piece 4). A model-judged
+"does this completion contain a conclusion" gate: a model call per completion for a question
+a 400-character regex plus a length bound answers deterministically (the ADR-0040 lesson).
+Relying on the Mind framework's rule and hook alone: they ship in `.claude/` and only reach
+a Body running inside a Mind workspace; this makes the behaviour Zak Code's own.
+
+**Consequences.** One bounded nudge per turn; a false positive costs a single re-prompt, and
+the broken-record guard (ADR-0026) bounds any cascade. The 600-character bound is the
+deliberate trade: a long answer that happens to end on "all steps are done" is left alone.
+On a Mind workspace the hint, the one-line reminder and the Mind's own PostToolUse reminder
+all fire at the same moment — redundant by design, since each covers a workspace the others
+do not. Tests: `tests/test_plan_verdict.py` (all four pieces, both paths, matcher
+surgicality) and `test_render_todo_collapses_a_complete_plan`.

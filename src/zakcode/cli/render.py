@@ -535,6 +535,14 @@ class StreamRenderer:
 
         if name == "Todo":
             items = [ln for ln in lines if ln.strip()]
+            # A finished plan — every step done or cancelled — collapses to one line so the
+            # completed checklist does not linger under the answer (ADR-0108). The real
+            # update_plan render is indented and carries a "Current plan (F/T …)" header,
+            # so judge the glyph rows only; a partial plan renders every row as before.
+            steps = [ln.strip() for ln in lines if ln.strip().startswith("[")]
+            if steps and all(s.startswith(("[x] ", "[-] ")) for s in steps):
+                collapsed = f"complete {g['dot']} {_plural(len(steps), 'step')}"
+                return Text(collapsed, style="result.summary"), []
             rows = [self._todo_row(ln) for ln in lines]
             return Text(_plural(len(items), "item"), style="result.summary"), rows
 
