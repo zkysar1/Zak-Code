@@ -71,6 +71,32 @@ async def test_score_plan_scores_on_the_decomposition_rubric() -> None:
     assert u.total_tokens == 2
 
 
+class _CapturingProvider(_Provider):
+    """Keeps the last prompt so a test can read what the judge was actually asked."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.last_prompt = ""
+
+    async def acomplete(  # noqa: ANN001
+        self, messages, *, system=None, tools=None, response_format=None, **kwargs: Any
+    ) -> LLMResult:
+        self.last_prompt = messages[-1].blocks[0].text
+        return await super().acomplete(
+            messages, system=system, tools=tools, response_format=response_format, **kwargs
+        )
+
+
+async def test_score_plan_frames_the_plan_as_unexecuted() -> None:
+    """The judge sees a plan before any of it has run; without saying so it docked a correct
+    plan to 0% coverage for 'failing to execute the first step' (ADR-0114)."""
+    prov = _CapturingProvider(json.dumps({"scores": {dim: 1.0 for dim in PLAN_RUBRIC}}))
+    await score_plan(prov, goal="do (a) now, leave (b) pending", plan="1. a\n2. b")
+    assert "<framing>" in prov.last_prompt
+    assert "before any of it has run" in prov.last_prompt
+    assert prov.last_prompt.index("</framing>") < prov.last_prompt.index("<goal>")
+
+
 async def test_judge_plan_picks_best_via_pairwise() -> None:
     # A content-aware judge ranks p2 best → it wins every pair (consistently both ways) → index 2.
     prov = _RankedJudge(order=["p2", "p0", "p1"])

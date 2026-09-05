@@ -39,7 +39,15 @@ async def score_plan(
     this decomposition?" — as useful for an anti-over-planning gate (a one-liner that already scores
     high needs no plan) as for quality. Returns ``(scorecard, usage)``.
     """
-    artifact = f"<goal>\n{goal}\n</goal>\n\n<plan>\n{plan}\n</plan>"
+    # The judge sees a plan BEFORE any of it has run. Without this framing it docked a correct
+    # three-step plan to 0% coverage for "failing to execute the first step as requested" —
+    # scoring the model's progress, not the decomposition (measured 2026-09-05, ADR-0114).
+    artifact = (
+        "<framing>\nJudge the plan as a plan, before any of it has run: every step is expected "
+        "to be undone, and the goal's own words about acting now describe the work, not a "
+        "defect in the plan. Score only what the steps would achieve if carried out.\n"
+        f"</framing>\n\n<goal>\n{goal}\n</goal>\n\n<plan>\n{plan}\n</plan>"
+    )
     return await score_rubric(
         provider, artifact=artifact, dimensions=rubric or PLAN_RUBRIC, weights=weights
     )

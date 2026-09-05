@@ -277,6 +277,20 @@ def test_quality_granularity_penalty_past_ten_primitives() -> None:
     assert any("primitive steps" in d for d in deficiencies)
 
 
+def test_quality_truncated_id_list_says_so() -> None:
+    """Four noteless steps used to read '4 step(s) ... (1, 2, 3)' — the count and the list
+    disagreed with nothing marking the cut (ADR-0114)."""
+    net = _net(*[Task(title=f"S{i}") for i in range(4)])
+    net.normalize()
+    _, deficiencies = net.quality()
+    line = next(d for d in deficiencies if "done-condition" in d)
+    assert "4 step(s)" in line and "(1, 2, 3, …)" in line
+    net3 = _net(*[Task(title=f"S{i}") for i in range(3)])
+    net3.normalize()
+    _, deficiencies3 = net3.quality()
+    assert any("(1, 2, 3)" in d and "…" not in d for d in deficiencies3)
+
+
 def test_quality_empty_plan_is_silent() -> None:
     assert TaskNetwork().quality() == (1.0, [])
 
