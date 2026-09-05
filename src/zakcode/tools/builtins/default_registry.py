@@ -15,6 +15,7 @@ from zakcode.tools.builtins.images import CreateChartImageTool, InspectImageTool
 from zakcode.tools.builtins.list_dir import ListDirTool
 from zakcode.tools.builtins.office import CreateDocxTool, CreateXlsxTool, ReadDocxTool, ReadXlsxTool
 from zakcode.tools.builtins.pdf import CreatePdfTool, ReadPdfTool
+from zakcode.tools.builtins.plan_recall import PlanRecallTool
 from zakcode.tools.builtins.powershell import PowerShellTool
 from zakcode.tools.builtins.read_file import ReadFileTool
 from zakcode.tools.builtins.schedule_wakeup import ScheduleWakeupTool
@@ -61,6 +62,10 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(SaveImageTool(), aliases=["image"])
     registry.register(CreateChartImageTool(), aliases=["chart"])
     registry.register(UpdatePlanTool(), aliases=["plan", "todo"])
+    # No bare "recall" alias: that name is reserved by the persistence boundary (the harness
+    # ships no cross-session memory tool; a Mind attaches its own recall through the seams —
+    # docs/PERSISTENCE-BOUNDARY.md). plan_recall reads THIS plan's record only.
+    registry.register(PlanRecallTool(), aliases=["plan_history"])
     # Claude Code's name too (ADR-0094): a Mind's loop calls ScheduleWakeup by that name.
     registry.register(ScheduleWakeupTool(), aliases=["ScheduleWakeup", "schedulewakeup", "wakeup"])
     registry.register(BashTool(), aliases=["sh", "shell"])
