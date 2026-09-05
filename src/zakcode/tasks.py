@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -57,6 +58,56 @@ _GLYPH: dict[str, str] = {
     "blocked": "!",
     "cancelled": "-",
 }
+
+#: ADR-0110 — bounds on the plan's MEMORY: evidence lines kept per step, history events kept
+#: before the oldest fold into ``TaskNetwork.log_folded``, characters kept of the request
+#: anchor and of one evidence / outcome line. Constants, not knobs: the bounds are part of the
+#: contract that the plan stays small enough to re-inject on every iteration.
+MAX_EVIDENCE_PER_STEP = 12
+MAX_LOG_EVENTS = 200
+MAX_REQUEST_CHARS = 600
+MAX_LINE_CHARS = 160
+
+
+def clip(text: str, limit: int) -> str:
+    """One line of ``text`` cut to ``limit`` characters (an ellipsis marks the cut)."""
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[: max(0, limit - 1)] + "…"
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+class PlanEvent(BaseModel):
+    """One entry of the plan's history (ADR-0110): what changed, when, and to which step.
+
+    ``kind`` is one of ``authored`` (the model laid out or reshaped the plan), ``step`` (a
+    step's status moved — ``detail`` carries ``old -> new`` and the outcome), ``seeded`` (the
+    harness added steps: a skill skeleton, an investigation, the request anchor), ``cleared``
+    (the model emptied the plan) or ``reset`` (the loop dropped a finished or abandoned plan at
+    a turn start — ``detail`` summarises what it achieved). The log is what makes the plan a
+    RECORD and not only a checklist: "what did I do a few steps ago" is answered here after the
+    conversation that did it has been compacted away.
+    """
+
+    seq: int
+    at: str
+    kind: str
+    step: str = ""
+    title: str = ""
+    detail: str = ""
+
+
+class PlanContext(BaseModel):
+    """What the plan is FOR (ADR-0110): the request that started it, verbatim and clipped.
+
+    Set by the loop when a turn begins on an empty plan and carried unchanged while the plan
+    lives, so a resumed or compacted session — or a small model twenty iterations in — can
+    re-read the ask without scrolling for it. A full-replace by the model never touches it.
+    """
+
+    request: str = ""
 
 
 class Task(BaseModel):
@@ -87,6 +138,23 @@ class Task(BaseModel):
     #: can never freeze the agent. Empty (the default) = no dependencies, i.e. document order.
     blocked_by: list[str] = Field(default_factory=list)
     children: list[Task] = Field(default_factory=list)
+    #: ADR-0110 — who authored the step: the model (default) or the harness (a skill section,
+    #: an investigation step, the request anchor). Rendered nowhere; read by the plan gate.
+    origin: Literal["model", "harness"] = "model"
+    #: ADR-0110 — the harness's REQUEST ANCHOR: a step standing for the user's ask itself,
+    #: seeded when deep work began to change the workspace with no plan. The one step the plan
+    #: gate may close on the model's behalf at a conclusion; the model's own steps never are.
+    anchor: bool = False
+    #: ADR-0110 — what the step PRODUCED, one line, recorded when it closes ("the flake is a
+    #: stale cache", "route added in app/users.py"). Set by the model (``update_plan``
+    #: ``outcome``) or filled by the harness from the last evidence line when the model leaves
+    #: it blank, so a closed step never reads as "done, no record".
+    outcome: str = ""
+    #: ADR-0110 — the tool calls that ran while this step was current, one compact line each
+    #: ("read_file app/users.py ✓", "bash pytest -q ✗"), oldest first, bounded to
+    #: :data:`MAX_EVIDENCE_PER_STEP` (older lines drop). Attached by the harness at the tool
+    #: execution seam; the model never writes it. This is the step's own record of what it did.
+    evidence: list[str] = Field(default_factory=list)
 
     def is_compound(self) -> bool:
         """True when this node has been decomposed into children (an actual sub-network)."""
@@ -104,6 +172,14 @@ class TaskNetwork(BaseModel):
     """
 
     tasks: list[Task] = Field(default_factory=list)
+    #: ADR-0110 — what the plan is for (the request anchor). Survives a full-replace; reset by
+    #: the loop when a new plan starts on an empty network.
+    context: PlanContext = Field(default_factory=PlanContext)
+    #: ADR-0110 — the plan's history, oldest first, bounded to :data:`MAX_LOG_EVENTS`; the count
+    #: of events folded off the front is kept so the record says how much it forgot. Outlives the
+    #: steps: a turn-start reset clears ``tasks`` and keeps the log.
+    log: list[PlanEvent] = Field(default_factory=list)
+    log_folded: int = 0
 
     # ── authoring / normalization ───────────────────────────────────────────────
 
@@ -129,7 +205,7 @@ class TaskNetwork(BaseModel):
             self._derive_status(task, advisories)
         return advisories
 
-    def insert_before(self, anchor: Task | None, steps: list[Task]) -> None:
+    def insert_before(self, anchor: Task | None, steps: list[Task], *, reason: str = "") -> None:
         """Splice harness-authored ``steps`` in as siblings directly AHEAD of ``anchor``.
 
         The decompose-on-stuck recovery (ADR-0057) uses this to put investigative steps in
@@ -137,8 +213,12 @@ class TaskNetwork(BaseModel):
         first new step becomes the current work, and the stuck step follows in document order
         — investigate, decide, then retry. ``anchor=None`` (no plan, or a finished one) appends
         at the top level: the investigation IS the plan. Normalizes afterwards, so ids, focus,
-        and derived statuses are consistent for the next render.
+        and derived statuses are consistent for the next render. Harness-authored, so every
+        step is stamped ``origin="harness"`` and the splice is logged (ADR-0110) — ``reason``
+        names why, else the titles do.
         """
+        for step in steps:
+            self._stamp_harness(step)
         siblings = self._siblings_of(anchor) if anchor is not None else None
         if siblings is None:
             self.tasks.extend(steps)
@@ -148,6 +228,121 @@ class TaskNetwork(BaseModel):
             index = next(i for i, task in enumerate(siblings) if task is anchor)
             siblings[index:index] = steps
         self.normalize()
+        if steps:
+            self.record(
+                "seeded",
+                step=steps[0] if len(steps) == 1 else None,
+                detail=reason or "; ".join(clip(s.title, 40) for s in steps[:6]),
+            )
+
+    @staticmethod
+    def _stamp_harness(step: Task) -> None:
+        step.origin = "harness"
+        for child in step.children:
+            TaskNetwork._stamp_harness(child)
+
+    # ── memory: history, evidence, carry-over (ADR-0110) ─────────────────────────
+
+    def record(self, kind: str, *, step: Task | None = None, detail: str = "") -> PlanEvent:
+        """Append one :class:`PlanEvent`; the oldest fold off past :data:`MAX_LOG_EVENTS`."""
+        event = PlanEvent(
+            seq=self.log_folded + len(self.log) + 1,
+            at=_now(),
+            kind=kind,
+            step=step.id if step is not None else "",
+            title=clip(step.title, MAX_LINE_CHARS) if step is not None else "",
+            detail=clip(detail, MAX_LINE_CHARS),
+        )
+        self.log.append(event)
+        overflow = len(self.log) - MAX_LOG_EVENTS
+        if overflow > 0:
+            del self.log[:overflow]
+            self.log_folded += overflow
+        return event
+
+    def attach_evidence(self, task: Task, line: str) -> None:
+        """Append one evidence line to ``task`` — the step that was current when a tool ran."""
+        if not line.strip():
+            return
+        task.evidence.append(clip(line, MAX_LINE_CHARS))
+        overflow = len(task.evidence) - MAX_EVIDENCE_PER_STEP
+        if overflow > 0:
+            del task.evidence[:overflow]
+
+    @staticmethod
+    def _title_key(title: str) -> str:
+        return " ".join(title.lower().split())
+
+    def replace_from_author(self, tasks: list[Task]) -> list[str]:
+        """Install a model-authored tree (full-replace), keeping what the model cannot resend.
+
+        ``update_plan`` hands a fresh tree by position, so without this every step's memory
+        would vanish on each edit. A new node inherits from its predecessor of the same title
+        (the one thing a model preserves across an edit; ids shift when steps are inserted):
+        ``evidence``, ``origin`` and ``anchor``, and — when the model left it blank — the prior
+        ``outcome``. A leaf that just reached a terminal status with no outcome gets one from
+        its last evidence line, so a closed step never reads as "done, no record". Every leaf's
+        start (``-> in_progress``) and close, and the (re)authoring itself when the set of
+        titles changed, are logged. Returns :meth:`normalize`'s advisories.
+        """
+        prior_by_title: dict[str, Task] = {}
+        for task in self._iter():
+            prior_by_title.setdefault(self._title_key(task.title), task)
+        prior_titles = [self._title_key(t.title) for t in self._iter()]
+        self.tasks = tasks
+        advisories = self.normalize()
+        for task in self._iter():
+            prior = prior_by_title.get(self._title_key(task.title))
+            if prior is None:
+                if not task.children and task.status in _TERMINAL:
+                    tail = f" — {task.outcome}" if task.outcome else ""
+                    self.record("step", step=task, detail=f"new -> {task.status}{tail}")
+                continue
+            task.evidence = list(prior.evidence)
+            task.origin = prior.origin
+            task.anchor = prior.anchor
+            if not task.outcome:
+                task.outcome = prior.outcome
+            if task.children or task.status == prior.status:
+                continue
+            if task.status in _TERMINAL and not task.outcome and task.evidence:
+                task.outcome = "last action: " + task.evidence[-1]
+            if task.status in _TERMINAL or task.status == "in_progress":
+                tail = f" — {task.outcome}" if task.status in _TERMINAL and task.outcome else ""
+                self.record("step", step=task, detail=f"{prior.status} -> {task.status}{tail}")
+        if [self._title_key(t.title) for t in self._iter()] != prior_titles:
+            leaves = self.leaves()
+            titles = "; ".join(clip(t.title, 40) for t in leaves[:6])
+            self.record("authored", detail=f"{len(leaves)} step(s): {titles}")
+        return advisories
+
+    def recent_closed(self, limit: int = 3) -> list[Task]:
+        """The most recently CLOSED leaves (done/cancelled), newest first (ADR-0110).
+
+        Read from the log, which is chronological where document order is not; a closed step
+        the model has since re-titled or dropped is skipped. When the log is silent about
+        closures (a plan restored by an older build), document order stands in.
+        """
+        by_title = {self._title_key(t.title): t for t in self.leaves()}
+        out: list[Task] = []
+        for event in reversed(self.log):
+            closing = "-> done" in event.detail or "-> cancelled" in event.detail
+            if event.kind != "step" or not closing:
+                continue
+            task = by_title.get(self._title_key(event.title))
+            if task is None or task.status not in _TERMINAL or any(t is task for t in out):
+                continue
+            out.append(task)
+            if len(out) >= limit:
+                return out
+        if not out:
+            out = [t for t in reversed(self.leaves()) if t.status in _TERMINAL][:limit]
+        return out
+
+    def last_closed(self) -> Task | None:
+        """The most recently closed leaf, or ``None``."""
+        closed = self.recent_closed(1)
+        return closed[0] if closed else None
 
     def contains(self, task: Task) -> bool:
         """True while this exact ``task`` object is still part of the network.
@@ -467,7 +662,9 @@ class TaskNetwork(BaseModel):
                 glyph = _GLYPH.get(node.status, " ")
                 indent = "  " * (depth + 1)
                 marker = "  <- current" if node.id == current_id else ""
-                detail = f" — {node.note}" if node.note else ""
+                # A closed step shows what it PRODUCED (ADR-0110); an open one its done-condition.
+                shown = node.outcome if node.status in _TERMINAL and node.outcome else node.note
+                detail = f" — {shown}" if shown else ""
                 deps = f" (after {', '.join(node.blocked_by)})" if node.blocked_by else ""
                 lines.append(f"{indent}[{glyph}] {node.id} {node.title}{detail}{deps}{marker}")
                 render_nodes(node.children, depth + 1)

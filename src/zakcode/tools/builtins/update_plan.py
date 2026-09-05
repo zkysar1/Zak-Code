@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from zakcode.config import PermissionTier
-from zakcode.tasks import Task, TaskStatus
+from zakcode.tasks import Task, TaskStatus, clip
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 
 #: Maximum decomposition depth the schema exposes. The near-term layer rarely needs more than
@@ -79,6 +79,14 @@ def _task_schema(depth: int) -> dict[str, Any]:
                 'e.g. ["1", "2"]. Omit when the step has no prerequisites.'
             ),
         },
+        "outcome": {
+            "type": "string",
+            "description": (
+                "What the step PRODUCED or found, one line — set it when you mark the step done "
+                "('the flake is a stale cache', 'route added in app/users.py'). This is the "
+                "record a later step, a resumed session, or the user reads back."
+            ),
+        },
     }
     if depth > 1:
         properties["subtasks"] = {
@@ -102,6 +110,7 @@ def _build_task(raw: dict[str, Any], depth: int) -> Task:
     raw_status = raw.get("status")
     status: TaskStatus = raw_status if raw_status in _STATUS_VALUES else "pending"
     note = str(raw.get("note", "")).strip()
+    outcome = str(raw.get("outcome", "")).strip()
     raw_deps = raw.get("blocked_by")
     blocked_by = (
         [str(d) for d in raw_deps if isinstance(d, str | int)] if isinstance(raw_deps, list) else []
@@ -114,6 +123,7 @@ def _build_task(raw: dict[str, Any], depth: int) -> Task:
         title=title,
         status=status,
         note=note,
+        outcome=outcome,
         blocked_by=blocked_by,
         kind="compound" if children else "primitive",
         children=children,
@@ -132,8 +142,9 @@ class UpdatePlanTool(Tool):
             "and no hidden 'figure out how' (break a step into 'subtasks' when it is itself "
             "several actions, and use 'blocked_by' when a step depends on earlier ones). Then "
             "call it again to mark a step done and the next one in_progress as you go. Always "
-            "send the WHOLE plan each time, with every step's status. Skip it only for a request "
-            "that asks one thing needing one or two actions."
+            "send the WHOLE plan each time, with every step's status. When you mark a step done, "
+            "record what it produced in its 'outcome'. Skip it only for a request that asks one "
+            "thing needing one or two actions."
         ),
         parameters={
             "type": "object",
@@ -167,6 +178,14 @@ class UpdatePlanTool(Tool):
             )
         if not tasks:
             # An empty plan clears the board (the goal is a single action, or work is abandoned).
+            # The record keeps what was dropped (ADR-0110).
+            if network.tasks:
+                dropped = network.actionable_remaining()
+                network.record(
+                    "cleared",
+                    detail=f"{len(dropped)} open step(s) dropped by the model: "
+                    + "; ".join(clip(t.title, 40) for t in dropped[:6]),
+                )
             network.tasks = []
             network.normalize()
             return ToolResult.ok("Plan cleared.", data={"task_count": 0})
@@ -179,8 +198,9 @@ class UpdatePlanTool(Tool):
                 "no valid steps found: each item in 'tasks' must be an object with a 'title'",
                 fix='e.g. [{"title": "first step"}, {"title": "second step"}]',
             )
-        network.tasks = built
-        advisories = network.normalize()
+        # Full-replace, but the steps' MEMORY (evidence, outcome, origin) carries over by title
+        # and every transition is logged (ADR-0110) — the model resends the plan, not its record.
+        advisories = network.replace_from_author(built)
 
         rendered = network.render()
         finished, total = network.progress()
