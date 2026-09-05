@@ -289,8 +289,21 @@ class TaskNetwork(BaseModel):
         for task in self._iter():
             prior_by_title.setdefault(self._title_key(task.title), task)
         prior_titles = [self._title_key(t.title) for t in self._iter()]
+        prior_anchors = [t for t in self.leaves() if t.anchor]
         self.tasks = tasks
         advisories = self.normalize()
+        new_titles = {self._title_key(t.title) for t in self._iter()}
+        for anchor in prior_anchors:
+            if self._title_key(anchor.title) not in new_titles:
+                # ADR-0111: the model's own plan supersedes the harness's request anchor. The
+                # anchor's record (what ran before the plan existed) stays in the history.
+                tail = f" — last action: {anchor.evidence[-1]}" if anchor.evidence else ""
+                self.record(
+                    "step",
+                    step=anchor,
+                    detail=f"anchor -> replaced by the model's plan ({len(anchor.evidence)} "
+                    f"tool call(s) recorded){tail}",
+                )
         for task in self._iter():
             prior = prior_by_title.get(self._title_key(task.title))
             if prior is None:
@@ -343,6 +356,20 @@ class TaskNetwork(BaseModel):
         """The most recently closed leaf, or ``None``."""
         closed = self.recent_closed(1)
         return closed[0] if closed else None
+
+    def is_anchor_only(self) -> bool:
+        """True when nothing but the harness's request anchor is on the board (ADR-0111) —
+        including the empty board. The plan-first gate reads this, not :meth:`is_empty`: an
+        anchor gives the work a record, not a decomposition, so a deep turn that only has one
+        still owes the model's own plan before it changes the workspace."""
+        return all(leaf.anchor for leaf in self.leaves())
+
+    def get(self, task_id: str) -> Task | None:
+        """The node with ``task_id`` (as rendered — ``"2"``, ``"3.1"``), or ``None``."""
+        for task in self._iter():
+            if task.id == task_id:
+                return task
+        return None
 
     def contains(self, task: Task) -> bool:
         """True while this exact ``task`` object is still part of the network.

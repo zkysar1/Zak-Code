@@ -254,6 +254,7 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "web_fetch",
         "secret_names",
         "update_plan",
+        "plan_recall",
         "schedule_wakeup",
         "deep_think",
     }

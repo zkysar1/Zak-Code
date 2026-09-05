@@ -4466,3 +4466,65 @@ unknown keys, fail-safe). Tests: `tests/test_plan_ledger.py` (carry-over,
 outcome fill, chronological closures, log bound, harness seeding, the anchor lifecycle on
 the buffered path, evidence attachment and the reminder's memory lines) and the collapse
 regression in `tests/test_render.py`.
+
+---
+
+## ADR-0111: The record is readable on demand, and a deep turn is anchored at its first action
+
+**Context.** ADR-0110 made the plan a record — request, per-step evidence, outcomes, a
+history — and showed the newest slice of it on every iteration (the current step's last
+three tool calls, the last closed step's outcome). Two gaps remained, both named in the
+operator's directive that motivated ADR-0110 ("fetch, search, what's next, what was
+previous … it can tell what it did a few steps ago"). First, the model had no way to read
+the REST of the record: a step's twelve evidence lines, the outcome of a step closed five
+steps ago, the history of how the plan changed, whether an approach had already been tried.
+It could only re-do the work or guess — the two behaviours the record exists to prevent.
+Second, the request anchor (ADR-0110 §4) was planted only when a deep turn tried to CHANGE
+the workspace without a plan. A deep turn that investigated first — the common shape, and
+the whole of a read-only analysis turn — ran with no plan at all, so its reads were nobody's
+evidence and its conclusion closed no record; the compliance workspace whose plan-less
+sessions started this work does mostly that kind of turn.
+
+**Decision.**
+
+1. *`plan_recall` — the model's read handle on the record.* A `READ_ONLY` /
+   `READ_ONLY_SAFE` builtin (alias `plan_history`; deliberately NOT `recall`, which the
+   persistence boundary reserves — the harness ships no cross-session memory tool, and this
+   one reads the current plan's record only), always available and never gated. With no arguments it returns the request, every step with its outcome (or
+   done-condition) and tool-call count, and the last eight history events. `step` returns
+   one step's full evidence and its history; `query` searches titles, done-conditions,
+   outcomes, evidence and history case-insensitively; `last` sizes the history slice
+   (capped at 60). Plan tools are never evidence, so reading the record leaves no trace in
+   it. The `_PLANNING` prompt block names it as the answer to "what did I already do".
+
+2. *A deep turn's record starts at its first action.* On a deep turn (the same verdict the
+   plan-first gate uses) whose first tool batch carries no plan tool, the harness plants the
+   request anchor BEFORE the batch runs — mutating or not, with nothing withheld. Read-only
+   investigation is still never gated; it is now recorded. The anchor's note tells the model
+   to refine it into steps; when the model's `update_plan` supersedes it, the anchor's record
+   is written to the history (`anchor -> replaced by the model's plan (N tool call(s)
+   recorded) — last action: …`) so what ran before the plan existed is never lost.
+
+3. *The mutate gate asks for the MODEL's plan.* `_plan_first_blocks` now tests
+   `TaskNetwork.is_anchor_only()` rather than `is_empty()`: an anchor gives the work a
+   record, not a decomposition, so a deep turn that has only an anchor still owes its own
+   plan before the first write, edit or shell action — two nudges, then the action runs
+   against the anchor as before. A skill skeleton or an investigation splice is a real
+   decomposition and satisfies the gate.
+
+**Alternatives considered.** Showing more of the record in the reminder — rejected: the
+reminder rides every iteration in the hot tail; the record is bounded but not small, and
+the model needs a specific slice at a specific moment, which is a read, not a broadcast.
+Separate `plan_search` / `plan_step` tools — rejected: one tool with three optional
+arguments is one tool a small model has to learn. Anchoring read-only turns by withholding
+the first read — rejected: never gate investigation.
+
+**Consequences.** Every deep turn now has a plan from its first action, authored by the
+model when it will and anchored by the harness when it will not, and every tool call of a
+deep turn is some step's evidence; the model can answer "what did I do" from the record
+instead of from memory. Costs: one more builtin in the catalog (read-only, cheap schema);
+the harness anchors some deep read-only turns whose model would have planned on its second
+batch anyway — the replacement record keeps their first batch. Tests:
+`tests/test_plan_recall.py` (overview / step / query / bad step, eager anchoring on a
+read-only first batch, the anchor-only mutate gate, the replacement record, the reminder's
+recall hint absent — the tool is discovered from the catalog and the prompt).

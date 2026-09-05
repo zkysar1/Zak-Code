@@ -981,9 +981,10 @@ _PLAN_JUDGE_SILENCE = 0.8
 #: extends it to every turn. Bounded so it can never deadlock.
 _MAX_PLAN_FIRST_NUDGES = 2
 
-#: Tool names that edit the plan itself: their calls are never recorded as a step's evidence
-#: (ADR-0110) — the plan's own bookkeeping is not work the step did.
-_PLAN_TOOLS = frozenset({"update_plan", "plan", "todo"})
+#: Tool names that edit or read the plan itself: their calls are never recorded as a step's
+#: evidence (ADR-0110 / ADR-0111) — the plan's own bookkeeping is not work the step did, and
+#: reading the record must leave no trace in it.
+_PLAN_TOOLS = frozenset({"update_plan", "plan", "todo", "plan_recall", "plan_history"})
 
 #: Argument keys, in preference order, whose value best says what a tool call touched — the one
 #: detail an evidence line carries beside the tool name and the outcome mark.
@@ -4125,11 +4126,13 @@ class AgentLoop:
 
     def _plan_first_blocks(self, calls: list[ToolCall], *, deep: bool = False) -> bool:
         """True when the plan-first gate should withhold this batch (ADR-0110): the work is DEEP
-        (or ``require_plan`` extends the gate to every turn), no plan exists yet, and the batch
-        contains a mutating call. Read-only investigation is never gated."""
+        (or ``require_plan`` extends the gate to every turn), no plan of the MODEL's exists yet
+        — the harness's request anchor alone does not count (ADR-0111): it gives the work a
+        record, not a decomposition — and the batch contains a mutating call. Read-only
+        investigation is never gated."""
         return (
             (deep or self.settings.require_plan)
-            and self.session.task_network.is_empty()
+            and self.session.task_network.is_anchor_only()
             and any(self._is_mutating(c) for c in calls)
         )
 
@@ -5872,12 +5875,13 @@ class AgentLoop:
 
             # Plan-first gate (ADR-0110): DEEP work — the routing verdict, else the length
             # heuristic; ``require_plan`` extends it to every turn — may not change the
-            # workspace before a plan exists. Bounded by _MAX_PLAN_FIRST_NUDGES; past the cap
-            # the harness anchors the request as the plan and the action runs (fail-open, with
-            # a record). Read-only investigation is never gated.
-            if self._plan_first_blocks(
-                result.tool_calls, deep=self._turn_is_deep(user_text, base_difficulty)
-            ):
+            # workspace before a plan of the model's exists. Bounded by _MAX_PLAN_FIRST_NUDGES;
+            # past the cap the harness anchors the request as the plan and the action runs
+            # (fail-open, with a record). Read-only investigation is never gated — but on a
+            # deep turn it IS recorded: the first batch of any kind plants the anchor before
+            # it runs (ADR-0111), so a deep turn's record starts at its first action.
+            deep_turn = self._turn_is_deep(user_text, base_difficulty)
+            if self._plan_first_blocks(result.tool_calls, deep=deep_turn):
                 if plan_first_nudges < _MAX_PLAN_FIRST_NUDGES:
                     plan_first_nudges += 1
                     self._note("intervention", "plan the task before editing", kind="plan_first")
@@ -5904,6 +5908,13 @@ class AgentLoop:
                     stuck.reset()
                     continue
                 self._seed_request_anchor(user_text)
+                self._persist()
+            elif (
+                deep_turn
+                and self.session.task_network.is_empty()
+                and not any(c.name in _PLAN_TOOLS for c in result.tool_calls)
+            ):
+                self._seed_request_anchor(user_text)  # ADR-0111: recorded, not withheld
                 self._persist()
 
             # A lone use_skill is the loop's re-entry: a newer build is taken there
@@ -7388,11 +7399,11 @@ class AgentLoop:
                     break
 
                 # Plan-first gate (ADR-0110; streaming twin): deep work may not change the
-                # workspace before a plan exists. Bounded; past the cap the request is anchored
-                # as the plan and the action runs. Read-only investigation is never gated.
-                if self._plan_first_blocks(
-                    tool_calls, deep=self._turn_is_deep(user_text, base_difficulty)
-                ):
+                # workspace before a plan of the model's exists. Bounded; past the cap the
+                # request is anchored as the plan and the action runs. Read-only investigation
+                # is never gated — on a deep turn it is recorded (ADR-0111, the elif below).
+                deep_turn = self._turn_is_deep(user_text, base_difficulty)
+                if self._plan_first_blocks(tool_calls, deep=deep_turn):
                     if plan_first_nudges < _MAX_PLAN_FIRST_NUDGES:
                         plan_first_nudges += 1
                         self._note(
@@ -7422,6 +7433,14 @@ class AgentLoop:
                         yield AgentStatus(message="plan-first: plan the task before editing")
                         continue
                     self._seed_request_anchor(user_text)
+                    self._persist()
+                    yield AgentStatus(message="plan anchored to the request")
+                elif (
+                    deep_turn
+                    and self.session.task_network.is_empty()
+                    and not any(c.name in _PLAN_TOOLS for c in tool_calls)
+                ):
+                    self._seed_request_anchor(user_text)  # ADR-0111: recorded, not withheld
                     self._persist()
                     yield AgentStatus(message="plan anchored to the request")
 

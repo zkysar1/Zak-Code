@@ -117,6 +117,10 @@ _PLANNING = (
     "when each part is small: a part held only in your head gets lost to interruptions and "
     "resumes; a plan step does not. Do not answer or finish until every part is done, "
     "cancelled, or explicitly declined.\n"
+    "- The plan is also your RECORD. When you mark a step done, put what it produced or found "
+    "in its `outcome` (one line); the harness records the tool calls each step made. When you "
+    "need to know what an earlier step did, what you already tried, or what the request was, "
+    "call `plan_recall` — never guess and never redo work to find out.\n"
     "- Skip planning only for a request that asks one straightforward thing; the plan is a "
     "tool for managing real multi-part work, not ceremony."
 )

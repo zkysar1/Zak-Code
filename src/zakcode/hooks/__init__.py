@@ -280,6 +280,7 @@ _CLAUDE_CODE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "web_fetch": ("WebFetch",),
     "task": ("Task",),
     "update_plan": ("TodoWrite",),
+    "plan_recall": ("TodoRead",),
     "schedule_wakeup": ("ScheduleWakeup",),
 }
 
