@@ -874,11 +874,18 @@
         return;
       case "task_update":
         // The live plan (Zak Code's task list). Render each line as its own row so
-        // newlines survive using textContent only (no markup injection).
+        // newlines survive using textContent only (no markup injection). A COMPLETE plan
+        // collapses to one line so the finished checklist does not linger under the
+        // answer (ADR-0108).
         assistantBody = null;
         {
           const box = el("div", "meta");
-          (ev.plan || "").split("\n").forEach((line) => box.appendChild(el("div", "", line)));
+          if (ev.complete) {
+            const done = (ev.finished || 0) + "/" + (ev.total || 0);
+            box.appendChild(el("div", "", "✓ plan complete — " + done + " steps"));
+          } else {
+            (ev.plan || "").split("\n").forEach((line) => box.appendChild(el("div", "", line)));
+          }
           add(row("plan", el("span", "", "☰"), box));
         }
         return;

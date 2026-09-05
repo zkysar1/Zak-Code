@@ -505,6 +505,21 @@ _INTENT_NUDGE = (
     "and finish without announcing further actions."
 )
 
+#: Plan-verdict rail (ADR-0108): the plan completed this turn and the completion is a bare
+#: STATUS ("plan finished" / "all steps are complete" / "no further action is needed") — the
+#: plan was the means; the user asked a question. Field report 2026-09-05, and the closing
+#: paragraph of the ADR-0026 incident word for word. Asked once per turn; a completion that
+#: already carries its conclusion says so and finishes.
+_VERDICT_NUDGE = (
+    'You ended on the plan\'s status ("plan finished" / "all steps complete"). That is not '
+    "the deliverable. Re-read the user's ORIGINAL request and answer it: lead with the "
+    "conclusion or verdict, then the evidence the steps produced. Do not restate the plan or "
+    "its steps."
+)
+#: A bare status is short. A longer completion that happens to END on a status phrase has
+#: room for its conclusion above it and is left alone — the rail is for the one-liner.
+_BARE_STATUS_MAX_CHARS = 600
+
 #: Broken-record guard (ADR-0026): a completion RE-SENT verbatim within one turn is the
 #: parroting attractor — a turn_end veto (or any gate nudge) re-prompts, and a small model
 #: re-emits its previous message word for word, forever. Field incident 2026-08-26: one
@@ -556,6 +571,30 @@ def _announces_future_work(text: str) -> bool:
     mid-turn; it is the turn ENDING on an announcement that makes it a false done.
     """
     return _FUTURE_INTENT_RE.search(text[-800:]) is not None
+
+
+#: Plan-status endings (ADR-0108): the plan/the steps declared finished, or "no further
+#: action". Bounded to one clause (no sentence punctuation between the noun and the status
+#: word) so "the plan's second step revealed the bug" never matches.
+_PLAN_STATUS_RE = re.compile(
+    r"\b(?:"
+    r"(?:the\s+)?plan\b[^.!?\n]{0,40}?\b(?:finished|complete|completed|done|executed)"
+    r"|(?:all|every)\b[^.!?\n]{0,30}?\bsteps?\b[^.!?\n]{0,25}?"
+    r"\b(?:complete|completed|done|finished)"
+    r"|no\s+further\s+(?:action|steps?|work)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _ends_on_plan_status(text: str) -> bool:
+    """True when the TAIL of a completion reports the plan's status instead of a conclusion.
+
+    Only the tail is judged, as in :func:`_announces_future_work`: a status phrase followed
+    by a real answer is a fine completion; it is the turn ENDING on the status that hands the
+    user a finished checklist and an unanswered question.
+    """
+    return _PLAN_STATUS_RE.search(text.rstrip()[-400:]) is not None
 
 
 #: Claim-vs-action guard (ADR-0033): a completion that REPORTS a change to a file, skill,
@@ -2130,6 +2169,18 @@ class AgentLoop:
         rendered = network.render()
         if not rendered:
             return None
+        if network.is_complete():
+            # ADR-0108: the call after the last step closes is the one that must produce the
+            # ANSWER. Handing it the finished checklist as its highest-salience message is
+            # what made small models narrate the plan's state instead ("all steps are
+            # complete, no further action is needed"). One line, pointing at the deliverable;
+            # the network itself stays intact for the UIs and the next turn's reset.
+            finished, total = network.progress()
+            return Message.user(
+                f"[plan] Plan complete ({finished}/{total} steps done); the checklist is no "
+                "longer shown. Answer the user's original request now — lead with the "
+                "conclusion or verdict, then the evidence the steps produced."
+            )
         body = (
             "[plan] Harness-tracked plan for the current goal. Keep it current with the "
             "update_plan tool: mark a step done and the next in_progress as you finish each, "
@@ -4687,6 +4738,7 @@ class AgentLoop:
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
+        verdict_nudged = False  # plan-verdict rail (ADR-0108): one nudge per turn
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
@@ -5303,7 +5355,7 @@ class AgentLoop:
                     )
                 if cascade_capped:
                     claim_nudged = blocker_nudged = missing_nudged = True
-                    identity_nudged = figure_nudged = intent_nudged = True
+                    identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
                 # Claim-vs-action guard (ADR-0033): the completion REPORTS a file change
                 # ("I have updated … I have registered …") but no file-changing tool call
                 # ran this turn, so nothing on disk changed. Ask once for the work or an
@@ -5431,6 +5483,31 @@ class AgentLoop:
                         kind="intent_gate",
                     )
                     self.session.add_message(Message.user(_control_rail(_INTENT_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
+                # Plan-verdict rail (ADR-0108): the plan completed this turn and the turn is
+                # ending on its STATUS ("plan finished", "all steps complete", "no further
+                # action") rather than on an answer to the user's request. A bare status is
+                # short; a longer completion that ends on one has its conclusion above and
+                # is left alone. Ask once; a model that already answered says so and finishes.
+                if (
+                    result.text
+                    and not verdict_nudged
+                    and len(result.text) <= _BARE_STATUS_MAX_CHARS
+                    and self.session.task_network.is_complete()
+                    and _ends_on_plan_status(result.text)
+                ):
+                    verdict_nudged = True
+                    self._note(
+                        "intervention",
+                        "completion reports the plan's status instead of the conclusion — "
+                        "asking for the verdict",
+                        kind="verdict_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_VERDICT_NUDGE)))
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -5899,6 +5976,7 @@ class AgentLoop:
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
+        verdict_nudged = False  # plan-verdict rail (ADR-0108): one nudge per turn
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
@@ -6786,7 +6864,7 @@ class AgentLoop:
                         yield AgentStatus(message="evidence gates stand down; the answer stands")
                     if cascade_capped:
                         claim_nudged = blocker_nudged = missing_nudged = True
-                        identity_nudged = figure_nudged = intent_nudged = True
+                        identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
                     # Claim-vs-action guard (ADR-0033) — see the buffered twin.
                     if (
                         assistant_text
@@ -6928,6 +7006,30 @@ class AgentLoop:
                         repeat_count = 0
                         stuck.reset()
                         yield AgentStatus(message="turn ended on announced work — asking for it")
+                        continue
+                    # Plan-verdict rail (ADR-0108) — see the buffered twin.
+                    if (
+                        assistant_text
+                        and not verdict_nudged
+                        and len(assistant_text) <= _BARE_STATUS_MAX_CHARS
+                        and self.session.task_network.is_complete()
+                        and _ends_on_plan_status(assistant_text)
+                    ):
+                        verdict_nudged = True
+                        self._note(
+                            "intervention",
+                            "completion reports the plan's status instead of the conclusion — "
+                            "asking for the verdict",
+                            kind="verdict_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_VERDICT_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="turn ended on the plan's status — asking for the verdict"
+                        )
                         continue
                     # Open-section guard (ADR-0087) — see the buffered twin.
                     open_section = self._open_delivered_section() if self.unattended() else None
