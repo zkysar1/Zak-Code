@@ -4564,3 +4564,32 @@ lands; a resumed or compacted model reads a request that still ends with its con
 (a harness plan draws once; a repeat of the Todo receipt is silent),
 `tests/test_plan_recall.py` (scoped vs widened history, files changed),
 `tests/test_plan_ledger.py` (head+tail anchor).
+
+---
+
+## ADR-0113: A full-replace that drops open work says so, and the web client sees the goal
+
+**Context.** `update_plan`'s full-replace contract (ADR-0110 kept it deliberately: the model
+resends the whole plan each call, which is what keeps weak models robust) has one failure
+mode built in — resend and forget. A small model marking step 2 done resends steps 1–2 and
+leaves step 3 out; the harness re-numbers, the plan looks whole, and the forgotten work is
+gone with no trace anywhere: not in the render, not in the record, not in the tool result.
+ADR-0110's history logged an `authored` event with the NEW titles, which is the one place
+the dropped title does not appear. Separately, the web client's plan row and the server's
+safe projection carried the checklist but not the request it serves, which the CLI and the
+loop's own reminder had since ADR-0110.
+
+**Decision.** `TaskNetwork.replace_from_author` compares the prior OPEN leaves (not
+done/cancelled, not the request anchor — ADR-0111 records that replacement itself) against
+the new tree's titles; each missing one is logged as a `dropped` event naming the step and
+its status, and one advisory names them in the tool result (`dropped open step(s) not in
+this plan: 'c' (pending) — resend them if that was not intended.`), so the author sees it
+on the very call that dropped them. A closed step left out is not an event — its work is
+done. `SafeTaskUpdate` gains the redacted `request`; the web client heads an open plan's
+row with `Goal: <request>`.
+
+**Consequences.** A forgotten step costs one advisory and one resend instead of a silent
+loss; `plan_recall` (query or `last`) finds it later by title. The advisory is not a gate —
+the model may drop a step on purpose, and cancelling remains the explicit way to say so.
+Tests: `tests/test_plan_ledger.py` (drop recorded + advised, faithful resend silent),
+`tests/test_safe_projection.py` (request travels redacted).

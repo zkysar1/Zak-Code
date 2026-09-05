@@ -86,6 +86,7 @@ def test_tool_result_strips_output_and_reports_status() -> None:
 def test_task_update_allowlists_description_and_status() -> None:
     out = _proj().project(
         AgentTaskUpdate(
+            request=f"fix the loader for {VIN}",
             tasks=[
                 {
                     "id": "1",
@@ -95,11 +96,13 @@ def test_task_update_allowlists_description_and_status() -> None:
                     "note": f"internal secret {VIN}",
                     "children": [{"id": "1a", "title": "leak me"}],
                 }
-            ]
+            ],
         )
     )
     assert isinstance(out, SafeTaskUpdate)
     assert out.tasks == [{"description": "run the thing", "status": "running"}]
+    # ADR-0113: the request the plan serves travels, redacted like everything else.
+    assert out.request.startswith("fix the loader for ")
     dumped = out.model_dump_json()
     assert VIN not in dumped and "leak me" not in dumped and "note" not in dumped
 

@@ -87,10 +87,12 @@ class SafeToolSummary(BaseModel):
 
 
 class SafeTaskUpdate(BaseModel):
-    """The plan checklist reduced to per-task {description, status}. Notes/children dropped."""
+    """The plan checklist reduced to per-task {description, status} plus the redacted request
+    the plan serves (ADR-0113). Notes/children/evidence/outcomes dropped."""
 
     event: Literal["task_update"] = "task_update"
     tasks: list[dict[str, str]] = []
+    request: str = ""
 
 
 class SafeDone(BaseModel):
@@ -345,7 +347,8 @@ class SafeEventProjection:
                             "status": str(t.get("status", "")),
                         }
                     )
-            return SafeTaskUpdate(tasks=safe_tasks)
+            request = self.redact(str(getattr(event, "request", "") or ""))
+            return SafeTaskUpdate(tasks=safe_tasks, request=request)
         if kind == "done":
             # stop_reason only; error/trace/usage/degraded dropped.
             return SafeDone(stop_reason=str(getattr(event, "stop_reason", "")))

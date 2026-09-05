@@ -136,6 +136,26 @@ def test_insert_before_stamps_harness_origin_and_logs_the_seed() -> None:
     assert all(t.origin == "harness" for t in net.tasks)
 
 
+def test_a_full_replace_that_drops_open_steps_says_so() -> None:
+    # ADR-0113: resend-and-forget is the full-replace contract's own failure mode. A dropped
+    # OPEN step is recorded and named in the advisories the tool result shows; a closed step
+    # left out of the resend is not an event (its work is done), and the anchor's replacement
+    # is ADR-0111's own record.
+    net = TaskNetwork()
+    _author(net, ("a", "done", "a happened"), ("b", "in_progress"), ("c", "pending"))
+    advisories = net.replace_from_author([Task(title="b", status="in_progress")])
+    assert advisories == [
+        "dropped open step(s) not in this plan: 'c' (pending) — resend them if that was not "
+        "intended."
+    ]
+    dropped = [e for e in net.log if e.kind == "dropped"]
+    assert len(dropped) == 1 and dropped[0].title == "c"
+    assert dropped[0].detail == "open step dropped by a full replace (pending): c"
+    # Resending it restores the step (its record starts afresh — the harness cannot know it
+    # is the same work), and a faithful resend drops nothing.
+    assert net.replace_from_author([Task(title="b", status="in_progress"), Task(title="c")]) == []
+
+
 def test_model_clearing_the_plan_leaves_a_record() -> None:
     net = TaskNetwork()
     _author(net, ("a", "in_progress"), ("b", "pending"))
