@@ -904,3 +904,113 @@ def test_usage_refusal_does_not_satisfy_an_acceptance_literal() -> None:
         [_r("r", is_error=True, output="Usage: fetch.sh <file_id>")],
     )
     assert c.needs_verification() is True
+
+
+# ── ADR-0114: verification credit that matches how Python actually runs ────────
+
+
+def test_extract_acceptance_rejects_format_templates() -> None:
+    """'as "word count" lines' describes the SHAPE of every output line, not one exact stdout
+    string. Extracting it demands the program print the literal `word count`, which no run
+    can, and the gate stalls a fully green turn (measured 2026-09-05 on coach's local model).
+    """
+    request = (
+        "create wordstats/cli.py with a main() that reads a file and prints the five most "
+        'common words as "word count" lines; then run python3 -m pytest -q tests'
+    )
+    assert extract_acceptance(request) is None
+    assert extract_acceptance('print each result as "name: score" lines') is None
+    assert extract_acceptance('output rows in the form "id,total"') is None
+    assert extract_acceptance("prints records like `key=value`") is None
+    assert extract_acceptance('displays them e.g. "3 apples"') is None
+    # ...while a stated exact output still extracts, including one followed by ordinary prose.
+    assert extract_acceptance('it should print "pong"') == "pong"
+    assert extract_acceptance('prints "done" then exits') == "done"
+    assert extract_acceptance("write a script that prints `Hello, World!`") == "Hello, World!"
+
+
+def test_executed_targets_credit_module_path_runs() -> None:
+    from zakcode.agent.recipe import _executed_targets
+
+    targets = {"cli.py", "core.py"}
+    executed = _executed_targets('cd "/w" && python3 -m wordstats.cli sample.txt --json', targets)
+    assert executed == {"cli.py"}
+    assert _executed_targets("py -m wordstats", {"wordstats.py"}) == {"wordstats.py"}
+    assert (
+        _executed_targets("python -m pytest -q tests", targets) == set()
+    )  # a runner, not a target
+    assert _executed_targets("echo -m wordstats.cli", targets) == set()  # not an interpreter head
+
+
+def test_cursor_verified_by_module_path_run() -> None:
+    c = RecipeCursor(enabled=True)
+    path = "/w/wordstats/cli.py"
+    c.observe([_c("w", "write_file", path=path)], [_r("w", path=path)])
+    c.observe(
+        [_c("r", "bash", command='cd "/w" && python3 -m wordstats.cli sample.txt --json')],
+        [_r("r", output='{"hello": 3}\n[exit code: 0]')],
+    )
+    assert c.needs_verification() is False
+
+
+def test_plumbing_files_do_not_arm_the_gate() -> None:
+    """__init__.py runs only by import and conftest.py only under pytest: a write of either arms
+    nothing, so the harness never 'verifies' one by running it (exit 0, having done nothing).
+    """
+    for path in ("/w/wordstats/__init__.py", "/w/conftest.py"):
+        c = RecipeCursor(enabled=True)
+        c.observe([_c("w", "write_file", path=path)], [_r("w", path=path)])
+        assert c.needs_verification() is False, path
+    # ...and they do not linger as unverifiable targets beside a real module.
+    c = RecipeCursor(enabled=True)
+    c.observe(
+        [
+            _c("w1", "write_file", path="/w/pkg/__init__.py"),
+            _c("w2", "write_file", path="/w/pkg/core.py"),
+        ],
+        [_r("w1", path="/w/pkg/__init__.py"), _r("w2", path="/w/pkg/core.py")],
+    )
+    c.observe([_c("r", "bash", command='cd "/w" && python3 -m pkg.core')], [_r("r")])
+    assert c.needs_verification() is False
+
+
+def test_resolve_run_command_uses_module_form_inside_a_package(tmp_path: Path) -> None:
+    pkg = tmp_path / "wordstats"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    target = pkg / "cli.py"
+    target.write_text("from wordstats import core\n")
+    cmd = resolve_run_command(str(target))
+    assert cmd is not None
+    assert f'cd "{tmp_path}"' in cmd and cmd.rstrip().endswith("-m wordstats.cli")
+    assert str(target) not in cmd  # never `py "pkg/cli.py"`: that run cannot import its package
+    # Nested packages resolve the whole dotted path from the first non-package ancestor.
+    sub = pkg / "inner"
+    sub.mkdir()
+    (sub / "__init__.py").write_text("")
+    (sub / "job.py").write_text("")
+    nested = resolve_run_command(str(sub / "job.py"))
+    assert nested is not None and nested.endswith("-m wordstats.inner.job")
+    # A plain script outside any package keeps the direct form.
+    script = tmp_path / "tool.py"
+    script.write_text("print('ok')\n")
+    plain = resolve_run_command(str(script))
+    assert plain is not None and str(script) in plain and "-m" not in plain
+
+
+def test_resolve_run_command_routes_test_modules_to_the_runner(tmp_path: Path) -> None:
+    if not (shutil.which("pytest") or importlib.util.find_spec("pytest")):
+        pytest.skip("no pytest available to route to")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    target = tests_dir / "test_core.py"
+    target.write_text("def test_x():\n    assert True\n")
+    cmd = resolve_run_command(str(target))
+    assert cmd is not None
+    assert f'cd "{tmp_path}"' in cmd  # the parent of tests/, where the package under test lives
+    assert "pytest -q" in cmd and str(target) in cmd
+    # The runner form is credited both ways the gate can be satisfied.
+    from zakcode.agent.recipe import _executed_targets, _runs_test_suite
+
+    assert _runs_test_suite(cmd) is True
+    assert _executed_targets(cmd, {"test_core.py"}) == {"test_core.py"}

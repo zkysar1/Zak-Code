@@ -24,6 +24,7 @@ rules), and the harness only enforces that a real run happened.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import shlex
@@ -109,6 +110,23 @@ _FILENAME_RE = re.compile(r"^\S+\.[A-Za-z]{1,8}$")
 # leading ``-`` then a DIGIT is kept, so a genuine negative-number output (``-5``, ``-3.14``)
 # is NOT mistaken for a flag. (Generic, like the filename guard — not a hardcoded blocklist.)
 _CLI_FLAG_RE = re.compile(r"^--?[A-Za-z]")
+# A FORMAT TEMPLATE reads like an expected-output literal but describes the SHAPE of many
+# lines, not one exact stdout string: 'prints the top words as "word count" lines'. The tell
+# is around the quote, not inside it — a template lead-in right before it ("as", "like", "in
+# the form", ...) or a plural/format noun right after it ("lines", "pairs", "rows", "format",
+# ...). Either rejects the candidate. Measured 2026-09-05 on coach's local model: the
+# wordstats request extracted `word count`, which no run could ever print, so the gate re-ran
+# the file to the attempt cap and stalled a fully green turn (ADR-0114).
+_TEMPLATE_LEAD_RE = re.compile(
+    r"(?:\b(?:as|like|such\s+as|formatted\s+as|of\s+the\s+form|in\s+the\s+form(?:\s+of)?"
+    r"|following\s+the\s+pattern|shaped\s+like)|e\.g\.)\s*$",
+    re.IGNORECASE,
+)
+_TEMPLATE_TAIL_RE = re.compile(
+    r"^\s*(?:lines?|rows?|pairs?|entries|entry|records?|columns?|fields?|tuples?|blocks?"
+    r"|format|style|template|pattern)\b",
+    re.IGNORECASE,
+)
 
 
 def extract_acceptance(user_text: str) -> str | None:
@@ -117,14 +135,22 @@ def extract_acceptance(user_text: str) -> str | None:
     Returns the string the program should print, or ``None`` when the request does not
     clearly and unambiguously state one (the common case -> exit-0-only verification).
     High precision by design: any ambiguity (no match, more than one distinct candidate,
-    a path/filename-looking literal, multi-line, or over-long) returns ``None`` so a
-    wrong extraction can never trap the turn in an unsatisfiable acceptance check.
+    a path/filename-looking literal, a format template, multi-line, or over-long) returns
+    ``None`` so a wrong extraction can never trap the turn in an unsatisfiable acceptance
+    check.
     """
     candidates: list[str] = []
     for m in _ACCEPT_RE.finditer(user_text):
-        literal = next((g for g in m.groups() if g is not None), None)
-        if literal is not None:
-            candidates.append(literal)
+        group = next((i for i in range(1, _ACCEPT_RE.groups + 1) if m.group(i) is not None), None)
+        if group is None:
+            continue
+        # The text between the cue verb and the opening quote, and what follows the closing
+        # quote: a template lead-in or a format noun means the literal is a shape, not an output.
+        lead = user_text[m.start() : m.start(group) - 1]
+        tail = user_text[m.end(group) + 1 : m.end(group) + 25]
+        if _TEMPLATE_LEAD_RE.search(lead) or _TEMPLATE_TAIL_RE.match(tail):
+            continue
+        candidates.append(m.group(group))
     distinct = list(dict.fromkeys(candidates))
     if len(distinct) != 1:
         return None
@@ -195,7 +221,9 @@ def _executed_targets(command: str, targets: set[str]) -> set[str]:
 
     Unlike a naive ``basename in command`` substring test, each target must appear as a
     whole path token in an execution position — run by an interpreter
-    (``py``/``python``/``node``/...), by a package runner (``uv run x.py``), or directly
+    (``py``/``python``/``node``/...), by a package runner (``uv run x.py``), by a test runner
+    that names it (``pytest test_x.py`` executes that module's tests — the module under test
+    is only imported, and is credited through :func:`_runs_test_suite` instead), or directly
     (``./x.py`` / ``.\\x.py``) — within a single command segment. So a command that merely
     *names* the file (``echo``/``cat``/``ls``/``rm`` ``x.py``) does not count, and a longer
     unrelated filename (``aa.py`` for target ``a.py``) no longer false-positives.
@@ -207,13 +235,20 @@ def _executed_targets(command: str, targets: set[str]) -> set[str]:
         if not seg:
             continue
         head = _interpreter_name(seg[0])
-        if head in _INTERPRETERS:
+        if head in _INTERPRETERS or head in _TEST_RUNNER_HEADS:
             body = seg[1:]
         elif head in _RUNNERS and len(seg) >= 2 and _interpreter_name(seg[1]) == "run":
             body = seg[2:]
         else:
             body = []
         executed |= {b for tok in body if (b := _basename_any(tok)) in targets}
+        # `python -m pkg.mod` executes pkg/mod.py without ever naming the file: the module
+        # path's last component is the executed basename (ADR-0114).
+        for i, tok in enumerate(body[:-1]):
+            if tok.strip().strip("'\"") == "-m":
+                module = body[i + 1].strip().strip("'\"")
+                if (b := module.rsplit(".", 1)[-1] + ".py") in targets:
+                    executed.add(b)
         # Direct execution: a ./x.py or .\x.py token anywhere in the segment.
         for tok in seg:
             stripped = tok.strip().strip("'\"")
@@ -287,11 +322,24 @@ def _is_usage_refusal(output: str) -> bool:
     return False
 
 
+#: Python package/pytest plumbing that is never RUN as a script: ``__init__.py`` executes only
+#: through an import and ``conftest.py`` only under pytest. Writing one must not arm the gate —
+#: a harness run of either proves nothing (``py conftest.py`` exits 0 having done nothing) and
+#: cannot verify the module it configures. They are verified the way they run: by a green
+#: suite or a sibling module's run (ADR-0114).
+_NOT_RUNNABLE_BASENAMES = {"__init__.py", "conftest.py"}
+#: A pytest-style test module (``test_x.py`` / ``x_test.py``): run as a bare script it imports
+#: nothing correctly (its own directory becomes ``sys.path[0]``) and asserts nothing; the run
+#: that verifies it is the test runner's (ADR-0114).
+_TEST_MODULE_RE = re.compile(r"^(?:test_.*|.*_test)\.py$", re.IGNORECASE)
+
+
 def _runnable_path(call: ToolCall, result: ToolResultBlock) -> str | None:
     """The path a successful write/edit touched IF it is a runnable script, else ``None``.
 
     "Runnable" = an extension in :data:`_INTERPRETER_BY_EXT` (``.py``/``.js``/``.ts``/
-    ``.sh``/``.rb``/``.ps1``/...). A write of such a file arms the verify-before-finish gate.
+    ``.sh``/``.rb``/``.ps1``/...) that is not package plumbing
+    (:data:`_NOT_RUNNABLE_BASENAMES`). A write of such a file arms the verify-before-finish gate.
     """
     path: str | None = None
     if isinstance(result.data, dict):
@@ -303,7 +351,67 @@ def _runnable_path(call: ToolCall, result: ToolResultBlock) -> str | None:
         path = candidate if isinstance(candidate, str) else None
     if path is None:
         return None
+    if _basename_any(path).lower() in _NOT_RUNNABLE_BASENAMES:
+        return None
     return path if os.path.splitext(path)[1].lower() in _INTERPRETER_BY_EXT else None
+
+
+def _package_root(directory: str) -> tuple[str, list[str]]:
+    """Walk up from ``directory`` while each level is a package (has an ``__init__.py``).
+
+    Returns ``(root, parts)``: the first non-package ancestor — the directory Python must run
+    from for the package's absolute imports to resolve — and the package path down from it.
+    ``parts`` is empty when ``directory`` is not a package.
+    """
+    parts: list[str] = []
+    current = os.path.abspath(directory)
+    while os.path.isfile(os.path.join(current, "__init__.py")):
+        parent, name = os.path.split(current)
+        if not name or parent == current:
+            break
+        parts.insert(0, name)
+        current = parent
+    return current, parts
+
+
+def _python_exe() -> str | None:
+    """The Python the harness runs a ``.py`` with: first PATH candidate, else ``sys.executable``."""
+    for exe in _INTERPRETER_BY_EXT[".py"]:
+        if shutil.which(exe):
+            return exe
+    return f'"{sys.executable}"' if sys.executable else None
+
+
+def _python_run_command(path: str) -> str | None:
+    """The package- and test-aware run command for a written ``.py``, or None for a plain script.
+
+    A module INSIDE a package (``pkg/cli.py`` beside ``pkg/__init__.py``) cannot run as
+    ``py "pkg/cli.py"``: its own directory becomes ``sys.path[0]`` and its first absolute
+    import of ``pkg`` fails — a failure the harness manufactures, then blames on the model
+    (measured 2026-09-05: three identical ``ModuleNotFoundError`` runs, then ``recipe_stalled``
+    over a working CLI). It runs as ``cd "<root>"; py -m pkg.cli``. A test module runs under
+    the test runner (``cd "<root>"; pytest -q "<path>"``). The ``;`` separator is the one both
+    harness shells accept (bash, and Windows PowerShell 5 has no ``&&``). Both forms are
+    credited — :func:`_executed_targets` reads the ``-m`` module path, :func:`_runs_test_suite`
+    the runner (ADR-0114).
+    """
+    directory, basename = os.path.split(os.path.abspath(path))
+    root, parts = _package_root(directory)
+    if _TEST_MODULE_RE.match(basename):
+        if not parts and os.path.basename(directory).lower() in {"tests", "test"}:
+            root = os.path.dirname(directory)  # the package under test lives beside tests/
+        if shutil.which("pytest"):
+            return f'cd "{root}"; pytest -q "{path}"'
+        if sys.executable and importlib.util.find_spec("pytest") is not None:
+            return f'cd "{root}"; "{sys.executable}" -m pytest -q "{path}"'
+        return None  # no runner available: fall through to the plain script run
+    if parts:
+        exe = _python_exe()
+        if exe is None:
+            return None
+        module = ".".join([*parts, os.path.splitext(basename)[0]])
+        return f'cd "{root}"; {exe} -m {module}'
+    return None
 
 
 def resolve_run_command(path: str) -> str | None:
@@ -315,6 +423,10 @@ def resolve_run_command(path: str) -> str | None:
     chosen deterministically; returns None when none resolves so the caller falls back to
     nudging the model rather than manufacturing a failing run.
 
+    A ``.py`` runs the way Python actually runs it (:func:`_python_run_command`): a module
+    inside a package as ``cd "<root>"; py -m pkg.mod``, a test module under the test runner,
+    and only a plain script as ``py "x.py"``.
+
     For ``.py`` there is a guaranteed last resort: the interpreter currently running Zak Code
     (``sys.executable``) can always run a written ``.py``, even when no bare ``py``/``python``
     is on PATH (a Windows venv whose ``Scripts`` dir isn't on PATH, or an embedded/isolated
@@ -323,6 +435,10 @@ def resolve_run_command(path: str) -> str | None:
     credited as executing the file.
     """
     ext = os.path.splitext(path)[1].lower()
+    if ext == ".py":
+        special = _python_run_command(path)
+        if special is not None:
+            return special
     for exe in _INTERPRETER_BY_EXT.get(ext, ()):
         if shutil.which(exe):
             if exe == "deno":  # deno runs a script via the `run` subcommand, not directly

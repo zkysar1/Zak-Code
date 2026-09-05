@@ -4593,3 +4593,46 @@ loss; `plan_recall` (query or `last`) finds it later by title. The advisory is n
 the model may drop a step on purpose, and cancelling remains the explicit way to say so.
 Tests: `tests/test_plan_ledger.py` (drop recorded + advised, faithful resend silent),
 `tests/test_safe_projection.py` (request travels redacted).
+
+## ADR-0114: The verify gate credits how Python actually runs, and a template is not an expected output
+
+**Context.** ADR-0110–0113 were tried live on coach's box (a 35B local model, 2026-09-05):
+the plan machinery held, and the harness stalled two of seven turns that the model had
+finished correctly. Both stalls were the recipe gate's, not the model's. (1) The request
+"prints the five most common words as `"word count"` lines" extracted `word count` as an
+expected-stdout literal — a FORMAT TEMPLATE, which no run can print — so a green
+`python3 -m pytest -q tests` could not satisfy the gate (an acceptance literal disables the
+suite short-circuit by design), and the harness re-ran files to the attempt cap. (2) The
+harness verified `wordstats/cli.py` by running `py "wordstats/cli.py"`: a module inside a
+package, executed as a script, puts its own directory at `sys.path[0]` and fails its first
+absolute import — three identical `ModuleNotFoundError` runs, each blamed on the model, while
+the model's own correct `python3 -m wordstats.cli sample.txt --json` earned no credit
+because `_executed_targets` reads file tokens, not module paths. Two smaller misfires rode
+along: writes of `__init__.py` / `conftest.py` armed the gate and were "verified" by runs that
+do nothing (`py conftest.py` → exit 0), and the plan-quality line read `4 step(s) ... (2, 3,
+4)` — a count and a list that disagreed with nothing marking the cut. Separately the
+decomposition judge scored a correct three-step plan 0% coverage for "failing to execute the
+first step as requested": it was scoring progress, not the decomposition.
+
+**Decision.** `extract_acceptance` rejects a candidate whose lead-in is a template cue
+("as", "like", "such as", "in the form", "e.g.", ...) or whose tail is a format noun
+("lines", "rows", "pairs", "format", ...) — the tell is around the quote, not inside it, and
+rejection keeps the gate's conservative default (exit-0 verification). `_executed_targets`
+credits `<interpreter> -m pkg.mod` as executing `mod.py`, and a test runner that names a
+module (`pytest test_x.py`) as executing it. `resolve_run_command` runs a `.py` the way Python
+does: a module inside a package as `cd "<root>"; py -m pkg.mod` (root = the first non-package
+ancestor), a `test_*.py` / `*_test.py` under the test runner (`cd "<root>"; pytest -q "<path>"`,
+`sys.executable -m pytest` when no bare `pytest`), and only a plain script as `py "x.py"` — so
+the harness never manufactures a failing run, and the nudge's example command is one the model
+can copy (`;` because Windows PowerShell 5 has no `&&`). `__init__.py` and `conftest.py` never
+arm the gate (they are verified the way they run: by a suite or a sibling module).
+`TaskNetwork.quality` marks a truncated id list with `…`. `score_plan` frames the artifact:
+judge the plan before any of it has run.
+
+**Consequences.** The turn-1 and turn-5 stalls on coach reproduce as clean `done` endings
+(re-tested live after install). The acceptance extractor stays high-precision — every prior
+positive still extracts; only shape descriptions are dropped. Credit by module path is
+exact-basename, like the file form, so `python -m pytest` credits nothing but the suite.
+Tests: `tests/test_recipe.py` (template rejection, module-path credit, package/test-aware
+commands, plumbing files inert), `tests/test_tasks.py` (truncation marker),
+`tests/test_plan.py` (framing precedes the goal).

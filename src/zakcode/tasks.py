@@ -75,6 +75,16 @@ def clip(text: str, limit: int) -> str:
     return flat if len(flat) <= limit else flat[: max(0, limit - 1)] + "…"
 
 
+def _some_ids(tasks: list[Task], limit: int = 3) -> str:
+    """The first ``limit`` task ids, with ``…`` marking that more were cut (ADR-0114).
+
+    A deficiency line names its offending steps; ``4 step(s) ... (1, 2, 3)`` read as a count
+    and a list that disagreed. The marker keeps both true.
+    """
+    ids = ", ".join(t.id for t in tasks[:limit])
+    return ids + ", …" if len(tasks) > limit else ids
+
+
 def clip_ends(text: str, limit: int) -> str:
     """One line of ``text`` cut to ``limit`` characters keeping its HEAD and its TAIL.
 
@@ -688,17 +698,17 @@ class TaskNetwork(BaseModel):
         undecomposed = [t for t in nodes if t.kind == "compound" and not t.children]
         completeness = 1.0 - (len(undecomposed) / len(nodes))
         if undecomposed:
-            ids = ", ".join(t.id for t in undecomposed[:3])
-            deficiencies.append(f"{len(undecomposed)} step(s) not yet decomposed ({ids})")
+            deficiencies.append(
+                f"{len(undecomposed)} step(s) not yet decomposed ({_some_ids(undecomposed)})"
+            )
         primitives = [t for t in self.leaves() if t.kind == "primitive"]
         noted = sum(1 for t in primitives if t.note)
         verifiability = (noted / len(primitives)) if primitives else 0.0
         missing = [t for t in primitives if not t.note]
         if missing:
-            ids = ", ".join(t.id for t in missing[:3])
             deficiencies.append(
-                f"{len(missing)} step(s) lack a done-condition note ({ids}) — say how each "
-                "step is verified"
+                f"{len(missing)} step(s) lack a done-condition note ({_some_ids(missing)}) — "
+                "say how each step is verified"
             )
         granularity = 1.0 / (1.0 + 0.1 * max(0, len(primitives) - 10))
         if len(primitives) > 10:
