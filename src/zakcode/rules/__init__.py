@@ -39,6 +39,7 @@ injection).
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger("zakcode.rules")
@@ -350,6 +351,108 @@ def discover_rules(workspace_root: str | Path) -> tuple[RuleRegistry, dict[str, 
     return registry, all_errors
 
 
+def _within(path: Path, root: Path) -> bool:
+    """Whether ``path``'s real path (junctions/symlinks/``..`` collapsed) is ``root`` itself
+    or lives under it — the same containment :mod:`zakcode.skills` enforces for skill writes.
+    """
+    resolved = path.resolve()
+    resolved_root = root.resolve()
+    return resolved == resolved_root or resolved_root in resolved.parents
+
+
+def project_rules_dir(workspace_root: str | Path) -> Path:
+    """The project-level rules root (``<workspace>/.zakcode/rules``).
+
+    Where runtime-authored rules (see :func:`save_rule`) are written so they travel with
+    the repository and are discovered next session. It is the zakcode-native project dir,
+    matching ``<workspace>/.zakcode/skills``. Note :func:`default_rule_dirs` scans
+    ``.claude/rules`` *after* this one, so a same-named rule in that compatibility dir
+    still shadows a rule written here — deliberate (a checked-in project rule outranks a
+    runtime-authored one), but worth knowing when a saved rule seems not to take effect.
+    """
+    return Path(workspace_root) / ".zakcode" / "rules"
+
+
+def save_rule(
+    name: str,
+    description: str,
+    body: str,
+    *,
+    rules_dir: str | Path,
+    overwrite: bool = False,
+) -> Path:
+    """Author a rule file under ``rules_dir`` and return its path.
+
+    The write counterpart to :class:`~zakcode.tools.builtins.read_rule.ReadRuleTool`.
+    ``read_rule`` let a turn READ project rules; nothing let it WRITE one, so a rule the
+    agent learned by experience could only enter the store by an out-of-band human edit.
+    This is the storage primitive that closes that asymmetry; it makes no decision about
+    *when* a rule is worth authoring.
+
+    Writes ``<rules_dir>/<name>.md`` with a frontmatter block :func:`_split_frontmatter`
+    round-trips, followed by ``body``. Deliberately mirrors :func:`zakcode.skills.save_skill`:
+    ``name`` must be a safe kebab-case identifier (``[a-z0-9][a-z0-9-]{0,63}``) so it has no
+    path separators or ``..``, and the target's REAL path is verified to live under
+    ``rules_dir`` (so a pre-planted junction/symlink cannot redirect the write out of tree).
+
+    Three constraints that are NOT arbitrary:
+
+    * The frontmatter fence is the FIRST byte of the file. :func:`_split_frontmatter` tests
+      ``lines[0].strip() == "---"``, so anything above it — a blank line, a comment — makes
+      the parser return *no metadata* and treat the whole file as the body. The rule would
+      still load, silently, under its filename stem with its description lost.
+    * ``name`` and ``description`` must be single-line. The frontmatter parser is line-based,
+      so an embedded newline either invents a bogus key or (if the line is ``---``) closes
+      the block early.
+    * ``body`` is capped at :data:`MAX_RULE_FILE_CHARS`, because that is the bound
+      :meth:`RuleRegistry._body_block` truncates at when rendering. Refusing here is better
+      than authoring a rule that is silently cut in half every turn it is read.
+
+    There is no ``always_apply`` parameter, and its absence is the point: ``alwaysApply``
+    puts a rule's full body in every turn's prompt, so a self-authored always-on rule would
+    let a turn permanently spend the shared context budget. An author who genuinely wants
+    that sets the frontmatter flag by hand, as a human review step.
+
+    Raises :class:`RuleError` on a bad name, a multi-line name/description, an out-of-tree
+    target, an empty or over-budget body, or an existing rule when ``overwrite`` is false.
+    """
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", name):
+        raise RuleError(
+            "rule name must be kebab-case ([a-z0-9-], <=64 chars) and contain no path separators"
+        )
+    if not body or not body.strip():
+        raise RuleError("rule body must be non-empty")
+    if len(body) > MAX_RULE_FILE_CHARS:
+        raise RuleError(
+            f"rule body is {len(body)} chars, over the {MAX_RULE_FILE_CHARS}-char per-rule "
+            "budget; the render would truncate it silently. Split it or shorten it."
+        )
+    if "\n" in description or "\r" in description:
+        raise RuleError("rule description must be a single line (the frontmatter is line-based)")
+    root = Path(rules_dir)
+    path = root / f"{name}.md"
+    if not _within(path, root):
+        raise RuleError(f"rule {name!r} resolves outside the rules directory {str(root)!r}")
+    if path.exists() and not overwrite:
+        raise RuleError(f"rule {name!r} already exists at {path} (pass overwrite=True to replace)")
+    root.mkdir(parents=True, exist_ok=True)
+    # The fence is byte 0 — see the docstring. The description is written UNQUOTED because
+    # quoting buys nothing: the parser partitions on the FIRST ':' and takes the remainder
+    # verbatim, so an internal colon already round-trips without a wrapper.
+    # The NORMALISATION below is the load-bearing half. The parser ends with .strip("\"'"),
+    # so a description that starts or ends with a quote char cannot survive a round trip in
+    # this format at all — that is the reader's behaviour and no writer can change it.
+    # Stripping the same way here means what is written is exactly what is read back, so
+    # editing a rule repeatedly (read description -> save it again) is idempotent rather
+    # than shedding one character per pass. (Measured while mutation-proving this writer:
+    # with this line present, quoted and unquoted are equivalent — the quoted form is
+    # redundant, not harmful, and an earlier comment here claiming otherwise was wrong.)
+    desc = description.strip().strip("\"'")
+    frontmatter = f"---\nname: {name}\ndescription: {desc}\n---"
+    path.write_text(f"{frontmatter}\n{body.strip()}\n", encoding="utf-8")
+    return path
+
+
 __all__ = [
     "MAX_RULE_FILE_CHARS",
     "MAX_RULES_TOTAL_CHARS",
@@ -360,4 +463,6 @@ __all__ = [
     "discover_rule_dir",
     "default_rule_dirs",
     "discover_rules",
+    "project_rules_dir",
+    "save_rule",
 ]

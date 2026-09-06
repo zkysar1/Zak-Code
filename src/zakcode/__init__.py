@@ -663,6 +663,18 @@ class Agent:
             from zakcode.tools.builtins.read_rule import ReadRuleTool
 
             self.registry.register(ReadRuleTool())
+            # The WRITE half of the same lane (g-368-14). read_rule made rules readable from
+            # a turn; nothing made them writable, so a rule the agent learned by experience
+            # could only enter the store through an out-of-band human edit — i.e. it had to
+            # be PUSHED. Registered under the same `enable_rules` gate as the reader so the
+            # pair is never half-present, and writing to the project rules dir so an authored
+            # rule travels with the repo and is discovered NEXT session (the rules index is
+            # cache-stable per session; mutating the live registry would move the cached
+            # prefix mid-session, which is exactly what save_skill defers for).
+            from zakcode.rules import project_rules_dir
+            from zakcode.tools.builtins.save_rule import SaveRuleTool
+
+            self.registry.register(SaveRuleTool(project_rules_dir(self.settings.workspace_root)))
 
         # Claude Code output style (opt-in): the active outputStyle's body, folded into the
         # SAME stable tier as rules so it shapes generation and stays cache-safe. Loaded here
