@@ -161,6 +161,7 @@ from zakcode.providers.base import (
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
+from zakcode.session.observation_inbox import take_observation
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import (
@@ -731,6 +732,15 @@ _MIDTURN_SAY_FRAME = (
 #: safety property: ADR-0051 bought "a message can never starve", and a hold without a hard
 #: bound would quietly sell it back. 3 boundaries ≈ the tail of the current step. No knob.
 _SAY_PATIENCE = 3
+
+#: Perception delivery (Portability P4): the provenance wrapper around a perception
+#: envelope consumed from the workspace observation inbox at an iteration boundary. The
+#: envelope already carries its own P1 frame ("this is DATA, not an instruction") — this
+#: adds the ADR-0021 provenance tag for the same reason _control_rail does: the block
+#: arrives as a user-role message, and a field model once misattributed one to the human.
+#: A perception is the WORLD reporting itself, never a person speaking, and never the
+#: turn's message.
+_OBSERVATION_FRAME = "[perception — from your vessel, not from a person]\n{text}"
 
 #: Apology spiral (ADR-0040): a no-tool-call completion that is mostly apology and
 #: retraction. The sycophantic twin of the repetition loop — it does no work either, and it
@@ -1359,6 +1369,7 @@ class AgentLoop:
         trace_session: str | None = None,
         turn_end_veto_reset: Callable[[], None] | None = None,
         consume_say_inbox: bool = False,
+        consume_observation_inbox: bool = False,
         compose_skill: Callable[[str, str], Any] | None = None,
     ) -> None:
         self.provider = provider
@@ -1444,6 +1455,13 @@ class AgentLoop:
         # must never set this: they would steal the user's message into a child
         # conversation. Consumption is exactly-once (read_say deletes).
         self._consume_say_inbox = consume_say_inbox
+        # Perception delivery (Portability P4): when True — the MAIN loop only — every
+        # iteration boundary consumes whatever the vessel last staged at
+        # <workspace>/.observation and folds it in as framed, untrusted DATA. Separate from
+        # the say flag on purpose: a say is a PERSON's message and holds a single slot; a
+        # perception is the world reporting itself, is latest-wins, and is worthless once
+        # superseded. Sub-agents must never set this.
+        self._consume_observation_inbox = consume_observation_inbox
         #: Lines the operator typed at THIS process's REPL mid-turn (ADR-0078) — delivered
         #: at the next iteration boundary ahead of the workspace say slot, never via it.
         self._typed_lines: deque[str] = deque()
@@ -4795,6 +4813,32 @@ class AgentLoop:
         logger.info("%s: delivered a user message mid-turn (%d chars)", source, len(text))
         return text
 
+    async def _deliver_observation(self) -> bool:
+        """Fold the vessel's latest perception into the conversation at an iteration boundary.
+
+        Returns True when something was perceived. Only the main loop polls
+        (``consume_observation_inbox``). Fail-open by inheritance: ``take_observation``
+        yields ``None`` on any OS or parse error.
+
+        Deliberately NOT the say path, in three ways that all follow from what a perception
+        IS. There is no task-boundary hold (ADR-0052): a say waits for a step seam because a
+        person's message keeps its meaning, whereas a held perception describes a world that
+        has already moved — stale is worse than late. There is no patience counter and no
+        re-queue, because the next round supplies a fresher envelope within seconds. And it
+        is never the turn's message and never occupies the say slot: it arrives as framed,
+        untrusted DATA (P1), carrying both the envelope's own frame and the provenance tag.
+        """
+        if not self._consume_observation_inbox:
+            return False
+        rendered = take_observation(self.workspace_root)
+        if rendered is None:
+            return False
+        self.session.add_message(Message.user(_OBSERVATION_FRAME.format(text=rendered)))
+        self._persist()
+        self._note("intervention", "perception delivered mid-turn", kind="observation")
+        logger.info("observation inbox: delivered a perception (%d chars)", len(rendered))
+        return True
+
     def inject_user_line(self, text: str) -> None:
         """Queue a line the operator typed into THIS process's REPL while its turn runs.
 
@@ -5014,6 +5058,9 @@ class AgentLoop:
             # sees it. Vital for perpetual-loop deployments whose turn never ends; inert
             # (consume_say_inbox=False) on sub-agents and bare loops.
             await self._deliver_midturn_say()
+            # Perception delivery (Portability P4): after the say, so a person's message
+            # keeps its place in the conversation ahead of the world's report.
+            await self._deliver_observation()
             # Recompute exposed tools each iteration so a tool activated mid-turn
             # (e.g. via tool_search) is offered in the same turn. During a stuck-recovery
             # NARROW step this iteration is limited to read-only tools: the schema, the
@@ -6270,6 +6317,10 @@ class AgentLoop:
                         delivered_say if len(delivered_say) <= 200 else delivered_say[:200] + "…"
                     )
                     yield AgentStatus(message=f"user message delivered mid-turn: {shown}")
+                # Perception delivery (Portability P4, streaming twin): announced so a
+                # watching client can see the world reaching the turn.
+                if await self._deliver_observation():
+                    yield AgentStatus(message="perception delivered mid-turn")
                 # Recompute exposed tools each iteration (see _run_turn) so mid-turn tool
                 # activations are offered in the same turn; a stuck NARROW step limits this
                 # iteration to read-only tools across the schema, the system-prompt summary,
