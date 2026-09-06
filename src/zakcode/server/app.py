@@ -78,8 +78,8 @@ from zakcode.server.wire import (
     CompleteRequest,
     CompleteResponse,
     NudgeRequest,
-    RunStopRequest,
     ObserveRequest,
+    RunStopRequest,
     SayRequest,
     SessionInfo,
     SessionTranscript,
@@ -1451,9 +1451,7 @@ def create_app(
             # receiver's independent floor, because P4 makes producer cooperation optional.
             raise HTTPException(
                 status_code=413,
-                detail=(
-                    f"observation too large ({len(payload)} chars > {OBSERVATION_MAX_CHARS})"
-                ),
+                detail=(f"observation too large ({len(payload)} chars > {OBSERVATION_MAX_CHARS})"),
             )
 
         root = Path(resolved_settings.workspace_root)
