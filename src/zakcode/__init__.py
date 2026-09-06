@@ -1058,6 +1058,7 @@ class Agent:
             # perpetual-loop deployment never produces. Sub-agent loops never set this
             # (they would steal the user's message into a child conversation). No knob.
             consume_say_inbox=True,
+            consume_observation_inbox=True,
             # A say that is a typed ``/<skill> [args]`` RUNS the skill mid-turn (ADR-0073)
             # through the same composition the REPL uses for a typed slash — one way.
             compose_skill=self.compose_skill_turn,
