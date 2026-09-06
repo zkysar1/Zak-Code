@@ -52,8 +52,12 @@ _EVENT_MAP: dict[str, HookEvent] = {
 #: provider-error turn end, a non-vetoable terminal that would need new firing threaded through the
 #: critical finalize path) lets a framework leave a crash breadcrumb for the next session, and
 #: UserPromptExpansion captures human-typed slash invocations (distinct from the model-path
-#: ON_SKILL_SELECTED signal). Deferred until those firing points are designed; see the roadmap.
-_SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion"}
+#: ON_SKILL_SELECTED signal). UserPromptSubmit fires at the user-message boundary and its stdout is
+#: injected as context — a real firing seam on the turn-entry path, so designing it is seam work
+#: rather than a mapping entry; it sits here so a Mind that wires it degrades LOUDLY instead of
+#: reading ``unknown event``, which is indistinguishable from a typo. Deferred until those firing
+#: points are designed; see the roadmap.
+_SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion", "UserPromptSubmit"}
 
 
 def _split_command(cmd: str) -> list[str]:

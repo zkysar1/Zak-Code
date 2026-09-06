@@ -79,11 +79,32 @@ clone the Mind repo, run `zakcode cli` inside it, answer the folder-trust prompt
 
 ## 🟡 Real remaining gaps
 
-- **`StopFailure` + `UserPromptExpansion` events** — recognised and skipped LOUDLY
-  (`_SKIP_EVENTS` in `hooks/settings_loader.py`; the skip lands in the errors dict, never a
-  silent drop). Cost to a Mind: no crash breadcrumb on a provider-error turn end, and no
-  human-typed-slash telemetry distinct from `ON_SKILL_SELECTED`. Deferred until those firing
-  points are designed — see the roadmap.
+- **`StopFailure` + `UserPromptExpansion` + `UserPromptSubmit` events** — recognised and skipped
+  LOUDLY (`_SKIP_EVENTS` in `hooks/settings_loader.py`; the skip lands in the errors dict, never a
+  silent drop). Cost to a Mind: no crash breadcrumb on a provider-error turn end, no
+  human-typed-slash telemetry distinct from `ON_SKILL_SELECTED`, and no user-message-boundary seam
+  for injecting per-prompt context. Deferred until those firing points are designed — see the
+  roadmap.
+
+  `UserPromptSubmit` was in NEITHER map until 2026-09-03, so a Mind that wired it read
+  `unknown event: UserPromptSubmit` — the exact string a TYPO produces. The two diagnoses need
+  opposite responses ("wait for the seam" vs "fix your spelling") and a shared message lets a Mind
+  author pick the wrong one; that is the ADR-0025 silent-drop failure wearing a warning. All three
+  events a live Mind wires now resolve to a deferral, and
+  `test_claude_mind_hooks_block_yields_no_unknown_events` loads claude-mind's whole 8-event hooks
+  block and pins that ZERO come back unknown — plus the exact deferral set, so shipping one of these
+  seams FAILS the test and forces the implementer to retire the row here.
+
+- **SessionStart hook stdout is NOT injected as context** (CC injects it) — a divergence with a
+  reason, not an oversight. Lifecycle dispatch is observe-only by contract: `HookManager.fire()`
+  returns `None`, and both its docstring and `_run_lifecycle_shell` state that stdout and exit code
+  are advisory and ignored. The collection machinery is not missing — `gather_context()` runs
+  `PreLLMCall` shell hooks and returns their stdout — so parity is not a mapping entry but a change
+  to the lifecycle seam's contract: give `fire()` a return channel and thread it into the turn's
+  prompt assembly. That is omni seam-domain work. **Cost to a Mind today is small and there is a
+  workaround**: a SessionStart hook still does anything by SIDE EFFECT (start `mind_api`, write
+  session state, prime a file) — it simply cannot hand text to the model, and a Mind that needs the
+  text can register the same script on `PreLLMCall`, which is already collected.
 
 ## ⚪ Not load-bearing (deliberately skipped)
 
