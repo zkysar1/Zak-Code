@@ -115,6 +115,33 @@ class SayRequest(BaseModel):
     text: str
 
 
+class ObserveRequest(BaseModel):
+    """Body of ``POST /observe`` — one perception envelope from this character's VESSEL
+    (the environment server's ``PerceptionBridgeVerticle``), carrying world state the mind
+    could not otherwise learn.
+
+    The vessel-to-mind direction of the border contract
+    (``world/conventions/character-seeding-and-discovery.md``). Distinct from BOTH sibling
+    inputs: a ``/say`` IS the next turn's message and a ``/nudge`` decorates its preamble —
+    both originate with a PERSON and are precious, hence their single-slot 429. An
+    observation originates with the WORLD, is continuous, and is worthless once superseded,
+    so this one is latest-wins and never refuses (P4: delivery is lossy; the mind must
+    tolerate absence, and must equally tolerate a frame it never saw).
+
+    ``observation`` is an opaque map of perception slices — the vessel's allow-rule is every
+    ``privateSelf`` key whose name ends in ``Perception``, so the shape here is deliberately
+    NOT enumerated: pinning today's slice names would silently reject tomorrow's. It is
+    UNTRUSTED: its text originates in a shared world where other players author content, so
+    it is framed as data, never as instruction (P1).
+    """
+
+    envelopeVersion: int
+    externalClientRef: str
+    observedAt: str
+    observation: dict[str, Any] = Field(default_factory=dict)
+    droppedSlices: list[str] = Field(default_factory=list)
+
+
 class WatchMarkerRequest(BaseModel):
     """Body of ``POST /watch/{session_id}/marker`` — a server-side meta-event published to a
     session's watch bus so late-joining observers learn of lifecycle changes the ``AgentEvent``
