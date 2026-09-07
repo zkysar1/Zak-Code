@@ -119,6 +119,11 @@ logger = logging.getLogger("zakcode.server")
 _ACTIVE_BEAT_SECONDS = 0.1
 _IDLE_BEAT_SECONDS = 0.5
 
+#: How often the deadline watcher re-reads the clock while a turn is in flight. It
+#: bounds only how far PAST `turn_deadline` a capped run may go, so the granularity
+#: costs at most this much billed time — it is not part of the cap arithmetic.
+_DEADLINE_WATCH_SECONDS = 1.0
+
 #: How long a permission prompt waits for an operator's answer before failing
 #: closed (deny-once). Bounds an unattended ask-mode deployment from hanging a turn.
 APPROVAL_TIMEOUT_SECONDS = 120.0
@@ -1959,28 +1964,66 @@ def create_app(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("on_run_end failed (%s: %s)", type(exc).__name__, exc)
 
+    async def _watch_turn_deadline() -> None:
+        """Raise the workspace interrupt when the cap lands MID-turn.
+
+        The loop's own check runs BETWEEN beats, so it cannot fire while a turn is
+        running — and on the normal path the very first say is a long boot turn, so
+        a capped run would sail past its own ceiling and keep billing for the vessel
+        until that turn happened to end. Measured: a run 1050s old against a 480s cap.
+
+        This watcher only ever SIGNALS, and it signals through the interrupt the turn
+        is ALREADY watching for (`_run_turn_for_say` polls `take_interrupt` every
+        0.3s). So the cancellation path is the existing one — nothing new has to
+        unwind a half-finished turn, and the loop keeps sole authority over what the
+        run's ending IS: the cancelled turn returns, the between-beats check below
+        reads the same clock and sets `duration_cap`, and the reserve is still on the
+        clock for the digest.
+        """
+        while True:
+            await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
+            if turn_deadline is None or not inflight:
+                continue
+            if time.monotonic() >= turn_deadline:
+                logger.info("run cap reached mid-turn: interrupting")
+                request_interrupt(interrupt_path(resolved_settings.workspace_root))
+                return
+
     async def _consume_say_loop() -> None:
         nonlocal run_stop_reason
         _arm_run_deadlines()
-        while not run_stopping.is_set():
-            # Read the CLOCK, never a remembered timestamp, and read it on this
-            # process's own monotonic base so a wall-clock adjustment mid-run can
-            # neither shorten nor extend a paid run.
-            #
-            # The check sits BETWEEN beats, never mid-turn: a turn already in flight
-            # always finishes. Killing one at its midpoint would leave exactly the
-            # half-done work that has nobody coming back to resume it.
-            if turn_deadline is not None and time.monotonic() >= turn_deadline:
-                run_stop_reason = "duration_cap"
-                break
-            try:
-                ran = await _consume_one_say()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 — a bad beat must not kill the runner
-                logger.exception("say consumer: beat failed")
-                ran = False
-            await asyncio.sleep(_ACTIVE_BEAT_SECONDS if ran else _IDLE_BEAT_SECONDS)
+        deadline_watcher = asyncio.create_task(_watch_turn_deadline())
+        try:
+            while not run_stopping.is_set():
+                # Read the CLOCK, never a remembered timestamp, and read it on this
+                # process's own monotonic base so a wall-clock adjustment mid-run can
+                # neither shorten nor extend a paid run.
+                #
+                # This check sits BETWEEN beats and is the only thing that NAMES the
+                # ending. It is not the only thing that ENFORCES the cap: a turn in
+                # flight when the deadline passes is interrupted by the watcher above,
+                # and lands back here to be named. The half-done work that costs is
+                # the work nobody comes back to — and the digest turn IS that return.
+                if turn_deadline is not None and time.monotonic() >= turn_deadline:
+                    run_stop_reason = "duration_cap"
+                    break
+                try:
+                    ran = await _consume_one_say()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 — a bad beat must not kill the runner
+                    logger.exception("say consumer: beat failed")
+                    ran = False
+                await asyncio.sleep(_ACTIVE_BEAT_SECONDS if ran else _IDLE_BEAT_SECONDS)
+        finally:
+            # BEFORE `_end_run()`, always, on every exit path — the consolidation turn
+            # runs PAST `turn_deadline` by design, so a watcher still alive would
+            # interrupt the digest it exists to protect. Cancelling is SYNC and that is
+            # deliberate (guard-4846): an `await` here is skipped in full if this
+            # cleanup is itself reached by cancellation, and the guarantee must not
+            # depend on it. `cancel()` alone suffices — the watcher is suspended in its
+            # sleep, so it can never reach the fire branch again.
+            deadline_watcher.cancel()
         if run_stop_reason is None:
             # Fell out of the `while` guard rather than the `break`: an explicit stop.
             # A human ending the run is a DIFFERENT story from the clock running out,

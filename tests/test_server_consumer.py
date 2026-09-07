@@ -597,3 +597,140 @@ def test_run_stop_route_ends_the_run_with_its_digest(tmp_path: Path) -> None:
     assert seen[-1][0] == "wrap up"  # the digest turn ran
     assert json.loads(out.read_text(encoding="utf-8"))["reason"] == "budget_exhausted"
     assert endings == ["budget_exhausted"]
+
+
+# ── the cap must end an IN-FLIGHT turn, not wait politely for it (g-369-158) ──
+
+
+class _InterruptibleAgent:
+    """A turn that outlasts the cap unless something CANCELS it.
+
+    Records what it was asked and, separately, what it finished answering. The
+    second list is the whole discriminator: a run that merely ends with the right
+    reason proves nothing if the turn ran to completion first — which is exactly
+    what the loop did before the deadline watcher existed.
+
+    The digest prompt is answered instantly, so the reserve is measuring the fix
+    and not this fixture's sleep.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        seen: list[str],
+        finished: list[str],
+        delay: float,
+        digest_message: str,
+    ) -> None:
+        self.session = session
+        self._seen = seen
+        self._finished = finished
+        self._delay = delay
+        self._digest = digest_message
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self._seen.append(user_text)
+        if user_text != self._digest:
+            await asyncio.sleep(self._delay)
+        self.session.add_message(Message.assistant_text("ok"))
+        self._finished.append(user_text)
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+
+def test_the_cap_interrupts_a_turn_still_in_flight(tmp_path: Path) -> None:
+    """The cap fires MID-TURN, through the interrupt the turn already watches for.
+
+    A Pearl vessel's first say is `/start <agent>` — one long boot turn — so the
+    between-beats check could never reach its own deadline on the normal path: the
+    run sailed past the ceiling and kept billing until the turn happened to end
+    (measured live at 1050s against a 480s cap). The watcher raises the workspace
+    interrupt instead; the turn is cancelled by its OWN interrupt watcher, lands back
+    in the loop, and the existing between-beats check names the ending unchanged.
+
+    Every assertion here fails with the watcher removed, but `finished` and `elapsed`
+    are the two that fail for the RIGHT reason — `endings`/`reason` were already
+    correct before the fix (the run did end as duration_cap, just far too late).
+    """
+    cap, reserve, turn_time = 0.5, 0.2, 6.0
+    command, out = _sink_command(tmp_path)
+    seen: list[str] = []
+    finished: list[str] = []
+    endings: list[str] = []
+    settings = Settings(
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        run_max_duration=cap,
+        run_consolidation_reserve=reserve,
+        run_consolidation_message="wrap up",
+        run_end_command=command,
+    )
+
+    async def _on_run_end(reason: str) -> None:
+        endings.append(reason)
+
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _InterruptibleAgent(
+            session, seen, finished, turn_time, "wrap up"
+        ),
+        on_run_end=_on_run_end,
+    )
+    assert write_say(say_path(tmp_path), "/start alpha")
+
+    started = time.monotonic()
+    asyncio.run(app.state.consume_say_loop())
+    elapsed = time.monotonic() - started
+
+    assert seen[0] == "/start alpha"  # the boot turn did start
+    assert "/start alpha" not in finished, "the boot turn ran to completion — cap never fired"
+    assert elapsed < turn_time, f"run took {elapsed:.2f}s — the cap waited out the turn"
+    # ... and the ending is the SAME one the between-beats check has always named.
+    assert seen[-1] == "wrap up" and finished == ["wrap up"]  # digest ran, under the reserve
+    assert endings == ["duration_cap"]
+    assert json.loads(out.read_text(encoding="utf-8"))["reason"] == "duration_cap"
+    marker = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
+    assert marker[-1] == "duration_cap", marker
+
+
+def test_the_deadline_watcher_cannot_interrupt_the_digest_turn(tmp_path: Path) -> None:
+    """The watcher is cancelled BEFORE `_end_run`, so it can never cut the receipt.
+
+    The consolidation turn runs PAST `turn_deadline` by design — that is what the
+    reserve IS — so a watcher still alive at that point would fire against the one
+    turn the whole cap exists to protect, and the run would end with no digest.
+    """
+    command, out = _sink_command(tmp_path)
+    seen: list[str] = []
+    finished: list[str] = []
+    settings = Settings(
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        # A reserve that comfortably funds a SLOW digest, so the only thing that can
+        # cut this turn short is an interrupt — never its own budget.
+        run_max_duration=1.6,
+        run_consolidation_reserve=1.5,
+        run_consolidation_message="wrap up",
+        run_end_command=command,
+    )
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _InterruptibleAgent(
+            # No fast path: the digest prompt sleeps too, long enough that a watcher
+            # still alive would land a 1.0s tick inside this turn.
+            session,
+            seen,
+            finished,
+            1.2,
+            "unreachable-digest-marker",
+        ),
+    )
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert seen == ["wrap up"], seen  # no say was queued; the digest is the only turn
+    assert finished == ["wrap up"], "the digest turn was cut short — the watcher outlived the loop"
+    assert json.loads(out.read_text(encoding="utf-8"))["digest"] == "ok"
