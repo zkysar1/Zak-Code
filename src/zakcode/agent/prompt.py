@@ -96,7 +96,11 @@ _TOOL_GUIDANCE = (
     "- Read a file (and the code around it) before you edit it; understand context first.\n"
     "- Make small, focused changes and prefer editing existing files over creating new ones.\n"
     "- Fill in each tool's declared parameters exactly as defined; do not pack data or "
-    "instructions into a parameter that is not meant for them."
+    "instructions into a parameter that is not meant for them.\n"
+    "- A refused write or edit is about the content you sent, never about the environment: "
+    "the refusal names the line and the file is unchanged. Fix the content and retry (a "
+    "smaller edit_file when a whole-file write keeps failing). Never hand the user an edit "
+    "you have the tools to make."
 )
 
 _EVIDENCE = (

@@ -4785,3 +4785,73 @@ produced, not the bare status they would have fixed. Tests: `tests/test_finish_r
 the plan gate and finished degraded with the step open, off switch, fail-open, streaming),
 `tests/test_small_model_containment.py` (the widened matcher and its negatives),
 `tests/test_plan_verdict.py` / `tests/test_loop_planning.py` (the extra verdict per script).
+
+## ADR-0118: A refused write is the model's content, never the environment — the self-diagnosing refusal, the refusal-aware blocker gate, and edits to already-broken files
+
+**Status.** Accepted (2026-09-09).
+
+**Context.** Field incident 2026-09-09 (serene, `gemini-2.5-flash`): asked to fix one line of a
+Python script, the model reported that `edit_file`/`write_file` "report success" but "the
+system then reports syntax errors (unterminated string literal / expected ':') even when the
+code I have written is syntactically correct", declared an "environmental blocker", and asked
+the user to apply the one-line fix by hand. Told to take a step back, it planned a binary search
+with a scratch `test.py`. The user: "why is this guy so fragile, it can't figure out how to edit
+a file?!"
+
+What actually happened is visible in the write path. `write_file` and `edit_file` run
+`check_python_syntax` (a `compile()` of the exact text) BEFORE writing and REFUSE non-parsing
+`.py` content; the file was never touched, and there is no "then the system validates" step —
+the refusal was the tool result. The model's content genuinely did not parse (a tool-call
+argument cut off at the output cap, or a real newline landing inside a quoted string when an
+escape was meant), but the refusal said only `Refusing to write invalid Python to … :
+unterminated string literal (line 47).` — no quoted line, no cause, no `fix`, and nothing
+saying the file was unchanged. A small model that cannot see its own mangled content has no
+next move from that message: it re-sends the same content, gets the same refusal, and
+concludes the environment is broken. The blocker-without-evidence gate (ADR-0036) then let
+the "manual intervention is required" conclusion through, because tool calls HAD failed this
+turn — the gate could not tell a refusal of the model's own content from a failed probe, and its
+matcher did not read a hand-off to the user as a blocker claim at all. Separately, `edit_file`
+checked the syntax of the whole resulting file, so once a file was broken (by anything), every
+edit that did not fix all of it at once was refused — a repair made one edit at a time was
+impossible through the edit tool.
+
+**Decision.** Four harness-side changes, all deterministic, none domain-specific.
+(1) **The refusal is self-diagnosing.** `diagnose_python_syntax` returns a `SyntaxRefusal`:
+the message quotes the offending line with two lines of context (`> 47 | …`), names the line
+once (the parser's own "detected at line N" suffix is folded away), and states "The file was
+NOT changed — Python's parser rejected the exact text you sent". The `fix` rail classifies the
+likely cause — `truncated` (the error is on the last non-blank line, or the parser reports an
+unexpected end: "the text you sent was cut off — nothing is wrong with the file; send the
+complete content, or change only the lines that need changing with `edit_file`"),
+`newline_in_string` (an unterminated string not on the last line: "a real line break landed
+inside the string; for a newline character write backslash-n, escaped as `\\n` in the tool
+argument; for a multi-line string use triple quotes"), or plain `syntax` — and always ends:
+the refusal is about the text you sent, not the file or the environment; never report it as
+an environmental blocker or ask the user to apply the change by hand. (2) **Refusals are
+tagged and the blocker gate reads the tag.** Every refusal of the model's own content
+(`python_syntax`, `literal_content`, `old_string_missing`, `old_string_ambiguous`) carries
+`data["refusal"]`; the loop counts them at the seam (`_turn_content_refusals`), and the
+blocker gate fires when every failure this turn was such a refusal — with a different nudge
+(`_REFUSAL_BLOCKER_NUDGE`): nothing in the environment failed, the file was not changed, the
+refusal names the line — read the file, fix the content, retry with a smaller `edit_file`, and
+do not hand the user a change you can make yourself. A refusal beside a real failure still
+counts as evidence, as before. The blocker matcher also reads a hand-off to the user as a
+blocker claim ("manual intervention", "you will need to apply/edit …", "apply it manually / by
+hand"), narrowly (not "apply for", not "should"). (3) **`edit_file` refuses only an edit that
+would BREAK a parsing file.** A file that already fails to parse may be edited; the success
+output then carries a note naming the remaining parse error with its window ("still does not
+parse — it already failed before this edit and still does; fix this next"). `write_file`
+(a whole-file replacement) still requires valid content. (4) **One prompt line** under "Using
+tools": a refused write or edit is about the content you sent, never about the environment;
+fix the content and retry; never hand the user an edit you have the tools to make.
+
+**Consequences.** The incident's turn now reads, at the first refusal, the line it broke and
+why, with the file untouched; its "manual intervention is required" conclusion is nudged
+back to the fix instead of reaching the user; and a file left broken by an earlier write can
+be repaired edit by edit. No new judge call, no setting. Domain facts stay in the Mind: the
+harness diagnoses the SHAPE of a bad write (cut off, newline in a string), never what the
+script should say. Tests: `tests/test_write_firewall.py` (window, cause classes, the fix
+rail, the refusal tag through both tools, edit refuses-only-breakage, already-broken file
+edited with a note, old_string refusals tagged), `tests/test_blocker_gate.py` (hand-off
+matcher and its negatives, the refusal nudge over a refused write, a refusal beside a real
+failure still counts), `tests/test_prompt.py` (the tool-guidance line).

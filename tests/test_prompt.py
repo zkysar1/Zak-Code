@@ -460,3 +460,5 @@ def test_evidence_discipline_is_in_the_stable_tier(tmp_path: Path) -> None:
         < stable.index("Planning multi-step work:")
     )
     assert "a null result never closes such a step by itself" in stable
+    # ADR-0118: a refused write is the model's content, never the environment
+    assert "Never hand the user an edit you have the tools to make" in stable

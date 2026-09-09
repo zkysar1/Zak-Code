@@ -708,7 +708,13 @@ _BLOCKER_CLAIM_RE = re.compile(
     r"\bi(?:['’]m|\s+am)\s+(?:blocked|stuck|unable\s+to\s+(?:proceed|continue))\b"
     r"|\b(?:i\s+)?can(?:['’]t|not)\s+(?:proceed|continue)\b"
     r"|\bi\s+(?:can(?:['’]t|not)|am\s+unable\s+to)\s+(?:\w+\s+){1,5}without\b"
-    r"|\bplease\s+(?:provide|supply|set|give\s+me)\b",
+    r"|\bplease\s+(?:provide|supply|set|give\s+me)\b"
+    # Hand-off framing (ADR-0118): the model routes a change it could make to the user.
+    r"|\bmanual\s+intervention\b"
+    r"|\b(?:you|the\s+user)\s+(?:will\s+(?:need|have)\s+to|need\s+to|have\s+to|must)\s+"
+    r"(?:apply|edit|update|change|modify|patch|fix|add|remove|replace)\b(?!\s+for\b)"
+    r"|\bapply\s+(?:(?:it|this|that|the)\s+)?(?:(?:change|fix|patch|edit|line)\s+)?"
+    r"(?:manually|by\s+hand)\b",
     re.IGNORECASE,
 )
 _BLOCKER_NUDGE = (
@@ -717,6 +723,17 @@ _BLOCKER_NUDGE = (
     "that would fail (the check the instructions themselves prescribe, or a direct probe such "
     "as printing the variable or reading the file) and show its output, or continue with the "
     "next step. Do not restate the blocker."
+)
+#: Refusal-is-not-a-blocker rail (ADR-0118): the only failures this turn were tools REFUSING
+#: the model's own content (a .py write that does not parse, an old_string that did not
+#: match). That is not an environmental problem and never needs the user's hands: the
+#: refusal already named the line.
+_REFUSAL_BLOCKER_NUDGE = (
+    "You reported a blocker, but the only failures this turn were tools refusing content "
+    "YOU sent (a write that does not parse, or an old_string that did not match). Nothing "
+    "in the environment failed and the file was not changed. The refusal names the line: "
+    "read_file the current file, fix the content, and retry with a smaller edit_file. Do "
+    "not restate the blocker and do not hand the user a change you can make yourself."
 )
 
 
@@ -1633,6 +1650,10 @@ class AgentLoop:
         # Blocker-without-evidence guard (ADR-0036): tool calls that FAILED this turn. A
         # completion declaring a blocker while this is zero measured nothing. Per-turn.
         self._turn_tool_errors = 0
+        # Refusal-is-not-a-blocker rail (ADR-0118): how many of those failures were tools
+        # refusing the model's OWN content (``data["refusal"]``). They demonstrate nothing
+        # about the environment, so the blocker gate does not count them as evidence.
+        self._turn_content_refusals = 0
         # Loud in-turn terminal (ADR-0066): ``(stop_reason, detail)`` armed by the execution
         # seam when a verbatim body cannot fit the window; both twins end the turn on it
         # right after the batch's results land. Per-turn.
@@ -3743,6 +3764,8 @@ class AgentLoop:
             network.attach_evidence(owner, _evidence_line(call, block))
         if block.is_error:
             self._turn_tool_errors += 1
+            if isinstance(block.data, dict) and block.data.get("refusal"):
+                self._turn_content_refusals += 1  # a refusal of the model's own content
         if call.name in _SEARCH_TOOLS or (call.name == "read_file" and not block.is_error):
             # A search ran (ADR-0040), whatever it found — or a file was actually read
             # (ADR-0058); a failed read stays the one-path-tried miss the gate is for.
@@ -5173,6 +5196,7 @@ class AgentLoop:
         cascade_capped = False  # cross-gate cascade cap (ADR-0058): once per turn
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
+        self._turn_content_refusals = 0  # refusal-is-not-a-blocker rail (ADR-0118): per-turn
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
         self._turn_section_restores = {}  # dropped-section restores (ADR-0075): per-turn
@@ -5829,18 +5853,30 @@ class AgentLoop:
                 if (
                     result.text
                     and not blocker_nudged
-                    and self._turn_tool_errors == 0
+                    and self._turn_tool_errors == self._turn_content_refusals
                     and _claims_blocker(result.text)
                 ):
+                    # Refusals of the model's own content are not environmental evidence
+                    # (ADR-0118): with only those, the blocker is as unmeasured as with none.
                     blocker_nudged = True
                     self._turn_struggle = True
+                    refused = self._turn_content_refusals > 0
                     self._note(
                         "intervention",
-                        "completion declares a blocker no tool call demonstrated — asking "
-                        "for the probe",
+                        "completion declares a blocker "
+                        + (
+                            "over refusals of its own content — asking for the fix"
+                            if refused
+                            else "no tool call demonstrated — asking for the probe"
+                        ),
                         kind="blocker_gate",
+                        refusals=self._turn_content_refusals,
                     )
-                    self.session.add_message(Message.user(_control_rail(_BLOCKER_NUDGE)))
+                    self.session.add_message(
+                        Message.user(
+                            _control_rail(_REFUSAL_BLOCKER_NUDGE if refused else _BLOCKER_NUDGE)
+                        )
+                    )
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -6485,6 +6521,7 @@ class AgentLoop:
         cascade_capped = False  # cross-gate cascade cap (ADR-0058): once per turn
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
+        self._turn_content_refusals = 0  # refusal-is-not-a-blocker rail (ADR-0118): per-turn
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
         self._turn_section_restores = {}  # dropped-section restores (ADR-0075): per-turn
@@ -7403,18 +7440,28 @@ class AgentLoop:
                     if (
                         assistant_text
                         and not blocker_nudged
-                        and self._turn_tool_errors == 0
+                        and self._turn_tool_errors == self._turn_content_refusals
                         and _claims_blocker(assistant_text)
                     ):
                         blocker_nudged = True
                         self._turn_struggle = True
+                        refused = self._turn_content_refusals > 0
                         self._note(
                             "intervention",
-                            "completion declares a blocker no tool call demonstrated — asking "
-                            "for the probe",
+                            "completion declares a blocker "
+                            + (
+                                "over refusals of its own content — asking for the fix"
+                                if refused
+                                else "no tool call demonstrated — asking for the probe"
+                            ),
                             kind="blocker_gate",
+                            refusals=self._turn_content_refusals,
                         )
-                        self.session.add_message(Message.user(_control_rail(_BLOCKER_NUDGE)))
+                        self.session.add_message(
+                            Message.user(
+                                _control_rail(_REFUSAL_BLOCKER_NUDGE if refused else _BLOCKER_NUDGE)
+                            )
+                        )
                         self._persist()
                         last_signature = None
                         repeat_count = 0
