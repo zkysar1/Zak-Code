@@ -242,10 +242,22 @@ class SayBoxEditor:
             self._rows = rows
             self._resize(rows)
 
+    def _prime_history(self) -> None:
+        """Start loading the history file BEFORE the first key is read.
+
+        prompt_toolkit loads history in a background task created at the first render,
+        which on a slow host can lose the race with a key already waiting in the input —
+        the first ``↑`` then recalls nothing (seen on the Windows CI runner). Creating
+        the task from ``pre_run``, before the input reader is attached, orders it first.
+        """
+        self._session.default_buffer.load_history_if_not_yet_loaded()
+
     def prompt(self, default: str = "") -> tuple[str, str]:
         self._submitting = False
         try:
-            text = self._session.prompt("▸ ", default=self.pastes.collapse(default))
+            text = self._session.prompt(
+                "▸ ", default=self.pastes.collapse(default), pre_run=self._prime_history
+            )
         finally:
             self._submitting = False
             if self._rows != MIN_ROWS:

@@ -159,12 +159,13 @@ async def test_edit_of_an_already_broken_file_is_applied_with_a_parse_note(
     # A repair is made one edit at a time: refusing every edit that does not fix the
     # whole file at once would leave a broken file unfixable through edit_file.
     ctx = ToolContext(workspace_root=tmp_path)
-    (tmp_path / "b.py").write_text("def f()\n    return 1\nz = 1\n")
+    # bytes, not text mode: Windows would translate "\n" to "\r\n" and break old_string
+    (tmp_path / "b.py").write_bytes(b"def f()\n    return 1\nz = 1\n")
     res = await EditFileTool().execute(
         {"path": "b.py", "old_string": "z = 1", "new_string": "z = 2"}, ctx
     )
     assert not res.is_error, res.output
-    assert (tmp_path / "b.py").read_text() == "def f()\n    return 1\nz = 2\n"
+    assert (tmp_path / "b.py").read_bytes() == b"def f()\n    return 1\nz = 2\n"
     assert "still does not parse" in res.output and "> 1 | def f()" in res.output
     # …and the edit that fixes it is plain success, no note.
     fixed = await EditFileTool().execute(
