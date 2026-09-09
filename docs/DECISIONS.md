@@ -4730,3 +4730,58 @@ Tests: `tests/test_tasks.py` (detector), `tests/test_plan_ledger.py` (challenge,
 trust, cancel, the loop replay), `tests/test_prompt.py` (tier and order),
 `tests/test_secrets.py` (shapes; the token-only layer leaves code alone),
 `tests/test_tool_output_redaction.py` (the seam, the transcript, the session file).
+
+## ADR-0117: A finish is not a finish while the answer defers the ask, announces work, or the plan hides a gap
+
+**Context.** Two more serene turns (`gemini-2.5-flash`, 2026-09-08). (1) A 50-iteration turn
+closed its plan and ended `done — struggled` on a conclusion that said, in its own words, the
+ask was not met: "the google-drive-list 'no files' issue … will enable further debugging in a
+future session … still present, but now debuggable". Nothing in the harness had a word for
+"the answer defers the ask": the plan gate saw a finished plan, the verdict rail (ADR-0108)
+saw a real conclusion, the intent gate (ADR-0024) looks for an announcement, and the
+completion critic is off by default and watches only turns that changed code. (2) Asked
+"go ahead and debug it", the next turn ended after ONE iteration on "I will now re-attempt
+to debug the google-drive-list script by inserting print statements" — an announcement with
+nothing behind it, and the intent gate did not fire because its verb list is closed
+(`use | run | create | write | …`): "re-attempt" and "debug" were on neither the hedge list
+nor the verb list. That list had already missed "I will try to create" twenty times over
+(ADR-0033 added the hedge). The user's two asks: "add something at the end of the todo list
+to do a fresh-eyes review to see if it is actually done, and then go get it done if not",
+and "a check on each response to see if anything in it needs to be added to the todo list".
+
+**Decision.** Three rails, all bounded, all in the harness. (1) **The intent gate inverts
+its list**: a first-person future / intent lead-in ("I will", "I'll", "I'm going to", "let
+me", "the next step is to"), an optional hedge ("try to", "re-attempt to", "go ahead and",
+"need to" — possessive, so a hedge can never be read back as the verb), then ANY verb that
+is not a non-action continuation (`not`, `be`, `have`, `need`, `let`, `know`, `wait`,
+`summarize`, `report`, `finish`, …). A new verb is an announcement by default; a false
+positive costs one bounded nudge, a miss ends the turn on words. The nudge now says to put
+multi-action work in the plan first. (2) **The deferral rail**: a completion whose tail
+postpones part of the request ("in a future session", "further debugging is needed",
+"remains unresolved", "still present", "left for a follow-up") is asked once — add the
+remaining work to the plan with a done-condition and do it now, or mark it blocked with the
+reason in one sentence, or say the user asked for only part of it. It needs no plan, sits
+after the verdict rail, and stands down with the other evidence gates under the cascade cap.
+(3) **The fresh-eyes plan review** (`Settings.plan_review`, `ZAKCODE_PLAN_REVIEW`, on by
+default): the LAST gate before a finish, after every free deterministic rail has had its say.
+When the plan the model authored has completed (never an anchor-only board, never a composed
+`/skill` turn), the independent critic reads the request against the answer AND the rendered
+plan record (steps with their outcomes — so a step whose outcome claims success over evidence
+that found nothing is visible). A flagged gap is not only nudged: it is SEEDED as a harness
+plan step (`Reviewer flagged: <issues>`, note: verify each item, finish what is missing, close
+with what you found — or cancel with the reason), so the plan gate holds the turn until the
+model does it or explicitly cancels it. Once per turn, fail-open, one cheap judge call. It
+shares `_completion_critic` with the code critic (which is unchanged, still opt-in), passing
+the record as part of the artifact.
+
+**Consequences.** The turn-3 conclusion is now nudged for the work; the turn-4 announcement
+is now nudged for the work; a finished plan whose answer hides a gap gets a step for it. Cost:
+one judge call per plan-completing turn (never on a single-action turn — those never plan),
+and every hermetic test whose plan completes carries one more scripted verdict (ten call
+counts moved by one; each script now ends with an explicit approval). Order matters and is
+pinned: the review runs after the deterministic rails so it reads the conclusion they
+produced, not the bare status they would have fixed. Tests: `tests/test_finish_rails.py`
+(deferral matcher, rail once / no plan needed, review seeds-and-closes, ignored gap held by
+the plan gate and finished degraded with the step open, off switch, fail-open, streaming),
+`tests/test_small_model_containment.py` (the widened matcher and its negatives),
+`tests/test_plan_verdict.py` / `tests/test_loop_planning.py` (the extra verdict per script).

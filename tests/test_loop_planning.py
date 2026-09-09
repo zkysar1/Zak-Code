@@ -80,6 +80,12 @@ def _done(text: str = "all done") -> LLMResult:
     return LLMResult(text=text, tool_calls=[], usage=Usage(total_tokens=1))
 
 
+def _review_ok() -> LLMResult:
+    """The fresh-eyes plan review (ADR-0117): one judge call when a COMPLETED plan tries to
+    finish. Scripts whose plan completes carry this approval as their last result."""
+    return LLMResult(text='{"approved": true, "issues": ""}', usage=Usage(total_tokens=2))
+
+
 def _loop(provider: Provider) -> tuple[AgentLoop, Session]:
     session = Session(cwd="/tmp", model="test/model")
     loop = AgentLoop(provider, default_registry(), session, max_iterations=20)
@@ -178,6 +184,7 @@ async def test_completion_gate_is_inert_when_plan_is_complete() -> None:
             _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "done"}]),
             _judge_ok(),
             _done(),
+            _review_ok(),
         ]
     )
     loop, session = _loop(provider)
@@ -185,7 +192,7 @@ async def test_completion_gate_is_inert_when_plan_is_complete() -> None:
 
     assert result.stop_reason == "completed"
     assert result.degraded is False  # nothing left open -> no nudge, clean finish
-    assert provider.calls == 3  # plan, judge (ADR-0050), done
+    assert provider.calls == 4  # plan, judge (ADR-0050), done, plan review (ADR-0117)
     assert session.task_network.is_complete()
 
 
@@ -508,12 +515,13 @@ async def test_strong_plan_judge_stays_silent() -> None:
             _plan_call([{"title": "A", "status": "done", "note": "x"}]),
             _judge(_JUDGE_STRONG),
             _done(),
+            _review_ok(),
         ]
     )
     loop, session = _loop(provider)
     await loop.arun_turn("small thing")
     assert not any("[plan critique]" in o for o in _plan_result_outputs(session))
-    assert provider.calls == 3  # plan, judge, done — the judge ran, silently
+    assert provider.calls == 4  # plan, judge, done, plan review — the judge ran, silently
 
 
 @pytest.mark.asyncio
@@ -531,13 +539,14 @@ async def test_judge_runs_once_per_turn_even_across_structural_edits() -> None:
                 ]
             ),
             _done(),
+            _review_ok(),
         ]
     )
     loop, session = _loop(provider)
     await loop.arun_turn("two structural edits")
     critiqued = [o for o in _plan_result_outputs(session) if "[plan critique]" in o]
     assert len(critiqued) == 1  # second structural edit did NOT re-judge
-    assert provider.calls == 4  # plan, judge, plan, done — no second judge call
+    assert provider.calls == 5  # plan, judge, plan, done, plan review — no second judge call
 
 
 @pytest.mark.asyncio
@@ -549,11 +558,12 @@ async def test_status_tick_never_triggers_the_judge() -> None:
             _judge(_JUDGE_STRONG),
             _plan_call([dict(step, status="done")]),  # same shape, new status
             _done(),
+            _review_ok(),
         ]
     )
     loop, session = _loop(provider)
     await loop.arun_turn("tick")
-    assert provider.calls == 4  # plan, judge (first authoring), plan tick, done
+    assert provider.calls == 5  # plan, judge (first authoring), plan tick, done, plan review
     assert not any("[plan critique]" in o for o in _plan_result_outputs(session))
 
 
@@ -613,6 +623,7 @@ def _closing_script(n: int) -> list[LLMResult]:
     for closed in range(1, n + 1):
         script += [_done("on it"), plan(closed)]
     script.append(_done("all six done: here is the answer"))
+    script.append(_review_ok())  # the fresh-eyes review of the finished plan (ADR-0117)
     return script
 
 
@@ -625,7 +636,7 @@ async def test_a_plan_that_keeps_closing_steps_is_nudged_to_the_end_never_finish
     assert result.degraded is False  # six nudges, every one earned a closed step
     assert result.open_steps == 0
     assert session.task_network.is_complete()
-    assert provider.calls == 2 + 2 * 6 + 1
+    assert provider.calls == 2 + 2 * 6 + 1 + 1
 
 
 @pytest.mark.asyncio
@@ -638,7 +649,7 @@ async def test_progress_charged_budget_holds_on_the_streaming_path() -> None:
     assert done.stop_reason == "completed" and done.degraded is False
     assert done.open_steps == 0
     assert session.task_network.is_complete()
-    assert provider.calls == 2 + 2 * 5 + 1
+    assert provider.calls == 2 + 2 * 5 + 1 + 1
 
 
 @pytest.mark.asyncio

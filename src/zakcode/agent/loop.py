@@ -509,7 +509,9 @@ _DEGENERATION_NUDGE = (
 _INTENT_NUDGE = (
     'You ended your turn announcing actions you have not performed ("I will …" / '
     '"let me now …"). Words are not work. Do ONE of these:\n'
-    "1. If those actions are part of this task, perform them NOW with real tool calls.\n"
+    "1. If those actions are part of this task, perform them NOW with real tool calls — "
+    "when they are more than one action, add them to the plan with update_plan first so "
+    "they cannot be dropped.\n"
     "2. If they are already done, or you were only describing options, say so plainly "
     "and finish without announcing further actions."
 )
@@ -552,22 +554,30 @@ def _broken_record_nudge(count: int) -> str:
     )
 
 
-#: Future-intent announcements: first-person future forms followed by an ACTION verb, so
-#: "I will need you to provide…" / "I'll let you know" / "I will be here" never match. A
-#: HEDGE between the future form and the verb ("I will try to create", "I'll attempt to
-#: add", "I will go ahead and write", "I will proceed to register") is still an announcement
-#: — the 2026-08-26 serene spiral was "I will try to create the skill correctly." ×20 and
-#: never matched because the verb had to follow "will" directly (ADR-0033).
+#: Future-intent announcements: a first-person future / intent lead-in ("I will", "I'll",
+#: "I'm going to", "let me", "the next step is to"), an optional HEDGE ("try to", "attempt
+#: to", "re-attempt to", "go ahead and", "proceed to", "need to"), then ANY verb that is not
+#: a non-action continuation. Until ADR-0117 the verb had to come from a closed list
+#: (use / run / create / write / …), and every real miss was a verb off the list: "I will
+#: try to create" (the 2026-08-26 spiral, ×20 — the hedge was added, ADR-0033), then "I will
+#: now re-attempt to debug the script by inserting print statements" ended a one-iteration
+#: turn on serene (2026-09-08) with "debug" and "re-attempt" on neither list. An allowlist
+#: fails on the next verb the model picks; the DENYLIST names the shapes that are not work
+#: — "I will need you to", "I'll let you know", "I will be here", "I will not", "let me know",
+#: "I'll summarize" — so a new verb is an announcement by default. A false positive costs one
+#: bounded nudge; a miss ends the turn on words.
 _FUTURE_INTENT_RE = re.compile(
     r"\b(?:"
-    r"(?:now\s+|next,?\s+|then\s+)?i(?:\s+will|['’]ll)\s+(?:now\s+|then\s+)?"
-    r"(?:try\s+to\s+|attempt\s+to\s+|go\s+ahead\s+and\s+|proceed\s+to\s+)?"
-    r"(?:use|run|create|write|edit|move|copy|delete|add|update|install|execute|make|"
-    r"start|begin|proceed|apply|open|read|fix|register)"
-    r"|let\s+me\s+now"
-    r"|i\s*['’]?a?m\s+going\s+to\s+(?:try\s+to\s+|attempt\s+to\s+|go\s+ahead\s+and\s+)?"
-    r"(?:use|run|create|write|edit|move|copy|delete|"
-    r"add|update|install|execute|make|start|begin|apply|open|read|fix|register)"
+    r"(?:now\s+|next,?\s+|then\s+|first,?\s+|so\s+)?"
+    r"(?:i(?:\s+will|['’]ll|\s+shall)|i\s*['’]?a?m\s+(?:now\s+)?going\s+to|let\s+me|allow\s+me\s+to"
+    r"|(?:my\s+|the\s+)?next\s+steps?\s+(?:is|will\s+be|would\s+be)\s+to)"
+    r"\s+(?:now\s+|then\s+|next\s+|also\s+|first\s+|just\s+|quickly\s+)?+"
+    r"(?:(?:try|attempt|re-?attempt|go\s+ahead\s+and|proceed\s+to|start\s+to|begin\s+to|"
+    r"continue\s+to|need\s+to|have\s+to)\s+(?:to\s+)?+)?+"
+    r"(?!(?:not|never|be|have|need|wait|await|let|know|keep|leave|stop|hold|remain|stay|"
+    r"assume|consider|treat|note|mention|say|tell|ask|answer|respond|reply|report|"
+    r"summari[sz]e|conclude|end|finish|get\s+back|defer|hand|pause)\b)"
+    r"[a-z][a-z-]+"
     r")\b",
     re.IGNORECASE,
 )
@@ -604,6 +614,55 @@ def _ends_on_plan_status(text: str) -> bool:
     user a finished checklist and an unanswered question.
     """
     return _PLAN_STATUS_RE.search(text.rstrip()[-400:]) is not None
+
+
+#: Deferral rail (ADR-0117): the completion's conclusion leaves part of the request for LATER
+#: — "will enable further debugging in a future session", "remains unresolved", "still
+#: present, but now debuggable", "to be addressed in a follow-up". The serene turn of
+#: 2026-09-08 ended on exactly that after 50 iterations, plan closed, nothing asking it to
+#: stop. Nothing in the harness had a word for "the answer defers the ask": the plan gate
+#: saw a finished plan, the verdict rail saw a real conclusion, and the intent gate looks for
+#: an announcement, not a postponement. Judged on the tail, once per turn; a model whose
+#: deferral is legitimate (the user asked for the partial, a person must act) says so and
+#: finishes; the rest add the work to the plan — and the plan gate then holds the turn.
+_DEFERRAL_RE = re.compile(
+    r"\b(?:"
+    r"in\s+(?:a\s+|the\s+)?(?:future|later|subsequent|separate|follow-?up|next)\s+"
+    r"(?:session|turn|pass|iteration|step|round|change|pr)\b"
+    r"|(?:future|later|follow-?up)\s+(?:session|work|debugging|investigation|iteration)\b"
+    r"|(?:further|additional|more)\s+(?:debugging|investigation|work|analysis|digging)\s+"
+    r"(?:is|will\s+be|would\s+be|may\s+be)?\s*(?:needed|required|necessary)\b"
+    r"|remains?\s+(?:unresolved|open|outstanding|to\s+be\s+(?:done|fixed|debugged|"
+    r"investigated|resolved|addressed))\b"
+    r"|still\s+(?:present|unresolved|broken|failing|outstanding|open|an?\s+(?:open\s+)?"
+    r"(?:issue|problem|question))\b"
+    r"|not\s+yet\s+(?:resolved|fixed|working|done|addressed|debugged|investigated)\b"
+    r"|(?:left|leave|leaving|deferred?|postponed?)\b[^.!?\n]{0,40}?\b(?:for|to|until)\s+"
+    r"(?:a\s+)?(?:later|future|follow-?up|next|another\s+(?:session|turn|pass|time|day))\b"
+    r"|to\s+be\s+(?:addressed|resolved|fixed|debugged|investigated)\s+"
+    r"(?:later|separately|in\s+a\s+(?:future|follow-?up|later))\b"
+    r"|will\s+enable\s+(?:further|future|later)\b"
+    r"|can\s+be\s+(?:addressed|debugged|investigated|fixed)\s+(?:later|in\s+a\s+future)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _defers_work(text: str) -> bool:
+    """True when the TAIL of a completion postpones part of the request to a later time."""
+    return _DEFERRAL_RE.search(text.rstrip()[-600:]) is not None
+
+
+_DEFERRAL_NUDGE = (
+    "Your answer leaves part of the request for later (a future session, further debugging, "
+    "an issue still present). This session is not over and nothing has asked you to stop. Do "
+    "ONE of these:\n"
+    "1. Add the remaining work to the plan with update_plan — one step each, with a "
+    "done-condition — and do it now.\n"
+    "2. If it genuinely cannot be done here (a person must act, an external event, the user's "
+    "decision), say exactly what blocks it in one sentence and mark that step blocked.\n"
+    "3. If the user asked for only part of it, say so plainly and finish."
+)
 
 
 #: Claim-vs-action guard (ADR-0033): a completion that REPORTS a change to a file, skill,
@@ -1280,6 +1339,31 @@ def _critic_nudge(issues: str) -> str:
         "ACTUALLY on disk (open the files), finish anything that is genuinely missing or "
         "half-done, then conclude. If an item is already fully satisfied, you may simply confirm "
         "it and finish."
+    )
+
+
+#: Fresh-eyes plan review (ADR-0117): once per turn, when the plan the model authored has
+#: completed, the same independent critic reads the request against the answer AND the plan
+#: record (steps with their outcomes). A flagged gap is not only nudged — it is SEEDED as a
+#: harness plan step, so the plan gate holds the turn until the model does it or cancels it
+#: with a reason. "Add something at the end of the todo list to do a fresh-eyes review to see
+#: if it is actually done, and then go get it done if not" (user, 2026-09-08).
+_MAX_PLAN_REVIEWS = 1
+
+_REVIEW_STEP_NOTE = (
+    "verify each flagged item against the workspace; finish what is genuinely missing; close "
+    "with what you found — or cancel with the reason if the reviewer is wrong"
+)
+
+
+def _plan_review_nudge(issues: str) -> str:
+    """The control message when the fresh-eyes review of a finished plan withholds approval."""
+    return (
+        "An independent reviewer read your answer against the request and your plan record, "
+        f"and flagged: {issues}\nA step has been added to your plan for it. Verify each flagged "
+        "item against the workspace (the reviewer could not), finish what is genuinely missing, "
+        "and close the step with what you found. If the reviewer is wrong, cancel the step with "
+        "the reason. Then conclude."
     )
 
 
@@ -3370,6 +3454,25 @@ class AgentLoop:
             "explicitly why it should be skipped."
         )
 
+    def _plan_review_due(self, spent: int) -> bool:
+        """The fresh-eyes review fires once per turn, on a completed plan the model authored
+        (an anchor-only board is a record, not a plan) and never on a composed /skill turn."""
+        network = self.session.task_network
+        return (
+            self.settings.plan_review
+            and spent < _MAX_PLAN_REVIEWS
+            and network.is_complete()
+            and not network.is_anchor_only()
+            and self._turn_skill is None
+        )
+
+    def _seed_review_step(self, issues: str) -> None:
+        """Append the reviewer's gap as a harness step: the plan gate now holds the turn."""
+        step = Task(title=f"Reviewer flagged: {clip(issues, 90)}", note=_REVIEW_STEP_NOTE)
+        self.session.task_network.insert_before(
+            None, [step], reason="fresh-eyes review flagged a gap in the finished plan"
+        )
+
     def _open_steps(self, *, ignore: Sequence[Task] = ()) -> list[Task]:
         """The plan's steps that still owe work, minus the turn's harness investigation steps."""
         return [
@@ -4459,7 +4562,9 @@ class AgentLoop:
         self._persist()
         return blocks
 
-    async def _completion_critic(self, request: str, claimed_result: str) -> tuple[bool, str]:
+    async def _completion_critic(
+        self, request: str, claimed_result: str, *, record: str = ""
+    ) -> tuple[bool, str]:
         """Independent fresh-context review of a finishing turn (the completion-review gate).
 
         A SEPARATE reviewer — a FRESH message list (NOT the loop's accumulated session), so it never
@@ -4476,9 +4581,12 @@ class AgentLoop:
         FRESH CONTEXT, not a different model; routing to a dedicated small model and fanning out to
         an N-judge vote (the full small-model fan-out) is the next increment of the quality engine.
         """
-        verdict, usage = await binary_judge(
-            self.provider, criteria=request, artifact=claimed_result or ""
-        )
+        artifact = claimed_result or ""
+        if record:
+            # ADR-0117: the plan record (steps + outcomes) beside the answer, so "done" is read
+            # against what the steps actually produced, not only against the prose.
+            artifact = f"{artifact}\n\nPlan record (steps and what each produced):\n{record}"
+        verdict, usage = await binary_judge(self.provider, criteria=request, artifact=artifact)
         with contextlib.suppress(Exception):  # accounting must never break the gate
             self.session.add_usage(usage, model=self.provider.model_id())
             if self.budget is not None:
@@ -5051,6 +5159,8 @@ class AgentLoop:
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
         verdict_nudged = False  # plan-verdict rail (ADR-0108): one nudge per turn
+        defer_nudged = False  # deferral rail (ADR-0117): one nudge per turn
+        plan_reviews = 0  # fresh-eyes plan reviews spent this turn (ADR-0117, bounded)
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
@@ -5687,6 +5797,7 @@ class AgentLoop:
                 if cascade_capped:
                     claim_nudged = blocker_nudged = missing_nudged = True
                     identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
+                    defer_nudged = True
                 # Claim-vs-action guard (ADR-0033): the completion REPORTS a file change
                 # ("I have updated … I have registered …") but no file-changing tool call
                 # ran this turn, so nothing on disk changed. Ask once for the work or an
@@ -5844,6 +5955,22 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # Deferral rail (ADR-0117): the conclusion leaves part of the request for a
+                # later session. Once per turn: add it to the plan and do it, mark it blocked
+                # with the reason, or say the user asked for only part of it.
+                if result.text and not defer_nudged and _defers_work(result.text):
+                    defer_nudged = True
+                    self._note(
+                        "intervention",
+                        "completion defers part of the request to later — asking for the work",
+                        kind="deferral_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_DEFERRAL_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 # Open-section guard (ADR-0087): the turn is ending while the model holds a
                 # section it has not closed. Nothing is ever pushed — the next page rides in
                 # the reply to the update_plan that closes this one — so a model that stops
@@ -5870,6 +5997,28 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # Fresh eyes on the finished plan (ADR-0117) — the LAST gate before a finish,
+                # after every free deterministic rail has had its say, so the reviewer reads
+                # the conclusion those rails produced. Once per turn; a flagged gap is seeded
+                # as a plan step and the plan gate holds the turn for it. Fail-open.
+                if self._plan_review_due(plan_reviews):
+                    plan_reviews += 1
+                    self._note(
+                        "intervention", "fresh eyes on the finished plan", kind="plan_review"
+                    )
+                    approved, issues = await self._completion_critic(
+                        user_text, result.text or "", record=self.session.task_network.render()
+                    )
+                    if not approved:
+                        self._seed_review_step(issues)
+                        self.session.add_message(
+                            Message.user(_control_rail(_plan_review_nudge(issues)))
+                        )
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
                 # A truly empty completion did no work — refund its shared-budget unit.
                 if not result.text:
                     self._refund_iteration()
@@ -6322,6 +6471,8 @@ class AgentLoop:
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
         intent_nudged = False  # false-done guard (ADR-0024): one nudge per turn
         verdict_nudged = False  # plan-verdict rail (ADR-0108): one nudge per turn
+        defer_nudged = False  # deferral rail (ADR-0117): one nudge per turn
+        plan_reviews = 0  # fresh-eyes plan reviews spent this turn (ADR-0117, bounded)
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
@@ -7223,6 +7374,7 @@ class AgentLoop:
                     if cascade_capped:
                         claim_nudged = blocker_nudged = missing_nudged = True
                         identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
+                        defer_nudged = True
                     # Claim-vs-action guard (ADR-0033) — see the buffered twin.
                     if (
                         assistant_text
@@ -7389,6 +7541,23 @@ class AgentLoop:
                             message="turn ended on the plan's status — asking for the verdict"
                         )
                         continue
+                    # Deferral rail (ADR-0117) — see the buffered twin.
+                    if assistant_text and not defer_nudged and _defers_work(assistant_text):
+                        defer_nudged = True
+                        self._note(
+                            "intervention",
+                            "completion defers part of the request to later — asking for the work",
+                            kind="deferral_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_DEFERRAL_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="answer defers part of the request — asking for it"
+                        )
+                        continue
                     # Open-section guard (ADR-0087) — see the buffered twin.
                     open_section = self._open_delivered_section() if self.unattended() else None
                     if open_section is not None and open_section[:2] not in section_nudged:
@@ -7415,6 +7584,30 @@ class AgentLoop:
                             "asking for the close or the work"
                         )
                         continue
+                    # Fresh eyes on the finished plan (ADR-0117) — see the buffered twin.
+                    if self._plan_review_due(plan_reviews):
+                        plan_reviews += 1
+                        self._note(
+                            "intervention", "fresh eyes on the finished plan", kind="plan_review"
+                        )
+                        approved, issues = await self._completion_critic(
+                            user_text,
+                            assistant_text or "",
+                            record=self.session.task_network.render(),
+                        )
+                        if not approved:
+                            self._seed_review_step(issues)
+                            self.session.add_message(
+                                Message.user(_control_rail(_plan_review_nudge(issues)))
+                            )
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            yield AgentStatus(
+                                message="fresh eyes on the finished plan — a gap was flagged"
+                            )
+                            continue
                     if not assistant_text:  # truly empty completion did no work
                         self._refund_iteration()
                     prompt = await self._fire_turn_end(
