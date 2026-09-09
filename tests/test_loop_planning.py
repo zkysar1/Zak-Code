@@ -121,13 +121,13 @@ async def test_completion_gate_nudges_then_completes_degraded() -> None:
     loop, _ = _loop(provider)
     result = await loop.arun_turn("two steps")
 
-    # call1 plan; call2 the decomposition judge (ADR-0050, silent); call 3 is nudged ONCE;
-    # call 4 restates with a byte-identical plan, so the no-progress guard ends the nudging
-    # (a model that changed nothing is waiting on something the harness cannot see) and the
-    # turn completes despite the open step.
+    # call1 plan; call2 the decomposition judge (ADR-0050, silent); calls 3 and 4 are each
+    # nudged — two CONSECUTIVE nudges that earned no progress spend the budget (ADR-0115) —
+    # and call 5 completes despite the open step, saying how many were left.
     assert result.stop_reason == "completed"
     assert result.degraded is True  # finished with an unresolved plan step
-    assert provider.calls == 4
+    assert result.open_steps == 1
+    assert provider.calls == 5
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,9 @@ async def test_completion_gate_keeps_nudging_while_the_plan_advances() -> None:
     result = await loop.arun_turn("two steps")
     assert result.stop_reason == "completed"
     assert result.degraded is True
-    assert provider.calls == 6  # plan, judge, nudged done, plan update, nudged done, final done
+    # plan, judge, nudged done, plan update (focus moved, nothing CLOSED — churn, not
+    # progress, so it still spends the budget), nudged done, final done
+    assert provider.calls == 6
 
 
 @pytest.mark.asyncio
@@ -588,3 +590,95 @@ async def test_composed_skill_turn_is_never_judged() -> None:
     assert result.stop_reason == "completed"
     assert provider.calls == 2  # plan, done — the judge never ran
     assert not any("[plan critique]" in o for o in _plan_result_outputs(session))
+
+
+# ── ADR-0115: the plan gate's budget is charged by progress, and silence mid-plan is a give-up ──
+
+
+def _closing_script(n: int) -> list[LLMResult]:
+    """A model that stops to narrate after EVERY step of an ``n``-step plan, and closes the
+    next step each time it is nudged: plan, judge, then (done, plan-with-one-more-closed) x n,
+    then the final answer. Under the old flat cap of two nudges this ended "done — struggled"
+    with ``n - 2`` steps open (the serene incident, 2026-09-08)."""
+    titles = [f"S{i}" for i in range(n)]
+
+    def plan(closed: int) -> LLMResult:
+        tasks = []
+        for i, title in enumerate(titles):
+            status = "done" if i < closed else ("in_progress" if i == closed else "pending")
+            tasks.append({"title": title, "status": status, "note": "ok"})
+        return _plan_call(tasks)
+
+    script = [plan(0), _judge_ok()]
+    for closed in range(1, n + 1):
+        script += [_done("on it"), plan(closed)]
+    script.append(_done("all six done: here is the answer"))
+    return script
+
+
+@pytest.mark.asyncio
+async def test_a_plan_that_keeps_closing_steps_is_nudged_to_the_end_never_finished_early() -> None:
+    provider = _Scripted(_closing_script(6))
+    loop, session = _loop(provider)
+    result = await loop.arun_turn("six steps")
+    assert result.stop_reason == "completed"
+    assert result.degraded is False  # six nudges, every one earned a closed step
+    assert result.open_steps == 0
+    assert session.task_network.is_complete()
+    assert provider.calls == 2 + 2 * 6 + 1
+
+
+@pytest.mark.asyncio
+async def test_progress_charged_budget_holds_on_the_streaming_path() -> None:
+    provider = _Scripted(_closing_script(5))
+    loop, session = _loop(provider)
+    events = [ev async for ev in loop.astream_turn("five steps")]
+    done = events[-1]
+    assert done.event == "done"
+    assert done.stop_reason == "completed" and done.degraded is False
+    assert done.open_steps == 0
+    assert session.task_network.is_complete()
+    assert provider.calls == 2 + 2 * 5 + 1
+
+
+@pytest.mark.asyncio
+async def test_churning_the_plan_without_closing_a_step_spends_the_budget() -> None:
+    """Moving the focus, retitling, re-sending — a changed plan is not progress unless the count
+    of open steps FELL. Two consecutive nudges without a close end the turn (degraded)."""
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "in_progress"}, {"title": "B"}]),
+            _judge_ok(),
+            _done("thinking"),
+            _plan_call([{"title": "A"}, {"title": "B", "status": "in_progress"}]),
+            _done("still thinking"),
+            _plan_call([{"title": "A", "status": "in_progress"}, {"title": "B"}]),
+            _done("done, I suppose"),
+        ]
+    )
+    loop, _ = _loop(provider)
+    result = await loop.arun_turn("two steps")
+    assert result.stop_reason == "completed"
+    assert result.degraded is True
+    assert result.open_steps == 2
+    assert provider.calls == 7
+
+
+@pytest.mark.asyncio
+async def test_empty_completion_mid_plan_ends_gave_up_not_done() -> None:
+    """The turn saw text earlier, so the empty-completion gate used to stay quiet and the plan
+    gate (its budget spent) let the turn finish "done — struggled" mid-plan. Silence with open
+    steps is a give-up: retried, then ended honestly as ``gave_up``."""
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "pending"}]),
+            _judge_ok(),
+            _done("working on B now"),
+            _done(""),
+        ]
+    )
+    loop, _ = _loop(provider)
+    result = await loop.arun_turn("two steps")
+    assert result.stop_reason == "gave_up"
+    assert result.degraded is True
+    assert result.open_steps == 1

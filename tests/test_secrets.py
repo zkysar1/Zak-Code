@@ -93,3 +93,29 @@ def test_ordinary_prose_is_untouched() -> None:
 
 def test_empty_is_safe() -> None:
     assert redact_secrets("") == ("", 0)
+
+
+def test_redacts_google_oauth_api_key_and_jwt_shapes() -> None:
+    # ADR-0116: a `gcloud auth print-access-token` value (ya29.…) was echoed into a transcript
+    # twice; the shape was not in the guard. Google API keys and JWTs ride along.
+    ya29 = "ya29.c.c0AZ4bNp" + "x" * 60 + ".Q1w2E3r4T5y6U7i8O9p0"
+    jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV"
+    api_key = "AIzaSyA1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q"  # AIza + 35, the real shape
+    out, n = redact_secrets(f"token: {ya29}\nkey {api_key}\n{jwt}")
+    assert n >= 3
+    assert "ya29." not in out and "AIzaSy" not in out and "eyJhbGci" not in out
+
+
+def test_redact_credential_tokens_scrubs_shapes_but_never_code_assignments() -> None:
+    from zakcode.secrets import redact_credential_tokens
+
+    ya29 = "ya29.a0AfB_byC" + "k" * 50
+    code = "api_key = settings.api_key\nOPENAI_API_KEY=sk-live-" + "a" * 24 + "\n"
+    out, n = redact_credential_tokens(code + ya29 + "\n")
+    assert n == 2  # the sk- token and the ya29 token
+    assert "api_key = settings.api_key" in out  # the key=value layer is NOT applied here
+    assert "ya29." not in out and "sk-live-" not in out
+    assert redact_credential_tokens("plain prose, nothing to hide") == (
+        "plain prose, nothing to hide",
+        0,
+    )

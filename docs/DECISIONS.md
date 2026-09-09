@@ -4636,3 +4636,97 @@ exact-basename, like the file form, so `python -m pytest` credits nothing but th
 Tests: `tests/test_recipe.py` (template rejection, module-path credit, package/test-aware
 commands, plumbing files inert), `tests/test_tasks.py` (truncation marker),
 `tests/test_plan.py` (framing precedes the goal).
+
+## ADR-0115: The plan gate's budget is charged by progress, silence mid-plan is a give-up, and the footer counts what was left open
+
+**Context.** Live on serene (`gemini-2.5-flash`, 2026-09-08): a 14-step plan ended
+`done — struggled · 51 iterations` at 9/14 with step 2.2.1 `in_progress` and no answer —
+"why did it tell me it was done mid-todo list?!". Three mechanisms, all in the harness.
+(1) `_MAX_PLAN_NUDGES = 2` was a flat per-turn cap, and the no-progress guard added
+2026-08-25 already ended nudging on a byte-identical plan; together the cap only ever bit on
+nudges that DID change the plan — the productive case — so a model that stops to narrate
+after every step spent both nudges on steps it then completed, and the third quiet finish
+was accepted with five steps open. (2) The empty-completion gate keyed on `turn_saw_text`,
+so once the turn had shown any text an empty completion mid-plan was a legal finish.
+(3) The footer's `done — struggled` said nothing about the plan, so the stop read as done.
+
+**Decision.** The cap bounds CONSECUTIVE nudges that earned no progress, where progress
+means the count of open steps FELL since the previous nudge: such a nudge resets the count
+and is free; a plan that changed without shrinking (focus moved, a step retitled, the plan
+re-sent) is churn and is charged; the byte-identical guard folds into this as the strongest
+no-progress case (the broken-record guard still catches verbatim restatements). The run of
+free nudges is bounded by the plan itself — each cost the model a closed step — and the
+iteration cap holds regardless. An empty completion while the plan has open steps takes the
+empty-completion path (bounded retries, then `gave_up`) whatever text came earlier: a model
+that is waiting says so; silence mid-plan is a give-up. `TurnResult.open_steps` /
+`AgentDone.open_steps` count the steps still owing work at the stop, the trace notes
+`plan_unresolved` with the count, and the CLI footer appends `— N plan step(s) left open` to
+any stop label.
+
+**Consequences.** A model that narrates after every step of a six-step plan is now nudged
+six times and ends clean with the plan complete
+(`test_a_plan_that_keeps_closing_steps_is_nudged_to_the_end_never_finished_early`, plus the
+streaming twin); a stubborn or churning model still ends after two nudges, one more than
+before (`test_completion_gate_nudges_then_completes_degraded` moves from four calls to five;
+`test_churning_the_plan_without_closing_a_step_spends_the_budget`); silence mid-plan ends
+`gave_up` (`test_empty_completion_mid_plan_ends_gave_up_not_done`); the footer says how much
+was left (`tests/test_render.py`). Not fixed here, by design: a model that restates in TEXT
+twice without touching the plan still ends after the cap — bounded beats deadlocked. The
+other half of the serene turn (a search closed on "No files found") is ADR-0116.
+
+## ADR-0116: A null result is a claim about the instrument — `∅` evidence, the one-time close challenge, the evidence-discipline rails, and token masking at the seam
+
+**Context.** Same serene session, the turn before: asked for `.tar.gz` files in a Drive the
+user KNOWS holds them, the agent ran `fileExtension = 'tar.gz'` → "No files found", listed
+the ROOT → "No files found", and told the user twice they were wrong. Both nulls were the
+instrument, not the world: a root listing that returns nothing is blindness (the token's
+principal or scope sees an empty drive), and that Drive API stores only the LAST extension,
+so the query could never match. The agent named the right alternatives (a different
+extension, a different location, the principal) and tested none; every plan step lacked a
+done-condition (`Plan quality 70%`, ignored), so "ran the search" closed each step; step 1.2's
+`outcome` claimed "Successfully listed files" over evidence that found nothing; and the
+access token was printed into the transcript twice. The user's ask: when the user has
+conviction, make the agent more curious — explore more before saying they are wrong.
+
+**Boundary** (`docs/PERSISTENCE-BOUNDARY.md`). The harness owns the domain-free discipline:
+how a null result is RECORDED, when a close is TRUSTED, what every model is told about
+negative results and a user's conviction, and that secrets never cross the seam. The Mind
+owns the domain facts — which principal a token belongs to, how a given API names an
+extension, the skill body that carries the positive control for THAT tool. None of the
+second kind is encoded here; the harness gives the Mind's knowledge a place to land (the
+step's `note`) and refuses to let its absence pass silently.
+
+**Decision.** (1) An evidence line for a call that SUCCEEDED and found nothing reads
+`<tool> <what> ∅ <first output line>` (`tasks.looks_null_result`: empty output, or a first
+line shaped like `No files found` / `0 matches` / `not found` / `no such file` / a bare
+`none`/`[]`; a clean check — `no errors found` — is a pass, never a null). (2)
+`TaskNetwork.replace_from_author` reopens ONCE a step moved to `done` from an open status
+with no `note` and a `∅` line in its evidence: back to `in_progress` (any other focus
+demoted quietly), `outcome` cleared, `challenged=True`, a `challenged` log event, and an
+advisory naming the line — "'not there' and 'I could not see' look identical; run a positive
+control or a query of a different shape, then close it with a done-condition". `update_plan`'s
+hint becomes the challenge rail for that call. A step WITH a done-condition is trusted, the
+second close stands, `cancelled` is never challenged: one nudge per step, no gate that can
+deadlock. (3) The stable prompt tier gains "Negative results and the user's conviction"
+between the tool guidance and the planning rules — a null result is a claim about the
+instrument (show the tool can see something in that scope before saying "not there"); the
+user saying you are wrong escalates the search (two approaches that differ in KIND, not the
+same call with a tweaked filter); a named alternative is a step owed, not a disclaimer — and
+the planning rule plus the `note` schema say a search step's done-condition names a hit AND
+what proves the scope was visible. (4) `secrets.redact_credential_tokens` (token shapes and
+PEM blocks only — the `key = value` layer would rewrite `api_key = settings.api_key` in code
+the model reads) runs on every tool output at the execution seam, with `ya29.`, `AIza` and
+JWT shapes added to the guard, and a rail telling the model to keep a secret inside one
+command.
+
+**Consequences.** The serene turn replays as: search → `∅` → the close is handed back →
+positive control → an honest answer ("the account this token belongs to sees an empty
+drive"), pinned end-to-end in
+`test_a_search_that_found_nothing_is_recorded_as_null_and_its_close_is_challenged`. The null
+detector is an English heuristic kept narrow on purpose: a miss costs nothing (the line reads
+`✓`), a false hit costs one advisory and only on a step that also has no done-condition. A
+model that printed a token to reuse it must now capture it in one command — the rail says how.
+Tests: `tests/test_tasks.py` (detector), `tests/test_plan_ledger.py` (challenge, carry-over,
+trust, cancel, the loop replay), `tests/test_prompt.py` (tier and order),
+`tests/test_secrets.py` (shapes; the token-only layer leaves code alone),
+`tests/test_tool_output_redaction.py` (the seam, the transcript, the session file).

@@ -137,7 +137,9 @@ All content sits on this grid; nothing else exists:
     {elapsed}`. Label map (from the stop reasons in `agent/loop.py`):
     `completed → "done"` (`"done — struggled"` with a `warn` marker when
     `done.degraded` — a clean-looking footer over a turn that engaged failure
-    recovery hid real give-ups, 2026-08-26), `max_iterations → "stopped early — max
+    recovery hid real give-ups, 2026-08-26; any label gains ` — N plan step(s) left
+    open` when `done.open_steps` is non-zero, because a bare "done — struggled" over a
+    plan stopped at 9/14 read as finished, ADR-0115), `max_iterations → "stopped early — max
     iterations"`, `provider_error → "provider error"` (+ ` — ` + first line of
     `done.error` when present), `doom_loop → "stopped — repeating itself"`, `stuck →
     "stopped — no progress"`, `gave_up → "stopped — gave up (no output)"`,

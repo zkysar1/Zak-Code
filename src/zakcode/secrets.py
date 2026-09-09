@@ -37,6 +37,9 @@ _TOKEN_RE = re.compile(
     r"|AKIA[0-9A-Z]{16}"  # AWS access key id
     r"|gh[pousr]_[A-Za-z0-9]{20,}"  # GitHub tokens
     r"|xox[baprs]-[A-Za-z0-9-]{10,}"  # Slack tokens
+    r"|ya29\.[A-Za-z0-9._-]{30,}"  # Google OAuth2 access token (gcloud auth print-access-token)
+    r"|AIza[0-9A-Za-z_-]{35}"  # Google API key
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"  # JWT (three b64url segments)
     r")\b"
 )
 
@@ -93,6 +96,34 @@ def redact_secrets(text: str) -> tuple[str, int]:
     return text, count
 
 
+def redact_credential_tokens(text: str) -> tuple[str, int]:
+    """Return ``(scrubbed_text, num_redactions)`` scrubbing ONLY the high-signal token shapes.
+
+    The layer safe to run over arbitrary tool output (ADR-0116): provider-prefixed tokens
+    (``sk-``, ``ya29.``, ``AIza``, ``AKIA``, GitHub/Slack, a JWT) and PEM private-key blocks.
+    The ``key = value`` layer of :func:`redact_secrets` is deliberately left out here — over
+    source code it rewrites ``api_key = settings.api_key`` and breaks the file the model is
+    reading. Never raises; returns the input unchanged with a count of 0 when nothing matches.
+    """
+    if not text:
+        return text, 0
+    count = 0
+
+    def _mark(_m: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        return _REDACTED
+
+    def _mark_pem(_m: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        return "[REDACTED PRIVATE KEY]"
+
+    text = _PEM_RE.sub(_mark_pem, text)
+    text = _TOKEN_RE.sub(_mark, text)
+    return text, count
+
+
 def strip_url_credentials(url: str | None) -> str | None:
     """Mask any ``user:password@`` userinfo in a URL's authority.
 
@@ -115,7 +146,12 @@ def strip_url_credentials(url: str | None) -> str | None:
         return url
 
 
-__all__ = ["provider_key_env_names", "redact_secrets", "strip_url_credentials"]
+__all__ = [
+    "provider_key_env_names",
+    "redact_credential_tokens",
+    "redact_secrets",
+    "strip_url_credentials",
+]
 
 
 # ── subprocess env hygiene (RISKS: provider keys reach subprocesses) ──────────

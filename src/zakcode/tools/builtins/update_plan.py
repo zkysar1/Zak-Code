@@ -46,6 +46,16 @@ _COMPLETE_HINT = (
 )
 
 
+#: Challenge rail (ADR-0116): the harness just REOPENED a step the model closed on a null
+#: result with no done-condition (the advisory in the output says which and why). The next
+#: action is that step, with a positive control — not the step the model had moved on to.
+_CHALLENGED_HINT = (
+    "A step was reopened (see the note above): do it first — run a positive control (show the "
+    "same tool sees something known to exist in that scope) or a query of a different shape — "
+    "then close it with a done-condition in 'note' and what you found in 'outcome'."
+)
+
+
 def _task_schema(depth: int) -> dict[str, Any]:
     """JSON schema for one task node, nesting ``subtasks`` to ``depth`` levels."""
     properties: dict[str, Any] = {
@@ -65,9 +75,11 @@ def _task_schema(depth: int) -> dict[str, Any]:
             "type": "string",
             "description": (
                 "The step's done-condition: a one-line, checkable acceptance criterion you will "
-                "verify against (e.g. 'tests pass', 'GET /health returns 200'). For a blocked "
-                "step, say why instead. Recommended on every primitive step; omit only if truly "
-                "none applies."
+                "verify against (e.g. 'tests pass', 'GET /health returns 200'). For a step that "
+                "searches, lists, or looks something up, say what a hit looks like AND what "
+                "proves the scope was visible — a null result never closes such a step on its "
+                "own. For a blocked step, say why instead. Recommended on every primitive step; "
+                "omit only if truly none applies."
             ),
         },
         "blocked_by": {
@@ -222,8 +234,14 @@ class UpdatePlanTool(Tool):
                 "deficiencies": deficiencies,
                 "complete": network.is_complete(),
             },
-            hint=_COMPLETE_HINT if network.is_complete() else _PLANNED_HINT,
+            hint=self._hint(network),
         )
+
+    @staticmethod
+    def _hint(network: Any) -> str:
+        if network.log and network.log[-1].kind == "challenged":
+            return _CHALLENGED_HINT
+        return _COMPLETE_HINT if network.is_complete() else _PLANNED_HINT
 
 
 __all__ = ["UpdatePlanTool"]

@@ -161,12 +161,14 @@ from zakcode.providers.base import (
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
+from zakcode.secrets import redact_credential_tokens
 from zakcode.session.observation_inbox import take_observation
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import (
     MAX_LINE_CHARS,
     MAX_REQUEST_CHARS,
+    NULL_MARK,
     PAGE_HEADER_RE,
     PlanContext,
     SkillPage,
@@ -174,6 +176,7 @@ from zakcode.tasks import (
     Task,
     clip,
     clip_ends,
+    looks_null_result,
     skill_pages,
     skill_skeleton,
     step_skill,
@@ -967,11 +970,25 @@ _WRITE_AFTER_FAILED_READ_NOTE = (
 #: so it is bounded separately from — and far below — the iteration cap.
 _MAX_LENGTH_CONTINUATIONS = 3
 
-#: How many times a turn may be nudged to resolve its open plan steps before it is allowed to
-#: finish anyway (the plan gate). Bounded like the recipe gate so a model that decides the
-#: remaining steps are unnecessary — but won't mark them done/cancelled — can never deadlock;
-#: after the cap the turn completes (flagged ``degraded`` because the plan was left unresolved).
+#: How many CONSECUTIVE plan-gate nudges that produce no progress a turn may spend before it
+#: is allowed to finish with open steps (flagged ``degraded``). Progress = the count of open
+#: steps FELL since the previous nudge; a nudge that earned progress resets the count, so a
+#: model that is finishing its plan and merely stops early between steps is nudged as often
+#: as it takes (each free nudge costs it a closed step, so the run is bounded by the plan, and
+#: the iteration cap holds regardless). Until ADR-0115 this was a flat per-turn cap and the
+#: no-progress guard already ended nudging on an unchanged plan — so the cap only ever bit on
+#: PRODUCTIVE nudges, and a 14-step plan finished "done — struggled" with five steps open after
+#: its two nudges were spent on steps that got done (serene, gemini-2.5-flash, 2026-09-08).
 _MAX_PLAN_NUDGES = 2
+
+#: Appended to a tool output from which credential-shaped tokens were scrubbed (ADR-0116):
+#: the model must learn the discipline from the rail, not from the missing value.
+_TOKEN_REDACTED_RAIL = (
+    "\n[harness] {n} credential-shaped value(s) were redacted from this output before you saw "
+    "it — never print a secret. Keep it inside ONE command in a shell variable or a file "
+    '(TOKEN=$(...); use "$TOKEN" in the same command), or use a {{{{secret:NAME}}}} placeholder '
+    "where a tool supports one."
+)
 
 #: How many consecutive turn-starts an UNFINISHED plan may sit byte-identical (the model neither
 #: advanced nor edited it) before the harness drops it as abandoned (issue #32 — the "haunting
@@ -1003,7 +1020,12 @@ _EVIDENCE_ARGS = ("path", "file_path", "command", "pattern", "query", "name", "u
 
 
 def _evidence_line(call: ToolCall, block: ToolResultBlock) -> str:
-    """One compact line for a step's evidence (ADR-0110): ``<tool> <what> ✓|✗``."""
+    """One compact line for a step's evidence (ADR-0110): ``<tool> <what> ✓|✗|∅``.
+
+    ``∅`` (ADR-0116) marks a call that succeeded and found NOTHING, with the output's first
+    line beside it: the record keeps "searched and saw nothing" distinct from "searched and
+    found it", which is what lets a close on that step be challenged.
+    """
     args = call.arguments if isinstance(call.arguments, dict) else {}
     detail = ""
     for key in _EVIDENCE_ARGS:
@@ -1011,7 +1033,13 @@ def _evidence_line(call: ToolCall, block: ToolResultBlock) -> str:
         if isinstance(value, str) and value.strip():
             detail = clip(value, 70)
             break
-    mark = "✗" if block.is_error else "✓"
+    if block.is_error:
+        mark = "✗"
+    elif looks_null_result(block.output):
+        first = next((ln for ln in block.output.strip().splitlines() if ln.strip()), "")
+        mark = f"{NULL_MARK} {clip(first, 60)}" if first else NULL_MARK
+    else:
+        mark = "✓"
     return " ".join(part for part in (call.name, detail, mark) if part)
 
 
@@ -1321,6 +1349,10 @@ class TurnResult(BaseModel):
     #: nudge/narrow/step-back fired). A thin "this turn struggled" roll-up; clean turns
     #: leave it False.
     degraded: bool = False
+    #: Plan steps still owing work when the turn ended (ADR-0115) — 0 with no plan, a finished
+    #: one, or only blocked steps. Non-zero means the model stopped mid-plan (it is ``degraded``
+    #: by construction) and a client should say so beside the stop, not print a bare "done".
+    open_steps: int = 0
     #: Under zakpick, the task category the MAIN turn ended on (``"quick_code"`` /
     #: ``"deep_code"``); ``None`` when zakpick is off. With ``routed_escalated`` it lets a client
     #: surface the "this ran on your deep coder but never needed to" advisory.
@@ -3338,6 +3370,14 @@ class AgentLoop:
             "explicitly why it should be skipped."
         )
 
+    def _open_steps(self, *, ignore: Sequence[Task] = ()) -> list[Task]:
+        """The plan's steps that still owe work, minus the turn's harness investigation steps."""
+        return [
+            step
+            for step in self.session.task_network.actionable_remaining()
+            if not any(step is skipped for skipped in ignore)
+        ]
+
     def _plan_gate_nudge(self, *, ignore: Sequence[Task] = ()) -> str | None:
         """The plan-completion nudge, or ``None`` when the plan permits finishing.
 
@@ -3347,12 +3387,7 @@ class AgentLoop:
         ``ignore`` is the turn's harness-added investigation steps (ADR-0057): they guide a
         stuck model, they never hold a recovered one.
         """
-        network = self.session.task_network
-        remaining = [
-            step
-            for step in network.actionable_remaining()
-            if not any(step is skipped for skipped in ignore)
-        ]
+        remaining = self._open_steps(ignore=ignore)
         if not remaining:
             return None
         nxt = remaining[0]
@@ -3589,6 +3624,18 @@ class AgentLoop:
         network = self.session.task_network
         owner = None if call.name in _PLAN_TOOLS or network.is_empty() else network.current()
         block = await self._execute_tool_call_gated(call, ctx, restrict_to=restrict_to)
+        # ADR-0116: credential-shaped tokens never reach the model, the transcript, or the
+        # session file through a tool output (GUARDRAILS §6). Only the provider-prefixed
+        # token SHAPES are scrubbed here — the key=value layer would mangle ordinary code.
+        scrubbed, hits = redact_credential_tokens(block.output)
+        if hits:
+            block.output = scrubbed + _TOKEN_REDACTED_RAIL.format(n=hits)
+            self._note(
+                "redaction",
+                f"{hits} credential-shaped value(s) redacted from {call.name} output",
+                tool=call.name,
+                count=hits,
+            )
         if owner is not None and network.contains(owner):
             network.attach_evidence(owner, _evidence_line(call, block))
         if block.is_error:
@@ -4997,8 +5044,8 @@ class AgentLoop:
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
-        plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
-        plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
+        plan_nudges = 0  # CONSECUTIVE no-progress plan-gate nudges (bounded by _MAX_PLAN_NUDGES)
+        open_at_nudge: int | None = None  # open step count at the last nudge (progress = it fell)
         investigation_steps: list[Task] = []  # decompose-on-stuck (ADR-0057): steps added
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
@@ -5423,15 +5470,16 @@ class AgentLoop:
                 self._close_request_anchor(result.text)
                 plan_nudge = self._plan_gate_nudge(ignore=investigation_steps)
                 if plan_nudge is not None:
-                    # A nudge that produced NO progress (the model answered with text only
-                    # and the plan is byte-identical) ends the nudging: it is legitimately
-                    # waiting on something the harness cannot see, and repeating the nudge
-                    # just makes it restate itself (measured 2026-08-25: two identical
-                    # "still waiting on you" replies to back-to-back nudges).
-                    plan_sig = self.session.task_network.progress_signature()
-                    if plan_nudges < _MAX_PLAN_NUDGES and plan_sig != plan_sig_at_nudge:
+                    # ADR-0115: the cap bounds CONSECUTIVE nudges that earned no progress. A
+                    # model that closed a step since the last nudge is finishing, not stuck —
+                    # it is nudged again for free; one that changed nothing (or only churned
+                    # the plan) spends the budget, and past it the turn ends degraded.
+                    open_now = len(self._open_steps(ignore=investigation_steps))
+                    if open_at_nudge is not None and open_now < open_at_nudge:
+                        plan_nudges = 0
+                    if plan_nudges < _MAX_PLAN_NUDGES:
                         plan_nudges += 1
-                        plan_sig_at_nudge = plan_sig
+                        open_at_nudge = open_now
                         self.session.add_message(Message.user(_control_rail(plan_nudge)))
                         if not result.text:
                             self._refund_iteration()  # an empty nudged completion did no work
@@ -5441,6 +5489,12 @@ class AgentLoop:
                         stuck.reset()
                         continue
                     turn_degraded = True  # finishing with open plan steps after the nudge cap
+                    self._note(
+                        "intervention",
+                        f"finishing with {open_now} open plan step(s) after the nudge cap",
+                        kind="plan_unresolved",
+                        open_steps=open_now,
+                    )
                 # Skill-coverage backstop: the request explicitly named skills, and each must
                 # be invoked, planned, or explicitly declined before the turn quietly ends.
                 # One nudge only — it exists for the cases plan seeding cannot hold (a plan
@@ -5468,8 +5522,15 @@ class AgentLoop:
                 # or the cap cut it off mid-thought — is never a deliberate finish, so it is
                 # retried even after prior text, with thinking off for that one call.
                 overflow = result.finish_reason in _LENGTH_FINISH_REASONS or bool(result.thinking)
+                # An empty completion while the plan still has open steps is never a finish
+                # either (ADR-0115): a model that is waiting says so; silence mid-plan is a
+                # give-up, and it ends as one (bounded retries, then ``gave_up``), not as "done".
                 if not result.text and (
-                    not turn_saw_text or stuck.took_action or composed_skill is not None or overflow
+                    not turn_saw_text
+                    or stuck.took_action
+                    or composed_skill is not None
+                    or overflow
+                    or plan_nudge is not None
                 ):
                     if empty_retries < _MAX_EMPTY_RETRIES:
                         empty_retries += 1
@@ -6111,6 +6172,7 @@ class AgentLoop:
             stop_reason=stop_reason,
             error=turn_error,
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
+            open_steps=len(self.session.task_network.actionable_remaining()),
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
             trace=self._trace,
@@ -6253,8 +6315,8 @@ class AgentLoop:
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
-        plan_nudges = 0  # plan-gate nudges spent this turn (bounded by _MAX_PLAN_NUDGES)
-        plan_sig_at_nudge: str | None = None  # plan state at the last nudge (no-progress guard)
+        plan_nudges = 0  # CONSECUTIVE no-progress plan-gate nudges (bounded by _MAX_PLAN_NUDGES)
+        open_at_nudge: int | None = None  # open step count at the last nudge (progress = it fell)
         investigation_steps: list[Task] = []  # decompose-on-stuck (ADR-0057): steps added
         completion_reviews = 0  # completion-review nudges spent this turn (bounded)
         quality_rounds = 0  # quality-gate (seam A) refine rounds spent this turn (bounded)
@@ -6939,13 +7001,13 @@ class AgentLoop:
                     self._close_request_anchor(assistant_text)
                     plan_nudge = self._plan_gate_nudge(ignore=investigation_steps)
                     if plan_nudge is not None:
-                        # No-progress guard — see the buffered path: an unchanged plan after
-                        # a nudge means the model is waiting on something external; stop
-                        # repeating the nudge.
-                        plan_sig = self.session.task_network.progress_signature()
-                        if plan_nudges < _MAX_PLAN_NUDGES and plan_sig != plan_sig_at_nudge:
+                        # Progress-charged budget (ADR-0115) — see the buffered path.
+                        open_now = len(self._open_steps(ignore=investigation_steps))
+                        if open_at_nudge is not None and open_now < open_at_nudge:
+                            plan_nudges = 0
+                        if plan_nudges < _MAX_PLAN_NUDGES:
                             plan_nudges += 1
-                            plan_sig_at_nudge = plan_sig
+                            open_at_nudge = open_now
                             self.session.add_message(Message.user(_control_rail(plan_nudge)))
                             if not assistant_text:
                                 self._refund_iteration()
@@ -6956,6 +7018,12 @@ class AgentLoop:
                             yield AgentStatus(message="plan has open steps; continuing")
                             continue
                         turn_degraded = True
+                        self._note(
+                            "intervention",
+                            f"finishing with {open_now} open plan step(s) after the nudge cap",
+                            kind="plan_unresolved",
+                            open_steps=open_now,
+                        )
                     # Skill-coverage backstop (streaming twin) — see _run_turn: the request
                     # named skills; each must be invoked, planned, or explicitly declined.
                     if requested_skills and not coverage_nudged:
@@ -6985,11 +7053,13 @@ class AgentLoop:
                     # the served /start of 2026-08-27 boot D (generic nudge, not the skill one).
                     # Reasoning overflow (ADR-0056), streaming twin — see _run_turn.
                     overflow = stream_finish_reason in _LENGTH_FINISH_REASONS or saw_thinking
+                    # Silence mid-plan is a give-up, never a finish (ADR-0115) — see _run_turn.
                     if not assistant_text and (
                         not turn_saw_text
                         or stuck.took_action
                         or composed_skill is not None
                         or overflow
+                        or plan_nudge is not None
                     ):
                         if empty_retries < _MAX_EMPTY_RETRIES:
                             empty_retries += 1
@@ -7684,6 +7754,7 @@ class AgentLoop:
             usage=turn_usage,
             error=turn_error,
             degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
+            open_steps=len(self.session.task_network.actionable_remaining()),
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
             trace=self._trace,

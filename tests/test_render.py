@@ -907,6 +907,20 @@ async def test_pinned_footer_states() -> None:
         AgentDone(stop_reason="completed", iterations=5, usage=_usage(5, 5), degraded=True)
     )
     assert "done — struggled" in out
+    # A turn that stopped mid-plan says how much is left (ADR-0115): "done — struggled" alone
+    # read as finished to a user watching a 14-step plan stop at 9/14 (serene, 2026-09-08).
+    out = await footer_for(
+        AgentDone(
+            stop_reason="completed", iterations=5, usage=_usage(5, 5), degraded=True, open_steps=5
+        )
+    )
+    assert "done — struggled — 5 plan step(s) left open" in out
+    out = await footer_for(
+        AgentDone(
+            stop_reason="gave_up", iterations=5, usage=_usage(5, 5), degraded=True, open_steps=1
+        )
+    )
+    assert "gave up (no output) — 1 plan step(s) left open" in out
 
 
 def test_pinned_permission_parser_legacy_synonyms() -> None:

@@ -406,3 +406,126 @@ async def test_a_finished_plan_is_reset_at_the_next_turn_but_its_record_stays() 
     assert resets and resets[-1].detail.startswith("completed 1/1: only step")
     # The next plan starts with the NEW request as its context.
     assert net.context.request == "second request"
+
+
+# ── ADR-0116: a null-result close with no done-condition is handed back once ──────────
+
+
+def _search_plan(net: TaskNetwork, first: str, second: str, **first_fields: str) -> list[str]:
+    return net.replace_from_author(
+        [
+            Task(title="search the drive", status=first, **first_fields),  # type: ignore[arg-type]
+            Task(title="report", status=second),  # type: ignore[arg-type]
+        ]
+    )
+
+
+def test_null_close_without_a_done_condition_is_reopened_once_then_accepted() -> None:
+    net = TaskNetwork()
+    _search_plan(net, "in_progress", "pending")
+    net.attach_evidence(net.tasks[0], "bash drive-list.py ∅ No files found in the location")
+
+    advisories = _search_plan(net, "done", "in_progress", outcome="listed the files")
+    search, report = net.tasks
+    assert search.status == "in_progress" and search.challenged is True
+    assert search.outcome == ""  # the claimed outcome contradicted the evidence; it is dropped
+    assert report.status == "pending"  # the reopened step is the work to do first
+    assert net.current() is search
+    assert any("REOPENED once" in a and "null result" in a for a in advisories)
+    assert net.log[-1].kind == "challenged" and "∅" in net.log[-1].detail
+
+    # The second close is the author's deliberate call: accepted, with its outcome kept.
+    advisories = _search_plan(net, "done", "in_progress", outcome="empty even after a control")
+    search, report = net.tasks
+    assert search.status == "done" and search.outcome == "empty even after a control"
+    assert report.status == "in_progress"
+    assert not any("REOPENED" in a for a in advisories)
+    closes = [e.detail for e in net.log if e.kind == "step" and e.step == "1"]
+    assert closes[-1] == "in_progress -> done — empty even after a control"
+
+
+def test_null_close_with_a_done_condition_is_trusted() -> None:
+    net = TaskNetwork()
+    _search_plan(net, "in_progress", "pending")
+    net.attach_evidence(net.tasks[0], "grep tar.gz ∅ No matches found")
+    _search_plan(
+        net, "done", "in_progress", note="a hit lists a .tar.gz, or root listing shows any file"
+    )
+    assert net.tasks[0].status == "done" and net.tasks[0].challenged is False
+
+
+def test_cancelling_or_a_hit_never_triggers_the_challenge() -> None:
+    net = TaskNetwork()
+    _search_plan(net, "in_progress", "pending")
+    net.attach_evidence(net.tasks[0], "grep tar.gz ∅ No matches found")
+    _search_plan(net, "cancelled", "in_progress")
+    assert net.tasks[0].status == "cancelled"
+
+    net2 = TaskNetwork()
+    _search_plan(net2, "in_progress", "pending")
+    net2.attach_evidence(net2.tasks[0], "grep tar.gz ✓")
+    _search_plan(net2, "done", "in_progress")
+    assert net2.tasks[0].status == "done" and net2.tasks[0].challenged is False
+
+
+class _FakeSearch(Tool):
+    spec = ToolSpec(
+        name="fake_search",
+        description="fake search",
+        required_permission=PermissionTier.READ_ONLY,
+        concurrency=ConcurrencyClass.READ_ONLY_SAFE,
+    )
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult.ok("No files found matching the query.")
+
+
+@pytest.mark.asyncio
+async def test_a_search_that_found_nothing_is_recorded_as_null_and_its_close_is_challenged() -> (
+    None
+):
+    provider = _Scripted(
+        [
+            _plan([{"title": "find the archives", "status": "in_progress"}, {"title": "report"}]),
+            _judge_ok(),
+            _call("fake_search", {"query": "tar.gz"}, cid="s1"),
+            _plan(
+                [
+                    {"title": "find the archives", "status": "done", "outcome": "none exist"},
+                    {"title": "report", "status": "in_progress"},
+                ]
+            ),
+            _plan(
+                [
+                    {
+                        "title": "find the archives",
+                        "status": "done",
+                        "note": "root listing shows any file",
+                        "outcome": "root listing empty too: the token sees nothing",
+                    },
+                    {"title": "report", "status": "in_progress"},
+                ]
+            ),
+            _plan(
+                [
+                    {"title": "find the archives", "status": "done"},
+                    {"title": "report", "status": "done", "outcome": "told the user"},
+                ]
+            ),
+            _done("The account this token belongs to sees an empty drive."),
+        ]
+    )
+    session = Session(cwd="/tmp", model="t/m")
+    loop = AgentLoop(provider, _registry(_FakeSearch()), session, max_iterations=20)
+    result = await loop.arun_turn("are there .tar.gz files in the drive?")
+    assert result.stop_reason == "completed"
+
+    first = session.task_network.tasks[0]
+    assert first.evidence == ["fake_search tar.gz ∅ No files found matching the query."]
+    # The first close (no note, null evidence) came back as a challenge, in the tool result
+    # the model read next, with the challenge rail as its hint; the second close stood.
+    challenge = [b.output for b in result.tool_results if "REOPENED once" in b.output]
+    assert len(challenge) == 1 and "Hint: A step was reopened" in challenge[0]
+    assert first.status == "done" and first.challenged is True
+    kinds = [e.kind for e in session.task_network.log]
+    assert "challenged" in kinds
