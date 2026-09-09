@@ -96,7 +96,29 @@ _TOOL_GUIDANCE = (
     "- Read a file (and the code around it) before you edit it; understand context first.\n"
     "- Make small, focused changes and prefer editing existing files over creating new ones.\n"
     "- Fill in each tool's declared parameters exactly as defined; do not pack data or "
-    "instructions into a parameter that is not meant for them."
+    "instructions into a parameter that is not meant for them.\n"
+    "- A refused write or edit is about the content you sent, never about the environment: "
+    "the refusal names the line and the file is unchanged. Fix the content and retry (a "
+    "smaller edit_file when a whole-file write keeps failing). Never hand the user an edit "
+    "you have the tools to make."
+)
+
+_EVIDENCE = (
+    "Negative results and the user's conviction:\n"
+    "- A search, listing, or lookup that returns nothing is a claim about your INSTRUMENT "
+    "before it is a claim about the world. Before you tell the user something does not exist, "
+    "show that the same tool can see something known to exist in that scope. Zero results for "
+    "a whole scope means you are blind — wrong identity or account, missing permission, a "
+    "malformed query, an error the tool swallowed — never that the scope is empty: say which, "
+    "and fix it.\n"
+    "- When the user says you are wrong, especially about a null result, treat that as evidence "
+    "that your instrument or query was wrong, not that they are. Before restating the negative, "
+    "try at least two approaches that differ in KIND from the first (a different tool, a "
+    "different query shape, a different identity or scope) and report what each showed. "
+    "Re-running the same call with a tweaked filter does not count.\n"
+    "- An alternative you name ('it may use a different name', 'it may live elsewhere') is a "
+    "step you owe, not a disclaimer: probe the cheap ones before you conclude, and record them "
+    "as plan steps when there are several."
 )
 
 _PLANNING = (
@@ -108,7 +130,9 @@ _PLANNING = (
     "no approach decision still buried inside it (a step that hides a 'first figure out how' is "
     "not primitive yet — break it down). Do NOT over-decompose: a step you can do in one action "
     "stays one step. Record each step's done-condition in its `note` so completion stays "
-    "checkable, not a guess.\n"
+    "checkable, not a guess; for a step that searches, lists, or looks something up, the note "
+    "says what a hit looks like AND what proves the scope was visible — a null result never "
+    "closes such a step by itself.\n"
     "- Keep exactly one step in_progress; as you finish each, call `update_plan` to mark it done "
     "and the next in_progress. Decomposition can be just-in-time: if a step turns out to be "
     "several actions once you reach it, break it down then.\n"
@@ -229,7 +253,7 @@ class SystemPromptBuilder:
         # The operator identity (self.md) REPLACES the default line when set, staying first
         # in the cacheable tier (highest framing precedence). Falls back to _IDENTITY.
         identity = self.identity.strip() if self.identity and self.identity.strip() else _IDENTITY
-        sections = [identity, _BEHAVIOR, _TOOL_GUIDANCE, _PLANNING, _SKILLS, _SAFETY]
+        sections = [identity, _BEHAVIOR, _TOOL_GUIDANCE, _EVIDENCE, _PLANNING, _SKILLS, _SAFETY]
         tool_section = self._summarize_tools(tools)
         if tool_section:
             sections.append(tool_section)

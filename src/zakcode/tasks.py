@@ -59,6 +59,56 @@ _GLYPH: dict[str, str] = {
     "cancelled": "-",
 }
 
+#: ADR-0116 — the evidence mark for a tool call that SUCCEEDED and found NOTHING (``✓`` is a
+#: hit, ``✗`` an error). A search, listing, or lookup that returns empty is a claim about the
+#: instrument before it is a claim about the world: the same line reads "not there" and "I
+#: could not see" (wrong identity, missing permission, malformed query, a swallowed error).
+#: Recorded so the plan's memory keeps the distinction, and so a close can be challenged.
+NULL_MARK = "∅"
+
+#: Output shapes that say "found nothing" (checked on the first non-empty line, case-insensitive):
+#: ``No files found``, ``0 matches``, ``not found``, ``nothing to show``, ``no such file``,
+#: ``does not exist``, a bare ``none`` / ``[]`` / ``{}``. English heuristics, deliberately
+#: narrow: a miss costs nothing (the line reads ``✓``); a false hit costs one advisory.
+_NULL_RESULT_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:no|zero|0)\s+(?:\S+\s+){0,3}?"
+    r"(?:found|match(?:es|ed)?|results?|files?|entries|records?|items?|hits?|rows?|"
+    r"folders?|directories|documents?|objects?|lines?|data|output)\b"
+    r"|.{0,80}?\b(?:not\s+found|nothing\s+(?:found|matched|to\s+(?:show|list|report))|"
+    r"no\s+such\s+(?:file|directory|path|entry|key)|does\s+not\s+exist)\b"
+    r"|(?:none|empty|null|\[\]|\{\})\s*$"
+    r")",
+    re.IGNORECASE,
+)
+
+#: ``no errors found`` / ``0 warnings`` is a PASS, not a blind instrument: these nouns after a
+#: null lead-in mean the check ran and came back clean.
+_NULL_RESULT_PASS_RE = re.compile(
+    r"^\s*(?:no|zero|0)\s+(?:\S+\s+){0,2}?"
+    r"(?:errors?|warnings?|issues?|problems?|failures?|failed|violations?|conflicts?|"
+    r"regressions?|vulnerabilit(?:y|ies)|complaints?|diff(?:erence)?s?|changes?|leaks?)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_null_result(output: str) -> bool:
+    """True when a successful tool output reads as "found nothing" (ADR-0116).
+
+    Empty output counts. Otherwise only the FIRST non-empty line is read, so a long listing
+    that mentions "not found" deep inside is a hit, not a null. A clean check (``no errors
+    found``) is excluded — that is the instrument seeing everything and reporting a pass.
+    """
+    stripped = output.strip()
+    if not stripped:
+        return True
+    first = next((line for line in stripped.splitlines() if line.strip()), "")
+    first = first[:200]
+    if _NULL_RESULT_PASS_RE.match(first):
+        return False
+    return _NULL_RESULT_RE.match(first) is not None
+
+
 #: ADR-0110 — bounds on the plan's MEMORY: evidence lines kept per step, history events kept
 #: before the oldest fold into ``TaskNetwork.log_folded``, characters kept of the request
 #: anchor and of one evidence / outcome line. Constants, not knobs: the bounds are part of the
@@ -111,8 +161,9 @@ class PlanEvent(BaseModel):
     ``kind`` is one of ``authored`` (the model laid out or reshaped the plan), ``step`` (a
     step's status moved — ``detail`` carries ``old -> new`` and the outcome), ``seeded`` (the
     harness added steps: a skill skeleton, an investigation, the request anchor), ``cleared``
-    (the model emptied the plan), ``dropped`` (a full replace left an OPEN step out — ADR-0113)
-    or ``reset`` (the loop dropped a finished or abandoned plan at
+    (the model emptied the plan), ``dropped`` (a full replace left an OPEN step out — ADR-0113),
+    ``challenged`` (the harness reopened a step closed on a null result with no done-condition
+    — ADR-0116) or ``reset`` (the loop dropped a finished or abandoned plan at
     a turn start — ``detail`` summarises what it achieved). The log is what makes the plan a
     RECORD and not only a checklist: "what did I do a few steps ago" is answered here after the
     conversation that did it has been compacted away.
@@ -182,6 +233,10 @@ class Task(BaseModel):
     #: :data:`MAX_EVIDENCE_PER_STEP` (older lines drop). Attached by the harness at the tool
     #: execution seam; the model never writes it. This is the step's own record of what it did.
     evidence: list[str] = Field(default_factory=list)
+    #: ADR-0116 — the harness already reopened ONE close of this step (it was closed on a
+    #: null-result evidence line with no done-condition). The next close is accepted as
+    #: deliberate; the challenge is a single nudge per step, never a gate that can deadlock.
+    challenged: bool = False
 
     def is_compound(self) -> bool:
         """True when this node has been decomposed into children (an actual sub-network)."""
@@ -354,6 +409,7 @@ class TaskNetwork(BaseModel):
                     detail=f"anchor -> replaced by the model's plan ({len(anchor.evidence)} "
                     f"tool call(s) recorded){tail}",
                 )
+        challenged: Task | None = None
         for task in self._iter():
             prior = prior_by_title.get(self._title_key(task.title))
             if prior is None:
@@ -364,9 +420,13 @@ class TaskNetwork(BaseModel):
             task.evidence = list(prior.evidence)
             task.origin = prior.origin
             task.anchor = prior.anchor
+            task.challenged = prior.challenged
             if not task.outcome:
                 task.outcome = prior.outcome
             if task.children or task.status == prior.status:
+                continue
+            if challenged is None and self._null_close_to_challenge(task, prior):
+                challenged = task
                 continue
             if task.status in _TERMINAL and not task.outcome and task.evidence:
                 task.outcome = "last action: " + task.evidence[-1]
@@ -377,7 +437,52 @@ class TaskNetwork(BaseModel):
             leaves = self.leaves()
             titles = "; ".join(clip(t.title, 40) for t in leaves[:6])
             self.record("authored", detail=f"{len(leaves)} step(s): {titles}")
+        if challenged is not None:
+            advisories.append(self._challenge(challenged))
         return advisories
+
+    # ── ADR-0116: a null result never closes a search on its own ──────────────────
+
+    @staticmethod
+    def _null_close_to_challenge(task: Task, prior: Task) -> bool:
+        """True when this close should be handed back ONCE: the step just moved to ``done``
+        from an open status, carries no done-condition (``note``), was never challenged, and
+        its evidence holds a :data:`NULL_MARK` line — a tool that ran fine and found nothing.
+        A step WITH a done-condition is trusted: the author said what done means and closed
+        against it. ``cancelled`` is never challenged (the author is declining the step)."""
+        return (
+            task.status == "done"
+            and prior.status not in _TERMINAL
+            and not task.note
+            and not task.challenged
+            and any(NULL_MARK in line for line in task.evidence)
+        )
+
+    def _challenge(self, task: Task) -> str:
+        """Reopen ``task`` as the current step, mark it challenged, log it, and say why.
+
+        The step goes back to ``in_progress`` (any other focus the author set is demoted
+        quietly — the reopened step is the work to do first) and the tree is re-normalized so
+        derived statuses agree. Returns the advisory the tool surfaces.
+        """
+        null_line = next(line for line in task.evidence if NULL_MARK in line)
+        task.challenged = True
+        task.status = "in_progress"
+        task.outcome = ""
+        for leaf in self.leaves():
+            if leaf is not task and leaf.status == "in_progress":
+                leaf.status = "pending"
+        self.normalize()
+        self.record("challenged", step=task, detail=f"done -> reopened once: {null_line}")
+        return (
+            f"step {task.id} ({clip(task.title, 50)!r}) was closed on a null result "
+            f"[{clip(null_line, 70)}] with no done-condition, so it is REOPENED once. A search "
+            "that finds nothing has proven nothing yet: 'not there' and 'I could not see' look "
+            "identical (wrong identity or account, missing permission, malformed query, a "
+            "swallowed error). Run a positive control — show the same tool sees something known "
+            "to exist in that scope — or a query of a different shape; then close the step with "
+            "a done-condition in 'note' and what you actually found in 'outcome'."
+        )
 
     def recent_closed(self, limit: int = 3) -> list[Task]:
         """The most recently CLOSED leaves (done/cancelled), newest first (ADR-0110).

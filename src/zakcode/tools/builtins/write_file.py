@@ -18,7 +18,7 @@ from zakcode.tools.base import (
 from zakcode.tools.builtins._safety import (
     PathEscapeError,
     check_literal_content,
-    check_python_syntax,
+    diagnose_python_syntax,
     resolve_path,
 )
 
@@ -61,9 +61,18 @@ class WriteFileTool(Tool):
 
         # Deterministic write firewall (refuse-only, before any bytes land): reject a
         # shell command written as file content, or a .py file that will not compile.
-        guard = check_literal_content(content) or check_python_syntax(path, content)
-        if guard is not None:
-            return ToolResult.error(guard)
+        # ``data["refusal"]`` tags the error as a refusal of the model's OWN content, which
+        # the loop's blocker gate distinguishes from an environmental failure (ADR-0118).
+        literal = check_literal_content(content)
+        if literal is not None:
+            return ToolResult.error(literal, data={"refusal": "literal_content"})
+        refusal = diagnose_python_syntax(path, content)
+        if refusal is not None:
+            return ToolResult.error(
+                refusal.message,
+                data={"refusal": "python_syntax", "cause": refusal.cause, "line": refusal.lineno},
+                fix=refusal.fix,
+            )
 
         try:
             resolved = resolve_path(path, ctx.workspace_root, ctx.extra_workspace_roots)

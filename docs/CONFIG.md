@@ -208,6 +208,7 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
+| `plan_review` | `ZAKCODE_PLAN_REVIEW` | `true` | Fresh eyes on a finished plan (ADR-0117): when the plan the model authored completes and the turn tries to finish, the independent critic reads the user's request against the answer AND the plan record (steps with their outcomes). A flagged gap is seeded as a harness plan step (`Reviewer flagged: …`) so the plan gate holds the turn until the model does it or cancels it with a reason. Once per turn, fail-open, one cheap judge call; never on an anchor-only board or a composed `/skill` turn. `false` restores the previous behavior. |
 | `quality_gate` | `ZAKCODE_QUALITY_GATE` | `false` | Seam A: after the verifier passes, score the turn result on a rubric and refine if it falls short — runs ALONGSIDE the binary completion critic (two independent quality checks). Off = today's behavior. |
 | `quality_gate_threshold` | `ZAKCODE_QUALITY_GATE_THRESHOLD` | `0.8` | Seam A ship threshold (overall rubric score, 0–1). |
 | `quality_gate_dimensions` | `ZAKCODE_QUALITY_GATE_DIMENSIONS` | _(unset)_ | Seam A rubric (JSON, dimension → what to assess); unset uses a built-in code rubric. |

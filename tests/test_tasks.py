@@ -312,3 +312,43 @@ def test_structure_signature_ignores_status_ticks_but_not_shape_edits() -> None:
     net.tasks.append(Task(title="C"))
     net.normalize()
     assert net.structure_signature() != signature  # a shape edit is
+
+
+# ── ADR-0116: a null result is a claim about the instrument ──────────────────────────
+
+
+def test_looks_null_result_recognizes_found_nothing_shapes() -> None:
+    from zakcode.tasks import looks_null_result
+
+    for output in (
+        "",
+        "   \n",
+        "No files found matching the query.",
+        "No files found in the specified location.",
+        "0 matches",
+        "No matches found for pattern 'foo'",
+        "ls: cannot access 'x': No such file or directory",
+        "Error: path does not exist",
+        "none",
+        "[]",
+        "{}",
+    ):
+        assert looks_null_result(output), output
+
+
+def test_looks_null_result_leaves_hits_and_clean_checks_alone() -> None:
+    from zakcode.tasks import looks_null_result
+
+    for output in (
+        "No errors found",  # the check ran and PASSED — the instrument saw everything
+        "0 warnings, 0 errors",
+        "no issues detected",
+        "3 files found",
+        "backup.tar.gz\nnotes.tar.gz",
+        "def main():\n    pass",
+        "Nothing to commit, working tree clean",
+        "no changes",
+        "total 0\ndrwxr-xr-x 2 root root 4096 .",
+        "a long listing\n...\nfoo: not found",  # only the FIRST line is read
+    ):
+        assert not looks_null_result(output), output

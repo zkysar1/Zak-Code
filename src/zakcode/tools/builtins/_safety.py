@@ -17,6 +17,7 @@ import ntpath
 import os
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -164,17 +165,112 @@ def check_literal_content(content: str) -> str | None:
     return None
 
 
-def check_python_syntax(path: str, content: str) -> str | None:
-    """For a ``.py`` ``path``, refuse ``content`` that does not parse (parse-only).
+#: Parser messages that mean the text ENDED before the statement did — the signature of
+#: a tool-call argument cut off at the output cap, not of a typo.
+_EOF_MSG_RE = re.compile(
+    r"unexpected EOF|was never closed|unterminated triple-quoted|expected an indented block",
+    re.IGNORECASE,
+)
+_UNTERMINATED_STRING_RE = re.compile(r"unterminated string literal", re.IGNORECASE)
+_CONTEXT_LINES = 2
 
-    Uses ``compile(..., "exec")`` — no execution, no new permission tier. Returns an
-    error message, or ``None`` if the content is empty, non-Python, or valid.
+#: The standing rail every syntax refusal ends with (ADR-0118). A small model that cannot
+#: see its own mangled content reads a bare refusal as "the tool succeeded and then the
+#: environment complained" — and then hands the user a one-line edit it has the tools to
+#: make. So the refusal says, in order: nothing was written, the check is compile() on
+#: exactly the bytes sent, and the remedy is smaller edits — never the user's hands.
+_SYNTAX_FIX_TAIL = (
+    "The refusal is about the text you sent, not the file or the environment. Fix that "
+    "line and resend; if a whole-file write keeps failing, read_file the current file and "
+    "make the change with a smaller edit_file. Never report this as an environmental "
+    "blocker or ask the user to apply the change by hand — you have the tools."
+)
+
+
+@dataclass(frozen=True)
+class SyntaxRefusal:
+    """Why a ``.py`` write was refused, in a form a small model can act on.
+
+    ``message`` names the parser error and quotes the offending line with two lines of
+    context; ``fix`` classifies the likely cause (``cause``: ``truncated`` — the content
+    stops mid-statement on its last line, ``newline_in_string`` — a real line break landed
+    inside a quoted string, or ``syntax``) and carries the remedy rail. ``lineno`` is the
+    parser's 1-based line, or 0 when it gave none.
+    """
+
+    message: str
+    fix: str
+    cause: str
+    lineno: int
+
+
+def _quote_window(lines: list[str], lineno: int) -> str:
+    """Number-prefixed lines around ``lineno`` (1-based), the offending one marked ``>``."""
+    if lineno < 1 or lineno > len(lines):
+        return ""
+    lo = max(1, lineno - _CONTEXT_LINES)
+    hi = min(len(lines), lineno + _CONTEXT_LINES)
+    width = len(str(hi))
+    out = []
+    for n in range(lo, hi + 1):
+        mark = ">" if n == lineno else " "
+        out.append(f"{mark} {n:>{width}} | {lines[n - 1]}")
+    return "\n".join(out)
+
+
+def diagnose_python_syntax(path: str, content: str) -> SyntaxRefusal | None:
+    """For a ``.py`` ``path``, explain why ``content`` does not parse (parse-only).
+
+    Uses ``compile(..., "exec")`` — no execution, no new permission tier. Returns
+    ``None`` if the content is empty, non-Python, or valid.
     """
     if not path.endswith(".py") or not content.strip():
         return None
     try:
         compile(content, path, "exec")
     except SyntaxError as exc:
-        where = f" (line {exc.lineno})" if exc.lineno else ""
-        return f"Refusing to write invalid Python to {path}: {exc.msg}{where}."
+        lines = content.splitlines()
+        lineno = exc.lineno or 0
+        last = max((i + 1 for i, ln in enumerate(lines) if ln.strip()), default=0)
+        msg = re.sub(r"\s*\(detected at line \d+\)", "", exc.msg or "invalid syntax")
+        where = f" (line {lineno})" if lineno else ""
+        window = _quote_window(lines, lineno)
+        head = (
+            f"Refusing to write invalid Python to {path}: {msg}{where}. The file was NOT "
+            f"changed — Python's parser rejected the exact text you sent"
+        )
+        message = f"{head}, at:\n{window}" if window else f"{head}."
+        on_last = lineno and lineno >= last
+        if _EOF_MSG_RE.search(msg) or (on_last and _UNTERMINATED_STRING_RE.search(msg)):
+            cause = "truncated"
+            why = (
+                f"The content stops mid-statement on its last line ({last} of {last}), "
+                "so the text you sent was cut off — nothing is wrong with the file. Send "
+                "the complete content, or change only the lines that need changing with "
+                "edit_file (each edit is small enough to arrive whole). "
+            )
+        elif _UNTERMINATED_STRING_RE.search(msg):
+            cause = "newline_in_string"
+            why = (
+                f"Line {lineno} opens a quote that never closes on that line: a real line "
+                "break landed inside the string. For a newline CHARACTER inside a string, "
+                "write the two characters backslash-n (escaped as \\\\n in the tool "
+                "argument); for a string that should span lines, use triple quotes. "
+            )
+        else:
+            cause = "syntax"
+            why = ""
+        return SyntaxRefusal(
+            message=message, fix=f"{why}{_SYNTAX_FIX_TAIL}", cause=cause, lineno=lineno
+        )
     return None
+
+
+def check_python_syntax(path: str, content: str) -> str | None:
+    """For a ``.py`` ``path``, refuse ``content`` that does not parse (parse-only).
+
+    Returns the refusal message (see :func:`diagnose_python_syntax`), or ``None`` if the
+    content is empty, non-Python, or valid.
+    """
+    refusal = diagnose_python_syntax(path, content)
+    return None if refusal is None else refusal.message

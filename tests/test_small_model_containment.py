@@ -212,6 +212,19 @@ def test_future_intent_matcher_is_surgical() -> None:
     assert not _announces_future_work("I created the file and registered the skill; done.")
     assert not _announces_future_work("I'll let you know if anything changes.")
     assert not _announces_future_work("I will need you to provide the API key first.")
+    # ADR-0117: any verb is an announcement unless it is a non-action continuation — the
+    # closed verb list missed "I will now re-attempt to debug …" (serene, 2026-09-08).
+    assert _announces_future_work(
+        "I will now re-attempt to debug the google-drive-list script by inserting print statements."
+    )
+    assert _announces_future_work("Let me check the file.")
+    assert _announces_future_work("The next step is to insert print statements.")
+    assert _announces_future_work("I'm going to add the route.")
+    assert not _announces_future_work("Let me know if you want more detail.")
+    assert not _announces_future_work("I will be here if you need anything.")
+    assert not _announces_future_work("I will not modify production.")
+    assert not _announces_future_work("I'll summarize: the flake is a stale cache.")
+    assert not _announces_future_work("I can now see the files.")
 
 
 def test_completion_announcing_work_is_nudged_once(tmp_path: Path) -> None:

@@ -17,7 +17,7 @@ from zakcode.tools.base import (
 from zakcode.tools.builtins._safety import (
     PathEscapeError,
     check_literal_content,
-    check_python_syntax,
+    diagnose_python_syntax,
     resolve_path,
 )
 
@@ -152,13 +152,15 @@ class EditFileTool(Tool):
                     )
                 return ToolResult.error(
                     f"'old_string' not found in {path}",
+                    data={"refusal": "old_string_missing"},
                     fix="re-read the file (read_file) and copy old_string exactly, including "
                     "whitespace and indentation.",
                 )
             if count > 1 and not replace_all:
                 return ToolResult.error(
                     f"Found {count} occurrences of 'old_string' in {path}; pass "
-                    "replace_all=true or add more context for a unique match."
+                    "replace_all=true or add more context for a unique match.",
+                    data={"refusal": "old_string_ambiguous"},
                 )
 
             if replace_all:
@@ -169,10 +171,34 @@ class EditFileTool(Tool):
                 replacements = 1
 
             # Write firewall: refuse a shell-command replacement, or an edit that would
-            # leave a .py file unparseable (checked on the resulting file).
-            guard = check_literal_content(new_string) or check_python_syntax(path, new_text)
-            if guard is not None:
-                return ToolResult.error(guard)
+            # BREAK a .py file (checked on the resulting file). The guard protects files
+            # that parse; a file that already fails to parse may still be edited — a repair
+            # is made one edit at a time, and refusing every edit that does not fix the
+            # whole file at once leaves a broken file unfixable by edit_file (ADR-0118).
+            literal = check_literal_content(new_string)
+            if literal is not None:
+                return ToolResult.error(literal, data={"refusal": "literal_content"})
+            after = diagnose_python_syntax(path, new_text)
+            parse_note = ""
+            if after is not None:
+                if diagnose_python_syntax(path, text) is None:
+                    return ToolResult.error(
+                        after.message.replace(
+                            "The file was NOT changed",
+                            "This edit would break the file, so it was NOT applied",
+                            1,
+                        ),
+                        data={
+                            "refusal": "python_syntax",
+                            "cause": after.cause,
+                            "line": after.lineno,
+                        },
+                        fix=after.fix,
+                    )
+                parse_note = (
+                    f"\nNote: {path} still does not parse — it already failed before this "
+                    f"edit and still does. Fix this next:\n" + after.message.split(", at:\n", 1)[-1]
+                )
 
             data = new_text.encode("utf-8")
             parent = resolved.parent
@@ -191,7 +217,7 @@ class EditFileTool(Tool):
 
             suffix = "s" if replacements != 1 else ""
             return ToolResult.ok(
-                f"Made {replacements} replacement{suffix} in {path}",
+                f"Made {replacements} replacement{suffix} in {path}{parse_note}",
                 data={"path": str(resolved), "replacements": replacements},
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise

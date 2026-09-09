@@ -57,6 +57,7 @@ from zakcode.cli._layout import (
 )
 from zakcode.cli._theme import ZAK_THEME
 from zakcode.cli.render import StreamRenderer, display_call
+from zakcode.cli.saybox import fold_lines
 from zakcode.config import PermissionTier, Settings, env_source, load_settings
 from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_permission_answer
@@ -1317,7 +1318,7 @@ class _InputMux:
                         style="notice.dim",
                     )
                     continue
-                console.print(f"(say) {escape(text)}", style="notice.dim")
+                console.print(f"(say) {escape(fold_lines(text))}", style="notice.dim")
                 return text
             if kind == "eof":
                 raise EOFError
@@ -2784,7 +2785,9 @@ def chat(
             # transcript must show what the agent was just told.
             tag = {"say": "(say) ", "harness": "(harness) "}.get(kind, "")
             console.print()
-            console.print(f"  ▸ {tag}{escape(line)}", style="notice.dim")
+            # A long message folds after a few lines (ADR-0119): the transcript shows
+            # what the agent was told without a 200-line paste burying the turn.
+            console.print(f"  ▸ {tag}{escape(fold_lines(line))}", style="notice.dim")
 
         stripped = line.strip()
         if not stripped:

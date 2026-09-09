@@ -649,3 +649,77 @@ def test_chat_exit_tears_down_the_whole_cockpit(fake_tmux: _FakeTmux, tmp_path: 
     pane_cmd = split[-1]
     assert "cockpit-main" in pane_cmd
     assert "kill-session" in pane_cmd and "agentbox" in pane_cmd
+
+
+# ── the say box's editor in the pane (ADR-0119) ───────────────────────────────
+
+
+def test_make_editor_returns_none_without_a_tty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cockpit.sys.stdin, "isatty", lambda: False)
+    assert cockpit._make_editor(tmp_path / ".say", tmp_path / ".interrupt") is None
+
+
+def test_say_box_prompt_uses_the_given_editor(tmp_path: Path) -> None:
+    class _Ed:
+        def __init__(self) -> None:
+            self.defaults: list[str] = []
+
+        def prompt(self, default: str = "") -> tuple[str, str]:
+            self.defaults.append(default)
+            return ("line", "from editor")
+
+    ed = _Ed()
+    kind, line = cockpit._say_box_prompt(tmp_path / ".say", tmp_path / ".interrupt", "carry", ed)
+    assert (kind, line) == ("line", "from editor")
+    assert ed.defaults == ["carry"]
+
+
+def test_say_box_loop_routes_status_into_the_editor_toolbar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Ed:
+        def __init__(self) -> None:
+            self.status = ""
+            self.seen: list[str] = []
+            self.replies = iter([("line", "alpha\nbeta"), ("line", "  ")])
+
+        def prompt(self, default: str = "") -> tuple[str, str]:
+            self.seen.append(self.status)
+            try:
+                return next(self.replies)
+            except StopIteration:
+                raise KeyboardInterrupt from None
+
+    ed = _Ed()
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    monkeypatch.setattr(cockpit, "_make_editor", lambda inbox, fp: ed)
+    cleared: list[str] = []
+    monkeypatch.setattr(cockpit, "_clear_own_scrollback", lambda: cleared.append("x"))
+    with pytest.raises(typer.Exit):
+        cockpit.cockpit_say_box(workspace=tmp_path, ledger=tmp_path / "l.jsonl", operator="h@b")
+    assert (tmp_path / ".say").read_text(encoding="utf-8") == "alpha\nbeta\n"
+    assert ed.seen[0] == "" and "✓ sent" in ed.seen[1] and "2 lines" in ed.seen[1]
+    assert "✓ sent" not in cockpit.console.export_text()  # the toolbar carries it, not the pane
+    assert len(cleared) == len(ed.seen)
+
+
+def test_pane_hooks_are_noops_outside_tmux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cockpit.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    cockpit._resize_own_pane(9)
+    cockpit._clear_own_scrollback()
+    assert calls == []
+
+
+def test_pane_hooks_target_own_pane_inside_tmux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    monkeypatch.setattr(cockpit.shutil, "which", lambda name: "/usr/bin/tmux")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cockpit.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    cockpit._resize_own_pane(9)
+    cockpit._clear_own_scrollback()
+    assert calls[0][1:] == ["resize-pane", "-t", "%7", "-y", "9"]
+    assert calls[1][1:] == ["clear-history", "-t", "%7"]

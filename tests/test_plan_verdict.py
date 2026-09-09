@@ -73,6 +73,12 @@ def _done(text: str) -> LLMResult:
     return LLMResult(text=text, tool_calls=[], usage=Usage(total_tokens=1))
 
 
+def _review_ok() -> LLMResult:
+    # The fresh-eyes plan review (ADR-0117) runs once when a completed plan tries to finish —
+    # the LAST gate, after the verdict rail — and costs one judge call: an approval here.
+    return LLMResult(text='{"approved": true, "issues": ""}', usage=Usage(total_tokens=2))
+
+
 def _loop(provider: Provider) -> tuple[AgentLoop, Session]:
     session = Session(cwd="/tmp", model="test/model")
     loop = AgentLoop(provider, default_registry(), session, max_iterations=20)
@@ -85,6 +91,7 @@ def _completing_script(*completions: str) -> list[LLMResult]:
         _plan_call([{"title": "A", "status": "done"}, {"title": "B", "status": "done"}]),
         _judge_ok(),
         *(_done(t) for t in completions),
+        _review_ok(),
     ]
 
 
@@ -150,7 +157,7 @@ async def test_bare_plan_status_is_nudged_once_then_the_verdict_completes() -> N
 
     assert result.stop_reason == "completed"
     assert result.degraded is False
-    assert provider.calls == 4  # plan, judge, bare status (nudged), verdict
+    assert provider.calls == 5  # plan, judge, bare status (nudged), verdict, plan review
     nudges = [t for t in _harness_nudges(session) if "original request" in t.lower()]
     assert len(nudges) == 1
     assert nudges[0].startswith("[harness] Hint:")
@@ -162,7 +169,7 @@ async def test_verdict_nudge_fires_at_most_once_per_turn() -> None:
     loop, _ = _loop(provider)
     result = await loop.arun_turn("why does the build flake?")
     assert result.stop_reason == "completed"
-    assert provider.calls == 4  # the second bare status ends the turn; no third ask
+    assert provider.calls == 5  # the second bare status ends the turn (+ review); no third ask
 
 
 @pytest.mark.asyncio
@@ -171,7 +178,7 @@ async def test_a_real_conclusion_after_a_completed_plan_is_not_nudged() -> None:
     loop, session = _loop(provider)
     result = await loop.arun_turn("why does the build flake?")
     assert result.stop_reason == "completed"
-    assert provider.calls == 3
+    assert provider.calls == 4  # plan, judge, verdict, plan review
     assert not any("original request" in t.lower() for t in _harness_nudges(session))
 
 
@@ -192,7 +199,7 @@ async def test_streaming_path_nudges_the_bare_status_too() -> None:
     provider = _Scripted(_completing_script(BARE_STATUS, VERDICT))
     loop, session = _loop(provider)
     events = [ev async for ev in loop.astream_turn("why does the build flake?")]
-    assert provider.calls == 4
+    assert provider.calls == 5
     statuses = [ev.message for ev in events if isinstance(ev, AgentStatus)]
     assert any("verdict" in s.lower() or "conclusion" in s.lower() for s in statuses)
     assert len([t for t in _harness_nudges(session) if "original request" in t.lower()]) == 1

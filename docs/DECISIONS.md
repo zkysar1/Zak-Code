@@ -4636,3 +4636,264 @@ exact-basename, like the file form, so `python -m pytest` credits nothing but th
 Tests: `tests/test_recipe.py` (template rejection, module-path credit, package/test-aware
 commands, plumbing files inert), `tests/test_tasks.py` (truncation marker),
 `tests/test_plan.py` (framing precedes the goal).
+
+## ADR-0115: The plan gate's budget is charged by progress, silence mid-plan is a give-up, and the footer counts what was left open
+
+**Context.** Live on serene (`gemini-2.5-flash`, 2026-09-08): a 14-step plan ended
+`done — struggled · 51 iterations` at 9/14 with step 2.2.1 `in_progress` and no answer —
+"why did it tell me it was done mid-todo list?!". Three mechanisms, all in the harness.
+(1) `_MAX_PLAN_NUDGES = 2` was a flat per-turn cap, and the no-progress guard added
+2026-08-25 already ended nudging on a byte-identical plan; together the cap only ever bit on
+nudges that DID change the plan — the productive case — so a model that stops to narrate
+after every step spent both nudges on steps it then completed, and the third quiet finish
+was accepted with five steps open. (2) The empty-completion gate keyed on `turn_saw_text`,
+so once the turn had shown any text an empty completion mid-plan was a legal finish.
+(3) The footer's `done — struggled` said nothing about the plan, so the stop read as done.
+
+**Decision.** The cap bounds CONSECUTIVE nudges that earned no progress, where progress
+means the count of open steps FELL since the previous nudge: such a nudge resets the count
+and is free; a plan that changed without shrinking (focus moved, a step retitled, the plan
+re-sent) is churn and is charged; the byte-identical guard folds into this as the strongest
+no-progress case (the broken-record guard still catches verbatim restatements). The run of
+free nudges is bounded by the plan itself — each cost the model a closed step — and the
+iteration cap holds regardless. An empty completion while the plan has open steps takes the
+empty-completion path (bounded retries, then `gave_up`) whatever text came earlier: a model
+that is waiting says so; silence mid-plan is a give-up. `TurnResult.open_steps` /
+`AgentDone.open_steps` count the steps still owing work at the stop, the trace notes
+`plan_unresolved` with the count, and the CLI footer appends `— N plan step(s) left open` to
+any stop label.
+
+**Consequences.** A model that narrates after every step of a six-step plan is now nudged
+six times and ends clean with the plan complete
+(`test_a_plan_that_keeps_closing_steps_is_nudged_to_the_end_never_finished_early`, plus the
+streaming twin); a stubborn or churning model still ends after two nudges, one more than
+before (`test_completion_gate_nudges_then_completes_degraded` moves from four calls to five;
+`test_churning_the_plan_without_closing_a_step_spends_the_budget`); silence mid-plan ends
+`gave_up` (`test_empty_completion_mid_plan_ends_gave_up_not_done`); the footer says how much
+was left (`tests/test_render.py`). Not fixed here, by design: a model that restates in TEXT
+twice without touching the plan still ends after the cap — bounded beats deadlocked. The
+other half of the serene turn (a search closed on "No files found") is ADR-0116.
+
+## ADR-0116: A null result is a claim about the instrument — `∅` evidence, the one-time close challenge, the evidence-discipline rails, and token masking at the seam
+
+**Context.** Same serene session, the turn before: asked for `.tar.gz` files in a Drive the
+user KNOWS holds them, the agent ran `fileExtension = 'tar.gz'` → "No files found", listed
+the ROOT → "No files found", and told the user twice they were wrong. Both nulls were the
+instrument, not the world: a root listing that returns nothing is blindness (the token's
+principal or scope sees an empty drive), and that Drive API stores only the LAST extension,
+so the query could never match. The agent named the right alternatives (a different
+extension, a different location, the principal) and tested none; every plan step lacked a
+done-condition (`Plan quality 70%`, ignored), so "ran the search" closed each step; step 1.2's
+`outcome` claimed "Successfully listed files" over evidence that found nothing; and the
+access token was printed into the transcript twice. The user's ask: when the user has
+conviction, make the agent more curious — explore more before saying they are wrong.
+
+**Boundary** (`docs/PERSISTENCE-BOUNDARY.md`). The harness owns the domain-free discipline:
+how a null result is RECORDED, when a close is TRUSTED, what every model is told about
+negative results and a user's conviction, and that secrets never cross the seam. The Mind
+owns the domain facts — which principal a token belongs to, how a given API names an
+extension, the skill body that carries the positive control for THAT tool. None of the
+second kind is encoded here; the harness gives the Mind's knowledge a place to land (the
+step's `note`) and refuses to let its absence pass silently.
+
+**Decision.** (1) An evidence line for a call that SUCCEEDED and found nothing reads
+`<tool> <what> ∅ <first output line>` (`tasks.looks_null_result`: empty output, or a first
+line shaped like `No files found` / `0 matches` / `not found` / `no such file` / a bare
+`none`/`[]`; a clean check — `no errors found` — is a pass, never a null). (2)
+`TaskNetwork.replace_from_author` reopens ONCE a step moved to `done` from an open status
+with no `note` and a `∅` line in its evidence: back to `in_progress` (any other focus
+demoted quietly), `outcome` cleared, `challenged=True`, a `challenged` log event, and an
+advisory naming the line — "'not there' and 'I could not see' look identical; run a positive
+control or a query of a different shape, then close it with a done-condition". `update_plan`'s
+hint becomes the challenge rail for that call. A step WITH a done-condition is trusted, the
+second close stands, `cancelled` is never challenged: one nudge per step, no gate that can
+deadlock. (3) The stable prompt tier gains "Negative results and the user's conviction"
+between the tool guidance and the planning rules — a null result is a claim about the
+instrument (show the tool can see something in that scope before saying "not there"); the
+user saying you are wrong escalates the search (two approaches that differ in KIND, not the
+same call with a tweaked filter); a named alternative is a step owed, not a disclaimer — and
+the planning rule plus the `note` schema say a search step's done-condition names a hit AND
+what proves the scope was visible. (4) `secrets.redact_credential_tokens` (token shapes and
+PEM blocks only — the `key = value` layer would rewrite `api_key = settings.api_key` in code
+the model reads) runs on every tool output at the execution seam, with `ya29.`, `AIza` and
+JWT shapes added to the guard, and a rail telling the model to keep a secret inside one
+command.
+
+**Consequences.** The serene turn replays as: search → `∅` → the close is handed back →
+positive control → an honest answer ("the account this token belongs to sees an empty
+drive"), pinned end-to-end in
+`test_a_search_that_found_nothing_is_recorded_as_null_and_its_close_is_challenged`. The null
+detector is an English heuristic kept narrow on purpose: a miss costs nothing (the line reads
+`✓`), a false hit costs one advisory and only on a step that also has no done-condition. A
+model that printed a token to reuse it must now capture it in one command — the rail says how.
+Tests: `tests/test_tasks.py` (detector), `tests/test_plan_ledger.py` (challenge, carry-over,
+trust, cancel, the loop replay), `tests/test_prompt.py` (tier and order),
+`tests/test_secrets.py` (shapes; the token-only layer leaves code alone),
+`tests/test_tool_output_redaction.py` (the seam, the transcript, the session file).
+
+## ADR-0117: A finish is not a finish while the answer defers the ask, announces work, or the plan hides a gap
+
+**Context.** Two more serene turns (`gemini-2.5-flash`, 2026-09-08). (1) A 50-iteration turn
+closed its plan and ended `done — struggled` on a conclusion that said, in its own words, the
+ask was not met: "the google-drive-list 'no files' issue … will enable further debugging in a
+future session … still present, but now debuggable". Nothing in the harness had a word for
+"the answer defers the ask": the plan gate saw a finished plan, the verdict rail (ADR-0108)
+saw a real conclusion, the intent gate (ADR-0024) looks for an announcement, and the
+completion critic is off by default and watches only turns that changed code. (2) Asked
+"go ahead and debug it", the next turn ended after ONE iteration on "I will now re-attempt
+to debug the google-drive-list script by inserting print statements" — an announcement with
+nothing behind it, and the intent gate did not fire because its verb list is closed
+(`use | run | create | write | …`): "re-attempt" and "debug" were on neither the hedge list
+nor the verb list. That list had already missed "I will try to create" twenty times over
+(ADR-0033 added the hedge). The user's two asks: "add something at the end of the todo list
+to do a fresh-eyes review to see if it is actually done, and then go get it done if not",
+and "a check on each response to see if anything in it needs to be added to the todo list".
+
+**Decision.** Three rails, all bounded, all in the harness. (1) **The intent gate inverts
+its list**: a first-person future / intent lead-in ("I will", "I'll", "I'm going to", "let
+me", "the next step is to"), an optional hedge ("try to", "re-attempt to", "go ahead and",
+"need to" — possessive, so a hedge can never be read back as the verb), then ANY verb that
+is not a non-action continuation (`not`, `be`, `have`, `need`, `let`, `know`, `wait`,
+`summarize`, `report`, `finish`, …). A new verb is an announcement by default; a false
+positive costs one bounded nudge, a miss ends the turn on words. The nudge now says to put
+multi-action work in the plan first. (2) **The deferral rail**: a completion whose tail
+postpones part of the request ("in a future session", "further debugging is needed",
+"remains unresolved", "still present", "left for a follow-up") is asked once — add the
+remaining work to the plan with a done-condition and do it now, or mark it blocked with the
+reason in one sentence, or say the user asked for only part of it. It needs no plan, sits
+after the verdict rail, and stands down with the other evidence gates under the cascade cap.
+(3) **The fresh-eyes plan review** (`Settings.plan_review`, `ZAKCODE_PLAN_REVIEW`, on by
+default): the LAST gate before a finish, after every free deterministic rail has had its say.
+When the plan the model authored has completed (never an anchor-only board, never a composed
+`/skill` turn), the independent critic reads the request against the answer AND the rendered
+plan record (steps with their outcomes — so a step whose outcome claims success over evidence
+that found nothing is visible). A flagged gap is not only nudged: it is SEEDED as a harness
+plan step (`Reviewer flagged: <issues>`, note: verify each item, finish what is missing, close
+with what you found — or cancel with the reason), so the plan gate holds the turn until the
+model does it or explicitly cancels it. Once per turn, fail-open, one cheap judge call. It
+shares `_completion_critic` with the code critic (which is unchanged, still opt-in), passing
+the record as part of the artifact.
+
+**Consequences.** The turn-3 conclusion is now nudged for the work; the turn-4 announcement
+is now nudged for the work; a finished plan whose answer hides a gap gets a step for it. Cost:
+one judge call per plan-completing turn (never on a single-action turn — those never plan),
+and every hermetic test whose plan completes carries one more scripted verdict (ten call
+counts moved by one; each script now ends with an explicit approval). Order matters and is
+pinned: the review runs after the deterministic rails so it reads the conclusion they
+produced, not the bare status they would have fixed. Tests: `tests/test_finish_rails.py`
+(deferral matcher, rail once / no plan needed, review seeds-and-closes, ignored gap held by
+the plan gate and finished degraded with the step open, off switch, fail-open, streaming),
+`tests/test_small_model_containment.py` (the widened matcher and its negatives),
+`tests/test_plan_verdict.py` / `tests/test_loop_planning.py` (the extra verdict per script).
+
+## ADR-0118: A refused write is the model's content, never the environment — the self-diagnosing refusal, the refusal-aware blocker gate, and edits to already-broken files
+
+**Status.** Accepted (2026-09-09).
+
+**Context.** Field incident 2026-09-09 (serene, `gemini-2.5-flash`): asked to fix one line of a
+Python script, the model reported that `edit_file`/`write_file` "report success" but "the
+system then reports syntax errors (unterminated string literal / expected ':') even when the
+code I have written is syntactically correct", declared an "environmental blocker", and asked
+the user to apply the one-line fix by hand. Told to take a step back, it planned a binary search
+with a scratch `test.py`. The user: "why is this guy so fragile, it can't figure out how to edit
+a file?!"
+
+What actually happened is visible in the write path. `write_file` and `edit_file` run
+`check_python_syntax` (a `compile()` of the exact text) BEFORE writing and REFUSE non-parsing
+`.py` content; the file was never touched, and there is no "then the system validates" step —
+the refusal was the tool result. The model's content genuinely did not parse (a tool-call
+argument cut off at the output cap, or a real newline landing inside a quoted string when an
+escape was meant), but the refusal said only `Refusing to write invalid Python to … :
+unterminated string literal (line 47).` — no quoted line, no cause, no `fix`, and nothing
+saying the file was unchanged. A small model that cannot see its own mangled content has no
+next move from that message: it re-sends the same content, gets the same refusal, and
+concludes the environment is broken. The blocker-without-evidence gate (ADR-0036) then let
+the "manual intervention is required" conclusion through, because tool calls HAD failed this
+turn — the gate could not tell a refusal of the model's own content from a failed probe, and its
+matcher did not read a hand-off to the user as a blocker claim at all. Separately, `edit_file`
+checked the syntax of the whole resulting file, so once a file was broken (by anything), every
+edit that did not fix all of it at once was refused — a repair made one edit at a time was
+impossible through the edit tool.
+
+**Decision.** Four harness-side changes, all deterministic, none domain-specific.
+(1) **The refusal is self-diagnosing.** `diagnose_python_syntax` returns a `SyntaxRefusal`:
+the message quotes the offending line with two lines of context (`> 47 | …`), names the line
+once (the parser's own "detected at line N" suffix is folded away), and states "The file was
+NOT changed — Python's parser rejected the exact text you sent". The `fix` rail classifies the
+likely cause — `truncated` (the error is on the last non-blank line, or the parser reports an
+unexpected end: "the text you sent was cut off — nothing is wrong with the file; send the
+complete content, or change only the lines that need changing with `edit_file`"),
+`newline_in_string` (an unterminated string not on the last line: "a real line break landed
+inside the string; for a newline character write backslash-n, escaped as `\\n` in the tool
+argument; for a multi-line string use triple quotes"), or plain `syntax` — and always ends:
+the refusal is about the text you sent, not the file or the environment; never report it as
+an environmental blocker or ask the user to apply the change by hand. (2) **Refusals are
+tagged and the blocker gate reads the tag.** Every refusal of the model's own content
+(`python_syntax`, `literal_content`, `old_string_missing`, `old_string_ambiguous`) carries
+`data["refusal"]`; the loop counts them at the seam (`_turn_content_refusals`), and the
+blocker gate fires when every failure this turn was such a refusal — with a different nudge
+(`_REFUSAL_BLOCKER_NUDGE`): nothing in the environment failed, the file was not changed, the
+refusal names the line — read the file, fix the content, retry with a smaller `edit_file`, and
+do not hand the user a change you can make yourself. A refusal beside a real failure still
+counts as evidence, as before. The blocker matcher also reads a hand-off to the user as a
+blocker claim ("manual intervention", "you will need to apply/edit …", "apply it manually / by
+hand"), narrowly (not "apply for", not "should"). (3) **`edit_file` refuses only an edit that
+would BREAK a parsing file.** A file that already fails to parse may be edited; the success
+output then carries a note naming the remaining parse error with its window ("still does not
+parse — it already failed before this edit and still does; fix this next"). `write_file`
+(a whole-file replacement) still requires valid content. (4) **One prompt line** under "Using
+tools": a refused write or edit is about the content you sent, never about the environment;
+fix the content and retry; never hand the user an edit you have the tools to make.
+
+**Consequences.** The incident's turn now reads, at the first refusal, the line it broke and
+why, with the file untouched; its "manual intervention is required" conclusion is nudged
+back to the fix instead of reaching the user; and a file left broken by an earlier write can
+be repaired edit by edit. No new judge call, no setting. Domain facts stay in the Mind: the
+harness diagnoses the SHAPE of a bad write (cut off, newline in a string), never what the
+script should say. Tests: `tests/test_write_firewall.py` (window, cause classes, the fix
+rail, the refusal tag through both tools, edit refuses-only-breakage, already-broken file
+edited with a note, old_string refusals tagged), `tests/test_blocker_gate.py` (hand-off
+matcher and its negatives, the refusal nudge over a refused write, a refusal beside a real
+failure still counts), `tests/test_prompt.py` (the tool-guidance line).
+
+## ADR-0119: The say box is an editor — paste tokens, persistent history, a growing pane, and a Ctrl+C that clears before it closes
+
+**Status.** Accepted (2026-09-09).
+
+**Context.** Operator report 2026-09-09: "if I paste a lot into it, I can't select and
+delete a large chunk, there is no paste or delete-all shortcut, and when I scroll up to get
+previous prompts that looks nasty. We need a large cockpit overhaul." The say box was a
+bare `PromptSession(multiline=True)` with two bindings (Esc, Enter), REBUILT on every
+message: so there was no history at all (up-arrow recalled nothing), no continuation
+prompt (pasted lines sat flush-left under the `▸`), a fixed five-row pane that any real
+paste overflowed into a scrolling window, `Ctrl+C` closed the pane outright, the last
+send's status was printed into the pane's scrollback (so a wheel-up showed stale cleared
+screens), and the chat pane echoed a 200-line paste in full.
+
+**Decision.** One persistent `SayBoxEditor` (`cli/saybox.py`) serves the whole box loop,
+with every terminal-facing effect behind an injectable seam so the editor is driven by a
+pipe in tests. (1) **Paste tokens.** A bracketed paste larger than 3 lines or 400 chars
+collapses into `⟪pasted #N · 120 lines⟫` held in a `PasteStore`; Backspace/Delete remove
+a token as one unit; Enter expands every token before the buffer is accepted, so the
+message — and the history entry — carry the real text. A recalled pending message and a
+carried-back busy message collapse the same way. (2) **Keys.** `Ctrl+J` newline, `Ctrl+U`
+clear-all (undoable), `Ctrl+Z` undo, `Ctrl+C` clears first and closes only on a second
+press within 2 s (the same shell convention the chat pane already follows for exit), Esc
+unchanged (recall-or-stop). Shift-arrow selection and the emacs word/line keys are
+prompt_toolkit's own and stay. (3) **History.** `FileHistory` at `~/.zakcode/say-history`
+(the ledger is provenance, never recall) with `↑`/`↓` recall at the top/bottom line and
+ghost-text auto-suggest. (4) **Geometry.** The pane starts at `MIN_ROWS` (5) and the
+editor resizes its own tmux pane (`$TMUX_PANE`) to fit the wrapped text plus the toolbar,
+capped at `MAX_ROWS` (16), shrinking back after each send; a token keeps a paste at one
+row. `· ` continuation gutter under `▸ `. (5) **Status in a toolbar.** The last send's
+status and the key help live in a dim prompt_toolkit bottom toolbar; the pane's tmux
+scrollback is cleared on every prompt. (6) **Folded echo.** The chat pane echoes an
+injected message as its first 6 lines plus `… (+N more lines)`. The plain `input()`
+fallback (no tty, prompt_toolkit missing) is unchanged.
+
+**Consequences.** A pasted transcript is one token the operator can delete with one key;
+the previous messages come back with `↑` and look like what was typed; the box never
+scrolls inside itself below the cap; Ctrl+C is safe. No new dependency (prompt_toolkit
+was already pinned), no setting. Tests: `tests/test_saybox.py` (every binding through a
+pipe, tokens, history across editors, geometry, folding), `tests/test_cli_cockpit.py`
+(editor wiring, toolbar status, pane hooks).

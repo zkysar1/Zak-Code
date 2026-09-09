@@ -110,6 +110,15 @@ class Settings(BaseSettings):
     # ── Quality engine (increment 6) — wire the small-model fan-out engine into the loop. All OFF
     # by default, so the default path is byte-identical; each seam is bounded (best_of_attempts and
     # the per-turn budget), fail-safe, and uses model_roles['judge'] for judging.
+    # ADR-0117: fresh eyes on a finished plan. When the plan the model authored completes and the
+    # turn tries to finish, the independent critic reads the request against the answer and the
+    # plan record; a flagged gap is seeded as a plan step the plan gate then holds the turn for.
+    # One cheap judge call per plan-completing turn; never on anchor-only boards or /skill turns.
+    plan_review: bool = Field(
+        default=True,
+        description="Fresh-eyes review when a plan completes: an independent critic reads the "
+        "request against the answer and the plan record; a flagged gap becomes a plan step.",
+    )
     quality_gate: bool = Field(
         default=False,
         description="Seam A: after the verifier passes, score the result and refine if it falls "

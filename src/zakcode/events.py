@@ -124,6 +124,9 @@ class AgentDone(BaseModel):
     #: turn engaged failure-recovery (a stuck nudge/narrow) or ended non-cleanly
     #: (stuck / doom_loop / degenerated / recipe_stalled). False on a clean turn.
     degraded: bool = False
+    #: Mirrors ``TurnResult.open_steps`` (ADR-0115): plan steps still owing work when the turn
+    #: ended. Non-zero = the model stopped mid-plan; a client says so beside the stop label.
+    open_steps: int = 0
     #: Mirrors ``TurnResult.error``: the (already secret-redacted) failure detail when
     #: ``stop_reason == "provider_error"``, so a streaming client consuming only the
     #: terminal event still learns WHY the turn failed; empty on every other stop.

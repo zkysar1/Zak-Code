@@ -698,7 +698,17 @@ class StreamRenderer:
         self._out(block(self.console, body, marker=g["marker"], marker_style=marker_style))
 
     def _stop_label(self, done: AgentDone) -> tuple[str, str]:
-        """The footer's leading outcome word(s) + the marker's state style."""
+        """The footer's leading outcome word(s) + the marker's state style.
+
+        A turn that ended with plan steps still open says so here (ADR-0115): "done —
+        struggled" alone read as finished to a user watching a 14-step plan stop at 9/14.
+        """
+        label, style = self._stop_label_base(done)
+        if done.open_steps:
+            label += f" {self._g['dash']} {done.open_steps} plan step(s) left open"
+        return label, style
+
+    def _stop_label_base(self, done: AgentDone) -> tuple[str, str]:
         reason = done.stop_reason
         template = _STOP_LABEL.get(reason)
         label = (

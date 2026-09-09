@@ -438,3 +438,27 @@ def test_skill_paging_contract_is_in_the_stable_tier(tmp_path: Path) -> None:
     assert "`skill_too_large`" in stable
     assert "zakcode info" in stable
     assert "never present a recollection as something you read" in stable
+
+
+def test_evidence_discipline_is_in_the_stable_tier(tmp_path: Path) -> None:
+    # ADR-0116: the harness-level rails for negative results and user conviction — a null
+    # result is a claim about the instrument, the user saying "you're wrong" escalates the
+    # search (two approaches of a different KIND), a named alternative is a step owed — sit
+    # in the cacheable tier for every model, every domain. Domain facts (which account a
+    # token belongs to, how a given API names an extension) stay with the Mind's knowledge.
+    prompt = SystemPromptBuilder().build(load_settings(workspace_root=tmp_path))
+    stable = prompt.split(DYNAMIC_BOUNDARY)[0]
+    assert "Negative results and the user's conviction:" in stable
+    assert "claim about your INSTRUMENT" in stable
+    assert "differ in KIND from the first" in stable
+    assert "a step you owe, not a disclaimer" in stable
+    # Ordered after the tool guidance and before planning, so the planning rule that a null
+    # result never closes a search step reads as its consequence.
+    assert (
+        stable.index("Using tools:")
+        < stable.index("Negative results")
+        < stable.index("Planning multi-step work:")
+    )
+    assert "a null result never closes such a step by itself" in stable
+    # ADR-0118: a refused write is the model's content, never the environment
+    assert "Never hand the user an edit you have the tools to make" in stable
