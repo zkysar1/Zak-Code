@@ -44,11 +44,11 @@ from zakcode import __version__
 from zakcode.build_info import version_line
 from zakcode.cli._layout import kv_table, notice_error, notice_info, panel
 from zakcode.cli._theme import ZAK_THEME
+from zakcode.cli.saybox import INTERRUPT_SENTINEL, MIN_ROWS, SayBoxEditor
 from zakcode.session.say_inbox import (
     busy_elsewhere,
     busy_path,
     interrupt_path,
-    read_say,
     request_interrupt,
     say_path,
     write_say,
@@ -56,62 +56,92 @@ from zakcode.session.say_inbox import (
 
 console = Console(theme=ZAK_THEME, highlight=False)
 
-#: Say-box pane height in rows: one input line plus the last-send status line.
-_SAY_BOX_HEIGHT = 5
+#: Say-box pane height in rows at rest; the editor grows the pane with the text up to
+#: ``saybox.MAX_ROWS`` and shrinks it back after each send (ADR-0119).
+_SAY_BOX_HEIGHT = MIN_ROWS
 #: Scrollback for the chat pane — a long-running agent's day fits comfortably.
 _HISTORY_LIMIT = 50000
 #: Detached-create size; tmux resizes to the client on attach.
 _CREATE_SIZE = ("220", "50")
 #: Module-level singleton so a call never appears in an argument default (B008).
 _DOT = Path(".")
-#: Prefix smuggled through the prompt result when Esc sent a stop signal; the
-#: remainder is the operator's half-typed text, restored into the next prompt.
-_INTERRUPT_SENTINEL = "\x00zakcode-interrupt\x00"
+#: Re-exported for callers that pinned the old name.
+_INTERRUPT_SENTINEL = INTERRUPT_SENTINEL
 
 
-def _say_box_prompt(inbox: Path, interrupt_fp: Path, default: str = "") -> tuple[str, str]:
-    """Read one say-box message with Esc semantics. Returns ``(kind, text)``.
+def _default_history() -> Path:
+    return Path.home() / ".zakcode" / "say-history"
 
-    Esc means: RECALL if there is something to recall, otherwise STOP —
-    - a message still sitting unconsumed in the say inbox is pulled back into the
-      edit buffer (the user edits and resubmits), and
-    - with nothing to recall, a stop signal is written for the running agent
-      (``kind == "interrupt-sent"``; ``text`` is the preserved half-typed input).
 
-    Uses prompt_toolkit when attached to a real terminal (native bracketed paste,
-    line editing, key bindings); falls back to plain ``input()`` — no Esc handling,
-    everything else identical — on import failure or a non-tty stdin.
+def _own_pane() -> str | None:
+    """This process's tmux pane id, when it runs inside one (``$TMUX_PANE``)."""
+    return os.environ.get("TMUX_PANE") or None
+
+
+def _resize_own_pane(rows: int) -> None:
+    """Grow/shrink the say-box pane with its text; a no-op outside tmux."""
+    pane = _own_pane()
+    if pane is None:
+        return
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            [_tmux_bin(), "resize-pane", "-t", pane, "-y", str(rows)],
+            check=False,
+            capture_output=True,
+        )
+
+
+def _clear_own_scrollback() -> None:
+    """Drop the say-box pane's scrollback so a wheel-up never shows stale screens."""
+    pane = _own_pane()
+    if pane is None:
+        return
+    with contextlib.suppress(Exception):
+        subprocess.run([_tmux_bin(), "clear-history", "-t", pane], check=False, capture_output=True)
+
+
+def _make_editor(inbox: Path, interrupt_fp: Path) -> SayBoxEditor | None:
+    """The say box's editor, or ``None`` when the plain ``input()`` reader must serve.
+
+    prompt_toolkit needs a tty; on import failure (a ``--no-deps`` install) or a
+    non-tty stdin the box degrades to ``input()`` — no Esc, no tokens, no history —
+    rather than crashing the pane.
     """
     try:
         if not sys.stdin.isatty():
-            raise OSError("say box without a tty")
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.key_binding import KeyBindings
-    except Exception:  # noqa: BLE001 — fall back to the plain reader, never crash the pane
+            return None
+        return SayBoxEditor(
+            inbox,
+            interrupt_fp,
+            history_path=_default_history(),
+            resize=_resize_own_pane,
+            columns=lambda: shutil.get_terminal_size().columns,
+        )
+    except Exception:  # noqa: BLE001 — never crash the pane over the editor
+        return None
+
+
+def _say_box_prompt(
+    inbox: Path,
+    interrupt_fp: Path,
+    default: str = "",
+    editor: SayBoxEditor | None = None,
+) -> tuple[str, str]:
+    """Read one say-box message. Returns ``(kind, text)``.
+
+    With an ``editor`` (the cockpit's persistent :class:`SayBoxEditor`): Esc means
+    RECALL if there is something to recall, otherwise STOP — a message still sitting
+    unconsumed in the say inbox is pulled back into the edit buffer, and with nothing
+    to recall a stop signal is written for the running agent (``kind ==
+    "interrupt-sent"``; ``text`` is the preserved half-typed input). Without one —
+    no tty, or prompt_toolkit missing — the plain ``input()`` reader serves: no Esc
+    handling, everything else identical.
+    """
+    if editor is None:
+        editor = _make_editor(inbox, interrupt_fp)
+    if editor is None:
         return ("line", input("▸ "))
-
-    bindings = KeyBindings()
-
-    @bindings.add("escape", eager=True)
-    def _esc(event) -> None:  # noqa: ANN001
-        recalled = read_say(inbox)
-        if recalled is not None:
-            event.app.current_buffer.insert_text(recalled)
-        else:
-            request_interrupt(interrupt_fp)
-            event.app.exit(result=_INTERRUPT_SENTINEL + event.app.current_buffer.text)
-
-    @bindings.add("enter")
-    def _enter(event) -> None:  # noqa: ANN001
-        # multiline buffer (so a bracketed paste keeps its newlines) with
-        # single-Enter submit — Enter always sends, exactly like before.
-        event.app.current_buffer.validate_and_handle()
-
-    session: PromptSession[str] = PromptSession(key_bindings=bindings, multiline=True)
-    text = session.prompt("▸ ", default=default)
-    if text.startswith(_INTERRUPT_SENTINEL):
-        return ("interrupt-sent", text[len(_INTERRUPT_SENTINEL) :])
-    return ("line", text)
+    return editor.prompt(default)
 
 
 def _tmux_bin() -> str:
@@ -198,6 +228,7 @@ def _print_cockpit_banner(workspace: Path) -> None:
     except Exception:  # noqa: BLE001 — the banner must never block the chat
         pass
     rows.append(("Input", "type in the box below · wheel scrolls (q snaps back)"))
+    rows.append(("Box keys", "Enter send · Ctrl+J newline · Ctrl+U clear · ↑↓ history · Esc stop"))
     console.print(panel(console, "zakcode cockpit", kv_table(rows), border_style="banner.border"))
 
 
@@ -300,7 +331,8 @@ def launch_cockpit(
             "-t",
             f"{session}:0.1",
             "-T",
-            "YOUR MESSAGE — type, Enter sends · Esc stops the agent / recalls a pending message",
+            "YOUR MESSAGE — Enter sends · Ctrl+J newline · Esc stops the agent / recalls a "
+            "pending message",
         )
         # Focus lands on the MESSAGE BOX — the one place to type. Focusing the
         # screen pane sent the operator's first keystrokes into the booting chat
@@ -401,11 +433,14 @@ def cockpit_say_box(
 ) -> None:
     """(internal) Bottom-pane loop: read a message, ledger it, drop it in the say inbox.
 
-    Bracketed paste is enabled on the box's own readline, so a multi-line paste
-    arrives as ONE editable block returned by a single ``input()`` — and the inbox
-    delivers it as ONE message. Single-slot semantics: while the agent is mid-turn
-    with a message already waiting, a new one is refused with a clear notice
-    (identical to POST /say's 429) instead of silently stacking.
+    One :class:`SayBoxEditor` serves the whole loop (ADR-0119): a large paste
+    collapses into a token that expands on send, the box keeps a history across
+    messages and sessions, the pane grows with the text, and the status of the last
+    send lives in the editor's toolbar. Bracketed paste is enabled on the fallback
+    reader too, so a multi-line paste arrives as ONE message either way. Single-slot
+    semantics: while the agent is mid-turn with a message already waiting, a new one
+    is refused with a clear notice (identical to POST /say's 429) instead of
+    silently stacking.
     """
     from zakcode.cli import _prepare_interactive_terminal
 
@@ -414,14 +449,18 @@ def cockpit_say_box(
     inbox = say_path(root)
     interrupt_fp = interrupt_path(root)
     ledger_path = ledger if ledger is not None else _default_ledger()
+    editor = _make_editor(inbox, interrupt_fp)
     last = ""
     carry = ""  # half-typed text preserved across an Esc-stop
     while True:
         console.clear()
-        if last:
+        _clear_own_scrollback()
+        if editor is not None:
+            editor.status = last
+        elif last:
             console.print(last, style="notice.dim")
         try:
-            kind, line = _say_box_prompt(inbox, interrupt_fp, default=carry)
+            kind, line = _say_box_prompt(inbox, interrupt_fp, default=carry, editor=editor)
         except EOFError:
             time.sleep(1)
             continue

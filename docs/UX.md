@@ -172,6 +172,28 @@ All content sits on this grid; nothing else exists:
     line suggesting a cheaper `deep_code` model may keep up, pointing at `/cost`. It states
     an observation and an option — never auto-changes routing (the user owns the choice).
 
+**Say box (the cockpit's one input, ADR-0119):** the bottom tmux pane runs ONE
+persistent `SayBoxEditor` (`cli/saybox.py`) for the life of the box — never a prompt
+rebuilt per message. Its contract:
+
+| Gesture | Behaviour |
+| --- | --- |
+| paste > 3 lines or > 400 chars | collapses to one token `⟪pasted #N · 120 lines⟫`; Backspace/Delete remove the whole token; the message (and the history entry) carries the real text |
+| Enter | sends, always (`Ctrl+J` inserts a newline) |
+| `Ctrl+U` / `Ctrl+Z` | clear the whole input / bring it back (undo) |
+| `Ctrl+C` | clears the input; a second press within 2s closes the box — never an instant exit (Ctrl+C-to-copy is a habit) |
+| `↑` / `↓` at the top/bottom line | recall from `~/.zakcode/say-history` (persists across sessions); ghost text from history, `→` accepts |
+| `Esc` | recall a still-pending message into the buffer, else stop the running agent (the half-typed text survives) |
+| continuation lines | `· ` gutter under the `▸ ` prompt |
+
+The pane starts at 5 rows and **grows with the text** (wrapped rows + toolbar + one
+breath, capped at 16) then shrinks back after each send; a token keeps a paste at one
+row. The last send's status (`✓ sent (12 lines) 14:22`, busy, stop sent) lives in a dim
+bottom toolbar beside the key help, never in the pane's scrollback — which is cleared
+on every prompt so a wheel-up in the box shows nothing stale. In the chat pane a long
+message echoes folded: the first 6 lines then `… (+N more lines)` (`fold_lines`), so a
+200-line paste never buries the turn it started.
+
 **Wait line (REPL layer, never the renderer):** a transient `rich.live.Live` line —
 spark frame (glyph-swap `· ✦ ✶ ✧`, brand azure; ASCII `- \ | /`) + gerund verb
 (concrete `Running…` while a tool call is outstanding) + dim

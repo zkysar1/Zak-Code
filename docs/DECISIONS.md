@@ -4855,3 +4855,45 @@ rail, the refusal tag through both tools, edit refuses-only-breakage, already-br
 edited with a note, old_string refusals tagged), `tests/test_blocker_gate.py` (hand-off
 matcher and its negatives, the refusal nudge over a refused write, a refusal beside a real
 failure still counts), `tests/test_prompt.py` (the tool-guidance line).
+
+## ADR-0119: The say box is an editor — paste tokens, persistent history, a growing pane, and a Ctrl+C that clears before it closes
+
+**Status.** Accepted (2026-09-09).
+
+**Context.** Operator report 2026-09-09: "if I paste a lot into it, I can't select and
+delete a large chunk, there is no paste or delete-all shortcut, and when I scroll up to get
+previous prompts that looks nasty. We need a large cockpit overhaul." The say box was a
+bare `PromptSession(multiline=True)` with two bindings (Esc, Enter), REBUILT on every
+message: so there was no history at all (up-arrow recalled nothing), no continuation
+prompt (pasted lines sat flush-left under the `▸`), a fixed five-row pane that any real
+paste overflowed into a scrolling window, `Ctrl+C` closed the pane outright, the last
+send's status was printed into the pane's scrollback (so a wheel-up showed stale cleared
+screens), and the chat pane echoed a 200-line paste in full.
+
+**Decision.** One persistent `SayBoxEditor` (`cli/saybox.py`) serves the whole box loop,
+with every terminal-facing effect behind an injectable seam so the editor is driven by a
+pipe in tests. (1) **Paste tokens.** A bracketed paste larger than 3 lines or 400 chars
+collapses into `⟪pasted #N · 120 lines⟫` held in a `PasteStore`; Backspace/Delete remove
+a token as one unit; Enter expands every token before the buffer is accepted, so the
+message — and the history entry — carry the real text. A recalled pending message and a
+carried-back busy message collapse the same way. (2) **Keys.** `Ctrl+J` newline, `Ctrl+U`
+clear-all (undoable), `Ctrl+Z` undo, `Ctrl+C` clears first and closes only on a second
+press within 2 s (the same shell convention the chat pane already follows for exit), Esc
+unchanged (recall-or-stop). Shift-arrow selection and the emacs word/line keys are
+prompt_toolkit's own and stay. (3) **History.** `FileHistory` at `~/.zakcode/say-history`
+(the ledger is provenance, never recall) with `↑`/`↓` recall at the top/bottom line and
+ghost-text auto-suggest. (4) **Geometry.** The pane starts at `MIN_ROWS` (5) and the
+editor resizes its own tmux pane (`$TMUX_PANE`) to fit the wrapped text plus the toolbar,
+capped at `MAX_ROWS` (16), shrinking back after each send; a token keeps a paste at one
+row. `· ` continuation gutter under `▸ `. (5) **Status in a toolbar.** The last send's
+status and the key help live in a dim prompt_toolkit bottom toolbar; the pane's tmux
+scrollback is cleared on every prompt. (6) **Folded echo.** The chat pane echoes an
+injected message as its first 6 lines plus `… (+N more lines)`. The plain `input()`
+fallback (no tty, prompt_toolkit missing) is unchanged.
+
+**Consequences.** A pasted transcript is one token the operator can delete with one key;
+the previous messages come back with `↑` and look like what was typed; the box never
+scrolls inside itself below the cap; Ctrl+C is safe. No new dependency (prompt_toolkit
+was already pinned), no setting. Tests: `tests/test_saybox.py` (every binding through a
+pipe, tokens, history across editors, geometry, folding), `tests/test_cli_cockpit.py`
+(editor wiring, toolbar status, pane hooks).
