@@ -17,8 +17,10 @@ from zakcode.tools.base import (
 from zakcode.tools.builtins._safety import (
     PathEscapeError,
     check_literal_content,
+    check_skill_claims,
     diagnose_python_syntax,
     resolve_path,
+    skill_hosts,
 )
 
 # Maximum number of bytes we will read before refusing to edit.
@@ -199,6 +201,18 @@ class EditFileTool(Tool):
                     f"\nNote: {path} still does not parse — it already failed before this "
                     f"edit and still does. Fix this next:\n" + after.message.split(", at:\n", 1)[-1]
                 )
+            # Same shape for a skill's claims (ADR-0126): refuse only an edit that INTRODUCES
+            # a host that does not exist; one the file already named is not this edit's doing.
+            claims = check_skill_claims(path, new_text)
+            if claims is not None:
+                introduced = [h for h in claims[1] if h not in skill_hosts(text)]
+                if introduced:
+                    message = claims[0].replace(
+                        "Refusing to write this skill", "This edit was NOT applied", 1
+                    )
+                    return ToolResult.error(
+                        message, data={"refusal": "skill_claims", "hosts": introduced}
+                    )
 
             data = new_text.encode("utf-8")
             parent = resolved.parent

@@ -5160,3 +5160,51 @@ parsed the result text (verified); only two test helpers counted results by the 
 **Rejected.** *Dropping the tail reminder instead* — it is the copy that is rebuilt from state
 each iteration and never persisted; it is the right carrier, the echo was the wrong one.
 *Collapsing only in the terminal* — that fixes the scrolling and leaves the bill.
+
+## ADR-0126: A skill that names a host that does not exist is refused at write time
+
+**Status.** Accepted (2026-09-10).
+
+**Context.** Measured on the coach rig, 2026-09-10 (qwen3.6-35b, local). Asked to build the
+skills it would need for a fantasy-football API, with the instruction *"the exact commands
+or API calls where you know them"*, the model wrote five well-formed skills — every one
+parsed, every description carried real trigger phrases, the closing rationale correctly
+declined four things that were not skills — and **eleven of eleven endpoints on a host that
+does not exist** (`api.fantasy.yahoo.com`; the real one is `fantasysports.yahooapis.com`).
+A fresh session then discovered one of those skills, followed it, and stopped only because
+an earlier prerequisite failed first.
+
+A `SKILL.md` is different from other writes in one way that matters: it is an artifact a
+**future** session executes without the author present. The harness verifies its format at
+authoring time (ADR-0035) and nothing verifies its claims. An explicit instruction not to
+invent was ignored eleven times, which is the measurement that says a note would be ignored
+too.
+
+**Decision.** The write firewall gains a **skill-claim gate**, in the ADR-0118 shape —
+refuse-only, before any bytes land, about the model's own content, with the remedy in the
+model's hands:
+
+- scoped to `skills/<name>/SKILL.md` paths only;
+- extracts the distinct hosts the body tells a future session to call, skipping
+  placeholders and locals by definition (RFC 2606 / 6761 names, IP literals, `{templated}`
+  hosts) and any line the author marked **unverified**;
+- resolves each (bounded: at most twelve hosts, a few seconds each, in a thread) and
+  refuses only on a **definitive** "no such name" — a timeout, an offline box or any other
+  failure is *unknown* and passes, so the gate can never refuse a write for the box's sake;
+- `edit_file` refuses only an edit that **introduces** such a host; a file that already
+  named one may still be repaired one edit at a time (the ADR-0118 parse-note rule);
+- the refusal names the hosts and both honest exits: look the API up (`web_search` /
+  `web_fetch` its documentation) and use the host you verified, or write *unverified* on
+  the line. It is tagged `refusal: skill_claims` so the blocker gate counts it as a content
+  refusal, never an environmental failure.
+
+**Consequences.** A skill cannot be written with an invented endpoint unless the author
+says so on the line, which is the honest form and is exactly what the instruction asked
+for. Real hosts, placeholders and internal addresses are untouched. The check is
+deterministic and cheap, and it fails open on infrastructure.
+
+**Rejected.** *An advisory note instead of a refusal* — the instruction the model already
+had was stronger than a note, and it was ignored 11/11. *Checking the full URL (a request)*
+— a live request from a write tool is a side effect and a secret-leak surface; DNS is a
+question about a name. *Verifying other claims (paths, commands)* — those depend on the
+workspace and the future session's environment; a host either resolves or it does not.
