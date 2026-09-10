@@ -5320,6 +5320,50 @@ with commands alone, skills alone, and both).
 
 ---
 
+## ADR-0128: The reviewer grades the ask minus what was handed to the operator
+
+**Context.** The field test of ADR-0127 (2026-09-10, the same "Start yourself as coach in
+assistant mode …" request on a local 35B model): the hand-off worked — iteration one, "I can't
+run /start — that's a user-only slash command. I'll do what I can" — the note was saved and read
+back, the operator was told to type the command, and the report was honest ("State: IDLE —
+/start not executed"). That is the Claude Code answer, reached at iteration twelve. Then the
+fresh-eyes review of the finished plan (ADR-0117) fired. The completion critic reads a FRESH
+context — the bare request, the answer, the plan record — by design, so it cannot be talked out
+of a gap by the transcript; and by the same design it could not see the rail that had, by rule,
+taken `/start` out of the agent's hands. It flagged "Failed to start itself as coach in assistant
+mode (explicitly requested)", the harness seeded a "Reviewer flagged" step, and the model spent
+the remaining eleven iterations re-measuring state and grepping `core/scripts` for
+start/boot/init entry points — pushed by one harness rail toward the very thing another had
+just forbidden. It ran no state-writing script (the session snapshot taken beforehand was not
+needed) and ended "done — recovered" at 23 iterations, 874k tokens; but the pressure was in the
+wrong direction, and a weaker or more obedient model would have obeyed it.
+
+**Decision.** The hand-off is remembered for the turn (`_turn_handed_off`, reset with the other
+per-turn flags) and the critic's CRITERIA carry the rule: "Out of the agent's scope, by rule:
+/start may only be run by the human operator — the agent's tools refuse it. The agent telling
+the operator to run it themselves, and doing the rest of the request, is the correct and
+complete outcome for that part. Do not flag that part as unmet, and do not ask the agent to find
+another way to do it." The artifact and the fresh context are untouched — the reviewer is still
+independent of the transcript; it is given the RULE, which is not something the work produced.
+Every caller of `_completion_critic` (the fresh-eyes review and the code-turn completion review,
+both routes) inherits it.
+
+**Alternatives rejected.** Telling the reviewer the whole rail text — it is written for the
+model, in the imperative, and would read as instructions to the judge. Skipping the fresh-eyes
+review on a turn with a hand-off — the rest of the request still deserves the review (the note
+WAS a real deliverable, and a review that catches it unsaved is the point of ADR-0117). Having
+the model cancel the reviewer's step "with the reason", which the nudge already permits — a 35B
+model obeyed the reviewer instead, and the cheap fix is upstream of the model. A rule-aware
+critic prompt in general ("never flag what the agent may not do") — the judge has no way to know
+what the agent may not do; the loop does, and says so per command.
+
+**Consequences.** A turn that hands a command to the operator ends after the answer instead of
+after a reviewer-driven hunt. The criteria grow by three sentences on such turns only. Test:
+`tests/test_user_only_skills.py` (the clause on the critic's criteria after a hand-off, absent on
+the next turn). Field re-test: the same request on this build, expected to end at the answer.
+
+---
+
 ## ADR-0129: A directory whose every entry is ignored is listed anyway
 
 **Context.** Field run 2026-09-10, a Mind workspace on a local 35B model, a domain question
@@ -5388,50 +5432,6 @@ a match deep in a line kept with the lead marker, the total cap with its count).
 
 ---
 
-## ADR-0128: The reviewer grades the ask minus what was handed to the operator
-
-**Context.** The field test of ADR-0127 (2026-09-10, the same "Start yourself as coach in
-assistant mode …" request on a local 35B model): the hand-off worked — iteration one, "I can't
-run /start — that's a user-only slash command. I'll do what I can" — the note was saved and read
-back, the operator was told to type the command, and the report was honest ("State: IDLE —
-/start not executed"). That is the Claude Code answer, reached at iteration twelve. Then the
-fresh-eyes review of the finished plan (ADR-0117) fired. The completion critic reads a FRESH
-context — the bare request, the answer, the plan record — by design, so it cannot be talked out
-of a gap by the transcript; and by the same design it could not see the rail that had, by rule,
-taken `/start` out of the agent's hands. It flagged "Failed to start itself as coach in assistant
-mode (explicitly requested)", the harness seeded a "Reviewer flagged" step, and the model spent
-the remaining eleven iterations re-measuring state and grepping `core/scripts` for
-start/boot/init entry points — pushed by one harness rail toward the very thing another had
-just forbidden. It ran no state-writing script (the session snapshot taken beforehand was not
-needed) and ended "done — recovered" at 23 iterations, 874k tokens; but the pressure was in the
-wrong direction, and a weaker or more obedient model would have obeyed it.
-
-**Decision.** The hand-off is remembered for the turn (`_turn_handed_off`, reset with the other
-per-turn flags) and the critic's CRITERIA carry the rule: "Out of the agent's scope, by rule:
-/start may only be run by the human operator — the agent's tools refuse it. The agent telling
-the operator to run it themselves, and doing the rest of the request, is the correct and
-complete outcome for that part. Do not flag that part as unmet, and do not ask the agent to find
-another way to do it." The artifact and the fresh context are untouched — the reviewer is still
-independent of the transcript; it is given the RULE, which is not something the work produced.
-Every caller of `_completion_critic` (the fresh-eyes review and the code-turn completion review,
-both routes) inherits it.
-
-**Alternatives rejected.** Telling the reviewer the whole rail text — it is written for the
-model, in the imperative, and would read as instructions to the judge. Skipping the fresh-eyes
-review on a turn with a hand-off — the rest of the request still deserves the review (the note
-WAS a real deliverable, and a review that catches it unsaved is the point of ADR-0117). Having
-the model cancel the reviewer's step "with the reason", which the nudge already permits — a 35B
-model obeyed the reviewer instead, and the cheap fix is upstream of the model. A rule-aware
-critic prompt in general ("never flag what the agent may not do") — the judge has no way to know
-what the agent may not do; the loop does, and says so per command.
-
-**Consequences.** A turn that hands a command to the operator ends after the answer instead of
-after a reviewer-driven hunt. The criteria grow by three sentences on such turns only. Test:
-`tests/test_user_only_skills.py` (the clause on the critic's criteria after a hand-off, absent on
-the next turn). Field re-test: the same request on this build, expected to end at the answer.
-
----
-
 ## ADR-0131: A skill no session could load is refused at write time, with its header
 
 **Context.** Field run 2026-09-10, a Mind workspace on a local 35B model, asked to author a
@@ -5465,3 +5465,49 @@ model can fix it in one call.
 directory name; loadable and non-skill files pass; a fence without a name is refused;
 `write_file` refuses before the claims check; `edit_file` refuses only the edit that breaks a
 loadable skill and allows the one that repairs a broken one).
+
+---
+
+## ADR-0132: The kept compaction tail is a token budget, not only a message count
+
+**Context.** Field run 2026-09-10 (coach, zc-03, a 131k-window local 35B model, the /forge-skill
+run behind ADR-0131). Two grep results over multi-kilobyte JSONL lines — each clamped at the seam
+to ~98k chars, ~33k tokens at the data's ~2.5 chars/token — took the prompt from 32k to 106k
+tokens in three calls; the 106k call took 380 s. Compaction fired (`52 → 8 messages`) and the
+prompt came back down only to 75k: `preserve_recent` keeps the last N messages verbatim whatever
+they weigh, and the eight kept ones carried both results. Six calls later the session compacted
+again (`14 → 8`, down to 37k), then a third time (`10 → 8`). Three summarizer calls on ~100k
+prompts in one turn, each a minute or more on the pod, each losing detail. The seam clamp
+(2026-08-26) bounds ONE result at a quarter window; nothing bounded the tail's SUM, and four
+clamped results in a tail exceed the window on their own. Claude Code keeps no verbatim tail after
+autocompact — summary only, files re-read on demand. Zak-Code's tail is a deliberate continuity
+aid for small models; the aid is the recent messages, not their weight.
+
+**Decision.** `CompactionConfig.tail_budget_fraction = 0.25`: given the model's context window and
+a token counter, the kept tail is held to that fraction of the window. Over it, `trim_tail` elides
+the OLDEST long tool outputs in the tail (the model has already acted on those) with the same
+stub the old-region elision uses, until the tail fits or nothing older is left. The newest message
+is never touched: at the per-call check it is the tool result the model is about to read for the
+first time, and a stub there loses it before it was ever seen. The summarize path and the
+summarizer-failed `elide` fallback both trim. The loop passes its window and a counter floored at
+the seam clamp's 3 chars/token — the provider's chars/4 estimate sits ~1.6x under the truth on
+id-dense tool output, and a budget that trusted it would keep the same fat tail with a smaller
+number on it. The outcome names the trim (`compacted 52 → 8 messages (2 long tool output(s) in
+the kept tail elided to fit its budget)`), so the trace shows what left the context. Without a
+window and counter the compactor behaves as before.
+
+**Alternatives rejected.** Dropping the verbatim tail entirely, as Claude Code does — a small
+model resumes far better from the actual recent exchange than from a summary of it, and a
+budgeted tail keeps that. Sizing the tail by count from the window (fewer messages) — a count
+still says nothing about size; one 25%-window result is the whole problem. Trimming the newest
+message too — see above; the second overflow rung (`elide_now`, ADR-0083) still reaches it when
+the tail alone overflows.
+
+**Consequences.** After a compaction the prompt is at most the system prompt, one summary, the
+budgeted tail and the newest result — no longer "whatever the last eight messages weighed" — so a
+compaction is followed by real headroom rather than another compaction. A model that needs an
+elided result re-runs the tool, which is the trade every elision already makes. Tests:
+`tests/test_compact.py` (the budget, the untouched newest message, the no-window default, the
+elide fallback) and `tests/test_compact_loop.py` (the loop's outcome text). Field test: H5 (read
+every knowledge-tree node, ~556 KB into a 131k window) on this build against the same run on
+ADR-0131's build.
