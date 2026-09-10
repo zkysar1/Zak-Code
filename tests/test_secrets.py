@@ -119,3 +119,71 @@ def test_redact_credential_tokens_scrubs_shapes_but_never_code_assignments() -> 
         "plain prose, nothing to hide",
         0,
     )
+
+
+_OAUTH = "wDIrZA" + "kQ9x" * 56  # an opaque 230-char OAuth token: no prefix to recognise
+_HEX32 = "e114adce" * 4
+
+
+def test_credential_values_after_a_secret_key_are_scrubbed_but_identifiers_never() -> None:
+    """ADR-0125. Measured 2026-09-10: ``cat .yahoo_token.json`` passed the seam untouched —
+    the token layer knows provider PREFIXES, and an OAuth token has none. The value layer
+    tests the SHAPE of the value, so a credential file is scrubbed and source code is not."""
+    from zakcode.secrets import redact_credential_tokens
+
+    # A credential file read verbatim: both secrets gone, the non-secret fields intact.
+    yahoo = (
+        '{"access_token": "' + _OAUTH + '", "refresh_token": "AEFMlG7pZq7pZq7pZq7pZq", '
+        '"token_type": "bearer", "expires_at": 1756570800}'
+    )
+    out, n = redact_credential_tokens(yahoo)
+    assert n == 2 and _OAUTH not in out and "AEFMlG" not in out
+    assert '"access_token": "[REDACTED]"' in out  # key and quotes kept, value gone
+    assert '"token_type": "bearer"' in out and "1756570800" in out
+
+    # A .env file: env-style names carry the key as a SUFFIX; hex and dashed shapes both.
+    env = (
+        f"YAHOO_CLIENT_SECRET={_HEX32}\nTAVILY_API_KEY=tvly-Ab3Ab3Ab3Ab3Ab3\n"
+        "ZAKCODE_MODEL=gpt-4o-mini\n"
+    )
+    out, n = redact_credential_tokens(env)
+    assert n == 2 and _HEX32 not in out and "tvly-" not in out
+    assert "YAHOO_CLIENT_SECRET=[REDACTED]" in out and "ZAKCODE_MODEL=gpt-4o-mini" in out
+
+    # YAML: an unquoted value that is a credential, beside ones that are words.
+    yaml = (
+        f"password: hunter2\naccess_token: {_OAUTH}\nname: alpha-agent-v2\n"
+        "model: qwen/qwen3.6-27b\n"
+    )
+    out, n = redact_credential_tokens(yaml)
+    assert n == 1 and _OAUTH not in out
+    assert "password: hunter2" in out and "alpha-agent-v2" in out and "qwen/qwen3.6-27b" in out
+
+    # THE ADR-0116 PROPERTY, KEPT: source code that names a secret is never rewritten.
+    code = (
+        "api_key = settings.api_key\n"
+        'token = os.environ["TOKEN"]\n'
+        "self.access_token = access_token\n"
+        "password = get_password()\n"
+        'token: str = Field(default="")\n'
+        "secret_key = config.secret_key_v2\n"
+        'API_KEY_ENV_NAME = "OPENAI_API_KEY"\n'
+    )
+    assert redact_credential_tokens(code) == (code, 0)
+
+    # Placeholders and dummies are not secrets.
+    ph = (
+        'api_key = "{{secret:OPENAI}}"\ntoken = "[REDACTED]"\npassword = "changeme"\n'
+        'api_key = "your_api_key_here"\nauthorization: Bearer ${TOKEN}\n'
+    )
+    assert redact_credential_tokens(ph) == (ph, 0)
+
+
+def test_the_blanket_layer_no_longer_misses_quoted_or_env_style_keys() -> None:
+    """The web_search screen uses ``redact_secrets`` to REFUSE a query carrying a credential.
+    A JSON-quoted key (``"access_token": "…"``) and an env-style name (``FOO_API_KEY=``)
+    both slipped its word boundaries, so a pasted credential file was not refused."""
+    out, n = redact_secrets('"access_token": "' + _OAUTH + '"')
+    assert n >= 1 and _OAUTH not in out
+    out, n = redact_secrets(f"YAHOO_CLIENT_SECRET={_HEX32}")
+    assert n >= 1 and _HEX32 not in out

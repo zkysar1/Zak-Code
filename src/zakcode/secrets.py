@@ -45,9 +45,9 @@ _TOKEN_RE = re.compile(
 
 # ``secret = value`` / ``api_key: value`` style assignments — keep the key, drop the value.
 _ASSIGN_RE = re.compile(
-    r"(?i)\b(api[_-]?key|secret|access[_-]?token|auth[_-]?token|token|password|passwd|bearer)\b"
-    r"(\s*[:=]\s*)"
-    r"(['\"]?)([A-Za-z0-9._\-/+]{8,})\3"
+    r"(?i)(['\"]?)\b(api[_-]?key|secret|access[_-]?token|auth[_-]?token|token|password|passwd|bearer)\b"
+    r"\1(\s*[:=]\s*)"
+    r"(['\"]?)([A-Za-z0-9._\-/+]{8,})\4"
 )
 
 # URL userinfo: ``scheme://user[:password]@host`` — mask the WHOLE userinfo (a user-only token,
@@ -56,6 +56,75 @@ _ASSIGN_RE = re.compile(
 # token. The greedy ``[^/\s]+`` stops at a path ``/`` or whitespace, so a non-credential ``@`` in a
 # path or free-form prose (no ``://``) is left untouched.
 _URL_CRED_RE = re.compile(r"://[^/\s]+@")
+
+# ── the credential-VALUE layer (ADR-0125) ────────────────────────────────────────────
+# The token layer above knows PROVIDER PREFIXES. Most credentials have none: an OAuth
+# access/refresh token is an opaque 200-char string, a client secret is 32 hex chars. The
+# most common way one enters a transcript is a credential FILE read verbatim —
+# ``cat .yahoo_token.json`` — and measured 2026-09-10 that passed the seam untouched, into
+# the model, the CLI log and the session file (weeks of prior runs, once we looked).
+#
+# ADR-0116 kept the ``key = value`` layer OFF the seam for a real reason: over source code it
+# rewrites ``api_key = settings.api_key`` and the model can no longer edit the file it read.
+# So this layer does not ask "is there a value after a secret key" — it asks whether the
+# value is SHAPED LIKE A CREDENTIAL rather than like an identifier or an expression:
+#   * a QUOTED literal after a secret key (``"access_token": "…"``, ``token = '…'``) that is
+#     16+ chars and carries a digit — a string literal after a secret key is a secret;
+#   * an UNQUOTED value (``.env``, YAML) 20+ chars that no identifier could be: base64/uuid
+#     punctuation (``-/+=``), or mixed case with several digits, or a hex string 32+ long,
+#     or a digit-heavy lowercase run with no underscore.
+# ``settings.api_key`` (16 chars, expression), ``os.environ["TOKEN"]`` (a bracket), a
+# ``{{secret:NAME}}`` placeholder, ``[REDACTED]`` and ``changeme`` all fall through.
+_CRED_KEY = (
+    r"api[_-]?key|api[_-]?secret|secret[_-]?key|client[_-]?secret|access[_-]?token"
+    r"|refresh[_-]?token|id[_-]?token|auth[_-]?token|session[_-]?token|private[_-]?key"
+    r"|access[_-]?key|secret|token|password|passwd|bearer|authorization|credentials?"
+)
+# The key may be the SUFFIX of an env-style name (``YAHOO_CLIENT_SECRET``, ``TAVILY_API_KEY``):
+# a leading ``\b`` alone never matches after the ``_``, so the prefix is consumed explicitly.
+_CRED_ASSIGN_RE = re.compile(
+    r"(?i)(?P<pre>(?:\\?[\"'])?\b(?:[A-Za-z0-9]+[_-])*(?:"
+    + _CRED_KEY
+    + r")\b(?:\\?[\"'])?\s*[:=]\s*(?P<quote>\\?[\"'])?)"
+    r"(?P<value>[A-Za-z0-9._\-/+=]{16,})"
+)
+_HEX_RE = re.compile(r"[0-9a-f]{32,}|[0-9A-F]{32,}")
+
+
+def _looks_like_credential(value: str, *, quoted: bool) -> bool:
+    """The shape test that separates a secret from an identifier (ADR-0125)."""
+    digits = sum(ch.isdigit() for ch in value)
+    if not digits or not any(ch.isalpha() for ch in value):
+        return False  # placeholders and words: ``changeme``, ``your_api_key_here``
+    if quoted:
+        return True  # a string literal after a secret key IS the secret
+    if len(value) < 20:
+        return False
+    if any(ch in "-/+=" for ch in value):
+        return True  # base64 / uuid punctuation — no identifier carries these
+    if _HEX_RE.fullmatch(value):
+        return True
+    mixed = any(ch.isupper() for ch in value) and any(ch.islower() for ch in value)
+    if mixed and digits >= 3:
+        return True  # ``wDIrZA…`` — camelCase identifiers rarely carry three digits
+    return "_" not in value and digits >= 4  # ``abcdef1234567890abcdef``: not snake_case
+
+
+def redact_credential_values(text: str) -> tuple[str, int]:
+    """Return ``(scrubbed_text, num_redactions)`` for credential-SHAPED values after a
+    secret key, keeping the key and the quotes (ADR-0125). Never raises."""
+    if not text:
+        return text, 0
+    count = 0
+
+    def _mark(m: re.Match[str]) -> str:
+        nonlocal count
+        if not _looks_like_credential(m.group("value"), quoted=m.group("quote") is not None):
+            return m.group(0)
+        count += 1
+        return m.group("pre") + _REDACTED
+
+    return _CRED_ASSIGN_RE.sub(_mark, text), count
 
 
 def redact_secrets(text: str) -> tuple[str, int]:
@@ -82,7 +151,7 @@ def redact_secrets(text: str) -> tuple[str, int]:
     def _mark_assign(m: re.Match[str]) -> str:
         nonlocal count
         count += 1
-        return f"{m.group(1)}{m.group(2)}{_REDACTED}"
+        return f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}{_REDACTED}"
 
     def _mark_url(_m: re.Match[str]) -> str:
         nonlocal count
@@ -93,7 +162,9 @@ def redact_secrets(text: str) -> tuple[str, int]:
     text = _URL_CRED_RE.sub(_mark_url, text)
     text = _TOKEN_RE.sub(_mark, text)
     text = _ASSIGN_RE.sub(_mark_assign, text)
-    return text, count
+    # ADR-0125: the env-style and JSON-quoted keys the blanket layer's boundaries miss.
+    text, values = redact_credential_values(text)
+    return text, count + values
 
 
 def redact_credential_tokens(text: str) -> tuple[str, int]:
@@ -101,9 +172,12 @@ def redact_credential_tokens(text: str) -> tuple[str, int]:
 
     The layer safe to run over arbitrary tool output (ADR-0116): provider-prefixed tokens
     (``sk-``, ``ya29.``, ``AIza``, ``AKIA``, GitHub/Slack, a JWT) and PEM private-key blocks.
-    The ``key = value`` layer of :func:`redact_secrets` is deliberately left out here — over
-    source code it rewrites ``api_key = settings.api_key`` and breaks the file the model is
-    reading. Never raises; returns the input unchanged with a count of 0 when nothing matches.
+    The blanket ``key = value`` layer of :func:`redact_secrets` is deliberately left out here
+    — over source code it rewrites ``api_key = settings.api_key`` and breaks the file the
+    model is reading. What runs instead is :func:`redact_credential_values` (ADR-0125): the
+    same keys, but only a value SHAPED like a credential is touched, so a credential file
+    read verbatim is scrubbed and an identifier never is. Never raises; returns the input
+    unchanged with a count of 0 when nothing matches.
     """
     if not text:
         return text, 0
@@ -121,7 +195,10 @@ def redact_credential_tokens(text: str) -> tuple[str, int]:
 
     text = _PEM_RE.sub(_mark_pem, text)
     text = _TOKEN_RE.sub(_mark, text)
-    return text, count
+    # ADR-0125: then the values that have no prefix to recognise — shape-tested, so an
+    # identifier or expression after a secret key is left exactly as it was.
+    text, values = redact_credential_values(text)
+    return text, count + values
 
 
 def strip_url_credentials(url: str | None) -> str | None:
