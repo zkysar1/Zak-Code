@@ -5429,3 +5429,39 @@ what the agent may not do; the loop does, and says so per command.
 after a reviewer-driven hunt. The criteria grow by three sentences on such turns only. Test:
 `tests/test_user_only_skills.py` (the clause on the critic's criteria after a hand-off, absent on
 the next turn). Field re-test: the same request on this build, expected to end at the answer.
+
+---
+
+## ADR-0131: A skill no session could load is refused at write time, with its header
+
+**Context.** Field run 2026-09-10, a Mind workspace on a local 35B model, asked to author a
+skill with exact API calls. After 46 iterations — most lost to two floods this same day's
+ADR-0129 and ADR-0130 closed — the model wrote `.zakcode/skills/free-agent-scan/SKILL.md`. Its
+first line was `# Free Agent Scan`. No fence, no `name`: the harness parser raises
+`SkillError: missing leading '---' frontmatter fence`, discovery skips the file, and no future
+session will ever see the skill the run was for. The write tool accepted it; the model read it
+back and reported success; the operator would have found out weeks later, if at all. Earlier
+the same day the same model wrote five skills with correct frontmatter (Test A), so the format
+is known to it — it was lost to a compacted context. ADR-0126 established the shape of the
+remedy: a skill is content a future session will act on, and a write tool may hold it to that.
+
+**Decision.** `check_skill_format(path, content)`: for a `skills/<name>/SKILL.md` path, the
+content is run through the harness's own `parse_frontmatter`; a failure is refused with the
+parser's reason and the exact header to put on top (`---` / `name: <dir name>` /
+`description: <what it does and when to use it>` / `---`). `write_file` refuses before the
+claims check runs (a file no one can load has no claims worth resolving). `edit_file` refuses
+only an edit that turns a loadable skill unloadable; a file that never parsed may still be
+edited, because repairing it is exactly what the refusal asks for. Trace tag
+`refusal: skill_format`.
+
+**Alternatives rejected.** Auto-inserting the header — the description is the model's to
+write (it is the line the catalog and the classifier read), and a silent fix teaches nothing.
+Checking only for the fence — the parser is the contract; a fence without a name fails
+discovery too. A post-turn audit that lists unloadable skills — later than the moment the
+model can fix it in one call.
+
+**Consequences.** A skill that reaches disk is a skill discovery will load. Tests:
+`tests/test_write_firewall.py` (the refusal names the parser's reason and the header with the
+directory name; loadable and non-skill files pass; a fence without a name is refused;
+`write_file` refuses before the claims check; `edit_file` refuses only the edit that breaks a
+loadable skill and allows the one that repairs a broken one).

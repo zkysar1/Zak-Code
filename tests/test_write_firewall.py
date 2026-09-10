@@ -270,6 +270,71 @@ async def test_write_file_refuses_a_fabricated_skill_as_the_models_own_content(
     assert not ok.is_error
 
 
+# ── a skill no session could load is refused with the header (ADR-0131) ──────────────────
+
+
+def test_a_skill_without_frontmatter_is_refused_with_its_header() -> None:
+    from zakcode.tools.builtins._safety import check_skill_format
+
+    msg = check_skill_format(".zakcode/skills/free-agent-scan/SKILL.md", "# Free Agent Scan\n")
+    assert msg is not None and "no session could load it" in msg
+    assert "frontmatter fence" in msg  # the parser's own reason
+    assert "---\nname: free-agent-scan\ndescription: <what it does" in msg
+    # A loadable skill, and any non-skill file, pass untouched.
+    assert check_skill_format("skills/w/SKILL.md", "---\nname: w\n---\nBody\n") is None
+    assert check_skill_format("notes/SKILL.md.txt", "# no fence here") is None
+    assert check_skill_format("README.md", "# no fence here") is None
+    # A fence with no name is as unloadable as no fence.
+    assert check_skill_format("skills/w/SKILL.md", "---\ndescription: x\n---\nBody\n") is not None
+
+
+async def test_write_file_refuses_an_unloadable_skill_before_reading_its_claims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_safety, "resolve_host", _resolve)
+    ctx = ToolContext(workspace_root=tmp_path)
+    path = ".zakcode/skills/free-agent-scan/SKILL.md"
+    res = await WriteFileTool().execute(
+        {"path": path, "content": "# Free Agent Scan\nGET https://api.fantasy.yahoo.com/v3\n"},
+        ctx,
+    )
+    assert res.is_error and res.data is not None and res.data["refusal"] == "skill_format"
+    assert not (tmp_path / path).exists()
+    ok = await WriteFileTool().execute(
+        {"path": path, "content": "---\nname: free-agent-scan\ndescription: scan\n---\nBody\n"},
+        ctx,
+    )
+    assert not ok.is_error and (tmp_path / path).exists()
+
+
+async def test_edit_refuses_only_the_edit_that_makes_a_skill_unloadable(tmp_path: Path) -> None:
+    ctx = ToolContext(workspace_root=tmp_path)
+    skill = tmp_path / ".zakcode/skills/w/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(b"---\nname: w\n---\nBody\n")
+    res = await EditFileTool().execute(
+        {
+            "path": ".zakcode/skills/w/SKILL.md",
+            "old_string": "---\nname: w\n---\n",
+            "new_string": "",
+        },
+        ctx,
+    )
+    assert res.is_error and res.data is not None and res.data["refusal"] == "skill_format"
+    assert skill.read_bytes().startswith(b"---\nname: w")  # untouched
+    # A file that never parsed may be edited — repairing it is what the refusal asks for.
+    skill.write_bytes(b"# Free Agent Scan\nBody\n")
+    res = await EditFileTool().execute(
+        {
+            "path": ".zakcode/skills/w/SKILL.md",
+            "old_string": "# Free Agent Scan\n",
+            "new_string": "---\nname: w\ndescription: scan\n---\n# Free Agent Scan\n",
+        },
+        ctx,
+    )
+    assert not res.is_error and skill.read_bytes().startswith(b"---\nname: w")
+
+
 async def test_edit_refuses_only_the_edit_that_introduces_a_dead_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
