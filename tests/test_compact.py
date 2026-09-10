@@ -267,9 +267,10 @@ def test_the_newest_message_is_never_trimmed_even_over_budget() -> None:
 def test_compact_without_a_window_keeps_the_tail_as_it_stands() -> None:
     async def scenario() -> None:
         c = Compactor(CompactionConfig(preserve_recent=8))
-        result = await c.compact(_budgeted(), summarize=_summarize)
+        msgs = _budgeted()
+        result = await c.compact(msgs, summarize=_summarize)
         assert result.compacted is True and result.tail_elided == 0
-        assert result.messages[1:] == _budgeted()[1:]
+        assert result.messages[1:] == msgs[1:]
 
     asyncio.run(scenario())
 

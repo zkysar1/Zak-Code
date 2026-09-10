@@ -2283,10 +2283,10 @@ class AgentLoop:
             self._record_compaction(outcome, compacted=False)
             return False, outcome
         outcome = f"compacted {before} → {len(result.messages)} messages"
-        if result.tail_elided:
+        tail_elided = getattr(result, "tail_elided", 0)  # a bare test double has none
+        if tail_elided:
             outcome += (
-                f" ({result.tail_elided} long tool output(s) in the kept tail elided to fit "
-                "its budget)"
+                f" ({tail_elided} long tool output(s) in the kept tail elided to fit its budget)"
             )
         if failure:
             outcome = (
