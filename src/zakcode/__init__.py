@@ -1488,11 +1488,16 @@ class Agent:
         if not should_consult_classifier(user_text, context_frac):
             return DifficultyVerdict("deep_code")  # long / large-context -> capable coder, no call
         provider, model = self._resolve_task_provider("classify")
-        # model_catalog, not catalog (ADR-0109): a user-only skill must never be implied —
-        # the plan step it seeds is one the model cannot execute, and the plan gate would hold
-        # the turn open until it tried (field 2026-09-05: a Mind's /start ran on "lets start
-        # from scratch").
-        skills = self.skill_registry.model_catalog() if self.skill_registry is not None else []
+        # model_catalog (ADR-0109) is what the model may RUN; the user-only commands travel
+        # separately (ADR-0127) so the classifier can NAME one without the loop ever seeding
+        # it — a request for /start that cannot be named gets matched to the nearest skill the
+        # model may run (field 2026-09-10: "Start yourself as coach in assistant mode" →
+        # /prime, seeded, thirty iterations inside the wrong skill, then a false "started").
+        registry = self.skill_registry
+        skills = registry.model_catalog() if registry is not None else []
+        commands = getattr(registry, "user_only_catalog", None)  # a bare stub has none
+        user_only = list(commands()) if commands is not None else []
+        listed = [*skills, *user_only]
         try:
             # json_OBJECT mode (native JSON), NOT json_schema: litellm implements a json_schema
             # response_format on Groq via FUNCTION CALLING, and Groq's open models (incl. the
@@ -1502,7 +1507,7 @@ class Agent:
             # locally against DIFFICULTY_SCHEMA below.
             result = await provider.acomplete(
                 [Message.user(user_text)],
-                system=difficulty_system_prompt(skills),
+                system=difficulty_system_prompt(skills, user_only),
                 response_format=make_response_format(None),
                 temperature=0.0,
             )
@@ -1516,12 +1521,14 @@ class Agent:
             data = coerce_structured(result.text, schema=DIFFICULTY_SCHEMA)
         except StructuredValidationError:
             return DifficultyVerdict("deep_code")  # output was not schema-valid JSON -> fail UP
-        verdict = parse_verdict(data, known=[name for name, _desc in skills])
+        verdict = parse_verdict(data, known=[name for name, _desc in listed])
         if verdict.skill is not None:
             # ADR-0036: the deterministic floor under "never guess" — a skill the request is
             # asking to RUN is named or described in the request's own words; no shared
             # content word means a topic match, and the skill is dropped (category kept).
-            description = next((d for n, d in skills if n == verdict.skill), "")
+            # The floor applies to an operator-only command too: "lets start from scratch"
+            # shares only the everyday word with /start and is still dropped (ADR-0109).
+            description = next((d for n, d in listed if n == verdict.skill), "")
             if not implied_skill_anchored(user_text, verdict.skill, description):
                 return DifficultyVerdict(verdict.category)
         return verdict
