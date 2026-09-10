@@ -5161,6 +5161,60 @@ parsed the result text (verified); only two test helpers counted results by the 
 each iteration and never persisted; it is the right carrier, the echo was the wrong one.
 *Collapsing only in the terminal* — that fixes the scrolling and leaves the bill.
 
+## ADR-0125: A credential file read verbatim is scrubbed at the seam — by the value's shape, never by the key alone
+
+**Status.** Accepted (2026-09-10).
+
+**Context.** Measured on the coach rig, 2026-09-10, in a skill-use test. The skill's
+prerequisites said to check the Yahoo token file; the model ran `cat .yahoo_token.json`; the
+tool output — a 230-character opaque OAuth access token and a refresh token — reached the
+model's context, the CLI log and the persisted session store unredacted. Zero redaction
+rails fired. When we then looked at the box's older logs, the same value was present in
+**36 places across weeks of prior runs**. This was not a one-off; it was the steady state.
+
+ADR-0116 put a scrub at the tool-output seam, and it worked as designed: it knows
+provider-**prefixed** token shapes (`sk-`, `ya29.`, `AIza`, `AKIA`, GitHub, Slack, JWT) and
+PEM blocks. Most credentials have no prefix. An OAuth token is an opaque string; a client
+secret is 32 hex characters. And the single most common way a real credential enters a
+transcript is not a prefixed token echoed by a command — it is a credential **file** read
+whole, because a procedure said to check it.
+
+ADR-0116 excluded the blanket `key = value` layer for a real reason that still holds: over
+source code it rewrites `api_key = settings.api_key`, and a model that cannot see the file
+it just read cannot edit it. The blanket layer also had a blind spot of its own — a
+JSON-quoted key (`"access_token": "…"`) and an env-style name (`YAHOO_CLIENT_SECRET=`) both
+slipped its word boundaries — so even the `web_search` screen that uses it could be evaded
+by pasting a credential file.
+
+**Decision.** The seam gains a **credential-value layer** that does not ask *"is there a value
+after a secret key?"* but *"is this value shaped like a credential rather than like an
+identifier?"*:
+
+- a **quoted** literal after a secret key, 16+ characters with a digit — a string literal
+  after a secret key is the secret (`"access_token": "…"`, `token = '…'`);
+- an **unquoted** value 20+ characters that no identifier could be: base64/uuid punctuation
+  (`-/+=`), mixed case with three or more digits, a 32+ hex string, or a digit-heavy
+  lowercase run with no underscore.
+
+Keys match as a suffix of an env-style name and with optional (even backslash-escaped)
+quotes, and the key and its quotes are kept — only the value becomes `[REDACTED]`, so the
+model can still read the file's structure. `settings.api_key`, `os.environ["TOKEN"]`,
+`get_password()`, `config.secret_key_v2`, a `{{secret:NAME}}` placeholder, `[REDACTED]`,
+`changeme` and `your_api_key_here` all fall through untouched — pinned by test. The blanket
+layer's key boundaries are fixed the same way, so the `web_search` screen refuses what it
+should.
+
+**Consequences.** A credential file read by a tool is scrubbed before it reaches the model,
+the transcript or the session file, with the same rail as ADR-0116. Non-secret fields beside
+the secret survive, so the model can still act on the file. The ADR-0116 property is intact
+and now has a stronger test. The six files on the rig that held the value were scrubbed in
+place and set to mode 600; the rotated-token recommendation went to the operator.
+
+**Rejected.** *Applying the blanket `_ASSIGN_RE` at the seam* — the mangled-code failure
+ADR-0116 measured. *An entropy threshold alone* — a 22-character camelCase identifier with a
+digit scores close to a token; the explicit shape rules are testable and their false
+positives are enumerable. *Refusing to read files named like credentials* — the model has
+legitimate reasons to check a token's expiry, and the skill in the field did exactly that.
 ## ADR-0126: A skill that names a host that does not exist is refused at write time
 
 **Status.** Accepted (2026-09-10).
