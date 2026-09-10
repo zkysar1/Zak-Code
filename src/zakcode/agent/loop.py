@@ -737,6 +737,20 @@ _REFUSAL_BLOCKER_NUDGE = (
     "read_file the current file, fix the content, and retry with a smaller edit_file. Do "
     "not restate the blocker and do not hand the user a change you can make yourself."
 )
+#: Operator-only command rail (ADR-0127): the classify side-call named a skill the model may
+#: never run (``disable-model-invocation: true``, ADR-0109). Before the classifier could name
+#: one it matched the nearest skill the model MAY run and the loop seeded that — field
+#: 2026-09-10, "Start yourself as coach in assistant mode": ``/prime`` seeded, thirty
+#: iterations inside the wrong skill, then a report that it had started. Claude Code's model
+#: says "run /start yourself" in one turn; this rail says exactly that, and where to stop.
+_USER_ONLY_SKILL_NUDGE = (
+    "The request asks for /{name}, a command only the operator can run: use_skill refuses "
+    "it, and you must not stand in for it with another skill or improvise its steps. Do the "
+    "parts of the request that do not depend on it, then tell the operator to type /{name} "
+    "themselves (with the arguments they want). If the rest of the request depends on it, "
+    "call await_user with that instruction — that ends the turn cleanly and keeps your "
+    "plan — instead of continuing or promising what you will do afterwards."
+)
 
 
 #: Missing-conclusion gate (ADR-0040): a completion that concludes something could not be
@@ -3429,6 +3443,25 @@ class AgentLoop:
             network.record("seeded", detail="skill steps: " + ", ".join(f"/{n}" for n in seeded))
         return seeded
 
+    def _hand_user_only_skill_to_operator(self, name: str) -> bool:
+        """The classify side-call named a command the operator alone may run (ADR-0127):
+        seed nothing, arm nothing, and tell the model whose command it is. The rail is
+        persisted like the blocker rail (``[harness]`` provenance, ADR-0021) so every later
+        iteration of the turn still sees why no neighbouring skill was the task. Returns
+        True when ``name`` is user-only (the caller rebuilds the call), else False.
+        """
+        if name.lower() not in self._user_only_skills():
+            return False
+        self.session.add_message(
+            Message.user(_control_rail(_USER_ONLY_SKILL_NUDGE.format(name=name)))
+        )
+        self._note(
+            "intervention",
+            f"request implies /{name}, an operator-only command — handed to the operator",
+            kind="user_only_skill",
+        )
+        return True
+
     def _adopt_implied_skill(self, name: str, requested: list[str]) -> bool:
         """Hold the turn to a skill the request IMPLIES (ADR-0035) — named by the classify
         side-call rather than a ``/slash`` token: arm the coverage backstop (``requested``)
@@ -5302,16 +5335,20 @@ class AgentLoop:
                     # Skill intent (ADR-0035): the request names its skill in prose — hold
                     # the turn to it like a typed /slash, and rebuild the call so the model
                     # sees the seeded step on THIS iteration.
-                    if verdict.skill is not None and self._adopt_implied_skill(
-                        verdict.skill, requested_skills
-                    ):
-                        self._note(
-                            "intervention",
-                            f"plan seeded: the request implies /{verdict.skill}",
-                            kind="plan",
-                        )
-                        self._persist()
-                        call_messages = await self._messages_for_call(user_text, iterations)
+                    if verdict.skill is not None:
+                        if self._hand_user_only_skill_to_operator(verdict.skill):
+                            # ADR-0127: an operator-only command is never seeded — the rail
+                            # just added is what the model must see on THIS iteration.
+                            self._persist()
+                            call_messages = await self._messages_for_call(user_text, iterations)
+                        elif self._adopt_implied_skill(verdict.skill, requested_skills):
+                            self._note(
+                                "intervention",
+                                f"plan seeded: the request implies /{verdict.skill}",
+                                kind="plan",
+                            )
+                            self._persist()
+                            call_messages = await self._messages_for_call(user_text, iterations)
                 category = classify_main_turn(
                     last_user_len=len(user_text),
                     context_frac=ctx_frac,
@@ -6644,19 +6681,29 @@ class AgentLoop:
                         verdict = await self.difficulty_classifier(user_text, ctx_frac)
                         base_difficulty = verdict.category
                         # Skill intent (ADR-0035) — see the buffered twin.
-                        if verdict.skill is not None and self._adopt_implied_skill(
-                            verdict.skill, requested_skills
-                        ):
-                            self._note(
-                                "intervention",
-                                f"plan seeded: the request implies /{verdict.skill}",
-                                kind="plan",
-                            )
-                            self._persist()
-                            call_messages = await self._messages_for_call(user_text, iterations)
-                            yield AgentStatus(
-                                message=f"request implies /{verdict.skill} — seeded as a plan step"
-                            )
+                        if verdict.skill is not None:
+                            if self._hand_user_only_skill_to_operator(verdict.skill):
+                                self._persist()
+                                call_messages = await self._messages_for_call(user_text, iterations)
+                                yield AgentStatus(
+                                    message=(
+                                        f"request implies /{verdict.skill} — operator-only, "
+                                        "handing it back to them"
+                                    )
+                                )
+                            elif self._adopt_implied_skill(verdict.skill, requested_skills):
+                                self._note(
+                                    "intervention",
+                                    f"plan seeded: the request implies /{verdict.skill}",
+                                    kind="plan",
+                                )
+                                self._persist()
+                                call_messages = await self._messages_for_call(user_text, iterations)
+                                yield AgentStatus(
+                                    message=(
+                                        f"request implies /{verdict.skill} — seeded as a plan step"
+                                    )
+                                )
                     category = classify_main_turn(
                         last_user_len=len(user_text),
                         context_frac=ctx_frac,

@@ -244,6 +244,13 @@ class SkillRegistry:
         """Names of the skills the operator alone may run (``disable-model-invocation: true``)."""
         return [s.name for s in self._skills.values() if not s.model_invocable]
 
+    def user_only_catalog(self) -> list[tuple[str, str]]:
+        """L0 for the skills the operator alone may run (ADR-0127) — shown to the classify
+        side-call under its own heading, so a request for one is NAMED and handed to the
+        operator instead of matched to the nearest skill the model may run.
+        """
+        return [(s.name, s.description) for s in self._skills.values() if not s.model_invocable]
+
     def render_catalog(self) -> str:
         """Render the L0 catalog as a compact prompt block (empty string if none).
 

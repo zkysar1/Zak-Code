@@ -360,12 +360,21 @@ def should_consult_classifier(user_text: str, context_frac: float) -> bool:
     return len(user_text) < _QUICK_MAX_USER_CHARS and context_frac < _QUICK_MAX_CONTEXT_FRAC
 
 
-def difficulty_system_prompt(skills: Sequence[tuple[str, str]] = ()) -> str:
+def difficulty_system_prompt(
+    skills: Sequence[tuple[str, str]] = (), user_only: Sequence[tuple[str, str]] = ()
+) -> str:
     """System prompt for the one-shot difficulty classifier (cheap model, JSON out).
 
     ``skills`` — the workspace's ``(name, description)`` catalog — adds the skill-intent half
     (ADR-0035): the classifier also names the ONE catalogued skill the request is asking to
     run, or null. Without a catalog the prompt is the plain scope judgment.
+
+    ``user_only`` — the commands the operator alone may run (``disable-model-invocation:
+    true``, ADR-0109) — is listed under its own heading (ADR-0127) so the classifier can NAME
+    one. Left out, a request for ``/start`` has no right answer and the classifier picks the
+    nearest skill the model may run (field 2026-09-10: "Start yourself as coach in assistant
+    mode" → ``prime``, seeded, thirty iterations inside the wrong skill). Named, the loop
+    hands the command back to the operator instead of seeding anything.
     """
     base = (
         "You are a fast router for a coding agent. Classify the user's request by the SCOPE of "
@@ -378,22 +387,39 @@ def difficulty_system_prompt(skills: Sequence[tuple[str, str]] = ()) -> str:
         'A request can be SHORT yet "deep" — e.g. "build a pdf reader and maker" or "add auth" '
         'are deep. When unsure, answer "deep".\n'
     )
-    if not skills:
+    if not skills and not user_only:
         return base + (
             'Reply with ONLY a JSON object: {"difficulty": "quick"} or {"difficulty": "deep"}.'
         )
-    catalog = "\n".join(
-        f"- {name}: {desc[:_SKILL_DESC_CAP]}" if desc else f"- {name}"
-        for name, desc in skills[:_SKILL_CATALOG_CAP]
-    )
-    return base + (
-        "The agent also has these skills (name: what it does):\n"
-        f"{catalog}\n"
-        "If the request is asking to RUN one of these skills — by name, or by an unmistakable "
-        'description of what that skill does — add "skill": "<exact name>"; otherwise '
-        '"skill": null. Never guess: a request that merely touches the same topic is null.\n'
-        'Reply with ONLY a JSON object, e.g. {"difficulty": "quick", "skill": null} or '
-        '{"difficulty": "deep", "skill": "<exact name>"}.'
+
+    def _rows(entries: Sequence[tuple[str, str]]) -> str:
+        return "\n".join(
+            f"- {name}: {desc[:_SKILL_DESC_CAP]}" if desc else f"- {name}"
+            for name, desc in entries[:_SKILL_CATALOG_CAP]
+        )
+
+    sections: list[str] = []
+    if skills:
+        sections.append(
+            "The agent also has these skills (name: what it does):\n" + _rows(skills) + "\n"
+        )
+    if user_only:
+        sections.append(
+            "These commands exist but ONLY the operator can run them — the agent never can, "
+            "and it must not stand in for one with a different skill:\n" + _rows(user_only) + "\n"
+        )
+    return (
+        base
+        + "".join(sections)
+        + (
+            "If the request is asking to RUN one of these skills or commands — by name, or by an "
+            'unmistakable description of what it does — add "skill": "<exact name>"; otherwise '
+            '"skill": null. Never guess: a request that merely touches the same topic is null, and '
+            "a request for an operator-only command names THAT command, never a neighbouring "
+            "skill.\n"
+            'Reply with ONLY a JSON object, e.g. {"difficulty": "quick", "skill": null} or '
+            '{"difficulty": "deep", "skill": "<exact name>"}.'
+        )
     )
 
 

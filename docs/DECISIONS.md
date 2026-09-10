@@ -5262,3 +5262,58 @@ had was stronger than a note, and it was ignored 11/11. *Checking the full URL (
 — a live request from a write tool is a side effect and a secret-leak surface; DNS is a
 question about a name. *Verifying other claims (paths, commands)* — those depend on the
 workspace and the future session's environment; a host either resolves or it does not.
+
+---
+
+## ADR-0127: A request for an operator-only command is handed to the operator, not to a neighbouring skill
+
+**Context.** Field run 2026-09-10 on a Mind workspace (a local 35B model): "Start yourself as
+coach in assistant mode. Once you are started, save a note … then tell me what state you are
+in." The classify side-call (ADR-0035) was offered `model_catalog()` only — ADR-0109 removed
+the user-only commands so that none could ever be implied — so the one skill the request was
+plainly asking for, `/start`, was not on its list and could not be named. The classifier did
+what a "pick one" prompt does with a missing right answer: it named the nearest skill the model
+MAY run, `prime`; the deterministic floor (ADR-0036) let it through on two shared description
+words; `_adopt_implied_skill` seeded `run /prime` as a harness guess; and the model, holding a
+plan step it had not asked for, ran /prime, spun through its pages for thirty iterations
+(no-progress rail, sections reopened), and closed with "State: IDLE (confirmed), Mode:
+assistant (confirmed)" — read from the PRE-EXISTING on-disk state after itself seeing
+`NO_AGENT` for its own session. The harness graded the turn "done — recovered". Claude Code's
+model, shown the same framework rule ("Claude MUST NOT invoke /start"), answers such a request
+in one turn: "I can't start myself — run `/start coach --mode assistant`." Zak Code's could not,
+because the harness had already decided the task was a different skill before the model spoke.
+
+**Decision.** The classifier is shown the operator-only commands too, under their own heading
+(`SkillRegistry.user_only_catalog()` → `difficulty_system_prompt(skills, user_only)`): "these
+exist but ONLY the operator can run them … a request for one names THAT command, never a
+neighbouring skill." `parse_skill` accepts the name (the anchor floor applies to it unchanged:
+"lets start from scratch" still shares only the everyday word and is dropped, ADR-0109). The
+loop's seams do not move: `_adopt_implied_skill` and `_seed_skill_steps` still refuse a
+user-only name, `use_skill` still refuses to load it. What is new is the hand-off —
+`_hand_user_only_skill_to_operator`: a persisted `[harness]` rail (ADR-0021 provenance) that
+says the request asks for /{name}, a command only the operator can run; do the parts that do
+not depend on it, tell the operator to type it, and if the rest depends on it call
+`await_user` (ADR-0121) rather than continue. Trace kind `user_only_skill`; the streaming
+route announces it. Nothing is seeded and the coverage backstop is not armed, so a wrong
+guess costs one sentence, as ADR-0035 intended.
+
+**Alternatives rejected.** Adding the commands to the classifier's ordinary list — it is the
+seeding that ADR-0109 forbids, not the naming; one list with no distinction would put a
+control command back on the path to `use_skill`. Keeping them off the list and hoping the
+system prompt's "User-only commands … say so" line wins — measured: a seeded plan step beats a
+prompt line on a small model every time (that asymmetry is ADR-0110's whole premise). A
+deterministic pre-check alone (`_references_skill` against the user-only names before
+adopting a neighbour) — it catches "/start" and "the start command" but not the field
+sentence, which describes the command without referencing it; the description floor catches
+that, and the classifier is what applies it. Refusing to adopt ANY implied skill when a
+user-only one anchors — over-broad: "in assistant mode, add a tree node" anchors /start on
+two description words and would lose a legitimate /tree seed.
+
+**Consequences.** A request that plainly asks for a control command ends, on the first
+iteration, with the model telling the operator to type it — a sentence or an `await_user`
+pause — instead of a plan seeded for whatever skill sat nearest. The classifier's prompt grows
+by one short section on frameworks that carry the flag and is byte-identical on those that do
+not. Tests: `tests/test_user_only_skills.py` (the prompt's two blocks, the verdict kept, the
+floor still dropping the everyday word, the field sentence anchoring, the hand-off on both
+routes with exactly one rail and no step) and `tests/test_skill_intent.py` (the prompt shape
+with commands alone, skills alone, and both).

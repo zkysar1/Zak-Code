@@ -76,6 +76,22 @@ def test_prompt_lists_the_catalog_and_the_null_rule() -> None:
     assert '"skill": null' in with_catalog and "Never guess" in with_catalog
 
 
+def test_prompt_lists_operator_only_commands_under_their_own_heading() -> None:
+    """ADR-0127: the classifier can name a command the model may never run — listed apart
+    from the agent's skills, with the rule that names it rather than a neighbour."""
+    commands = [("start", "Creates or resumes an agent in assistant or autonomous mode")]
+    both = difficulty_system_prompt(CATALOG, commands)
+    agent_block, heading, operator_block = both.partition("ONLY the operator can run")
+    assert heading and "forge-skill: Forge a new skill" in agent_block
+    assert "- start" not in agent_block and "- start: Creates or resumes" in operator_block
+    assert "names THAT command, never a neighbouring skill" in operator_block
+    assert '"skill": null' in both and "Never guess" in both
+    # Skills alone: no heading at all. Commands alone: still the skill-intent shape.
+    assert "ONLY the operator" not in difficulty_system_prompt(CATALOG)
+    alone = difficulty_system_prompt((), commands)
+    assert "- start: Creates" in alone and '"skill": null' in alone
+
+
 def test_implied_skill_needs_a_shared_content_word() -> None:
     """ADR-0036: the deterministic floor under "never guess"."""
     forge = ("forge-skill", "Forge a new skill from a description")
