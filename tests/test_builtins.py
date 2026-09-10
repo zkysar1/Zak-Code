@@ -255,11 +255,14 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "secret_names",
         "update_plan",
         "plan_recall",
+        "await_user",
         "schedule_wakeup",
         "deep_think",
     }
     # Aliases resolve to the canonical tools (M1 added "edit" -> edit_file).
     assert reg.get("read") is reg.get("read_file")
+    assert reg.get("ask_user") is reg.get("await_user")
+    assert reg.get("wait_for_user") is reg.get("await_user")
     assert reg.get("write") is reg.get("write_file")
     assert reg.get("edit") is reg.get("edit_file")
     assert reg.get("ls") is reg.get("list_dir")

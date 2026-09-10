@@ -373,6 +373,22 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-call wall-clock ceiling (seconds) for one model call.",
     )
+    # A STREAMING call needs its own bound, and it cannot be this one. Measured on the
+    # zc-03 pod 2026-09-10: the response HEADERS arrive in 0.12-2.0s at every prompt size
+    # while the first DATA chunk waits out the whole prefill (0.29s at 5k prompt tokens,
+    # 25.5s at 22k, 126.1s at 60k — ~2.1ms/token, so ~275s at that pod's 131k context
+    # limit). A socket read timeout is therefore satisfied by the headers and never fires,
+    # which is how a wedged engine held a streaming call for 45 minutes (Zak-Code #176).
+    # This bound sits on the ITERATOR instead, and is PER-GAP: a long generation is many
+    # millisecond gaps, so only the prefill gap ever approaches it. It is deliberately NOT
+    # `request_timeout` — that one is a whole-call ceiling operators raise for long calls
+    # (the pod runs 3600), and a per-gap bound that large would not have caught the 45
+    # minutes it exists to catch.
+    stream_stall_timeout: float = Field(
+        default=600.0,
+        gt=0,
+        description="Max seconds a streaming call may wait for its next chunk.",
+    )
     # ── bounded runs (a run is one `zakcode webapp` process; ADR-0039) ─────────────
     # A hosted vessel bills for wall-clock, so an unbounded run is a bill-shock machine:
     # the customer only learns the cap did not hold when the invoice arrives. These three

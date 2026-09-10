@@ -722,7 +722,9 @@ _BLOCKER_NUDGE = (
     "it. Do not conclude a blocker from reading code or instructions. Either run the command "
     "that would fail (the check the instructions themselves prescribe, or a direct probe such "
     "as printing the variable or reading the file) and show its output, or continue with the "
-    "next step. Do not restate the blocker."
+    "next step. If what you need can only come from the operator — a decision, an approval, a "
+    "credential — call await_user with the question instead: that ends the turn cleanly and "
+    "keeps your plan. Do not restate the blocker."
 )
 #: Refusal-is-not-a-blocker rail (ADR-0118): the only failures this turn were tools REFUSING
 #: the model's own content (a .py write that does not parse, an old_string that did not
@@ -1089,6 +1091,11 @@ _MAX_PLAN_FIRST_NUDGES = 2
 #: evidence (ADR-0110 / ADR-0111) — the plan's own bookkeeping is not work the step did, and
 #: reading the record must leave no trace in it.
 _PLAN_TOOLS = frozenset({"update_plan", "plan", "todo", "plan_recall", "plan_history"})
+
+#: Waiting for the operator is a turn-ENDING state (ADR-0121): a call to any of these names
+#: that SUCCEEDS ends the turn with the plan untouched. Prose cannot stop a loop — a model
+#: that only says it is waiting gets re-invoked to say it again.
+_AWAIT_USER_TOOLS = frozenset({"await_user", "ask_user", "wait_for_user"})
 
 #: Argument keys, in preference order, whose value best says what a tool call touched — the one
 #: detail an evidence line carries beside the tool name and the outcome mark.
@@ -1658,6 +1665,10 @@ class AgentLoop:
         # seam when a verbatim body cannot fit the window; both twins end the turn on it
         # right after the batch's results land. Per-turn.
         self._turn_fatal: tuple[str, str] | None = None
+        # Await-user terminal (ADR-0121): the question the model asked the operator, armed by
+        # the execution seam; both twins end the turn on it right after the batch's results
+        # land, leaving every open plan step in_progress. Per-turn.
+        self._turn_awaiting: str | None = None
         # Skill paging (ADR-0067): a sectioned skill's pages by lower-cased name, the highest
         # page delivered so far (session-lifetime — a page belongs to the plan, not the turn),
         # and this turn's delivery record for the summary note.
@@ -3519,7 +3530,8 @@ class AgentLoop:
             f"Your plan still has {len(remaining)} open step(s); the next is {nxt.id} "
             f"({nxt.title}). Do ONE of these, then end the turn:\n"
             "1. Finish the remaining steps, marking each done as you go.\n"
-            "2. If a step is WAITING on a person or an external event, mark it "
+            "2. If a step is WAITING on a person, call await_user with the question — the "
+            "turn ends and your plan is kept. If it waits on an external EVENT, mark it "
             "status=blocked with a note saying what it waits on (blocked steps do not "
             "hold up the turn).\n"
             "3. If this goal is done or no longer active, mark the steps done/cancelled "
@@ -3766,6 +3778,13 @@ class AgentLoop:
             self._turn_tool_errors += 1
             if isinstance(block.data, dict) and block.data.get("refusal"):
                 self._turn_content_refusals += 1  # a refusal of the model's own content
+        elif call.name in _AWAIT_USER_TOOLS:
+            # The model asked the operator something (ADR-0121). A malformed call ERRORS and is
+            # not armed here, so a bad argument can never silently end a turn.
+            question = ""
+            if isinstance(block.data, dict):
+                question = str(block.data.get("question") or "")
+            self._turn_awaiting = question or "the model is waiting for your answer"
         if call.name in _SEARCH_TOOLS or (call.name == "read_file" and not block.is_error):
             # A search ran (ADR-0040), whatever it found — or a file was actually read
             # (ADR-0058); a failed read stays the one-path-tried miss the gate is for.
@@ -5198,6 +5217,7 @@ class AgentLoop:
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_content_refusals = 0  # refusal-is-not-a-blocker rail (ADR-0118): per-turn
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
+        self._turn_awaiting = None  # await-user terminal (ADR-0121): per-turn
         self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
         self._turn_section_restores = {}  # dropped-section restores (ADR-0075): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
@@ -6249,6 +6269,12 @@ class AgentLoop:
                 stop_reason, fatal_detail = self._turn_fatal
                 self._note("intervention", fatal_detail, kind=stop_reason)
                 break
+            if self._turn_awaiting is not None:
+                # Waiting on a person is a terminal, not an open step (ADR-0121): end the turn
+                # with the plan exactly as it stands, so the operator's answer resumes it.
+                stop_reason = "awaiting_user"
+                self._note("intervention", self._turn_awaiting, kind="awaiting_user")
+                break
 
             # Write-grounding is unconditional (no flag); it no-ops when nothing was written.
             grounding = build_write_grounding(result.tool_calls, result_blocks)
@@ -6523,6 +6549,7 @@ class AgentLoop:
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_content_refusals = 0  # refusal-is-not-a-blocker rail (ADR-0118): per-turn
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
+        self._turn_awaiting = None  # await-user terminal (ADR-0121): per-turn
         self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
         self._turn_section_restores = {}  # dropped-section restores (ADR-0075): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
@@ -7866,6 +7893,13 @@ class AgentLoop:
                     stop_reason, fatal_detail = self._turn_fatal
                     self._note("intervention", fatal_detail, kind=stop_reason)
                     yield AgentStatus(message=f"turn ended — {fatal_detail}")
+                    break
+                if self._turn_awaiting is not None:
+                    # Waiting on a person is a terminal, not an open step (ADR-0121) — see the
+                    # buffered twin. The plan is left exactly as it stands.
+                    stop_reason = "awaiting_user"
+                    self._note("intervention", self._turn_awaiting, kind="awaiting_user")
+                    yield AgentStatus(message=f"waiting for you — {self._turn_awaiting}")
                     break
 
                 # Write-grounding is unconditional (no flag); no-ops when nothing was written.

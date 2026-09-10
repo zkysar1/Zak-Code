@@ -122,6 +122,7 @@ _STOP_LABEL = {
     "gave_up": "stopped {dash} gave up (no output)",
     "recipe_stalled": "stopped {dash} recipe stalled",
     "skill_too_large": "stopped {dash} skill too large for this model's window",
+    "awaiting_user": "waiting for you {dash} answer to continue",
     "restart": "restarting {dash} a newer build is installed; this session resumes there",
 }
 

@@ -16,6 +16,7 @@ tests assert that:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
@@ -33,6 +34,7 @@ from zakcode.providers.base import (
     StreamTextDelta,
     StreamToolCallDelta,
     StreamUsage,
+    TimedOut,
 )
 from zakcode.providers.litellm_provider import LiteLLMProvider
 
@@ -335,3 +337,136 @@ async def test_stream_keeps_a_bounded_sample_of_raw_deltas(monkeypatch: Any) -> 
     assert len(sample["deltas"]) == 5
     assert '"content": "a"' in sample["deltas"][0]
     assert '"content": ""' in sample["deltas"][-1]
+
+
+# ── the streaming stall deadline (ADR-0120, Zak-Code #176) ────────────────────
+# Measured on the zc-03 pod: a streaming response's HEADERS arrive in 0.12-2.0s at every
+# prompt size while the first DATA chunk waits out the whole prefill (0.29s at 5k prompt
+# tokens, 25.5s at 22k, 126.1s at 60k). A socket-level read timeout is satisfied by the
+# headers and never fires again, so a backend that sent headers and then nothing held one
+# call for 45 minutes. The bound sits on the ITERATOR, and is per-GAP.
+
+
+class _StallingStream:
+    """Yields ``chunks`` with ``gap`` seconds between them, then hangs forever."""
+
+    def __init__(self, chunks: list[Any], gap: float = 0.0, *, hang: bool = True) -> None:
+        self._chunks, self._gap, self._hang = list(chunks), gap, hang
+        self.closed = False
+        self.i = 0
+
+    def __aiter__(self) -> Any:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self.i < len(self._chunks):
+            await asyncio.sleep(self._gap)
+            self.i += 1
+            return self._chunks[self.i - 1]
+        if self._hang:
+            await asyncio.sleep(3600)  # the wedged backend: never another byte
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _serving(stream: Any) -> Any:
+    async def _acompletion(**_kwargs: Any) -> Any:
+        return stream
+
+    return _acompletion
+
+
+def _fast_provider(stall: float = 0.05) -> LiteLLMProvider:
+    return LiteLLMProvider(model="gpt-4o-mini", api_key="sk-test", stream_stall_timeout=stall)
+
+
+async def test_a_stream_that_never_sends_a_chunk_is_timed_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _StallingStream([])
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    with pytest.raises(TimedOut) as excinfo:
+        await _collect(_fast_provider().astream(_MSGS))
+    message = str(excinfo.value)
+    assert "no stream data at all" in message
+    assert "ZAKCODE_STREAM_STALL_TIMEOUT" in message
+    assert stream.closed  # the socket is released, not leaked
+
+
+async def test_a_stall_midway_reports_how_far_the_stream_got(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _StallingStream([_chunk(content="par"), _chunk(content="tial")])
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    with pytest.raises(TimedOut) as excinfo:
+        await _collect(_fast_provider().astream(_MSGS))
+    assert "stalled after 2 chunk(s)" in str(excinfo.value)
+
+
+async def test_the_deadline_is_per_gap_so_a_long_stream_is_never_punished_for_its_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Six 20ms gaps = 120ms of streaming under a 60ms bound: a whole-call ceiling would
+    # kill this healthy generation, a per-gap one must not. This is the property that
+    # makes request_timeout the wrong knob for the job.
+    chunks = [_chunk(content=str(i)) for i in range(5)]
+    chunks.append(_chunk(content="", finish_reason="stop"))
+    stream = _StallingStream(chunks, gap=0.02, hang=False)
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    events = await _collect(
+        LiteLLMProvider(model="gpt-4o-mini", api_key="sk-test", stream_stall_timeout=0.06).astream(
+            _MSGS
+        )
+    )
+    assert [e.text for e in events if isinstance(e, StreamTextDelta)] == ["0", "1", "2", "3", "4"]
+    assert isinstance(events[-1], StreamDone) and events[-1].finish_reason == "stop"
+
+
+async def test_a_healthy_stream_is_unaffected_by_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chunks = [_chunk(content="fine"), _chunk(content="", finish_reason="stop")]
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _fake_stream(chunks))
+    events = await _collect(_make_provider().astream(_MSGS))
+    assert [e.text for e in events if isinstance(e, StreamTextDelta)] == ["fine"]
+
+
+async def test_a_timed_out_stream_records_what_it_saw_for_diagnosis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # last_stream_sample is how an empty completion is diagnosed; a stall must still fill
+    # it, and chunks=0 is exactly the tell that the prefill never finished.
+    stream = _StallingStream([])
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    provider = _fast_provider()
+    with pytest.raises(TimedOut):
+        await _collect(provider.astream(_MSGS))
+    assert provider.last_stream_sample["chunks"] == 0
+
+
+def test_stream_stall_timeout_resolution_prefers_the_explicit_value() -> None:
+    from zakcode.config import Settings
+
+    assert LiteLLMProvider(model="gpt-4o-mini", api_key="sk-test").stream_stall_timeout == 600.0
+    assert (
+        LiteLLMProvider(
+            model="gpt-4o-mini", api_key="sk-test", stream_stall_timeout=12.5
+        ).stream_stall_timeout
+        == 12.5
+    )
+    settings = Settings(stream_stall_timeout=42.0)
+    assert (
+        LiteLLMProvider(
+            model="gpt-4o-mini", api_key="sk-test", settings=settings
+        ).stream_stall_timeout
+        == 42.0
+    )
+    # …and it is INDEPENDENT of request_timeout, which operators raise for slow backends
+    # (the pod runs 3600): a per-gap bound that large would not catch a 45-minute stall.
+    both = LiteLLMProvider(
+        model="gpt-4o-mini", api_key="sk-test", settings=Settings(request_timeout=3600.0)
+    )
+    assert both.request_timeout == 3600.0
+    assert both.stream_stall_timeout == 600.0
