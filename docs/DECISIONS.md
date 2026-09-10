@@ -5320,6 +5320,41 @@ with commands alone, skills alone, and both).
 
 ---
 
+## ADR-0129: A directory whose every entry is ignored is listed anyway
+
+**Context.** Field run 2026-09-10, a Mind workspace on a local 35B model, a domain question
+answered from the knowledge tree. The Mind's world lives under a gitignored root
+(`.mind-data/`), so every `list_dir` on its tree came back as one line — `[... 5 ignored
+entries hidden; include_ignored=true to show ...]`. The tool said exactly what to do. The model
+read that line four times without acting on it, the no-progress rail fired and seeded
+investigative steps (misdiagnosed as "`bash` keeps failing"), and only then did it pass the flag:
+five of the turn's twelve iterations, on a directory the tool could have shown. Claude Code's
+listing shows everything; its hygiene lives in the model, not the tool. Zak Code hides
+`.gitignore`d and build/vendor entries by default so that `node_modules` beside source does not
+flood a listing — a hygiene worth keeping for MIXED directories. The failure is specific to the
+all-hidden case: an empty-looking listing of a non-empty directory is the one shape that reads
+as "nothing here", and a count note under it is a footnote a small model skims.
+
+**Decision.** When every entry of a directory is soft-ignored, `list_dir` lists them anyway,
+followed by a note that names the rule ("all N entries here are ignored by .gitignore/default
+rules — shown anyway because nothing else is here; elsewhere pass include_ignored=true").
+`data["all_ignored"]` marks the case for clients. The always-hidden class (`.git`) stays hidden
+in that listing too. A mixed directory is unchanged: ignored entries hidden behind the count.
+`include_ignored=true` is unchanged.
+
+**Alternatives rejected.** Showing everything always, as Claude Code does — the mixed-directory
+hygiene has earned its place on small-context models. Shaping the empty result as a refusal
+with a `Fix:` line — a refusal counts as a tool failure in the struggle accounting, and the tool
+did not fail; it also still leaves the model one more call from the answer. Making the note the
+first line — the model that skims one line skims the first as easily as the last.
+
+**Consequences.** A listing never comes back empty for a directory with contents. Workspaces
+whose data lives under an ignored root (a Mind's external world, a vendored dataset) list like
+any other. Test: `tests/test_list_dir_all_ignored.py` (all-ignored shown and tagged, `.git`
+still hidden, mixed directory unchanged, `include_ignored` unchanged).
+
+---
+
 ## ADR-0128: The reviewer grades the ask minus what was handed to the operator
 
 **Context.** The field test of ADR-0127 (2026-09-10, the same "Start yourself as coach in
