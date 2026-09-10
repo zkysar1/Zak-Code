@@ -4995,3 +4995,58 @@ rather than one only the prose carried. Aliases `ask_user`/`wait_for_user` catch
 guesses. Tests: `tests/test_await_user.py` (the tool's contract, the buffered and streaming
 terminals, the preserved plan, the malformed call that must NOT end a turn, the aliases,
 both nudges, the stop label, registration).
+
+## ADR-0123: A search that ran and found nothing is an empty result, not a failure
+
+**Status.** Accepted (2026-09-10).
+
+**Context.** Measured on the coach rig, 2026-09-10, in the same field run that produced
+ADR-0122. Mid-research the model got back:
+
+```
+✗ DuckDuckGo search failed: No results found. · 1.9s
+  Fix: DuckDuckGo may be rate-limiting; retry shortly, or set ZAKCODE_SEARCH_BACKEND
+```
+
+Nothing had failed. The `ddgs` library reports "every engine ran and none of them had
+anything" by *raising* rather than by returning an empty list — `raise DDGSException(err or
+"No results found.")`, where `err` is `None` exactly when no engine errored. Our backend
+caught every exception alike and turned all of them into one `SearchError` carrying one
+guess about the cause.
+
+Three things went wrong at once, and only the first is cosmetic:
+
+1. The model was told the search **failed** when it had succeeded.
+2. It was told to **retry shortly** — the one response that cannot help an empty result, and
+   the opposite of the advice the tool already had for this case.
+3. It cost a **tool error**, and tool errors are what the stuck ladder counts. In this run
+   the empty search sat beside a genuine 403 and together they tripped the stuck
+   intervention, which is what made the turn `degraded` — and therefore what ADR-0122's
+   footer had to describe.
+
+The advice that helps was already written and simply unreachable: `WebSearchTool` has a
+`if not items:` branch returning `ok("(no results)", hint="no hits — try different/broader
+keywords")`. Behind a backend that raises instead of returning `[]`, no query could ever
+reach it.
+
+**Decision.** The backend returns `[]` for a legitimately empty search and keeps raising for
+everything else. The discriminator is the library's own: the **base** `DDGSException`
+carrying the exact `"No results found."` sentinel means every engine ran and none had
+anything, because a real fault puts that error in the message instead, and rate limits and
+timeouts raise dedicated *subclasses*.
+
+The match is deliberately exact — base type, exact message — because the two directions fail
+very differently. Too loose and a genuine engine failure is swallowed as "no hits", which is
+a silent wrong answer. Too strict (the library renames the sentinel) and we degrade to
+exactly today's behaviour: an error. So the unrecognised case stays a fault, which is the
+safe direction, and the "may be rate-limiting" rail is now shown only when it might be true.
+
+**Consequences.** An empty search reaches the model as a result with useful advice instead of
+a fault with misleading advice, and stops charging the stuck ladder for a search that worked.
+The other backends are untouched — Tavily and SearXNG already return lists.
+
+**Rejected.** *Catching `DDGSException` broadly* — it is the base class of the real failures
+too, so this would swallow a genuine engine error as an empty result: the failure mode is
+silent and produces a confidently wrong answer, which is worse than the defect being fixed.
+*Fixing it in `WebSearchTool` by string-matching the error text* — that puts a `ddgs`
+implementation detail in the shared tool, where it would be wrong for every other backend.
