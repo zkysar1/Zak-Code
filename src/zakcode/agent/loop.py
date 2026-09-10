@@ -1394,6 +1394,17 @@ _REVIEW_STEP_NOTE = (
 )
 
 
+def _handed_off_clause(names: Sequence[str]) -> str:
+    """The reviewer's criteria amendment for commands the operator alone may run (ADR-0128)."""
+    listed = ", ".join(f"/{n}" for n in names)
+    return (
+        f"Out of the agent's scope, by rule: {listed} may only be run by the human operator — "
+        "the agent's tools refuse it. The agent telling the operator to run it themselves, and "
+        "doing the rest of the request, is the correct and complete outcome for that part. Do "
+        "not flag that part as unmet, and do not ask the agent to find another way to do it."
+    )
+
+
 def _plan_review_nudge(issues: str) -> str:
     """The control message when the fresh-eyes review of a finished plan withholds approval."""
     return (
@@ -1675,6 +1686,9 @@ class AgentLoop:
         # refusing the model's OWN content (``data["refusal"]``). They demonstrate nothing
         # about the environment, so the blocker gate does not count them as evidence.
         self._turn_content_refusals = 0
+        self._turn_handed_off: list[
+            str
+        ] = []  # operator-only commands handed back this turn (ADR-0128)
         # Loud in-turn terminal (ADR-0066): ``(stop_reason, detail)`` armed by the execution
         # seam when a verbatim body cannot fit the window; both twins end the turn on it
         # right after the batch's results land. Per-turn.
@@ -3452,6 +3466,8 @@ class AgentLoop:
         """
         if name.lower() not in self._user_only_skills():
             return False
+        if name not in self._turn_handed_off:
+            self._turn_handed_off.append(name)  # the reviewer grades the ask minus this
         self.session.add_message(
             Message.user(_control_rail(_USER_ONLY_SKILL_NUDGE.format(name=name)))
         )
@@ -4662,6 +4678,12 @@ class AgentLoop:
             # ADR-0117: the plan record (steps + outcomes) beside the answer, so "done" is read
             # against what the steps actually produced, not only against the prose.
             artifact = f"{artifact}\n\nPlan record (steps and what each produced):\n{record}"
+        if self._turn_handed_off:
+            # ADR-0128: a reviewer that reads the bare request flags the operator-only command
+            # the agent correctly handed back as "unmet" and sends the model hunting for a way
+            # to run it (field 2026-09-10: a correct "type /start yourself" answer, then eleven
+            # iterations grepping for start/boot/init scripts). The criteria carry the rule.
+            request = f"{request}\n\n{_handed_off_clause(self._turn_handed_off)}"
         verdict, usage = await binary_judge(self.provider, criteria=request, artifact=artifact)
         with contextlib.suppress(Exception):  # accounting must never break the gate
             self.session.add_usage(usage, model=self.provider.model_id())
@@ -5250,6 +5272,7 @@ class AgentLoop:
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_content_refusals = 0  # refusal-is-not-a-blocker rail (ADR-0118): per-turn
+        self._turn_handed_off = []  # operator-only commands handed back this turn (ADR-0128)
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_awaiting = None  # await-user terminal (ADR-0121): per-turn
         self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
@@ -6586,6 +6609,7 @@ class AgentLoop:
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_content_refusals = 0  # refusal-is-not-a-blocker rail (ADR-0118): per-turn
+        self._turn_handed_off = []  # operator-only commands handed back this turn (ADR-0128)
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_awaiting = None  # await-user terminal (ADR-0121): per-turn
         self._turn_paging = {}  # skill pages delivered this turn (ADR-0067): per-turn
