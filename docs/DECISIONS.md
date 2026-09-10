@@ -4897,3 +4897,53 @@ scrolls inside itself below the cap; Ctrl+C is safe. No new dependency (prompt_t
 was already pinned), no setting. Tests: `tests/test_saybox.py` (every binding through a
 pipe, tokens, history across editors, geometry, folding), `tests/test_cli_cockpit.py`
 (editor wiring, toolbar status, pane hooks).
+
+## ADR-0120: A streaming call is bounded by the gap between chunks, not by a socket read timeout
+
+**Status.** Accepted (2026-09-10). Closes Zak-Code #176.
+
+**Context.** Measured on the zc-03 pod test bed 2026-08-21: a streaming completion whose
+backend never sent a single response byte ran **45 minutes** with no client-side timeout —
+the socket showed the request fully sent (89,028 bytes) and no bytes ever received, while
+litellm's scalar `timeout` (600s at the time) never raised. A scalar httpx timeout is
+supposed to include a read component, so the expectation was that it would fire; on the
+streaming path it did not.
+
+Re-measured on the same pod 2026-09-10, which explains why. A streaming response's
+**headers arrive at once at every prompt size, while the first DATA chunk waits out the
+entire prefill**:
+
+| prompt | headers | first data chunk | last chunk |
+| --- | --- | --- | --- |
+| ~5k tokens | 0.12s | 0.29s | 1.23s |
+| ~22k tokens | 0.18s | 25.5s | 26.6s |
+| ~60k tokens | 2.01s | 126.1s | 127.5s |
+
+So a socket-level read timeout is satisfied by the headers within a second and never has
+anything to fire on again. The wait that matters happens in the ITERATOR, and nothing was
+watching it. (Prefill is ~2.1ms/token here, so a full 131k-context prompt is ~275s — the
+45-minute hang was ten times a worst-case legitimate prefill, i.e. a wedged engine.)
+
+`request_timeout` cannot be the bound. It is a whole-call ceiling that operators raise for
+slow backends — the pod runs `ZAKCODE_REQUEST_TIMEOUT=3600` — and a per-gap bound of an
+hour would not have caught the 45 minutes this exists to catch. Reusing it would ship the
+fix inert on the one rig that measured the defect.
+
+**Decision.** A new `Settings.stream_stall_timeout` (`ZAKCODE_STREAM_STALL_TIMEOUT`,
+default 600s) bounds **the wait for each next chunk**, enforced in
+`LiteLLMProvider._bounded_chunks` by an `asyncio.wait_for` around `__anext__`. Per-GAP,
+not per-call: a healthy generation is a long run of millisecond gaps, so only the first
+gap — the one covering prefill — ever approaches the bound, and a long answer is never
+punished for its length. On expiry the response is closed (the socket is released) and the
+call raises `TimedOut`, the existing recoverable class, so the turn rides the loop's
+bounded retry and then ends loudly instead of hanging an unattended session. The message
+distinguishes the two conditions the operator must tell apart: zero chunks means the
+prefill never finished, a stall after N chunks means a mid-stream death. `last_stream_sample`
+is still recorded, so `chunks: 0` is the diagnosis.
+
+**Consequences.** The measured failure now ends the turn in 10 minutes with a message
+naming the knob, on a rig whose worst legitimate gap is ~275s (2.2x headroom). No change
+to any healthy call. Operators whose backend's full-context prefill exceeds the default
+raise one documented value. Tests: `tests/test_provider_stream.py` (never-sends, mid-stream
+stall, the per-gap property that a whole-call ceiling would fail, socket release,
+diagnosis sample, and the independence of the two timeouts).

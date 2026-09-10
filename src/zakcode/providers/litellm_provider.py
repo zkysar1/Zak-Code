@@ -12,6 +12,7 @@ their results are validated/narrowed explicitly before use.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -464,6 +465,7 @@ class LiteLLMProvider(Provider):
         num_retries: int | None = None,
         ollama_base_url: str | None = None,
         request_timeout: float | None = None,
+        stream_stall_timeout: float | None = None,
         local_only: bool | None = None,
         local_api_bases: list[str] | None = None,
         extra_body: dict[str, Any] | None = None,
@@ -482,6 +484,7 @@ class LiteLLMProvider(Provider):
         resolved_api_key = api_key
         resolved_ollama_base = ollama_base_url
         resolved_request_timeout = request_timeout
+        resolved_stream_stall = stream_stall_timeout
         resolved_local_only = local_only
         resolved_local_api_bases = local_api_bases
         resolved_extra_body = extra_body
@@ -509,6 +512,8 @@ class LiteLLMProvider(Provider):
             if resolved_request_timeout is None:
                 # getattr: an older/faked Settings without the field keeps the default.
                 resolved_request_timeout = getattr(settings, "request_timeout", None)
+            if resolved_stream_stall is None:
+                resolved_stream_stall = getattr(settings, "stream_stall_timeout", None)
             if resolved_local_only is None:
                 resolved_local_only = settings.local_only
             if resolved_local_api_bases is None:
@@ -577,6 +582,11 @@ class LiteLLMProvider(Provider):
         # then Settings.request_timeout (ZAKCODE_REQUEST_TIMEOUT), then the 600s safety net.
         self.request_timeout: float = (
             resolved_request_timeout if resolved_request_timeout is not None else 600.0
+        )
+        # Streaming's own bound (ADR-0120) — see _bounded_chunks for why request_timeout
+        # cannot serve, and Settings.stream_stall_timeout for the prefill measurement.
+        self.stream_stall_timeout: float = (
+            resolved_stream_stall if resolved_stream_stall is not None else 600.0
         )
 
         # litellm reads OLLAMA_API_BASE from the environment for ollama_chat/*.
@@ -1281,6 +1291,48 @@ class LiteLLMProvider(Provider):
 
         return events, finish_reason
 
+    async def _bounded_chunks(self, resp: Any) -> AsyncIterator[Any]:
+        """Yield the stream's chunks, bounding the WAIT for each one (ADR-0120, #176).
+
+        litellm's scalar ``timeout`` does not bound a streaming READ. Measured on the
+        zc-03 pod 2026-09-10: response HEADERS arrive in 0.12-2.0s at every prompt size,
+        while the first DATA chunk waits out the whole prefill (0.29s at a 5k-token
+        prompt, 25.5s at 22k, 126.1s at 60k). A socket-level read timeout is satisfied by
+        the headers and never fires again, so a backend that sent headers and then nothing
+        held one call for 45 minutes with the request fully sent and zero bytes back.
+        The bound therefore sits on the ITERATOR, where the wait actually happens.
+
+        PER-GAP, not per-call: a healthy generation is a long run of millisecond gaps, so
+        only the first gap — the one that covers prefill — ever approaches the bound, and
+        a long answer is never punished for its length. The expiry is reported as
+        :class:`TimedOut`, which rides the loop's bounded retry and then ends the turn
+        loudly; the message says whether anything ever arrived, because zero chunks is a
+        wedged prefill while a stall after N chunks is a mid-stream death.
+        """
+        iterator = resp.__aiter__()
+        seen = 0
+        while True:
+            try:
+                chunk = await asyncio.wait_for(iterator.__anext__(), self.stream_stall_timeout)
+            except StopAsyncIteration:
+                return
+            except TimeoutError as exc:
+                with contextlib.suppress(Exception):  # release the socket; never mask the timeout
+                    await resp.aclose()
+                where = (
+                    "the backend sent no stream data at all (its headers arrived, the "
+                    "stream never did)"
+                    if seen == 0
+                    else f"the stream stalled after {seen} chunk(s)"
+                )
+                raise TimedOut(
+                    f"streaming call exceeded ZAKCODE_STREAM_STALL_TIMEOUT "
+                    f"({self.stream_stall_timeout:g}s): {where}. If this backend's prefill "
+                    f"for a full-context prompt legitimately takes longer, raise that value."
+                ) from exc
+            seen += 1
+            yield chunk
+
     async def astream(
         self,
         messages: list[Message],
@@ -1320,7 +1372,7 @@ class LiteLLMProvider(Provider):
         await self._pace()
         try:
             resp = await litellm.acompletion(**call_kwargs)
-            async for chunk in resp:
+            async for chunk in self._bounded_chunks(resp):
                 chunks += 1
                 delta = _stream_delta(chunk)
                 if delta is not None:
