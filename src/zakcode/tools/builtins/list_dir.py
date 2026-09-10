@@ -29,8 +29,9 @@ class ListDirTool(Tool):
         description=(
             "List the entries of a directory within the workspace. Directories are "
             "suffixed with '/'. Defaults to the workspace root. Ignored entries (.git, "
-            "build/vendor/cache dirs, .gitignore/.zakcodeignore) are hidden with a count; "
-            "pass include_ignored=true to show them."
+            "build/vendor/cache dirs, .gitignore/.zakcodeignore) are hidden with a count — "
+            "unless EVERY entry is ignored, in which case they are listed anyway; pass "
+            "include_ignored=true to show them elsewhere."
         ),
         parameters={
             "type": "object",
@@ -95,15 +96,30 @@ class ListDirTool(Tool):
             entries: list[str] = []
             names: list[str] = []
             ignored_count = 0
+            hidden_entries: list[str] = []  # soft-ignored only; .git-class stays hidden
+            hidden_names: list[str] = []
             for entry in children:
                 is_dir = entry.is_dir()
                 # Hide ignored entries (build/vendor/.gitignore), counted so the listing never
                 # SILENTLY omits something like node_modules — the agent sees there's more.
                 if ignore.is_ignored_path(entry, ignore_root, is_dir=is_dir, soft=soft):
                     ignored_count += 1
+                    if not ignore.is_ignored_path(entry, ignore_root, is_dir=is_dir, soft=False):
+                        hidden_entries.append(f"{entry.name}/" if is_dir else entry.name)
+                        hidden_names.append(entry.name)
                     continue
                 entries.append(f"{entry.name}/" if is_dir else entry.name)
                 names.append(entry.name)
+
+            all_ignored = False
+            if not entries and hidden_entries:
+                # EVERY entry is ignored — a workspace whose data lives under a gitignored root
+                # (field 2026-09-10: a Mind's world/ under .mind-data/; three listings came back
+                # as one count line, the model skimmed the note four times, and the no-progress
+                # rail had to fire). An empty listing of a non-empty directory is the one shape
+                # that misleads, so these are shown, tagged, rather than hidden behind a count.
+                all_ignored = True
+                entries, names = hidden_entries, hidden_names
 
             # Soft cap with an explicit marker so a huge directory cannot flood the model's
             # context one-entry-per-line with no signal that it was capped. (#5 dense output)
@@ -114,11 +130,19 @@ class ListDirTool(Tool):
                 shown = entries[:_MAX_ENTRIES] + [
                     f"[... {hidden} more entries; use glob with a pattern to narrow ...]"
                 ]
-            notes = (
-                [f"[... {ignored_count} ignored entries hidden; include_ignored=true to show ...]"]
-                if ignored_count
-                else []
-            )
+            if all_ignored:
+                notes = [
+                    f"[all {len(names)} entries here are ignored by .gitignore/default rules "
+                    "— shown anyway because nothing else is here; elsewhere pass "
+                    "include_ignored=true to see ignored entries]"
+                ]
+            elif ignored_count:
+                notes = [
+                    f"[... {ignored_count} ignored entries hidden; "
+                    "include_ignored=true to show ...]"
+                ]
+            else:
+                notes = []
             output = "\n".join(shown + notes) if (shown or notes) else "(empty directory)"
             return ToolResult.ok(
                 output,
@@ -128,6 +152,7 @@ class ListDirTool(Tool):
                     "entries": names,
                     "truncated": truncated,
                     "ignored": ignored_count,
+                    "all_ignored": all_ignored,
                 },
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
