@@ -5352,3 +5352,36 @@ first line — the model that skims one line skims the first as easily as the la
 whose data lives under an ignored root (a Mind's external world, a vendored dataset) list like
 any other. Test: `tests/test_list_dir_all_ignored.py` (all-ignored shown and tagged, `.git`
 still hidden, mixed directory unchanged, `include_ignored` unchanged).
+
+---
+
+## ADR-0130: A search result clips each match line and caps the whole
+
+**Context.** Field run 2026-09-10, a Mind workspace on a local 35B model, asked to author a
+skill with exact API calls. The Mind's stores are JSONL — one record per line, and a record can
+carry a whole knowledge article. Three `grep` calls over the agent's directory (`league|fantasy|
+yahoo|free.agent`, then two near-identical `league_id` patterns) each returned 18 matches of
+~10 KB: 958, 928 and 924 transcript lines, and in the session store 229 KB, 136 KB and 133 KB
+of tool result. The model re-ran the same search three times, the no-progress rail fired, and
+the session compacted under the weight before the first file was written. `grep` capped the
+number of matches (1000) and the bytes scanned per file (5 MB) and never the length of a
+match line or the size of the whole result — the two dimensions a JSONL store stresses. Claude
+Code's grep does not hand the model a 10 KB line either.
+
+**Decision.** Each match line longer than 300 chars is clipped to a 300-char window around its
+first match, the dropped lengths marked on both sides (`[… +4000 chars] … [… +4759 chars;
+read_file the line for the rest]`) so the model knows the line goes on and how to get it. The
+whole output is capped at 40 000 chars; beyond that the remaining matches are dropped with a
+count and the advice to narrow the pattern or path. `data["matches"]` carries the clipped rows
+and `data["capped"]` the number dropped; `count` is still the true total.
+
+**Alternatives rejected.** Clipping at the match only (no lead) — the leading context is
+usually the record's id and title, the very thing that makes a JSONL hit usable. A per-file
+match cap — the field cost was per LINE, and one file with five 10 KB lines is the case.
+Leaving it to the model ("narrow your pattern") — it did not, three times, and the rail that
+finally moved it cost more than the clip.
+
+**Consequences.** A broad search over a store of long records costs at most ~40 KB, and a
+single hit is a few hundred chars with its id and title intact. Tests:
+`tests/test_grep_line_clip.py` (a long line clipped around its match, a short line untouched,
+a match deep in a line kept with the lead marker, the total cap with its count).

@@ -23,6 +23,29 @@ from zakcode.tools.builtins._suggest import not_found_fix, render, suggest
 _MAX_MATCHES = 1000
 # Read at most this many bytes per file when scanning.
 _MAX_FILE_BYTES = 5 * 1024 * 1024
+# A match LINE longer than this is clipped to a window around its first match (ADR-0130):
+# a JSONL store keeps a whole record on one line, and three searches over such a store
+# returned ~10 KB per match — 900 transcript lines each — and the model looped on them.
+_MAX_LINE_CHARS = 300
+_LINE_LEAD_CHARS = 100
+# Total output cap across all matches; beyond it the rest is dropped with a count.
+_MAX_OUTPUT_CHARS = 40_000
+
+
+def _clip_line(line: str, regex: re.Pattern[str]) -> str:
+    """``line`` unchanged when short; else a ``_MAX_LINE_CHARS`` window around its first
+    match, the dropped lengths marked so the model knows the line goes on (read_file for
+    the rest)."""
+    if len(line) <= _MAX_LINE_CHARS:
+        return line
+    m = regex.search(line)
+    start = max(0, (m.start() if m else 0) - _LINE_LEAD_CHARS)
+    end = min(len(line), start + _MAX_LINE_CHARS)
+    head = f"[… +{start} chars] " if start else ""
+    tail = ""
+    if end < len(line):
+        tail = f" [… +{len(line) - end} chars; read_file the line for the rest]"
+    return f"{head}{line[start:end]}{tail}"
 
 
 def _is_binary(sample: bytes) -> bool:
@@ -136,7 +159,7 @@ class GrepTool(Tool):
                         f"{file_path}: [... file exceeds 5MB; only its first 5MB was scanned ...]"
                     )
                 for line_no, line in matches:
-                    rows.append(f"{file_path}:{line_no}:{line}")
+                    rows.append(f"{file_path}:{line_no}:{_clip_line(line, regex)}")
                     total += 1
                     if total >= _MAX_MATCHES:
                         truncated = True
@@ -145,7 +168,25 @@ class GrepTool(Tool):
             if not rows and not file_notes:
                 return ToolResult.ok("(no matches)", data={"count": 0, "matches": []})
 
-            output = "\n".join(rows)
+            # Total cap (ADR-0130): clipped lines bound each row, this bounds the sum, so a
+            # broad pattern over a big store cannot hand the model tens of thousands of chars.
+            shown = rows
+            capped = 0
+            if sum(len(r) + 1 for r in rows) > _MAX_OUTPUT_CHARS:
+                budget = _MAX_OUTPUT_CHARS
+                shown = []
+                for r in rows:
+                    if budget - len(r) - 1 < 0:
+                        break
+                    budget -= len(r) + 1
+                    shown.append(r)
+                capped = len(rows) - len(shown)
+            output = "\n".join(shown)
+            if capped:
+                output += (
+                    f"\n\n[... output capped: {capped} of {len(rows)} matches not shown; "
+                    "narrow the pattern or the path, or search one file ...]"
+                )
             if truncated:
                 output += f"\n\n[... results truncated at {_MAX_MATCHES} matches ...]"
             if file_notes:
@@ -156,6 +197,7 @@ class GrepTool(Tool):
                     "count": total,
                     "matches": rows,
                     "truncated": truncated,
+                    "capped": capped,
                     "files_partially_scanned": len(file_notes),
                 },
             )
