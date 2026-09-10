@@ -305,6 +305,38 @@ def test_an_implied_user_only_skill_is_handed_to_the_operator(tmp_path: Path) ->
     assert len(notes) == 1 and "/start" in notes[0].detail
 
 
+def test_the_reviewer_is_told_what_was_handed_to_the_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0128: the fresh-eyes critic reads the bare request, so it flagged "failed to start
+    itself" against a correct hand-off and sent the model hunting for a start script. The
+    criteria now carry the rule for the commands handed back this turn — and only this turn."""
+    import zakcode.agent.loop as loop_module
+    from zakcode.quality.judge import BinaryVerdict
+    from zakcode.usage import Usage
+
+    seen: list[str] = []
+
+    async def judge(provider: Any, *, criteria: str, artifact: str, **kw: Any) -> Any:
+        seen.append(criteria)
+        return BinaryVerdict(approved=True), Usage()
+
+    monkeypatch.setattr(loop_module, "binary_judge", judge)
+    loop = _loop(tmp_path, _Text(HANDED_BACK), DifficultyVerdict("deep_code", "start"))
+    asyncio.run(loop.arun_turn(FIELD_REQUEST))
+    assert loop._turn_handed_off == ["start"]
+    asyncio.run(loop._completion_critic(FIELD_REQUEST, HANDED_BACK))
+    assert seen[-1].startswith(FIELD_REQUEST)
+    assert "/start may only be run by the human operator" in seen[-1]
+    assert "Do not flag that part as unmet" in seen[-1]
+    # The next turn hands nothing off: the clause is gone with it.
+    loop.difficulty_classifier = None  # no verdict this turn
+    asyncio.run(loop.arun_turn("what did you save?"))
+    assert loop._turn_handed_off == []
+    asyncio.run(loop._completion_critic("what did you save?", "the note"))
+    assert seen[-1] == "what did you save?"
+
+
 def test_streaming_hands_a_user_only_skill_to_the_operator_too(tmp_path: Path) -> None:
     loop = _loop(tmp_path, _Text(HANDED_BACK), DifficultyVerdict("deep_code", "start"))
 
