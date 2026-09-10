@@ -243,6 +243,50 @@ def test_pip_install_hint_is_actionable() -> None:
     assert "uv pip install" in hint and "-m pip install" in hint  # both managers offered
 
 
+def _stub_ddgs(monkeypatch: pytest.MonkeyPatch, raises: Exception) -> None:
+    """Stand in for the optional ``[web]`` dep so this runs where it is not installed.
+
+    Faithful to the shape the discriminator reads: the same three exception classes in the
+    same hierarchy (rate limit and timeout SUBCLASS the base), and a ``text()`` that raises
+    rather than returning, which is the library behaviour being handled.
+    """
+    import sys
+    import types
+
+    exceptions = types.ModuleType("ddgs.exceptions")
+    exceptions.DDGSException = _DDGSException
+    exceptions.RatelimitException = _RatelimitException
+    exceptions.TimeoutException = _TimeoutException
+
+    class _DDGS:
+        def __enter__(self) -> _DDGS:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def text(self, query: str, max_results: int = 5) -> list[dict]:
+            raise raises
+
+    module = types.ModuleType("ddgs")
+    module.DDGS = _DDGS
+    module.exceptions = exceptions
+    monkeypatch.setitem(sys.modules, "ddgs", module)
+    monkeypatch.setitem(sys.modules, "ddgs.exceptions", exceptions)
+
+
+class _DDGSException(Exception):
+    pass
+
+
+class _RatelimitException(_DDGSException):
+    pass
+
+
+class _TimeoutException(_DDGSException):
+    pass
+
+
 async def test_a_search_that_found_nothing_is_an_empty_result_not_a_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -253,38 +297,23 @@ async def test_a_search_that_found_nothing_is_an_empty_result_not_a_failure(
     on the one case where retrying is exactly the wrong move, and a tool ERROR (which the
     stuck ladder counts) charged against a search that worked fine.
     """
-    from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
-
     from zakcode.search.ddgs_backend import DuckDuckGoBackend
-
-    def raising(exc: Exception) -> None:
-        class _DDGS:
-            def __enter__(self) -> _DDGS:
-                return self
-
-            def __exit__(self, *a: object) -> None:
-                return None
-
-            def text(self, query: str, max_results: int = 5) -> list[dict]:
-                raise exc
-
-        monkeypatch.setattr("ddgs.DDGS", _DDGS)
 
     # Every engine ran, none had anything: an empty list, so the TOOL can give the advice
     # that actually helps ("try different/broader keywords") instead of "retry shortly".
-    raising(DDGSException("No results found."))
+    _stub_ddgs(monkeypatch, _DDGSException("No results found."))
     assert await DuckDuckGoBackend().search("a query with no hits") == []
 
     # Everything else stays a fault. The dedicated subclasses are the real rate limit and
     # timeout, and an unrecognised base-class message degrades to a fault, not to an empty —
-    # a wrong guess in that direction would swallow a genuine failure.
+    # a wrong guess in that direction would swallow a genuine failure as a confident "no hits".
     for exc in (
-        RatelimitException("429"),
-        TimeoutException("timed out"),
-        DDGSException("upstream engine exploded"),
+        _RatelimitException("No results found."),  # same message, real fault: the TYPE decides
+        _TimeoutException("timed out"),
+        _DDGSException("upstream engine exploded"),  # same type, real fault: the MESSAGE decides
         RuntimeError("something else entirely"),
     ):
-        raising(exc)
+        _stub_ddgs(monkeypatch, exc)
         with pytest.raises(SearchError):
             await DuckDuckGoBackend().search("python")
 
