@@ -88,3 +88,52 @@ async def test_token_in_tool_output_is_masked_before_model_transcript_and_sessio
         [(n.kind, n.detail) for n in result.trace.notes] if hasattr(result.trace, "notes") else []
     )
     assert not kinds or any(k == "redaction" for k, _ in kinds)
+
+
+_OAUTH = "wDIrZA" + "kQ9x" * 56
+_CRED_FILE = (
+    '{"access_token": "' + _OAUTH + '", "refresh_token": "AEFMlG7pZq7pZq7pZq7pZq", '
+    '"token_type": "bearer", "expires_at": 1756570800}'
+)
+
+
+class _CatTool(Tool):
+    spec = ToolSpec(
+        name="cat_token_file",
+        description="reads a credential file verbatim",
+        required_permission=PermissionTier.READ_ONLY,
+        concurrency=ConcurrencyClass.READ_ONLY_SAFE,
+    )
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult.ok(_CRED_FILE)
+
+
+@pytest.mark.asyncio
+async def test_a_credential_file_read_verbatim_is_scrubbed_at_the_seam() -> None:
+    """ADR-0125. Measured on the coach rig 2026-09-10: a skill told the model to check the
+    token file, the model ran ``cat .yahoo_token.json``, and a 230-char OAuth token reached
+    the model, the CLI log and the session store — the seam knew only provider prefixes.
+    Weeks of earlier logs held the same value once we looked."""
+    provider = _Scripted(
+        [
+            LLMResult(
+                text="",
+                tool_calls=[ToolCall(id="c1", name="cat_token_file", arguments={})],
+                usage=Usage(total_tokens=1),
+            ),
+            LLMResult(text="done", tool_calls=[], usage=Usage(total_tokens=1)),
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(_CatTool())
+    session = Session(cwd="/tmp", model="t/m")
+    loop = AgentLoop(provider, registry, session, max_iterations=5)
+    result = await loop.arun_turn("check the token file")
+
+    block = result.tool_results[0]
+    assert _OAUTH not in block.output and "AEFMlG" not in block.output
+    assert '"access_token": "[REDACTED]"' in block.output  # structure kept, value gone
+    assert '"token_type": "bearer"' in block.output  # the model can still read the file
+    assert "2 credential-shaped value(s) were redacted" in block.output
+    assert all(_OAUTH not in m.text for m in session.messages)

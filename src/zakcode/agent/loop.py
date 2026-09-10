@@ -3761,8 +3761,9 @@ class AgentLoop:
         owner = None if call.name in _PLAN_TOOLS or network.is_empty() else network.current()
         block = await self._execute_tool_call_gated(call, ctx, restrict_to=restrict_to)
         # ADR-0116: credential-shaped tokens never reach the model, the transcript, or the
-        # session file through a tool output (GUARDRAILS §6). Only the provider-prefixed
-        # token SHAPES are scrubbed here — the key=value layer would mangle ordinary code.
+        # session file through a tool output (GUARDRAILS §6). Provider-prefixed token SHAPES,
+        # plus (ADR-0125) credential-SHAPED values after a secret key — a credential file
+        # read verbatim — but never the blanket key=value layer, which would mangle code.
         scrubbed, hits = redact_credential_tokens(block.output)
         if hits:
             block.output = scrubbed + _TOKEN_REDACTED_RAIL.format(n=hits)
