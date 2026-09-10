@@ -135,7 +135,7 @@ def test_a_third_text_only_completion_is_not_re_prompted_in_a_third_direction(
     result = asyncio.run(loop.arun_turn("fix the config"))
     assert provider.calls == 3  # intent nudge, missing nudge, then the answer stands
     assert result.stop_reason == "completed"
-    assert result.degraded is True  # a capped cascade is an honest "struggled"
+    assert result.degraded is True  # a capped cascade still trips the flag (footer: "recovered")
     assert _count(loop, _INTENT_NUDGE) == 1
     assert _count(loop, _MISSING_NUDGE) == 1
     assert _count(loop, _IDENTITY_NUDGE) == 0  # the third gate stood down
