@@ -18,6 +18,7 @@ from zakcode.tools.base import (
 from zakcode.tools.builtins._safety import (
     PathEscapeError,
     check_literal_content,
+    check_skill_claims,
     diagnose_python_syntax,
     resolve_path,
 )
@@ -73,6 +74,12 @@ class WriteFileTool(Tool):
                 data={"refusal": "python_syntax", "cause": refusal.cause, "line": refusal.lineno},
                 fix=refusal.fix,
             )
+        # A skill names hosts a future session will call; a host that does not exist is the
+        # model's own fabrication, refused the same way a .py that will not compile is
+        # (ADR-0126).
+        claims = check_skill_claims(path, content)
+        if claims is not None:
+            return ToolResult.error(claims[0], data={"refusal": "skill_claims", "hosts": claims[1]})
 
         try:
             resolved = resolve_path(path, ctx.workspace_root, ctx.extra_workspace_roots)

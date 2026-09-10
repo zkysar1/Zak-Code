@@ -16,7 +16,10 @@ from __future__ import annotations
 import ntpath
 import os
 import re
-from collections.abc import Sequence
+import socket
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -274,3 +277,97 @@ def check_python_syntax(path: str, content: str) -> str | None:
     """
     refusal = diagnose_python_syntax(path, content)
     return None if refusal is None else refusal.message
+
+
+# ── the skill-claim gate (ADR-0126) ──────────────────────────────────────────────────
+# A SKILL.md is an artifact a FUTURE session executes. Measured 2026-09-10 (coach rig,
+# qwen3.6-35b): asked to write "the exact API calls where you know them", the model wrote
+# eleven endpoints on a host that does not exist — every one of them — into five skills a
+# later session then followed. Nothing at authoring time checks a skill's claims; the format
+# is verified, the facts are not. This gate checks the one claim that is cheap and decisive:
+# a host the skill tells a future self to call must resolve. Refuse-only, before any bytes
+# land, in the ADR-0118 shape: the refusal is about the model's own content, and the remedy
+# is in the model's hands (look the endpoint up, or mark the line unverified).
+_SKILL_PATH_RE = re.compile(r"(?:^|[\\/])skills[\\/][^\\/]+[\\/]SKILL\.md$", re.IGNORECASE)
+_URL_HOST_RE = re.compile(r"https?://([A-Za-z0-9._-]+)")
+#: Hosts that are documentation placeholders or local by definition (RFC 2606, RFC 6761),
+#: plus IP literals: never fabrications, never looked up.
+_RESERVED_HOST_RE = re.compile(
+    r"^(?:localhost|[0-9.]+|\[?[0-9a-f:]+\]?"
+    r"|(?:[^.]+\.)*(?:example\.(?:com|net|org)|localhost|local|internal|test|invalid|localdomain))$",
+    re.IGNORECASE,
+)
+#: A line carrying this word is the author saying "I have not verified this" — exempt.
+_UNVERIFIED_RE = re.compile(r"unverified", re.IGNORECASE)
+#: Bound the cost: a skill rarely names more distinct hosts than this, and each lookup is
+#: bounded separately, so the gate can never hold a write for long.
+_MAX_HOST_LOOKUPS = 12
+_LOOKUP_TIMEOUT_S = 2.5
+_SKILL_CLAIMS_FIX = (
+    "Nothing was written. A skill is followed by a future session, so an endpoint it names "
+    "must be real: look the API up (web_search / web_fetch its documentation) and use the "
+    "host you verified, or if you cannot verify it, say so on that line — a line containing "
+    "the word 'unverified' is exempt from this check. Never invent a host."
+)
+
+
+def resolve_host(host: str) -> str:
+    """``"ok"`` / ``"nxdomain"`` / ``"unknown"`` for a hostname, bounded to a few seconds.
+
+    Only a DEFINITIVE "no such name" counts against the author. A timeout, an unreachable
+    resolver or any other failure is ``"unknown"`` — the gate must never refuse a write
+    because the box is offline.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(socket.getaddrinfo, host, None)
+        try:
+            future.result(timeout=_LOOKUP_TIMEOUT_S)
+            return "ok"
+        except socket.gaierror as exc:
+            nodata = getattr(socket, "EAI_NODATA", None)
+            if exc.errno in (socket.EAI_NONAME, nodata):
+                return "nxdomain"
+            return "unknown"
+        except (FutureTimeout, OSError, ValueError):
+            return "unknown"
+
+
+def skill_hosts(content: str) -> list[str]:
+    """The distinct, checkable hosts a skill body names — placeholders and marked lines out."""
+    seen: list[str] = []
+    for line in content.splitlines():
+        if _UNVERIFIED_RE.search(line):
+            continue
+        for host in _URL_HOST_RE.findall(line):
+            host = host.strip(".").lower()
+            if not host or _RESERVED_HOST_RE.match(host) or "." not in host:
+                continue
+            if host not in seen:
+                seen.append(host)
+    return seen
+
+
+def check_skill_claims(
+    path: str, content: str, *, resolve: Callable[[str], str] | None = None
+) -> tuple[str, list[str]] | None:
+    """Refuse a SKILL.md that tells a future session to call a host that does not exist.
+
+    Returns ``(message, bad_hosts)`` or ``None``. Only fires for ``skills/<name>/SKILL.md``
+    paths, only on a definitive NXDOMAIN, and only for the first :data:`_MAX_HOST_LOOKUPS`
+    distinct hosts; everything else — a non-skill file, a reserved or template host, a lookup
+    that could not be completed — passes.
+    """
+    if not _SKILL_PATH_RE.search(path.replace("\\", "/")):
+        return None
+    lookup = resolve or resolve_host  # bound at call time, so it can be swapped
+    hosts = skill_hosts(content)[:_MAX_HOST_LOOKUPS]
+    bad = [h for h in hosts if lookup(h) == "nxdomain"]
+    if not bad:
+        return None
+    listed = ", ".join(bad)
+    return (
+        f"Refusing to write this skill: it tells a future session to call {listed}, and "
+        f"{'that host does' if len(bad) == 1 else 'those hosts do'} not exist (DNS: no such "
+        "name). " + _SKILL_CLAIMS_FIX,
+        bad,
+    )
