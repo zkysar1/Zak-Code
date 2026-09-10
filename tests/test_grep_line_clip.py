@@ -17,6 +17,14 @@ from zakcode.tools.base import ToolContext
 from zakcode.tools.builtins.grep import _MAX_LINE_CHARS, _MAX_OUTPUT_CHARS, GrepTool
 
 
+def _body(row: str, path: Path, line_no: int = 1) -> str:
+    """The text after ``<path>:<line>:`` — split on the known prefix, never on ":" (a Windows
+    path carries its own colon)."""
+    prefix = f"{path}:{line_no}:"
+    assert row.startswith(prefix), row[:120]
+    return row[len(prefix) :]
+
+
 def _store(tmp_path: Path, records: int = 1, filler: int = 5000) -> Path:
     rows = [
         json.dumps({"id": f"rec-{i:03d}", "title": "Yahoo league data", "body": "x" * filler})
@@ -37,7 +45,7 @@ async def test_a_long_match_line_is_clipped_around_the_match(tmp_path: Path) -> 
     long_row = next(r for r in rows if "records.jsonl" in r)
     short_row = next(r for r in rows if "notes.md" in r)
     assert "Yahoo league data" in long_row
-    body = long_row.split(":", 2)[2]  # after "<path>:<line>:"
+    body = _body(long_row, ws / "records.jsonl")
     assert len(body) <= _MAX_LINE_CHARS + 60  # the window plus the tail marker
     assert "chars; read_file the line for the rest]" in long_row
     assert short_row.endswith("the Yahoo league id lives in prep-tasks")  # short lines untouched
@@ -51,7 +59,7 @@ async def test_the_window_keeps_the_match_when_it_sits_deep_in_the_line(tmp_path
         {"pattern": "NEEDLE-HERE"}, ToolContext(workspace_root=tmp_path)
     )
     row = result.output.splitlines()[0]
-    assert "NEEDLE-HERE" in row and row.split(":", 2)[2].startswith("[… +")
+    assert "NEEDLE-HERE" in row and _body(row, tmp_path / "wide.txt").startswith("[… +")
 
 
 async def test_the_whole_output_is_capped_with_a_count(tmp_path: Path) -> None:
