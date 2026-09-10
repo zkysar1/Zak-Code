@@ -18,6 +18,7 @@ from zakcode.tools.builtins._safety import (
     PathEscapeError,
     check_literal_content,
     check_skill_claims,
+    check_skill_format,
     diagnose_python_syntax,
     resolve_path,
     skill_hosts,
@@ -203,6 +204,16 @@ class EditFileTool(Tool):
                 )
             # Same shape for a skill's claims (ADR-0126): refuse only an edit that INTRODUCES
             # a host that does not exist; one the file already named is not this edit's doing.
+            # …and one that makes a loadable skill UNLOADABLE (ADR-0131) — a file that never
+            # parsed may still be edited: repairing it is exactly the edit a refusal asks for.
+            unloadable = check_skill_format(path, new_text)
+            if unloadable is not None and check_skill_format(path, text) is None:
+                return ToolResult.error(
+                    unloadable.replace(
+                        "Refusing to write this skill", "This edit was NOT applied", 1
+                    ),
+                    data={"refusal": "skill_format"},
+                )
             claims = check_skill_claims(path, new_text)
             if claims is not None:
                 introduced = [h for h in claims[1] if h not in skill_hosts(text)]

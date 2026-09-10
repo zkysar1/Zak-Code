@@ -347,6 +347,37 @@ def skill_hosts(content: str) -> list[str]:
     return seen
 
 
+def check_skill_format(path: str, content: str) -> str | None:
+    """Refuse a SKILL.md no session could load (ADR-0131): the refusal carries the header.
+
+    Only fires for ``skills/<name>/SKILL.md`` paths. The check is the harness's own parser
+    (:func:`zakcode.skills.parse_frontmatter`), so what passes here is exactly what discovery
+    will load. Field 2026-09-10: a 46-iteration skill-authoring run ended on a SKILL.md whose
+    first line was ``# Free Agent Scan`` — no fence, no name — accepted by the write tool and
+    invisible to every future session. Returns the refusal message, or ``None``.
+    """
+    if not _SKILL_PATH_RE.search(path.replace("\\", "/")):
+        return None
+    from zakcode.skills import SkillError, parse_frontmatter  # local: keeps the import light
+
+    try:
+        parse_frontmatter(content)
+    except SkillError as exc:
+        reason = str(exc)
+    except Exception as exc:  # noqa: BLE001 — any parse failure is the same refusal
+        reason = f"{type(exc).__name__}: {exc}"
+    else:
+        return None
+    name = path.replace("\\", "/").rstrip("/").rsplit("/", 2)[-2] if "/" in path else "the-skill"
+    return (
+        f"Refusing to write this skill: no session could load it ({reason}). Nothing was "
+        "written. A skill file starts with a YAML frontmatter fence carrying its name and a "
+        "one-line description of what it does and when to use it, then the body:\n"
+        f"---\nname: {name}\ndescription: <what it does and when to use it>\n---\n"
+        "Put that at the top of the same content and write again."
+    )
+
+
 def check_skill_claims(
     path: str, content: str, *, resolve: Callable[[str], str] | None = None
 ) -> tuple[str, list[str]] | None:

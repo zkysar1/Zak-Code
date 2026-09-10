@@ -19,6 +19,7 @@ from zakcode.tools.builtins._safety import (
     PathEscapeError,
     check_literal_content,
     check_skill_claims,
+    check_skill_format,
     diagnose_python_syntax,
     resolve_path,
 )
@@ -77,6 +78,11 @@ class WriteFileTool(Tool):
         # A skill names hosts a future session will call; a host that does not exist is the
         # model's own fabrication, refused the same way a .py that will not compile is
         # (ADR-0126).
+        # …and a skill no session could LOAD is refused before its claims are even read
+        # (ADR-0131): the parser that discovery uses is the check, the header is the fix.
+        unloadable = check_skill_format(path, content)
+        if unloadable is not None:
+            return ToolResult.error(unloadable, data={"refusal": "skill_format"})
         claims = check_skill_claims(path, content)
         if claims is not None:
             return ToolResult.error(claims[0], data={"refusal": "skill_claims", "hosts": claims[1]})
