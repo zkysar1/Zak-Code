@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins._secrets import SecretsProvider
+from zakcode.tools.builtins.await_user import AwaitUserTool
 from zakcode.tools.builtins.bash import BashTool
 from zakcode.tools.builtins.deep_think import DeepThinkTool
 from zakcode.tools.builtins.edit import EditFileTool
@@ -66,6 +67,7 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     # ships no cross-session memory tool; a Mind attaches its own recall through the seams —
     # docs/PERSISTENCE-BOUNDARY.md). plan_recall reads THIS plan's record only.
     registry.register(PlanRecallTool(), aliases=["plan_history"])
+    registry.register(AwaitUserTool(), aliases=["ask_user", "wait_for_user"])
     # Claude Code's name too (ADR-0094): a Mind's loop calls ScheduleWakeup by that name.
     registry.register(ScheduleWakeupTool(), aliases=["ScheduleWakeup", "schedulewakeup", "wakeup"])
     registry.register(BashTool(), aliases=["sh", "shell"])

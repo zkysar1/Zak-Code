@@ -4947,3 +4947,51 @@ to any healthy call. Operators whose backend's full-context prefill exceeds the 
 raise one documented value. Tests: `tests/test_provider_stream.py` (never-sends, mid-stream
 stall, the per-gap property that a whole-call ceiling would fail, socket release,
 diagnosis sample, and the independence of the two timeouts).
+
+## ADR-0121: Waiting for the operator is a turn-ending state, not an open plan step
+
+**Status.** Accepted (2026-09-10). Closes Zak-Code #181.
+
+**Context.** Measured 2026-08-22 driving a live agent on slow local inference: the model
+reached a non-skippable user-input gate mid-plan and said so correctly — "I'm blocked at
+the C0.5 gate, I can't advance without your explicit answer" — and the harness's
+plan-continuation (`plan has open steps; continuing`) re-invoked it anyway, repeatedly. It
+burned **27 of the session's 50 iterations** restating "still waiting" at ~15-17 minutes a
+call, and each restatement grew the turn's context.
+
+The harness was not missing a rule; it was missing a MOVE. The plan-gate nudge already
+offered "mark the step blocked", and ADR-0115 later charged the nudge budget by progress so
+the loop gives up after two barren nudges instead of twenty-seven. But every one of those
+paths ends in a *degraded* finish — the turn is scored as a struggle and the plan is either
+abandoned or falsified — when what actually happened is a legitimate pause. The model had
+no way to say "stop the turn, keep everything, ask the operator", so it said it in prose,
+and prose cannot stop a loop: a completion that only contains a sentence is a completion,
+and the next iteration begins.
+
+**Decision.** A new `await_user(question)` built-in — READ_ONLY, never gated, the only tool
+whose SUCCESS ends the turn. The loop arms `_turn_awaiting` at the execution seam (mirroring
+`_turn_fatal`, ADR-0066) and both twins stop on it immediately after the batch's results
+land, with `stop_reason="awaiting_user"`. Three properties make it worth having over prose
+detection, which the issue itself argued against:
+
+1. **The turn ends** — one call, not twenty-seven. The question reaches the operator and
+   nothing else is spent.
+2. **The plan survives untouched.** Open steps stay `in_progress`: not failed, not
+   cancelled, not falsely marked done. The operator's next message resumes the plan instead
+   of restarting it.
+3. **It is not a struggle.** `awaiting_user` renders as "waiting for you — answer to
+   continue", never as a degraded finish, because a pause is not a failure.
+
+A malformed call (no question) ERRORS and does not arm the terminal, so a bad argument can
+never silently end a turn. Two rails now point at the tool so a model that reaches for
+prose is redirected once rather than looped: `_BLOCKER_NUDGE` ("if what you need can only
+come from the operator … call await_user"), and the plan-gate nudge's option 2, which now
+splits waiting on a PERSON (call the tool) from waiting on an EVENT (mark it blocked) — two
+different things it previously ran together. One line of stable prompt names it.
+
+**Consequences.** The measured 27-iteration burn becomes one call. The distinction between
+"blocked on a person" and "blocked on an event" is now a distinction the harness can act on
+rather than one only the prose carried. Aliases `ask_user`/`wait_for_user` catch the obvious
+guesses. Tests: `tests/test_await_user.py` (the tool's contract, the buffered and streaming
+terminals, the preserved plan, the malformed call that must NOT end a turn, the aliases,
+both nudges, the stop label, registration).
