@@ -903,12 +903,16 @@ async def test_pinned_footer_states() -> None:
     # A DEGRADED completion must not print an indistinguishable clean "done": the
     # degraded flag was computed and silently dropped by the footer (field incident
     # 2026-08-25 — a stuck-nudged give-up rendered exactly like a good turn).
+    # It says WHICH kind (ADR-0122): a rail fired and the turn still finished everything,
+    # so this is the harness working — "recovered", not "struggled".
     out = await footer_for(
         AgentDone(stop_reason="completed", iterations=5, usage=_usage(5, 5), degraded=True)
     )
-    assert "done — struggled" in out
-    # A turn that stopped mid-plan says how much is left (ADR-0115): "done — struggled" alone
-    # read as finished to a user watching a 14-step plan stop at 9/14 (serene, 2026-09-08).
+    assert "done — recovered" in out
+    assert "struggled" not in out
+    # Work left OWING is the one degraded path that is a real struggle, and it says how much
+    # is left (ADR-0115): "done — struggled" alone read as finished to a user watching a
+    # 14-step plan stop at 9/14 (serene, 2026-09-08).
     out = await footer_for(
         AgentDone(
             stop_reason="completed", iterations=5, usage=_usage(5, 5), degraded=True, open_steps=5
@@ -921,6 +925,43 @@ async def test_pinned_footer_states() -> None:
         )
     )
     assert "gave up (no output) — 1 plan step(s) left open" in out
+
+
+@pytest.mark.asyncio
+async def test_a_rail_that_fired_and_finished_reads_as_recovery_not_struggle() -> None:
+    """The word the operator reads must track whether work was left owing (ADR-0122).
+
+    Measured on the coach rig 2026-09-10: a 12-iteration, 10m41s answer that searched the
+    web, cross-referenced a local roster and came back correctly sourced with a clean
+    ``completed`` terminal and ZERO open steps printed "done — struggled", because the
+    stuck ladder had nudged once in the middle and the footer collapsed every degraded
+    completion into that one word. An operator who reads "struggled" over good work learns
+    to ignore the word — which destroys the signal the 2026-08-25 fix exists to create.
+    """
+
+    async def footer_for(done: AgentDone) -> str:
+        renderer, buffer = _make_renderer()
+        await renderer.render(_astream([done]))
+        return buffer.getvalue()
+
+    # The field shape: a rail fired, and the turn still finished everything it planned.
+    recovered = await footer_for(
+        AgentDone(stop_reason="completed", iterations=12, usage=_usage(5, 5), degraded=True)
+    )
+    assert "done — recovered" in recovered
+    assert "struggled" not in recovered
+
+    # Work left owing is the one degraded path that really is a struggle — and it still is.
+    struggled = await footer_for(
+        AgentDone(
+            stop_reason="completed", iterations=12, usage=_usage(5, 5), degraded=True, open_steps=3
+        )
+    )
+    assert "done — struggled — 3 plan step(s) left open" in struggled
+
+    # Neither is a clean "done": the operator must still see that something fired.
+    clean = await footer_for(AgentDone(stop_reason="completed", iterations=12, usage=_usage(5, 5)))
+    assert "recovered" not in clean and "struggled" not in clean
 
 
 def test_pinned_permission_parser_legacy_synonyms() -> None:

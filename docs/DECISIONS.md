@@ -4996,6 +4996,72 @@ guesses. Tests: `tests/test_await_user.py` (the tool's contract, the buffered an
 terminals, the preserved plan, the malformed call that must NOT end a turn, the aliases,
 both nudges, the stop label, registration).
 
+## ADR-0122: A rail that fired and finished is a recovery, not a struggle
+
+**Status.** Accepted (2026-09-10).
+
+**Context.** Measured on the coach rig, 2026-09-10, on the build shipped hours earlier. A
+real task — find every injury from last night's NE-at-SEA game, cross-reference the local
+roster, cite a source for every claim, and say plainly what could not be confirmed — ran
+12 iterations over 10m41s on local inference and came back correct and fully sourced: two
+in-game injuries with URLs, both matched to roster entries, pre-game inactives explicitly
+excluded as out of scope, and a short verdict. The turn's own trace records
+`stop_reason: "completed"` with no step left open.
+
+The footer said: **`done — struggled`**.
+
+The cause is one line. `TurnResult.degraded` is a deliberately thin roll-up — "this turn
+engaged failure-recovery machinery" — and the renderer collapsed every degraded completion
+into that single word. On this run the stuck ladder had nudged once in the middle ("no
+progress — added 2 investigative steps in the plan"), the nudge landed, and the turn went
+on to finish everything. The harness worked exactly as designed and then reported it as a
+failure.
+
+Two things make this worth fixing rather than tolerating. First, the blanket word is
+**residue**: it was added 2026-08-25 because a stuck-nudged *give-up* rendered identically
+to a good turn — and give-ups got their own terminal (`gave_up`, with its own label) the
+very next day. The precise fix for that incident has been in place since 2026-08-26; the
+blunt one stayed. Second, the conflation is already named in the codebase — the test that
+covers this exact path is called `test_loop_step_back_recovers_the_turn`, and its comment
+then explains that the footer will call it a struggle.
+
+An operator who reads "struggled" over visibly good work learns to ignore the word. That
+destroys the signal the 2026-08-25 fix exists to create, which makes this a regression of
+that fix rather than a cosmetic complaint.
+
+**Decision.** Keep the flag; split the WORD. `degraded` stays exactly as it is — a machine
+signal consumed by the server projection and the eval probes, and nothing about its meaning
+changes. Only the one consumer that turns it into operator-facing English changes, and it
+splits on a discriminator that is already computed and already displayed:
+
+| completed + `degraded` | `open_steps` | footer |
+|---|---|---|
+| a rail fired, the turn finished its work | 0 | `done — recovered` |
+| the model stopped with work owing | > 0 | `done — struggled — N plan step(s) left open` |
+
+Enumerating the seven sites that set `turn_degraded` shows why that discriminator is the
+right one and not a proxy: six are rails that fire and let the turn continue (the stuck
+ladder's nudge/narrow/step-back, a length-truncation continuation, a repeated-batch
+correction, a capped evidence cascade, a rejected-output retry). Exactly **one** —
+"finishing with open plan steps after the nudge cap" — leaves real work undone, and that is
+precisely the one `open_steps` already reports. The split is not a heuristic about the
+outcome; it is a read of which path was taken.
+
+Both outcomes keep the `warn` style. Neither is a clean `done`, because in both cases
+something fired and the operator should see that it did.
+
+**Consequences.** The operator can tell "the harness caught a wobble and your answer is
+complete" from "the model stopped mid-plan" — the two states the single word made
+indistinguishable. `gave_up` is untouched and still carries the 2026-08-25 incident. No
+machine consumer changes, so the server projection, the API and the eval suite see exactly
+what they saw before.
+
+**Rejected.** *Narrowing `degraded` itself* so a recovered turn no longer sets it —
+`degraded` serves two semantics (a machine "a rail fired" signal and a human outcome word),
+and a flag serving two semantics cannot be put in lockstep with one of them without
+silently changing the other's consumers. The fix belongs where the two diverge, which is
+the renderer. *Styling a recovery as `ok`* — that walks straight back into 2026-08-25,
+where a degraded turn was visually indistinguishable from a clean one.
 ## ADR-0123: A search that ran and found nothing is an empty result, not a failure
 
 **Status.** Accepted (2026-09-10).

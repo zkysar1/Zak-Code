@@ -723,8 +723,18 @@ class StreamRenderer:
             # indistinguishable clean "done": the flag was computed and then silently
             # dropped here, so a nudged give-up looked identical to a good turn
             # (field incident 2026-08-25).
+            #
+            # But one blanket word over-reaches the other way (ADR-0122). That incident was a
+            # give-up, and give-ups got their OWN terminal the next day (``gave_up``), so the
+            # blanket is residue. Every OTHER degraded completion is a rail that fired and then
+            # let the turn FINISH — the stuck ladder's step-back, a length continuation, a
+            # capped cascade — which is the harness working, not the model failing. Exactly one
+            # degraded path leaves real work owing, and it is already the one ``open_steps``
+            # reports. So split there: work left open is a struggle, work finished behind a rail
+            # is a recovery. Both stay ``warn`` — the operator still sees that something fired.
             if done.degraded:
-                return f"done {self._g['dash']} struggled", "warn"
+                word = "struggled" if done.open_steps else "recovered"
+                return f"done {self._g['dash']} {word}", "warn"
             return label, "ok"
         if reason in ("provider_error", "skill_too_large"):
             if done.error:

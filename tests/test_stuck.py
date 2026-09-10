@@ -376,7 +376,8 @@ class _RecoversOnStepBackProvider(Provider):
 def test_loop_step_back_recovers_the_turn(tmp_path: Path) -> None:
     # The whole point of the rung: a turn that would previously have died as "stuck" at the
     # old stop threshold instead completes, because the step-back prompt landed. Degraded
-    # stays True — the footer honestly reports the struggle ("done — struggled").
+    # stays True — the flag is the machine signal that a rail fired, and the footer reports
+    # it as what it is: nothing left open, so "done — recovered" (ADR-0122).
     provider = _RecoversOnStepBackProvider()
     result = asyncio.run(_loop(provider, tmp_path).arun_turn("fetch the drive notes"))
     assert result.stop_reason == "completed"
