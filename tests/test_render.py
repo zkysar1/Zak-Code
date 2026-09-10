@@ -555,7 +555,9 @@ async def test_render_draws_a_harness_plan_change_once() -> None:
     ]
     await renderer.render(_astream(events))
     out = buffer.getvalue()
-    assert "Plan" in out and "2 items" in out  # header row + the step row
+    # ADR-0124: a partial plan draws as ONE line — progress plus the step in hand — not as
+    # every row. Still exactly once: the dedup on the checklist's glyph rows is untouched.
+    assert "Plan" in out and "0/1 steps" in out and "current:" in out
     assert out.count("Audit the pipeline") == 1
 
 

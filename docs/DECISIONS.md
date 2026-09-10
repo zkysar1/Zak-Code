@@ -5116,3 +5116,47 @@ too, so this would swallow a genuine engine error as an empty result: the failur
 silent and produces a confidently wrong answer, which is worse than the defect being fixed.
 *Fixing it in `WebSearchTool` by string-matching the error text* — that puts a `ddgs`
 implementation detail in the shared tool, where it would be wrong for every other backend.
+
+## ADR-0124: The update_plan result is a receipt, not the plan
+
+**Status.** Accepted (2026-09-10).
+
+**Context.** A live agent on `gemini-2.5-flash` (the serene deployment, 2026-09-10) ran a
+40-step plan to a stop: **37 iterations, 11.68M tokens, $3.57, six minutes** — most of them
+restating that it was blocked. The bill was not the restating. It was the plan.
+
+`update_plan` is full-replace: the model sends the whole plan every call. The tool then echoed
+the whole rendered checklist back as its result, and the loop *also* re-injects the live
+checklist as an ephemeral tail message every iteration (the highest-salience slot, on
+purpose). So each edit delivered the plan to the model twice — and the two copies are not
+equal. The reminder is ephemeral and never persisted; the tool result is a message in the
+session history. Every `update_plan` call therefore appended a full copy of the plan to the
+context for the rest of the session, compounding with the plan's size and the iteration
+count. On coach's own run this morning the echo was 7.8% of the transcript on a nine-step
+plan; at forty steps it is the bulk of every subsequent prompt.
+
+The operator paid the same tax in the terminal: forty rows redrawn on every edit, so the work
+scrolled away under the checklist.
+
+**Decision.** Keep the reminder as the single carrier of the checklist. The tool result becomes
+a **receipt** holding only what the model cannot get elsewhere:
+
+- progress and the step to act on now (`Plan updated: 14/32 steps done · current: 5.5 …`), so
+  the standing hint "do the step marked current" still has its referent;
+- this call's advisories (a dropped open step, a reopened section) — call-specific, and the one
+  thing the reminder cannot carry;
+- this edit's structural quality score (ADR-0050).
+
+In the terminal a partial plan now collapses to one line — progress plus the step in hand —
+the way a finished plan already collapsed (ADR-0108). The dedup between a tool-result draw
+and a `task_update` draw is unchanged. The full checklist is one `/todo` away, in the REPL and
+through the cockpit's say box, which already dispatches slash commands.
+
+**Consequences.** History no longer grows by a plan per edit. Nothing the model needs is
+lost: the checklist still arrives every iteration, once, at the tail, rebuilt from the live
+network — which also means it survives compaction by construction. Production code never
+parsed the result text (verified); only two test helpers counted results by the old prefix.
+
+**Rejected.** *Dropping the tail reminder instead* — it is the copy that is rebuilt from state
+each iteration and never persisted; it is the right carrier, the echo was the wrong one.
+*Collapsing only in the terminal* — that fixes the scrolling and leaves the bill.

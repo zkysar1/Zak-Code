@@ -563,6 +563,7 @@ def eval_(
 _TIPS: tuple[str, ...] = (
     "mention a file by path and Zak reads it before answering",
     "/plan <task> drafts a read-only plan before anything runs",
+    "/todo shows the live plan in full (the harness prints one line per edit)",
     "/compact summarizes older history to free up context",
     "ctrl-c interrupts a running reply without leaving the chat",
     "/skills lists what Zak can load; invoke one with /<name>",
@@ -590,6 +591,7 @@ _HELP_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("/hooks", "configured lifecycle hooks"),
             ("/agents", "sub-agent types available for delegation"),
             ("/plan <task>", "draft a plan (read-only, never executes)"),
+            ("/todo", "the live plan in full"),
         ),
     ),
     (
@@ -1658,6 +1660,7 @@ _REPL_COMMANDS = (
     "/cost",
     "/agents",
     "/plan",
+    "/todo",
     "/mcp",
     "/plugins",
     "/skills",
@@ -2906,6 +2909,21 @@ def chat(
                 )
                 _render_transcript(console, agent.session)
                 _announce_resume(console, agent)  # resume safety (ADR-0033)
+                continue
+            if command == "/todo":
+                # The live plan on demand (ADR-0124): the harness no longer prints the whole
+                # checklist on every edit, so this is where the full view lives.
+                network = agent.session.task_network
+                rendered = network.render()
+                if not rendered:
+                    console.print(margin(Text("no plan for the current goal", style="notice.dim")))
+                else:
+                    finished, total = network.progress()
+                    console.print(
+                        margin(Text(f"plan {finished}/{total} steps done", style="notice.dim"))
+                    )
+                    for ln in rendered.splitlines()[1:]:
+                        console.print(margin(Text(ln, style="result.output")))
                 continue
             if command == "/cost":
                 usage = agent.session.cumulative_usage()
