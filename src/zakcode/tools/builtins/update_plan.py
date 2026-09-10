@@ -214,10 +214,24 @@ class UpdatePlanTool(Tool):
         # and every transition is logged (ADR-0110) — the model resends the plan, not its record.
         advisories = network.replace_from_author(built)
 
-        rendered = network.render()
         finished, total = network.progress()
         quality, deficiencies = network.quality()
-        output = rendered
+        # The result is a RECEIPT, not the plan (ADR-0124). The model just sent the whole plan
+        # (full-replace), and the loop re-injects the live checklist as an ephemeral tail
+        # message every iteration anyway — so echoing it here put a third copy into the
+        # PERSISTED history on every call, compounding for the rest of the session (measured:
+        # 37 iterations on a 40-step plan, 11.68M tokens). What stays is what the model cannot
+        # get elsewhere: the step to act on now, this call's advisories, this edit's score.
+        current = network.current()
+        if network.is_complete():
+            output = f"Plan updated: {finished}/{total} steps done — complete."
+        elif current is not None:
+            output = (
+                f"Plan updated: {finished}/{total} steps done · current: "
+                f"{current.id} {clip(current.title, 80)}"
+            )
+        else:
+            output = f"Plan updated: {finished}/{total} steps done."
         if advisories:
             output += "\n\nNotes:\n" + "\n".join(f"- {a}" for a in advisories)
         if deficiencies:

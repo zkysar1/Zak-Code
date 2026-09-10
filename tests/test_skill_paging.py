@@ -749,7 +749,7 @@ def test_a_third_drop_is_the_models_decision(tmp_path: Path) -> None:
             1
             for m in messages
             for b in m.blocks
-            if isinstance(b, ToolResultBlock) and (b.output or "").startswith("Current plan")
+            if isinstance(b, ToolResultBlock) and (b.output or "").startswith("Plan updated")
         )
         if plans < 3:
             return _plan(_keep_first(rewrite=n), call_id=f"p{n}")
@@ -798,7 +798,7 @@ def _plans_sent(messages: list[Message]) -> int:
         1
         for m in messages
         for b in m.blocks
-        if isinstance(b, ToolResultBlock) and (b.output or "").startswith("Current plan")
+        if isinstance(b, ToolResultBlock) and (b.output or "").startswith("Plan updated")
     )
 
 

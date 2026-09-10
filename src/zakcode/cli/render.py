@@ -65,6 +65,14 @@ from zakcode.usage import Usage
 _GLYPH_ROW_RE = re.compile(r"^\[[ x~!-]\] \d")
 
 
+_PLAN_HEADER_RE = re.compile(r"Current plan \((\d+)/(\d+) steps done\)")
+
+
+def _plan_step_label(row: str) -> str:
+    """A checklist row without its glyph or the ``<- current`` marker: what the step IS."""
+    return re.sub(r"^\[.\]\s*", "", row).replace("<- current", "").strip()
+
+
 def _plan_key(lines: list[str]) -> str:
     """The checklist's glyph rows joined — the identity of a drawn plan (ADR-0112), shared by
     an ``update_plan`` result and a ``task_update`` so the same plan is never drawn twice."""
@@ -600,6 +608,24 @@ class StreamRenderer:
             if steps and all(s.startswith(("[x] ", "[-] ")) for s in steps):
                 collapsed = f"complete {g['dot']} {_plural(len(steps), 'step')}"
                 return Text(collapsed, style="result.summary"), []
+            if steps:
+                # A PARTIAL plan collapses too (ADR-0124): progress plus the step in hand.
+                # Forty rows on every edit buried the work under the checklist; the full
+                # plan is one `/todo` away.
+                head = _PLAN_HEADER_RE.search("\n".join(lines))
+                label = (
+                    f"{head.group(1)}/{head.group(2)} steps"
+                    if head
+                    else _plural(len(steps), "step")
+                )
+                # The step in hand is the one the render marks `<- current`; a checklist
+                # without the marker falls back to its first in-progress row.
+                current = next((row for row in steps if "<- current" in row), None)
+                if current is None:
+                    current = next((row for row in steps if row.startswith("[~] ")), None)
+                if current is not None:
+                    label += f" {g['dot']} current: {_plan_step_label(current)[:80]}"
+                return Text(label, style="result.summary"), []
             rows = [self._todo_row(ln) for ln in lines]
             return Text(_plural(len(items), "item"), style="result.summary"), rows
 
