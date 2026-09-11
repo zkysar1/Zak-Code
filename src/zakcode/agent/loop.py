@@ -139,6 +139,7 @@ from zakcode.hooks import (
     LLMContextPayload,
     TurnEndPayload,
     TurnEndResult,
+    UserPromptSubmitPayload,
 )
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
@@ -1755,6 +1756,9 @@ class AgentLoop:
         # empty (no-op) manager so the hook calls are always safe to make.
         self.permission_policy = permission_policy
         self.hook_manager = hook_manager or HookManager()
+        # ADR-0134: USER_PROMPT_SUBMIT context, computed ONCE per turn (turn-start) and
+        # folded into every model call of that turn via the ephemeral tail. Reset each turn.
+        self._turn_prompt_context: list[str] = []
         # Fired once, lazily, on the first turn of this loop's lifetime (a session). A delegated
         # sub-agent passes ``fire_session_start=False``: it is a sub-task WITHIN the parent's
         # already-started session, not a new session, so it must NOT re-run the workspace's
@@ -2388,6 +2392,12 @@ class AgentLoop:
             )
             if texts:
                 tail.append(Message.user(_fence_injected_context(texts)))
+        # ADR-0134: UserPromptSubmit context, computed once at the turn's user-message
+        # boundary, rides the ephemeral tail for the whole turn (prompt-cache safe, never
+        # persisted) -- same mechanism as the PRE_LLM_CALL context above, a different seam and
+        # timing. Injected even when no PRE_LLM_CALL context hooks exist (that block is skipped).
+        if self._turn_prompt_context:
+            tail.append(Message.user(_fence_injected_context(self._turn_prompt_context)))
         # The live plan is re-injected LAST (highest salience, countering instruction
         # fade-out) as an ephemeral tail message — never persisted, so the cached
         # system+history prefix and the on-disk session both stay clean (the plan lives
@@ -5219,6 +5229,26 @@ class AgentLoop:
         logger.info("say inbox: delivered /%s mid-turn", skill)
         return f"/{skill} {args}".strip()
 
+    async def _fire_user_prompt_submit(self, user_text: str) -> None:
+        """Fire USER_PROMPT_SUBMIT hooks ONCE at the turn's user-message boundary (ADR-0134).
+
+        Stashes the injected context in ``self._turn_prompt_context``; the tail-builder folds it
+        into every model call of this turn (ephemeral, never persisted -- prompt-cache safe).
+        Gated on ``has_user_prompt_hooks()`` so the common no-hook path pays a single boolean.
+        Injection only -- a hook cannot block the prompt here (documented follow-up). Never raises:
+        ``gather_user_prompt_context`` isolates every hook failure.
+        """
+        self._turn_prompt_context = []
+        if not self.hook_manager.has_user_prompt_hooks():
+            return
+        self._turn_prompt_context = await self.hook_manager.gather_user_prompt_context(
+            UserPromptSubmitPayload(
+                prompt=user_text,
+                session_id=self.session.id,
+                cwd=str(self.workspace_root),
+            )
+        )
+
     async def _run_turn(self, user_text: str) -> TurnResult:
         await self._fire_session_start_once()
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
@@ -5226,6 +5256,7 @@ class AgentLoop:
         self._reset_stale_or_completed_plan()
         self._anchor_request(user_text)  # ADR-0110: a fresh plan knows what it is for
         self.session.add_message(Message.user(user_text))
+        await self._fire_user_prompt_submit(user_text)  # ADR-0134 (both turn paths)
         # Contested-claim rail (ADR-0040): the operator disputes the previous answer — ask for
         # the re-measurement up front, before the apology reflex gets a first token.
         if _contests_prior_claim(user_text) and self._previous_assistant_text():
@@ -6564,6 +6595,7 @@ class AgentLoop:
         self._reset_stale_or_completed_plan()
         self._anchor_request(user_text)  # ADR-0110 — see _run_turn (buffered twin)
         self.session.add_message(Message.user(user_text))
+        await self._fire_user_prompt_submit(user_text)  # ADR-0134 (both turn paths)
         # Contested-claim rail (ADR-0040) — see _run_turn (buffered twin).
         if _contests_prior_claim(user_text) and self._previous_assistant_text():
             self._note(
