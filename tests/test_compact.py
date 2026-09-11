@@ -200,3 +200,86 @@ def test_elide_reports_nothing_to_do_on_a_plain_transcript() -> None:
     msgs = _convo(4)
     result = Compactor(CompactionConfig()).elide(msgs, keep_recent=0)
     assert result.compacted is False and result.messages == msgs
+
+
+# ── the kept tail's token budget (ADR-0132) ─────────────────────────────────────
+
+
+def _chars_over_4(messages: list[Message]) -> int:
+    """A stand-in tokenizer: the provider's own estimate is chars/4."""
+    return (
+        sum(
+            len(block.output)
+            for message in messages
+            for block in message.blocks
+            if isinstance(block, ToolResultBlock)
+        )
+        // 4
+    )
+
+
+def _budgeted() -> list[Message]:
+    return [
+        Message.user("start"),
+        *_tool_pair("t1", "a" * 8000),
+        *_tool_pair("t2", "b" * 8000),
+        *_tool_pair("t3", "c" * 8000),
+        Message.user("go on"),
+        *_tool_pair("t4", "d" * 8000),
+    ]
+
+
+def test_compact_trims_the_kept_tail_to_its_token_budget() -> None:
+    # Measured 2026-09-10 (coach, zc-03, 131k window): an eight-message tail carried two
+    # ~33k-token grep results through a compaction, the prompt came back down only to
+    # 75k, and the session compacted again six calls later. The tail is a budget too.
+    async def scenario() -> None:
+        c = Compactor(CompactionConfig(preserve_recent=8))
+        # A 20k window is a 5k-token budget; the tail holds four 2k-token results.
+        result = await c.compact(
+            _budgeted(), summarize=_summarize, context_window=20_000, count_tokens=_chars_over_4
+        )
+        assert result.compacted is True and result.tail_elided == 2
+        tail = result.messages[1:]
+        assert _chars_over_4(tail) <= 5_000
+        assert _output(tail[1]).startswith(ELISION_MARKER)  # t1 — the oldest goes first
+        assert _output(tail[3]).startswith(ELISION_MARKER)  # then t2
+        assert _output(tail[5]) == "c" * 8000  # t3 fits once the two older are gone
+        assert _output(tail[-1]) == "d" * 8000  # the newest result is never touched
+
+    asyncio.run(scenario())
+
+
+def test_the_newest_message_is_never_trimmed_even_over_budget() -> None:
+    async def scenario() -> None:
+        c = Compactor(CompactionConfig(preserve_recent=8))
+        # A budget nothing fits: every older result is elided; the newest stays whole,
+        # because at the per-call check it is the result the model has not read yet.
+        result = await c.compact(
+            _budgeted(), summarize=_summarize, context_window=400, count_tokens=_chars_over_4
+        )
+        assert result.tail_elided == 3
+        assert _output(result.messages[-1]) == "d" * 8000
+
+    asyncio.run(scenario())
+
+
+def test_compact_without_a_window_keeps_the_tail_as_it_stands() -> None:
+    async def scenario() -> None:
+        c = Compactor(CompactionConfig(preserve_recent=8))
+        msgs = _budgeted()
+        result = await c.compact(msgs, summarize=_summarize)
+        assert result.compacted is True and result.tail_elided == 0
+        assert result.messages[1:] == msgs[1:]
+
+    asyncio.run(scenario())
+
+
+def test_elide_holds_its_kept_tail_to_the_budget_too() -> None:
+    msgs = [Message.user("start"), *_tool_pair("t0", "z" * 8000), *_budgeted()[1:]]
+    c = Compactor(CompactionConfig(preserve_recent=8))
+    result = c.elide(msgs, context_window=20_000, count_tokens=_chars_over_4)
+    assert result.compacted is True
+    assert result.summarized_count == 1  # t0, in the old region
+    assert result.tail_elided == 2  # t1 and t2, the oldest in the tail
+    assert _output(result.messages[-1]) == "d" * 8000

@@ -393,3 +393,30 @@ def test_maybe_compact_says_when_compaction_failed(tmp_path: Path) -> None:
         "compaction failed — summarizer failed (RuntimeError: summarizer down) and no long "
         "tool output to elide; continuing with the full history"
     )
+
+
+def test_auto_compact_holds_the_kept_tail_to_its_budget(tmp_path: Path) -> None:
+    # ADR-0132: the loop hands the compactor the window and a token counter, so the kept
+    # tail is a budget as well as a count, and the outcome names what was elided from it.
+    # The counter floors the provider's estimate at 3 chars/token (the seam clamp's
+    # density): three 5,000-char results are 5,000 tokens against an 8192-window budget
+    # of 2,048, so the two older ones go and the newest stays whole.
+    provider = _SummarizerProvider(["summary"], tokens=100)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(
+        [
+            *_history(3),
+            *_tool_pair("t1", "x" * 5000),
+            *_tool_pair("t2", "y" * 5000),
+            *_tool_pair("t3", "z" * 5000),
+        ]
+    )
+
+    assert asyncio.run(loop.compact_now()) is True
+    assert loop.last_compaction == (
+        "compacted 12 → 7 messages "
+        "(2 long tool output(s) in the kept tail elided to fit its budget)"
+    )
+    assert _output(loop.session.messages[2]).startswith(ELISION_MARKER)
+    assert _output(loop.session.messages[4]).startswith(ELISION_MARKER)
+    assert _output(loop.session.messages[-1]) == "z" * 5000

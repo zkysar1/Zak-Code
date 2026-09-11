@@ -96,7 +96,7 @@ class StubCompactor:
         # compact_now() recovery path (which does not consult should_compact) runs.
         return False
 
-    async def compact(self, messages: list[Message], *, summarize: Any) -> Any:
+    async def compact(self, messages: list[Message], *, summarize: Any, **kw: Any) -> Any:
         from types import SimpleNamespace
 
         self.compact_calls += 1
@@ -104,7 +104,7 @@ class StubCompactor:
         kept = list(messages[-1:]) if self._succeeds else list(messages)
         return SimpleNamespace(compacted=self._succeeds, messages=kept)
 
-    def elide(self, messages: list[Message], *, keep_recent: int | None = None) -> Any:
+    def elide(self, messages: list[Message], *, keep_recent: int | None = None, **kw: Any) -> Any:
         from types import SimpleNamespace
 
         self.elide_calls += 1
@@ -455,7 +455,7 @@ class ThresholdCompactor:
         self.checks += 1
         return len(messages) >= self._limit
 
-    async def compact(self, messages: list[Message], *, summarize: Any) -> Any:
+    async def compact(self, messages: list[Message], *, summarize: Any, **kw: Any) -> Any:
         from types import SimpleNamespace
 
         self.compact_calls += 1
@@ -575,7 +575,7 @@ class CountingCompactor:
         self.counts.append(n)
         return n > self._limit
 
-    async def compact(self, messages: list[Message], *, summarize: Any) -> Any:
+    async def compact(self, messages: list[Message], *, summarize: Any, **kw: Any) -> Any:
         from types import SimpleNamespace
 
         self.compact_calls += 1

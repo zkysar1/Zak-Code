@@ -382,7 +382,9 @@ async def test_compaction_forgets_the_reload_dedup(tmp_path: Path) -> None:
     assert second.body is not None and second.body.startswith("[already loaded]")
 
     class _Compactor:
-        async def compact(self, messages: list, *, summarize: object) -> CompactionResult:
+        async def compact(
+            self, messages: list, *, summarize: object, **kw: object
+        ) -> CompactionResult:
             return CompactionResult(compacted=True, messages=list(messages[-1:]))
 
     agent.loop.compactor = _Compactor()  # type: ignore[assignment]

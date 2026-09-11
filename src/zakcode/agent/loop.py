@@ -2187,6 +2187,24 @@ class AgentLoop:
             estimate = max(estimate, tokens + self.provider.count_tokens(messages[index:]))
         return estimate
 
+    def _tail_tokens(self, messages: list[Message]) -> int:
+        """Tokens in a slice of the transcript, for the compaction tail budget (ADR-0132).
+
+        The provider's estimate is chars/4 and sits ~1.6x under the truth on id-dense tool
+        output — the reason the prompt anchor exists (``_count_tokens_anchored``), but an
+        anchor measures the whole prefix, not a slice. The seam clamp's 3-chars/token
+        density is the floor here too, so a budget that trusted the estimate could not
+        keep a fat tail with a smaller number on it.
+        """
+        estimate = self.provider.count_tokens(messages)
+        output_chars = sum(
+            len(block.output)
+            for message in messages
+            for block in message.blocks
+            if isinstance(block, ToolResultBlock)
+        )
+        return max(estimate, output_chars // _CLAMP_CHARS_PER_TOKEN)
+
     async def compact_now(self, *, trigger: str = "manual") -> bool:
         """Force a compaction regardless of threshold.
 
@@ -2238,15 +2256,24 @@ class AgentLoop:
         before = len(self.session.messages)
         failure = ""
         try:
+            window: int | None = self.provider.capabilities().context_window
+        except NotImplementedError:
+            window = None
+        try:
             result = await self.compactor.compact(
-                self.session.messages, summarize=self._summarize_for_compaction
+                self.session.messages,
+                summarize=self._summarize_for_compaction,
+                context_window=window,
+                count_tokens=self._tail_tokens,
             )
         except Exception as exc:  # noqa: BLE001 — the summarizer is a model call; it can fail
             failure = f"{type(exc).__name__}: {str(exc)[:160]}"
             logging.getLogger(__name__).warning(
                 "compaction summarizer failed; eliding tool outputs instead", exc_info=True
             )
-            result = self.compactor.elide(self.session.messages)
+            result = self.compactor.elide(
+                self.session.messages, context_window=window, count_tokens=self._tail_tokens
+            )
         if not result.compacted:
             outcome = (
                 f"summarizer failed ({failure}) and no long tool output to elide"
@@ -2256,6 +2283,11 @@ class AgentLoop:
             self._record_compaction(outcome, compacted=False)
             return False, outcome
         outcome = f"compacted {before} → {len(result.messages)} messages"
+        tail_elided = getattr(result, "tail_elided", 0)  # a bare test double has none
+        if tail_elided:
+            outcome += (
+                f" ({tail_elided} long tool output(s) in the kept tail elided to fit its budget)"
+            )
         if failure:
             outcome = (
                 f"summarizer failed ({failure}); elided {result.summarized_count} long "
