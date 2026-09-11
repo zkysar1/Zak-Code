@@ -44,6 +44,7 @@ _EVENT_MAP: dict[str, HookEvent] = {
     "PreCompact": HookEvent.PRE_COMPACT,
     "OnSkillSelected": HookEvent.ON_SKILL_SELECTED,
     "Stop": HookEvent.TURN_END,
+    "UserPromptSubmit": HookEvent.USER_PROMPT_SUBMIT,
 }
 
 #: Real Claude Code events deferred FOR SCOPE — recognised and skipped with a warning (not silently
@@ -52,12 +53,13 @@ _EVENT_MAP: dict[str, HookEvent] = {
 #: provider-error turn end, a non-vetoable terminal that would need new firing threaded through the
 #: critical finalize path) lets a framework leave a crash breadcrumb for the next session, and
 #: UserPromptExpansion captures human-typed slash invocations (distinct from the model-path
-#: ON_SKILL_SELECTED signal). UserPromptSubmit fires at the user-message boundary and its stdout is
-#: injected as context — a real firing seam on the turn-entry path, so designing it is seam work
-#: rather than a mapping entry; it sits here so a Mind that wires it degrades LOUDLY instead of
-#: reading ``unknown event``, which is indistinguishable from a typo. Deferred until those firing
-#: points are designed; see the roadmap.
-_SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion", "UserPromptSubmit"}
+#: ON_SKILL_SELECTED signal).
+#:
+#: UserPromptSubmit GRADUATED OUT of this set (ADR-0134): it now maps to
+#: ``HookEvent.USER_PROMPT_SUBMIT`` and fires once at the user-message boundary, its returned
+#: ``additionalContext`` folded into the turn as an ephemeral tail (injection only; exit-2
+#: prompt-blocking is a documented follow-up). See ``HookManager.gather_user_prompt_context``.
+_SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion"}
 
 
 def _split_command(cmd: str) -> list[str]:
