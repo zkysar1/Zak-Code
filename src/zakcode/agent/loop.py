@@ -168,7 +168,12 @@ from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thi
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
 from zakcode.secrets import redact_credential_tokens
-from zakcode.session.observation_inbox import take_observation
+from zakcode.session.discovery_ledger import discovery_path, fold_observation
+from zakcode.session.observation_inbox import (
+    observation_path,
+    read_observation,
+    render_observation,
+)
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import (
@@ -1021,6 +1026,12 @@ _SAY_PATIENCE = 3
 #: A perception is the WORLD reporting itself, never a person speaking, and never the
 #: turn's message.
 _OBSERVATION_FRAME = "[perception — from your vessel, not from a person]\n{text}"
+
+#: How many newly-unlocked keys the discovery note names before it summarises the rest.
+#: A first perception in a dense room can unlock a whole bubble at once, and the note
+#: rides inside an envelope already capped at 16 KB by the vessel — an uncapped list is
+#: how a one-line addition starts evicting the perception it was annotating.
+_DISCOVERY_NOTE_MAX = 12
 
 #: Apology spiral (ADR-0040): a no-tool-call completion that is mostly apology and
 #: retraction. The sycophantic twin of the repetition loop — it does no work either, and it
@@ -5407,8 +5418,8 @@ class AgentLoop:
         """Fold the vessel's latest perception into the conversation at an iteration boundary.
 
         Returns True when something was perceived. Only the main loop polls
-        (``consume_observation_inbox``). Fail-open by inheritance: ``take_observation``
-        yields ``None`` on any OS or parse error.
+        (``consume_observation_inbox``). Fail-open by inheritance: ``read_observation``
+        yields ``None`` on any OS or parse error, and ``render_observation`` on an empty one.
 
         Deliberately NOT the say path, in three ways that all follow from what a perception
         IS. There is no task-boundary hold (ADR-0052): a say waits for a step seam because a
@@ -5420,9 +5431,32 @@ class AgentLoop:
         """
         if not self._consume_observation_inbox:
             return False
-        rendered = take_observation(self.workspace_root)
+        # Two steps rather than take_observation(), which renders straight to prose: the
+        # discovery fold needs the STRUCTURED envelope, and it has to run between the read
+        # and the render so a newly-unlocked entity can be named in the same block the
+        # perception arrives in. Consumption stays exactly-once — read_observation() deletes.
+        envelope = read_observation(observation_path(self.workspace_root))
+        rendered = render_observation(envelope)
         if rendered is None:
             return False
+        # Accumulate the discovery slice and name what just unlocked, in the same block the
+        # perception arrives in. The vessel's discoveryPerception is a per-tick projection
+        # bounded at the character's bubble, so an object explored and then walked away from
+        # VANISHES from the next envelope — "what have I unlocked by exploring" is
+        # unanswerable from any one perception, and accumulating it is the mind's job
+        # (ADR-0145). Only the EVENT is announced: the standing set is already in the ledger,
+        # and re-stating it every round is noise from the second round on. Fail-open, like
+        # every step on this path — bookkeeping must never cost the perception it records.
+        try:
+            newly = fold_observation(discovery_path(self.workspace_root), envelope)
+        except Exception:  # noqa: BLE001 - a ledger fault must not swallow a perception
+            logger.warning("discovery ledger: fold failed; perception delivered", exc_info=True)
+            newly = []
+        if newly:
+            shown = newly[:_DISCOVERY_NOTE_MAX]
+            more = len(newly) - len(shown)
+            tail = f", and {more} more" if more else ""
+            rendered += f"\n\n(Newly discovered by exploring: {', '.join(shown)}{tail})"
         self.session.add_message(Message.user(_OBSERVATION_FRAME.format(text=rendered)))
         self._persist()
         self._note("intervention", "perception delivered mid-turn", kind="observation")

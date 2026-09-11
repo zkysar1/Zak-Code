@@ -6273,3 +6273,74 @@ variance exists, which is precisely not where this gate was needed.
 is per-turn, so a script read in an earlier turn is not credited and a long session can be asked
 twice about one file (the whole family shares this shape). And it nudges rather than refuses: a
 model that insists on the zero still may.
+
+---
+
+## ADR-0145: The discovery ledger — accumulation lives in the mind, because the vessel's slice is a projection
+
+**Context.** The vessel (Ayoai-Environment-Server, g-368-15) now emits a `discoveryPerception`
+slice on the observation envelope: per `ayoKey`, `{touchCount, distanceStatus, discovered}` for
+every entity inside the character's 27-stud bubble. The feature it is meant to serve is
+"objects unlock through exploration" — a permanent, monotone property of a character.
+
+The slice cannot carry that property, and it is right that it cannot. `SpatialPerceptionVerticle`
+CLEARS the folder and rebuilds it from scratch on every perception tick, bounded at
+`bubbleRadius`. That is the correct vessel-side design — nothing accumulates, a departing entity
+prunes itself, and the slice cannot drift from the `touchCount` it mirrors — but it means an
+object the character explored and then walked away from is simply ABSENT from the next envelope.
+
+So the evidence for a monotone fact arrives in a population that shrinks as a matter of normal
+operation. Read any single envelope and you under-report what the character has found, every
+time, with no error anywhere. Unlocking is permanent; the reporting of it is not.
+
+**Decision.** `zakcode/session/discovery_ledger.py` — a workspace file `.discovery`, a sibling of
+`.say` and `.observation`, folded in `AgentLoop._deliver_observation` between the envelope read
+and the render.
+
+The fold has to sit *between* those two, and that is the one structural constraint the wiring
+imposes: `take_observation()` renders straight to framed prose, so a consumer needing structured
+fields has to call `read_observation()` + `render_observation()` itself. Consumption stays
+exactly-once — the read is what deletes.
+
+Four properties, each of which a future reader could plausibly "simplify" away:
+
+- **Membership IS the unlock, and it is sticky.** A key enters the map once and never leaves.
+  Absence from a later envelope, and an explicit `discovered: false`, are both readings of the
+  current frame — never retractions. There is no per-entry `discovered` flag, because presence
+  already is one and a second copy of a fact is a second thing to keep true.
+- **Merely-seen entities are not recorded.** "In the bubble, never touched" is re-supplied by the
+  very next envelope. Storing it would grow the file with a copy of what the vessel already says.
+  The unlock is the only fact that outlives the frame, so it is the only one kept.
+- **`touchCount` and `lastObservedAt` are latest-wins and travel together.** A count is
+  meaningless without the time it was read at, which is the entire reason the stamp is stored.
+  `touchCount: 0` beside a present key is the visible signature of a vessel-side counter reset:
+  nothing hides it and nothing corrects it.
+- **The unlock is an EVENT.** `fold_observation` returns the keys that crossed on THIS envelope,
+  and `_deliver_observation` names them in the same block the perception arrives in — capped at
+  `_DISCOVERY_NOTE_MAX`, since a first perception in a dense room unlocks a whole bubble at once
+  and the note rides inside an envelope the vessel already caps at 16 KB. The standing set is
+  never re-announced; it is already in the ledger, and re-stating it is noise from round two on.
+
+Fail-open throughout, by inheritance from the path it sits on: a corrupt, version-mismatched or
+unwritable ledger costs the ledger something and costs the perception nothing. The fold is
+wrapped so that even a defect in it cannot swallow a perception.
+
+**Alternatives rejected.** *Accumulating vessel-side* — that is what guard-4871 forbids (the
+reactive layer is execution, not memory), and it is also what makes the slice trustworthy: a
+projection cannot drift from its source. *Widening the slice to `sightRadius`* — the 27-stud
+bound is the tightest tier already computed in the same loop, so the projection reuses a bound
+rather than adding one; the 16 KB envelope cap is what the wider radius would have spent.
+*A `discovered_keys()` reader* — written, then deleted before commit: it had zero call sites, and
+the ledger already has a real reader in the fold itself (stickiness is a read).
+
+**Consequences.** The consumer ships BEFORE the producer: the env-server PR that emits the slice
+is open and unmerged under a deploy hold. That is deliberate and was sanctioned upstream — an
+envelope with no `discoveryPerception` is the expected case on any vessel that predates the
+producer, so this code is inert rather than noisy until the channel is live, and `.discovery` is
+simply never created. It is also gated on `consume_observation_inbox`, so a sub-agent accumulates
+nothing into the workspace its parent owns.
+
+Six mutations were run against the suite and all six went red on the intended test: recording
+merely-seen entities, returning the standing set instead of the event, ignoring the version
+stamp, re-deriving `discovered` instead of trusting the vessel's flag, dropping the note cap, and
+removing the fail-open guard.
