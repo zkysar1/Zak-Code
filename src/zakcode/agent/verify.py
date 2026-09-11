@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import shlex
 
+from zakcode.agent.recipe import _PIPE_SPLIT  # ADR-0139: one definition of "a pipe ate the status"
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
 
@@ -49,6 +50,24 @@ def _commands_match(ran: str, verify: str) -> bool:
         return False
     n = len(verify_tokens)
     return any(ran_tokens[i : i + n] == verify_tokens for i in range(len(ran_tokens) - n + 1))
+
+
+def _exit_status_is_the_commands(ran: str, verify: str) -> bool:
+    """Whether the shell exit status the harness saw belongs to the VERIFY command (ADR-0139).
+
+    A pipeline reports its LAST stage's status, so ``uv run poe check 2>&1 | tail -40`` exits 0
+    however the checks went -- and a model pipes precisely because the output is long. ``&&`` and
+    ``;`` are fine: the shell returns the last segment's status and ``&&`` short-circuits on
+    failure, so a failing check still propagates.
+
+    Unlike a test suite (see :func:`~zakcode.agent.recipe._piped_suite_output_is_green`) a
+    configured verify command has NO standard summary line -- it may be a lint, a type check, a
+    composite task runner -- so there is no text to fall back on and an unreadable verdict must
+    count as NOT passed. The asymmetry is deliberate: the recipe gate reads pytest's summary
+    because pytest has one; this gate cannot, so it declines instead of guessing.
+    """
+    stages = _PIPE_SPLIT.split(ran)
+    return len(stages) == 1 or _commands_match(stages[-1], verify)
 
 
 class VerificationGate:
@@ -83,7 +102,11 @@ class VerificationGate:
                 command = call.arguments.get("command")
                 if not isinstance(command, str) or not _commands_match(command, self.command or ""):
                     continue
-                if result.is_error:
+                if result.is_error or not _exit_status_is_the_commands(command, self.command or ""):
+                    # A piped run's success is the pipe consumer's, not the checks' (ADR-0139).
+                    # Keeping the output is the other half of the repair: before this, a piped
+                    # FAILING run set passed=True and CLEARED last_output, so the nudge that would
+                    # have shown the model its own failure was never built.
                     self.last_output = result.output or ""
                 else:
                     self.passed = True

@@ -7,7 +7,11 @@ from typing import Any
 import pytest
 
 from zakcode.agent.loop import AgentLoop
-from zakcode.agent.verify import VerificationGate, _commands_match
+from zakcode.agent.verify import (
+    VerificationGate,
+    _commands_match,
+    _exit_status_is_the_commands,
+)
 from zakcode.config import PermissionTier, Settings
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
@@ -179,3 +183,46 @@ async def test_loop_is_inert_without_verify_command() -> None:
     result = await loop.arun_turn("change code")
     assert result.stop_reason == "completed"
     assert bash.runs == 0  # gate never armed -> the verifier was never invoked
+
+
+def test_a_piped_verify_run_does_not_pass_the_gate_on_the_pipes_exit_code() -> None:
+    """ADR-0139, sibling half: `uv run poe check | tail -40` reports TAIL's status.
+
+    A model pipes the verify command precisely because its output is long, so the shape is the
+    common one, not an edge case (observed verbatim in a live run: `uv run poe check 2>&1 |
+    tail -40`). Before this, a FAILING check exited 0 through the pipe, set passed=True, and
+    additionally CLEARED last_output -- so the nudge that would have shown the model its own
+    failure was never built.
+    """
+    assert _exit_status_is_the_commands("uv run poe check", "uv run poe check") is True
+    assert _exit_status_is_the_commands("cd repo && uv run poe check", "uv run poe check") is True
+    assert (
+        _exit_status_is_the_commands("uv run poe check 2>&1 | tail -40", "uv run poe check")
+        is False
+    )
+    # A pipeline ENDING in the verify command keeps its own status.
+    assert _exit_status_is_the_commands("echo go | uv run poe check", "uv run poe check") is True
+
+    def gate(command: str, is_error: bool) -> VerificationGate:
+        g = VerificationGate(command="uv run poe check")
+        g.observe(
+            [ToolCall(id="w", name="write_file", arguments={})],
+            [ToolResultBlock(tool_use_id="w", output="ok", is_error=False)],
+        )
+        g.observe(
+            [ToolCall(id="r", name="bash", arguments={"command": command})],
+            [ToolResultBlock(tool_use_id="r", output="2 failed, 10 passed", is_error=is_error)],
+        )
+        return g
+
+    # The defect: shell exit is tail's (0), so is_error is False though the checks FAILED.
+    piped = gate("uv run poe check 2>&1 | tail -40", False)
+    assert piped.passed is False
+    assert piped.needs_verification() is True
+    assert piped.last_output  # kept, so nudge() can show the model what failed
+    assert "2 failed" in piped.nudge()
+
+    # Unpiped behaviour is untouched in both directions.
+    assert gate("uv run poe check", False).passed is True
+    assert gate("uv run poe check", False).last_output == ""
+    assert gate("uv run poe check", True).passed is False

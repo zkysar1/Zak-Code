@@ -5902,6 +5902,20 @@ reports the same pipeline status, so it carries the same lie. *Ban pipes in run 
 truncation is legitimate and necessary: an untruncated 3,600-test summary is a context problem of
 its own.
 
+**The sibling gate has the same hole, and is fixed the same way with one deliberate asymmetry.**
+``VerificationGate`` (the R1 project-verifier, ADR-0110's complement) credited ``passed`` from
+``is_error`` alone, so a configured ``uv run poe check`` run as ``uv run poe check 2>&1 | tail -40``
+— observed verbatim in a live run — marked a FAILING project verified. Worse, it then CLEARED
+``last_output``, so the nudge that would have shown the model its own failure was never built; the
+repair keeps the output, which makes a piped failure strictly more informative than before.
+
+The asymmetry: that gate does NOT get the text-reading fallback. A configured verify command has
+no standard summary line — it may be a lint, a type check, or a composite task runner — so there is
+nothing reliable to read, and an unreadable verdict counts as not passed. The recipe gate reads
+pytest's summary because pytest HAS one; this gate declines rather than guessing. Same decision,
+different information available, and saying so is the point: a fallback justified by pytest's
+output format must not be smuggled into a place where that format is not guaranteed.
+
 **Consequences.** The text-reading route is pytest/unittest-shaped (``N passed`` / ``N failed`` /
 ``N errors`` / ``FAILED <nodeid>`` / ``errors during collection`` / ``no tests ran``), so a runner
 whose summary uses none of those words yields no verdict through a pipe and its turn falls back to
