@@ -58,7 +58,7 @@ class ResolvedModel:
     """A concrete resolution: which model, from which source, and why."""
 
     model: str
-    source: str  # "local" | "groq" | "openai" | "anthropic" | ...
+    source: str  # "local" | "openai" | "anthropic" | ...
     reason: str  # human-readable, shown in the info panel / status line
 
 
@@ -100,16 +100,6 @@ class _ExternalSource:
 
 #: Known external sources, keyed by the preference-list names.
 _EXTERNAL_SOURCES: dict[str, _ExternalSource] = {
-    "groq": _ExternalSource(
-        name="groq",
-        key_env="GROQ_API_KEY",
-        models_url="https://api.groq.com/openai/v1/models",
-        candidates=(
-            "groq/openai/gpt-oss-120b",
-            "groq/qwen/qwen3-32b",
-            "groq/llama-3.3-70b-versatile",
-        ),
-    ),
     "openai": _ExternalSource(
         name="openai",
         key_env="OPENAI_API_KEY",
@@ -376,7 +366,7 @@ def resolver_for(settings: object, *, use_cache: bool = True) -> AvailabilityRes
     return AvailabilityResolver(
         ollama_base_url=getattr(settings, "ollama_base_url", "http://localhost:11434"),
         preference=list(
-            getattr(settings, "auto_model_preference", ["groq", "openai", "anthropic"])
+            getattr(settings, "auto_model_preference", ["openai", "anthropic"])
         ),
         use_cache=use_cache,
     )

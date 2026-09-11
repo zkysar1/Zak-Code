@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Lane-D benchmark runner: run ONE zak-code task headless against Groq, capture cost.
+"""Lane-D benchmark runner: run ONE zak-code task headless against a hosted provider, capture cost.
 
 Usage (from the Zak-Code repo root, with the repo venv):
     ./.venv/Scripts/python.exe bench/run_task.py bench/tasks/01-wordfreq
@@ -54,8 +54,8 @@ def _build_agent(workspace: Path, spec: dict):
     # Make `python`/`pytest` resolve to this runner's (pytest-capable) interpreter for the
     # agent's subprocess verification, mirroring an activated project venv (see the helper).
     _ensure_interpreter_on_path()
-    # load_settings() (cwd = repo root) loads the repo .env -> GROQ_API_KEY into os.environ,
-    # which litellm reads directly for groq/ models. api_base stays None (commented out in .env).
+    # load_settings() (cwd = repo root) loads the repo .env -> OPENAI_API_KEY into os.environ,
+    # which litellm reads directly for openai/ models. api_base stays None (commented out in .env).
     base = load_settings()
     update = {
         # A Path, NOT str(workspace): `base.model_copy(update=...)` on line ~120 does NOT
@@ -65,7 +65,7 @@ def _build_agent(workspace: Path, spec: dict):
         # type(s) for /: 'str' and 'str' — before a single model call. Every test passes
         # a real tmp_path, so the suite stays green while every bench task crashes.
         "workspace_root": workspace,
-        "default_model": "zakpick",        # Groq per-category routing
+        "default_model": "zakpick",        # per-category routing
         "permission_mode": "autonomous",   # headless: never prompts, dangerous=hard-DENY
         "max_cost_usd": spec.get("max_cost_usd", 1.0),
         "max_iterations": spec.get("max_iterations", 50),
@@ -79,11 +79,12 @@ def _build_agent(workspace: Path, spec: dict):
     if deep_model:
         from zakcode.providers.routing import ZakpickModel
 
-        # ZBENCH_DEEP_SOURCE picks the provider/runtime: "groq" (default), "openai",
-        # "gemini", "deepseek", "fireworks_ai", "together_ai", "local"/"ollama", etc.
+        # ZBENCH_DEEP_SOURCE picks the provider/runtime: "openai" (default), "gemini",
+        # "deepseek", "fireworks_ai", "together_ai", "local"/"ollama", etc. ("groq" was the
+        # default until that provider was retired — g-369-295.)
         # The litellm string is "<source>/<model>" so any litellm-supported supplier
         # can be benchmarked for the deep_code category by config alone.
-        deep_source = os.environ.get("ZBENCH_DEEP_SOURCE", "groq")
+        deep_source = os.environ.get("ZBENCH_DEEP_SOURCE", "openai")
         existing = dict(getattr(base, "zakpick_models", None) or {})
         existing["deep_code"] = ZakpickModel(model=deep_model, source=deep_source)
         existing["delegate"] = ZakpickModel(model=deep_model, source=deep_source)

@@ -119,7 +119,7 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("LITELLM_LOG", "ERROR")
 
 # Provider / service API keys we report the *presence* of (never the value).
-_PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"]
+_PROVIDER_KEY_ENV = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "TAVILY_API_KEY"]
 
 
 def _sourced(name: str, value: str) -> str:

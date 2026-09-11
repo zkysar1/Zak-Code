@@ -43,53 +43,62 @@ def test_anthropic_registry() -> None:
         assert get_capabilities(model).context_window == 200_000
 
 
-def test_groq_registry() -> None:
-    """Static lookup returns the real (128k+) windows for current Groq models."""
-    caps = _lookup_static("groq/llama-3.3-70b-versatile")
-    assert caps is not None
-    assert caps.context_window >= 128_000
-    assert caps.max_output == 32_768
-    assert caps.supports_tools
-    for model in ("groq/llama-3.1-8b-instant", "groq/openai/gpt-oss-120b", "groq/qwen/qwen3-32b"):
+def test_openai_registry() -> None:
+    """Static lookup returns real windows for the first-party OpenAI models we route to.
+
+    Replaced the Groq equivalent when that provider was retired (g-369-295).
+    """
+    for model in ("openai/gpt-4o-mini", "openai/gpt-4o"):
         static = _lookup_static(model)
         assert static is not None, f"no static registry entry resolves {model!r}"
         assert static.context_window >= 128_000
         assert static.supports_tools
-    assert get_capabilities("groq/llama-3.3-70b-versatile").context_window >= 128_000
+        assert static.tools_unreliable is False
+    assert get_capabilities("openai/gpt-4o-mini").context_window >= 128_000
 
 
 # ── CLI key detection (audit P0-1c; acceptance 3) ────────────────────────────
 
 
 def test_provider_key_status(monkeypatch) -> None:
-    """The info panel detects ANTHROPIC_API_KEY and GROQ_API_KEY (provenance only)."""
+    """The info panel detects the provider keys it advertises (provenance only)."""
     import zakcode.config as cfg
 
     # Isolate from any dotenv exports earlier tests made in this process.
     monkeypatch.setattr(cfg, "_ENV_SOURCES", {})
     monkeypatch.setattr(cfg, "_DOTENV_EXPORTED", {})
     assert "ANTHROPIC_API_KEY" in _PROVIDER_KEY_ENV
-    assert "GROQ_API_KEY" in _PROVIDER_KEY_ENV
+    assert "OPENAI_API_KEY" in _PROVIDER_KEY_ENV
+    # GROQ_API_KEY was dropped from the advertised list with the provider (g-369-295).
+    assert "GROQ_API_KEY" not in _PROVIDER_KEY_ENV
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
     status = _provider_key_status()
     assert status["ANTHROPIC_API_KEY"] == "env"
-    assert status["GROQ_API_KEY"] == "env"
+    assert status["OPENAI_API_KEY"] == "env"
+    assert "GROQ_API_KEY" not in status  # retired with the provider (g-369-295)
     monkeypatch.delenv("ANTHROPIC_API_KEY")
-    monkeypatch.delenv("GROQ_API_KEY")
+    monkeypatch.delenv("OPENAI_API_KEY")
     status = _provider_key_status()
     assert status["ANTHROPIC_API_KEY"] == "not set"
-    assert status["GROQ_API_KEY"] == "not set"
+    assert status["OPENAI_API_KEY"] == "not set"
 
 
 # ── docs (audit P0-1b; acceptance 4) ─────────────────────────────────────────
 
 
-def test_env_example_documents_all_three_providers() -> None:
+def test_env_example_documents_every_live_provider() -> None:
+    """Was ``..._all_three_providers`` until Groq was retired (g-369-295).
+
+    Kept as a live-provider check rather than a count so the next provider change updates
+    ONE list. The negative assertion is the half that matters: a retired provider must not
+    reappear in the operator-facing example, which is where a stale key gets re-adopted.
+    """
     text = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
-    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY"):
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         assert name in text, f".env.example is missing a commented {name} example"
-    assert "anthropic/" in text and "groq/" in text and "openai/" in text
+    assert "anthropic/" in text and "openai/" in text
+    assert "GROQ_API_KEY" not in text and "groq/" not in text
 
 
 # ── provider-shaped response normalization (audit P0-1d) ─────────────────────

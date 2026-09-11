@@ -177,7 +177,12 @@ def test_decommissioned_flag_actually_discriminates() -> None:
     ever marked — the same vacuity that let the original defect through. Pin that
     the flag is set on the model we know is dead, so the check has real teeth.
     """
-    from zakcode.providers.registry import get_capabilities
+    from zakcode.providers.base import Capabilities
 
-    assert get_capabilities("groq/qwen/qwen3-32b").decommissioned is True
-    assert get_capabilities("groq/qwen/qwen3.6-27b").decommissioned is False
+    # Asserted on SYNTHETIC capabilities, not a registry row. Every row that carried
+    # decommissioned=True was a Groq row, and retiring Groq (g-369-295) emptied that
+    # population — so the registry-keyed control this test used to make would now pass
+    # vacuously, which is the precise defect its docstring above warns about. The flag
+    # itself still discriminates, and the sibling test above still walks the live table.
+    assert Capabilities(decommissioned=True).decommissioned is True
+    assert Capabilities().decommissioned is False
