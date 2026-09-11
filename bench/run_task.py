@@ -143,6 +143,16 @@ def _build_agent(workspace: Path, spec: dict):
     # confound that wrecked two prior attempts to separate engine behaviour from model
     # behaviour. Moving threshold_fraction on the FULL window changes ONE variable.
     # Unset (the default) leaves the shipped 0.8 byte-unchanged.
+    # ZBENCH_TOOL_DENY narrows the ADVERTISED tool surface via the registry's own
+    # set_exposure_filter -- documented least-privilege, already shipped, operator-set. Measured
+    # across 22 recorded runs: the agent called EIGHT distinct tools; the other 17 cost 3,907 tok
+    # (58% of the tool surface, 44% of the 8,956-token fixed floor) and were never called once.
+    # That floor is 6.8% of a 131,072 window and 27.3% of a 32,768 one, so it scales badly toward
+    # exactly the models this bench exists to compare.
+    deny = os.environ.get("ZBENCH_TOOL_DENY")
+    if deny:
+        agent.registry.set_exposure_filter(deny=[x.strip() for x in deny.split(",") if x.strip()])
+        print(f"[bench] tool deny filter: {deny}", file=sys.stderr)
     frac = os.environ.get("ZBENCH_COMPACT_FRACTION")
     if frac and agent.compactor is not None:
         agent.compactor.config.threshold_fraction = float(frac)
@@ -209,6 +219,11 @@ def run(task_dir: Path) -> int:
     # level, and the Agent's compactor is constructed inside _build_agent.
     compaction = _instrument_compaction()
     agent = _build_agent(ws, spec)
+    # The surface the model was ACTUALLY offered. Without this a deny filter that silently failed
+    # to apply is indistinguishable from one that applied and changed nothing -- the same
+    # "instrument that stopped measuring" shape this bench keeps finding (ADR-0145).
+    _defs = agent.registry.definitions()
+    tool_surface = {"exposed": len(_defs), "schema_chars": sum(len(json.dumps(x)) for x in _defs)}
 
     err = None
     stop_reason = iterations = routed_category = routed_escalated = degraded = None
@@ -299,6 +314,7 @@ def run(task_dir: Path) -> int:
         "turn_tokens": turn_tokens,
         **snap,
         "compaction": compaction,
+        "tool_surface": tool_surface,
         "tool_calls": tool_calls,
         "tool_errors": tool_errors,
         "trace_events": trace_events,
