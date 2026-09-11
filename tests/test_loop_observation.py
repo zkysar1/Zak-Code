@@ -25,6 +25,7 @@ from zakcode.config import load_settings
 from zakcode.messages import Message
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session import Session
+from zakcode.session.discovery_ledger import discovery_path, read_ledger
 from zakcode.session.observation_inbox import (
     OBSERVATION_ENVELOPE_VERSION,
     observation_path,
@@ -219,3 +220,118 @@ async def test_streaming_twin_also_delivers_and_announces(tmp_path: Path) -> Non
     delivered = _all_text(provider.seen[-1])
     assert "a river" in delivered, "the streaming boundary dropped the perception"
     assert any("perception delivered" in str(getattr(e, "message", "")) for e in events)
+
+
+# --- the discovery fold (g-368-15) -----------------------------------------------------------
+#
+# The vessel's discoveryPerception slice is a per-tick projection bounded at the character's
+# bubble, so what the character has UNLOCKED by exploring exists nowhere but here. These pin the
+# wiring: the fold runs between the read and the render (it needs the structured envelope, and
+# its note has to reach the same block), the accumulation outlives the envelope that fed it, and
+# nothing about it can cost a perception.
+
+
+def _discovery(**rows: int) -> dict[str, Any]:
+    """A discoveryPerception slice in the producer's own shape (discovered == touchCount > 0)."""
+    return {
+        "discoveryPerception": {
+            key: {"touchCount": n, "distanceStatus": "Within Touching Reach", "discovered": n > 0}
+            for key, n in rows.items()
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_new_unlock_is_named_in_the_perception_it_arrived_with(tmp_path: Path) -> None:
+    provider = _Recording([_tool_call("perceive"), _DONE])
+    loop, _ = _loop(
+        provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, _discovery(fountain=1))]
+    )
+
+    await loop.arun_turn("begin")
+
+    delivered = _all_text(provider.seen[-1])
+    assert "Newly discovered by exploring: fountain" in delivered
+    assert discovery_path(tmp_path).exists(), "the unlock was announced but never accumulated"
+
+
+@pytest.mark.asyncio
+async def test_an_unlock_is_announced_once_across_turns(tmp_path: Path) -> None:
+    """The ledger is what makes this possible — the envelope alone cannot tell new from standing."""
+    provider = _Recording([_tool_call("perceive"), _DONE, _tool_call("perceive"), _DONE])
+    loop, _ = _loop(
+        provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, _discovery(fountain=1))]
+    )
+
+    await loop.arun_turn("begin")
+    first = _all_text(provider.seen[-1])
+    await loop.arun_turn("again")
+    second = _all_text(provider.seen[-1])
+
+    assert "Newly discovered by exploring" in first
+    assert second.count("Newly discovered by exploring") == first.count(
+        "Newly discovered by exploring"
+    ), "a standing unlock was re-announced on the next turn"
+    # Positive control: the SECOND perception did arrive in full, so the missing note is the
+    # once-only rule and not a dropped round.
+    assert second.count("fountain") > first.count("fountain")
+
+
+@pytest.mark.asyncio
+async def test_an_untouched_entity_is_perceived_but_not_announced(tmp_path: Path) -> None:
+    """Positive control: the slice DID reach the mind, so a missing note is the gate, not a drop."""
+    provider = _Recording([_tool_call("perceive"), _DONE])
+    loop, _ = _loop(
+        provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, _discovery(statue=0))]
+    )
+
+    await loop.arun_turn("begin")
+
+    delivered = _all_text(provider.seen[-1])
+    assert "statue" in delivered, "the discovery slice never reached the model at all"
+    assert "Newly discovered by exploring" not in delivered
+
+
+@pytest.mark.asyncio
+async def test_the_note_is_capped_not_unbounded(tmp_path: Path) -> None:
+    """A dense room unlocks a whole bubble at once; the note rides inside a 16 KB envelope."""
+    rows = {f"relic{i:02d}": 1 for i in range(20)}
+    provider = _Recording([_tool_call("perceive"), _DONE])
+    loop, _ = _loop(provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, _discovery(**rows))])
+
+    await loop.arun_turn("begin")
+
+    delivered = _all_text(provider.seen[-1])
+    assert "and 8 more)" in delivered, "the note named every unlock with no bound"
+    assert len(read_ledger(discovery_path(tmp_path))) == 20, "the ledger itself must not be capped"
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_shape_accumulates_nothing(tmp_path: Path) -> None:
+    observation_path(tmp_path).write_text(_envelope(_discovery(fountain=1)), encoding="utf-8")
+    provider = _Recording([_DONE])
+    loop, _ = _loop(provider, tmp_path, consume=False)
+
+    await loop.arun_turn("begin")
+
+    assert discovery_path(tmp_path).exists() is False, "a sub-agent wrote the workspace ledger"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_fold_never_costs_the_perception(tmp_path: Path, monkeypatch) -> None:
+    """Fail-open by inheritance: bookkeeping about a perception must not be able to eat it."""
+
+    def _explode(*_args: object, **_kwargs: object) -> list[str]:
+        raise RuntimeError("ledger on fire")
+
+    monkeypatch.setattr("zakcode.agent.loop.fold_observation", _explode)
+    provider = _Recording([_tool_call("perceive"), _DONE])
+    loop, _ = _loop(
+        provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, _discovery(fountain=1))]
+    )
+
+    await loop.arun_turn("begin")
+
+    delivered = _all_text(provider.seen[-1])
+    assert "fountain" in delivered, "a ledger fault swallowed the perception"
+    assert "Newly discovered by exploring" not in delivered
