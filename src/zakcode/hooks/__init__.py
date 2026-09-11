@@ -86,6 +86,11 @@ class HookEvent(StrEnum):
     # turn's exit. A BLOCK decision vetoes the stop, injects a continuation prompt, and
     # re-enters the iteration loop.
     TURN_END = "TurnEnd"
+    # Fired ONCE at the user-message boundary (before the turn's model calls), carrying the
+    # raw ``prompt`` text. Its hooks return text to fold into the turn (injection only;
+    # exit-2 prompt-blocking is a documented follow-up). Mirrors Claude Code's UserPromptSubmit;
+    # the seam a Mind's user-prompt retrieval/inject hook plugs into.
+    USER_PROMPT_SUBMIT = "UserPromptSubmit"
 
 
 class HookDecision(StrEnum):
@@ -162,6 +167,24 @@ class LLMContextPayload(BaseModel):
     cwd: str = ""
     iteration: int = 0
     message_count: int = 0
+
+
+class UserPromptSubmitPayload(BaseModel):
+    """The JSON document handed to a ``USER_PROMPT_SUBMIT`` hook (stdin for shells).
+
+    Mirrors Claude Code's UserPromptSubmit stdin contract: the raw ``prompt`` the user
+    submitted, plus ``session_id`` / ``cwd`` / ``hook_event_name``. Distinct from
+    :class:`LLMContextPayload` — that carries ``user_text`` and fires before *every* model
+    call; this carries ``prompt`` (the field a Claude-Code UserPromptSubmit hook reads from
+    stdin) and fires ONCE at the user-message boundary. A hook returns text to inject
+    (``additionalContext``); prompt-blocking (exit 2) is a documented follow-up.
+    """
+
+    event: HookEvent = HookEvent.USER_PROMPT_SUBMIT
+    prompt: str = ""
+    session_id: str = ""
+    cwd: str = ""
+    hook_event_name: str = "UserPromptSubmit"
 
 
 class LifecyclePayload(BaseModel):
@@ -736,12 +759,15 @@ class HookManager:
             logger.warning("context hook raised %s: %s", type(exc).__name__, exc)
             return None
 
-    async def _run_context_shell(self, spec: HookSpec, payload: LLMContextPayload) -> str | None:
-        """Run one ``PRE_LLM_CALL`` shell hook; its stdout is the text to inject.
+    async def _exec_shell_hook_stdout(self, spec: HookSpec, payload: Any) -> bytes | None:
+        """Spawn one shell hook, feed it the payload JSON on stdin, return its stdout bytes.
 
-        Protocol: exit 0 = use stdout (plain text, or JSON ``{"context": "..."}``);
-        any non-zero exit, spawn failure, timeout, or weirdness contributes nothing.
-        A context hook can never block the turn.
+        Shared subprocess plumbing for the two context-injection seams (``PRE_LLM_CALL`` and
+        ``USER_PROMPT_SUBMIT``): own process group so the whole tree is killable, kill on
+        timeout AND on turn-cancellation (``CancelledError`` re-raises so a cancelled turn does
+        not orphan the hook), and full error isolation. Returns ``None`` on any non-zero exit,
+        spawn failure, timeout, or error — so an injection hook can never block the turn. The
+        caller owns the stdout *parse* (the two seams use different stdout contracts).
         """
         if not spec.command:
             return None
@@ -780,7 +806,19 @@ class HookManager:
 
         if proc.returncode != 0:
             return None
-        text = (stdout or b"").decode("utf-8", errors="replace").strip()
+        return stdout or b""
+
+    async def _run_context_shell(self, spec: HookSpec, payload: LLMContextPayload) -> str | None:
+        """Run one ``PRE_LLM_CALL`` shell hook; its stdout is the text to inject.
+
+        Protocol: exit 0 = use stdout (plain text, or JSON ``{"context": "..."}``);
+        any non-zero exit, spawn failure, timeout, or weirdness contributes nothing.
+        A context hook can never block the turn.
+        """
+        stdout = await self._exec_shell_hook_stdout(spec, payload)
+        if stdout is None:
+            return None
+        text = stdout.decode("utf-8", errors="replace").strip()
         if not text:
             return None
         # A JSON object may wrap the text under a "context" key; plain text is used as-is.
@@ -792,6 +830,47 @@ class HookManager:
             ctx = doc.get("context")
             return ctx if isinstance(ctx, str) and ctx.strip() else None
         return text
+
+    async def _run_user_prompt_shell(
+        self, spec: HookSpec, payload: UserPromptSubmitPayload
+    ) -> str | None:
+        """Run one ``USER_PROMPT_SUBMIT`` shell hook; return the context it injects.
+
+        Mirrors Claude Code's UserPromptSubmit stdout contract via :meth:`_parse_stdout`:
+        exit 0 with ``{"hookSpecificOutput": {"additionalContext": "..."}}`` injects that text;
+        plain-text stdout is injected as-is. Injection only — a non-zero exit (incl. Claude
+        Code's exit-2 block) contributes nothing here (prompt-blocking is a documented follow-up).
+        """
+        stdout = await self._exec_shell_hook_stdout(spec, payload)
+        if stdout is None:
+            return None
+        message, _mutated, _deny, additional = self._parse_stdout(stdout)
+        text = (additional or message).strip()
+        return text or None
+
+    def has_user_prompt_hooks(self) -> bool:
+        """Whether any ``USER_PROMPT_SUBMIT`` shell hook is registered.
+
+        The loop checks this once at turn start to skip the whole seam (a single boolean) when
+        nothing is wired — so the common no-hook path pays nothing.
+        """
+        return any(spec.event is HookEvent.USER_PROMPT_SUBMIT for spec in self.shell_hooks)
+
+    async def gather_user_prompt_context(self, payload: UserPromptSubmitPayload) -> list[str]:
+        """Run every ``USER_PROMPT_SUBMIT`` shell hook and collect the text to inject.
+
+        The turn-entry analogue of :meth:`gather_context`: fires ONCE at the user-message
+        boundary (not before every model call). Returns non-empty, stripped strings in run
+        order; every failure is isolated (worst case: no extra context). Injection only.
+        """
+        collected: list[str] = []
+        for spec in self.shell_hooks:
+            if spec.event is not HookEvent.USER_PROMPT_SUBMIT:
+                continue
+            text = await self._run_user_prompt_shell(spec, payload)
+            if text and text.strip():
+                collected.append(text.strip())
+        return collected
 
     # ── lifecycle runners (observe-only; each fully error-isolated) ────────────
 
@@ -990,6 +1069,7 @@ __all__ = [
     "HookPayload",
     "wire_payload",
     "LLMContextPayload",
+    "UserPromptSubmitPayload",
     "LifecyclePayload",
     "TurnEndPayload",
     "TurnEndResult",

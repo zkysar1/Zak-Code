@@ -140,23 +140,21 @@ def test_load_settings_stop_failure_skipped(tmp_path: Path) -> None:
 # ── UserPromptSubmit => skipped, not "unknown" ──────────────────────────
 
 
-def test_load_settings_user_prompt_submit_skipped(tmp_path: Path) -> None:
-    """A real CC event whose firing seam is not designed yet must degrade LOUDLY.
-
-    Until it was listed in ``_SKIP_EVENTS`` it fell through to the unknown-event
-    branch, so a Mind that wires ``UserPromptSubmit`` (claude-mind does) read the
-    same message a typo produces. "Deliberately deferred" and "you misspelled it"
-    are different diagnoses and only one of them is actionable, so the *absence*
-    of "unknown" is asserted beside the presence of the deferral.
+def test_load_settings_user_prompt_submit_registers(tmp_path: Path) -> None:
+    """UserPromptSubmit now REGISTERS (ADR-0134): its firing seam ships (context injection
+    at the user-message boundary), so it maps to ``HookEvent.USER_PROMPT_SUBMIT`` instead of
+    being deferred. A configured hook must yield a real spec and no error -- neither
+    "not implemented" nor "unknown". This is the counterpart to the deferral test it replaced:
+    the graduation of the one seam whose absence that test pinned.
     """
     _write_settings(
         tmp_path,
         {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}},
     )
     specs, errors = load_settings_hooks(tmp_path)
-    assert specs == []
-    assert "not implemented" in errors["UserPromptSubmit"].lower()
-    assert "unknown" not in errors["UserPromptSubmit"].lower()
+    assert "UserPromptSubmit" not in errors
+    assert len(specs) == 1
+    assert specs[0].event is HookEvent.USER_PROMPT_SUBMIT
 
 
 # ── a whole claude-mind hooks block loads with zero unknown events ─────────
@@ -201,8 +199,9 @@ def test_claude_mind_hooks_block_yields_no_unknown_events(tmp_path: Path) -> Non
 
     # The deferral list, spelled out. When a seam below ships, this fails and the
     # implementer updates it here -- a deferral nobody is forced to retire becomes
-    # permanent, and then the compat doc is lying in the other direction.
-    assert set(errors) == {"StopFailure", "UserPromptExpansion", "UserPromptSubmit"}
+    # permanent, and then the compat doc is lying in the other direction. UserPromptSubmit
+    # already graduated this way (ADR-0134); StopFailure and UserPromptExpansion remain.
+    assert set(errors) == {"StopFailure", "UserPromptExpansion"}
 
     registered = [ev for ev in _CLAUDE_MIND_EVENTS if ev not in errors]
     assert len(specs) == len(registered), (
