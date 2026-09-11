@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.agent.loop import _BLOCKER_NUDGE, AgentLoop
-from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.cli.render import _STOP_LABEL
 from zakcode.events import AgentStatus
+from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import (
     Capabilities,
     LLMResult,
@@ -239,9 +239,7 @@ async def test_await_user_fails_closed_when_unattended() -> None:
 async def test_streaming_await_user_fails_closed_when_unattended() -> None:
     provider = _ScriptedStream([_await(), LLMResult(text="decided it myself", tool_calls=[])])
     loop, _ = _loop_with_mode(provider, PermissionMode.AUTONOMOUS)
-    statuses = [
-        e.message async for e in loop.astream_turn("ship it") if isinstance(e, AgentStatus)
-    ]
+    statuses = [e.message async for e in loop.astream_turn("ship it") if isinstance(e, AgentStatus)]
     assert not any(s.startswith("waiting for you") for s in statuses)
     assert provider.calls == 2  # continued, not stranded
 
