@@ -5511,3 +5511,41 @@ elided result re-runs the tool, which is the trade every elision already makes. 
 elide fallback) and `tests/test_compact_loop.py` (the loop's outcome text). Field test: H5 (read
 every knowledge-tree node, ~556 KB into a 131k window) on this build against the same run on
 ADR-0131's build.
+
+## ADR-0135: The recipe gate's verification budget scales with the number of files written
+
+**Context.** ADR-0114 closed several recipe-gate false-stalls measured live on coach's 35B, but a
+sibling class remained, surfaced 2026-09-11 by a ripple-refactor probe (SOAK-9): change
+`apply_discount(price, pct)` from a percentage (0–100) to a fraction (0.0–1.0) and update every call
+site so the applied discount is unchanged. The model did it correctly — grep'd for the callers, found
+all three (`cart.py`/`invoice.py`/`report.py`), edited each (20→0.20, 15→0.15, 30→0.30) and the
+function (`pct / 100`→`pct`); a hidden numeric oracle passed (`checkout/bill/summary(100)` = 80/85/70,
+`apply_discount(100, 0.5)` = 50.0). Yet the turn ended `recipe_stalled` (exit 1) — a false failure on
+complete, correct work. Root cause: the verify-before-finish gate requires every runnable file written
+this turn to be run (`_targets <= _verified`), and the harness verifies by running `pending_target()`
+in reverse write order. Four runnable files were written but `attempt_cap` was a fixed 3, so the
+harness spent its whole budget on the last three (`report`/`invoice`/`cart`) and never reached the
+first-written module (`discount.py`). A create-and-run turn that writes more runnable files than the
+fixed cap cannot pass the gate even when every file would verify.
+
+**Decision.** `RecipeCursor.can_nudge()` scales the budget with the number of runnable files written
+this turn: `self.nudges < max(self.attempt_cap, len(self._targets))`. Verifying N files takes ~N runs
+(the harness issues one per pending target), so the budget must be at least N. `attempt_cap` (default 3)
+stays the FLOOR — a turn writing ≤3 runnable files is unchanged; only N>cap turns gain the attempts
+they need. Pure per-turn state, no file I/O, no language coupling — the properties the cursor already
+holds.
+
+**Consequences.** The SOAK-9 stall reproduces as a clean `done`: given a fourth attempt the harness
+runs `discount.py` (exit 0), credits the last unverified target, and the turn finishes `completed`. The
+common 1–3 file case is untouched (the floor). The budget grows only as far as the work (N files → N
+attempts), so it does not weaken the gate's bound against a model that genuinely cannot verify — a
+failing run still spends an attempt and a truly broken multi-file turn still stalls. Residual, left to
+a later ADR: a pure library module (no `__main__`) is still "verified" by a do-nothing `py lib.py` run
+rather than credited to the sibling that imports it — consistent with the gate's exit-0-suffices
+default (ADR-0114 exempts `__init__.py`/`conftest.py` by name; crediting a general imported-only module
+would need import-graph awareness the cursor deliberately lacks). Tests: `tests/test_recipe.py`
+(`test_cursor_nudge_cap_scales_with_files_written`, `test_cursor_nudge_cap_floored_at_default`);
+full suite 3623 passed / 9 skipped (main + the two new tests). A/B-confirmed live on coach's 35B:
+the identical probe, workspace and model stalled `recipe_stalled` / exit 1 on the unpatched build
+(16 iterations) and finished `done` / exit 0 with the hidden oracle passing on the patched build
+(12 iterations) — the one-line `can_nudge` change the only difference.
