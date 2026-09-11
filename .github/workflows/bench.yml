@@ -6,6 +6,16 @@ name: agent-bench
 # merges). Normal CI (ci.yml) is untouched. It runs ONLY on the canonical repo (forks never get
 # the secrets) and ONLY when provider API keys are configured, so an unconfigured repo no-ops.
 #
+# The no-op is a SEPARATE JOB (`gate`) on purpose (ADR-0142). When the keys are absent the `bench`
+# job is `skipped` — GitHub's own word for "did not run" — instead of reporting `success` for a
+# measurement that never happened. A quality bench that is green because it did nothing is worse
+# than no bench: "the bench is green" then reads identically to "the bench has never run", and it
+# read that way here for the workflow's whole life (measured 2026-09-11: five consecutive nightly
+# runs, conclusion=success, `Run the suite` skipped every time, no provider keys on the repo).
+# Gating in its own job also makes the dark path genuinely free — the old single-job form paid for
+# a checkout and a full `uv sync --extra dev --extra server` every night before discovering it had
+# nothing to do.
+#
 # NOTE: a real-model run costs money. The schedule is nightly per the project owner's request — to
 # spend less, change the cron to weekly ("0 7 * * 1") or simply remove the OPENAI_API_KEY /
 # GROQ_API_KEY repo secrets (the gate step then skips every run). Trigger ad-hoc any time via the
@@ -40,10 +50,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  bench:
-    name: agent quality bench
+  # Its own job so the bench below can be SKIPPED rather than falsely green (ADR-0142), and so an
+  # unconfigured repo costs one trivial step instead of a full dependency sync.
+  gate:
+    name: provider keys configured?
     runs-on: ubuntu-latest
     if: github.repository == 'zkysar1/Zak-Code' # forks have no secrets; skip entirely
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.keys.outputs.run }}
+    steps:
+      - name: Gate on provider keys
+        id: keys
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ] && [ -z "$GROQ_API_KEY" ]; then
+            echo "::notice::No provider API keys (OPENAI_API_KEY / GROQ_API_KEY) configured — the agent bench will be SKIPPED, not passed."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            {
+              echo '## Agent quality bench — NOT MEASURED'
+              echo
+              echo 'No `OPENAI_API_KEY` / `GROQ_API_KEY` on this repository, so the suite did not run'
+              echo 'and **this run says nothing about agent quality**. The bench job is reported as'
+              echo '`skipped` rather than `success` precisely so that stays visible.'
+              echo
+              echo 'To measure: add either secret, or run the suite locally against a self-hosted'
+              echo 'endpoint (`bench/README.md` — no key required).'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  bench:
+    name: agent quality bench
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -56,21 +100,7 @@ jobs:
       - name: Sync (dev + server extras)
         run: uv sync --extra dev --extra server
 
-      - name: Gate on provider keys
-        id: keys
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: |
-          if [ -z "$OPENAI_API_KEY" ] && [ -z "$GROQ_API_KEY" ]; then
-            echo "::notice::No provider API keys (OPENAI_API_KEY / GROQ_API_KEY) configured — skipping the agent bench."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run the suite
-        if: steps.keys.outputs.run == 'true'
         # Dispatch inputs flow through env: (NOT inlined into the script) — the standard guard
         # against shell-injection via a workflow_dispatch input. $BENCH_FILTERS is intentionally
         # unquoted so a space-separated prefix list word-splits into separate positional args.
@@ -85,7 +115,6 @@ jobs:
             --jobs "${BENCH_JOBS:-3}" | tee bench-output.txt
 
       - name: Publish summary
-        if: steps.keys.outputs.run == 'true'
         run: |
           {
             echo '## Agent quality bench'
@@ -100,7 +129,6 @@ jobs:
           ZAKCODE_DEFAULT_MODEL: ${{ github.event.inputs.model }}
 
       - name: Upload results JSON
-        if: steps.keys.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-${{ github.run_id }}
