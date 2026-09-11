@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.agent.loop import _BLOCKER_NUDGE, AgentLoop
+from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.cli.render import _STOP_LABEL
 from zakcode.events import AgentStatus
 from zakcode.providers.base import (
@@ -196,6 +197,63 @@ async def test_streaming_announces_the_wait_and_ends_the_turn() -> None:
     assert any(s.startswith("waiting for you") and QUESTION in s for s in statuses)
     assert provider.calls == 3
     assert session.task_network.tasks[0].status == "in_progress"
+
+
+# -- the unattended terminal: no operator to wait for (ADR-0133) --------------
+
+
+def _loop_with_mode(provider: Provider, mode: PermissionMode) -> tuple[AgentLoop, Session]:
+    session = Session(cwd="/tmp", model="test/model")
+    loop = AgentLoop(
+        provider,
+        default_registry(),
+        session,
+        max_iterations=20,
+        permission_policy=PermissionPolicy(mode),
+    )
+    return loop, session
+
+
+async def test_await_user_fails_closed_when_unattended() -> None:
+    # Autonomous, and a worker Body's bypass, both mean "no one at the prompt" (loop.unattended):
+    # await_user then has no terminus, so it must NOT end the turn -- the loop continues instead
+    # of stranding on a question no one will answer (the bobby /start-that-asked-to-boot class).
+    for mode in (PermissionMode.AUTONOMOUS, PermissionMode.BYPASS):
+        provider = _Scripted([_await(), LLMResult(text="decided it myself", tool_calls=[])])
+        loop, _ = _loop_with_mode(provider, mode)
+        result = await loop.arun_turn("ship it")
+        assert result.stop_reason == "completed", mode
+        assert provider.calls == 2, mode  # re-invoked, not stranded on the one await call
+        armed = [
+            e for e in loop._trace.of_kind("intervention") if e.data.get("kind") == "awaiting_user"
+        ]
+        assert not armed, mode
+        refused = [
+            e
+            for e in loop._trace.of_kind("intervention")
+            if e.data.get("kind") == "awaiting_refused"
+        ]
+        assert refused, mode
+
+
+async def test_streaming_await_user_fails_closed_when_unattended() -> None:
+    provider = _ScriptedStream([_await(), LLMResult(text="decided it myself", tool_calls=[])])
+    loop, _ = _loop_with_mode(provider, PermissionMode.AUTONOMOUS)
+    statuses = [
+        e.message async for e in loop.astream_turn("ship it") if isinstance(e, AgentStatus)
+    ]
+    assert not any(s.startswith("waiting for you") for s in statuses)
+    assert provider.calls == 2  # continued, not stranded
+
+
+async def test_await_user_still_waits_when_an_operator_is_present() -> None:
+    # ask / acceptEdits / allow all have someone at the prompt: the ADR-0121 terminal is unchanged.
+    for mode in (PermissionMode.ASK, PermissionMode.ACCEPT_EDITS, PermissionMode.ALLOW):
+        provider = _Scripted([_await()])
+        loop, _ = _loop_with_mode(provider, mode)
+        result = await loop.arun_turn("ship it")
+        assert result.stop_reason == "awaiting_user", mode
+        assert provider.calls == 1, mode
 
 
 # ── the rails that point at it ────────────────────────────────────────────────
