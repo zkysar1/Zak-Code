@@ -81,6 +81,46 @@ ZBENCH_DEEP_MODEL=llama-3.3-70b-versatile ZBENCH_DEEP_SOURCE=groq \
 #   together_ai, groq, local/ollama, ...}
 ```
 
+## A self-hosted endpoint, with no API key at all (ADR-0142)
+
+Every lane above needs a paid provider key, so the nightly CI bench is `skipped` on a repo that
+has none — and the small models this harness exists to study are exactly the ones people self-host.
+Any OpenAI-compatible server (llama.cpp, vLLM, SGLang, a local gateway) benchmarks for free:
+
+```bash
+export ZAKCODE_ZAKPICK_MODELS='{"classify":{"model":"<id>","source":"openai","thinking":false,"context_window":131072},
+  "summarize":{"model":"<id>","source":"openai","thinking":false,"context_window":131072},
+  "quick_code":{"model":"<id>","source":"openai","thinking":false,"context_window":131072},
+  "delegate":{"model":"<id>","source":"openai","thinking":false,"context_window":131072},
+  "deep_code":{"model":"<id>","source":"openai","thinking":true,"context_window":131072},
+  "plan":{"model":"<id>","source":"openai","thinking":true,"context_window":131072}}'
+export OPENAI_BASE_URL=http://<host>:<port>/v1
+export OPENAI_API_KEY=dummy          # required by the client, never checked by the server
+
+./.venv/bin/python bench/run_task.py --preflight bench/tasks/01-wordfreq   # wiring check, no LLM call
+./.venv/bin/python bench/run_suite.py --jobs 2
+```
+
+Three things bite, none of them obvious, all measured 2026-09-11:
+
+1. **Use `ZAKCODE_ZAKPICK_MODELS`, NOT `ZBENCH_DEEP_MODEL`.** `run_task.py` builds its override as
+   `ZakpickModel(model=..., source=...)` with no `context_window`, and it OVERWRITES the `deep_code`
+   and `delegate` entries — so setting it discards the window you just supplied and the agent
+   refuses to start.
+2. **`context_window` is mandatory and belongs in the model's entry.** A self-hosted alias is in no
+   capability registry and litellm has no metadata for it, so ADR-0066 refuses to guess. Normally
+   the server is asked directly (ADR-0065), but `run_task.py` pins `api_base: None`
+   ("belt-and-suspenders: never a local base"), so there is no server to ask. `ZAKCODE_CONTEXT_WINDOW`
+   does NOT cover the per-category zakpick entries. Read the real value off the server's own
+   `/v1/models` listing and paste it once.
+3. **`OPENAI_BASE_URL` still reaches the server**, because litellm reads it from the environment
+   directly — it is not routed through the `api_base` setting that (2) pins to `None`. The two
+   consumers of "where is the server" are separate, which is why this lane works at all.
+
+A reasoning model starved of `max_tokens` returns **empty content and no error** — it spends the
+whole budget thinking. That is the failure `thinking: false` exists to avoid on the cheap
+categories; keep it off for `classify`/`summarize`/`quick_code` (see `ZakpickModel.thinking`).
+
 ## The small-model bet: best-of-N vs 1-big (`run_bestof.py`)
 
 The quality engine's central wager is that **N cheap small-model tries + a judge to pick beat one
