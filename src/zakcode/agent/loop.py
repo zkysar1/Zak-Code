@@ -3866,7 +3866,34 @@ class AgentLoop:
             question = ""
             if isinstance(block.data, dict):
                 question = str(block.data.get("question") or "")
-            self._turn_awaiting = question or "the model is waiting for your answer"
+            if self.unattended():
+                # No one is at the prompt (ADR-0133): the session is autonomous, or a worker Body
+                # under --dangerously-skip-permissions. Waiting for the operator then has no
+                # terminus -- the turn would end stop_reason="awaiting_user" and nothing would ever
+                # resume it, stranding the loop (measured: an autonomous /start that asked "shall I
+                # boot?" and never continued). So do NOT arm the terminal. Mirror the permission
+                # system's autonomous posture (permissions.py): an operator-required action becomes
+                # a recoverable tool error the model adapts to -- identical with or without a
+                # prompter -- never a prompt no one can answer. The turn continues.
+                assert self.permission_policy is not None  # unattended() guarantees a policy
+                mode = self.permission_policy.mode.value
+                block.is_error = True
+                block.output = (
+                    "await_user has no operator to wait for: this session is unattended "
+                    f"(permission mode {mode}). You cannot pause for a human here and nothing "
+                    "will resume a waiting turn. Make the decision yourself and continue, or "
+                    "record it for later review (a note, or a plan step marked blocked with what "
+                    "it waits on) -- do not call await_user again. "
+                    f"Your question was: {question or 'unspecified'}"
+                )
+                block.data = {"awaiting_refused": True, "question": question}
+                self._note(
+                    "intervention",
+                    f"await_user refused -- unattended session ({mode}); the loop continues",
+                    kind="awaiting_refused",
+                )
+            else:
+                self._turn_awaiting = question or "the model is waiting for your answer"
         if call.name in _SEARCH_TOOLS or (call.name == "read_file" and not block.is_error):
             # A search ran (ADR-0040), whatever it found — or a file was actually read
             # (ADR-0058); a failed read stays the one-path-tried miss the gate is for.
