@@ -409,6 +409,75 @@ def test_runs_test_suite_sees_past_the_wrappers_own_flags() -> None:
         assert _recipe._runs_test_suite(cmd) is False, cmd
 
 
+def test_a_piped_suite_run_does_not_hand_the_gate_the_pipes_exit_code() -> None:
+    """ADR-0139: `pytest | tail` reports TAIL's status, so a RED suite arrives as a success.
+
+    Measured across six probe runs on a live 35B model: nearly every pytest invocation it wrote
+    was piped (`uv run pytest 2>&1 | tail -10`). Before this fix, a suite with failures set
+    _suite_verified and satisfied the verify-before-finish gate -- the gate was being cleared by
+    the very evidence that should have blocked it.
+    """
+    from zakcode.agent import recipe as _recipe
+
+    # The exit status belongs to the runner only when no pipe throws it away.
+    assert _recipe._suite_exit_belongs_to_the_runner("uv run pytest") is True
+    assert _recipe._suite_exit_belongs_to_the_runner("cd sub && uv run pytest -q") is True
+    assert _recipe._suite_exit_belongs_to_the_runner("uv run pytest 2>&1 | tail -10") is False
+    assert _recipe._suite_exit_belongs_to_the_runner("uv run pytest | head -5") is False
+    # `||` is not a pipe, and a pipeline ENDING in the runner keeps its own status.
+    assert _recipe._suite_exit_belongs_to_the_runner("make setup || uv run pytest") is True
+    assert _recipe._suite_exit_belongs_to_the_runner("echo hi | uv run pytest") is True
+
+    # When the status is not the runner's, the verdict is read from the TEXT.
+    assert _recipe._piped_suite_output_is_green("3651 passed, 9 skipped in 48s") is True
+    assert _recipe._piped_suite_output_is_green("1 failed, 3647 passed in 47s") is False
+    assert _recipe._piped_suite_output_is_green("6 errors in 1.11s") is False
+    assert _recipe._piped_suite_output_is_green("Interrupted: 6 errors during collection") is False
+    failed_line = "FAILED tests/test_x.py::test_y - assert 1 == 2"
+    assert _recipe._piped_suite_output_is_green(failed_line) is False
+    assert _recipe._piped_suite_output_is_green("no tests ran in 0.01s") is False
+    # A summary cut off by `| head` carries no verdict at all, so it credits nothing.
+    assert _recipe._piped_suite_output_is_green("collecting ... 42 items") is False
+    # A runner that prints a ZERO failure count on a clean run is not red (the counted forms
+    # require a non-zero count, or `TOTAL: N passed, 0 failed, 0 errors` would read as failure).
+    assert _recipe._piped_suite_output_is_green("TOTAL: 900 passed, 0 failed, 0 errors") is True
+
+
+def test_the_cursor_refuses_a_red_piped_suite_and_still_credits_a_green_one() -> None:
+    """The end-to-end path: the same RED output credits nothing piped, and the gate stays armed."""
+    from zakcode.messages import ToolResultBlock
+    from zakcode.providers.base import ToolCall
+
+    def run(command: str, output: str, is_error: bool) -> RecipeCursor:
+        cursor = RecipeCursor(enabled=True)
+        cursor.observe(
+            [ToolCall(id="w", name="write_file", arguments={"path": "m.py"})],
+            [
+                ToolResultBlock(
+                    tool_use_id="w", output="written", is_error=False, data={"path": "/x/m.py"}
+                )
+            ],
+        )
+        cursor.observe(
+            [ToolCall(id="r", name="bash", arguments={"command": command})],
+            [ToolResultBlock(tool_use_id="r", output=output, is_error=is_error)],
+        )
+        return cursor
+
+    red = "=== 1 failed, 3647 passed in 47s ==="
+    green = "3651 passed, 9 skipped in 48s"
+    # The defect: shell exit is tail's (0), so is_error is False even though the suite is RED.
+    piped_red = run("uv run pytest 2>&1 | tail -10", red, False)
+    assert piped_red.verified is False
+    assert piped_red.needs_verification() is True
+    # Unpiped, the runner's own nonzero status already told the truth.
+    assert run("uv run pytest", red, True).verified is False
+    # A green suite must keep its credit whether piped or not -- ADR-0136 exists because a
+    # false stall on a correct turn is expensive.
+    assert run("uv run pytest 2>&1 | tail -1", green, False).verified is True
+    assert run("uv run pytest", green, False).verified is True
+
+
 # ── loop integration ──────────────────────────────────────────────────────────
 
 
