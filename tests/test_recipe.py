@@ -478,6 +478,71 @@ def test_the_cursor_refuses_a_red_piped_suite_and_still_credits_a_green_one() ->
     assert run("uv run pytest", green, False).verified is True
 
 
+def test_a_shell_write_is_a_write_so_the_gate_still_arms() -> None:
+    """ADR-0140: keyed on the write TOOLS alone, the gate never armed for a shell write.
+
+    A model that writes a runnable file with `cat > solver.py << 'PYEOF'` or edits one with
+    `sed -i` escaped the verify-before-finish obligation ENTIRELY -- not by defeating the check
+    but by never engaging it, which is strictly worse than a check that reads the wrong thing.
+    Measured on a live 35B model that does exactly this: shell was 63% of its tool use and it
+    appended a whole test file by heredoc.
+    """
+    from zakcode.agent import recipe as _recipe
+
+    def runnable_writes(command: str) -> list[str]:
+        return [t for t in _recipe._shell_write_targets(command) if _recipe._is_runnable_target(t)]
+
+    # Every heredoc form carries a redirect, which is why the redirect is the load-bearing case.
+    assert runnable_writes("cat > /w/solver.py << 'PYEOF'") == ["/w/solver.py"]
+    assert runnable_writes("cat >> /w/tests/test_x.py << TESTEOF") == ["/w/tests/test_x.py"]
+    assert runnable_writes("echo hi >/w/gen.py") == ["/w/gen.py"]  # no space after `>`
+    assert runnable_writes("sed -i '199s/a/b/' /w/tests/test_x.py") == ["/w/tests/test_x.py"]
+    assert runnable_writes("cp /tmp/a.py /w/b.py") == ["/w/b.py"]
+    assert runnable_writes("mv /tmp/a.py /w/b.py") == ["/w/b.py"]
+    assert runnable_writes("touch /w/new.py") == ["/w/new.py"]
+    assert runnable_writes("tee /w/out.py") == ["/w/out.py"]
+
+    # A READ is not a write: `sed -n` prints, it does not edit in place.
+    assert runnable_writes("sed -n 1,5p /w/tests/test_x.py") == []
+    assert runnable_writes("cat /w/solver.py") == []
+    # A write whose target is not runnable arms nothing -- this is what keeps the fix from
+    # firing on every log redirect a suite run makes.
+    assert runnable_writes("uv run pytest > /w/out.log") == []
+    assert runnable_writes("echo note >> /w/notes.md") == []
+    # Not detected, and deliberately so: a write hidden inside an interpreter string. The gate
+    # then behaves exactly as it did before, which is the safe direction.
+    assert runnable_writes("python -c \"open('/w/x.py','w').write('1')\"") == []
+
+
+def test_the_cursor_arms_on_a_shell_write_and_a_suite_run_still_clears_it() -> None:
+    from zakcode.messages import ToolResultBlock
+    from zakcode.providers.base import ToolCall
+
+    def run(*commands: str) -> RecipeCursor:
+        cursor = RecipeCursor(enabled=True)
+        for i, command in enumerate(commands):
+            cursor.observe(
+                [ToolCall(id=str(i), name="bash", arguments={"command": command})],
+                [ToolResultBlock(tool_use_id=str(i), output="3651 passed in 48s", is_error=False)],
+            )
+        return cursor
+
+    # The hole: a heredoc write left the gate disarmed, so the turn could end unverified.
+    armed = run("cat > /w/solver.py << 'PYEOF'")
+    assert armed.wrote_runnable is True
+    assert armed.needs_verification() is True
+    assert armed.written_paths == ["/w/solver.py"]
+
+    # Writes are handled BEFORE the run credit, so write-then-run in one turn arms and clears.
+    assert run("cat > /w/solver.py << 'PYEOF'", "uv run pytest").needs_verification() is False
+    assert run("sed -i '1s/a/b/' /w/t_x.py", "uv run pytest").needs_verification() is False
+
+    # Read-only shell work must not arm the gate -- that would stall every turn that greps.
+    quiet = run("cat /w/solver.py", "ls /w", "uv run pytest > /w/out.log")
+    assert quiet.wrote_runnable is False
+    assert quiet.needs_verification() is False
+
+
 # ── loop integration ──────────────────────────────────────────────────────────
 
 

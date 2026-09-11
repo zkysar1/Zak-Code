@@ -5924,3 +5924,68 @@ an unread result — and the unpiped path is unaffected for every runner.
 
 The fix is deliberately narrow: it changes only WHEN a suite run counts as green, never what
 counts as a suite run. ADR-0136's classifier and its flag-skipping amendment are untouched.
+
+## ADR-0140: A shell command can BE the write, so the gate must arm on it
+
+**Context.** The verify-before-finish gate (ADR-0110) is the engine's central safety property: a
+turn may not end ``completed`` once a runnable file has been written until that file has been RUN.
+``RecipeCursor`` armed it from ``_WRITE_TOOLS`` — ``write_file`` and ``edit_file`` — and from
+nothing else.
+
+A model that writes through the shell therefore never armed it. Measured:
+
+| how a runnable file gets written | ``wrote_runnable`` | ``needs_verification()`` |
+|---|---|---|
+| ``write_file`` | True | True — gate arms |
+| ``cat > /w/solver.py << 'PYEOF'`` | **False** | **False — gate never arms** |
+| ``sed -i '199s/a/b/' /w/tests/test_x.py`` | **False** | **False** |
+
+This is worse than a check that reads the wrong thing. ADR-0139 fixed two gates that credited a
+verdict nobody read; here there is no verdict to misread, because the obligation is never created.
+Nothing nudges, nothing stalls, and the turn ends ``completed`` having written code that was never
+executed — the exact outcome ADR-0110 exists to prevent, reachable by a formatting choice.
+
+And it is the live shape, not a hypothetical. Across six probe runs on a 35B model, shell calls
+were 63% of all tool use, and the model appended an entire test file with
+``cat >> tests/test_text_tools.py << 'TESTEOF'`` and edited another with ``sed -i``.
+
+**Decision.** Treat a shell command as a write when a token scan shows it writing a runnable path,
+and arm the gate exactly as a write tool would — same target set, same invalidation of a prior
+green suite, same per-file verification budget (ADR-0135).
+
+Recognized shapes are the ones models actually emit: a ``>``/``>>`` redirect in either spelling
+(``> path`` and ``>path``), which also covers every heredoc form because ``cat > f << 'EOF'``
+carries the redirect; ``tee``; ``sed`` with an in-place flag; the destination argument of ``cp`` /
+``mv`` / ``install``; and ``touch``. The runnable test is the EXISTING one — an extension in
+``_INTERPRETER_BY_EXT`` minus ``_NOT_RUNNABLE_BASENAMES`` — so ``uv run pytest > out.log`` and
+``echo note >> notes.md`` arm nothing, which is what keeps the change off the critical path of
+every ordinary turn.
+
+Writes are processed BEFORE the run credit in the same call, so a line that writes and runs
+(``cat > f.py <<EOF … EOF && python f.py``) arms and then verifies, in that order.
+
+**Alternatives rejected.** *Detect writes by watching the filesystem* (mtime scan or a diff of the
+workspace around each call). It catches everything, including writes hidden in ``python -c``, and
+it is the only complete answer — but it costs a tree walk per tool call and makes the cursor
+stateful about the disk, where today it is a pure function of the call log. *Ask the model in the
+prompt not to write through the shell.* The engine would still be trusting a formatting
+convention for a safety property, which is the defect, not the fix. *Refuse shell writes
+outright.* Heredoc writing is legitimate and sometimes the only reasonable way to emit a large
+file; the gate's job is to notice it, not to forbid it.
+
+**Consequences.** Detection is a token scan, so it is deliberately incomplete: a write performed
+inside an interpreter string (``python -c "open(p,'w')…"``), through ``patch``, or by a script the
+model invokes is not seen, and the gate then behaves exactly as it did before. Incomplete in the
+safe direction — every shape it does recognize is one that used to escape entirely.
+
+The real risk is the opposite one: arming the gate more often can produce false stalls, which is
+precisely the cost ADR-0136 exists to prevent. Two protections already in place make that
+acceptable, and neither predates this change by accident — they are why this is landable now. A
+green test-runner run satisfies the whole obligation at once (ADR-0136, now including the flagged
+and piped forms), and the attempt cap scales with the number of files written (ADR-0135), so a
+turn that heredocs four files is not cut off after three verification attempts.
+
+This also subsumes a limitation recorded as accepted in ADR-0138: a shell edit left
+``_turn_edit_calls`` at zero, so a later suite run read as a "pre-edit baseline" and the
+attribution gate declined to fire. Same root cause — the engine keying a behavioural fact on tool
+NAMES — and the same fix addresses both.
