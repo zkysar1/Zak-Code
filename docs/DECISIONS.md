@@ -5511,3 +5511,47 @@ elided result re-runs the tool, which is the trade every elision already makes. 
 elide fallback) and `tests/test_compact_loop.py` (the loop's outcome text). Field test: H5 (read
 every knowledge-tree node, ~556 KB into a 131k window) on this build against the same run on
 ADR-0131's build.
+
+## ADR-0136: A test suite run through an env manager's run-wrapper is still a test suite
+
+**Context.** The verify-before-finish gate (ADR-0110/0114) will not let a turn end `completed`
+once a runnable file was written this turn until that work has been RUN successfully. It credits a
+turn two ways: `_suite_verified` — a green test-runner run verified the whole turn — or, failing
+that, every written file run individually (`_targets <= _verified`). `_runs_test_suite(command)`
+decides whether a run counts as the suite. It already strips a leading `cd sub &&` per segment and
+matches a test-runner head (`pytest`, `jest`, `vitest`, …), but it classified the RAW head — so
+`uv run pytest`, the exact command zak-code's own CI runs, presented `uv` as the head and was NOT
+credited as a suite. `_executed_targets` has stripped `<runner> run` wrappers via `_RUNNERS` all
+along; `_runs_test_suite` never got the same treatment (the gap this ADR closes). Field run
+2026-09-11 (coach, zc-03, the 35B pod) surfaced it: a dogfood task — add a method to zak-code's own
+`RecipeCursor` and verify with `uv run pytest tests/test_recipe.py` — the model did exactly that
+and the suite passed, but `_suite_verified` was never set. The gate fell back to per-file runs;
+`resolve_run_command` emitted a bare `py -m zakcode.agent.recipe` for the package file, which died
+with a `ModuleNotFoundError` outside the project's env. The turn ended `recipe_stalled` — a
+correct, suite-verified turn failed the gate only because the suite ran through the project's env
+manager.
+
+**Decision.** `_runs_test_suite` strips an env-manager run-wrapper at the top of the per-segment
+loop, mirroring `_executed_targets`: when a segment's head is in `_RUNNERS` (`uv`, `poetry`, `pdm`,
+`hatch`, `rye`, `pipenv`) and the next token is `run`, drop both and classify the wrapped command.
+`uv run pytest` → `pytest` → credited; `uv run python -m pytest` still reaches the existing
+`python -m pytest` branch; `uv run app.py` is not a suite; `uv sync` / `uv pip install pytest` /
+`poetry install` are not (the wrapped head is not a runner). The strip runs before the `cd`
+handling composes, so `cd sub && uv run pytest` is still handled.
+
+**Alternatives rejected.** Teaching the per-file fallback to run package files through the env
+manager — treats the symptom (the bad per-file command) not the cause (a real suite run
+uncredited), and a genuinely per-file turn through `uv run` would still mis-resolve. Widening
+`_TEST_RUNNER_HEADS` to include `uv` — `uv` is not a test runner; `uv run app.py` would
+false-positive as a suite. Matching only the literal `uv run pytest` — misses the other five
+managers and `uv run python -m pytest`; `_RUNNERS` is the same set `_executed_targets` already
+trusts, so reusing it keeps one source of truth.
+
+**Consequences.** A turn that verifies through the project's env manager — the norm for any
+`uv`/`poetry`/`pdm` project, including zak-code itself — is credited as suite-verified and ends
+`completed`, instead of falling to per-file runs that fail on the project's own dependencies.
+Tests: `tests/test_recipe.py::test_runs_test_suite_recognizes_env_manager_wrappers` (the six
+managers, `python -m pytest` through a wrapper, `cd sub &&` composition, and the non-suite
+negatives). Field test (A/B on zc-03, the same dogfood task): unpatched exited 1 `recipe_stalled`;
+patched, the model's `uv run pytest` was credited, the turn reached `done`, and the 79-test
+workspace suite passed — a real zak-code improvement verified through zak-code's own gate.

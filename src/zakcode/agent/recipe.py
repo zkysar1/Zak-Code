@@ -276,13 +276,27 @@ def _runs_test_suite(command: str) -> bool:
     tokens). Covers bare runners (``pytest``), the ``<launcher> -m <module>`` form
     (``python -m pytest`` / ``py -m unittest``), and the ``<tool> test`` subcommand of common
     toolchains (``npm``/``pnpm``/``yarn`` ``test``, ``deno``/``bun``/``go`` ``test``,
-    ``cargo test``, ``node --test``). Per-segment, so ``cd sub && pytest`` is handled.
+    ``cargo test``, ``node --test``). Per-segment, so ``cd sub && pytest`` is handled, and an
+    env-manager run-wrapper (``uv run pytest``, ``poetry run pytest``) is unwrapped first.
     """
     if not command:
         return False
     for seg in _segments(command):
         if not seg:
             continue
+        # Strip an env-manager run-wrapper (`uv run pytest`, `poetry run pytest`, ...) so the
+        # WRAPPED command is what we classify — mirrors _executed_targets' _RUNNERS handling.
+        # zakcode's own CI runs `uv run pytest`; without this a green suite run through the
+        # project's env manager is not credited as a suite, so the gate falls back to per-file
+        # runs that fail on the project's dependencies and false-stalls a correct turn (ADR-0136).
+        if (
+            _interpreter_name(seg[0]) in _RUNNERS
+            and len(seg) >= 2
+            and _interpreter_name(seg[1]) == "run"
+        ):
+            seg = seg[2:]
+            if not seg:
+                continue
         head = _interpreter_name(seg[0])
         body = [t.strip().strip("'\"").lower() for t in seg[1:]]
         if head in _TEST_RUNNER_HEADS:
