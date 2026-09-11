@@ -5682,3 +5682,53 @@ managers, `python -m pytest` through a wrapper, `cd sub &&` composition, and the
 negatives). Field test (A/B on zc-03, the same dogfood task): unpatched exited 1 `recipe_stalled`;
 patched, the model's `uv run pytest` was credited, the turn reached `done`, and the 79-test
 workspace suite passed — a real zak-code improvement verified through zak-code's own gate.
+
+## ADR-0137: The suite depends on nothing the developer's machine happens to have
+
+**Context.** Measured on zc-03, a box where Zak Code is INSTALLED (its own config at
+``/etc/zakcode`` and ``~/.zakcode``): a plain ``uv run pytest`` at d0281a7 reported **154
+failed / 3484 passed**. The same tree on a box without an install is green. Two independent
+machine dependencies produce that, and neither is a bug in the code under test.
+
+First, config. ``config_home()`` resolves ``~/.zakcode`` unless ``ZAKCODE_HOME`` overrides it —
+an override whose own docstring says it exists for "tests / portable installs". Nothing set it,
+so the suite read whatever Zak Code config the box happened to have: real settings, real skills,
+real endpoints. The failures cluster exactly where that would land (20 in ``test_use_skill``, 17
+in ``test_skills_facade``, 15 in ``test_zakpick``, 13 in ``test_cc_permissions``) and every one of
+those files passes when run ALONE — the ambient config only reaches them once some earlier test
+in the same process has loaded it, which is why a developer sees it in the full suite and never
+when narrowing down. The suite a developer runs to check their own change reported 154 failures
+that were purely their own installation.
+
+Second, the optional ``server`` extra. Its test modules import ``fastapi`` / ``starlette`` /
+``uvicorn`` at module scope, which fails *collection* rather than skipping, so ``conftest``
+ignores them when the extra is absent. That list was hand-written and had gone stale in BOTH
+directions: it named four modules, two of which no longer exist, while seventeen import the
+extra. The plain ``uv sync && pytest`` the block exists to protect died with collection errors
+in the fourteen it missed.
+
+**Decision.** Both stop trusting the environment and derive from it instead. An autouse fixture
+points ``ZAKCODE_HOME`` at a per-test ``tmp_path``, so every test gets an empty config home and
+the machine's install is unreachable. ``collect_ignore`` is computed by scanning each
+``test_*.py`` for a MODULE-SCOPE import of a server-extra package (``fastapi``, ``starlette``,
+``sse_starlette``, ``uvicorn``, ``websockets``); ``httpx`` is excluded because it ships with the
+``web`` extra and so says nothing about the server one. The line anchor is load-bearing: an
+import nested in a function is lazy and cannot break collection, which is the only failure this
+guards.
+
+**Alternatives rejected.** Overriding ``HOME``/``XDG_CONFIG_HOME`` as well — measured
+unnecessary (``ZAKCODE_HOME`` alone takes the suite to zero failures), and the narrower override
+tells a smaller lie about the environment. A session-scoped config home — one test's writes
+would then reach the next. Correcting the hand-listed ignore rather than deriving it — it had
+already gone stale twice over and would again. Globbing ``test_server_*.py`` — misses
+``test_sdk_iface_parity.py``, which imports the extra without carrying the name, so only the
+import is a reliable signal. Documenting "run it with ``ZAKCODE_HOME`` set" — a suite that needs
+a wrapper to be correct is a suite people will run wrong, and the person most likely to run it
+wrong is the one who just installed Zak Code.
+
+**Consequences.** On a box where Zak Code is installed, ``uv run pytest`` goes from 154 failed to
+**0 failed / 3638 passed** — same tree, same command, the fixture the only difference. A plain
+``uv sync && pytest`` without the server extra skips exactly the seventeen modules that need it
+instead of erroring on fourteen of them. The suite is its own test here: both defects were
+invisible to CI, which installs the extra and runs on a box with no Zak Code config, and both
+were found by running the suite somewhere a user would.
