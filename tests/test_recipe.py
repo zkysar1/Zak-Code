@@ -378,6 +378,37 @@ def test_runs_test_suite_recognizes_env_manager_wrappers() -> None:
         assert _recipe._runs_test_suite(cmd) is False, cmd
 
 
+def test_runs_test_suite_sees_past_the_wrappers_own_flags() -> None:
+    # ADR-0136 amendment (2026-09-11): the original unwrap required the command at the token
+    # right after `run`, so ANY flag hid it -- including `--no-sync`, which is the form this
+    # project's own CI and every hand-run in its docs actually use. Measured False before this.
+    from zakcode.agent import recipe as _recipe
+
+    flagged_suites = [
+        "uv run --no-sync pytest",
+        "uv run --no-sync pytest -q",
+        "uv run --frozen pytest",
+        "uv run --extra=server pytest",  # joined form: the flag is one token
+        "uv run --no-sync python -m pytest",
+        "poetry run --no-plugins pytest",
+        "cd sub && uv run --no-sync pytest",
+    ]
+    for cmd in flagged_suites:
+        assert _recipe._runs_test_suite(cmd) is True, cmd
+    # Still not over-broad. The separated `--opt value` form leaves its VALUE at the head and is
+    # deliberately NOT recognized: promoting past a non-option token would let any wrapped
+    # command's arguments claim to be a suite. Documented limitation, not an oversight.
+    still_not_suites = [
+        "uv run --no-sync ruff check .",
+        "uv run --no-sync poe check",  # a task runner wrapping the suite is a different case
+        "uv run --extra server pytest",  # separated value: head is `server`
+        "uv run --no-sync",
+        "uv run --no-sync app.py",
+    ]
+    for cmd in still_not_suites:
+        assert _recipe._runs_test_suite(cmd) is False, cmd
+
+
 # ── loop integration ──────────────────────────────────────────────────────────
 
 

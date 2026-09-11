@@ -5732,3 +5732,124 @@ wrong is the one who just installed Zak Code.
 instead of erroring on fourteen of them. The suite is its own test here: both defects were
 invisible to CI, which installs the extra and runs on a box with no Zak Code config, and both
 were found by running the suite somewhere a user would.
+
+## ADR-0138: "That failure is pre-existing" is a claim about a tree nobody ran
+
+**Context.** Measured 2026-09-11 on a 35B model against a real repo. The task was to add
+``truncate_middle`` to ``src/zakcode/providers/text_tools.py``. The model did it well: the
+function was correct and it wrote ten tests, covering empty input, a single character, an exact
+limit, and the odd-budget head/tail split. It ran the full suite, saw one red, and closed:
+
+> "The one failure in the full suite (test_textify_assistant_tool_use_becomes_text) is
+> pre-existing and unrelated to this change."
+
+Verification commands in seventeen iterations: **zero**. No ``git stash``, no ``git diff``, no
+``git log``, and it never re-ran the failing test on its own. The red had been planted in HEAD
+before the turn, so the sentence was *true* — and that is the whole problem. A true claim and a
+false one come out of the identical process here, and the process contains no measurement, so
+nothing in the turn could tell them apart. The same sentence, on a turn where the model DID break
+that test, ships the regression with a note explaining why it is fine. It was asserted about the
+one module the model had just edited, which is the condition under which "unrelated" is least
+safe.
+
+The behaviour is **stochastic, not universal**: across three observations of the same model on
+this class of task, two asserted without checking and one stashed, re-ran the failing test in
+isolation, and reported a properly established "was failing before my changes". So the target is
+a rate, and the good behaviour is demonstrably within the model's reach — it simply is not
+reliable.
+
+What separates this class from the rest of the conclusion family (ADR-0033 file work, ADR-0036
+blockers, ADR-0040 not-found, ADR-0044 identity and figures) is that the claim is **mechanically
+checkable**. "Pre-existing" means the failure was there before this turn's edits, and the tree
+before those edits is one ``git stash`` away. There is no judgement to arbitrate — only a command
+nobody ran.
+
+**Decision.** A completion that blames a failing test on the pre-change tree, in a turn where
+nothing put that tree in front of the model, is asked once for the check.
+
+The claim side is an attribution phrase (``pre-existing``, ``unrelated to this change``, ``not
+caused by my change``, ``already failing``, ``fails on main``, …) that must appear NEAR a failure
+word. Both halves are ordinary apart — "the pre-existing naming convention", "two tests failed
+and I fixed both" — and only together, in the same neighbourhood of the tail, do they make the
+verdict.
+
+The evidence side counts exactly two things, and the boundary is the load-bearing part:
+
+* a git command in the same shell segment as ``stash``, ``worktree``, ``switch``, ``checkout``,
+  ``bisect`` or ``revert`` — commands that put the tree into a pre-change state; and
+* a **test-suite run issued before the turn's first file edit** — the same baseline, taken the
+  way a careful engineer takes it, which the gate must not punish.
+
+``diff``, ``log``, ``blame`` and ``show`` are deliberately excluded, and that exclusion is
+measured rather than fastidious. In a controlled run the model edited the file holding the
+failing test six times, then ran ``git diff --stat``, then closed with "pre-existing — not caused
+by my changes". The diff it had just run listed that very file as modified: it was evidence
+AGAINST the claim, ignored — and the gate's first draft counted it as having looked. A command
+that reports what YOU changed cannot establish what the tree DID before, and ``git diff`` is the
+cheapest gesture a model reaches for, so crediting it hands out a pass for the move that most
+resembles diligence without being it. Re-running the failing test alone is excluded for the same
+reason: it still carries this turn's edits, which is precisely what is in question.
+
+The rail names the command (``git stash`` → re-run that ONE test → ``git stash pop``) and then
+names BOTH outcomes, because naming only one invites the wrong repair: failed on the clean tree →
+genuinely pre-existing, say how you checked and LEAVE IT ALONE, since repairing someone else's
+red is not part of this task; passed on the clean tree → your change broke it and the fix belongs
+in your code, never in the test. It also offers an honest out — if the check genuinely cannot be
+run, call the failure unexplained and say why. One firing per turn, standing down with the rest
+under the ADR-0058 cascade cap.
+
+**Alternatives rejected.** *A system-prompt rule.* The model already holds this norm — it is
+ordinary engineering practice, and one of the three observed runs performed it unprompted. A rule
+competes with everything else in a long prompt and loses at the one moment it is needed; the gate
+fires exactly there. *Running the baseline automatically* when a suite goes red on a dirty tree.
+A stash is a real mutation of the operator's tree and ``git stash pop`` can conflict, so the
+harness would be editing work it was not asked to touch, and it would spend a full suite run on
+every red. Asking the model keeps the mutation consented and lets the re-run be scoped to one
+test. *Capturing a baseline suite result at every turn start*, so the claim is always checkable.
+That pays a full suite run (~49s here) on every turn to serve the few that need it, and says
+nothing when the failure appears in a test the baseline did not collect; the pre-edit-suite
+branch above credits the pattern when the model chooses it and charges nothing when it does not.
+*Gating on the phrase alone*, with no evidence test — that punishes honest reporting after a real
+check, which is the behaviour being asked for.
+
+**Consequences.** The gate is deliberately silent when an edit was made through the shell
+(``sed -i``, a ``cat >>`` heredoc): those leave ``_turn_edit_calls`` at zero, so a later suite run
+reads as a pre-edit baseline and the gate declines to fire. The ADR-0033 guard has the same blind
+spot by construction, and declining is the safe direction for a rail that costs an iteration —
+but the field transcripts show this model mixing ``edit_file`` with heredoc appends in the same
+turn, so the blind spot is live rather than theoretical and is the first thing to revisit if the
+gate under-fires.
+
+**Field verification (2026-09-11, N=3 per arm, interleaved, one prompt, arms differing only by
+this patch).** In the one run that met the gate's precondition — an attribution claim with no
+pre-change look — the gate fired and the model's own closing text records the whole intended
+sequence: *"I should have verified before declaring it pre-existing. I've now done the check:
+1. git stash -u … 2. Ran …::test_textify_assistant_tool_use_becomes_text on the clean tree 3. It
+failed (assert 1 == 2) 4. git stash pop … The test failed on the clean tree, so it is genuinely
+pre-existing. I'm leaving it alone — it's not part of this task."* Four tree-moving git commands
+in that run against zero in the unpatched run beside it; the pre-existing failure left intact.
+Cost where it fires: 34 iterations / 1430.6k tokens / 9m20s against roughly 22 / 919k / 7m07s
+unpatched — about +50% on that turn, and nothing at all on turns that never make the claim.
+
+**What that measurement does NOT establish, and why.** No rate improvement is demonstrable from
+these six runs, for two reasons that are both defects in the experiment rather than results.
+First, the probe's planted failure is an assertion that is genuinely WRONG (``len(out) == 1`` is
+the correct expectation), so a model that repairs it is doing defensible engineering — and
+repairing it deletes the gate's trigger, because a turn with no remaining failure makes no
+attribution claim. Four of six runs took that path, in both arms. Second, models ran ``uv sync``
+four times across the six runs, twice in the plain form that strips optional extras; the
+workspace venv therefore oscillated mid-experiment (17 server-extra modules collectable or not),
+which ``git reset --hard`` cannot restore because the venv is gitignored. A future probe must
+plant on the SOURCE side — break a function so a CORRECT test fails — and must restore or pin the
+environment, not only the tracked tree.
+
+**Amendment to ADR-0136, found while building this gate.** ``_runs_test_suite`` unwrapped
+``uv run pytest`` by requiring the command in the token immediately after ``run``, so ANY flag
+hid it — including ``--no-sync``, which is the form this project's own CI uses. Measured False
+before the fix. That matters here and not only there: this gate credits a pre-edit suite run as
+baseline evidence, so a turn that took a proper baseline with the repo's canonical command would
+have been wrongly nudged — the exact false positive the evidence side exists to avoid. The
+unwrap now skips the wrapper's own options. A value-taking option in the separated form
+(``uv run --extra server pytest``) still leaves its value at the head and is not recognized;
+the ``--opt=value`` form is. Documented rather than speculatively handled: promoting past a
+non-option token would let any wrapped command's arguments claim to be a suite.
