@@ -6059,3 +6059,50 @@ project check that has passed suppresses it. The cost when it fires is one itera
 suite run; the cost it prevents is a regression that reaches CI wearing a green verdict. It is
 incomplete in the same safe direction as ADR-0140: `go test ./pkg/foo` narrows to a package and
 is not detected, because no extension appears.
+
+## ADR-0142: A benchmark that did not run must not report success
+
+**Context.** `agent-bench` is the only instrument in this repo that measures the agent against
+real models — pass-rate, $/task, convergence. It is key-gated on purpose: a real-model run costs
+money, and the workflow's own header documents removing the provider secrets as the sanctioned
+way to spend less. That gate works. What did not work is what the gate REPORTS.
+
+Measured 2026-09-11 on run `34572456787` and the four nightly runs before it:
+
+```
+Gate on provider keys  -> success
+Run the suite          -> SKIPPED
+Publish summary        -> SKIPPED
+Upload results JSON    -> SKIPPED
+job conclusion         -> SUCCESS
+```
+
+`gh secret list` returns `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` and nothing else — no
+`OPENAI_API_KEY`, no `GROQ_API_KEY`. So every nightly since the workflow shipped has reported a
+green agent-quality bench while running no agent and grading no task, and the run history gives a
+reader no way to tell that from a bench that measured five tasks and passed them. "The bench is
+green" and "the bench has never run" were the same observation.
+
+This is the claim-guard family (ADR-0033 / 0036 / 0040 / 0138 / 0140 / 0141) arriving in CI. Each
+of those gates the same shape in the model: a claim is made, and the evidence the claim presupposes
+was never gathered. Here the claimant is the workflow and the claim is `success`. A skipped
+measurement is not a passed measurement, and reporting it as one is the most durable kind of wrong
+answer, because nothing ever contradicts it.
+
+**Decision.** The key check moves into its own `gate` job publishing a `run` output; `bench` gains
+`needs: gate` and `if: needs.gate.outputs.run == 'true'`. With no keys the bench job is reported
+`skipped` — GitHub's own vocabulary for "did not run" — instead of `success`, and the gate writes a
+`## Agent quality bench — NOT MEASURED` step summary stating in the run page that the result says
+nothing about agent quality. The three now-redundant step-level `if:` guards are deleted, so there
+is ONE gate rather than two that can drift apart.
+
+The split also makes the dark path free. The old single-job form ran `actions/checkout`, installed
+`uv`, and did a full `uv sync --extra dev --extra server` every night BEFORE discovering it had
+nothing to do — which is why a no-op nightly took 13-17s rather than being instant.
+
+**What this deliberately does NOT do.** It does not make the nightly measure anything; the repo has
+no provider keys by choice, so the honest outcome is a skipped job, nightly, until someone adds one.
+The lane that measures with no key at all is a self-hosted OpenAI-compatible endpoint, and a GitHub
+runner cannot reach a private one — so that lane runs on a box with network access to the server,
+documented in `bench/README.md`. Fixing the reporting and fixing the coverage are different jobs;
+this ADR does the first and says plainly that the second is open.
