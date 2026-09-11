@@ -39,7 +39,10 @@ def _build_agent(workspace: Path, spec: dict, *, best_of_attempts: int, verify_c
     base = load_settings()
     settings = base.model_copy(
         update={
-            "workspace_root": str(workspace),
+            # A Path, NOT str(): model_copy does NOT re-validate, so a str defeats the
+            # `workspace_root: Path` annotation and dies in load_settings_permissions
+            # before any model call (the same trap run_task.py documents at length).
+            "workspace_root": workspace,
             "default_model": SMALL_MODEL,
             "permission_mode": "autonomous",
             "max_cost_usd": spec.get("max_cost_usd", 1.0),

@@ -65,7 +65,10 @@ def _build_agent_for(workspace: Path, spec: dict, model: str, temperature: float
     base = load_settings()  # loads the repo .env -> provider keys into os.environ for litellm
     settings = base.model_copy(
         update={
-            "workspace_root": str(workspace),
+            # A Path, NOT str(): model_copy does NOT re-validate, so a str defeats the
+            # `workspace_root: Path` annotation and dies in load_settings_permissions
+            # before any model call (the same trap run_task.py documents at length).
+            "workspace_root": workspace,
             "default_model": model,
             "temperature": temperature,
             "permission_mode": "autonomous",
