@@ -5853,3 +5853,74 @@ unwrap now skips the wrapper's own options. A value-taking option in the separat
 (``uv run --extra server pytest``) still leaves its value at the head and is not recognized;
 the ``--opt=value`` form is. Documented rather than speculatively handled: promoting past a
 non-option token would let any wrapped command's arguments claim to be a suite.
+
+## ADR-0139: A suite verdict read through a pipe is not a verdict
+
+**Context.** The recipe gate (ADR-0110/0135/0136) will not let a turn end ``completed`` once a
+runnable file is written until something has RUN it, and a green test-runner run satisfies that
+whole obligation at once — ``_suite_verified``. "Green" was read off the tool result's
+``is_error``, which the bash tool derives from the shell's exit code.
+
+A shell pipeline's exit code is its LAST stage's. So ``uv run pytest 2>&1 | tail -10`` returns
+*tail's* status — 0 — however many tests failed. The suite arrives at the gate as a SUCCESS, and a
+run with failures credits ``_suite_verified`` and clears the very gate that exists to stop an
+unverified finish. Measured directly: the same red output (``1 failed, 3647 passed``) leaves
+``verified`` False when the runner's own status reaches the harness and True when a pipe throws it
+away.
+
+This is not a corner case; it is the common shape. Across six probe runs on a live 35B model,
+shell calls were 63% of all tool use and nearly every pytest invocation was piped, because piping
+to ``tail`` is how a model keeps a 3,600-test summary inside its context window. The habit that
+makes the output readable is the habit that destroys the verdict. (The same hazard is a
+long-standing guardrail in a sibling system, which forbids piping its suite runner for exactly
+this reason — evidence the trap is general, not specific to this model.)
+
+Note what makes it worse than a plain missed signal: the gate does not merely fail to notice the
+failures, it reports the turn as VERIFIED. An absent check leaves a question open; this one
+answered it wrongly.
+
+**Decision.** Credit a suite run only when the verdict is actually readable, by one of two routes.
+If the exit status belongs to the runner — no pipe, or a pipeline whose final stage IS the runner
+— use it as before; ``&&`` and ``;`` need no special handling, because the shell returns the last
+segment's status and ``&&`` short-circuits on failure, so a red runner still propagates. If a pipe
+threw the status away, read the verdict from the TEXT: credit only on a pass count with no failure
+marker. A summary cut off by ``| head -5`` carries no verdict, so it credits nothing and the gate
+stays armed.
+
+The failure markers require a NON-ZERO count (``[1-9]\d*\s+(?:failed|errors?)``) so a runner that
+prints ``TOTAL: 900 passed, 0 failed, 0 errors`` on a clean run is not read as red — the obvious
+pattern would have inverted the fix for every runner that reports zeros explicitly.
+
+**Alternatives rejected.** *Refuse credit for any piped run.* Sound, and it was the first draft,
+but it re-creates the exact cost ADR-0136 exists to prevent: a correct turn with a genuinely green
+suite gets nudged into re-running ~50s of tests because of how it formatted its command. The
+output usually contains the answer; declining to read it is not caution, it is throwing away the
+one signal that survived. *Require ``set -o pipefail``.* It would make the exit code honest, but
+it is a prompt-side ask that a model will forget, and forgetting it returns silently to the wrong
+answer. *Parse the exit code out of the harness's own ``[exit code: N]`` footer.* That footer
+reports the same pipeline status, so it carries the same lie. *Ban pipes in run commands.* The
+truncation is legitimate and necessary: an untruncated 3,600-test summary is a context problem of
+its own.
+
+**The sibling gate has the same hole, and is fixed the same way with one deliberate asymmetry.**
+``VerificationGate`` (the R1 project-verifier, ADR-0110's complement) credited ``passed`` from
+``is_error`` alone, so a configured ``uv run poe check`` run as ``uv run poe check 2>&1 | tail -40``
+— observed verbatim in a live run — marked a FAILING project verified. Worse, it then CLEARED
+``last_output``, so the nudge that would have shown the model its own failure was never built; the
+repair keeps the output, which makes a piped failure strictly more informative than before.
+
+The asymmetry: that gate does NOT get the text-reading fallback. A configured verify command has
+no standard summary line — it may be a lint, a type check, or a composite task runner — so there is
+nothing reliable to read, and an unreadable verdict counts as not passed. The recipe gate reads
+pytest's summary because pytest HAS one; this gate declines rather than guessing. Same decision,
+different information available, and saying so is the point: a fallback justified by pytest's
+output format must not be smuggled into a place where that format is not guaranteed.
+
+**Consequences.** The text-reading route is pytest/unittest-shaped (``N passed`` / ``N failed`` /
+``N errors`` / ``FAILED <nodeid>`` / ``errors during collection`` / ``no tests ran``), so a runner
+whose summary uses none of those words yields no verdict through a pipe and its turn falls back to
+per-target verification. That is the safe direction — the gate stays armed rather than clearing on
+an unread result — and the unpiped path is unaffected for every runner.
+
+The fix is deliberately narrow: it changes only WHEN a suite run counts as green, never what
+counts as a suite run. ADR-0136's classifier and its flag-skipping amendment are untouched.

@@ -326,6 +326,53 @@ def _runs_test_suite(command: str) -> bool:
     return False
 
 
+#: A single ``|`` (not ``||``): the stage separator that DISCARDS the left side's exit status.
+_PIPE_SPLIT = re.compile(r"(?<!\|)\|(?!\|)")
+#: A test-runner summary that reports passes. Needed because a PIPED run's exit status is not the
+#: runner's, so the verdict has to come from the text instead.
+_SUITE_PASSED = re.compile(r"\b\d+\s+passed\b", re.IGNORECASE)
+#: A summary (or per-test line) that reports failure. The counted forms require a NON-ZERO count,
+#: so a runner that prints ``0 failed, 0 errors`` on a clean run is not read as red.
+_SUITE_FAILED = re.compile(
+    r"\b[1-9]\d*\s+(?:failed|errors?)\b"
+    r"|\bFAILED\s+\S+::"
+    r"|\berrors?\s+during\s+collection\b"
+    r"|\bno\s+tests\s+ran\b",
+    re.IGNORECASE,
+)
+
+
+def _suite_exit_belongs_to_the_runner(command: str) -> bool:
+    """Whether the shell exit status the harness saw is the TEST RUNNER's own.
+
+    ``pytest | tail -10`` reports *tail's* status, so a suite with failures exits 0 and the
+    harness sees success. ``&&`` and ``;`` are fine: the shell returns the LAST segment's status
+    and ``&&`` short-circuits on failure, so a red runner still propagates. Only a pipe whose
+    final stage is something other than the runner throws the verdict away.
+    """
+    stages = _PIPE_SPLIT.split(command)
+    return len(stages) == 1 or _runs_test_suite(stages[-1])
+
+
+def _suite_run_is_green(command: str, output: str) -> bool:
+    """Whether a recognized test-runner run actually DEMONSTRATES a green suite.
+
+    Called only for a non-error result, so when the exit status is the runner's own it is 0 and
+    the suite really did pass. When a pipe threw that status away the success is meaningless and
+    the verdict has to come from the text, which is the whole of ADR-0139.
+    """
+    return _suite_exit_belongs_to_the_runner(command) or _piped_suite_output_is_green(output)
+
+
+def _piped_suite_output_is_green(output: str) -> bool:
+    """Read a piped run's verdict from its TEXT, since its exit status is not the runner's.
+
+    Requires a pass count AND no failure marker: ``1 failed, 3647 passed`` is red, and a run
+    whose summary got cut off by ``| head -5`` yields no verdict at all (so it is not credited).
+    """
+    return bool(_SUITE_PASSED.search(output)) and not _SUITE_FAILED.search(output)
+
+
 _USAGE_LINE = re.compile(r"^\s*usage[: ]", re.IGNORECASE)
 
 
@@ -574,7 +621,17 @@ class RecipeCursor:
                 # as a whole — but only when no exact-output literal was demanded (a suite run
                 # does not demonstrate a specific stdout string, so an acceptance check still
                 # requires a direct run that prints it).
-                if self.acceptance is None and _runs_test_suite(command):
+                # ...and only when the exit status the harness saw is the RUNNER's own. A model
+                # that writes `uv run pytest 2>&1 | tail -10` hands us TAIL's status, so a suite
+                # with failures arrived here as a SUCCESS and credited the gate GREEN (ADR-0139;
+                # measured over six probe runs in which nearly every pytest invocation was piped).
+                # Where the status is not the runner's, the verdict is read from the text instead,
+                # and a text carrying no verdict credits nothing.
+                if (
+                    self.acceptance is None
+                    and _runs_test_suite(command)
+                    and _suite_run_is_green(command, result.output or "")
+                ):
                     self._suite_verified = True
 
     def needs_verification(self) -> bool:
