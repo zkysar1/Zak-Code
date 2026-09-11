@@ -261,7 +261,38 @@ def run(task_dir: Path) -> int:
     return 0
 
 
+def _enable_engine_warnings() -> None:
+    """Route the engine's WARNING log records to stderr, so the bench can SEE them.
+
+    ``zakcode/__init__`` installs a ``NullHandler`` on the package logger -- correct library
+    hygiene, and it also means ``logging.lastResort`` never fires, because lastResort only
+    engages when NO handler is found anywhere in the chain. A NullHandler counts as one. So
+    ``loop.py``'s ``logger.warning("provider rejected a malformed tool call; retrying ...")``
+    -- and its rate-limit and timeout siblings -- were emitted correctly and went NOWHERE in
+    every bench run this file has ever driven.
+
+    Measured 2026-09-11: a bare ``logger.warning`` on a fresh interpreter DOES reach stderr
+    via lastResort; the same call after ``import zakcode`` does not. The package logger
+    propagates (``propagate=True``), so a root handler receives the record past the
+    NullHandler -- which is what this installs.
+
+    Why it matters: those warnings are the ONLY signal that a provider retry, a malformed
+    tool call, or a rate limit occurred. None of them reach ``TurnResult`` -- a successful
+    retry ends the turn ``completed`` with ``degraded=False`` and ``error=""`` -- so with the
+    log swallowed, a run that fought through three malformed tool calls is byte-identical to
+    a clean one in the report. That is the hazard the suite exists to detect, in the suite.
+    """
+    import logging
+
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="[engine] %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
 def main(argv: list[str]) -> int:
+    _enable_engine_warnings()
     args = [a for a in argv if a != "--preflight"]
     if not args:
         print("usage: run_task.py [--preflight] <task_dir>", file=sys.stderr)

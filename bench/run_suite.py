@@ -39,14 +39,29 @@ def run_one(task_dir: Path) -> dict:
         timeout=900,
     )
     out = proc.stdout.strip()
+    # The child's stderr carries the ENGINE's WARNING records -- provider retries, malformed
+    # tool calls, rate limits (run_task._enable_engine_warnings routes them there). None of
+    # those reach TurnResult: a successful retry ends the turn `completed` with
+    # `degraded=False` and `error=""`. This function captured stderr and then referenced it
+    # ONLY in the parse-error branch below, so on every SUCCESSFUL task it was discarded --
+    # and a turn that fought through three malformed tool calls reported byte-identically to
+    # a clean one. Attach them to the report instead, so they land in the results JSON and
+    # can be counted.
+    engine_warnings = [ln for ln in proc.stderr.splitlines() if ln.startswith("[engine] ")]
+
+    def _with_warnings(rep: dict) -> dict:
+        if engine_warnings:
+            rep["engine_warnings"] = engine_warnings
+        return rep
+
     try:
-        return json.loads(out)
+        return _with_warnings(json.loads(out))
     except json.JSONDecodeError:
         # Recover the last balanced {...} block if stdout carried extra noise.
         start = out.rfind("\n{")
         if start != -1:
             try:
-                return json.loads(out[start:].strip())
+                return _with_warnings(json.loads(out[start:].strip()))
             except json.JSONDecodeError:
                 pass
         return {
