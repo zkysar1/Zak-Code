@@ -348,10 +348,68 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     shipped with a bench (`run_quality`, `run_bestof`) before being trusted.
   - **Safe adoption.** Seam B copies only source (size-capped), verifies in isolation, and adopts by
     diff with a TOCTOU guard — never a blind overwrite of the user's workspace.
-- **Measured:** the quality gate is a NICHE tool (neutral on a task whose failures are stalls, not
-  weak completions); **best-of-N is the win** (4/5 vs 1-big 3/5 across the suite, the edge on hard
-  tasks), so seam B deploys it where it pays. Validated live: seam B fired on a real stall, ran 3
-  isolated attempts, and adopted a verified one by diff.
+- **Measured (2026-06, on the corpus named below — see the re-measurement that follows):** the
+  quality gate is a NICHE tool (neutral on a task whose failures are stalls, not weak completions);
+  **best-of-N is the win** (4/5 vs 1-big 3/5 across the suite, the edge on hard tasks), so seam B
+  deploys it where it pays. Validated live: seam B fired on a real stall, ran 3 isolated attempts,
+  and adopted a verified one by diff.
+  *Corpus:* 5 tasks (`bench/tasks/01`–`05`; `m01`–`m05` did not exist until 2026-09-01), small =
+  `groq/qwen/qwen3-32b`, big = `openai/gpt-4o-mini`, **one pass per cell**.
+- **Re-measured 2026-09-11 — the pass-rate claim HOLDS, but its ATTRIBUTION does not, and the cost
+  premise under it is INVERTED.**
+  Both corpora are named because the populations differ, and comparing the bare rates would publish
+  a false divergence (the mistake this bullet exists to prevent).
+  *Corpus:* the same 5 tasks; big = `openai/gpt-4o-mini`, **unchanged**; small =
+  `groq/qwen/qwen3.6-27b`, a SUBSTITUTION — the original `qwen/qwen3-32b` is no longer reachable
+  from this account (`/models` omits it; a direct call returns HTTP 404 `model_not_found`), so this
+  is not a replication of the small arm. **Four passes per cell**, not one — three driven directly
+  plus a fourth through this repo's own `bench/run_bestof_suite.py` aggregator as a positive
+  control. That control is why the numbers below are right: three passes agreed on 1-big 4/5 and
+  the fourth scored 3/5, so a three-pass write-up would have reported a stable margin that is not
+  stable.
+  - **best-of-N 20/20 vs 1-big 15/20 pooled** (per pass: 5/5 vs 4/5, 4/5, 4/5, **3/5**). Best-of-N
+    passed every task in every pass. The 2026-06 margin (+1, edge on the hard task) reproduces and
+    is if anything larger, both arms having shifted as the models changed underneath.
+  - **The margin is TWO tasks, and they fail for different reasons — do not cite it as one.**
+    `gpt-4o-mini` fails `05-ledger` **0/4**, a DETERMINISTIC incapacity, not a sampling loss; it
+    fails `04-todo-cli` **3/4**, which is ordinary variance. The other three tasks are 4/4 on both
+    arms. An earlier draft of this bullet said "the entire margin is `05-ledger`" on three passes;
+    the fourth falsified it.
+  - **The margin is MODEL SUBSTITUTION, not fan-out — a fixed-model control says so.** Re-run on
+    the pod lane with BOTH arms pinned to the same model (`zds-qwen3.6-35b`; fan-out at temp 0.7,
+    single shot at temp 0.0), on `05-ledger` — the only task that varies on THAT lane:
+    all three fan-out attempts passed AND the single greedy shot passed
+    (`bestof_won_where_big_lost` = False), at 1,649s sequential against 499s — **3.3x the wall
+    clock for an identical outcome**. So what produces the bulk of the margin on the paid lane is
+    `gpt-4o-mini` FAILING `05-ledger` **0/4** while `qwen3.6-27b` passes it 4/4 — a model-choice
+    effect, not the fan-out-and-select structure this ADR credits. (The `04-todo-cli` half of the
+    margin, 3/4, is variance, which IS the regime fan-out is for — so the structure is not worth
+    nothing; it is worth roughly one flaky task in five, not the headline.) Before citing
+    best-of-N as the cause of a win,
+    run the fixed-model control; it is one task and one run of cost.
+    **Caveat: N=1 at fixed model on one task** — supporting, not conclusive. The nearest larger
+    sample is the 5-pass determinism map (4/5 single attempts on that task), which routes through
+    zakpick rather than pinning a model, so it corroborates and does not replicate.
+  - **The cost premise no longer holds.** This decision's bet is "~10 cheap calls + selection can
+    beat one big call". Pooled: **$8.949 best-of-N vs $1.512 one-big — 5.9x MORE**, and best-of-N
+    was the cheaper arm in 1 of 20 runs. A small-model fan-out is not automatically the cheap arm;
+    that depends on per-token prices that have since moved. The pass-rate finding survives, the
+    economic argument for it does not, and seam B's off-by-default posture carries more weight than
+    the text above gives it.
+  - **Oracle-first rescued nothing here: `oracle_rescued_a_win` = 0/20, judge-only = hybrid = 20/20.**
+    The "Why this shape" bullet above calls oracle-first the fix for a judge that mis-ranks. On this
+    corpus today the judge never mis-ranked. Not refuted — the `04` selection failure it was built
+    for was real — but it is currently inert, so do not cite it as an active, earning win.
+  - **Headroom is a property of the (model, task) PAIR, not of "the suite" — measure it per lane.**
+    5 passes of `run_suite.py` on the pod lane (`zds-qwen3.6-35b`) scored **49/50**, `05-ledger`
+    the only varying task (4/5): on that lane 9 of 10 tasks cannot show a difference in either
+    direction, so best-of-N has almost nothing to buy. The paid lane is NOT the same picture —
+    `gpt-4o-mini` is 0/4 on `05-ledger` and 3/4 on `04-todo-cli`. Same tasks, different lane,
+    different discriminating power. Do not carry a determinism figure across lanes (an earlier
+    draft of this bullet did exactly that). Either way the honest conclusion is the same: the
+    discriminating surface is 1–2 tasks wide, so a best-of-N spread measured here is a few
+    task-runs of evidence however many passes are stacked on it, and harder tasks — not more
+    passes — are what would make the number mean more.
 - **Consequences:** an opt-in quality layer that composes with zakpick (cheap models) and `deep_think`
   (deliberation). **Deferred:** best-of-N *plans* (seam C — low value; the HTN in `tasks.py` already
   decomposes); a wired cost-fraction cap (today bounded by `best_of_attempts` + the per-turn budget);
