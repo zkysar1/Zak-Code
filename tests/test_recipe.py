@@ -144,6 +144,35 @@ def test_cursor_nudge_cap() -> None:
     assert c.can_nudge() is False
 
 
+def test_cursor_nudge_cap_scales_with_files_written() -> None:
+    # SOAK-9 (ADR-0135): the cap must scale with the number of runnable files written. A
+    # library+callers ripple refactor writes 4 runnable files; the harness verifies by walking
+    # pending_target in reverse write order, so a fixed cap of 3 spends its whole budget on the
+    # last three (report/invoice/cart) and never reaches the first-written module (discount.py),
+    # stalling a COMPLETE, correct turn as recipe_stalled. Four files => at least four attempts.
+    c = RecipeCursor(enabled=True, attempt_cap=3)
+    for f in ("discount.py", "cart.py", "invoice.py", "report.py"):
+        c.observe([_c(f, "write_file", path=f)], [_r(f, path=f)])
+    c.nudge()
+    c.nudge()
+    c.nudge()
+    assert c.can_nudge() is True  # fixed cap 3 would refuse the 4th; the scaled cap allows it
+    c.nudge()
+    assert c.can_nudge() is False  # but it does not grow without bound — 4 files, 4 attempts
+
+
+def test_cursor_nudge_cap_floored_at_default() -> None:
+    # The floor is preserved: writing <= attempt_cap runnable files keeps the original budget,
+    # so the common 1-3 file case is unchanged (max(3, 2) == 3).
+    c = RecipeCursor(enabled=True, attempt_cap=3)
+    for f in ("a.py", "b.py"):
+        c.observe([_c(f, "write_file", path=f)], [_r(f, path=f)])
+    c.nudge()
+    c.nudge()
+    c.nudge()
+    assert c.can_nudge() is False
+
+
 def test_cursor_non_executing_commands_do_not_verify() -> None:
     # A command that merely NAMES the file (never runs it) must not satisfy the gate.
     for cmd in ("echo prog.py", "cat prog.py", "ls -l prog.py", "rm prog.py", "git add prog.py"):
