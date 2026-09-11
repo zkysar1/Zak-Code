@@ -217,6 +217,7 @@ def run(task_dir: Path) -> int:
     tool_calls: dict = {}
     tool_errors = 0
     trace_events: dict = {}
+    trace_interventions: dict = {}
     t0 = time.perf_counter()
     try:
         result = agent.run_turn(spec["prompt"])
@@ -243,6 +244,20 @@ def run(task_dir: Path) -> int:
         tool_calls = dict(counts.most_common())
         tool_errors = sum(1 for r in result.tool_results if r.is_error)
         trace_events = dict(collections.Counter(e.kind for e in result.trace.events).most_common())
+        # An "intervention" event's IDENTITY lives in its payload, not its kind: TurnTrace.note
+        # is `note("intervention", "...", kind="doom_loop")`, where the leading positional is the
+        # EVENT kind and the keyword `kind` lands in `data`. Counting only e.kind therefore
+        # reports `intervention: 5` while saying nothing about WHICH five gates fired -- and
+        # "which robustness paths ran?" is the entire question this recording exists to answer.
+        # Measured 2026-09-11 on 04-todo-cli: intervention=5 beside compaction fired=3, leaving
+        # two interventions unidentifiable at exactly the moment a failure needed explaining.
+        trace_interventions = dict(
+            collections.Counter(
+                (e.data or {}).get("kind") or (e.detail or "?")[:40]
+                for e in result.trace.events
+                if e.kind == "intervention"
+            ).most_common()
+        )
     except Exception as e:  # noqa: BLE001 - a crash is a result (a bug to file), not a runner failure
         err = f"{type(e).__name__}: {e}"
     elapsed = time.perf_counter() - t0
@@ -287,6 +302,7 @@ def run(task_dir: Path) -> int:
         "tool_calls": tool_calls,
         "tool_errors": tool_errors,
         "trace_events": trace_events,
+        "trace_interventions": trace_interventions,
         "verify_rc": verify_rc,
         "verify_out": verify_out,
         "error": err,
