@@ -5512,6 +5512,46 @@ elide fallback) and `tests/test_compact_loop.py` (the loop's outcome text). Fiel
 every knowledge-tree node, ~556 KB into a 131k window) on this build against the same run on
 ADR-0131's build.
 
+## ADR-0133: await_user fails closed when no operator is at the prompt
+
+**Status.** Accepted (2026-09-11). Hardening on ADR-0121.
+
+**Context.** ADR-0121 gave the model `await_user` — the one tool whose success ENDS the turn, so
+a model blocked on a human says so once instead of restating it for 27 iterations. Its motivating
+incident was an INTERACTIVE session on slow local inference: an operator was present and expected
+to answer. The unattended case was never considered. But the same tool is reachable in an
+autonomous loop and under a worker Body's `--dangerously-skip-permissions`, where by definition no
+one is at the prompt (`AgentLoop.unattended()` — the modes `autonomous` and `bypassPermissions`).
+There, `await_user` ends the turn `stop_reason="awaiting_user"` and NOTHING resumes it: the loop is
+stranded until a human notices. Measured on the Mind framework running on zakcode (2026-09-11): an
+autonomous `/start coach` set the agent RUNNING, then the model, reaching a soft "invoke /boot"
+instruction, stopped and asked the operator "shall I boot?" — the loop never started. This is the
+exact failure `permissions.py` already designs against for permission prompts: in `autonomous` mode
+"everything auto-allows and NOTHING ever prompts… a present operator may [approve]; `autonomous`
+never can." `await_user` is an operator-required action that slipped past that law.
+
+**Decision.** At the terminal-arming seam in `_execute_tool_call` (the shared chokepoint both the
+buffered and streaming turn loops read), when the tool is an await-user tool AND `self.unattended()`
+is true, do NOT arm `_turn_awaiting`. Instead convert the tool result into a recoverable error the
+model adapts to — identical in spirit to the autonomous permission posture: it names the situation
+("await_user has no operator to wait for: this session is unattended"), tells the model to decide
+itself or record the decision, and instructs it not to call await_user again. The turn continues.
+An `awaiting_refused` intervention note is recorded, symmetric with the attended path's
+`awaiting_user` note, so the redirect is auditable. When an operator IS present (`ask`,
+`acceptEdits`, `allow`), ADR-0121's terminal is unchanged.
+
+**Consequences.** An autonomous loop can no longer be silently stranded by a model reaching for
+await_user — the harness-level twin of the text-death protections the Mind maintains for the same
+class of failure, but one no downstream prompt fix could fully close. Defense in depth beneath the
+skill-level fix (the Mind's `/start` now chains straight to `/boot`): the model is steered not to
+ask, and if it asks anyway the harness refuses to strand. `unattended()` is reused as the single
+predicate — no new mode plumbing. The residual risk is thrash (a nudge still recommends await_user,
+the model calls it, gets refused); it is bounded by ADR-0115's progress-charged nudge budget and by
+the refusal's explicit "do not call await_user again", and is the specific thing to watch under a
+live model. Tests: `tests/test_await_user.py` — the unattended fail-closed terminal (autonomous and
+bypass, buffered and streaming), the attended terminal unchanged (ask/acceptEdits/allow), and all
+ADR-0121 contracts still green (14 passed); full suite 3624 passed / 9 skipped.
+
 ## ADR-0134: UserPromptSubmit fires at the user-message boundary, its context folded into the turn
 
 **Context.** `UserPromptSubmit` sat in `settings_loader._SKIP_EVENTS` — a real Claude Code event
