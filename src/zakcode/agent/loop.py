@@ -3875,6 +3875,7 @@ class AgentLoop:
                 # system's autonomous posture (permissions.py): an operator-required action becomes
                 # a recoverable tool error the model adapts to -- identical with or without a
                 # prompter -- never a prompt no one can answer. The turn continues.
+                assert self.permission_policy is not None  # unattended() guarantees a policy
                 mode = self.permission_policy.mode.value
                 block.is_error = True
                 block.output = (
