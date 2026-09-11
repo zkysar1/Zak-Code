@@ -403,6 +403,70 @@ _NOT_RUNNABLE_BASENAMES = {"__init__.py", "conftest.py"}
 _TEST_MODULE_RE = re.compile(r"^(?:test_.*|.*_test)\.py$", re.IGNORECASE)
 
 
+#: Shell verbs whose LAST argument is the file being written (`sed -i … path`, `cp a b`, `mv a b`).
+_SHELL_WRITE_LAST_ARG = {"sed", "cp", "mv", "install"}
+#: Shell verbs that write every non-option argument (`touch a.py b.py`).
+_SHELL_WRITE_ALL_ARGS = {"touch"}
+
+
+def _shell_write_targets(command: str) -> list[str]:
+    """Paths a shell command WRITES, as far as a token scan can tell (ADR-0140).
+
+    ``RecipeCursor`` keyed "a runnable file was written" on the write/edit TOOLS alone, so a model
+    that writes through the shell -- ``cat > solver.py << 'PYEOF'``, ``sed -i … test_x.py`` -- never
+    armed the verify-before-finish gate at all. Measured on a live 35B model, which does exactly
+    this: shell calls were 63% of its tool use and it appended a whole test file by heredoc.
+
+    Recognized shapes, chosen because they are the ones models actually emit: a ``>``/``>>``
+    redirect (which also covers every heredoc form, since ``cat > f << 'EOF'`` carries the
+    redirect), ``tee``, and the verb tables above. Everything else is ignored -- a write hidden
+    inside ``python -c`` or a ``patch`` stream is not detected, and the gate then behaves exactly
+    as it did before, which is the safe direction.
+
+    Returns raw tokens; the caller applies the SAME runnable test as :func:`_runnable_path`, so
+    ``pytest > out.log`` and ``echo x >> notes.md`` arm nothing.
+    """
+    targets: list[str] = []
+    for seg in _segments(command):
+        if not seg:
+            continue
+        head = _interpreter_name(seg[0])
+        args = seg[1:]
+        # 1. redirects, in both spellings: `> path` and `>path` (and the `>>` append forms).
+        for i, raw in enumerate(seg):
+            token = raw.strip().strip("'\"")
+            if not token.startswith(">"):
+                continue
+            rest = token.lstrip(">")
+            if rest:
+                targets.append(rest)
+            elif i + 1 < len(seg):
+                targets.append(seg[i + 1])
+        # 2. `tee path` / `tee -a path`
+        if head == "tee":
+            targets.extend(a for a in args if not a.startswith("-"))
+        # 3. verbs whose last argument is the destination. `sed` only with an in-place flag --
+        #    a plain `sed script file` READS the file and writes to stdout.
+        if head in _SHELL_WRITE_LAST_ARG:
+            if head == "sed" and not any(a.startswith("-i") for a in args):
+                continue
+            positional = [a for a in args if not a.startswith("-")]
+            # For sed the script itself is positional; the destination is still the LAST token.
+            if positional:
+                targets.append(positional[-1])
+        # 4. verbs that write every argument.
+        if head in _SHELL_WRITE_ALL_ARGS:
+            targets.extend(a for a in args if not a.startswith("-"))
+    return [t.strip().strip("'\"") for t in targets if t.strip()]
+
+
+def _is_runnable_target(path: str) -> bool:
+    """The runnable test of :func:`_runnable_path`, reusable for a path with no tool result."""
+    if _basename_any(path).lower() in _NOT_RUNNABLE_BASENAMES:
+        return False
+    return os.path.splitext(path)[1].lower() in _INTERPRETER_BY_EXT
+
+
 def _runnable_path(call: ToolCall, result: ToolResultBlock) -> str | None:
     """The path a successful write/edit touched IF it is a runnable script, else ``None``.
 
@@ -603,9 +667,27 @@ class RecipeCursor:
                     # ...and it invalidates a prior green test run: the new/edited code has
                     # not been exercised by the suite yet, so re-require verification.
                     self._suite_verified = False
-            elif call.name in _RUN_TOOLS and self.wrote_runnable:
+            elif call.name in _RUN_TOOLS:
                 command = call.arguments.get("command")
                 if not isinstance(command, str):
+                    continue
+                # A shell command can BE the write (ADR-0140). Keyed on the write TOOLS alone,
+                # this gate never armed for `cat > solver.py << 'PYEOF'` or `sed -i … test_x.py`,
+                # so a model that writes through the shell escaped the verify-before-finish
+                # obligation entirely -- not by defeating the check, but by never engaging it.
+                # Writes are handled BEFORE the run credit below, so a command that writes AND
+                # runs in one line (`cat > f.py <<EOF … EOF && python f.py`) arms and then
+                # verifies, in that order.
+                for written in _shell_write_targets(command):
+                    if not _is_runnable_target(written):
+                        continue
+                    self.wrote_runnable = True
+                    base = os.path.basename(written)
+                    self._targets.add(base)
+                    self._abs_targets.append(written)
+                    self._verified.discard(base)  # a fresh write must be re-verified
+                    self._suite_verified = False  # ...and a prior green suite did not see it
+                if not self.wrote_runnable:
                     continue
                 # Only a command that actually EXECUTES a written file verifies it (not one
                 # that merely names it). With an acceptance string, the run output must ALSO
