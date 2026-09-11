@@ -31,13 +31,35 @@ def discover(filters: list[str]) -> list[Path]:
 
 
 def run_one(task_dir: Path) -> dict:
-    """Run one task in a child process; parse its JSON report from stdout."""
-    proc = subprocess.run(
-        [sys.executable, str(BENCH / "run_task.py"), str(task_dir)],
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )
+    """Run one task in a child process; parse its JSON report from stdout.
+
+    A per-task TIMEOUT is a RESULT, not a runner crash. ``subprocess.run(timeout=...)``
+    raises ``TimeoutExpired``, and this function used to let it propagate: it surfaced from
+    ``fut.result()`` in main() and killed the ENTIRE pass -- no rows printed, no results JSON
+    written, nine finished tasks discarded. Measured 2026-09-11: ``03-lru`` exceeded 900s on
+    ``zds-qwen3.5-35b`` (it takes 261-614s on ``zds-qwen3.6-35b``), and a 10-task pass
+    returned literally nothing.
+
+    That failure mode is worst exactly where the suite is most needed. "Too slow to finish"
+    is the signal a weaker or cheaper model emits FIRST -- before any wrong answer -- so a
+    harness that converts it into a total loss cannot measure the models it exists to
+    compare. Returning a row keeps the other nine tasks and makes the timeout countable.
+    """
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(BENCH / "run_task.py"), str(task_dir)],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "id": task_dir.name,
+            "success": False,
+            "stop_reason": "runner_timeout",
+            "error": f"task exceeded the {exc.timeout:.0f}s per-task cap",
+            "elapsed_s": exc.timeout,
+        }
     out = proc.stdout.strip()
     # The child's stderr carries the ENGINE's WARNING records -- provider retries, malformed
     # tool calls, rate limits (run_task._enable_engine_warnings routes them there). None of
