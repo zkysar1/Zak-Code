@@ -6400,3 +6400,41 @@ The first tally of this evidence said 41 task-runs. It was 21. The glob that pro
 `weak-pass-2` (md5 `c7e18ef93d55774e7878ab8b2ffd9050`) — the stale-artifact fabrication
 quarantined one step earlier in the same session, readmitted by a wider glob and double-counting
 20 rows. Quarantining bad data does not protect a later count that reaches past the quarantine.
+
+**Measured 2026-09-11, same day, on `zds-qwen3.5-35b` (older-pass-2, all 10 tasks instrumented).**
+The peaks above were a FIT; these are readings, and they change one number and confirm the rest.
+
+```
+task              n   total_in   FITTED peak   MEASURED peak   fit error   floor share
+01-wordfreq       8    101,383        15,564          14,369        +8%         70.7%
+02-median-bug     6     59,894        10,715          10,626        +1%         89.7%
+03-lru            8    113,006        18,147          17,245        +5%         63.4%
+04-todo-cli      17    344,797        30,350          30,147        +1%         44.2%
+05-ledger        17    318,261        27,401          27,726        -1%         47.8%
+m01/m03/m05     3-4  28.2k-38.6k    9,628-10,060    9,466-9,941   +1% to +2%  92.8-95.2%
+```
+
+Three things follow. **The fit method is sound** — within +1% to +8%, mostly +1%, so every earlier
+fitted peak in this document is trustworthy. **The ~52k figure is the top of a range, not a typical
+value**: `05-ledger`'s peak is run-dependent across 27,726–51,808, consistent with the ~40%
+input-token noise measured for deep-code tasks. Cite the range. **The conclusion is unchanged and
+strengthened** — even the 51,808 maximum is half the 104,857 threshold, and the typical ~28–30k is
+under a third of it. `fired` was 0 on all 20 instrumented task-runs, with `checks` equal to
+iterations+1 on every one, so the in-run positive control held throughout: the probe was live
+inside the measured run, not merely before it.
+
+The floor-share column also explains, mechanically, which tasks make good instruments. A task that
+is 93% fixed prompt floor reproduces to ~0.1%; one that is 44% floor swings ~40%. Precision here is
+not a property of the task's difficulty but of how much of it is the byte-identical prefix.
+
+**And the experiment this ADR pre-registered was redesigned before it ran, because it was
+confounded.** Shrinking the declared context window moves `_window()`, which feeds three consumers,
+not one: the compaction threshold (0.8x), the seam clamp in `_clamp_result`
+(`window * 0.25 * 3` chars, so 98,304 -> 24,576 — every tool result cut 4x smaller), and
+`_refuse_oversized_body`. A failure under that arm would have been unattributable, which is the
+exact defect that wrecked the two prior attempts to compare engine against model behaviour. The
+replacement moves `Compactor.config.threshold_fraction` on the FULL window instead: one variable,
+the clamp untouched. Set from the measured peaks rather than the fitted ones — at 0.15 the
+threshold is 19,660, which sits 1.8x above the largest m-task peak (10,714) and 1.4-1.5x below
+`04-todo-cli` (30,147) and `05-ledger` (27,726). The first draft used 0.2, where `05-ledger`'s
+margin was 5.8% against a metric that varies by 40% — a positive arm that might simply not fire.
