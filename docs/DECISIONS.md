@@ -6510,3 +6510,76 @@ while shrinking the prompt would look like an improvement. It is one model famil
 its determinism is measured at the serving stack's DEFAULT sampling temperature (`temperature`
 defaults to `None`, meaning "send none"; the bench never set one), so even these numbers are a sum
 of engine and sampling determinism that has not yet been partitioned.
+
+## ADR-0147: Compaction trades context for re-work, and the exchange rate is 25% more iterations and 10x the variance
+
+ADR-0145 established that compaction had never fired in any benchmark run. Forcing it to fire —
+by moving `Compactor.config.threshold_fraction` to 0.15 on the full window, so the threshold falls
+to 19,660 while the seam clamp and the oversized-body check stay where they are — produced a
+result worth shipping, and a false alarm worth recording.
+
+**The false alarm first, because the discipline is the point.** The first pass came back 9/10 with
+`04-todo-cli` failing verification (`persistence broken: reloaded ids = [3], expected [1, 3]`),
+clean stop, not degraded, not a timeout. It had compacted the most of any task and was 9/9
+historically. That is a tempting mechanism finding. The pre-registered decision rule said
+otherwise, and an interleaved A/B replication (3 runs per arm, alternating so pod-load drift hit
+both equally) came back **6/6 PASS**. Arm A finished 1 fail in 4, arm B 0 in 4 — the rule's
+"report it as flake and retract" branch, fired exactly as written before the data existed.
+ADR-0144 had already recorded `05-ledger` flipping once and resolving to noise; the same shape
+recurred and the pre-registration is what kept it from being published as a defect.
+
+**What the replication actually found.** Same model, same task, only the threshold differs:
+
+```
+ARM A (threshold  19,660)   iterations 20, 29, 16, 21   mean 21.5   spread  60%   fired 5,7,1,3
+ARM B (threshold 104,857)   iterations 17, 18, 17, 17   mean 17.2   spread   6%   fired 0,0,0,0
+```
+
+Compaction raises mean iterations **+25%** and iteration spread **10.4x**. It also does not reduce
+peak context — max peak 30,684 (A) against 30,147 (B) — because the peak is set *between* checks by
+a single large tool result, which the seam clamp bounds and compaction does not. It fired up to
+seven times and bought no reduction in the quantity it looks like it should control.
+
+**The mechanism is measured, and then confirmed in the source.** Re-reads track compactions:
+
+```
+fired  0, 0, 0  ->  read_file  3, 3, 3      (the zero-compaction baseline is EXACTLY 3, 3/3 runs)
+fired  1        ->  read_file  3
+fired  3        ->  read_file  4
+fired  5        ->  read_file  6
+fired  7        ->  read_file 11
+                    Pearson r = 0.925, n=7, perfectly monotone
+```
+
+`_elidable` matches any `ToolResultBlock` whose output exceeds `ELIDE_MIN_CHARS` — a file read's
+contents are exactly that — and `elision_note` leaves behind the stub *"… characters dropped;
+re-run the tool if you need it"*. The agent does what the stub says. So this is **designed
+behaviour, not a defect**: compaction trades transcript space for re-work. What had never been
+measured is the exchange rate, and it is not cheap. Attribution is clean because
+`trace_interventions` shows the only gate differing between arms is `compaction` itself —
+`suite_scope_gate` and `plan_review` fire identically in both.
+
+**Why this is the campaign's problem.** At the shipped 0.8 on a 131,072 window, compaction never
+fires and none of this is paid. On a small-window model it binds by construction: 0.8 of 32,768 is
+26,214, which `04-todo-cli` and `05-ledger` both exceed. So every cost above is a cost that
+appears *only* on the models this campaign targets — and a 6% -> 60% jump in iteration spread is
+the direct opposite of "more deterministic", which is the stated goal.
+
+The remedy is design work rather than a one-line change, and this ADR deliberately stops short of
+prescribing one. Two directions worth measuring: preserve the most recent read of each distinct
+file across a compaction, or give the elision stub enough identity (path, size, a content hash)
+that a re-read is visibly redundant to the model. Either would be measurable against the numbers
+above with the ADR-0146 triad as the in-run comparability control.
+
+**Limits.** One task, one model, one box, four runs per arm. The `r = 0.925` rests on 7 points
+with three tied at zero, so it is corroboration for a mechanism independently confirmed in the
+source, not a result standing on its own. Pass rate did **not** drop in arm A once the flake was
+ruled out (3/4, and the 4th ruled flake by pre-registered rule), so this is a COST finding, not a
+correctness finding — compaction did not make the agent wrong, it made it slower and less
+predictable.
+
+**One correction to ADR-0145's follow-up.** A grep for `note("intervention", ..., kind=...)`
+enumerated 12 intervention kinds. It missed at least two: `suite_scope_gate` and `plan_review` fire
+in every run of both arms and match no grep hit, so they are emitted through a call shape the
+pattern did not cover. The recorded `trace_interventions` is the reliable enumeration; the grep was
+not, and a catalog built from it would have understated the engine's gate surface.
