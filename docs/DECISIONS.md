@@ -5995,3 +5995,67 @@ false-fire risk and deserves its own measurement. That measurement says leave it
 live probe runs the coach called ``write_file``/``edit_file`` between six and nine times EACH, so
 ``_turn_edit_calls`` was never zero and the hole never opened. An earlier draft of this ADR said
 this change subsumed that limitation. It does not — this commit touches ``recipe.py`` only.
+
+## ADR-0141: A scoped test run does not verify the whole turn
+
+**Context.** The verify-before-finish gate (ADR-0110) will not let a turn end `completed` once
+a runnable file was written until that work has been RUN. `RecipeCursor` credits it two ways:
+every written file run individually, or `_suite_verified` — which ADR-0136 defines, in its own
+words, as "a green test-runner run verified the whole turn". `_runs_test_suite` decides what
+counts, and it asks only whether a recognized runner was invoked. It never asks what the runner
+was pointed AT. Probed directly against the installed build, every one of these clears the
+obligation in full:
+
+```
+pytest tests/test_text_tools.py                       -> True
+pytest -k truncate                                    -> True
+pytest tests/test_text_tools.py::test_truncate_basic  -> True
+```
+
+So "you must run what you wrote" is discharged by "you ran something" — down to a single test
+function.
+
+Measured 2026-09-11 on the 35B coach, in BOTH arms of a two-arm probe on zak-code's own tree.
+The task was three helpers in `src/zakcode/providers/text_tools.py` with tests. The model wrote
+them, ran `uv run pytest tests/test_text_tools.py -v 2>&1 | tail -30`, saw `67 passed`, and
+closed: *"All done — 67/67 tests pass."* The FULL suite on that tree was **2 failed, 3671
+passed**. The same tree with its changes reverted was **3656 passed, 0 failed** — so the two
+reds were caused by its own change, in test files it never ran, and the run it chose was
+structurally incapable of seeing them. The turn ended `completed`.
+
+This is the third member of a family. ADR-0136 credited a suite that ran through an env-manager
+wrapper; ADR-0139 stopped crediting a verdict a pipe had eaten. Both moved a reading toward the
+truth. This one is the reading being about a smaller thing than the claim it discharges.
+
+**Decision.** `_suite_run_is_scoped(command)` — true when a recognized runner segment carries a
+test FILE, a `::` node id, or a narrowing flag (`-k`, `--lf`, `--ff`, `--deselect`). The cursor
+records `_suite_unscoped` when a credited green run was NOT scoped, resets it wherever
+`_suite_verified` resets (code written after a full run was never covered by it), and exposes
+`suite_scoped_only`. A one-shot rail (`_SCOPE_NUDGE`) then asks, once per turn, for one unscoped
+run — in both loop variants, standing down with the rest under the ADR-0058 cascade cap.
+
+Three deliberate narrowings, each of which would otherwise fire the rail on a correct turn:
+
+- **A DIRECTORY is not scoping.** `pytest tests/` is how most projects spell "the whole suite".
+- **`-m` is not counted.** It narrows for `pytest -m slow` and launches for `python -m pytest`,
+  and they are indistinguishable by token — counting it would call the single most common way
+  to invoke a suite "scoped".
+- **Only the runner's own segment is scanned**, so `pytest -q | grep foo.py` is not read as a
+  selector.
+
+**Alternatives rejected.** *Refusing the credit outright* — that is ADR-0136's false stall
+rebuilt, and the gate would fall back to per-file runs that fail on the project's dependencies.
+*Forcing the unscoped run from the harness* — ADR-0138 rejected the sibling of this for the
+right reason: it would spend a full suite run on turns that do not need one, and the mutation
+should be consented. A rail asks and can be declined; the rail names that out explicitly.
+*Mapping a changed source file to the tests that import it*, so the scope could be judged
+sufficient rather than merely narrow — it is the honest answer and needs an import graph the
+cursor cannot build as a pure function of the call log.
+
+**Consequences.** The rail fires only on the population that needs it: a runnable file written,
+a green suite credited, and every green run narrowed. A turn verified file-by-file (ADR-0110's
+fallback) is untouched, a red scoped run still belongs to the recipe gate, and a configured
+project check that has passed suppresses it. The cost when it fires is one iteration plus one
+suite run; the cost it prevents is a regression that reaches CI wearing a green verdict. It is
+incomplete in the same safe direction as ADR-0140: `go test ./pkg/foo` narrows to a package and
+is not detected, because no extension appears.
