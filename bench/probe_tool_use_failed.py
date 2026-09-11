@@ -26,7 +26,10 @@ def build_agent():
     ws = Path(tempfile.mkdtemp(prefix="zprobe-"))
     settings = base.model_copy(
         update={
-            "workspace_root": str(ws),
+            # A Path, NOT str(): model_copy does NOT re-validate, so a str defeats the
+            # `workspace_root: Path` annotation and dies in load_settings_permissions
+            # before any model call (the same trap run_task.py documents at length).
+            "workspace_root": ws,
             "default_model": "zakpick",
             "permission_mode": "autonomous",
             "api_base": None,

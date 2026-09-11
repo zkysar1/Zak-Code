@@ -48,7 +48,10 @@ def _build_agent(workspace: Path):
     run_task._ensure_interpreter_on_path()
     settings = load_settings().model_copy(
         update={
-            "workspace_root": str(workspace),
+            # A Path, NOT str(): model_copy does NOT re-validate, so a str defeats the
+            # `workspace_root: Path` annotation and dies in load_settings_permissions
+            # before any model call (the same trap run_task.py documents at length).
+            "workspace_root": workspace,
             "default_model": MODEL,
             "permission_mode": "autonomous",  # headless: file writes never prompt
             "max_cost_usd": 0.50,

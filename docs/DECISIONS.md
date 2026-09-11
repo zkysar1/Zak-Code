@@ -6115,3 +6115,56 @@ The lane that measures with no key at all is a self-hosted OpenAI-compatible end
 runner cannot reach a private one — so that lane runs on a box with network access to the server,
 documented in `bench/README.md`. Fixing the reporting and fixing the coverage are different jobs;
 this ADR does the first and says plainly that the second is open.
+
+## ADR-0143: Six of the seven bench runners were dead, and the gates that would have said so exclude them
+
+**Context.** Measured 2026-09-11, live, against a self-hosted 35B endpoint. `run_quality.py` and
+`run_bestof.py` both die identically before a single model call:
+
+```
+File "src/zakcode/permissions_settings.py", line 350, in load_settings_permissions
+  workspace_root / ".claude" / "settings.json",
+TypeError: unsupported operand type(s) for /: 'str' and 'str'
+```
+
+The cause is `Settings.model_copy(update={"workspace_root": str(ws)})`. `model_copy` does NOT
+re-validate, so the `str` defeats the `workspace_root: Path` annotation and survives into
+`load_settings_permissions`. `run_task.py` documents this exact trap in a nine-line comment and
+passes the `Path`; it is the ONLY runner that does. The other six — `run_quality`, `run_bestof`,
+`run_seam_b`, `run_skill_chain`, `run_skill_branch`, `probe_tool_use_failed` — all stringify.
+
+The dates are in the history and they are not a coincidence. `run_quality.py` was authored
+2026-06-19 (`d5593af`, "the activation evidence") and worked: ADR-0011's measurements were taken
+with these scripts. `load_settings_permissions(workspace_root)` entered `Agent.__init__` on
+2026-06-22 (`1b87957`, an unrelated Claude-Code-permissions feature). The harness was killed three
+days after it was written, by a change that had nothing to do with it, and stayed dead 81 days.
+
+What died is specifically the QUALITY-ENGINE arm — `run_bestof` (the evidence ADR-0011 cites for
+"best-of-N is the win", 4/5 vs 1-big 3/5), `run_quality` ("the activation evidence"), `run_seam_b`.
+`bench/README.md` says of running these across the suite: "the pattern IS the small-model preset."
+`grep -rn preset src/zakcode/` returns nothing. The preset the design pointed at was never built
+because the instrument that would have justified it could not start.
+
+It went unseen because nothing looks. `bench/` is excluded from every gate deliberately — `ruff` via
+`extend-exclude`, `pytest` via `testpaths = ["tests"]`, `mypy` via `packages = ["zakcode"]`. That is
+a reasonable posture for experiment code and it means a runner can rot in total silence. The same
+shape as ADR-0142, one layer down: there, a measurement that did not happen reported success; here,
+a measurement that COULD not happen reported nothing at all, which is quieter and lasted longer.
+
+**Decision.** Pass the `Path` in all six, each with a three-line comment naming the trap rather than
+re-deriving it. Add `tests/test_bench_runners_constructible.py`, which walks each `bench/*.py` AST
+and fails any dict entry handing `workspace_root` a `str(...)` call — checked on the AST so
+reformatting cannot hide it. The test READS the bench sources and never imports or executes them, so
+the harness keeps its exclusion from the runtime gates while this regression class stays closed. It
+carries a positive control (`test_bench_dir_is_present`) because an empty glob would make every
+parametrized case pass vacuously — the failure mode that hid the original bug, re-appearing in the
+guard against it.
+
+**Measured after the fix.** `run_quality.py` produces a result block on `m02-ambiguous-zero` for the
+first time (`off_pass_rate 0.0`, `on_pass_rate 0.0`, `delta 0.0`, `+3.3s/run`), and `run_bestof.py`
+no longer raises. Suite `3683 passed, 9 skipped`. The mutation was verified in both directions: with
+`str(workspace)` reintroduced the new test fails on exactly that module, and passes when restored.
+
+**What this does NOT do.** It restores the instrument; it does not re-run ADR-0011's measurements.
+Those numbers were taken in June on runners that worked, have not been re-validated on current main,
+and should be re-measured before anything is built on them — including the small-model preset.
