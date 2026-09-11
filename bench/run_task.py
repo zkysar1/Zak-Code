@@ -191,6 +191,9 @@ def run(task_dir: Path) -> int:
     if seed.is_dir():
         shutil.copytree(seed, ws, dirs_exist_ok=True)
 
+    # Armed BEFORE the agent is built: the probe patches Compactor.should_compact at class
+    # level, and the Agent's compactor is constructed inside _build_agent.
+    compaction = _instrument_compaction()
     agent = _build_agent(ws, spec)
 
     err = None
@@ -248,6 +251,7 @@ def run(task_dir: Path) -> int:
         "turn_cost_usd": round(turn_cost, 6),
         "turn_tokens": turn_tokens,
         **snap,
+        "compaction": compaction,
         "verify_rc": verify_rc,
         "verify_out": verify_out,
         "error": err,
@@ -259,6 +263,60 @@ def run(task_dir: Path) -> int:
     if success:
         shutil.rmtree(ws, ignore_errors=True)
     return 0
+
+
+def _instrument_compaction() -> dict:
+    """Record what the compactor SAW on every check, so a threshold that NEVER TRIPS is visible.
+
+    ``enable_compaction=True`` is set honestly, a ``Compactor`` is attached honestly, and
+    ``_maybe_compact()`` runs before every provider call honestly -- and none of that is
+    evidence the compaction path ever EXECUTED. ``should_compact`` fires at
+    ``threshold_fraction`` (0.8) of the window: 102,400 tokens on the 128k pod models, while
+    the hardest task in this suite (``05-ledger``) peaks near 52k. So every pass measured so
+    far returned False on every call, and a compaction path that never runs reports
+    byte-identically to one that works perfectly.
+
+    That matters most for exactly the models this bench exists to compare. The threshold is a
+    FRACTION of the window, so a 32k-window model compacts at 25.6k -- which ``04-todo-cli``
+    (23-33k) and ``05-ledger`` (32-52k) both cross. ``trim_tail``, ``_split_index``,
+    ``_adopt_compacted`` and the summarizer call would first execute on the smallest models,
+    having never been exercised by a single benchmark run.
+
+    Reports ``peak_context_tokens`` beside ``fired``: the peak alone cannot say whether the
+    mechanism is healthy or dead, and ``fired: 0`` alone cannot say whether the context stayed
+    small or the check is broken. The pair is readable; either number alone is not.
+
+    Calls the ORIGINAL for the verdict rather than re-deriving ``n > threshold`` here -- a
+    duplicated predicate would drift from the engine's and report a confident wrong "never
+    fired". ``count_tokens`` is chars/4 (a local string op, no API call), so counting a second
+    time for the peak costs nothing measurable.
+    """
+    from zakcode.agent.compact import Compactor
+
+    stats: dict = {
+        "checks": 0,
+        "fired": 0,
+        "peak_context_tokens": 0,
+        "threshold_tokens": None,
+        "context_window": None,
+    }
+    original = Compactor.should_compact
+
+    def probe(self, messages, *, context_window, count_tokens):
+        verdict = original(
+            self, messages, context_window=context_window, count_tokens=count_tokens
+        )
+        stats["checks"] += 1
+        stats["context_window"] = context_window
+        if context_window:
+            stats["threshold_tokens"] = int(context_window * self.config.threshold_fraction)
+        stats["peak_context_tokens"] = max(stats["peak_context_tokens"], count_tokens(messages))
+        if verdict:
+            stats["fired"] += 1
+        return verdict
+
+    Compactor.should_compact = probe
+    return stats
 
 
 def _enable_engine_warnings() -> None:
