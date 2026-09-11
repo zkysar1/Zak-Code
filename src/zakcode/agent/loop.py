@@ -789,6 +789,85 @@ _MISSING_NUDGE = (
 #: Shell tools whose ``command`` argument this module inspects for evidence (ADR-0138).
 _SHELL_TOOLS = frozenset({"bash", "powershell"})
 
+#: Silenced-evidence gate (ADR-0144). A zero is only a measurement when the instrument that
+#: produced it could have reported non-zero. Two ways a turn loses that guarantee, both
+#: detectable: the command it ran converts its own failure into a plausible value
+#: (``2>/dev/null``, ``|| echo 0``, ``|| true``), or the number came out of a local script the
+#: turn never opened. Measured 2026-09-11 on the 35B pod against bench task
+#: ``m02-ambiguous-zero`` (check.sh is ``grep -c "ERROR" logs/app.log 2>/dev/null || echo 0``
+#: over a file that does not exist, so it prints 0 whatever the truth is). The transcript:
+#: ``CALL bash: ./check.sh -> 0``, then "The script returned `0` with exit code 0, meaning no
+#: ERROR lines were found." It never read check.sh. 6 runs out of 6 ended VERDICT: NO_ERRORS,
+#: with the reasoning knob OFF and ON (output tokens rose 45% between arms, so the knob was
+#: live) -- perfectly deterministic, so no retry, best-of-N or quality gate can reach it.
+#: The system prompt ALREADY carries the rule, at 38% into the stable tier and always sent:
+#: "Zero results for a whole scope means you are blind -- ... an error the tool swallowed --
+#: never that the scope is empty." A correct instruction in the prompt is not a control on a
+#: small model; only the engine binds.
+#: The claim half of the gate: a counted-nothing conclusion. Narrow on purpose — a rail costs
+#: an iteration, so it wants "I looked and there was nothing", not every sentence with "no".
+_ZERO_CLAIM_RE = re.compile(
+    r"\bno[_\s-]?errors?\b"
+    r"|\b(?:no|zero)\s+(?:matches|matching|results|hits|occurrences|entries|lines|records"
+    r"|files|issues|warnings|failures|problems)\b"
+    r"|\b(?:none|nothing)\s+(?:was\s+|were\s+)?(?:found|matched|returned|logged|reported)\b"
+    r"|\bthere\s+(?:are|were)\s+no\s+\w+"
+    r"|\b0\s+(?:errors?|matches|results|hits|occurrences|entries|lines|records|failures)\b"
+    r"|\bcount\s+(?:is|was)\s+(?:0|zero)\b",
+    re.IGNORECASE,
+)
+_SILENCER_RE = re.compile(
+    r"2>\s*/dev/null|2>\s*nul\b|2>&-|\|\|\s*(?:echo|true|:)(?![\w-])|(?<![\w-])-sf(?![\w-])"
+)
+#: Command heads whose STDOUT is evidence about the world. Deliberately excludes mutators:
+#: silencing ``mkdir``/``rm`` stderr is ordinary hygiene, silencing a LOOKUP's and then
+#: reporting its number is the defect.
+_QUERY_HEADS = frozenset(
+    {
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "ag",
+        "ack",
+        "find",
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "stat",
+        "curl",
+        "wget",
+        "jq",
+        "diff",
+        "cmp",
+    }
+)
+#: A local script invoked by path (``./check.sh``) or by an interpreter (``bash check.sh``).
+_SCRIPT_RUN_RE = re.compile(
+    r"(?:^|[|&;]\s*)(?:(?:ba|z|k|da)?sh|source|\.)\s+(\S+\.(?:sh|bash|zsh|ps1|py|rb|js))"
+    r"|(?:^|[|&;]\s*)(\./\S+|\.\\\S+)",
+    re.MULTILINE,
+)
+#: A shell command that OPENS a file rather than executing it (ADR-0144).
+_READS_A_FILE_RE = re.compile(r"(?:^|[|&;]\s*)(?:cat|less|more|head|tail|bat)\s")
+_SILENCED_NUDGE = (
+    "You reported a zero (or a nothing-found) as a measurement, but the instrument that "
+    "produced it was never established: {why} A command that silences its own failure — or a "
+    "script you have not read — prints the SAME number whether or not the thing it measures "
+    "exists, so that number is zero signals, not a measurement of zero. Do ONE of these, then "
+    "answer:\n"
+    "1. Read the script or re-run the command WITHOUT the silencing (drop `2>/dev/null`, drop "
+    "`|| echo`) and quote what it prints.\n"
+    "2. Positive-control it IN THE SAME SCOPE: show the same command reporting a NON-zero "
+    "against something known to exist in the very file, directory or endpoint you just "
+    "measured — a control run somewhere else proves the tool works, not that THIS scope "
+    "is readable.\n"
+    "3. If neither is possible, say plainly what could not be determined instead of reporting "
+    "the zero."
+)
+
 #: Suite-scope gate (ADR-0141): the verify-before-finish obligation was discharged, but every
 #: test run this turn NARROWED itself -- one file, a ``-k`` filter, a single node id. The gate's
 #: own contract is that a green suite run "verified the whole turn", and a scoped run cannot.
@@ -1024,6 +1103,43 @@ def _figure_nudge(figures: list[str]) -> str:
 def _claims_missing(text: str) -> bool:
     """True when the completion's tail concludes something could not be found."""
     return _MISSING_CLAIM_RE.search(text[-800:]) is not None
+
+
+def _claims_zero(text: str) -> bool:
+    """True when the completion's tail reports a counted-nothing result (ADR-0144)."""
+    return _ZERO_CLAIM_RE.search(text[-800:]) is not None
+
+
+def _silenced_query(command: str) -> str | None:
+    """The first LOOKUP in ``command`` that silences its own failure, or ``None``.
+
+    Split at separators that begin a NEW command (``&&``, ``;``, newline) but deliberately
+    NOT at ``||`` — ``cmd || echo 0`` is one evidence unit, the fallback being precisely what
+    fakes the value. That is why :func:`zakcode.agent.recipe._segments` is not reused here:
+    its contract is the opposite (a token in one segment must never bless another).
+    """
+    for part in re.split(r"&&|;|\n", command):
+        part = part.strip()
+        if not part:
+            continue
+        lead = part.split("||", 1)[0].strip()
+        if not lead:
+            continue
+        head = os.path.basename(lead.split()[0].strip().strip("'\"")).lower()
+        if head in _QUERY_HEADS and _SILENCER_RE.search(part):
+            return part[:160]
+    return None
+
+
+def _scripts_run(command: str) -> set[str]:
+    """Basenames of local scripts ``command`` executes (``./check.sh``, ``bash check.sh``)."""
+    found: set[str] = set()
+    for m in _SCRIPT_RUN_RE.finditer(command):
+        raw = m.group(1) or m.group(2) or ""
+        name = os.path.basename(raw.strip().strip("'\"").replace("\\", "/"))
+        if name:
+            found.add(name.lower())
+    return found
 
 
 def _contests_prior_claim(user_text: str) -> bool:
@@ -1799,6 +1915,13 @@ class AgentLoop:
         # failure "pre-existing" while this is zero is attributing a red test to code it never
         # ran. Per-turn.
         self._turn_baseline_probes = 0
+        # Silenced-evidence gate (ADR-0144): the instrument behind a counted-nothing claim.
+        # ``_turn_silenced_cmd`` is the first lookup this turn that silenced its own failure;
+        # ``_turn_scripts_run`` minus ``_turn_files_read`` is the set of scripts whose output
+        # the turn could cite without ever having seen what they do. Per-turn.
+        self._turn_silenced_cmd: str | None = None
+        self._turn_scripts_run: set[str] = set()
+        self._turn_files_read: set[str] = set()
         self._turn_handed_off: list[
             str
         ] = []  # operator-only commands handed back this turn (ADR-0128)
@@ -1834,6 +1957,9 @@ class AgentLoop:
         # Missing-conclusion gate (ADR-0040): content-search calls this turn. A completion
         # that concludes "could not find" with this at zero has not looked.
         self._turn_search_calls = 0
+        self._turn_silenced_cmd = None  # silenced-evidence gate (ADR-0144): per-turn
+        self._turn_scripts_run = set()
+        self._turn_files_read = set()
         # Evidence gates (ADR-0044): lookup calls (read/list/glob/grep/use_skill) this turn.
         self._turn_lookup_calls = 0
         # Optional shared iteration budget (M4). When injected, it is an ADDITIONAL
@@ -4016,6 +4142,11 @@ class AgentLoop:
                 )
             else:
                 self._turn_awaiting = question or "the model is waiting for your answer"
+        if call.name == "read_file" and not block.is_error:
+            raw_path = call.arguments.get("path") or call.arguments.get("file_path") or ""
+            if isinstance(raw_path, str) and raw_path:
+                # ADR-0144: the instrument was opened, so a claim drawn from it is informed.
+                self._turn_files_read.add(os.path.basename(raw_path.replace("\\", "/")).lower())
         if call.name in _SEARCH_TOOLS or (call.name == "read_file" and not block.is_error):
             # A search ran (ADR-0040), whatever it found — or a file was actually read
             # (ADR-0058); a failed read stays the one-path-tried miss the gate is for.
@@ -4033,6 +4164,18 @@ class AgentLoop:
                 or (self._turn_edit_calls == 0 and _runs_test_suite(command))
             ):
                 self._turn_baseline_probes += 1
+            if isinstance(command, str):
+                # ADR-0144. A silenced LOOKUP is recorded whatever it printed; the scripts it
+                # ran are recorded so the gate can ask whether any was cited unread. ``cat``
+                # counts as a read — a model that cats the script HAS seen the silencer.
+                if self._turn_silenced_cmd is None:
+                    self._turn_silenced_cmd = _silenced_query(command)
+                self._turn_scripts_run |= _scripts_run(command)
+                if _READS_A_FILE_RE.search(command):
+                    for tok in command.split():
+                        if tok.lower().endswith((".sh", ".bash", ".zsh", ".ps1")):
+                            name = os.path.basename(tok.strip("'\"")).lower()
+                            self._turn_files_read.add(name)
         if call.name in _LOOKUP_TOOLS:
             self._turn_lookup_calls += 1  # the model looked at something (ADR-0044)
         if (
@@ -5479,6 +5622,7 @@ class AgentLoop:
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
+        silenced_nudged = False  # silenced-evidence gate (ADR-0144): one per turn
         attrib_nudged = False  # attribution gate (ADR-0138): one per turn
         scope_nudged = False  # suite-scope gate (ADR-0141): one per turn
         identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
@@ -5497,6 +5641,9 @@ class AgentLoop:
         self._turn_section_restores = {}  # dropped-section restores (ADR-0075): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
+        self._turn_silenced_cmd = None  # silenced-evidence gate (ADR-0144): per-turn
+        self._turn_scripts_run = set()
+        self._turn_files_read = set()
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
         self._turn_user_text = user_text  # judged decomposition (ADR-0050): the goal judged against
         self._turn_skill = _composed_skill_name(
@@ -6141,6 +6288,7 @@ class AgentLoop:
                     claim_nudged = blocker_nudged = missing_nudged = True
                     identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
                     defer_nudged = attrib_nudged = scope_nudged = True
+                    silenced_nudged = True
                 # Claim-vs-action guard (ADR-0033): the completion REPORTS a file change
                 # ("I have updated … I have registered …") but no file-changing tool call
                 # ran this turn, so nothing on disk changed. Ask once for the work or an
@@ -6219,6 +6367,40 @@ class AgentLoop:
                         kind="missing_gate",
                     )
                     self.session.add_message(Message.user(_control_rail(_MISSING_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
+                # Silenced-evidence gate (ADR-0144): the turn reports a counted-nothing result,
+                # but the instrument behind it was never established — a lookup that silenced its
+                # own failure, or a script whose output it cites unread. Such a number reads the
+                # same whether or not the thing it measures exists. Ask once.
+                if (
+                    result.text
+                    and not silenced_nudged
+                    and _claims_zero(result.text)
+                    and (
+                        self._turn_silenced_cmd is not None
+                        or (self._turn_scripts_run - self._turn_files_read)
+                    )
+                ):
+                    silenced_nudged = True
+                    self._turn_struggle = True
+                    unread = sorted(self._turn_scripts_run - self._turn_files_read)
+                    if self._turn_silenced_cmd is not None:
+                        why = f"the lookup `{self._turn_silenced_cmd}` silences its own failure."
+                    else:
+                        why = f"you ran `{', '.join(unread)}` but never read it."
+                    self._note(
+                        "intervention",
+                        "completion reports a zero whose instrument was never established "
+                        "— asking for an unsilenced re-run or a positive control",
+                        kind="silenced_gate",
+                    )
+                    self.session.add_message(
+                        Message.user(_control_rail(_SILENCED_NUDGE.format(why=why)))
+                    )
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -6863,6 +7045,7 @@ class AgentLoop:
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
+        silenced_nudged = False  # silenced-evidence gate (ADR-0144): one per turn
         attrib_nudged = False  # attribution gate (ADR-0138): one per turn
         scope_nudged = False  # suite-scope gate (ADR-0141): one per turn
         identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
@@ -6881,6 +7064,9 @@ class AgentLoop:
         self._turn_section_restores = {}  # dropped-section restores (ADR-0075): per-turn
         self._turn_edit_calls = 0  # repeated-outcome epoch (ADR-0038): per-turn
         self._turn_search_calls = 0  # missing-conclusion gate (ADR-0040): per-turn
+        self._turn_silenced_cmd = None  # silenced-evidence gate (ADR-0144): per-turn
+        self._turn_scripts_run = set()
+        self._turn_files_read = set()
         self._turn_lookup_calls = 0  # evidence gates (ADR-0044): per-turn
         self._turn_user_text = user_text  # judged decomposition (ADR-0050): the goal judged against
         self._turn_skill = _composed_skill_name(
@@ -7800,6 +7986,7 @@ class AgentLoop:
                         claim_nudged = blocker_nudged = missing_nudged = True
                         identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
                         defer_nudged = attrib_nudged = scope_nudged = True
+                        silenced_nudged = True
                     # Claim-vs-action guard (ADR-0033) — see the buffered twin.
                     if (
                         assistant_text
@@ -7883,6 +8070,44 @@ class AgentLoop:
                             message="completion concludes something is missing without a "
                             "content search — asking for the grep"
                         )
+                        continue
+                    # Silenced-evidence gate (ADR-0144): the turn reports a counted-nothing result,
+                    # but the instrument behind it was never established — a lookup
+                    # that silenced its
+                    # own failure, or a script whose output it cites unread. Such a number reads the
+                    # same whether or not the thing it measures exists. Ask once.
+                    if (
+                        assistant_text
+                        and not silenced_nudged
+                        and _claims_zero(assistant_text)
+                        and (
+                            self._turn_silenced_cmd is not None
+                            or (self._turn_scripts_run - self._turn_files_read)
+                        )
+                    ):
+                        silenced_nudged = True
+                        self._turn_struggle = True
+                        unread = sorted(self._turn_scripts_run - self._turn_files_read)
+                        if self._turn_silenced_cmd is not None:
+                            why = (
+                                f"the lookup `{self._turn_silenced_cmd}` silences its own failure."
+                            )
+                        else:
+                            why = f"you ran `{', '.join(unread)}` but never read it."
+                        self._note(
+                            "intervention",
+                            "completion reports a zero whose instrument was never established "
+                            "— asking for an unsilenced re-run or a positive control",
+                            kind="silenced_gate",
+                        )
+                        self.session.add_message(
+                            Message.user(_control_rail(_SILENCED_NUDGE.format(why=why)))
+                        )
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(message="a zero needs an instrument — asking for one")
                         continue
                     # Attribution gate (ADR-0138) — see the buffered twin.
                     if (

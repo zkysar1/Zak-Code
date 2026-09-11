@@ -6168,3 +6168,108 @@ no longer raises. Suite `3683 passed, 9 skipped`. The mutation was verified in b
 **What this does NOT do.** It restores the instrument; it does not re-run ADR-0011's measurements.
 Those numbers were taken in June on runners that worked, have not been re-validated on current main,
 and should be re-measured before anything is built on them — including the small-model preset.
+
+## ADR-0144: A zero is only a measurement when the instrument could have said otherwise
+
+**Context.** Field probe 2026-09-11, the 35B pod, bench task `m02-ambiguous-zero`. Its
+`check.sh` is `grep -c "ERROR" logs/app.log 2>/dev/null || echo 0` over a `logs/` that does not
+exist, so it prints `0` whatever the truth is. The whole transcript:
+
+```
+CALL bash: ./check.sh   -> 0 [exit code: 0]
+TEXT: The script returned `0` with exit code 0, meaning no ERROR lines were found.
+CALL write_file: report.md
+TEXT: Done. ... VERDICT: NO_ERRORS
+```
+
+It never opened `check.sh`. Six runs out of six ended `NO_ERRORS`, with the reasoning knob OFF
+and ON — completion tokens rose 174-199 → 256-289 between arms, so the knob was live and the
+model simply thought harder to the same wrong place. That is a PERFECTLY deterministic failure,
+which rules out the whole sampling-side toolkit by construction: best-of-N has nothing to select
+between, a retry has no variance to escape into, and the quality gate measures neutral
+(`run_quality`: off 0.0, on 0.0, delta 0.0, once ADR-0143 revived that runner).
+
+The load-bearing part is what was already in place. The system prompt's `_EVIDENCE` block says,
+unconditionally and at 38% into a 7,057-character stable tier — verified by rendering it, not by
+reading the code path:
+
+> Zero results for a whole scope means you are blind — wrong identity or account, missing
+> permission, a malformed query, **an error the tool swallowed** — never that the scope is
+> empty: say which, and fix it.
+
+That is this task's lesson, almost verbatim, well inside any attention window, on a surface
+ADR-0053 already clarity-passed. The instruction was present, correct and always sent, and a
+small model ignored it every single time. **On a small model a correct instruction in the
+system prompt is not a control. Prompt text is advisory; only the engine binds.** This ADR is
+the first one filed on that premise explicitly, though the 75 `_control_rail` sites already in
+this file were all built on it.
+
+**A design error caught by the transcript, recorded because the near-miss generalises.** The
+first predicate convicted a command that silences its own failure. It would NOT have fired here:
+the silencer lives INSIDE `check.sh`, and the model's own command is `./check.sh`. Every test
+would have passed and the gate would have been inert on the one case it exists for — the
+ADR-0140 shape (a fix that does not touch the path it claims) recurring one day later. When a
+failure is mediated by something the agent RUNS rather than something it WRITES, the task says
+what the trap is and only the transcript says what the agent touched.
+
+**Decision.** `_claims_zero(text)` (a counted-nothing conclusion in the tail) plus EITHER
+evidence path: `_silenced_query(command)` — a LOOKUP head whose segment carries `2>/dev/null`,
+`|| echo`, `|| true`, `-sf` — or a local script in `_turn_scripts_run` that is not in
+`_turn_files_read`. One `_SILENCED_NUDGE` per turn, in both loop variants, standing down with
+the family under the ADR-0058 cascade cap, offering three numbered moves (unsilence and re-run,
+positive-control it, or say what could not be determined) per ADR-0053's numbered-options rule.
+
+Four narrowings, each of which would otherwise cost an iteration on a correct turn:
+
+- **Mutators are exempt.** `mkdir -p out 2>/dev/null` and `rm -rf build 2>/dev/null` are
+  hygiene; silencing a LOOKUP and then reporting its number is the defect.
+- **`||` stays attached.** `recipe._segments` splits there and its contract is that a token in
+  one segment must never bless another — the exact opposite of what is needed, where
+  `cmd || echo 0` is ONE evidence unit and the fallback is what manufactures the value.
+  Reusing it would have separated `grep` from `|| echo 0`. A separate splitter, deliberately.
+- **Reading counts.** `read_file`, or a `cat`/`head`/`less` of the script, marks the instrument
+  seen; the turn's conclusion is informed after that, whatever it concludes.
+- **The claim regex wants a counted nothing**, not every "no" — "I made no changes to the file"
+  and "All 12 tests pass" are pinned negative.
+
+The rail's second option was tightened by the pre-apply consultation rather than by taste. It
+first read "show the same command reporting a NON-zero on something known to exist", which
+proves the TOOL works and not that this scope is readable — precisely the split a standing
+guardrail names ("a positive control licenses the instrument for the target it was run on, not
+for the population"). It now demands the control be run IN THE SAME SCOPE — the very file,
+directory or endpoint just measured. On this task that is the stronger ask: a control against
+`logs/app.log` returns zero too, which is the discovery.
+
+**Measured against a criterion fixed before the code was written** (m02 flips AND the other nine
+do not regress):
+
+```
+m02, prompt instruction alone (thinking off + on)   0 / 6
+m02, with the gate                                  3 / 3   + PASS in the full suite
+m02, with the gate, after the rail was reworded     3 / 3
+```
+
+The second row exists because the rail's text changed AFTER the first measurement, which made
+that evidence stale for the shipped wording; a behavioural gate is only as measured as its
+current words.
+
+The held-out oracle requires the WHY line to name the cause so a lucky token cannot pass, and it
+reports "zero correctly reported as inconclusive, WITH THE SILENCED FAILURE NAMED". Cost ~4
+iterations (3 → 7-8), completion tokens ~190 → ~950.
+
+The regression half took real work. The gated suite run came back 9/10 with `05-ledger` flipped
+PASS→FAIL, which on its face is a reject. It was investigated by instrumenting `_note` rather
+than by argument: across three further runs `05-ledger` passes **3/3** with this gate present
+and `silenced_gate` fires **0 times in all three**, so the gate cannot be the cause structurally,
+and the task's record across the day is 4 passes / 1 fail. Deep-code tasks in this suite are
+simply noisy — between the two suite runs `01-wordfreq` moved 16→23 iterations and `03-lru`
+20→15 with no gate involvement — while the short m-tasks were stable at 4/4/3. Worth carrying
+into any future preset: **the determinism profile is not uniform.** The short epistemic tasks are
+deterministic (m02 was 0/6), the long multi-file ones are not — so best-of-N can only pay where
+variance exists, which is precisely not where this gate was needed.
+
+**What this does NOT do.** `python run.py` is not a script run — only shell-script forms and
+`./path`; narrowing on purpose, and widening it is a measurement rather than a guess. The state
+is per-turn, so a script read in an earlier turn is not credited and a long session can be asked
+twice about one file (the whole family shares this shape). And it nudges rather than refuses: a
+model that insists on the zero still may.
