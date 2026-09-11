@@ -364,6 +364,41 @@ def _suite_run_is_green(command: str, output: str) -> bool:
     return _suite_exit_belongs_to_the_runner(command) or _piped_suite_output_is_green(output)
 
 
+#: Options that NARROW a test run to a subset. ``-m`` is deliberately absent: as a pytest
+#: marker filter it narrows, but ``python -m pytest`` is the module launcher and the two are
+#: indistinguishable by token alone, so counting it would call every ``python -m pytest`` run
+#: scoped -- the single most common way to invoke a suite.
+_SCOPE_FLAGS = frozenset({"-k", "--lf", "--last-failed", "--ff", "--failed-first", "--deselect"})
+#: A positional argument with one of these extensions names a test FILE, not a tree.
+_TEST_FILE_EXTS = frozenset({".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".rb", ".go"})
+
+
+def _suite_run_is_scoped(command: str) -> bool:
+    """True if a test-runner command narrows what it runs to a subset (ADR-0141).
+
+    A DIRECTORY argument (``pytest tests/``) is deliberately NOT scoping: it is how most
+    projects spell "the whole suite", and calling it scoped would fire the rail on the
+    common case. Only a test FILE, a ``::`` node id, or an explicit narrowing flag counts.
+    Checked per segment and only on the segment the existing classifier already recognises
+    as the runner, so a ``| grep foo.py`` downstream of a full run is not read as a selector.
+    """
+    for seg in _segments(command):
+        if not seg or not _runs_test_suite(" ".join(seg)):
+            continue
+        for raw in seg:
+            token = raw.strip().strip("'\"")
+            if not token:
+                continue
+            if "::" in token:
+                return True
+            low = token.lower()
+            if low in _SCOPE_FLAGS or low.split("=", 1)[0] in _SCOPE_FLAGS:
+                return True
+            if not token.startswith("-") and os.path.splitext(low)[1] in _TEST_FILE_EXTS:
+                return True
+    return False
+
+
 def _piped_suite_output_is_green(output: str) -> bool:
     """Read a piped run's verdict from its TEXT, since its exit status is not the runner's.
 
@@ -603,6 +638,8 @@ class RecipeCursor:
         # what stops a create-with-tests turn that runs `pytest` green from falsely stalling as
         # recipe_stalled. Reset by a fresh runnable write (the new code is unverified again).
         self._suite_verified = False
+        #: ADR-0141: a green suite run happened that did NOT narrow itself to a subset.
+        self._suite_unscoped = False
 
     @property
     def verified(self) -> bool:
@@ -667,6 +704,7 @@ class RecipeCursor:
                     # ...and it invalidates a prior green test run: the new/edited code has
                     # not been exercised by the suite yet, so re-require verification.
                     self._suite_verified = False
+                    self._suite_unscoped = False  # ADR-0141: nor by an unscoped one
             elif call.name in _RUN_TOOLS:
                 command = call.arguments.get("command")
                 if not isinstance(command, str):
@@ -687,6 +725,7 @@ class RecipeCursor:
                     self._abs_targets.append(written)
                     self._verified.discard(base)  # a fresh write must be re-verified
                     self._suite_verified = False  # ...and a prior green suite did not see it
+                    self._suite_unscoped = False  # ADR-0141: scoped or not, it predates this
                 if not self.wrote_runnable:
                     continue
                 # Only a command that actually EXECUTES a written file verifies it (not one
@@ -715,6 +754,22 @@ class RecipeCursor:
                     and _suite_run_is_green(command, result.output or "")
                 ):
                     self._suite_verified = True
+                    if not _suite_run_is_scoped(command):
+                        self._suite_unscoped = True
+
+    @property
+    def suite_scoped_only(self) -> bool:
+        """The turn's green-suite credit rests ENTIRELY on runs that narrowed themselves.
+
+        ADR-0141. ``_suite_verified`` means "a green test-runner run verified the whole turn",
+        and a run scoped to one file cannot: measured 2026-09-11 on the 35B coach, a model
+        added three helpers to ``providers/text_tools.py``, ran
+        ``pytest tests/test_text_tools.py -v | tail -30``, saw "67 passed", said "All done --
+        67/67 tests pass", and left the FULL suite at 2 failed where the clean tree was green.
+        Both arms of the probe did it. False only when no suite ran at all, so a turn verified
+        file-by-file (ADR-0110's fallback) is untouched.
+        """
+        return self._suite_verified and not self._suite_unscoped
 
     def needs_verification(self) -> bool:
         """True when the turn should not end yet: a runnable file written, not yet verified.

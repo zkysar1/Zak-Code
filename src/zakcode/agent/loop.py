@@ -789,6 +789,26 @@ _MISSING_NUDGE = (
 #: Shell tools whose ``command`` argument this module inspects for evidence (ADR-0138).
 _SHELL_TOOLS = frozenset({"bash", "powershell"})
 
+#: Suite-scope gate (ADR-0141): the verify-before-finish obligation was discharged, but every
+#: test run this turn NARROWED itself -- one file, a ``-k`` filter, a single node id. The gate's
+#: own contract is that a green suite run "verified the whole turn", and a scoped run cannot.
+#: Measured 2026-09-11 on the 35B coach, in BOTH arms of a two-arm probe: it added three helpers
+#: to ``providers/text_tools.py``, ran ``pytest tests/test_text_tools.py -v | tail -30``, saw
+#: "67 passed", closed with "All done -- 67/67 tests pass" -- and the FULL suite was 2 failed
+#: where the same tree one commit earlier was 3656 passed / 0 failed. The regression was real,
+#: caused by its own change, and structurally invisible to the run it chose.
+_SCOPE_NUDGE = (
+    "Every test run this turn narrowed what it ran -- to one file, a -k filter, or a single "
+    "test. That tells you those tests pass. It cannot tell you the rest of the suite still "
+    "does, and that is the part your change is most likely to have broken: a shared module is "
+    "imported by tests that live in other files. Run the suite once WITHOUT a path, a -k, or a "
+    "node id -- the plain command this project uses -- and read the totals. If it is green, say "
+    "so and finish. If it is red, those failures are yours: you have already established the "
+    "scoped tests pass, so anything else that fails now failed because of this change. Fix them "
+    "in your code, not in the tests. If the full suite genuinely cannot be run here, say that "
+    "and say why, and do not describe the scoped result as though it covered everything."
+)
+
 #: Attribution gate (ADR-0138): a completion that blames a failing test on the tree as it was
 #: BEFORE this turn's edits — "that failure is pre-existing", "unrelated to my change" — is a
 #: verdict about code the model never ran. Measured 2026-09-11 on a 35B coach: it added a
@@ -5460,6 +5480,7 @@ class AgentLoop:
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
         attrib_nudged = False  # attribution gate (ADR-0138): one per turn
+        scope_nudged = False  # suite-scope gate (ADR-0141): one per turn
         identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
         figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
@@ -5874,6 +5895,26 @@ class AgentLoop:
                     verify.consume_attempt()
                     self._persist()
                     continue
+                # Suite-scope gate (ADR-0141): the recipe gate is satisfied, but
+                # every green test run this turn narrowed itself to a subset --
+                # and the credit it granted means "verified the whole turn". Ask
+                # ONCE for one unscoped run. Skipped when a configured project
+                # check already passed: independent evidence over the whole tree.
+                if not scope_nudged and cursor.suite_scoped_only and not verify.passed:
+                    scope_nudged = True
+                    self._turn_struggle = True
+                    self._note(
+                        "intervention",
+                        "every green suite run this turn was scoped to a subset — asking for one "
+                        "unscoped run",
+                        kind="suite_scope_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_SCOPE_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
                 # Plan gate: a turn carrying a plan with still-open steps should not quietly
                 # finish. Nudge the model to complete them (or mark them done/cancelled);
                 # bounded by _MAX_PLAN_NUDGES so a deliberate finish can never deadlock — past
@@ -6099,7 +6140,7 @@ class AgentLoop:
                 if cascade_capped:
                     claim_nudged = blocker_nudged = missing_nudged = True
                     identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
-                    defer_nudged = attrib_nudged = True
+                    defer_nudged = attrib_nudged = scope_nudged = True
                 # Claim-vs-action guard (ADR-0033): the completion REPORTS a file change
                 # ("I have updated … I have registered …") but no file-changing tool call
                 # ran this turn, so nothing on disk changed. Ask once for the work or an
@@ -6823,6 +6864,7 @@ class AgentLoop:
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
         attrib_nudged = False  # attribution gate (ADR-0138): one per turn
+        scope_nudged = False  # suite-scope gate (ADR-0141): one per turn
         identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
         figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
@@ -7505,6 +7547,30 @@ class AgentLoop:
                         verify.consume_attempt()
                         self._persist()
                         continue
+                    # Suite-scope gate (ADR-0141): the recipe gate is satisfied, but
+                    # every green test run this turn narrowed itself to a subset --
+                    # and the credit it granted means "verified the whole turn". Ask
+                    # ONCE for one unscoped run. Skipped when a configured project
+                    # check already passed: independent evidence over the whole tree.
+                    if not scope_nudged and cursor.suite_scoped_only and not verify.passed:
+                        scope_nudged = True
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            "every green suite run this turn was scoped to a "
+                            "subset — asking for one unscoped run",
+                            kind="suite_scope_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_SCOPE_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="every green suite run this turn was scoped to a subset — "
+                            "asking for one unscoped run"
+                        )
+                        continue
                     # Plan gate (streaming twin of the buffered path): don't quietly finish
                     # with open plan steps; nudge, bounded by _MAX_PLAN_NUDGES, then complete
                     # (degraded) rather than deadlock. The request anchor closes here (ADR-0110).
@@ -7733,7 +7799,7 @@ class AgentLoop:
                     if cascade_capped:
                         claim_nudged = blocker_nudged = missing_nudged = True
                         identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
-                        defer_nudged = attrib_nudged = True
+                        defer_nudged = attrib_nudged = scope_nudged = True
                     # Claim-vs-action guard (ADR-0033) — see the buffered twin.
                     if (
                         assistant_text
