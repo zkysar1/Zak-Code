@@ -6331,3 +6331,72 @@ variance exists, which is precisely not where this gate was needed.
 is per-turn, so a script read in an earlier turn is not credited and a long session can be asked
 twice about one file (the whole family shares this shape). And it nudges rather than refuses: a
 model that insists on the zero still may.
+
+## ADR-0145: The bench validates the engine on models that never need it
+
+Across **20 real task-runs** on this box (`weak-pass-1`, `weak-pass-2` — 2 passes x 10 tasks on
+`zds-qwen3.8-27b`), not one of the engine's robustness mechanisms executed:
+
+```
+compaction (should_compact fired)        0        threshold 104,857 vs ~52k peak
+malformed-tool-call retry                0        (185 agent turns, positive-controlled)
+provider retry / degraded                0 real   1 forced via ZAKCODE_REQUEST_TIMEOUT=1.0
+stop_reason != "completed"               0 real   same forced run
+```
+
+Every one of those zeros reads as a clean bill of health and none of them is one. A compaction
+path that never runs reports byte-identically to a compaction path that works perfectly, and the
+suite has no way to tell the two apart. `enable_compaction=True` is set honestly in
+`bench/run_task.py`, a `Compactor` is attached honestly, and `_maybe_compact()` is called before
+every provider call honestly — and `should_compact` has returned `False` on every call of every
+pass ever run here.
+
+The arithmetic is not close. `threshold_fraction` is 0.8 and every `_podenv*.sh` slot declares
+`"context_window":131072`, so the threshold is **104,857 tokens** on all three variants (baseline
+3.6-35b, weak 3.8-27b, older 3.5-35b alike). The hardest task in the suite, `05-ledger`, peaks
+near **52k** — half of it. Nothing in the suite gets within a factor of two of firing.
+
+**Why this is the campaign's problem and not a curiosity.** The threshold is a FRACTION of the
+window, so it scales down with the model. A 32,768-window model compacts at **26,214** — which
+`04-todo-cli` (23-33k) and `05-ledger` (32-52k) both cross. `trim_tail`, `_split_index`,
+`_adopt_compacted`, `_fire_pre_compact` and the summarizer call would therefore first execute on
+the smallest models in the fleet, having never been exercised by a single benchmark run. The
+generalisation is worse than the instance: the engine's robustness machinery exists precisely for
+weak models, a strong model never triggers it, and the bench runs strong models. **The suite is
+blindest exactly where the campaign aims.** It also explains why two attempts to find
+engine-vs-compliance "flips" came back confounded — the engine-bound behaviours under test were
+never entering their recovery paths at all.
+
+**What shipped.** `_instrument_compaction()` wraps `Compactor.should_compact` and records
+`peak_context_tokens` BESIDE `fired`, because neither number is readable alone: a peak cannot say
+whether the mechanism is healthy or dead, and `fired: 0` cannot say whether the context stayed
+small or the check is broken. The probe calls the ORIGINAL for its verdict rather than
+re-deriving `n > threshold` — a duplicated predicate drifts from the engine's and then reports a
+confident wrong "never fired", which is this ADR's own failure mode turned on its instrument.
+Positive control, no provider calls: the same injected 50k context returns `False` at a 131,072
+window and `True` at 32,768, `checks=2 fired=1 peak=50,000`.
+
+**What this does NOT claim.** It does not claim the compaction machinery is broken. It claims the
+machinery is UNMEASURED, and that a mechanism which never ran is evidence of neither health nor
+defect. N is 20 real runs, one model family, one box. And the ~52k peak is a FIT
+(`input(i) = floor + k*i` against billed per-task prompt totals), not a per-call reading — the
+bench persists no transcript, so no prior run has a per-call context size at all. That absence is
+the reason the probe exists.
+
+**Pre-registered next** (`bench/results/compaction-window-map.log`): hold the model fixed at
+`zds-qwen3.6-35b` and drop the declared window 131072 -> 32768, so the threshold falls to 26,214
+and the existing tasks cross it. `resolve_context_window` is explicit that "the operator's number
+wins over the server's", so this is supported configuration; the server still serves 131072 and
+only the engine's belief changes. Holding the model fixed is the whole design — any failure is
+then attributable to the MECHANISM rather than to model weakness, which is the confound that
+wrecked the two prior attempts. The five m-tasks (~10k peak) are the negative control and must
+NOT compact; `compaction.checks > 0` on every task is the in-run positive control, because a
+control that rides inside the measured run rules out the instrument breaking between control and
+measurement, and a pre-flight one cannot.
+
+**One more count worth recording, because it is this ADR's thesis applied to its own author.**
+The first tally of this evidence said 41 task-runs. It was 21. The glob that produced it swept
+`bench/results/*.json` plus `_stale-2a/*.json`, and `_stale-2a` holds two byte-identical copies of
+`weak-pass-2` (md5 `c7e18ef93d55774e7878ab8b2ffd9050`) — the stale-artifact fabrication
+quarantined one step earlier in the same session, readmitted by a wider glob and double-counting
+20 rows. Quarantining bad data does not protect a later count that reaches past the quarantine.
