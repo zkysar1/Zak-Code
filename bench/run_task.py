@@ -271,14 +271,21 @@ def _instrument_compaction() -> dict:
     ``enable_compaction=True`` is set honestly, a ``Compactor`` is attached honestly, and
     ``_maybe_compact()`` runs before every provider call honestly -- and none of that is
     evidence the compaction path ever EXECUTED. ``should_compact`` fires at
-    ``threshold_fraction`` (0.8) of the window: 102,400 tokens on the 128k pod models, while
-    the hardest task in this suite (``05-ledger``) peaks near 52k. So every pass measured so
-    far returned False on every call, and a compaction path that never runs reports
+    ``threshold_fraction`` (0.8) of the window, and every ``_podenv*.sh`` slot declares
+    ``context_window: 131072``, so the threshold is 104,857 tokens on all three pod variants
+    (baseline 3.6-35b, weak 3.8-27b, older 3.5-35b alike). The hardest task in this suite
+    (``05-ledger``) peaks near 52k -- HALF the threshold. So every pass measured so far
+    returned False on every call, and a compaction path that never runs reports
     byte-identically to one that works perfectly.
 
+    Peak figures are from ``weak-pass-{1,2}.json`` -- 2 passes x 10 tasks on
+    ``zds-qwen3.8-27b`` -- derived by fitting ``input(i) = floor + k*i`` to the per-task
+    billed prompt totals, NOT read off a per-call record (the bench persists no transcript,
+    so no per-call context size exists for any prior run; that is what this probe adds).
+
     That matters most for exactly the models this bench exists to compare. The threshold is a
-    FRACTION of the window, so a 32k-window model compacts at 25.6k -- which ``04-todo-cli``
-    (23-33k) and ``05-ledger`` (32-52k) both cross. ``trim_tail``, ``_split_index``,
+    FRACTION of the window, so a 32,768-window model compacts at 26,214 -- which
+    ``04-todo-cli`` (23-33k) and ``05-ledger`` (32-52k) both cross. ``trim_tail``, ``_split_index``,
     ``_adopt_compacted`` and the summarizer call would first execute on the smallest models,
     having never been exercised by a single benchmark run.
 
