@@ -6438,3 +6438,75 @@ the clamp untouched. Set from the measured peaks rather than the fitted ones —
 threshold is 19,660, which sits 1.8x above the largest m-task peak (10,714) and 1.4-1.5x below
 `04-todo-cli` (30,147) and `05-ledger` (27,726). The first draft used 0.2, where `05-ledger`'s
 margin was 5.8% against a metric that varies by 40% — a positive arm that might simply not fire.
+
+## ADR-0146: Three micro-tasks are the only instrument here with enough precision to see an engine change
+
+The suite's binary metric is saturated. Three model generations now pass essentially everything:
+
+```
+zds-qwen3.6-35b  (baseline, determinism map, 5 passes)   49/50
+zds-qwen3.8-27b  (weak arm, 2 passes)                    20/20
+zds-qwen3.5-35b  (older arm, 2 passes)                   20/20
+```
+
+A suite where everything passes cannot tell whether a zakcode change helped. That is not a
+complaint about task difficulty — it is a statement that PASS/FAIL has no headroom left on this
+model family, so the campaign's actual question ("did the engine get better?") is unanswerable
+through it. The obvious remedy, harder tasks, answers a different question: harder tasks
+discriminate MODELS, and this campaign is about the ENGINE.
+
+The continuous metrics were never saturated, and nobody had measured their noise. Two passes of
+one model on one task set give the floor directly:
+
+```
+metric            median run-to-run swing   max
+iterations                   8%             29%
+input tokens                19%             52%
+wall-clock elapsed          31%            141%
+```
+
+**Wall-clock is the worst signal in the suite** — which matters, because it is the intuitive one
+and it is what an earlier, now-falsified conclusion ("this model fails by not finishing") rested
+on. The cleanest demonstration came later: in the compaction experiment, `m03-minimal-diff` took
+**7.7x** its control wall-clock (13.6s -> 104.3s) while its iterations and input tokens were
+**identical** (4/4, -0.6%). The agent's behaviour did not change at all; only pod scheduling did.
+
+**The instrument is three tasks.** `m01-stale-doc-negative`, `m03-minimal-diff` and
+`m05-read-before-edit` hold identical iteration counts and 0.1-0.6% input-token spread across BOTH
+model generations and every pass measured:
+
+```
+task                     iterations        input tokens                spread
+m01-stale-doc-negative    4 / 4 / 4    38,717 / 38,662 / 38,610         0.3%
+m03-minimal-diff          4 / 4 / 4    38,068 / 38,110 / 37,889         0.6%
+m05-read-before-edit      3 / 3 / 3    28,799 / 28,820 / 28,786         0.1%
+```
+
+`m02` (7/7/8, 15.2%) and `m04` (4/3/4, 28.1%) are NOT in it — the core is three tasks, not five,
+and the boundary was measured rather than assumed.
+
+**Why they are precise, which is also the limit on what they can measure.** The fixed prompt floor
+is 8,956 tokens per iteration (system prompt 2,221 + tool schemas 6,735), byte-identical every
+turn. It is 92.8-95.2% of an m-task and only 44-48% of a deep-code task. Precision here is a
+property of PREFIX SHARE, not of difficulty or of the task being "easy". So the triad is a
+high-precision instrument for the FIXED PROMPT SURFACE — a change to the system prompt or the tool
+schemas shows up immediately and unambiguously — and a POOR instrument for agent behaviour, which
+lives in the small variable remainder. Scope any claim made with it accordingly.
+
+**Second use, found by accident and worth more than the first.** Run the triad inside any
+experiment as an in-run comparability control. In the compaction experiment (`threshold_fraction`
+0.15 against a matched control) the triad returned 4/4, 4/4, 3/3 iterations at -0.5%, -0.6%, -0.1%
+tokens with `fired: 0` as predicted — establishing that the arm was comparable to its control
+BEFORE any of its differences were interpreted, and doing so in about 40 seconds of pod time. It
+also drew the boundary correctly in the same run: `m04` diverged (3->4 iterations, +33.9%),
+exactly as its cross-model spread predicted it would.
+
+The practical shape: `m05` costs ~20s at ~0.1% noise; `05-ledger` costs ~520s at ~40% noise. For
+the quantity this campaign actually targets, that is 26x faster and roughly 300x more precise.
+
+**What this does NOT give us.** It does not measure capability, correctness, or reasoning quality —
+a change that made the agent smarter would be invisible here, and a change that made it dumber
+while shrinking the prompt would look like an improvement. It is one model family, one box, and
+its determinism is measured at the serving stack's DEFAULT sampling temperature (`temperature`
+defaults to `None`, meaning "send none"; the bench never set one), so even these numbers are a sum
+of engine and sampling determinism that has not yet been partitioned.
