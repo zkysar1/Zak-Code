@@ -6583,3 +6583,20 @@ enumerated 12 intervention kinds. It missed at least two: `suite_scope_gate` and
 in every run of both arms and match no grep hit, so they are emitted through a call shape the
 pattern did not cover. The recorded `trace_interventions` is the reliable enumeration; the grep was
 not, and a catalog built from it would have understated the engine's gate surface.
+
+**Correction, 2026-09-11, from the first experiment that used this instrument.** ADR-0146 says the
+triad holds "identical iteration counts". Measured over ten runs of `m05-read-before-edit`, that is
+**9/10, not 10/10** — one control run took 4 iterations (38,422 tokens) where every other run took
+3 (~28,750). The rate is not the important part; the consequence is. Because these tasks are ~93%
+fixed prompt floor, **one extra iteration moves TOTAL tokens by ~33%**, which dwarfs the 0.1-0.6%
+spread this ADR advertises.
+
+So the quantity the triad measures precisely is **tokens PER ITERATION**, not total tokens, and any
+measurement built on it must divide by the iteration count rather than compare totals. This is not
+hypothetical: the tool-surface experiment's first single-run-per-arm comparison reported -58.7%,
+and the correct per-iteration figure over three runs per arm is **-44.3%** — a 14-point error
+produced entirely by an iteration-count outlier in the control arm, in the direction that
+flattered the result.
+
+Per-iteration, the instrument performs as claimed: 9,577 / 9,583 / 9,599 (0.23% spread) against
+5,348 / 5,346 / 5,320 (0.52% spread), i.e. a 44% effect read against a 0.3% noise floor.
