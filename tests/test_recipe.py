@@ -346,6 +346,38 @@ def test_runs_test_suite_recognizes_runners() -> None:
         assert _recipe._runs_test_suite(cmd) is False, cmd
 
 
+def test_runs_test_suite_recognizes_env_manager_wrappers() -> None:
+    # ADR-0136: a green suite run through the project's env manager must be credited as a suite.
+    # zakcode's own CI runs `uv run pytest`; without unwrapping, the gate false-stalls a correct
+    # turn on any dependency-bearing project (the per-file fallback runs a bare interpreter that
+    # lacks the project's deps). Every _RUNNERS member uses the `<tool> run <cmd>` shape.
+    from zakcode.agent import recipe as _recipe
+
+    wrapped_suites = [
+        "uv run pytest",
+        "uv run pytest tests/test_recipe.py",
+        "uv run python -m pytest",
+        "poetry run pytest",
+        "pdm run pytest -q",
+        "hatch run pytest",
+        "rye run pytest",
+        "pipenv run pytest",
+        "cd sub && uv run pytest",
+    ]
+    for cmd in wrapped_suites:
+        assert _recipe._runs_test_suite(cmd) is True, cmd
+    # Not over-broad: a wrapped NON-test command, or a runner without `run`, is still not a suite.
+    not_suites = [
+        "uv run app.py",
+        "uv run python app.py",
+        "uv pip install pytest",
+        "uv sync",
+        "poetry install",
+    ]
+    for cmd in not_suites:
+        assert _recipe._runs_test_suite(cmd) is False, cmd
+
+
 # ── loop integration ──────────────────────────────────────────────────────────
 
 
