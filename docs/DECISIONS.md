@@ -6101,7 +6101,16 @@ The split also makes the dark path free. The old single-job form ran `actions/ch
 nothing to do — which is why a no-op nightly took 13-17s rather than being instant.
 
 **What this deliberately does NOT do.** It does not make the nightly measure anything; the repo has
-no provider keys by choice, so the honest outcome is a skipped job, nightly, until someone adds one.
+no provider keys by choice, so the honest outcome is a skipped job, nightly, until someone adds one. And
+it fixes the JOB, not the RUN BADGE. Verified on dispatch run `34616958218` immediately after the
+merge: job `agent quality bench` reports `skipped` and the gate's `::notice::` fires, exactly as
+designed — but the run-level conclusion is still `success`, because GitHub aggregates a skipped job
+as non-failing and the `neutral` run status this case wants was removed with `exit 78`. So a reader
+of the JOB LIST now sees the truth and a reader of the BADGE still does not. The remaining options
+were weighed and refused: failing the run would make the sanctioned no-key posture permanently red,
+which is alarm fatigue, and the workflow's own header documents removing the keys as the way to
+spend less. This half is stated rather than fixed so nobody concludes from the green badge that the
+bench measured something — the precise error the ADR exists to end.
 The lane that measures with no key at all is a self-hosted OpenAI-compatible endpoint, and a GitHub
 runner cannot reach a private one — so that lane runs on a box with network access to the server,
 documented in `bench/README.md`. Fixing the reporting and fixing the coverage are different jobs;
