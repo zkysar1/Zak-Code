@@ -17,6 +17,7 @@ cost/permission API WITHOUT any LLM call (cheap API smoke).
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import shutil
@@ -133,6 +134,19 @@ def _build_agent(workspace: Path, spec: dict):
         enable_mcp=False,
         enable_plugins=False,
     )
+    # ZBENCH_COMPACT_FRACTION moves the compaction THRESHOLD without touching anything else.
+    # The obvious way to force compaction -- declare a smaller context_window -- is CONFOUNDED:
+    # _window() feeds three consumers, so shrinking it also cuts the seam clamp in
+    # _clamp_result (window * 0.25 * 3 chars: 98,304 -> 24,576, every tool result 4x smaller)
+    # and changes _refuse_oversized_body. A task failing under that arm could be lost grep/read
+    # output rather than compaction, and the failure would be unattributable -- the same
+    # confound that wrecked two prior attempts to separate engine behaviour from model
+    # behaviour. Moving threshold_fraction on the FULL window changes ONE variable.
+    # Unset (the default) leaves the shipped 0.8 byte-unchanged.
+    frac = os.environ.get("ZBENCH_COMPACT_FRACTION")
+    if frac and agent.compactor is not None:
+        agent.compactor.config.threshold_fraction = float(frac)
+        print(f"[bench] compaction threshold_fraction={frac}", file=sys.stderr)
     return agent
 
 
@@ -200,6 +214,9 @@ def run(task_dir: Path) -> int:
     stop_reason = iterations = routed_category = routed_escalated = degraded = None
     turn_error = None
     turn_cost = turn_tokens = 0
+    tool_calls: dict = {}
+    tool_errors = 0
+    trace_events: dict = {}
     t0 = time.perf_counter()
     try:
         result = agent.run_turn(spec["prompt"])
@@ -211,6 +228,21 @@ def run(task_dir: Path) -> int:
         turn_error = result.error  # TurnResult.error: the provider/loop error detail behind stop_reason
         turn_cost = result.usage.cost_usd
         turn_tokens = result.usage.total_tokens
+        # TurnResult already carries three signals this bench used to throw away: WHICH tools
+        # were called (assistant_messages -> ToolUseBlock.name), which RESULTS errored, and the
+        # engine's own decision trace (every gate/recovery intervention it fired, empty on a
+        # clean turn). Recording what the engine already reports beats bolting on more probes,
+        # and it makes "which robustness paths actually ran?" answerable natively rather than
+        # by monkeypatch. Tool-name counts also answer whether the 25-tool / 6,735-token schema
+        # surface is earning its place on a small model -- nothing measured that before.
+        counts: collections.Counter = collections.Counter()
+        for msg in result.assistant_messages:
+            for blk in msg.blocks:
+                if getattr(blk, "type", None) == "tool_use":
+                    counts[blk.name] += 1
+        tool_calls = dict(counts.most_common())
+        tool_errors = sum(1 for r in result.tool_results if r.is_error)
+        trace_events = dict(collections.Counter(e.kind for e in result.trace.events).most_common())
     except Exception as e:  # noqa: BLE001 - a crash is a result (a bug to file), not a runner failure
         err = f"{type(e).__name__}: {e}"
     elapsed = time.perf_counter() - t0
@@ -252,6 +284,9 @@ def run(task_dir: Path) -> int:
         "turn_tokens": turn_tokens,
         **snap,
         "compaction": compaction,
+        "tool_calls": tool_calls,
+        "tool_errors": tool_errors,
+        "trace_events": trace_events,
         "verify_rc": verify_rc,
         "verify_out": verify_out,
         "error": err,
