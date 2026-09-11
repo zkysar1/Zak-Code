@@ -52,6 +52,19 @@ VOTES = int(os.environ.get("ZBENCH_VOTES", "1"))  # pairwise panel size per judg
 _SRC_EXTS = {".py", ".js", ".ts", ".sh", ".rb", ".go", ".rs", ".java", ".txt", ".md", ".json", ".toml"}
 
 
+def _progress(msg: str) -> None:
+    """A flushed stderr line, so a KILLED run still shows how far it got.
+
+    Everything else this script emits lands in one ``json.dumps`` at the very end,
+    so a ``timeout`` kill leaves a ZERO-BYTE log -- indistinguishable from a run that
+    never started. Measured 2026-09-11: an 1800s cap on ``05-ledger`` (4 sequential
+    attempts at ~480s each, plus two judging tournaments) produced exactly that, and
+    only an ``echo $?`` in the calling shell revealed the rc=124. A partial result is
+    worth far more than a clean-looking nothing.
+    """
+    print(f"[bestof] {time.strftime('%H:%M:%S')} {msg}", file=sys.stderr, flush=True)
+
+
 def _build_agent_for(workspace: Path, spec: dict, model: str, temperature: float):
     """An autonomous headless agent pinned to ONE model (not zakpick) at ``temperature``.
 
@@ -129,6 +142,7 @@ def _grade(task_dir: Path, workspace: Path, spec: dict) -> bool:
 
 def _run_attempt(task_dir: Path, spec: dict, model: str, temperature: float, tag: str) -> dict:
     """One agent attempt in a fresh seeded workspace: run, grade, serialize. Never raises."""
+    _progress(f"attempt {tag} starting ({model})")
     ws = Path(tempfile.mkdtemp(prefix=f"zbof-{spec['id']}-{tag}-"))
     seed = task_dir / "workspace"
     if seed.is_dir():
@@ -145,6 +159,7 @@ def _run_attempt(task_dir: Path, spec: dict, model: str, temperature: float, tag
     elapsed = time.perf_counter() - t0
     snap = run_task._usage_snapshot(agent)
     passed = _grade(task_dir, ws, spec) if crashed is None else False
+    _progress(f"attempt {tag} done passed={passed} elapsed={elapsed:.0f}s crashed={crashed}")
     return {
         "tag": tag,
         "model": model,
@@ -176,6 +191,7 @@ def run_experiment(task_dir: Path) -> dict:
     from zakcode.quality import best_of, select_best
 
     texts = [a["solution"] for a in small]
+    _progress(f"judging: best_of (judge-only) over {len(texts)} candidates")
     judge_only_index, judge_usage = asyncio.run(
         best_of(judge_provider, criteria=spec["prompt"], candidates=texts, votes=VOTES)
     )
@@ -183,6 +199,7 @@ def run_experiment(task_dir: Path) -> dict:
     async def _oracle(i: int) -> bool:
         return small[i]["passed"]
 
+    _progress("judging: select_best (hybrid, oracle-first)")
     hybrid_index, hybrid_usage = asyncio.run(
         select_best(
             judge_provider, criteria=spec["prompt"], candidates=texts, oracle=_oracle, votes=VOTES
