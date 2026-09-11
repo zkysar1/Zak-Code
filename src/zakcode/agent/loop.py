@@ -114,7 +114,12 @@ from zakcode.agent.compact import Compactor
 from zakcode.agent.degeneration import burst_repetition, repeated_tail
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
-from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
+from zakcode.agent.recipe import (
+    RecipeCursor,
+    _runs_test_suite,  # ADR-0138: the same classifier the recipe gate credits a suite by
+    extract_acceptance,
+    resolve_run_command,
+)
 from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate
@@ -781,6 +786,86 @@ _MISSING_NUDGE = (
     "ask the user for a path you have not searched for."
 )
 
+#: Shell tools whose ``command`` argument this module inspects for evidence (ADR-0138).
+_SHELL_TOOLS = frozenset({"bash", "powershell"})
+
+#: Attribution gate (ADR-0138): a completion that blames a failing test on the tree as it was
+#: BEFORE this turn's edits — "that failure is pre-existing", "unrelated to my change" — is a
+#: verdict about code the model never ran. Measured 2026-09-11 on a 35B coach: it added a
+#: function to providers/text_tools.py, ran the suite, saw one red in a test covering that very
+#: module, and closed with "pre-existing and unrelated to this change" having issued ZERO git
+#: commands in seventeen iterations. The claim happened to be true — and that is the danger: the
+#: identical sentence is how a real regression ships, and nothing in the turn could tell them
+#: apart. Unlike every other conclusion in this family this one is MECHANICALLY checkable (the
+#: pre-change tree is one ``git stash`` away), so the gate asks for the check rather than
+#: arguing about the wording. One nudge per turn; a model that already looked is never asked.
+_ATTRIB_PHRASE_RE = re.compile(
+    r"\bpre[-\s]?existing\b"
+    r"|\bunrelated\s+to\s+(?:this|my|the|these|those)\b"
+    r"|\bnot\s+(?:caused\s+by|related\s+to|introduced\s+by|due\s+to)\s+(?:this|my|the)\b"
+    r"|\balready\s+(?:failing|failed|broken|red)\b"
+    r"|\bfails?\s+on\s+(?:main|master|trunk|origin)\b"
+    r"|\bexisting\s+(?:failure|failures|breakage)\b"
+    r"|\bnothing\s+to\s+do\s+with\s+(?:this|my|the)\s+(?:change|edit|work)\b",
+    re.IGNORECASE,
+)
+#: The failure vocabulary that turns an attribution phrase into a verdict about a RED test.
+#: Both halves are ordinary apart ("the pre-existing config", "the tests fail"); only together,
+#: and only close together, do they make the claim this gate is about.
+_FAILURE_WORD_RE = re.compile(
+    r"\bfail(?:s|ed|ing|ure|ures)?\b|\berrors?\b|\bbroken\b|\bregressions?\b"
+    r"|\bassertion\b|\bred\b|\bnot\s+pass\w*\b",
+    re.IGNORECASE,
+)
+#: Commands that put the tree into a PRE-CHANGE state, which is the only thing that can settle
+#: whether a test failed before this turn: a stash, a worktree or checkout/switch of another
+#: rev, a bisect, a revert. The lookahead is bounded to one shell segment, so
+#: ``git status; echo checkout`` is not mistaken for ``git checkout``.
+#:
+#: ``diff``, ``log``, ``blame`` and ``show`` are deliberately NOT here, and that exclusion is
+#: measured rather than fastidious. In the 2026-09-11 A/B the model edited the file holding the
+#: failing test SIX times, then ran ``git diff --stat``, then closed with "pre-existing -- not
+#: caused by my changes". The diff it had just run listed that very file as modified: it was
+#: evidence AGAINST the claim, ignored -- and an earlier draft of this gate counted it as
+#: having looked. A command that reports what YOU changed cannot establish what the tree DID
+#: before, and ``git diff`` is the cheapest gesture a model reaches for, so crediting it hands
+#: out a pass for the one move that most resembles diligence without being it.
+#:
+#: Re-running the failing test alone is likewise not evidence: it still carries this turn's
+#: edits, which is the whole problem.
+_GIT_BASELINE_RE = re.compile(
+    r"\bgit\b(?=[^\n;|&]{0,80}?\b(?:stash|worktree|switch|checkout|bisect|revert)\b)",
+    re.IGNORECASE,
+)
+_ATTRIB_NUDGE = (
+    'You blamed a failing test on the tree as it was before your edits ("pre-existing", '
+    '"unrelated to this change") without ever looking at that tree. Nothing this turn ran '
+    "that test WITHOUT your changes, so the verdict is about code you did not run. Establish "
+    "it or drop it: `git stash` (add -u if you created files), re-run that ONE test, then "
+    "`git stash pop`, and report what the clean tree did. Then exactly one of two things is "
+    "true. If the test FAILED on the clean tree it is genuinely pre-existing: say so, say how "
+    "you checked, and LEAVE IT ALONE -- do not edit, delete or 'correct' a test that was "
+    "already failing, because repairing it is not part of this task. If it PASSED on the clean "
+    "tree then your change broke it, and the fix belongs in YOUR code, never in the test. If "
+    "you genuinely cannot run the check, call the failure unexplained and say why; do not call "
+    "it pre-existing."
+)
+
+
+def _attributes_failure_away(text: str) -> bool:
+    """True when the TAIL of a completion blames a failing test on the pre-change tree.
+
+    Proximity, not mere co-occurrence: an attribution phrase counts only with a failure word in
+    its neighbourhood, so "the docs change is unrelated to this refactor" stays conversation.
+    """
+    tail = text[-800:]
+    for match in _ATTRIB_PHRASE_RE.finditer(tail):
+        window = tail[max(0, match.start() - 160) : match.end() + 160]
+        if _FAILURE_WORD_RE.search(window):
+            return True
+    return False
+
+
 #: Contested-claim rail (ADR-0040): the operator is disputing the previous answer. A small
 #: model's reflex under a challenge is the apology spiral — retract, apologize, repeat until
 #: the sampler collapses ("I am a large language model" ×40, 2026-08-27, "10,892 nodes").
@@ -1007,10 +1092,11 @@ def _composed_skill_body(text: str) -> str:
 #: five such completions on the cheap model with nothing in the harness escalating.
 _TEXT_ONLY_STALL = 2
 
-#: Cross-gate cascade cap (ADR-0058): the six evidence gates (claim, blocker, missing,
-#: identity, figure, intent) each fire once per turn, so a model that answers every nudge
-#: in words can be re-prompted six times in a row — each time in a different direction,
-#: burning an iteration per gate. Past this many consecutive text-only completions the
+#: Cross-gate cascade cap (ADR-0058): every evidence gate fires once per turn (the live list
+#: is the stand-down block itself, which is the only copy that cannot go stale — this comment
+#: said "six" while eight stood down), so a model that answers each nudge in words can be
+#: re-prompted once per gate in a row — each time in a different direction, burning an
+#: iteration apiece. Past this many consecutive text-only completions the
 #: evidence gates stand down and the answer stands (degraded, traced); a tool batch resets
 #: the count, so a model that does real work between completions keeps every gate.
 _MAX_GATE_CASCADE = 2
@@ -1687,6 +1773,12 @@ class AgentLoop:
         # refusing the model's OWN content (``data["refusal"]``). They demonstrate nothing
         # about the environment, so the blocker gate does not count them as evidence.
         self._turn_content_refusals = 0
+        # Attribution gate (ADR-0138): commands this turn that LOOKED AT the pre-change tree —
+        # a git stash/worktree/history probe, or a test-suite run issued before the first file
+        # edit (the same baseline, measured rather than recalled). A completion calling a
+        # failure "pre-existing" while this is zero is attributing a red test to code it never
+        # ran. Per-turn.
+        self._turn_baseline_probes = 0
         self._turn_handed_off: list[
             str
         ] = []  # operator-only commands handed back this turn (ADR-0128)
@@ -3908,6 +4000,19 @@ class AgentLoop:
             # A search ran (ADR-0040), whatever it found — or a file was actually read
             # (ADR-0058); a failed read stays the one-path-tried miss the gate is for.
             self._turn_search_calls += 1
+        if call.name in _SHELL_TOOLS and not block.is_error:
+            command = call.arguments.get("command")
+            # The pre-change tree was looked at (ADR-0138): git history/stash/worktree, or a
+            # suite run that preceded every file edit this turn. ``_turn_edit_calls`` counts
+            # only write_file/edit_file and is incremented before this runs, so its zero here
+            # means the suite genuinely ran FIRST. An edit made through the shell is invisible
+            # to it — the gate then declines to fire, which is the safe direction for a rail
+            # that costs an iteration (the ADR-0033 guard has the same blind spot by design).
+            if isinstance(command, str) and (
+                _GIT_BASELINE_RE.search(command)
+                or (self._turn_edit_calls == 0 and _runs_test_suite(command))
+            ):
+                self._turn_baseline_probes += 1
         if call.name in _LOOKUP_TOOLS:
             self._turn_lookup_calls += 1  # the model looked at something (ADR-0044)
         if (
@@ -5354,6 +5459,7 @@ class AgentLoop:
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
+        attrib_nudged = False  # attribution gate (ADR-0138): one per turn
         identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
         figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
@@ -5362,6 +5468,7 @@ class AgentLoop:
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_content_refusals = 0  # refusal-is-not-a-blocker rail (ADR-0118): per-turn
+        self._turn_baseline_probes = 0  # attribution gate (ADR-0138): per-turn
         self._turn_handed_off = []  # operator-only commands handed back this turn (ADR-0128)
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_awaiting = None  # await-user terminal (ADR-0121): per-turn
@@ -5977,7 +6084,7 @@ class AgentLoop:
                         stuck.reset()
                         continue
                 # Cross-gate cascade cap (ADR-0058): past _MAX_GATE_CASCADE consecutive
-                # text-only completions the six evidence gates below stand down — each
+                # text-only completions the evidence gates below stand down — each
                 # already had its say, and a third re-prompt in a third direction is the
                 # cascade, not a correction. The answer stands; the turn is degraded.
                 if text_only_completions > _MAX_GATE_CASCADE and not cascade_capped:
@@ -5992,7 +6099,7 @@ class AgentLoop:
                 if cascade_capped:
                     claim_nudged = blocker_nudged = missing_nudged = True
                     identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
-                    defer_nudged = True
+                    defer_nudged = attrib_nudged = True
                 # Claim-vs-action guard (ADR-0033): the completion REPORTS a file change
                 # ("I have updated … I have registered …") but no file-changing tool call
                 # ran this turn, so nothing on disk changed. Ask once for the work or an
@@ -6071,6 +6178,29 @@ class AgentLoop:
                         kind="missing_gate",
                     )
                     self.session.add_message(Message.user(_control_rail(_MISSING_NUDGE)))
+                    self._persist()
+                    last_signature = None
+                    repeat_count = 0
+                    stuck.reset()
+                    continue
+                # Attribution gate (ADR-0138): the completion blames a failing test on the
+                # pre-change tree, yet nothing this turn looked at that tree. Ask once for the
+                # stash-and-re-run — the one conclusion in this family that git can settle.
+                if (
+                    result.text
+                    and not attrib_nudged
+                    and self._turn_baseline_probes == 0
+                    and _attributes_failure_away(result.text)
+                ):
+                    attrib_nudged = True
+                    self._turn_struggle = True
+                    self._note(
+                        "intervention",
+                        "completion calls a failure pre-existing without looking at the "
+                        "pre-change tree — asking for the stash-and-re-run",
+                        kind="attribution_gate",
+                    )
+                    self.session.add_message(Message.user(_control_rail(_ATTRIB_NUDGE)))
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -6692,6 +6822,7 @@ class AgentLoop:
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
+        attrib_nudged = False  # attribution gate (ADR-0138): one per turn
         identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
         figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
@@ -6700,6 +6831,7 @@ class AgentLoop:
         self._turn_write_calls = 0  # claim-vs-action guard (ADR-0033): per-turn
         self._turn_tool_errors = 0  # blocker-without-evidence guard (ADR-0036): per-turn
         self._turn_content_refusals = 0  # refusal-is-not-a-blocker rail (ADR-0118): per-turn
+        self._turn_baseline_probes = 0  # attribution gate (ADR-0138): per-turn
         self._turn_handed_off = []  # operator-only commands handed back this turn (ADR-0128)
         self._turn_fatal = None  # loud in-turn terminal (ADR-0066): per-turn
         self._turn_awaiting = None  # await-user terminal (ADR-0121): per-turn
@@ -7601,7 +7733,7 @@ class AgentLoop:
                     if cascade_capped:
                         claim_nudged = blocker_nudged = missing_nudged = True
                         identity_nudged = figure_nudged = intent_nudged = verdict_nudged = True
-                        defer_nudged = True
+                        defer_nudged = attrib_nudged = True
                     # Claim-vs-action guard (ADR-0033) — see the buffered twin.
                     if (
                         assistant_text
@@ -7684,6 +7816,31 @@ class AgentLoop:
                         yield AgentStatus(
                             message="completion concludes something is missing without a "
                             "content search — asking for the grep"
+                        )
+                        continue
+                    # Attribution gate (ADR-0138) — see the buffered twin.
+                    if (
+                        assistant_text
+                        and not attrib_nudged
+                        and self._turn_baseline_probes == 0
+                        and _attributes_failure_away(assistant_text)
+                    ):
+                        attrib_nudged = True
+                        self._turn_struggle = True
+                        self._note(
+                            "intervention",
+                            "completion calls a failure pre-existing without looking at the "
+                            "pre-change tree — asking for the stash-and-re-run",
+                            kind="attribution_gate",
+                        )
+                        self.session.add_message(Message.user(_control_rail(_ATTRIB_NUDGE)))
+                        self._persist()
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        yield AgentStatus(
+                            message="completion calls a failure pre-existing without looking "
+                            "at the pre-change tree — asking for the stash-and-re-run"
                         )
                         continue
                     # Evidence gate, identity claims (ADR-0044) — see the buffered twin.

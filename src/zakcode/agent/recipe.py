@@ -295,6 +295,14 @@ def _runs_test_suite(command: str) -> bool:
             and _interpreter_name(seg[1]) == "run"
         ):
             seg = seg[2:]
+            # Then drop the run-wrapper's OWN options, or a flag between `run` and the command
+            # hides it: `uv run --no-sync pytest` is what this project's CI actually invokes,
+            # and it classified as NOT a suite until 2026-09-11 -- the original fix below was
+            # written against the flagless `uv run pytest` and measured only that. A
+            # value-taking option in the separated form (`uv run --extra server pytest`) still
+            # leaves its VALUE at the head and is NOT recognized; the `--opt=value` form is.
+            while seg and seg[0].startswith("-"):
+                seg = seg[1:]
             if not seg:
                 continue
         head = _interpreter_name(seg[0])
