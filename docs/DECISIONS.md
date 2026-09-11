@@ -5512,6 +5512,133 @@ elide fallback) and `tests/test_compact_loop.py` (the loop's outcome text). Fiel
 every knowledge-tree node, ~556 KB into a 131k window) on this build against the same run on
 ADR-0131's build.
 
+## ADR-0133: await_user fails closed when no operator is at the prompt
+
+**Status.** Accepted (2026-09-11). Hardening on ADR-0121.
+
+**Context.** ADR-0121 gave the model `await_user` — the one tool whose success ENDS the turn, so
+a model blocked on a human says so once instead of restating it for 27 iterations. Its motivating
+incident was an INTERACTIVE session on slow local inference: an operator was present and expected
+to answer. The unattended case was never considered. But the same tool is reachable in an
+autonomous loop and under a worker Body's `--dangerously-skip-permissions`, where by definition no
+one is at the prompt (`AgentLoop.unattended()` — the modes `autonomous` and `bypassPermissions`).
+There, `await_user` ends the turn `stop_reason="awaiting_user"` and NOTHING resumes it: the loop is
+stranded until a human notices. Measured on the Mind framework running on zakcode (2026-09-11): an
+autonomous `/start coach` set the agent RUNNING, then the model, reaching a soft "invoke /boot"
+instruction, stopped and asked the operator "shall I boot?" — the loop never started. This is the
+exact failure `permissions.py` already designs against for permission prompts: in `autonomous` mode
+"everything auto-allows and NOTHING ever prompts… a present operator may [approve]; `autonomous`
+never can." `await_user` is an operator-required action that slipped past that law.
+
+**Decision.** At the terminal-arming seam in `_execute_tool_call` (the shared chokepoint both the
+buffered and streaming turn loops read), when the tool is an await-user tool AND `self.unattended()`
+is true, do NOT arm `_turn_awaiting`. Instead convert the tool result into a recoverable error the
+model adapts to — identical in spirit to the autonomous permission posture: it names the situation
+("await_user has no operator to wait for: this session is unattended"), tells the model to decide
+itself or record the decision, and instructs it not to call await_user again. The turn continues.
+An `awaiting_refused` intervention note is recorded, symmetric with the attended path's
+`awaiting_user` note, so the redirect is auditable. When an operator IS present (`ask`,
+`acceptEdits`, `allow`), ADR-0121's terminal is unchanged.
+
+**Consequences.** An autonomous loop can no longer be silently stranded by a model reaching for
+await_user — the harness-level twin of the text-death protections the Mind maintains for the same
+class of failure, but one no downstream prompt fix could fully close. Defense in depth beneath the
+skill-level fix (the Mind's `/start` now chains straight to `/boot`): the model is steered not to
+ask, and if it asks anyway the harness refuses to strand. `unattended()` is reused as the single
+predicate — no new mode plumbing. The residual risk is thrash (a nudge still recommends await_user,
+the model calls it, gets refused); it is bounded by ADR-0115's progress-charged nudge budget and by
+the refusal's explicit "do not call await_user again", and is the specific thing to watch under a
+live model. Tests: `tests/test_await_user.py` — the unattended fail-closed terminal (autonomous and
+bypass, buffered and streaming), the attended terminal unchanged (ask/acceptEdits/allow), and all
+ADR-0121 contracts still green (14 passed); full suite 3624 passed / 9 skipped.
+
+## ADR-0134: UserPromptSubmit fires at the user-message boundary, its context folded into the turn
+
+**Context.** `UserPromptSubmit` sat in `settings_loader._SKIP_EVENTS` — a real Claude Code event
+recognised but not implemented, so a Mind that wired it (claude-mind's
+`user-prompt-retrieval-inject.sh`, which retrieves memory/RAG for the user's prompt) read
+`event not implemented` and its retrieval silently never ran. Claude Code fires it once when the
+user submits a prompt; its stdout is injected as context for that turn (a retrieval/RAG seam),
+and — separately — an exit 2 blocks and erases the prompt. Unlike the other two skipped events,
+its firing point is the turn-entry path the loop already owns, so it was seam work rather than a
+missing map entry. The bare-harness parity gap named in the campaign: Claude Code has this seam,
+Zak-Code did not.
+
+**Decision.** Implement `UserPromptSubmit` as a context-injection seam (ADR-0134), **injection
+only**. `HookEvent.USER_PROMPT_SUBMIT` is added and mapped in `_EVENT_MAP`; `UserPromptSubmit` is
+removed from `_SKIP_EVENTS`. A dedicated `UserPromptSubmitPayload` carries `prompt` (the field a
+Claude-Code hook reads from stdin — *not* `user_text`), `session_id`, `cwd`, `hook_event_name`.
+`HookManager.gather_user_prompt_context` runs every `USER_PROMPT_SUBMIT` shell hook and returns
+the text to inject, parsing Claude Code's `hookSpecificOutput.additionalContext` (via the existing
+`_parse_stdout`) with a plain-text fallback — *not* the `{"context": ...}` shape the
+`PRE_LLM_CALL` seam uses. The subprocess plumbing is shared with `_run_context_shell` via one
+extracted `_exec_shell_hook_stdout` (two call sites). `AgentLoop._fire_user_prompt_submit` fires
+the seam ONCE at the turn's user-message boundary — in BOTH `_run_turn` (buffered; `arun_turn`
+delegates to it) and `astream_turn` (streaming), whose turn-entry setup is duplicated — gated on
+`has_user_prompt_hooks()` so the common no-hook path is a single boolean. The result is stashed in
+`self._turn_prompt_context` (reset each turn) and folded into every model call of that turn by the
+tail-builder, as an ephemeral `<injected_context>` tail message — the same prompt-cache-safe,
+never-persisted mechanism as `PRE_LLM_CALL` context, a different seam and timing. It is injected
+even when no `PRE_LLM_CALL` hooks exist (that block is skipped independently).
+
+**Alternatives rejected.** Reusing the `PRE_LLM_CALL` seam — wrong on three axes: it sends
+`user_text` not `prompt` (the coach hook reads `prompt` and would get nothing), parses
+`{"context"}` not `additionalContext`, and fires before *every* model call rather than once at
+the prompt boundary. Implementing the exit-2 prompt-block now — deferred as a documented
+follow-up: the block touches the prompt-erase path, and the real consumer
+(`user-prompt-retrieval-inject.sh`) is injection-only and never exits 2, so injection fully serves
+it. Keeping it deferred in `_SKIP_EVENTS` — leaves a named parity gap unimplemented when the
+firing point is already owned and the risk is containable (the gate makes the no-hook path free).
+
+**Consequences.** An interactive Mind session (e.g. the operator cockpit) whose settings wire
+`UserPromptSubmit` now gets its retrieval/RAG context folded into the turn at the user-message
+boundary, matching Claude Code; autonomous Bodies, where the hook self-skips, are unaffected; a
+session with no such hook pays one boolean per turn. The `_run_context_shell` refactor is
+behaviour-preserving (the full context-injection suite is green). Tests:
+`tests/test_user_prompt_submit.py` (the seam in isolation — reads `prompt` from stdin, injects
+`additionalContext`, plain-text fallback, injection-only on non-zero exit, failure isolation,
+seam-distinctness from `PRE_LLM_CALL`, and loop-level injection on both the buffered and streaming
+paths, unpersisted and non-accumulating) and the updated `tests/test_settings_loader.py` (the
+event now registers instead of being skipped).
+
+## ADR-0135: The recipe gate's verification budget scales with the number of files written
+
+**Context.** ADR-0114 closed several recipe-gate false-stalls measured live on coach's 35B, but a
+sibling class remained, surfaced 2026-09-11 by a ripple-refactor probe (SOAK-9): change
+`apply_discount(price, pct)` from a percentage (0–100) to a fraction (0.0–1.0) and update every call
+site so the applied discount is unchanged. The model did it correctly — grep'd for the callers, found
+all three (`cart.py`/`invoice.py`/`report.py`), edited each (20→0.20, 15→0.15, 30→0.30) and the
+function (`pct / 100`→`pct`); a hidden numeric oracle passed (`checkout/bill/summary(100)` = 80/85/70,
+`apply_discount(100, 0.5)` = 50.0). Yet the turn ended `recipe_stalled` (exit 1) — a false failure on
+complete, correct work. Root cause: the verify-before-finish gate requires every runnable file written
+this turn to be run (`_targets <= _verified`), and the harness verifies by running `pending_target()`
+in reverse write order. Four runnable files were written but `attempt_cap` was a fixed 3, so the
+harness spent its whole budget on the last three (`report`/`invoice`/`cart`) and never reached the
+first-written module (`discount.py`). A create-and-run turn that writes more runnable files than the
+fixed cap cannot pass the gate even when every file would verify.
+
+**Decision.** `RecipeCursor.can_nudge()` scales the budget with the number of runnable files written
+this turn: `self.nudges < max(self.attempt_cap, len(self._targets))`. Verifying N files takes ~N runs
+(the harness issues one per pending target), so the budget must be at least N. `attempt_cap` (default 3)
+stays the FLOOR — a turn writing ≤3 runnable files is unchanged; only N>cap turns gain the attempts
+they need. Pure per-turn state, no file I/O, no language coupling — the properties the cursor already
+holds.
+
+**Consequences.** The SOAK-9 stall reproduces as a clean `done`: given a fourth attempt the harness
+runs `discount.py` (exit 0), credits the last unverified target, and the turn finishes `completed`. The
+common 1–3 file case is untouched (the floor). The budget grows only as far as the work (N files → N
+attempts), so it does not weaken the gate's bound against a model that genuinely cannot verify — a
+failing run still spends an attempt and a truly broken multi-file turn still stalls. Residual, left to
+a later ADR: a pure library module (no `__main__`) is still "verified" by a do-nothing `py lib.py` run
+rather than credited to the sibling that imports it — consistent with the gate's exit-0-suffices
+default (ADR-0114 exempts `__init__.py`/`conftest.py` by name; crediting a general imported-only module
+would need import-graph awareness the cursor deliberately lacks). Tests: `tests/test_recipe.py`
+(`test_cursor_nudge_cap_scales_with_files_written`, `test_cursor_nudge_cap_floored_at_default`);
+full suite 3623 passed / 9 skipped (main + the two new tests). A/B-confirmed live on coach's 35B:
+the identical probe, workspace and model stalled `recipe_stalled` / exit 1 on the unpatched build
+(16 iterations) and finished `done` / exit 0 with the hidden oracle passing on the patched build
+(12 iterations) — the one-line `can_nudge` change the only difference.
+
 ## ADR-0136: A test suite run through an env manager's run-wrapper is still a test suite
 
 **Context.** The verify-before-finish gate (ADR-0110/0114) will not let a turn end `completed`

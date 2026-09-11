@@ -579,8 +579,17 @@ class RecipeCursor:
         return self.enabled and self.wrote_runnable and not self.verified
 
     def can_nudge(self) -> bool:
-        """Whether another verification attempt is allowed before giving up (recipe_stalled)."""
-        return self.nudges < self.attempt_cap
+        """Whether another verification attempt is allowed before giving up (recipe_stalled).
+
+        The cap scales with the number of runnable files written this turn: verifying N files
+        takes ~N runs (the harness issues one per pending target), so a fixed cap below N cuts a
+        model off mid-verification and stalls a COMPLETE turn as recipe_stalled. Measured on a
+        4-file library+callers ripple refactor at the default cap of 3 (ADR-0135): the harness
+        walks pending_target in reverse write order, spends its three attempts on the last three
+        files, and never reaches the first-written library module. ``attempt_cap`` stays the
+        floor, so the common 1-3 file case is unchanged.
+        """
+        return self.nudges < max(self.attempt_cap, len(self._targets))
 
     def pending_target(self) -> str | None:
         """The most-recently-written runnable script still needing verification, else None."""
