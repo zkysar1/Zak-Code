@@ -5985,7 +5985,13 @@ green test-runner run satisfies the whole obligation at once (ADR-0136, now incl
 and piped forms), and the attempt cap scales with the number of files written (ADR-0135), so a
 turn that heredocs four files is not cut off after three verification attempts.
 
-This also subsumes a limitation recorded as accepted in ADR-0138: a shell edit left
-``_turn_edit_calls`` at zero, so a later suite run read as a "pre-edit baseline" and the
-attribution gate declined to fire. Same root cause — the engine keying a behavioural fact on tool
-NAMES — and the same fix addresses both.
+A sibling of this defect lives in ``loop.py`` and is deliberately NOT fixed here. The
+attribution gate (ADR-0138) credits a suite run as a pre-change baseline when
+``_turn_edit_calls`` is zero, and that counter is keyed the same way on tool NAMES, so it
+misses a shell edit: a ``sed -i`` followed by the suite would be read as a baseline the model
+never took. Same root cause, but a different file, a different gate, and the opposite fix
+direction — letting a rail fire MORE, rather than arming an obligation — so it carries its own
+false-fire risk and deserves its own measurement. That measurement says leave it: across the six
+live probe runs the coach called ``write_file``/``edit_file`` between six and nine times EACH, so
+``_turn_edit_calls`` was never zero and the hole never opened. An earlier draft of this ADR said
+this change subsumed that limitation. It does not — this commit touches ``recipe.py`` only.
