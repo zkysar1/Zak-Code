@@ -7289,8 +7289,13 @@ answer: it was caught by re-reading the pre-registration, not by the output look
 
 **What is robust regardless of where the FIRST-vs-FULL truth lies:** the marginal value of catalogue
 bytes collapses. First sentences buy 33.8 points for 7,130 tokens; the entire remaining description
-buys 4.9 points for 15,038 tokens — **14.5x worse per point, and 46% of a 32k context window.** Two
-thirds of what a small model currently spends its window on is the least informative two thirds.
+buys 4.9 points for 15,038 tokens — **14.5x worse per point.** Two thirds of what the model spends
+its catalogue budget on is the least informative two thirds.
+
+The window framing needs both numbers, as elsewhere in this file: 15,038 tokens is **46% of a 32,768
+window and 11.5% of a 131,072 one.** The pod's models declare 131,072, so the 32k figure is the
+small-model reference point this file uses throughout, not the deployed configuration. The ratio —
+14.5x — is window-independent and is the part that generalises.
 
 **Where this lands in the engine.** `SkillRegistry.render_catalog()` (`src/zakcode/skills/__init__.py`)
 is the single site emitting full descriptions into the system prompt. A precedent already ships on a
