@@ -111,3 +111,33 @@ plus m01-m05 on the 35B N=3 as a no-change control (those workspaces carry no CO
   bytes -> the change leaked into workspaces without the file; refuse until explained.  C4  27B 06 stays 3/3
   (prediction: bytes CHANGE -- the folded rules alter the prompt -- but the outcome holds).
 Prediction: C1, C3 clean, C4 holds.
+
+=== 22:52 UTC 2026-09-12 ARM C DESIGN REFINEMENT (before any code runs on zc-01)
+Implementation: prompt.py gains CONVENTION_FILENAMES = ("CONTRIBUTING.md",), folded per directory along the same
+ancestor chain as the guides, AFTER them (guides can never be crowded out by a long CONTRIBUTING.md; per-file 8,192 /
+total 32,768 caps unchanged). The context header sentence names the new kind, so it changes wording.
+C3 refined: the header renders ONLY when something was discovered. m01, m03, m04, m05 workspaces carry no README /
+guide / CONTRIBUTING.md (ls-verified) -> their prompts are byte-identical to tonight's H2H prompts -> C3 (bytes must
+hold) applies to those four. m02 carries a README.md -> its header wording changes with this PR -> C3b: m02's bytes
+MAY change; its OUTCOME must stay 3/3 (prediction: bytes change, 3/3 holds). 06 as it ships gains a
+`## <ws>/CONTRIBUTING.md` block. No new setting; conventions are guidance, always on (a README toggle exists because
+READMEs are long and noisy; four hard rules are neither).
+
+=== 23:12 UTC 2026-09-12 ARM C RESULTS (chain 22:54:53-23:11:36 on zc-01, src sha f6881229212e = PR build minus a docstring rewrap; box clock)
+  C1/C2  35B 06 as-ships with the fold: 3/3 PASS, turns [13, 13, 13] -> C1 the lever works
+  C4     27B 06: 3/3 PASS, turns [12, 12, 12]; bytes vs H2H-27B: CHANGED (predicted)
+  C3 (bytes must hold)                                       m01-stale-doc-negative   pass 3/3 bytes-vs-H2H IDENTICAL turns [4, 4, 4]
+  C3b (README workspace: bytes may change, outcome must hold) m02-ambiguous-zero       pass 3/3 bytes-vs-H2H DIFFER turns [7, 7, 7]
+  C3 (bytes must hold)                                       m03-minimal-diff         pass 3/3 bytes-vs-H2H IDENTICAL turns [4, 4, 4]
+  C3 (bytes must hold)                                       m04-assert-not-hedge     pass 3/3 bytes-vs-H2H IDENTICAL turns [4, 3, 4]
+  C3 (bytes must hold)                                       m05-read-before-edit     pass 3/3 bytes-vs-H2H IDENTICAL turns [3, 3, 3]
+  positive control (max system chars, rule text in system): ARMC-35B-06 [(10930, True), (10930, True), (10930, True)] | H2H mech [(9835, False)]
+  Per cell: ARMC-35B-06 3/3 PASS 13/13/13 turns 107/100/100 s; ARMC-27B-06 3/3 PASS 12/12/12 turns 116/104/95 s (H2H: 14 turns);
+  m01 4/4/4 turns; m02 7/7/7; m03 4/4/4; m04 4/3/4; m05 3/3/3 -- every cell byte-identical within itself.
+  ALL RULES HELD: C1 (lever works), C3 on m01/m03/m04/m05 (bytes identical to tonight's H2H cells -> the change touches
+  no workspace without the file), C3b on m02 (bytes differ because the context header wording changed under its README;
+  outcome 3/3), C4 (27B stays 3/3; bytes changed as predicted). Positive control: the 35B's system prompt grew from
+  9,835 to 10,930 chars and the rule-1 text is present in it (absent in the H2H mech cell).
+  Predictions C1, C3 clean, C4 held. DECISION: ship default-on (Zak-Code PR, ADR-0162). The 06 GAP from ADR-0161 is
+  closed on both models by a model-free step; the head-to-head instrument now reads 12/12 PARITY cells with this build.
+  Dumps for the two 06 cells stay on zc-01 (/root/zb-dumps/ARMC-*); the seven results JSONs are committed.

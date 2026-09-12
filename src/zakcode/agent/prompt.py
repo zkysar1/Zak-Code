@@ -47,6 +47,15 @@ DYNAMIC_BOUNDARY = "--- DYNAMIC_BOUNDARY ---"
 #: content to a "pick one" rule.
 AGENT_GUIDE_FILENAMES = ("AGENTS.md", "CLAUDE.md", "ZAK.md")
 
+#: Per-directory CONVENTION filenames, folded along the same ancestor chain AFTER that
+#: directory's guides. A ``CONTRIBUTING.md`` is where a repo states its hard rules for anyone who
+#: changes it ("standard library only", "every renderer raises PluginError") -- rules an agent must
+#: follow that nobody addressed to an agent. Folding it is a model-free step: measured on a 27B and
+#: a 35B (ADR-0161), both list the workspace root, SEE the file in the listing, and never open it,
+#: while the same 35B with the rules in context passes 3/3. Guides come first so a long
+#: CONTRIBUTING.md can never crowd them out of the total cap.
+CONVENTION_FILENAMES = ("CONTRIBUTING.md",)
+
 #: The human-facing project doc, folded into context (after the agent guides) when
 #: ``Settings.context_include_readme`` is on. Read ONLY at the workspace root — a README is a
 #: project-root file, so (unlike the guides) the ancestor chain is not searched for it.
@@ -383,8 +392,9 @@ class SystemPromptBuilder:
             return ""
         blocks = [f"## {path}\n{content}" for path, content in discovered]
         return (
-            "Project context (AGENTS.md / CLAUDE.md / ZAK.md guides and the workspace README, "
-            "outermost first; treat as project guidance):\n\n" + "\n\n".join(blocks)
+            "Project context (AGENTS.md / CLAUDE.md / ZAK.md guides, CONTRIBUTING.md conventions, "
+            "and the workspace README, outermost first; treat as project guidance):\n\n"
+            + "\n\n".join(blocks)
         )
 
 
@@ -413,13 +423,15 @@ def discover_context(
     Each directory from ``workspace_root`` up to (and including) the **project root** — the nearest
     ancestor-or-self with a VCS marker (:data:`_VCS_MARKERS`) — is checked for the agent-guide files
     :data:`AGENT_GUIDE_FILENAMES` (``AGENTS.md`` / ``CLAUDE.md`` / ``ZAK.md``); ALL present in a dir
-    are loaded, so a repo keeping both an ``AGENTS.md`` and a ``CLAUDE.md`` never loses content. The
-    walk **stops at the project root** — a guide ABOVE it (``~/CLAUDE.md``, a shared-box
-    ``/home/.../AGENTS.md``) is never folded into the trusted tier; a workspace not in a repo scans
-    only its own root. The workspace root's :data:`README_FILENAME` is folded in last (the project
-    doc) when ``include_readme`` is set — a README is a project-ROOT file, so even within the chain
-    only the root's is read. Files are returned outermost-first (project root → cwd) so a deeper,
-    more specific guide appears later and can refine a broader one. Behavior:
+    are loaded, so a repo keeping both an ``AGENTS.md`` and a ``CLAUDE.md`` never loses content --
+    then for :data:`CONVENTION_FILENAMES` (``CONTRIBUTING.md``, a repo's hard rules, folded after
+    that directory's guides). The walk **stops at the project root** — a guide ABOVE it
+    (``~/CLAUDE.md``, a shared-box ``/home/.../AGENTS.md``) is never folded into the trusted tier; a
+    workspace not in a repo scans only its own root. The workspace root's :data:`README_FILENAME` is
+    folded in last (the project doc) when ``include_readme`` is set — a README is a project-ROOT
+    file, so even within the chain only the root's is read. Files are returned outermost-first
+    (project root → cwd) so a deeper, more specific guide appears later and can refine a broader
+    one. Behavior:
 
     * **Content-hash de-duplication** — identical content (e.g. an ``AGENTS.md`` that merely copies
       ``CLAUDE.md``) is kept only once, at its first occurrence.
@@ -471,7 +483,7 @@ def discover_context(
         return total < MAX_CONTEXT_TOTAL_CHARS
 
     for directory in chain:
-        names = list(AGENT_GUIDE_FILENAMES)
+        names = [*AGENT_GUIDE_FILENAMES, *CONVENTION_FILENAMES]
         # The README is a project-ROOT doc: load it only at the workspace root, after its guides.
         if include_readme and directory == root:
             names.append(README_FILENAME)
@@ -484,6 +496,7 @@ def discover_context(
 
 __all__ = [
     "AGENT_GUIDE_FILENAMES",
+    "CONVENTION_FILENAMES",
     "DYNAMIC_BOUNDARY",
     "MAX_CONTEXT_FILE_CHARS",
     "MAX_CONTEXT_TOTAL_CHARS",

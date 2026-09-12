@@ -486,3 +486,26 @@ def test_evidence_discipline_is_in_the_stable_tier(tmp_path: Path) -> None:
     assert "a null result never closes such a step by itself" in stable
     # ADR-0118: a refused write is the model's content, never the environment
     assert "Never hand the user an edit you have the tools to make" in stable
+
+
+def test_discover_context_folds_contributing_after_the_guides(tmp_path: Path) -> None:
+    # ADR-0161: a listed CONTRIBUTING.md is not a read one on small models, so it is folded in
+    # deterministically -- after the directory's guides, so it can never crowd them out.
+    (tmp_path / "ZAK.md").write_text("GUIDE_BODY", encoding="utf-8")
+    rules = "Standard library only. RULE_MARKER_1"
+    (tmp_path / "CONTRIBUTING.md").write_text(rules, encoding="utf-8")
+
+    discovered = discover_context(tmp_path)
+    assert [p for p, _ in discovered] == [tmp_path / "ZAK.md", tmp_path / "CONTRIBUTING.md"]
+
+    prompt = SystemPromptBuilder().build(load_settings(workspace_root=tmp_path))
+    assert "RULE_MARKER_1" in prompt[prompt.index(DYNAMIC_BOUNDARY) :]
+
+
+def test_discover_context_folds_project_root_contributing_from_a_subdir(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()  # project root: its CONTRIBUTING.md governs every subdir workspace
+    (tmp_path / "CONTRIBUTING.md").write_text("ROOT_RULES", encoding="utf-8")
+    child = tmp_path / "pkg"
+    child.mkdir()
+
+    assert discover_context(child) == [(tmp_path / "CONTRIBUTING.md", "ROOT_RULES")]
