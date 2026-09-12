@@ -6667,3 +6667,67 @@ accumulated tool output, which is compaction's job, and compaction costs +25% it
 iteration variance when it binds (ADR-0147). So for the hardest small-model cases the tool surface
 is **not** the lever — context accumulation is, and the mechanism that manages it is the expensive
 one.
+
+## ADR-0149: Most of the variance this bench measures is the sampler's, not the engine's
+
+Every determinism statement made from this suite before now was about an unpartitioned quantity.
+`Settings.temperature` defaults to `None`, which means *send no temperature and let the backend use
+its own default*, and `bench/run_task.py` never set one — so every pass ever run here sampled
+stochastically, and the run-to-run variance being reported was
+
+```
+total variance  =  MODEL SAMPLING non-determinism  +  ENGINE non-determinism
+```
+
+with only the second term being something zakcode can fix. Pinning `ZAKCODE_TEMPERATURE=0` (it
+binds through pydantic's `ZAKCODE_` prefix; no code change) separates them. Three passes per arm on
+`zds-qwen3.5-35b`, with the ADR-0146 triad carried as an in-run comparability control:
+
+```
+task           pinned (temp=0)  spread  |  default (unset)  spread
+01-wordfreq      12, 12, 11        9%   |    12,  8, 10       40%
+03-lru           15, 11, 16       36%   |    17,  8, 14       69%
+04-todo-cli      17, 17, 17        0%   |    16, 17, 15       12%
+```
+
+**Most of it was the sampler.** `04-todo-cli` becomes *exactly* deterministic across three runs of
+a 17-iteration task. That variance was never zakcode's and could not have been fixed by changing
+zakcode, which is worth saying plainly: a determinism campaign measuring this number would have
+chased an irreducible quantity.
+
+**The residual is the deliverable.** With sampling held constant the spread is 9% / 36% / 0%. That
+is variance the engine owns. `03-lru`'s 36% is the actionable target, and `04-todo-cli`'s 0% proves
+the engine *can* be fully deterministic over a long task — so 36% is a defect, not a floor. This is
+the campaign's first determinism baseline; there was not one before.
+
+**V1, the comparability control, held**, which is why the cross-arm comparison is asserted rather
+than assumed: `m03` ran 4/4/4 in both arms, `m05` 3/3/3 in both, per-iteration tokens agreeing
+within 0.6%.
+
+**A tension I reported and then had to withdraw.** The first three passes showed pass rate falling
+19/21, entirely `05-ledger`, failing 2 of 3 with an identical error signature — the fingerprint of a
+reproduced greedy path. The hypothesis was attractive and consequential: pinning removes the
+accidental retry-diversity that sampling provides, so a buggy most-likely implementation reproduces
+every time, and *more determinism costs correctness*. A pre-registered focused replication (3 runs
+per arm, `05-ledger` alone) came back 6/6 PASS, leaving pinned at 4/6 and default at 6/6 — two
+failures against zero, Fisher p≈0.45. The rule's "flake clustering" branch fired.
+**H-GREEDY-BUG is unsupported and the tension is not in the data.** One repeated signature across
+two failures is equally consistent with a single flaky failure mode when four of six pass.
+
+**And a confound I did not design out, recorded because it bounds the result.** `05-ledger` is
+unresolved and must not be read either way. Passing-only spread is 45% pinned against 22% default,
+which looks like pinning hurting — but the pinned arm splits three in-suite (20, 26, 21, containing
+*both* failures) and three solo (17, 20, 17), while the default arm shows no such split (19, 17, 16
+vs 20, 19, 18). Every pinned failure and every high iteration count sits in the in-suite half, so
+co-tenancy and the pin are entangled at n=3 per cell. Within-context it is 26% vs 17% and 16% vs
+11% — directionally consistent, far too sparse to claim. **Hold co-tenancy constant as well as the
+model.** That variable was not on my list, which is the same class of omission as shrinking a
+context window that turned out to feed three consumers instead of one (ADR-0147).
+
+**What this does NOT license.** It is not an argument to change the product default. ADR-0018 chose
+`None` over a harness-wide 0.0 deliberately, calling 0.0 "fake-determinism inherited from
+local-model habits", because Gemini 2.5+ documents repetition loops below 1.0 and a field deployment
+hit exactly that. That reasoning is untouched here; nothing above measures a product outcome. The
+claim is narrower and only about measurement: **to attribute variance to the engine you must pin the
+sampler, exactly as you must hold the model fixed to attribute a failure to a mechanism.** The bench
+should pin it; the product should not.
