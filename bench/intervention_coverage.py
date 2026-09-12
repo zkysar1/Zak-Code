@@ -116,6 +116,27 @@ def recorded_kinds(files: list[Path], signature: tuple | None = None) -> collect
 
 def main(argv: list[str]) -> int:
     emitted = emitted_kinds()
+    if "--compare" in argv:
+        # Compare bench coverage against a PRODUCTION census: {kind: count}. The bench's own
+        # history cannot tell you which untested paths matter, and the exclusion list above is a
+        # statement about this harness's configuration, never about importance -- measured, the
+        # paths it calls structurally unreachable are exactly the ones production leans on.
+        idx = argv.index("--compare")
+        prod = set(json.loads(Path(argv[idx + 1]).read_text(encoding="utf-8")))
+        bench = set(recorded_kinds(sorted(RESULTS.rglob("*.json"))))
+        emitted = set(emitted_kinds())
+        print(f"engine can emit   : {len(emitted)}")
+        print(f"bench recorded    : {len(bench)}")
+        print(f"production        : {len(prod)}")
+        print(f"BOTH              : {len(bench & prod)}  {sorted(bench & prod)}")
+        print(f"PRODUCTION ONLY   : {len(prod - bench)}  {sorted(prod - bench)}")
+        print("  ^ live in production and never exercised by any test here. This is the risk")
+        print("    surface: an untested path that real users reach. Rank work by THIS list.")
+        print(f"BENCH ONLY        : {len(bench - prod)}  {sorted(bench - prod)}")
+        print(f"NEITHER           : {len(emitted - bench - prod)}")
+        union = len((bench | prod) & emitted)
+        print(f"union coverage    : {union}/{len(emitted)} = {union / len(emitted) * 100:.0f}%")
+        return 0
     if "--ratchet" in argv:
         idx = argv.index("--ratchet")
         newest = Path(argv[idx + 1]) if len(argv) > idx + 1 else None

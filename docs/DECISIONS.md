@@ -6526,6 +6526,33 @@ records, 5,310 are real `/opt/coach-mind` usage and **5,021 (~48%) are pytest re
 count over the whole corpus is about half test traffic. That is sufficient for the EXISTENCE claim
 above (one genuine elision would be) and insufficient for any rate, so no rate is stated here.
 
+**CORRECTION, same day: the evidence above was drawn from the WRONG STORE, and the claim has been
+re-sourced.** The 1,174-file corpus is `/etc/zakcode/transcripts`, whose records carry
+`cwd` / `message` / `parentUuid` / `sessionId` — **Claude Code's** transcript format, not zakcode's.
+Marker text appearing there is at best zakcode output captured inside a Claude Code session, and
+citing it as evidence that zakcode's own compactor fired was a provenance error: the right store
+was never consulted. The re-measurement, from zakcode's OWN session store on the same box:
+
+```
+/etc/zakcode/sessions        185 files (zakcode Session records: build, last_stop_reason,
+                             permission_grants, model)   -> 2 marker files, 31 occurrences
+  of those, cwd /opt/coach-mind    134 files             -> ALL 31 occurrences
+/etc/zakcode/transcripts   1,175 files (Claude Code format)  -> 35 files, 64 occurrences
+/opt/coach-mind/.zakcode      32 files (traces)              -> 0
+```
+
+**The claim survives and its strength changes.** zakcode's compactor fired **31 times across 2 of
+134 real `/opt/coach-mind` sessions** — genuine production work, not pytest and not a sandbox —
+against zero firings in 20 instrumented bench runs. So the blindness this ADR describes is real and
+measured from both sides. What is retracted is the prevalence the original wording implied:
+"fires routinely" reads as broad, and 2 of 134 sessions is 1.5%. The correct statement is that the
+path is exercised in production and never in the bench.
+
+Worth recording as the thesis applied to itself a second time: the figure 64 was cited once and
+carried into a merged ADR without a second reading, and the re-reading was prompted only by a
+coincidence — an unrelated census returned 64 as well, which looked like double-counting. The
+coincidence was innocent; the provenance error it exposed was not.
+
 **And the retraction that had to precede it.** I recorded earlier in this campaign that coach was
 unreachable, because `/opt/coach-mind` is absent on this box. That was a single signal about the
 WRONG box, never corroborated against the host the notes name. zc-03 answers, and the path is
@@ -6962,9 +6989,114 @@ self-consistent answer to the wrong question is the most expensive kind: it look
 `--replay-wire` re-sends the recorded body verbatim and reports 5/5 identical on the agent's real
 25-tool call.
 
+**ADDENDUM, same day: the reproduction above is BATCH-LOCAL, and this ADR's "3/3 exactly" must be
+read that way.** The `m05` cap=64 cell was re-run in a later batch and came back **34 iterations,
+nine reasoning overflows, PASS** against the **22 iterations, four overflows, FAIL** it had produced
+three times identically an hour earlier. The `knobs` dicts are byte-identical across all four runs —
+`temperature 0.0`, `max_completion_tokens 64`, `pin_identity True`, `session_id 000…0`, workspace
+`/tmp/zbench-pinned-m05-read-before-edit`, routed category `deep_code`. So an identical
+configuration reproduces EXACTLY within a batch and does not reproduce across batches, and the
+3/3 above is evidence of the former only.
+
+This does not restore "the engine owns the variance" — the engine's inputs were identical in all
+four runs, so whatever moved sits outside it. It lands squarely on the question this ADR already
+left open in writing: no instrument here has asked a COLD server the same question twice, and two
+batches an hour apart are the same question asked at two different times. The claim that survives
+intact is the one about causes A and B; the claim that needed scoping was the demonstration.
+
 **What stays open, stated as open.** Whether a byte-identical wire body can ever produce a
 different completion is not settled here. An earlier pair appeared to show it at call one, but that
 dump did not record kwargs, so the requests were never shown to be identical; the pair re-run with
 the complete dump reproduced through eight calls. Every replay also runs against an already-warm
 prefix cache, which is precisely the condition a first call does not have. The honest statement is
 that no instrument here has yet asked a cold server the same question twice.
+
+## ADR-0153: The stress ladder did not restore resolution, and the metric that looked like it does is the one that moves
+
+`03-lru` and every other task in this suite report a saturated PASS for both agents (ADR-0151) and
+across three model generations (ADR-0147). ADR-0152's reasoning-overflow work produced, as a side
+effect, something that looked like a way out: lowering the per-response output-token cap turned one
+saturated task into a monotone curve. The hypothesis — **a saturated measurement is being read at
+one point on a curve, and a stress axis restores resolution** — was pre-registered with its primary
+metric named in advance: the lowest cap at which the task still passes. If the models shared one
+breaking point, the pre-registration said to declare the hypothesis dead.
+
+```
+model             cap=256     192        128        96              64
+zds-qwen3.6-35b   PASS it=3   PASS it=3  PASS it=8  PASS it=11 deg  PASS it=34 deg
+zds-qwen3.5-35b   PASS it=3   PASS it=4  PASS it=12 PASS it=15 deg  PASS it=17 deg
+zds-qwen3.8-27b   PASS it=4   PASS it=4  PASS it=9  PASS it=16 deg  PASS it=45 deg, stop=stuck
+```
+
+**The primary metric is NOT SUPPORTED.** All three models pass at all five caps, so the breaking
+point sits below the tested range for every one of them and separates nothing. The saturation
+ADR-0151 measured is not relieved by this axis.
+
+**What did work is the axis itself.** Iterations are monotone in all three arms
+(3,3,8,11,34 / 3,4,12,15,17 / 4,4,9,16,45), so the token cap is a clean single-variable stress —
+`_MAX_COMPLETION_TOKENS` is declared once and read at one call site, deliberately unlike the context
+window that fed three consumers (ADR-0146). Wall clock is not monotone (`3.5-35b` reads 267.1s at
+cap=128 against 110.8s at cap=96), which is ADR-0147's "worst signal" finding reappearing exactly
+where it would be most tempting to substitute it for the metric that just disappointed.
+
+**The post-hoc reading, and why it is not cited as a result.** Cost at cap=64 looks strongly
+discriminating — 34 / 17 / 45 iterations, 9 / 6 / 13 reasoning overflows, and only the smallest
+model reaching a `stuck` stop, which is the direction one would predict. It is a metric chosen after
+seeing the declared one fail, which is what the pre-registration existed to prevent. It is also dead
+on its own terms: its discriminating cell is precisely the `3.6-35b` cap=64 cell that moved 22 → 34
+across batches. Had the metric been swapped in, the campaign's headline small-model finding would
+have rested on the single least stable number in the table.
+
+**What this leaves.** A stress axis can be clean and still not discriminate, because monotonicity is
+a property of the axis and separation is a property of where the subjects sit on it. To make this
+suite answer a small-model question, the ladder has to run below 64 — where the batch-local
+reproduction problem is worst — or the tasks themselves have to get harder, which is the same
+conclusion ADR-0151 reached from the other direction. Two independent routes to "the tasks are too
+easy" is the finding.
+
+## ADR-0154: The bench and production exercise nearly disjoint slices of the engine, and sixteen production turns beat the whole bench corpus
+
+ADR-0153 concluded the tasks are too easy. This ADR measures a different and larger gap in the same
+instrument: not how hard the tasks are, but **which of the engine's paths any of them touch.**
+
+Censusing every `kind="..."` the engine can emit, against every intervention recorded in the bench's
+results corpus, against a census of coach's own trace store:
+
+```
+engine can emit   : 52
+bench recorded    : 11      (after today's work; it was 7 this morning)
+production        : 13      from SIXTEEN turns
+BOTH              :  5      compaction, intent_gate, plan_first, plan_review, stuck
+PRODUCTION ONLY   :  8      plan, skill_skeleton, skill_page, skill_coverage, skill_paging,
+                            skill_sections_reopened, awaiting_user, user_only_skill
+BENCH ONLY        :  6      suite_scope_gate, silenced_gate, text_only_stall, reasoning_overflow,
+                            gate_cascade, deferral_gate
+NEITHER           : 33
+union coverage    : 19/52 = 37%
+```
+
+**Sixteen turns of real use reached more distinct paths than the entire benchmark corpus, and they
+agree on five.** The bench is not a small version of production; it is a different slice of the
+engine, and the two together still leave 63% of the intervention surface untouched.
+
+**The most-fired intervention in production has never fired in the bench.** `plan` leads coach's
+census at 13 of 64, and it does not appear once in any recorded bench run.
+
+**And the exclusion list was hiding the risk, not bounding it.** `intervention_coverage.py` marks
+`skill_*`, `awaiting_user` and `user_only_skill` as structurally unreachable — correct, because the
+bench runs `enable_skills=False` and non-interactive. That framing is a statement about this
+harness's configuration and was silently read as a statement about importance. Six of those eight
+"unreachable" kinds are live in production. An exclusion list that quarantines exactly the paths
+real users hit converts the most dangerous gap into a footnote, so the tool now takes
+`--compare <production-census>` and prints PRODUCTION ONLY as the ranked risk surface.
+
+**Population, stated because it bounds everything above.** Coach's trace store is 16 files / 407
+event records — small, so these are EXISTENCE claims and no rate is asserted. Existence is the whole
+argument here: one production firing of a path the bench never reaches is enough to show the bench
+cannot regression-test it. A larger census would sharpen the ranking, not the conclusion.
+
+**What this changes about the campaign.** "Make zakcode as good as Claude Code" has been pursued
+through a benchmark that touches 11 of 52 intervention paths and cannot separate two agents or
+three model generations. The cheapest real improvement available is not a better score — it is
+running the census against production regularly and closing the PRODUCTION ONLY list, because every
+entry there is a path that real users take and no test here defends.
