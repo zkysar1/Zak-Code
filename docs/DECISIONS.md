@@ -6962,9 +6962,67 @@ self-consistent answer to the wrong question is the most expensive kind: it look
 `--replay-wire` re-sends the recorded body verbatim and reports 5/5 identical on the agent's real
 25-tool call.
 
+**ADDENDUM, same day: the reproduction above is BATCH-LOCAL, and this ADR's "3/3 exactly" must be
+read that way.** The `m05` cap=64 cell was re-run in a later batch and came back **34 iterations,
+nine reasoning overflows, PASS** against the **22 iterations, four overflows, FAIL** it had produced
+three times identically an hour earlier. The `knobs` dicts are byte-identical across all four runs —
+`temperature 0.0`, `max_completion_tokens 64`, `pin_identity True`, `session_id 000…0`, workspace
+`/tmp/zbench-pinned-m05-read-before-edit`, routed category `deep_code`. So an identical
+configuration reproduces EXACTLY within a batch and does not reproduce across batches, and the
+3/3 above is evidence of the former only.
+
+This does not restore "the engine owns the variance" — the engine's inputs were identical in all
+four runs, so whatever moved sits outside it. It lands squarely on the question this ADR already
+left open in writing: no instrument here has asked a COLD server the same question twice, and two
+batches an hour apart are the same question asked at two different times. The claim that survives
+intact is the one about causes A and B; the claim that needed scoping was the demonstration.
+
 **What stays open, stated as open.** Whether a byte-identical wire body can ever produce a
 different completion is not settled here. An earlier pair appeared to show it at call one, but that
 dump did not record kwargs, so the requests were never shown to be identical; the pair re-run with
 the complete dump reproduced through eight calls. Every replay also runs against an already-warm
 prefix cache, which is precisely the condition a first call does not have. The honest statement is
 that no instrument here has yet asked a cold server the same question twice.
+
+## ADR-0153: The stress ladder did not restore resolution, and the metric that looked like it does is the one that moves
+
+`03-lru` and every other task in this suite report a saturated PASS for both agents (ADR-0151) and
+across three model generations (ADR-0147). ADR-0152's reasoning-overflow work produced, as a side
+effect, something that looked like a way out: lowering the per-response output-token cap turned one
+saturated task into a monotone curve. The hypothesis — **a saturated measurement is being read at
+one point on a curve, and a stress axis restores resolution** — was pre-registered with its primary
+metric named in advance: the lowest cap at which the task still passes. If the models shared one
+breaking point, the pre-registration said to declare the hypothesis dead.
+
+```
+model             cap=256     192        128        96              64
+zds-qwen3.6-35b   PASS it=3   PASS it=3  PASS it=8  PASS it=11 deg  PASS it=34 deg
+zds-qwen3.5-35b   PASS it=3   PASS it=4  PASS it=12 PASS it=15 deg  PASS it=17 deg
+zds-qwen3.8-27b   PASS it=4   PASS it=4  PASS it=9  PASS it=16 deg  PASS it=45 deg, stop=stuck
+```
+
+**The primary metric is NOT SUPPORTED.** All three models pass at all five caps, so the breaking
+point sits below the tested range for every one of them and separates nothing. The saturation
+ADR-0151 measured is not relieved by this axis.
+
+**What did work is the axis itself.** Iterations are monotone in all three arms
+(3,3,8,11,34 / 3,4,12,15,17 / 4,4,9,16,45), so the token cap is a clean single-variable stress —
+`_MAX_COMPLETION_TOKENS` is declared once and read at one call site, deliberately unlike the context
+window that fed three consumers (ADR-0146). Wall clock is not monotone (`3.5-35b` reads 267.1s at
+cap=128 against 110.8s at cap=96), which is ADR-0147's "worst signal" finding reappearing exactly
+where it would be most tempting to substitute it for the metric that just disappointed.
+
+**The post-hoc reading, and why it is not cited as a result.** Cost at cap=64 looks strongly
+discriminating — 34 / 17 / 45 iterations, 9 / 6 / 13 reasoning overflows, and only the smallest
+model reaching a `stuck` stop, which is the direction one would predict. It is a metric chosen after
+seeing the declared one fail, which is what the pre-registration existed to prevent. It is also dead
+on its own terms: its discriminating cell is precisely the `3.6-35b` cap=64 cell that moved 22 → 34
+across batches. Had the metric been swapped in, the campaign's headline small-model finding would
+have rested on the single least stable number in the table.
+
+**What this leaves.** A stress axis can be clean and still not discriminate, because monotonicity is
+a property of the axis and separation is a property of where the subjects sit on it. To make this
+suite answer a small-model question, the ladder has to run below 64 — where the batch-local
+reproduction problem is worst — or the tasks themselves have to get harder, which is the same
+conclusion ADR-0151 reached from the other direction. Two independent routes to "the tasks are too
+easy" is the finding.
