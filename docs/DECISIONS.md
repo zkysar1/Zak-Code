@@ -8565,3 +8565,75 @@ samples a basin, N=3 at temperature 0 pins one (rb-10837). The comparison ADR-01
    ships on both models plus m01–m05 as a byte-identity control, ship default-on only if C1 and C3 hold.
 3. **No pooled score, no "N% of Claude Code".** Six tasks at N=2/3 support per-task verdicts and nothing
    finer; the next instrument step is more tasks, not more repeats (rb-10837).
+
+## ADR-0162: fold `CONTRIBUTING.md` into the discovered project context — the first deterministic lever that closes a measured gap against Claude Code
+
+**Date:** 2026-09-12 · **Status:** accepted · **Pre-registration:** `bench/results/head-to-head-preregistration.log`
+(22:47 ARM C rules C1–C4, 22:53 design refinement, results block stamped after the last cell) · **Change:**
+`src/zakcode/agent/prompt.py` (`CONVENTION_FILENAMES`), `tests/test_prompt.py` · **Results:**
+`bench/results/*.ARMC-{35B,27B}-*.json`.
+
+### Why this lever
+
+ADR-0161's one GAP against Claude Code — the 35B on `06-plugin-conventions`, 0/3 — had a measured shape:
+both local models list the workspace root, see `CONTRIBUTING.md` in the listing, and never open it, while
+the same 35B with those rules folded into its prompt (arm B, via an `AGENTS.md` byte copy) passes 3/3.
+Claude Code closes that gap by exploring: its first tool call is a `find`, its second or fifth a `Read` of
+the conventions file. A 35B does not, and no prompt instruction was tried to make it — the redirect that
+governs this cycle asks for levers that are **deterministic and work on smaller models**, and "read the
+conventions before you write" is neither. Folding the file is model-free: it costs one file read at prompt
+build and puts the rules in front of every model equally.
+
+### The change
+
+`discover_context` already walks the workspace root up to the project (VCS) root and folds every
+`AGENTS.md` / `CLAUDE.md` / `ZAK.md` it finds, then the workspace README. It now also folds
+`CONVENTION_FILENAMES = ("CONTRIBUTING.md",)` per directory, **after** that directory's guides, so a long
+conventions file can never crowd a guide out of the total cap. Per-file (8,192) and total (32,768) caps,
+content-hash de-duplication, the stop-at-project-root rule and the README toggle are unchanged. The
+context header now names the new kind. No new setting: a README is optional because READMEs are long and
+noisy; four hard rules are neither.
+
+### Pre-registered rules and results
+
+Rules (22:47, before any code ran): **C1** 35B on 06 as it ships ≥2/3 → the lever works, ship default-on;
+**C2** ≤1/3 → arm B's effect was positional, record and do not ship; **C3** any m-task cell not byte-identical to
+tonight's H2H bytes → the change leaked into a workspace without the file, refuse until explained; **C4** the 27B
+stays 3/3 on 06 (bytes predicted to change, outcome to hold). Refinement (22:53, before the chain): the context
+header renders only when something was discovered, and m02's workspace carries a README, so C3 covers m01, m03,
+m04, m05 and **C3b** covers m02 (bytes may change, outcome must hold). Chain on zc-01, 22:54–23:11, same
+environment as ADR-0161's zakcode arms.
+
+| cell | pass | turns | median s | bytes vs ADR-0161 cell | rule |
+|---|---|---|---|---|---|
+| 35B · 06 as it ships | **3/3** | 13, 13, 13 | 100 | changed (was 0/3, `import yaml`) | **C1 holds** |
+| 27B · 06 as it ships | 3/3 | 12, 12, 12 | 104 | changed, as predicted (was 14 turns) | **C4 holds** |
+| 35B · m01 | 3/3 | 4, 4, 4 | 19 | **identical** | C3 holds |
+| 35B · m02 (README) | 3/3 | 7, 7, 7 | 38 | differ, as predicted | C3b holds |
+| 35B · m03 | 3/3 | 4, 4, 4 | 18 | **identical** | C3 holds |
+| 35B · m04 | 3/3 | 4, 3, 4 | 14 | **identical** | C3 holds |
+| 35B · m05 | 3/3 | 3, 3, 3 | 31 | **identical** | C3 holds |
+
+Every cell is byte-identical within itself. Positive control from the request dumps: the 35B's system prompt on
+06 grew from 9,835 to 10,930 characters and now contains the rule-1 text ("Standard library only"), which the
+ADR-0161 mechanism cell's prompt did not. The four m-task workspaces without a discoverable file produced the
+same bytes as three hours earlier, so the fold touches nothing it should not; m02's bytes moved only because
+its README already renders the context header, whose wording names the new kind — a reminder that at
+temperature 0 output identity is sensitive to any prompt byte (rb-10837), and why C3b was split out before the run.
+
+With this build the ADR-0161 instrument reads **12 of 12 model×task cells at PARITY** with Claude Code on
+Fable 5.1, with every zakcode cell reproducible byte-for-byte and $0 marginal. The 27B also finishes 06 in
+12 turns instead of 14: rules it can see cost it less searching.
+
+### Decision
+
+1. **Ship default-on.** C1 and C3 held; the pre-registered condition for shipping is met. No setting is
+   added; the file is folded like a guide, after the guides, under the existing caps.
+2. **What this is evidence of.** One task, two models, one convention file. It shows that a listed-but-unread
+   rule file is a discovery problem a deterministic fold solves, on these models; it does not show that every
+   repo's `CONTRIBUTING.md` helps, and a long one is capped at 8,192 characters like any guide. The coach's
+   repository on zc-03 carries no `CONTRIBUTING.md`, so its prompt is unchanged by this ADR.
+3. **What comes next.** The head-to-head instrument is saturated (12/12); its next step is more tasks that
+   Claude Code passes and a small model might not — not more repeats (rb-10837). Candidates are the shapes
+   ADR-0161 exposed: a rule that lives in a file the model would have to find, and a task whose correct
+   answer requires reading a test the model did not write.

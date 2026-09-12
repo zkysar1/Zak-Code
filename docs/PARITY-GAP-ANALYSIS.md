@@ -348,7 +348,8 @@ The verifier dropped these as already-present or already-best-in-class:
 - **Context/memory:** preemptive auto-compaction at a real-token threshold; genuinely
   idempotent compaction (folds a prior summary instead of stacking — cleaner than
   goose/claw-code on re-compaction); stable/dynamic system-prompt split; just-in-time
-  agent-guide discovery (`AGENTS.md` / `CLAUDE.md` / `ZAK.md` ancestor-chain + workspace README)
+  agent-guide discovery (`AGENTS.md` / `CLAUDE.md` / `ZAK.md` ancestor-chain, `CONTRIBUTING.md`
+  conventions folded after the guides (ADR-0161), + workspace README)
   with caps + content-hash dedup; a generic `PreLLMCall` recall seam a Mind injects
   fenced-untrusted context through (the harness ships no memory of its own);
   per-role summarizer routing.
