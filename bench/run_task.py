@@ -17,6 +17,7 @@ cost/permission API WITHOUT any LLM call (cheap API smoke).
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import shutil
@@ -133,6 +134,29 @@ def _build_agent(workspace: Path, spec: dict):
         enable_mcp=False,
         enable_plugins=False,
     )
+    # ZBENCH_COMPACT_FRACTION moves the compaction THRESHOLD without touching anything else.
+    # The obvious way to force compaction -- declare a smaller context_window -- is CONFOUNDED:
+    # _window() feeds three consumers, so shrinking it also cuts the seam clamp in
+    # _clamp_result (window * 0.25 * 3 chars: 98,304 -> 24,576, every tool result 4x smaller)
+    # and changes _refuse_oversized_body. A task failing under that arm could be lost grep/read
+    # output rather than compaction, and the failure would be unattributable -- the same
+    # confound that wrecked two prior attempts to separate engine behaviour from model
+    # behaviour. Moving threshold_fraction on the FULL window changes ONE variable.
+    # Unset (the default) leaves the shipped 0.8 byte-unchanged.
+    # ZBENCH_TOOL_DENY narrows the ADVERTISED tool surface via the registry's own
+    # set_exposure_filter -- documented least-privilege, already shipped, operator-set. Measured
+    # across 22 recorded runs: the agent called EIGHT distinct tools; the other 17 cost 3,907 tok
+    # (58% of the tool surface, 44% of the 8,956-token fixed floor) and were never called once.
+    # That floor is 6.8% of a 131,072 window and 27.3% of a 32,768 one, so it scales badly toward
+    # exactly the models this bench exists to compare.
+    deny = os.environ.get("ZBENCH_TOOL_DENY")
+    if deny:
+        agent.registry.set_exposure_filter(deny=[x.strip() for x in deny.split(",") if x.strip()])
+        print(f"[bench] tool deny filter: {deny}", file=sys.stderr)
+    frac = os.environ.get("ZBENCH_COMPACT_FRACTION")
+    if frac and agent.compactor is not None:
+        agent.compactor.config.threshold_fraction = float(frac)
+        print(f"[bench] compaction threshold_fraction={frac}", file=sys.stderr)
     return agent
 
 
@@ -191,12 +215,38 @@ def run(task_dir: Path) -> int:
     if seed.is_dir():
         shutil.copytree(seed, ws, dirs_exist_ok=True)
 
+    # Armed BEFORE the agent is built: the probe patches Compactor.should_compact at class
+    # level, and the Agent's compactor is constructed inside _build_agent.
+    compaction = _instrument_compaction()
     agent = _build_agent(ws, spec)
+    # The surface the model was ACTUALLY offered. Without this a deny filter that silently failed
+    # to apply is indistinguishable from one that applied and changed nothing -- the same
+    # "instrument that stopped measuring" shape this bench keeps finding (ADR-0145).
+    _defs = agent.registry.definitions()
+    tool_surface = {"exposed": len(_defs), "schema_chars": sum(len(json.dumps(x)) for x in _defs)}
+    # EVERY EXPERIMENTAL KNOB RECORDS ITS VALUE HERE, because an arm LABEL kept outside the
+    # artifact is an assumption about which env var was set when this process started. Measured
+    # 2026-09-12: a 6-pass temperature experiment lost every pass to a filename error, and the one
+    # surviving file could only be assigned to an arm by MTIME ORDERING -- the data itself did not
+    # say. compaction records threshold_tokens and the tool filter records tool_surface.exposed,
+    # and both of those let an inert knob be told apart from a genuine null result; temperature had
+    # no such field. `temperature` is read off the RESOLVED Settings (what actually took effect),
+    # not off the env string (what was requested).
+    knobs = {
+        "temperature": getattr(getattr(agent, "settings", None), "temperature", None),
+        "compact_fraction": os.environ.get("ZBENCH_COMPACT_FRACTION"),
+        "tool_deny": os.environ.get("ZBENCH_TOOL_DENY"),
+        "rules_root": os.environ.get("ZBENCH_RULES_ROOT"),
+    }
 
     err = None
     stop_reason = iterations = routed_category = routed_escalated = degraded = None
     turn_error = None
     turn_cost = turn_tokens = 0
+    tool_calls: dict = {}
+    tool_errors = 0
+    trace_events: dict = {}
+    trace_interventions: dict = {}
     t0 = time.perf_counter()
     try:
         result = agent.run_turn(spec["prompt"])
@@ -208,6 +258,35 @@ def run(task_dir: Path) -> int:
         turn_error = result.error  # TurnResult.error: the provider/loop error detail behind stop_reason
         turn_cost = result.usage.cost_usd
         turn_tokens = result.usage.total_tokens
+        # TurnResult already carries three signals this bench used to throw away: WHICH tools
+        # were called (assistant_messages -> ToolUseBlock.name), which RESULTS errored, and the
+        # engine's own decision trace (every gate/recovery intervention it fired, empty on a
+        # clean turn). Recording what the engine already reports beats bolting on more probes,
+        # and it makes "which robustness paths actually ran?" answerable natively rather than
+        # by monkeypatch. Tool-name counts also answer whether the 25-tool / 6,735-token schema
+        # surface is earning its place on a small model -- nothing measured that before.
+        counts: collections.Counter = collections.Counter()
+        for msg in result.assistant_messages:
+            for blk in msg.blocks:
+                if getattr(blk, "type", None) == "tool_use":
+                    counts[blk.name] += 1
+        tool_calls = dict(counts.most_common())
+        tool_errors = sum(1 for r in result.tool_results if r.is_error)
+        trace_events = dict(collections.Counter(e.kind for e in result.trace.events).most_common())
+        # An "intervention" event's IDENTITY lives in its payload, not its kind: TurnTrace.note
+        # is `note("intervention", "...", kind="doom_loop")`, where the leading positional is the
+        # EVENT kind and the keyword `kind` lands in `data`. Counting only e.kind therefore
+        # reports `intervention: 5` while saying nothing about WHICH five gates fired -- and
+        # "which robustness paths ran?" is the entire question this recording exists to answer.
+        # Measured 2026-09-11 on 04-todo-cli: intervention=5 beside compaction fired=3, leaving
+        # two interventions unidentifiable at exactly the moment a failure needed explaining.
+        trace_interventions = dict(
+            collections.Counter(
+                (e.data or {}).get("kind") or (e.detail or "?")[:40]
+                for e in result.trace.events
+                if e.kind == "intervention"
+            ).most_common()
+        )
     except Exception as e:  # noqa: BLE001 - a crash is a result (a bug to file), not a runner failure
         err = f"{type(e).__name__}: {e}"
     elapsed = time.perf_counter() - t0
@@ -248,6 +327,13 @@ def run(task_dir: Path) -> int:
         "turn_cost_usd": round(turn_cost, 6),
         "turn_tokens": turn_tokens,
         **snap,
+        "compaction": compaction,
+        "tool_surface": tool_surface,
+        "knobs": knobs,
+        "tool_calls": tool_calls,
+        "tool_errors": tool_errors,
+        "trace_events": trace_events,
+        "trace_interventions": trace_interventions,
         "verify_rc": verify_rc,
         "verify_out": verify_out,
         "error": err,
@@ -261,7 +347,99 @@ def run(task_dir: Path) -> int:
     return 0
 
 
+def _instrument_compaction() -> dict:
+    """Record what the compactor SAW on every check, so a threshold that NEVER TRIPS is visible.
+
+    ``enable_compaction=True`` is set honestly, a ``Compactor`` is attached honestly, and
+    ``_maybe_compact()`` runs before every provider call honestly -- and none of that is
+    evidence the compaction path ever EXECUTED. ``should_compact`` fires at
+    ``threshold_fraction`` (0.8) of the window, and every ``_podenv*.sh`` slot declares
+    ``context_window: 131072``, so the threshold is 104,857 tokens on all three pod variants
+    (baseline 3.6-35b, weak 3.8-27b, older 3.5-35b alike). The hardest task in this suite
+    (``05-ledger``) peaks near 52k -- HALF the threshold. So every pass measured so far
+    returned False on every call, and a compaction path that never runs reports
+    byte-identically to one that works perfectly.
+
+    Peak figures are from ``weak-pass-{1,2}.json`` -- 2 passes x 10 tasks on
+    ``zds-qwen3.8-27b`` -- derived by fitting ``input(i) = floor + k*i`` to the per-task
+    billed prompt totals, NOT read off a per-call record (the bench persists no transcript,
+    so no per-call context size exists for any prior run; that is what this probe adds).
+
+    That matters most for exactly the models this bench exists to compare. The threshold is a
+    FRACTION of the window, so a 32,768-window model compacts at 26,214 -- which
+    ``04-todo-cli`` (23-33k) and ``05-ledger`` (32-52k) both cross. ``trim_tail``, ``_split_index``,
+    ``_adopt_compacted`` and the summarizer call would first execute on the smallest models,
+    having never been exercised by a single benchmark run.
+
+    Reports ``peak_context_tokens`` beside ``fired``: the peak alone cannot say whether the
+    mechanism is healthy or dead, and ``fired: 0`` alone cannot say whether the context stayed
+    small or the check is broken. The pair is readable; either number alone is not.
+
+    Calls the ORIGINAL for the verdict rather than re-deriving ``n > threshold`` here -- a
+    duplicated predicate would drift from the engine's and report a confident wrong "never
+    fired". ``count_tokens`` is chars/4 (a local string op, no API call), so counting a second
+    time for the peak costs nothing measurable.
+    """
+    from zakcode.agent.compact import Compactor
+
+    stats: dict = {
+        "checks": 0,
+        "fired": 0,
+        "peak_context_tokens": 0,
+        "threshold_tokens": None,
+        "context_window": None,
+    }
+    original = Compactor.should_compact
+
+    def probe(self, messages, *, context_window, count_tokens):
+        verdict = original(
+            self, messages, context_window=context_window, count_tokens=count_tokens
+        )
+        stats["checks"] += 1
+        stats["context_window"] = context_window
+        if context_window:
+            stats["threshold_tokens"] = int(context_window * self.config.threshold_fraction)
+        stats["peak_context_tokens"] = max(stats["peak_context_tokens"], count_tokens(messages))
+        if verdict:
+            stats["fired"] += 1
+        return verdict
+
+    Compactor.should_compact = probe
+    return stats
+
+
+def _enable_engine_warnings() -> None:
+    """Route the engine's WARNING log records to stderr, so the bench can SEE them.
+
+    ``zakcode/__init__`` installs a ``NullHandler`` on the package logger -- correct library
+    hygiene, and it also means ``logging.lastResort`` never fires, because lastResort only
+    engages when NO handler is found anywhere in the chain. A NullHandler counts as one. So
+    ``loop.py``'s ``logger.warning("provider rejected a malformed tool call; retrying ...")``
+    -- and its rate-limit and timeout siblings -- were emitted correctly and went NOWHERE in
+    every bench run this file has ever driven.
+
+    Measured 2026-09-11: a bare ``logger.warning`` on a fresh interpreter DOES reach stderr
+    via lastResort; the same call after ``import zakcode`` does not. The package logger
+    propagates (``propagate=True``), so a root handler receives the record past the
+    NullHandler -- which is what this installs.
+
+    Why it matters: those warnings are the ONLY signal that a provider retry, a malformed
+    tool call, or a rate limit occurred. None of them reach ``TurnResult`` -- a successful
+    retry ends the turn ``completed`` with ``degraded=False`` and ``error=""`` -- so with the
+    log swallowed, a run that fought through three malformed tool calls is byte-identical to
+    a clean one in the report. That is the hazard the suite exists to detect, in the suite.
+    """
+    import logging
+
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="[engine] %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
 def main(argv: list[str]) -> int:
+    _enable_engine_warnings()
     args = [a for a in argv if a != "--preflight"]
     if not args:
         print("usage: run_task.py [--preflight] <task_dir>", file=sys.stderr)

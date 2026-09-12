@@ -31,22 +31,59 @@ def discover(filters: list[str]) -> list[Path]:
 
 
 def run_one(task_dir: Path) -> dict:
-    """Run one task in a child process; parse its JSON report from stdout."""
-    proc = subprocess.run(
-        [sys.executable, str(BENCH / "run_task.py"), str(task_dir)],
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )
-    out = proc.stdout.strip()
+    """Run one task in a child process; parse its JSON report from stdout.
+
+    A per-task TIMEOUT is a RESULT, not a runner crash. ``subprocess.run(timeout=...)``
+    raises ``TimeoutExpired``, and this function used to let it propagate: it surfaced from
+    ``fut.result()`` in main() and killed the ENTIRE pass -- no rows printed, no results JSON
+    written, nine finished tasks discarded. Measured 2026-09-11: ``03-lru`` exceeded 900s on
+    ``zds-qwen3.5-35b`` (it takes 261-614s on ``zds-qwen3.6-35b``), and a 10-task pass
+    returned literally nothing.
+
+    That failure mode is worst exactly where the suite is most needed. "Too slow to finish"
+    is the signal a weaker or cheaper model emits FIRST -- before any wrong answer -- so a
+    harness that converts it into a total loss cannot measure the models it exists to
+    compare. Returning a row keeps the other nine tasks and makes the timeout countable.
+    """
     try:
-        return json.loads(out)
+        proc = subprocess.run(
+            [sys.executable, str(BENCH / "run_task.py"), str(task_dir)],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "id": task_dir.name,
+            "success": False,
+            "stop_reason": "runner_timeout",
+            "error": f"task exceeded the {exc.timeout:.0f}s per-task cap",
+            "elapsed_s": exc.timeout,
+        }
+    out = proc.stdout.strip()
+    # The child's stderr carries the ENGINE's WARNING records -- provider retries, malformed
+    # tool calls, rate limits (run_task._enable_engine_warnings routes them there). None of
+    # those reach TurnResult: a successful retry ends the turn `completed` with
+    # `degraded=False` and `error=""`. This function captured stderr and then referenced it
+    # ONLY in the parse-error branch below, so on every SUCCESSFUL task it was discarded --
+    # and a turn that fought through three malformed tool calls reported byte-identically to
+    # a clean one. Attach them to the report instead, so they land in the results JSON and
+    # can be counted.
+    engine_warnings = [ln for ln in proc.stderr.splitlines() if ln.startswith("[engine] ")]
+
+    def _with_warnings(rep: dict) -> dict:
+        if engine_warnings:
+            rep["engine_warnings"] = engine_warnings
+        return rep
+
+    try:
+        return _with_warnings(json.loads(out))
     except json.JSONDecodeError:
         # Recover the last balanced {...} block if stdout carried extra noise.
         start = out.rfind("\n{")
         if start != -1:
             try:
-                return json.loads(out[start:].strip())
+                return _with_warnings(json.loads(out[start:].strip()))
             except json.JSONDecodeError:
                 pass
         return {

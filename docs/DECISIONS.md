@@ -348,10 +348,68 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     shipped with a bench (`run_quality`, `run_bestof`) before being trusted.
   - **Safe adoption.** Seam B copies only source (size-capped), verifies in isolation, and adopts by
     diff with a TOCTOU guard — never a blind overwrite of the user's workspace.
-- **Measured:** the quality gate is a NICHE tool (neutral on a task whose failures are stalls, not
-  weak completions); **best-of-N is the win** (4/5 vs 1-big 3/5 across the suite, the edge on hard
-  tasks), so seam B deploys it where it pays. Validated live: seam B fired on a real stall, ran 3
-  isolated attempts, and adopted a verified one by diff.
+- **Measured (2026-06, on the corpus named below — see the re-measurement that follows):** the
+  quality gate is a NICHE tool (neutral on a task whose failures are stalls, not weak completions);
+  **best-of-N is the win** (4/5 vs 1-big 3/5 across the suite, the edge on hard tasks), so seam B
+  deploys it where it pays. Validated live: seam B fired on a real stall, ran 3 isolated attempts,
+  and adopted a verified one by diff.
+  *Corpus:* 5 tasks (`bench/tasks/01`–`05`; `m01`–`m05` did not exist until 2026-09-01), small =
+  `groq/qwen/qwen3-32b`, big = `openai/gpt-4o-mini`, **one pass per cell**.
+- **Re-measured 2026-09-11 — the pass-rate claim HOLDS, but its ATTRIBUTION does not, and the cost
+  premise under it is INVERTED.**
+  Both corpora are named because the populations differ, and comparing the bare rates would publish
+  a false divergence (the mistake this bullet exists to prevent).
+  *Corpus:* the same 5 tasks; big = `openai/gpt-4o-mini`, **unchanged**; small =
+  `groq/qwen/qwen3.6-27b`, a SUBSTITUTION — the original `qwen/qwen3-32b` is no longer reachable
+  from this account (`/models` omits it; a direct call returns HTTP 404 `model_not_found`), so this
+  is not a replication of the small arm. **Four passes per cell**, not one — three driven directly
+  plus a fourth through this repo's own `bench/run_bestof_suite.py` aggregator as a positive
+  control. That control is why the numbers below are right: three passes agreed on 1-big 4/5 and
+  the fourth scored 3/5, so a three-pass write-up would have reported a stable margin that is not
+  stable.
+  - **best-of-N 20/20 vs 1-big 15/20 pooled** (per pass: 5/5 vs 4/5, 4/5, 4/5, **3/5**). Best-of-N
+    passed every task in every pass. The 2026-06 margin (+1, edge on the hard task) reproduces and
+    is if anything larger, both arms having shifted as the models changed underneath.
+  - **The margin is TWO tasks, and they fail for different reasons — do not cite it as one.**
+    `gpt-4o-mini` fails `05-ledger` **0/4**, a DETERMINISTIC incapacity, not a sampling loss; it
+    fails `04-todo-cli` **3/4**, which is ordinary variance. The other three tasks are 4/4 on both
+    arms. An earlier draft of this bullet said "the entire margin is `05-ledger`" on three passes;
+    the fourth falsified it.
+  - **The margin is MODEL SUBSTITUTION, not fan-out — a fixed-model control says so.** Re-run on
+    the pod lane with BOTH arms pinned to the same model (`zds-qwen3.6-35b`; fan-out at temp 0.7,
+    single shot at temp 0.0), on `05-ledger` — the only task that varies on THAT lane:
+    all three fan-out attempts passed AND the single greedy shot passed
+    (`bestof_won_where_big_lost` = False), at 1,649s sequential against 499s — **3.3x the wall
+    clock for an identical outcome**. So what produces the bulk of the margin on the paid lane is
+    `gpt-4o-mini` FAILING `05-ledger` **0/4** while `qwen3.6-27b` passes it 4/4 — a model-choice
+    effect, not the fan-out-and-select structure this ADR credits. (The `04-todo-cli` half of the
+    margin, 3/4, is variance, which IS the regime fan-out is for — so the structure is not worth
+    nothing; it is worth roughly one flaky task in five, not the headline.) Before citing
+    best-of-N as the cause of a win,
+    run the fixed-model control; it is one task and one run of cost.
+    **Caveat: N=1 at fixed model on one task** — supporting, not conclusive. The nearest larger
+    sample is the 5-pass determinism map (4/5 single attempts on that task), which routes through
+    zakpick rather than pinning a model, so it corroborates and does not replicate.
+  - **The cost premise no longer holds.** This decision's bet is "~10 cheap calls + selection can
+    beat one big call". Pooled: **$8.949 best-of-N vs $1.512 one-big — 5.9x MORE**, and best-of-N
+    was the cheaper arm in 1 of 20 runs. A small-model fan-out is not automatically the cheap arm;
+    that depends on per-token prices that have since moved. The pass-rate finding survives, the
+    economic argument for it does not, and seam B's off-by-default posture carries more weight than
+    the text above gives it.
+  - **Oracle-first rescued nothing here: `oracle_rescued_a_win` = 0/20, judge-only = hybrid = 20/20.**
+    The "Why this shape" bullet above calls oracle-first the fix for a judge that mis-ranks. On this
+    corpus today the judge never mis-ranked. Not refuted — the `04` selection failure it was built
+    for was real — but it is currently inert, so do not cite it as an active, earning win.
+  - **Headroom is a property of the (model, task) PAIR, not of "the suite" — measure it per lane.**
+    5 passes of `run_suite.py` on the pod lane (`zds-qwen3.6-35b`) scored **49/50**, `05-ledger`
+    the only varying task (4/5): on that lane 9 of 10 tasks cannot show a difference in either
+    direction, so best-of-N has almost nothing to buy. The paid lane is NOT the same picture —
+    `gpt-4o-mini` is 0/4 on `05-ledger` and 3/4 on `04-todo-cli`. Same tasks, different lane,
+    different discriminating power. Do not carry a determinism figure across lanes (an earlier
+    draft of this bullet did exactly that). Either way the honest conclusion is the same: the
+    discriminating surface is 1–2 tasks wide, so a best-of-N spread measured here is a few
+    task-runs of evidence however many passes are stacked on it, and harder tasks — not more
+    passes — are what would make the number mean more.
 - **Consequences:** an opt-in quality layer that composes with zakpick (cheap models) and `deep_think`
   (deliberation). **Deferred:** best-of-N *plans* (seam C — low value; the HTN in `tasks.py` already
   decomposes); a wired cost-fraction cap (today bounded by `best_of_attempts` + the per-turn budget);
@@ -6344,3 +6402,497 @@ Six mutations were run against the suite and all six went red on the intended te
 merely-seen entities, returning the standing set instead of the event, ignoring the version
 stamp, re-deriving `discovered` instead of trusting the vessel's flag, dropping the note cap, and
 removing the fail-open guard.
+
+## ADR-0146: The bench validates the engine on models that never need it
+
+Across **20 real task-runs** on this box (`weak-pass-1`, `weak-pass-2` — 2 passes x 10 tasks on
+`zds-qwen3.8-27b`), not one of the engine's robustness mechanisms executed:
+
+```
+compaction (should_compact fired)        0        threshold 104,857 vs ~52k peak
+malformed-tool-call retry                0        (185 agent turns, positive-controlled)
+provider retry / degraded                0 real   1 forced via ZAKCODE_REQUEST_TIMEOUT=1.0
+stop_reason != "completed"               0 real   same forced run
+```
+
+Every one of those zeros reads as a clean bill of health and none of them is one. A compaction
+path that never runs reports byte-identically to a compaction path that works perfectly, and the
+suite has no way to tell the two apart. `enable_compaction=True` is set honestly in
+`bench/run_task.py`, a `Compactor` is attached honestly, and `_maybe_compact()` is called before
+every provider call honestly — and `should_compact` has returned `False` on every call of every
+pass ever run here.
+
+The arithmetic is not close. `threshold_fraction` is 0.8 and every `_podenv*.sh` slot declares
+`"context_window":131072`, so the threshold is **104,857 tokens** on all three variants (baseline
+3.6-35b, weak 3.8-27b, older 3.5-35b alike). The hardest task in the suite, `05-ledger`, peaks
+near **52k** — half of it. Nothing in the suite gets within a factor of two of firing.
+
+**Why this is the campaign's problem and not a curiosity.** The threshold is a FRACTION of the
+window, so it scales down with the model. A 32,768-window model compacts at **26,214** — which
+`04-todo-cli` (23-33k) and `05-ledger` (32-52k) both cross. `trim_tail`, `_split_index`,
+`_adopt_compacted`, `_fire_pre_compact` and the summarizer call would therefore first execute on
+the smallest models in the fleet, having never been exercised by a single benchmark run. The
+generalisation is worse than the instance: the engine's robustness machinery exists precisely for
+weak models, a strong model never triggers it, and the bench runs strong models. **The suite is
+blindest exactly where the campaign aims.** It also explains why two attempts to find
+engine-vs-compliance "flips" came back confounded — the engine-bound behaviours under test were
+never entering their recovery paths at all.
+
+**What shipped.** `_instrument_compaction()` wraps `Compactor.should_compact` and records
+`peak_context_tokens` BESIDE `fired`, because neither number is readable alone: a peak cannot say
+whether the mechanism is healthy or dead, and `fired: 0` cannot say whether the context stayed
+small or the check is broken. The probe calls the ORIGINAL for its verdict rather than
+re-deriving `n > threshold` — a duplicated predicate drifts from the engine's and then reports a
+confident wrong "never fired", which is this ADR's own failure mode turned on its instrument.
+Positive control, no provider calls: the same injected 50k context returns `False` at a 131,072
+window and `True` at 32,768, `checks=2 fired=1 peak=50,000`.
+
+**What this does NOT claim.** It does not claim the compaction machinery is broken. It claims the
+machinery is UNMEASURED, and that a mechanism which never ran is evidence of neither health nor
+defect. N is 20 real runs, one model family, one box. And the ~52k peak is a FIT
+(`input(i) = floor + k*i` against billed per-task prompt totals), not a per-call reading — the
+bench persists no transcript, so no prior run has a per-call context size at all. That absence is
+the reason the probe exists.
+
+**Pre-registered next** (`bench/results/compaction-window-map.log`): hold the model fixed at
+`zds-qwen3.6-35b` and drop the declared window 131072 -> 32768, so the threshold falls to 26,214
+and the existing tasks cross it. `resolve_context_window` is explicit that "the operator's number
+wins over the server's", so this is supported configuration; the server still serves 131072 and
+only the engine's belief changes. Holding the model fixed is the whole design — any failure is
+then attributable to the MECHANISM rather than to model weakness, which is the confound that
+wrecked the two prior attempts. The five m-tasks (~10k peak) are the negative control and must
+NOT compact; `compaction.checks > 0` on every task is the in-run positive control, because a
+control that rides inside the measured run rules out the instrument breaking between control and
+measurement, and a pre-flight one cannot.
+
+**One more count worth recording, because it is this ADR's thesis applied to its own author.**
+The first tally of this evidence said 41 task-runs. It was 21. The glob that produced it swept
+`bench/results/*.json` plus `_stale-2a/*.json`, and `_stale-2a` holds two byte-identical copies of
+`weak-pass-2` (md5 `c7e18ef93d55774e7878ab8b2ffd9050`) — the stale-artifact fabrication
+quarantined one step earlier in the same session, readmitted by a wider glob and double-counting
+20 rows. Quarantining bad data does not protect a later count that reaches past the quarantine.
+
+**Measured 2026-09-11, same day, on `zds-qwen3.5-35b` (older-pass-2, all 10 tasks instrumented).**
+The peaks above were a FIT; these are readings, and they change one number and confirm the rest.
+
+```
+task              n   total_in   FITTED peak   MEASURED peak   fit error   floor share
+01-wordfreq       8    101,383        15,564          14,369        +8%         70.7%
+02-median-bug     6     59,894        10,715          10,626        +1%         89.7%
+03-lru            8    113,006        18,147          17,245        +5%         63.4%
+04-todo-cli      17    344,797        30,350          30,147        +1%         44.2%
+05-ledger        17    318,261        27,401          27,726        -1%         47.8%
+m01/m03/m05     3-4  28.2k-38.6k    9,628-10,060    9,466-9,941   +1% to +2%  92.8-95.2%
+```
+
+Three things follow. **The fit method is sound** — within +1% to +8%, mostly +1%, so every earlier
+fitted peak in this document is trustworthy. **The ~52k figure is the top of a range, not a typical
+value**: `05-ledger`'s peak is run-dependent across 27,726–51,808, consistent with the ~40%
+input-token noise measured for deep-code tasks. Cite the range. **The conclusion is unchanged and
+strengthened** — even the 51,808 maximum is half the 104,857 threshold, and the typical ~28–30k is
+under a third of it. `fired` was 0 on all 20 instrumented task-runs, with `checks` equal to
+iterations+1 on every one, so the in-run positive control held throughout: the probe was live
+inside the measured run, not merely before it.
+
+The floor-share column also explains, mechanically, which tasks make good instruments. A task that
+is 93% fixed prompt floor reproduces to ~0.1%; one that is 44% floor swings ~40%. Precision here is
+not a property of the task's difficulty but of how much of it is the byte-identical prefix.
+
+**And the experiment this ADR pre-registered was redesigned before it ran, because it was
+confounded.** Shrinking the declared context window moves `_window()`, which feeds three consumers,
+not one: the compaction threshold (0.8x), the seam clamp in `_clamp_result`
+(`window * 0.25 * 3` chars, so 98,304 -> 24,576 — every tool result cut 4x smaller), and
+`_refuse_oversized_body`. A failure under that arm would have been unattributable, which is the
+exact defect that wrecked the two prior attempts to compare engine against model behaviour. The
+replacement moves `Compactor.config.threshold_fraction` on the FULL window instead: one variable,
+the clamp untouched. Set from the measured peaks rather than the fitted ones — at 0.15 the
+threshold is 19,660, which sits 1.8x above the largest m-task peak (10,714) and 1.4-1.5x below
+`04-todo-cli` (30,147) and `05-ledger` (27,726). The first draft used 0.2, where `05-ledger`'s
+margin was 5.8% against a metric that varies by 40% — a positive arm that might simply not fire.
+
+**PRODUCTION CONFIRMATION — measured on a real deployment 2026-09-12, and it is the strongest
+evidence in this ADR because it could not come from the bench.** This ADR's claim is a *negative*
+about the instrument: the bench cannot see the compaction path. A negative about coverage is only
+as good as the other side of it, and the other side is a deployment that exercises the path. Coach
+(`zc-03`, `/opt/coach-mind`) has a 1,174-transcript corpus, and **64 tool results carry
+`[tool output elided at compaction`** — the marker `Compactor.elision_note` writes and nothing else
+produces. **Compaction fires routinely in production while firing zero times in 20 instrumented
+bench runs.** The blindness is not hypothetical.
+
+Two disciplines this measurement had to obey, both of which changed what it could claim. The
+aggregates were computed ON THE BOX and only counts crossed the wire — coach carries third-party
+health content that must never leave it. And the population was checked before any rate: of 10,437
+records, 5,310 are real `/opt/coach-mind` usage and **5,021 (~48%) are pytest residue**, so every
+count over the whole corpus is about half test traffic. That is sufficient for the EXISTENCE claim
+above (one genuine elision would be) and insufficient for any rate, so no rate is stated here.
+
+**And the retraction that had to precede it.** I recorded earlier in this campaign that coach was
+unreachable, because `/opt/coach-mind` is absent on this box. That was a single signal about the
+WRONG box, never corroborated against the host the notes name. zc-03 answers, and the path is
+there. A negative conclusion from one signal — asserted while writing the guardrails about exactly
+that — cost this ADR its confirming evidence for most of a campaign.
+
+
+## ADR-0147: Three micro-tasks are the only instrument here with enough precision to see an engine change
+
+The suite's binary metric is saturated. Three model generations now pass essentially everything:
+
+```
+zds-qwen3.6-35b  (baseline, determinism map, 5 passes)   49/50
+zds-qwen3.8-27b  (weak arm, 2 passes)                    20/20
+zds-qwen3.5-35b  (older arm, 2 passes)                   20/20
+```
+
+A suite where everything passes cannot tell whether a zakcode change helped. That is not a
+complaint about task difficulty — it is a statement that PASS/FAIL has no headroom left on this
+model family, so the campaign's actual question ("did the engine get better?") is unanswerable
+through it. The obvious remedy, harder tasks, answers a different question: harder tasks
+discriminate MODELS, and this campaign is about the ENGINE.
+
+The continuous metrics were never saturated, and nobody had measured their noise. Two passes of
+one model on one task set give the floor directly:
+
+```
+metric            median run-to-run swing   max
+iterations                   8%             29%
+input tokens                19%             52%
+wall-clock elapsed          31%            141%
+```
+
+**Wall-clock is the worst signal in the suite** — which matters, because it is the intuitive one
+and it is what an earlier, now-falsified conclusion ("this model fails by not finishing") rested
+on. The cleanest demonstration came later: in the compaction experiment, `m03-minimal-diff` took
+**7.7x** its control wall-clock (13.6s -> 104.3s) while its iterations and input tokens were
+**identical** (4/4, -0.6%). The agent's behaviour did not change at all; only pod scheduling did.
+
+**The instrument is three tasks.** `m01-stale-doc-negative`, `m03-minimal-diff` and
+`m05-read-before-edit` hold identical iteration counts and 0.1-0.6% input-token spread across BOTH
+model generations and every pass measured:
+
+```
+task                     iterations        input tokens                spread
+m01-stale-doc-negative    4 / 4 / 4    38,717 / 38,662 / 38,610         0.3%
+m03-minimal-diff          4 / 4 / 4    38,068 / 38,110 / 37,889         0.6%
+m05-read-before-edit      3 / 3 / 3    28,799 / 28,820 / 28,786         0.1%
+```
+
+`m02` (7/7/8, 15.2%) and `m04` (4/3/4, 28.1%) are NOT in it — the core is three tasks, not five,
+and the boundary was measured rather than assumed.
+
+**Why they are precise, which is also the limit on what they can measure.** The fixed prompt floor
+is 8,956 tokens per iteration (system prompt 2,221 + tool schemas 6,735), byte-identical every
+turn. It is 92.8-95.2% of an m-task and only 44-48% of a deep-code task. Precision here is a
+property of PREFIX SHARE, not of difficulty or of the task being "easy". So the triad is a
+high-precision instrument for the FIXED PROMPT SURFACE — a change to the system prompt or the tool
+schemas shows up immediately and unambiguously — and a POOR instrument for agent behaviour, which
+lives in the small variable remainder. Scope any claim made with it accordingly.
+
+**Second use, found by accident and worth more than the first.** Run the triad inside any
+experiment as an in-run comparability control. In the compaction experiment (`threshold_fraction`
+0.15 against a matched control) the triad returned 4/4, 4/4, 3/3 iterations at -0.5%, -0.6%, -0.1%
+tokens with `fired: 0` as predicted — establishing that the arm was comparable to its control
+BEFORE any of its differences were interpreted, and doing so in about 40 seconds of pod time. It
+also drew the boundary correctly in the same run: `m04` diverged (3->4 iterations, +33.9%),
+exactly as its cross-model spread predicted it would.
+
+The practical shape: `m05` costs ~20s at ~0.1% noise; `05-ledger` costs ~520s at ~40% noise. For
+the quantity this campaign actually targets, that is 26x faster and roughly 300x more precise.
+
+**What this does NOT give us.** It does not measure capability, correctness, or reasoning quality —
+a change that made the agent smarter would be invisible here, and a change that made it dumber
+while shrinking the prompt would look like an improvement. It is one model family, one box, and
+its determinism is measured at the serving stack's DEFAULT sampling temperature (`temperature`
+defaults to `None`, meaning "send none"; the bench never set one), so even these numbers are a sum
+of engine and sampling determinism that has not yet been partitioned.
+
+## ADR-0148: Compaction trades context for re-work, and the exchange rate is 25% more iterations and 10x the variance
+
+ADR-0146 established that compaction had never fired in any benchmark run. Forcing it to fire —
+by moving `Compactor.config.threshold_fraction` to 0.15 on the full window, so the threshold falls
+to 19,660 while the seam clamp and the oversized-body check stay where they are — produced a
+result worth shipping, and a false alarm worth recording.
+
+**The false alarm first, because the discipline is the point.** The first pass came back 9/10 with
+`04-todo-cli` failing verification (`persistence broken: reloaded ids = [3], expected [1, 3]`),
+clean stop, not degraded, not a timeout. It had compacted the most of any task and was 9/9
+historically. That is a tempting mechanism finding. The pre-registered decision rule said
+otherwise, and an interleaved A/B replication (3 runs per arm, alternating so pod-load drift hit
+both equally) came back **6/6 PASS**. Arm A finished 1 fail in 4, arm B 0 in 4 — the rule's
+"report it as flake and retract" branch, fired exactly as written before the data existed.
+ADR-0144 had already recorded `05-ledger` flipping once and resolving to noise; the same shape
+recurred and the pre-registration is what kept it from being published as a defect.
+
+**What the replication actually found.** Same model, same task, only the threshold differs:
+
+```
+ARM A (threshold  19,660)   iterations 20, 29, 16, 21   mean 21.5   spread  60%   fired 5,7,1,3
+ARM B (threshold 104,857)   iterations 17, 18, 17, 17   mean 17.2   spread   6%   fired 0,0,0,0
+```
+
+Compaction raises mean iterations **+25%** and iteration spread **10.4x**. It also does not reduce
+peak context — max peak 30,684 (A) against 30,147 (B) — because the peak is set *between* checks by
+a single large tool result, which the seam clamp bounds and compaction does not. It fired up to
+seven times and bought no reduction in the quantity it looks like it should control.
+
+**The mechanism is measured, and then confirmed in the source.** Re-reads track compactions:
+
+```
+fired  0, 0, 0  ->  read_file  3, 3, 3      (the zero-compaction baseline is EXACTLY 3, 3/3 runs)
+fired  1        ->  read_file  3
+fired  3        ->  read_file  4
+fired  5        ->  read_file  6
+fired  7        ->  read_file 11
+                    Pearson r = 0.925, n=7, perfectly monotone
+```
+
+`_elidable` matches any `ToolResultBlock` whose output exceeds `ELIDE_MIN_CHARS` — a file read's
+contents are exactly that — and `elision_note` leaves behind the stub *"… characters dropped;
+re-run the tool if you need it"*. The agent does what the stub says. So this is **designed
+behaviour, not a defect**: compaction trades transcript space for re-work. What had never been
+measured is the exchange rate, and it is not cheap. Attribution is clean because
+`trace_interventions` shows the only gate differing between arms is `compaction` itself —
+`suite_scope_gate` and `plan_review` fire identically in both.
+
+**Why this is the campaign's problem.** At the shipped 0.8 on a 131,072 window, compaction never
+fires and none of this is paid. On a small-window model it binds by construction: 0.8 of 32,768 is
+26,214, which `04-todo-cli` and `05-ledger` both exceed. So every cost above is a cost that
+appears *only* on the models this campaign targets — and a 6% -> 60% jump in iteration spread is
+the direct opposite of "more deterministic", which is the stated goal.
+
+The remedy is design work rather than a one-line change, and this ADR deliberately stops short of
+prescribing one. Two directions worth measuring: preserve the most recent read of each distinct
+file across a compaction, or give the elision stub enough identity (path, size, a content hash)
+that a re-read is visibly redundant to the model. Either would be measurable against the numbers
+above with the ADR-0147 triad as the in-run comparability control.
+
+**Limits.** One task, one model, one box, four runs per arm. The `r = 0.925` rests on 7 points
+with three tied at zero, so it is corroboration for a mechanism independently confirmed in the
+source, not a result standing on its own. Pass rate did **not** drop in arm A once the flake was
+ruled out (3/4, and the 4th ruled flake by pre-registered rule), so this is a COST finding, not a
+correctness finding — compaction did not make the agent wrong, it made it slower and less
+predictable.
+
+**One correction to ADR-0146's follow-up.** A grep for `note("intervention", ..., kind=...)`
+enumerated 12 intervention kinds. It missed at least two: `suite_scope_gate` and `plan_review` fire
+in every run of both arms and match no grep hit, so they are emitted through a call shape the
+pattern did not cover. The recorded `trace_interventions` is the reliable enumeration; the grep was
+not, and a catalog built from it would have understated the engine's gate surface.
+
+**Correction, 2026-09-11, from the first experiment that used this instrument.** ADR-0147 says the
+triad holds "identical iteration counts". Measured over ten runs of `m05-read-before-edit`, that is
+**9/10, not 10/10** — one control run took 4 iterations (38,422 tokens) where every other run took
+3 (~28,750). The rate is not the important part; the consequence is. Because these tasks are ~93%
+fixed prompt floor, **one extra iteration moves TOTAL tokens by ~33%**, which dwarfs the 0.1-0.6%
+spread this ADR advertises.
+
+So the quantity the triad measures precisely is **tokens PER ITERATION**, not total tokens, and any
+measurement built on it must divide by the iteration count rather than compare totals. This is not
+hypothetical: the tool-surface experiment's first single-run-per-arm comparison reported -58.7%,
+and the correct per-iteration figure over three runs per arm is **-44.3%** — a 14-point error
+produced entirely by an iteration-count outlier in the control arm, in the direction that
+flattered the result.
+
+Per-iteration, the instrument performs as claimed: 9,577 / 9,583 / 9,599 (0.23% spread) against
+5,348 / 5,346 / 5,320 (0.52% spread), i.e. a 44% effect read against a 0.3% noise floor.
+
+## ADR-0149: 58% of the advertised tool surface was never called, and removing it is a 44% token cut where the prompt floor dominates
+
+Across 22 recorded task-runs the agent called **eight** distinct tools: `update_plan` 62,
+`write_file` 40, `bash` 36, `read_file` 36, `edit_file` 16, `glob` 6, `list_dir` 6, `grep` 2. The
+other seventeen — office/document, image, web, `plan_recall`, `deep_think`, `schedule_wakeup`,
+`await_user`, `powershell`, `secret_names` — were never called once, and cost **3,907 tokens: 58%
+of the 6,732-token tool schema surface and 44% of the whole 8,956-token fixed prompt floor.**
+
+That floor is 6.8% of a 131,072-token window and **27.3% of a 32,768 one**, so it is a burden that
+scales badly toward exactly the models this campaign targets.
+
+**`update_plan` is not the fat, against expectation.** It is the single most expensive schema at
+1,549 tokens (23% of the surface) and it is the most-called tool in the corpus (62 calls). The
+cheap-looking target earns its cost; measuring before trimming is what kept it.
+
+**Result.** Denying the seventeen via `ToolRegistry.set_exposure_filter` — documented
+least-privilege, already shipped, operator-set, so this is configuration rather than a code change
+— over a full suite pass plus three interleaved runs per arm on `m05`:
+
+```
+10/10 PASS, and NOT ONE denied tool was ever requested (tool_calls across all ten tasks
+contains only the eight survivors, so the model never even tried to reach for one).
+
+per-iteration input tokens, rows whose ITERATION COUNT was unchanged (no accumulation confound):
+  02-median-bug      9,982 ->  5,720   -43%    floor share 89.7%
+  m01                9,646 ->  5,376   -44%    floor share 92.8%
+  m02                9,783 ->  5,538   -43%    floor share 91.5%
+  m04                9,403 ->  5,141   -45%    floor share 95.2%
+  (m05, 3 runs/arm:  9,586 ->  5,338   -44%    spread 0.23% vs 0.52%)
+```
+
+**The saving tracks FLOOR SHARE, and that is the load-bearing finding — not the 44%.**
+
+```
+floor share 89.7-95.2%  ->  -43% to -45%
+floor share 70.7%       ->  -37%
+floor share 63.4%       ->  -25%
+floor share 47.8%       ->  +2%     (05-ledger, the longest task: NO benefit at all)
+```
+
+A fixed subtraction from a variable total shrinks as the variable part grows. So the trim pays where
+the byte-identical prefix dominates — short tasks — and pays **nothing** on the longest one, where
+accumulated tool output is ~52% of each prompt. `04-todo-cli` (-51% at 44.2% floor share) is the
+lone exception and is confounded: its iterations fell 17 -> 15, which reduced accumulation and
+inflated the apparent per-iteration saving.
+
+**This retires a claim I had been making.** The argument that a small model mis-selects among 25
+mostly-irrelevant tools, and would choose better among 8, is **unsupported**. Deep-task iterations
+went 8->10, 8->13, 17->15, 17->18 — three of four UP with fewer tools. Deep-task iteration counts
+carry 24-60% noise so N=1 cannot resolve it, but there is no evidence for the hypothesis and a hint
+against it. Dropped until measured properly.
+
+**Scope, and the two caveats that must travel with any citation.** This is a CODING benchmark of ten
+tasks; a user asking for a chart or a web lookup needs precisely the tools unused here, which is why
+`set_exposure_filter` is operator-set and static rather than automatic. Nothing here argues zakcode
+should ship fewer tools. And the COST saving is serving-stack-dependent: this pod cache-reads 87-90%
+of input, so 44% fewer input tokens is largely 44% fewer *cached* tokens. **Window pressure is not
+cache-dependent** — on a 32,768-token model the floor falls from 27.3% of the window to 15.4%
+whatever the cache does, and that is the claim worth carrying.
+
+**Where this leaves the small-model lever.** Two measurements now bracket it. The prompt floor is
+trimmable by 44% and that helps short tasks only (this ADR). The long tasks are dominated by
+accumulated tool output, which is compaction's job, and compaction costs +25% iterations and 10x
+iteration variance when it binds (ADR-0148). So for the hardest small-model cases the tool surface
+is **not** the lever — context accumulation is, and the mechanism that manages it is the expensive
+one.
+
+**FALSIFIED AS A PRODUCTION RECOMMENDATION, measured on coach 2026-09-12.** The caveat above says a
+user asking for a chart or a web lookup needs precisely the tools unused here. That was reasoning;
+it is now a reading. Coach called **20 distinct tools, not 8, and SEVEN of the seventeen I proposed
+denying are among them**: `web_fetch` 48, `schedule_wakeup` 28, `web_search` 26, `save_image` 4,
+`await_user` 2, `secret_names` 1, `deep_think` 1 — ~110 calls against a surface this ADR measured as
+dead. Applying this trim to coach would break it.
+
+Two things that does NOT overturn. The measurement stands exactly as taken: on a ten-task coding
+suite those seventeen are dead weight and removing them cuts the per-iteration prompt 43-45% where
+the fixed floor dominates. And the remedy was already the right shape — `set_exposure_filter` is
+operator-set and per-deployment precisely so a coding harness and an assistant can expose different
+surfaces. What changes is the caveat's standing: it stops being a hedge a reader may skip and
+becomes the measured reason the trim must not be a default.
+
+A third reading makes the scope gap sharper than "different workload". Coach also calls tools that
+are **not in the bench's 25 at all** — `echo` 297, `use_skill` 208, `read` 33, `task` 4 — because
+skills are enabled there. A deny-list computed against the bench registry does not even *describe*
+coach's tool surface, let alone prune it correctly. The same population caveat as ADR-0146 applies:
+~48% of the corpus is pytest residue, so these counts support the existence claims made and no rate.
+
+
+## ADR-0150: Most of the variance this bench measures is the sampler's, not the engine's
+
+Every determinism statement made from this suite before now was about an unpartitioned quantity.
+`Settings.temperature` defaults to `None`, which means *send no temperature and let the backend use
+its own default*, and `bench/run_task.py` never set one — so every pass ever run here sampled
+stochastically, and the run-to-run variance being reported was
+
+```
+total variance  =  MODEL SAMPLING non-determinism  +  ENGINE non-determinism
+```
+
+with only the second term being something zakcode can fix. Pinning `ZAKCODE_TEMPERATURE=0` (it
+binds through pydantic's `ZAKCODE_` prefix; no code change) separates them. Three passes per arm on
+`zds-qwen3.5-35b`, with the ADR-0147 triad carried as an in-run comparability control:
+
+```
+task           pinned (temp=0)  spread  |  default (unset)  spread
+01-wordfreq      12, 12, 11        9%   |    12,  8, 10       40%
+03-lru           15, 11, 16       36%   |    17,  8, 14       69%
+04-todo-cli      17, 17, 17        0%   |    16, 17, 15       12%
+```
+
+**Most of it was the sampler.** `04-todo-cli` becomes *exactly* deterministic across three runs of
+a 17-iteration task. That variance was never zakcode's and could not have been fixed by changing
+zakcode, which is worth saying plainly: a determinism campaign measuring this number would have
+chased an irreducible quantity.
+
+**The residual is the deliverable.** With sampling held constant the spread is 9% / 36% / 0%. That
+is variance the engine owns. `03-lru`'s 36% is the actionable target, and `04-todo-cli`'s 0% proves
+the engine *can* be fully deterministic over a long task — so 36% is a defect, not a floor. This is
+the campaign's first determinism baseline; there was not one before.
+
+**V1, the comparability control, held**, which is why the cross-arm comparison is asserted rather
+than assumed: `m03` ran 4/4/4 in both arms, `m05` 3/3/3 in both, per-iteration tokens agreeing
+within 0.6%.
+
+**A tension I reported and then had to withdraw.** The first three passes showed pass rate falling
+19/21, entirely `05-ledger`, failing 2 of 3 with an identical error signature — the fingerprint of a
+reproduced greedy path. The hypothesis was attractive and consequential: pinning removes the
+accidental retry-diversity that sampling provides, so a buggy most-likely implementation reproduces
+every time, and *more determinism costs correctness*. A pre-registered focused replication (3 runs
+per arm, `05-ledger` alone) came back 6/6 PASS, leaving pinned at 4/6 and default at 6/6 — two
+failures against zero, Fisher p≈0.45. The rule's "flake clustering" branch fired.
+**H-GREEDY-BUG is unsupported and the tension is not in the data.** One repeated signature across
+two failures is equally consistent with a single flaky failure mode when four of six pass.
+
+**And a confound I did not design out, recorded because it bounds the result.** `05-ledger` is
+unresolved and must not be read either way. Passing-only spread is 45% pinned against 22% default,
+which looks like pinning hurting — but the pinned arm splits three in-suite (20, 26, 21, containing
+*both* failures) and three solo (17, 20, 17), while the default arm shows no such split (19, 17, 16
+vs 20, 19, 18). Every pinned failure and every high iteration count sits in the in-suite half, so
+co-tenancy and the pin are entangled at n=3 per cell. Within-context it is 26% vs 17% and 16% vs
+11% — directionally consistent, far too sparse to claim. **Hold co-tenancy constant as well as the
+model.** That variable was not on my list, which is the same class of omission as shrinking a
+context window that turned out to feed three consumers instead of one (ADR-0148).
+
+**What this does NOT license.** It is not an argument to change the product default. ADR-0018 chose
+`None` over a harness-wide 0.0 deliberately, calling 0.0 "fake-determinism inherited from
+local-model habits", because Gemini 2.5+ documents repetition loops below 1.0 and a field deployment
+hit exactly that. That reasoning is untouched here; nothing above measures a product outcome. The
+claim is narrower and only about measurement: **to attribute variance to the engine you must pin the
+sampler, exactly as you must hold the model fixed to attribute a failure to a mechanism.** The bench
+should pin it; the product should not.
+
+## ADR-0151: Both agents score 100% on this suite, so it cannot answer the parity question it was built for
+
+The campaign's directive is parity with Claude Code. Until 2026-09-12 that comparison had never been
+run — every measurement was zakcode against zakcode. So I ran the reference arm:
+`bench/run_claude_code.py` puts the same task prompt in the same workspace, with `--allowedTools`
+scoped to the same operations, and grades it with the task's OWN `verify.py`.
+
+```
+02-median-bug   PASS  7 turns   7.1s  $0.1531
+03-lru          PASS  5 turns  12.4s  $0.2018
+04-todo-cli     PASS  7 turns  15.8s  $0.2657
+05-ledger       PASS  7 turns  21.0s  $0.3392
+m05             PASS  5 turns   5.9s  $0.1224
+                5/5           $1.08
+```
+
+**5/5 — including `05-ledger`, the only task zakcode has ever failed.** Against zakcode's 20/20 on
+two consecutive passes and 49/50 across three model generations, that is the decision:
+
+**The suite is saturated for BOTH agents, so it cannot demonstrate parity or its absence.** This is
+not a hedge, it is a measured property of the instrument. A benchmark on which the reference agent
+also scores 100% has no resolving power between them at all: every task is answering "is this task
+easy" and none is answering "which agent is better". The saturation finding (ADR-0147) is now
+extended to the reference agent, and it is what makes the parity question unanswerable HERE rather
+than merely unanswered.
+
+**The fix is concrete and it is the only one that helps: extend the suite until Claude Code fails
+part of it.** Only from that point does a zakcode score carry information about parity. Every other
+improvement to this bench — more replicates, tighter variance, better instrumentation — buys
+precision on a quantity that is pinned at its ceiling.
+
+**The one visible gap is turns, and it is model-confounded by construction — do not cite it as an
+engine finding.** Claude Code converges in 5-7 turns where zakcode takes 3-21 iterations; on
+`05-ledger` that is 7 turns/21.0s against 16-21 iterations/~500s. That is a large gap and it cannot
+be attributed to the agent loop, because the two arms did not run the same model: Claude Code ran
+Opus 5 and zakcode ran a 35b local model. Holding the model fixed is not possible on this box —
+zakcode has no `ANTHROPIC_API_KEY`, `providers/claude_code.py` is an in-session text bridge that
+needs an injected callable rather than a headless provider, and Claude Code cannot be pointed at the
+pod. So the loop-vs-loop comparison the directive asks for is **not currently constructible here**,
+and the honest report is that sentence rather than a number.
+
+What the arm DOES establish, on top of the saturation verdict: the tasks are well-formed (an
+independent agent satisfies every `verify.py`, so no task encodes a zakcode-specific assumption),
+the verifiers are not vacuous, and `05-ledger` is hard for zakcode specifically rather than
+ambiguous in its specification — which promotes it from "flaky task" to the one genuine capability
+gap this suite has ever shown.
+
+Cost asymmetry, recorded because it is the standing argument for the local arm at all: $1.08 for
+five tasks against ~$0 on the pod.
