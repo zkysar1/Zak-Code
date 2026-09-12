@@ -1,0 +1,10 @@
+coach skills=64  with 3 queries=64  queries=192  requests=576  model=zds-qwen3.6-35b
+families>=3: 3 covering 25 skills (39%)
+FULL   112/192 = 58.3%   catalogue 36994 chars
+FIRST  95/192 = 49.5%   catalogue 14611 chars
+NAMES  43/192 = 22.4%   catalogue 1177 chars
+
+--- verdict against the pre-registered rules ---
+control OK: FULL 58.3% (VOID below 45%).
+FULL minus FIRST: +8.9%  95% CI (+3.6%, +14.6%)  excludes zero: True
+FULL minus NAMES: +35.9%  95% CI (+28.1%, +43.8%)  excludes zero: True

@@ -1,0 +1,48 @@
+PRE-REGISTRATION -- coach replication                           2026-09-12
+Written BEFORE the run. Every finding so far comes from ONE catalogue
+(ayoai-mind, 145 skills). Coach is the real deployment and the standing
+directive is to test hypotheses against it, so this asks whether the findings
+are about catalogues in general or about that one.
+
+MEASURED ON-BOX BEFORE ANY MODEL CALL (counts only crossed the wire)
+  coach: 64 skills with a description; FULL 36,930 ch (~8,649 tok),
+         FIRST 14,547 ch, NAMES 1,177 ch; 3 families of >=3 covering 25 skills
+         (39% of the catalogue); largest family 15; all 64 yield 3 queries.
+  ayoai-mind for comparison: 145 skills, 97,907 ch, 36% in >=3 families,
+         largest family 15.
+  So coach is 38% the SIZE but has HIGHER sibling density. That already
+  falsifies "the sibling ceiling is an artifact of an unusually large
+  catalogue" -- recorded here because it was measured before the arms ran.
+
+PREDICTIONS, fixed before data
+  P1 ALL ARMS SCORE HIGHER than on ayoai-mind. A 64-way choice is easier than a
+     145-way one. If they do NOT, catalogue SIZE is not the driver and something
+     about coach's skills is harder.
+  P2 NAMES STILL COLLAPSES, but by less than the 37.6pp measured on ayoai-mind:
+     64 names are more separable than 145.
+  P3 FIRST STILL LOSES TO FULL. Direction only -- the magnitude is genuinely
+     uncertain and I am not predicting it. Fewer candidates need less
+     disambiguation (argues smaller gap); higher sibling density needs more
+     (argues larger). Naming both arguments in advance so neither can be
+     retrofitted as "what I expected".
+
+DECISION RULES
+  PRIMARY: does the RETRACTION replicate? Paired bootstrap over SKILLS on
+    (FULL - FIRST), two-sided 95% CI.
+      CI excludes zero, positive -> the retraction holds on the real deployment.
+      CI includes zero -> the retraction is catalogue-specific; ADR-0155's
+        fourth addendum must be scoped to "measured on a 145-skill catalogue"
+        rather than stated generally. That is a correction I will make.
+      CI excludes zero, negative -> FIRST BEATS FULL on coach; the retraction
+        is wrong for the deployment that matters and must be revisited entirely.
+  SECONDARY: NAMES vs FULL, same machinery, for P2.
+  CONTROL: FULL must clear 45%, same floor as the TOPK run and far from any
+    observed value (guard-5645). Empty completions abort (guard-6562).
+
+METHOD CONSTRAINTS
+  Runs ON zc-03. Coach's skill text never crosses the wire; only scores do.
+  The script sources /etc/zakcode/.env on-box for pod credentials -- the key is
+  never printed, never logged, never copied.
+  Identical extraction, rendering, scoring and clustering as the 420-query
+  ayoai-mind run, so the two are directly comparable. 64 skills x 3 queries =
+  192 queries, 576 requests.
