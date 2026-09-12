@@ -411,6 +411,24 @@ class Settings(BaseSettings):
             "(reason + digest text) as JSON on stdin; None = nothing runs."
         ),
     )
+    # The ending belongs to the MIND, not to us (ADR-0047 / Vinheim ruling): this
+    # conductor decides WHEN a run ends, never WHAT the agent does at the end. When the
+    # workspace is a framework seed, naming its agent here makes the run's ending the
+    # framework's OWN graceful stop — consolidate, handoff, drop to `assistant`, IDLE —
+    # raised through the sanctioned external-caller shape (see
+    # `zakcode.session.framework_stop`). The digest turn is then redundant AND wrong: it
+    # is an injected prompt, which the ruling forbids.
+    #
+    # This is an ADDRESS, not a policy knob: without the agent name there is no session
+    # dir to signal. None = no framework stop is raised and the ending is exactly what it
+    # was before — the interrupt backstop — so a non-seed workspace is untouched.
+    run_stop_agent: str | None = Field(
+        default=None,
+        description=(
+            "Framework agent whose own graceful stop ends the run (a seed workspace's "
+            "agents/<name>/); None = raise no framework stop, interrupt as before."
+        ),
+    )
     # There is deliberately NO turn-end veto budget (removed 2026-08-25, no-knobs
     # ruling): the TURN_END seam (Claude Code's Stop hook) is structurally ALWAYS ON
     # for the main Agent loop when the workspace's adopted hooks register one, and

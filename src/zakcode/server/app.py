@@ -92,6 +92,7 @@ from zakcode.server.wire import (
     event_to_dict,
     events_schema,
 )
+from zakcode.session.framework_stop import request_framework_stop
 from zakcode.session.say_inbox import (
     busy_elsewhere,
     busy_path,
@@ -1964,6 +1965,33 @@ def create_app(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("on_run_end failed (%s: %s)", type(exc).__name__, exc)
 
+    def _framework_stop_grace() -> float:
+        """How long the mind gets to end ITSELF before the interrupt takes over.
+
+        The consolidation reserve, repurposed — see `_graceful_stop_budget`. Falls back
+        to the configured reserve when the deadlines were never armed (capless run), so
+        an explicit stop on an unbounded run still gets a real window.
+        """
+        return effective_reserve or resolved_settings.run_consolidation_reserve
+
+    async def _raise_framework_stop() -> bool:
+        """Ask the workspace's Mind to run its own graceful stop (ADR-0047).
+
+        False means "not a framework seed, or the raise failed" — the caller then keeps
+        the ending it already had. Off the event loop: the raise shells out to the
+        framework's own signal writer, and a wedged filesystem must not stall the server.
+        """
+        agent = resolved_settings.run_stop_agent
+        if not agent:
+            return False
+        try:
+            return await asyncio.to_thread(
+                request_framework_stop, resolved_settings.workspace_root, agent
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-open to the interrupt backstop
+            logger.warning("framework stop raise failed (%s: %s)", type(exc).__name__, exc)
+            return False
+
     async def _watch_turn_deadline() -> None:
         """Raise the workspace interrupt when the cap lands MID-turn.
 
@@ -1985,7 +2013,24 @@ def create_app(
             if turn_deadline is None or not inflight:
                 continue
             if time.monotonic() >= turn_deadline:
-                logger.info("run cap reached mid-turn: interrupting")
+                if await _raise_framework_stop():
+                    # The mind is now ending itself. Keep watching, but only to BOUND it:
+                    # the interrupt stops being the ending and becomes the backstop for an
+                    # overrun. A stop that lands inside its grace never sees an interrupt,
+                    # which is the whole point — an interrupted turn cannot consolidate.
+                    grace = _framework_stop_grace()
+                    logger.info(
+                        "run cap reached mid-turn: raised the mind's own stop (grace %.0fs)", grace
+                    )
+                    overrun_at = time.monotonic() + grace
+                    while time.monotonic() < overrun_at:
+                        await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
+                        if not inflight:
+                            logger.info("run cap: the mind's own stop ended the turn")
+                            return
+                    logger.warning("run cap: framework stop overran %.0fs — interrupting", grace)
+                else:
+                    logger.info("run cap reached mid-turn: interrupting")
                 request_interrupt(interrupt_path(resolved_settings.workspace_root))
                 return
 
@@ -2049,11 +2094,21 @@ def create_app(
         runs existed: an unconfigured server has no digest to write and no ending to
         report, so there is nothing to wait for.
         """
-        if not resolved_settings.run_consolidation_message and on_run_end is None:
+        if (
+            not resolved_settings.run_consolidation_message
+            and not resolved_settings.run_stop_agent
+            and on_run_end is None
+        ):
             return 0.0
+        # `run_stop_agent` earns the reserve for the same reason a digest turn does, and
+        # it is the SAME seconds: the reserve was always the budget for "the ending". It
+        # used to buy an injected recap prompt; with the ending handed back to the
+        # framework it buys the mind's own consolidation + handoff. Omitting it here
+        # would arm a graceful stop and then cancel the loop before it could finish —
+        # the severed ending, reintroduced one layer down.
         reserve = (
             resolved_settings.run_consolidation_reserve
-            if resolved_settings.run_consolidation_message
+            if (resolved_settings.run_consolidation_message or resolved_settings.run_stop_agent)
             else 0.0
         )
         return _IDLE_BEAT_SECONDS + reserve
@@ -2096,6 +2151,10 @@ def create_app(
             return {"stopping": False, "ended": True, "reason": run_stop_reason}
         if not run_stopping.is_set():
             run_stop_reason = reason
+            # A human ending the run IS the framework's /stop. Raise it before the loop
+            # winds down so the mind consolidates and hands off, rather than being
+            # cancelled mid-thought; `_graceful_stop_budget` holds the door for it.
+            await _raise_framework_stop()
             run_stopping.set()
         return {"stopping": True, "reason": run_stop_reason}
 
@@ -2108,6 +2167,10 @@ def create_app(
     app.state.consume_say_loop = _consume_say_loop
     app.state.start_consumer = _start_consumer
     app.state.stop_consumer = _stop_consumer
+    # The budget is a seam too: it decides whether an armed graceful stop is given
+    # time to finish, and a wrong 0 there is invisible from the outside — the run
+    # still ends, just without the ending.
+    app.state.graceful_stop_budget = _graceful_stop_budget
 
     return app
 
