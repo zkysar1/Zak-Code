@@ -6526,6 +6526,33 @@ records, 5,310 are real `/opt/coach-mind` usage and **5,021 (~48%) are pytest re
 count over the whole corpus is about half test traffic. That is sufficient for the EXISTENCE claim
 above (one genuine elision would be) and insufficient for any rate, so no rate is stated here.
 
+**CORRECTION, same day: the evidence above was drawn from the WRONG STORE, and the claim has been
+re-sourced.** The 1,174-file corpus is `/etc/zakcode/transcripts`, whose records carry
+`cwd` / `message` / `parentUuid` / `sessionId` — **Claude Code's** transcript format, not zakcode's.
+Marker text appearing there is at best zakcode output captured inside a Claude Code session, and
+citing it as evidence that zakcode's own compactor fired was a provenance error: the right store
+was never consulted. The re-measurement, from zakcode's OWN session store on the same box:
+
+```
+/etc/zakcode/sessions        185 files (zakcode Session records: build, last_stop_reason,
+                             permission_grants, model)   -> 2 marker files, 31 occurrences
+  of those, cwd /opt/coach-mind    134 files             -> ALL 31 occurrences
+/etc/zakcode/transcripts   1,175 files (Claude Code format)  -> 35 files, 64 occurrences
+/opt/coach-mind/.zakcode      32 files (traces)              -> 0
+```
+
+**The claim survives and its strength changes.** zakcode's compactor fired **31 times across 2 of
+134 real `/opt/coach-mind` sessions** — genuine production work, not pytest and not a sandbox —
+against zero firings in 20 instrumented bench runs. So the blindness this ADR describes is real and
+measured from both sides. What is retracted is the prevalence the original wording implied:
+"fires routinely" reads as broad, and 2 of 134 sessions is 1.5%. The correct statement is that the
+path is exercised in production and never in the bench.
+
+Worth recording as the thesis applied to itself a second time: the figure 64 was cited once and
+carried into a merged ADR without a second reading, and the re-reading was prompted only by a
+coincidence — an unrelated census returned 64 as well, which looked like double-counting. The
+coincidence was innocent; the provenance error it exposed was not.
+
 **And the retraction that had to precede it.** I recorded earlier in this campaign that coach was
 unreachable, because `/opt/coach-mind` is absent on this box. That was a single signal about the
 WRONG box, never corroborated against the host the notes name. zc-03 answers, and the path is
@@ -7026,3 +7053,50 @@ suite answer a small-model question, the ladder has to run below 64 — where th
 reproduction problem is worst — or the tasks themselves have to get harder, which is the same
 conclusion ADR-0151 reached from the other direction. Two independent routes to "the tasks are too
 easy" is the finding.
+
+## ADR-0154: The bench and production exercise nearly disjoint slices of the engine, and sixteen production turns beat the whole bench corpus
+
+ADR-0153 concluded the tasks are too easy. This ADR measures a different and larger gap in the same
+instrument: not how hard the tasks are, but **which of the engine's paths any of them touch.**
+
+Censusing every `kind="..."` the engine can emit, against every intervention recorded in the bench's
+results corpus, against a census of coach's own trace store:
+
+```
+engine can emit   : 52
+bench recorded    : 11      (after today's work; it was 7 this morning)
+production        : 13      from SIXTEEN turns
+BOTH              :  5      compaction, intent_gate, plan_first, plan_review, stuck
+PRODUCTION ONLY   :  8      plan, skill_skeleton, skill_page, skill_coverage, skill_paging,
+                            skill_sections_reopened, awaiting_user, user_only_skill
+BENCH ONLY        :  6      suite_scope_gate, silenced_gate, text_only_stall, reasoning_overflow,
+                            gate_cascade, deferral_gate
+NEITHER           : 33
+union coverage    : 19/52 = 37%
+```
+
+**Sixteen turns of real use reached more distinct paths than the entire benchmark corpus, and they
+agree on five.** The bench is not a small version of production; it is a different slice of the
+engine, and the two together still leave 63% of the intervention surface untouched.
+
+**The most-fired intervention in production has never fired in the bench.** `plan` leads coach's
+census at 13 of 64, and it does not appear once in any recorded bench run.
+
+**And the exclusion list was hiding the risk, not bounding it.** `intervention_coverage.py` marks
+`skill_*`, `awaiting_user` and `user_only_skill` as structurally unreachable — correct, because the
+bench runs `enable_skills=False` and non-interactive. That framing is a statement about this
+harness's configuration and was silently read as a statement about importance. Six of those eight
+"unreachable" kinds are live in production. An exclusion list that quarantines exactly the paths
+real users hit converts the most dangerous gap into a footnote, so the tool now takes
+`--compare <production-census>` and prints PRODUCTION ONLY as the ranked risk surface.
+
+**Population, stated because it bounds everything above.** Coach's trace store is 16 files / 407
+event records — small, so these are EXISTENCE claims and no rate is asserted. Existence is the whole
+argument here: one production firing of a path the bench never reaches is enough to show the bench
+cannot regression-test it. A larger census would sharpen the ranking, not the conclusion.
+
+**What this changes about the campaign.** "Make zakcode as good as Claude Code" has been pursued
+through a benchmark that touches 11 of 52 intervention paths and cannot separate two agents or
+three model generations. The cheapest real improvement available is not a better score — it is
+running the census against production regularly and closing the PRODUCTION ONLY list, because every
+entry there is a path that real users take and no test here defends.
