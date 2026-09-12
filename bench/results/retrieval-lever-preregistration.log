@@ -1,0 +1,69 @@
+PRE-REGISTRATION -- is RETRIEVAL RECALL the lever?              2026-09-12
+Written at 11:06, BEFORE the TOPK20 or TOPK40 arms reported. Only FULL (60.2%)
+and TOPK10 (57.6% at recall 67.6%) are known. Timestamped deliberately: this
+hypothesis is motivated by TOPK10 alone, and if TOPK20 lands first it becomes
+unfalsifiable as a prediction.
+
+THE OBSERVATION IT RESTS ON
+  TOPK10 scored 57.6% while holding the correct skill only 67.6% of the time.
+  Conditional on the answer being present, it chose correctly 85.2% of the time.
+  FULL holds the answer 100% of the time and chooses correctly 60.2%.
+  So a 10-item shortlist appears to make the model ~25 points BETTER at choosing,
+  and the only thing holding the arm down is that the retriever loses the answer
+  a third of the time.
+
+THE HYPOTHESIS
+  H-RETRIEVAL: the binding constraint on skill selection is RETRIEVER RECALL, not
+  catalogue content. Catalogue SIZE was falsified as the driver (ADR-0155 fifth
+  addendum: a 38%-size catalogue scored slightly LOWER on every arm). Description
+  SHORTENING was retracted (-8.8pp). Both attacked the catalogue. If H-RETRIEVAL
+  holds, the catalogue was never the lever and three passes were spent on the
+  wrong object.
+
+WHAT WOULD FOLLOW, quantitatively
+  The retriever is plain BM25 over name+description with a 3-char token filter --
+  the weakest reasonable baseline. Its measured ceilings are recall@10 68.3%,
+  @20 72.9%, @40 81.0%. If conditional accuracy stays near 85% and recall can be
+  lifted to ~90% (embeddings, query expansion, or simply a better tokenizer),
+  the projected arm score is ~76% against FULL's 60.2%.
+  That would be the largest lever this campaign has found, and it is CHEAPER
+  than FULL rather than more expensive.
+
+PREDICTIONS, fixed now
+  R1 Conditional accuracy FALLS as K grows -- more siblings in the shortlist is
+     the sibling-confusion mechanism itself. I predict TOPK20's conditional
+     accuracy is BELOW TOPK10's 85.2%, and TOPK40's below TOPK20's.
+  R2 Despite R1, TOPK40 scores HIGHEST of the three TOPK arms, because recall
+     rises faster (68.3 -> 81.0) than conditional accuracy falls.
+  R3 At least one TOPK arm beats FULL's 60.2% on the point estimate.
+  R4 A cheap retriever improvement (better tokenization alone -- keeping 2-char
+     tokens, splitting on hyphens, stemming) lifts recall@20 by >=3 points over
+     the measured 72.9%. This is the only prediction here that is testable with
+     NO model calls at all, so it is the one to run first and the cheapest way
+     to falsify H-RETRIEVAL early.
+
+DECISION RULES
+  R4 fails (tokenizer change moves recall@20 by <3 points) -> the retriever is
+     not trivially improvable; H-RETRIEVAL survives but its CHEAP route is shut,
+     and any further work needs an embedding retriever, which is a real build.
+  R1 and R2 both hold AND R3 holds -> shortlisting works and recall is the knob.
+     Next measurement is a better retriever at fixed K, not a different K.
+  R3 fails (no TOPK arm beats FULL) -> conditional accuracy is not high enough to
+     overcome the recall loss at any K tried. H-RETRIEVAL is then about a ceiling
+     nobody can reach with this retriever family, and shortlisting is dead as a
+     product move regardless of how attractive the conditional number looked.
+     Record that the 85.2% conditional was a TRUE observation that did NOT
+     translate -- that is the failure mode this pre-registration exists to catch.
+
+KNOWN CONFOUND, stated in advance
+  Conditional accuracy is computed as accuracy/recall over ARM-LEVEL aggregates,
+  not per query. It assumes a query whose answer is missing from the shortlist is
+  never scored correct -- true by construction, since the model can only reply
+  with a name it was shown. But it also assumes the queries the retriever MISSES
+  are no harder for the model than the ones it HITS, and that is NOT established:
+  BM25 likely misses exactly the queries whose wording is furthest from the skill
+  description, which are plausibly the hard ones. If so, conditional accuracy is
+  BIASED UPWARD and the projection above is optimistic. This cannot be resolved
+  from arm aggregates -- it needs per-query join of retrieval hit vs correctness,
+  which choosability-topk-matrix.json supports and should be computed before any
+  claim rests on the 85.2%.

@@ -7821,3 +7821,97 @@ The test carries a NEGATIVE CONTROL: two different session ids must produce the 
 the flag on, and DIFFERENT prompts with it off. Asserting only that the line disappeared would pass
 against a builder that never rendered the id at all — an invariance assertion that is green when
 broken (guard-2903).
+
+## ADR-0158
+
+**Small-model skill selection is driven by description fidelity; catalogue size, description
+length and family size are not.** 2026-09-12.
+
+ADR-0155 and its five addenda spent three passes attacking the skill catalogue — shortening
+descriptions (retracted, −8.8pp), then testing whether catalogue size drives choosability (falsified
+on coach: a 38%-size catalogue scored slightly lower on every arm). This ADR closes the question of
+*what does* drive it, on two independent catalogues, with every prediction fixed before data.
+
+### Three drivers falsified, one supported
+
+| candidate driver | verdict | evidence |
+|---|---|---|
+| catalogue **size** | falsified | ADR-0155 fifth addendum |
+| description **length** | retracted | −8.8pp, CI (+5.5, +12.4) |
+| family / sibling **size** | falsified | this ADR — the 15-member family scores 60.0% (the overall mean); four 5-member families score 33–40%; 2-member families beat solo skills on both axes |
+| description **fidelity** | **supported, replicated** | ρ +0.637 (ayoai-mind), ρ +0.534 (coach) |
+
+**Fidelity** is per-skill token coverage of a skill's queries by its own name+description — does the
+description say what the skill does, in words a query would use. Pre-registered in
+`bench/results/description-fidelity-preregistration.log` (11:16) and
+`fidelity-coach-preregistration.log` (11:24) before any statistic was computed.
+
+| catalogue | skills | ρ coverage→FULL accuracy | lowest tertile | highest tertile | spread |
+|---|---|---|---|---|---|
+| ayoai-mind | 140 | **+0.637** | 35.5% | 85.1% | 50 |
+| coach (on-box, aggregates only) | 64 | **+0.534** | 38.1% | 72.7% | 34.6 |
+
+Every pre-registered prediction held on both: the sanity check (coverage predicts BM25 recall —
+near-tautological, since BM25 *is* lexical overlap), the real test (coverage predicts the *model's*
+full-catalogue accuracy, which it need not — the model sees every skill and could match
+semantically), the tertile floor (25 points, set strictly inside the predicted direction), and the
+model being less lexical than BM25. Two catalogues is "did not break on the second one", not
+"generalizes".
+
+### The mechanism the gradient was missing
+
+Joining BM25 retrieval hits against full-catalogue accuracy per skill (populations verified
+identical: 140/140, FULL 60.2% in both runs, 0.0 points apart) gave a monotonic 53-point gradient —
+skills BM25 retrieves 0/3 score 25.6% on the full catalogue; 3/3 score 78.8%. Retrieval-hard and
+model-hard are the same difficulty. Sibling size was the candidate mechanism and failed; fidelity
+supplies it: a low-coverage description is hard to retrieve and hard to choose from one cause.
+
+### A finding about the small model itself
+
+The model's dependence on lexical overlap (ρ +0.637 / +0.534) is only slightly weaker than
+bag-of-words BM25's (ρ +0.752 / +0.600). A 35b model reasons beyond lexical matching on skill
+selection, but barely. That is directly about how small models behave on this task, and it is why
+description wording matters as much as it does.
+
+### What was wrong before the join, stated plainly
+
+The TOPK10 arm scored 57.6% at 67.6% recall, and I reported accuracy/recall = **85.2%** as
+"conditional accuracy" — the shortlist making the model 25 points better at choosing. That number
+was a selection effect: the retriever loses precisely the queries the model cannot answer anyway,
+so dividing by recall credits the shortlist for questions it never had to answer. The
+pre-registration named this confound before the data and said the join should be computed before
+any claim rested on the figure. It was not — the figure was reported first. Corrected, a *perfect*
+retriever buys +8 to +14 points, not +23. The cheap route to a better retriever is also shut: every
+tokenizer variant tried (2-char tokens, stemming, bigrams) made recall *worse* (R4, in
+`retrieval-recall-R4.log`), so anything further is an embedding retriever, a build rather than a
+tweak.
+
+### Caveat that travels with the numbers
+
+The benchmark's queries are extracted from each skill's own body, so coverage partly measures
+description-echoes-body. That makes the retrieval half near-tautological (why it was registered as
+a sanity check) and leaves the selection half real but best-case: these are queries in the skill's
+own vocabulary. Real user phrasing would have *lower* coverage, so the direction is safe and the
+magnitude is not transferable. **No causal claim.** Rewriting a low-coverage description may lift
+its accuracy, or low coverage may merely mark skills that are intrinsically ambiguous. Only a
+rewrite arm on the lowest-coverage tertile separates those, and that is the next experiment.
+
+### Decision
+
+Stop attacking the catalogue's size, length or structure; they are not the lever. The next
+measurement is a **rewrite arm**: take the lowest-coverage tertile, rewrite those descriptions to
+cover their bodies, and re-run FULL — pre-registered, with the rewritten descriptions never seeing
+the queries. Shortlisting's own verdict (does TOPK20 beat FULL, the pre-registered primary) is
+pending the TOPK run and lands as an addendum here rather than being read off the confounded
+conditional figure.
+
+### Instrument corrections this pass forced
+
+`sibling_mechanism.py` first printed MECHANISM SUPPORTED from a solo-vs-5+ extreme contrast while
+the middle buckets contradicted it and the 5+ bucket spread 27 points across its own families; it
+now checks monotonicity and within-bucket spread itself. `choosability_topk.py` writes its matrix
+after every arm — the end-of-run write was reached only if all four arms completed, and the first
+full pass was on course to be killed by its own timeout twenty minutes into the last arm, which
+would have discarded the pre-registered primary's per-skill data. The `| tail` on a long ssh
+pipeline hid all interim output until EOF and reproduced the zero-byte-log ambiguity this campaign
+keeps meeting; liveness was read on-box from the run's own progress lines instead.

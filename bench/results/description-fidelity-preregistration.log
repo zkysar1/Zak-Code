@@ -1,0 +1,92 @@
+PRE-REGISTRATION -- is DESCRIPTION FIDELITY the missing mechanism?   2026-09-12
+Written at 11:19, BEFORE computing any overlap statistic. TOPK20/TOPK40 have not
+reported (run restarted 11:14, currently in the FULL arm).
+
+WHAT IS ALREADY KNOWN
+  - A 53-point monotonic gradient links BM25 retrieval difficulty to full-catalogue
+    selection difficulty (0/3 retrieved -> FULL 25.6%; 3/3 -> 78.8%). Robust, n=140.
+  - Three candidate drivers are FALSIFIED: catalogue SIZE (ADR-0155 fifth addendum),
+    description LENGTH (retracted, -8.8pp), family SIZE (this session -- the largest
+    family scores at the overall average while four 5-member families score 33-40%).
+  - So the gradient has a strong correlation and NO mechanism.
+
+THE HYPOTHESIS
+  H-FIDELITY: the driver is whether a skill's DESCRIPTION represents its own BODY.
+  The queries in this benchmark are extracted from each skill's BODY; the catalogue
+  shows only its one-line DESCRIPTION. Where the description is unrepresentative of
+  what the skill actually does, BM25 cannot match the query to it (retrieval miss)
+  AND the model cannot recognise it as the answer (selection miss). One cause, both
+  symptoms -- the same shape sibling density was supposed to supply and did not.
+  Unlike size and length, fidelity is a property of the description's CONTENT, and
+  it is fixable by rewriting descriptions rather than by shortening, shortlisting,
+  or re-retrieving.
+
+MEASURE (no model calls)
+  For each skill: token-overlap between its description and its 3 extracted queries,
+  as Jaccard and as coverage (what fraction of query tokens appear in the
+  description), using the SAME tokenizer BM25 uses so the retrieval half is
+  measured on its own terms.
+
+PREDICTIONS, fixed before computing anything
+  F1 Description-query overlap correlates POSITIVELY with BM25 recall@20. This is
+     near-tautological -- BM25 IS lexical overlap -- so it is a SANITY CHECK, not
+     evidence. If it fails, the overlap measure is broken and nothing else counts.
+  F2 Description-query overlap correlates POSITIVELY with FULL-catalogue accuracy.
+     This is the REAL test and it is NOT tautological: the model reads the full
+     catalogue and can reason semantically, so it need not depend on lexical
+     overlap at all. A positive correlation here says the model is, in effect,
+     doing lexical matching too.
+  F3 The correlation in F2 is WEAKER than in F1. The model should be at least
+     somewhat better than bag-of-words.
+
+DECISION RULES
+  F1 fails -> instrument broken, no verdict on anything.
+  F1 holds, F2 holds -> H-FIDELITY SUPPORTED. The object becomes description
+     CONTENT (does it describe what the skill does, in the words a user would
+     use), which is a catalogue-authoring action and the first actionable driver
+     this arc has found. Next step is a rewrite arm on the worst-fidelity decile.
+  F1 holds, F2 fails (no correlation with FULL accuracy) -> H-FIDELITY REJECTED
+     for the SELECTION half. Lexical fidelity then explains only retrieval, the
+     model's failures are driven by something else, and the 53-point gradient
+     STILL has no single mechanism. Record that plainly rather than reaching for
+     a fourth candidate in the same breath.
+  F3 fails (F2 correlation >= F1) -> the model is doing NO better than lexical
+     matching on this task, which is a finding about the 35b model's skill
+     selection worth more than the fidelity question itself.
+
+KNOWN LIMIT
+  Correlation over 140 skills with 3 queries each. Overlap and accuracy are both
+  skill-level aggregates; this cannot establish causation, and a rewrite arm is
+  the only thing that would. No causal claim will be made from this run.
+
+############ RESULT (2026-09-12T11:18, run after the pre-registration above) ############
+  F1  coverage vs BM25 recall@20   rho = +0.752   HOLDS (sanity check)
+  F2  coverage vs FULL accuracy    rho = +0.637   HOLDS (the real test)
+  F3  model less lexical than BM25 +0.637 < +0.752  HOLDS
+
+   coverage tertile   skills   BM25 recall   FULL accuracy
+       lowest third       46        40.6%          35.5%
+       middle third       47        82.3%          59.6%
+      highest third       47        94.3%          85.1%
+
+VERDICT: H-FIDELITY SUPPORTED. All three predictions held. This is the first
+  actionable driver in the arc, and it supplies the mechanism the 53-point
+  retrieval/selection gradient was missing: low-coverage skills are hard to
+  RETRIEVE and hard to CHOOSE from one cause.
+
+THE CAVEAT THAT MUST TRAVEL WITH IT, and it is not small.
+  The benchmark's queries are EXTRACTED FROM EACH SKILL'S OWN BODY. So "coverage"
+  measures how well a skill's description overlaps its own body text, and a skill
+  whose description echoes its body scores high by construction. On the RETRIEVAL
+  half this is close to tautological -- BM25 is lexical overlap, which is exactly
+  why F1 was registered as a sanity check and not as evidence.
+  The SELECTION half is not tautological: the model sees every skill and could
+  match semantically, so F2 is a real finding about the model. But it is a finding
+  about queries phrased in the skill's own vocabulary, which is the BEST case. Real
+  user queries would plausibly have LOWER coverage, which would make the effect
+  larger, not smaller -- so the direction is safe even though the magnitude is not
+  transferable.
+  What this CANNOT establish is causation. Rewriting a low-coverage description
+  might lift its accuracy, or low coverage might merely MARK skills that are
+  intrinsically ambiguous. Only a rewrite arm separates those, and a rewrite arm
+  needs model calls. That is the next experiment, and no causal claim is made here.

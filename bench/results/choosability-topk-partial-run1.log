@@ -1,0 +1,41 @@
+145 skills   140 with 3 queries   420 queries   1680 requests
+  .. FULL 25 queries  10:23:35
+  .. FULL 50 queries  10:23:57
+  .. FULL 75 queries  10:24:19
+  .. FULL 100 queries  10:24:40
+  .. FULL 125 queries  10:25:03
+  .. FULL 150 queries  10:25:25
+  .. FULL 175 queries  10:25:46
+  .. FULL 200 queries  10:26:08
+  .. FULL 225 queries  10:26:30
+  .. FULL 250 queries  10:26:51
+  .. FULL 275 queries  10:27:13
+  .. FULL 300 queries  10:27:35
+  .. FULL 325 queries  10:27:57
+  .. FULL 350 queries  10:28:18
+  .. FULL 375 queries  10:28:39
+  .. FULL 400 queries  10:29:00
+FULL    253/420 = 60.2%   recall@K 100.0%   mean catalogue   97,907 ch ( 100% of FULL)
+  .. TOPK10 425 queries  10:29:33
+  .. TOPK10 450 queries  10:31:04
+  .. TOPK10 475 queries  10:32:27
+  .. TOPK10 500 queries  10:33:52
+  .. TOPK10 525 queries  10:35:17
+  .. TOPK10 550 queries  10:37:06
+  .. TOPK10 575 queries  10:39:27
+  .. TOPK10 600 queries  10:41:21
+  .. TOPK10 625 queries  10:43:47
+  .. TOPK10 650 queries  10:46:30
+  .. TOPK10 675 queries  10:48:19
+  .. TOPK10 700 queries  10:50:02
+  .. TOPK10 725 queries  10:51:11
+  .. TOPK10 750 queries  10:52:39
+  .. TOPK10 775 queries  10:55:09
+  .. TOPK10 800 queries  10:58:55
+  .. TOPK10 825 queries  11:00:50
+TOPK10  242/420 = 57.6%   recall@K 67.6%   mean catalogue    8,221 ch (   8% of FULL)
+  .. TOPK20 850 queries  11:03:06
+  .. TOPK20 875 queries  11:06:24
+  .. TOPK20 900 queries  11:08:50
+  .. TOPK20 925 queries  11:11:48
+  .. TOPK20 950 queries  11:14:24

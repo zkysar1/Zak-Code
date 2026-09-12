@@ -1,0 +1,18 @@
+population: 140/140 skills overlap; FULL 60.2% (NI run) vs 60.2% (TOPK run)
+
+--- FULL's accuracy, split by how well BM25 retrieves that skill (K=20)
+  BM25 hits (of 3)   skills   FULL accuracy
+                 0       13          25.6%
+                 1       15          33.3%
+                 2       46          52.2%
+                 3       66          78.8%
+
+  always-retrieved skills (3/3): n= 66  FULL 78.8%
+  never-retrieved skills  (0/3): n= 13  FULL 25.6%
+  gap: +53.1 points
+
+--- VERDICT
+  CONFOUND CONFIRMED. FULL scores 53 points WORSE on the skills BM25 loses, so
+  those queries were disproportionately going to be missed anyway. Dividing accuracy
+  by recall credits the shortlist for questions it never had to answer: the 85.2%
+  conditional figure is BIASED UPWARD and must not be used to project an arm score.
