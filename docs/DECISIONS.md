@@ -6332,7 +6332,78 @@ is per-turn, so a script read in an earlier turn is not credited and a long sess
 twice about one file (the whole family shares this shape). And it nudges rather than refuses: a
 model that insists on the zero still may.
 
-## ADR-0145: The bench validates the engine on models that never need it
+---
+
+## ADR-0145: The discovery ledger — accumulation lives in the mind, because the vessel's slice is a projection
+
+**Context.** The vessel (Ayoai-Environment-Server, g-368-15) now emits a `discoveryPerception`
+slice on the observation envelope: per `ayoKey`, `{touchCount, distanceStatus, discovered}` for
+every entity inside the character's 27-stud bubble. The feature it is meant to serve is
+"objects unlock through exploration" — a permanent, monotone property of a character.
+
+The slice cannot carry that property, and it is right that it cannot. `SpatialPerceptionVerticle`
+CLEARS the folder and rebuilds it from scratch on every perception tick, bounded at
+`bubbleRadius`. That is the correct vessel-side design — nothing accumulates, a departing entity
+prunes itself, and the slice cannot drift from the `touchCount` it mirrors — but it means an
+object the character explored and then walked away from is simply ABSENT from the next envelope.
+
+So the evidence for a monotone fact arrives in a population that shrinks as a matter of normal
+operation. Read any single envelope and you under-report what the character has found, every
+time, with no error anywhere. Unlocking is permanent; the reporting of it is not.
+
+**Decision.** `zakcode/session/discovery_ledger.py` — a workspace file `.discovery`, a sibling of
+`.say` and `.observation`, folded in `AgentLoop._deliver_observation` between the envelope read
+and the render.
+
+The fold has to sit *between* those two, and that is the one structural constraint the wiring
+imposes: `take_observation()` renders straight to framed prose, so a consumer needing structured
+fields has to call `read_observation()` + `render_observation()` itself. Consumption stays
+exactly-once — the read is what deletes.
+
+Four properties, each of which a future reader could plausibly "simplify" away:
+
+- **Membership IS the unlock, and it is sticky.** A key enters the map once and never leaves.
+  Absence from a later envelope, and an explicit `discovered: false`, are both readings of the
+  current frame — never retractions. There is no per-entry `discovered` flag, because presence
+  already is one and a second copy of a fact is a second thing to keep true.
+- **Merely-seen entities are not recorded.** "In the bubble, never touched" is re-supplied by the
+  very next envelope. Storing it would grow the file with a copy of what the vessel already says.
+  The unlock is the only fact that outlives the frame, so it is the only one kept.
+- **`touchCount` and `lastObservedAt` are latest-wins and travel together.** A count is
+  meaningless without the time it was read at, which is the entire reason the stamp is stored.
+  `touchCount: 0` beside a present key is the visible signature of a vessel-side counter reset:
+  nothing hides it and nothing corrects it.
+- **The unlock is an EVENT.** `fold_observation` returns the keys that crossed on THIS envelope,
+  and `_deliver_observation` names them in the same block the perception arrives in — capped at
+  `_DISCOVERY_NOTE_MAX`, since a first perception in a dense room unlocks a whole bubble at once
+  and the note rides inside an envelope the vessel already caps at 16 KB. The standing set is
+  never re-announced; it is already in the ledger, and re-stating it is noise from round two on.
+
+Fail-open throughout, by inheritance from the path it sits on: a corrupt, version-mismatched or
+unwritable ledger costs the ledger something and costs the perception nothing. The fold is
+wrapped so that even a defect in it cannot swallow a perception.
+
+**Alternatives rejected.** *Accumulating vessel-side* — that is what guard-4871 forbids (the
+reactive layer is execution, not memory), and it is also what makes the slice trustworthy: a
+projection cannot drift from its source. *Widening the slice to `sightRadius`* — the 27-stud
+bound is the tightest tier already computed in the same loop, so the projection reuses a bound
+rather than adding one; the 16 KB envelope cap is what the wider radius would have spent.
+*A `discovered_keys()` reader* — written, then deleted before commit: it had zero call sites, and
+the ledger already has a real reader in the fold itself (stickiness is a read).
+
+**Consequences.** The consumer ships BEFORE the producer: the env-server PR that emits the slice
+is open and unmerged under a deploy hold. That is deliberate and was sanctioned upstream — an
+envelope with no `discoveryPerception` is the expected case on any vessel that predates the
+producer, so this code is inert rather than noisy until the channel is live, and `.discovery` is
+simply never created. It is also gated on `consume_observation_inbox`, so a sub-agent accumulates
+nothing into the workspace its parent owns.
+
+Six mutations were run against the suite and all six went red on the intended test: recording
+merely-seen entities, returning the standing set instead of the event, ignoring the version
+stamp, re-deriving `discovered` instead of trusting the vessel's flag, dropping the note cap, and
+removing the fail-open guard.
+
+## ADR-0146: The bench validates the engine on models that never need it
 
 Across **20 real task-runs** on this box (`weak-pass-1`, `weak-pass-2` — 2 passes x 10 tasks on
 `zds-qwen3.8-27b`), not one of the engine's robustness mechanisms executed:
@@ -6462,7 +6533,7 @@ there. A negative conclusion from one signal — asserted while writing the guar
 that — cost this ADR its confirming evidence for most of a campaign.
 
 
-## ADR-0146: Three micro-tasks are the only instrument here with enough precision to see an engine change
+## ADR-0147: Three micro-tasks are the only instrument here with enough precision to see an engine change
 
 The suite's binary metric is saturated. Three model generations now pass essentially everything:
 
@@ -6534,9 +6605,9 @@ its determinism is measured at the serving stack's DEFAULT sampling temperature 
 defaults to `None`, meaning "send none"; the bench never set one), so even these numbers are a sum
 of engine and sampling determinism that has not yet been partitioned.
 
-## ADR-0147: Compaction trades context for re-work, and the exchange rate is 25% more iterations and 10x the variance
+## ADR-0148: Compaction trades context for re-work, and the exchange rate is 25% more iterations and 10x the variance
 
-ADR-0145 established that compaction had never fired in any benchmark run. Forcing it to fire —
+ADR-0146 established that compaction had never fired in any benchmark run. Forcing it to fire —
 by moving `Compactor.config.threshold_fraction` to 0.15 on the full window, so the threshold falls
 to 19,660 while the seam clamp and the oversized-body check stay where they are — produced a
 result worth shipping, and a false alarm worth recording.
@@ -6592,7 +6663,7 @@ The remedy is design work rather than a one-line change, and this ADR deliberate
 prescribing one. Two directions worth measuring: preserve the most recent read of each distinct
 file across a compaction, or give the elision stub enough identity (path, size, a content hash)
 that a re-read is visibly redundant to the model. Either would be measurable against the numbers
-above with the ADR-0146 triad as the in-run comparability control.
+above with the ADR-0147 triad as the in-run comparability control.
 
 **Limits.** One task, one model, one box, four runs per arm. The `r = 0.925` rests on 7 points
 with three tied at zero, so it is corroboration for a mechanism independently confirmed in the
@@ -6601,13 +6672,13 @@ ruled out (3/4, and the 4th ruled flake by pre-registered rule), so this is a CO
 correctness finding — compaction did not make the agent wrong, it made it slower and less
 predictable.
 
-**One correction to ADR-0145's follow-up.** A grep for `note("intervention", ..., kind=...)`
+**One correction to ADR-0146's follow-up.** A grep for `note("intervention", ..., kind=...)`
 enumerated 12 intervention kinds. It missed at least two: `suite_scope_gate` and `plan_review` fire
 in every run of both arms and match no grep hit, so they are emitted through a call shape the
 pattern did not cover. The recorded `trace_interventions` is the reliable enumeration; the grep was
 not, and a catalog built from it would have understated the engine's gate surface.
 
-**Correction, 2026-09-11, from the first experiment that used this instrument.** ADR-0146 says the
+**Correction, 2026-09-11, from the first experiment that used this instrument.** ADR-0147 says the
 triad holds "identical iteration counts". Measured over ten runs of `m05-read-before-edit`, that is
 **9/10, not 10/10** — one control run took 4 iterations (38,422 tokens) where every other run took
 3 (~28,750). The rate is not the important part; the consequence is. Because these tasks are ~93%
@@ -6624,7 +6695,7 @@ flattered the result.
 Per-iteration, the instrument performs as claimed: 9,577 / 9,583 / 9,599 (0.23% spread) against
 5,348 / 5,346 / 5,320 (0.52% spread), i.e. a 44% effect read against a 0.3% noise floor.
 
-## ADR-0148: 58% of the advertised tool surface was never called, and removing it is a 44% token cut where the prompt floor dominates
+## ADR-0149: 58% of the advertised tool surface was never called, and removing it is a 44% token cut where the prompt floor dominates
 
 Across 22 recorded task-runs the agent called **eight** distinct tools: `update_plan` 62,
 `write_file` 40, `bash` 36, `read_file` 36, `edit_file` 16, `glob` 6, `list_dir` 6, `grep` 2. The
@@ -6687,7 +6758,7 @@ whatever the cache does, and that is the claim worth carrying.
 **Where this leaves the small-model lever.** Two measurements now bracket it. The prompt floor is
 trimmable by 44% and that helps short tasks only (this ADR). The long tasks are dominated by
 accumulated tool output, which is compaction's job, and compaction costs +25% iterations and 10x
-iteration variance when it binds (ADR-0147). So for the hardest small-model cases the tool surface
+iteration variance when it binds (ADR-0148). So for the hardest small-model cases the tool surface
 is **not** the lever — context accumulation is, and the mechanism that manages it is the expensive
 one.
 
@@ -6708,11 +6779,11 @@ becomes the measured reason the trim must not be a default.
 A third reading makes the scope gap sharper than "different workload". Coach also calls tools that
 are **not in the bench's 25 at all** — `echo` 297, `use_skill` 208, `read` 33, `task` 4 — because
 skills are enabled there. A deny-list computed against the bench registry does not even *describe*
-coach's tool surface, let alone prune it correctly. The same population caveat as ADR-0145 applies:
+coach's tool surface, let alone prune it correctly. The same population caveat as ADR-0146 applies:
 ~48% of the corpus is pytest residue, so these counts support the existence claims made and no rate.
 
 
-## ADR-0149: Most of the variance this bench measures is the sampler's, not the engine's
+## ADR-0150: Most of the variance this bench measures is the sampler's, not the engine's
 
 Every determinism statement made from this suite before now was about an unpartitioned quantity.
 `Settings.temperature` defaults to `None`, which means *send no temperature and let the backend use
@@ -6725,7 +6796,7 @@ total variance  =  MODEL SAMPLING non-determinism  +  ENGINE non-determinism
 
 with only the second term being something zakcode can fix. Pinning `ZAKCODE_TEMPERATURE=0` (it
 binds through pydantic's `ZAKCODE_` prefix; no code change) separates them. Three passes per arm on
-`zds-qwen3.5-35b`, with the ADR-0146 triad carried as an in-run comparability control:
+`zds-qwen3.5-35b`, with the ADR-0147 triad carried as an in-run comparability control:
 
 ```
 task           pinned (temp=0)  spread  |  default (unset)  spread
@@ -6766,7 +6837,7 @@ vs 20, 19, 18). Every pinned failure and every high iteration count sits in the 
 co-tenancy and the pin are entangled at n=3 per cell. Within-context it is 26% vs 17% and 16% vs
 11% — directionally consistent, far too sparse to claim. **Hold co-tenancy constant as well as the
 model.** That variable was not on my list, which is the same class of omission as shrinking a
-context window that turned out to feed three consumers instead of one (ADR-0147).
+context window that turned out to feed three consumers instead of one (ADR-0148).
 
 **What this does NOT license.** It is not an argument to change the product default. ADR-0018 chose
 `None` over a harness-wide 0.0 deliberately, calling 0.0 "fake-determinism inherited from
@@ -6776,7 +6847,7 @@ claim is narrower and only about measurement: **to attribute variance to the eng
 sampler, exactly as you must hold the model fixed to attribute a failure to a mechanism.** The bench
 should pin it; the product should not.
 
-## ADR-0150: Both agents score 100% on this suite, so it cannot answer the parity question it was built for
+## ADR-0151: Both agents score 100% on this suite, so it cannot answer the parity question it was built for
 
 The campaign's directive is parity with Claude Code. Until 2026-09-12 that comparison had never been
 run — every measurement was zakcode against zakcode. So I ran the reference arm:
@@ -6798,7 +6869,7 @@ two consecutive passes and 49/50 across three model generations, that is the dec
 **The suite is saturated for BOTH agents, so it cannot demonstrate parity or its absence.** This is
 not a hedge, it is a measured property of the instrument. A benchmark on which the reference agent
 also scores 100% has no resolving power between them at all: every task is answering "is this task
-easy" and none is answering "which agent is better". The saturation finding (ADR-0146) is now
+easy" and none is answering "which agent is better". The saturation finding (ADR-0147) is now
 extended to the reference agent, and it is what makes the parity question unanswerable HERE rather
 than merely unanswered.
 
