@@ -1,0 +1,8 @@
+{
+  "id": "08-mutation-leak",
+  "title": "A cross-module mutation leak whose symptom is three modules from its cause",
+  "max_iterations": 40,
+  "max_cost_usd": 1.0,
+  "verify_timeout_s": 120,
+  "prompt": "This workspace holds a small ETL pipeline. Running it reports audit problems:\n\n    from pipeline import run\n    summary, problems = run()\n    # problems is non-empty\n\nFix it. The pipeline must satisfy all of the following:\n\n1. `run()` returns a correct summary and an EMPTY list of audit problems.\n2. The pipeline may derive whatever new values it likes, but it must NOT alter the source records it is handed. After a run, the raw records are exactly what is on disk.\n3. `audit()` must keep checking what it checks today. Do not weaken, delete, or bypass the audit to make it quiet.\n4. The existing tests in `tests/` must still pass.\n\nUse only the standard library."
+}

@@ -1,0 +1,8 @@
+{
+  "id": "07-ttl-cache",
+  "title": "LRU cache with TTL where the rules interact",
+  "max_iterations": 40,
+  "max_cost_usd": 1.0,
+  "verify_timeout_s": 120,
+  "prompt": "Write `cache.py` in this workspace containing a class `Cache` -- an LRU cache with a time-to-live. There is an existing `tests/test_cache.py`; it covers the basics only and passing it is NOT sufficient.\n\n`Cache(capacity, ttl_seconds, now=time.monotonic)`. `now` is a zero-argument callable returning a float, injected so tests control time; default to `time.monotonic`. An entry is EXPIRED when `now() - (the time it was last written) >= ttl_seconds`.\n\nThe rules, all of which must hold together:\n\n1. `put(key, value)`: insert, or update an existing key. Either way the entry becomes the most-recently-used AND its TTL clock RESETS (an update makes it fresh again).\n2. `get(key)`: return the value, or None if the key is absent or expired. A `get` that finds an EXPIRED entry must REMOVE that entry and must NOT change recency ordering -- it is not a use.\n3. A `get` that returns a live value DOES make that entry the most-recently-used.\n4. Expired entries must never occupy capacity. When `put` needs room, it must first drop every expired entry; only if the cache is still full does it evict.\n5. Eviction removes the least-recently-used entry among entries that are still LIVE.\n6. `len(cache)` counts LIVE entries only -- never expired ones still held internally.\n7. `keys()` returns the live keys in order, least-recently-used first.\n\nUse only the standard library."
+}

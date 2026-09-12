@@ -6924,6 +6924,137 @@ gap this suite has ever shown.
 Cost asymmetry, recorded because it is the standing argument for the local arm at all: $1.08 for
 five tasks against ~$0 on the pod.
 
+**ADDENDUM (2026-09-12): the first attempt at the prescribed fix — convention-inference — raises
+effort 2.7x and does NOT break the ceiling.** This ADR's prescription is "extend the suite until
+Claude Code fails part of it", so `06-plugin-conventions` was built to do exactly that, on the axis
+ADR-0154 identified as the bench's blind spot: every existing task states its full contract in the
+prompt, while production work means inferring a codebase's conventions from the codebase.
+
+The task gives a plugin package with two sibling renderers and a `CONTRIBUTING.md` stating four hard
+rules, and asks only for "a renderer that outputs YAML". Nothing else is stated. The load-bearing
+rule is stdlib-only: `import yaml` is the obvious implementation, **pyyaml IS installed so it would
+run fine**, and the project forbids it — a convention the interpreter does not enforce, which is the
+kind real repositories are made of.
+
+Validated in three directions BEFORE any agent ran, because a failure on an unvalidated task is
+ambiguous between "the agent failed" and "the task is impossible":
+
+```
+untouched workspace        FAIL   the verifier is not vacuous
+correct stdlib solution    PASS   the task is possible
+`import yaml` (obvious)    FAIL   the task discriminates on the trap
+```
+
+**Result: Claude Code PASSED — 17 turns, 23.4s, $0.3487.** Against a mean of 6.2 turns across the
+five saturated tasks, that is **2.7x the effort and still a pass.** So convention-inference sits
+inside the reference agent's ceiling. The suite remains saturated and parity remains unmeasurable.
+
+**What this buys, since the goal was not met.** The negative result is directional, not just a
+miss: difficulty on the DISCOVERABILITY axis — hidden-but-findable requirements — costs turns
+without costing correctness, because a capable agent simply reads the file. That axis is therefore
+the wrong lever for discrimination, and this is now measured rather than assumed. The remaining
+candidates are axes where finding the requirement is not the hard part: constraints that INTERACT
+(satisfying one naively breaks another), semantic traps where the natural implementation passes
+every visible test and fails a held-out invariant, and long-range consistency across many call
+sites. `05-ledger`'s atomicity is in that family and is the one task zakcode has ever failed, which
+is corroborating evidence for the family rather than for this one.
+
+The task is kept in the suite regardless of the saturation verdict: it is well-formed, its verifier
+is non-vacuous, and at 2.7x turns it is the most demanding task here — a useful effort baseline even
+while it carries no parity signal.
+
+**SECOND ATTEMPT — interacting constraints — also passes, and it passes CHEAPER, which inverts the
+expectation the first attempt set.** `07-ttl-cache` was built on the axis the paragraph above
+prescribed: an LRU cache with TTL where every rule is stated explicitly in the prompt, so finding
+the requirement is trivial and satisfying the rules TOGETHER is the whole difficulty. Four traps,
+each independently checked by a held-out oracle: an expired `get` must not bump recency; expired
+entries must be reclaimed before a live LRU is evicted; `put` on an existing key resets the TTL;
+`len()` counts live entries only. The workspace ships basic visible tests, and the control that
+matters is that **a natural `OrderedDict` implementation passes all four visible tests and fails the
+oracle** — the property the first task lacked.
+
+```
+control              visible tests    held-out oracle
+no cache.py          n/a              FAIL   verifier is not vacuous
+correct solution     4 passed         PASS   task is possible
+naive solution       4 passed         FAIL   task discriminates on the trap
+```
+
+**Claude Code PASSED at 7 turns, 29.5s, $0.3764** — against a 6.2-turn baseline, that is **1.1x the
+effort**, less than half the 17 turns the convention task cost.
+
+**The comparison across the two axes is the finding, and it is worth more than either task.**
+
+```
+axis                                        turns   vs baseline   result
+original five (stated, local)                 6.2        1.0x      PASS
+06 discoverability (rules must be inferred)    17        2.7x      PASS
+07 interaction (4 traps, all stated)            7        1.1x      PASS
+```
+
+**Exploration costs turns; intricacy, fully specified, costs almost nothing.** A fully-specified
+problem — however many ways its rules interact — is a well-posed engineering task, and that is
+exactly what this reference agent is strongest at. Difficulty that lives in the SPECIFICATION does
+not transfer into difficulty for the agent. So **local correctness is not a lever against this
+reference agent at all**, and two independent attempts now say so rather than one.
+
+What remains untested is difficulty that is neither local nor discoverable: SCALE (many call sites,
+where one missed site breaks a non-obvious case), HORIZON (enough steps that attention degrades),
+and verifiers that check PROCESS rather than outcome — `m03-minimal-diff` is the existing instance
+of that last family and is the only style of task here that constrains HOW rather than WHAT.
+
+**THIRD ATTEMPT — cross-module root cause — also passes, at 1.3x.** `08-mutation-leak` was built on
+the axis the second result pointed at: maximise the DISTANCE between symptom and cause rather than
+local intricacy, since exploration is the only thing measured to cost effort. A small ETL package
+where the symptom surfaces in `audit.py`, the defect is in `normalize.py`, and the mechanism joining
+them — a deliberately shared cache — is in `load.py`. None of the three is wrong on its own reading.
+The oracle is outcome-based (any fix achieving the invariant is accepted, no file is mandated) but
+pins the ROOT two ways: it calls `normalize()` on a caller-owned list and requires it untouched, and
+it corrupts a raw record to check the audit still has teeth. Four controls, and all four PASS THE
+VISIBLE TESTS, so the shipped suite discriminates nothing and the oracle does all the work:
+
+```
+untouched (buggy)      3 passed   oracle FAIL   audit problems
+correct root fix       3 passed   oracle PASS   task is possible
+silence the audit      3 passed   oracle FAIL   audit lost its teeth
+reload around it       3 passed   oracle FAIL   same check catches it
+```
+
+**Claude Code PASSED at 8 turns, 20.2s, $0.2829.**
+
+**THE CONSOLIDATED RESULT — three independent axes, three passes:**
+
+```
+task                     axis                      turns   vs baseline   result
+original five            stated, local               6.2        1.0x      PASS
+06-plugin-conventions    DISCOVERABILITY              17        2.7x      PASS
+07-ttl-cache             INTERACTION (all stated)      7        1.1x      PASS
+08-mutation-leak         CROSS-MODULE ROOT CAUSE       8        1.3x      PASS
+```
+
+**Only EXPLORATION costs effort, and 2.7x effort is still a pass.** Neither intricacy, nor
+interacting constraints, nor a root cause three modules from its symptom with two plausible decoy
+fixes, moves this reference agent off a pass. Each task was validated against controls BEFORE any
+agent ran, and in every case the natural-but-wrong solution fails the oracle — so these are not weak
+tasks that failed to discriminate; they discriminate correctly and the reference agent is simply not
+caught.
+
+**DECISION: stop trying to unsaturate this suite with well-formed small-to-medium tasks.** That was
+this ADR's prescribed route and three measured attempts say the route is not cheap and may not be
+available at this scale. What remains untried is genuine SCALE and HORIZON — many files, enough
+steps that attention degrades — which is expensive to build, expensive to run, and would test
+context management rather than the agent loop. Verifiers that check PROCESS rather than outcome
+(`m03-minimal-diff` is the existing instance) are the one cheap family left.
+
+**The strategic reading, now with three data points instead of one:** constructing a FAIR,
+well-formed software task that Opus 5 fails is itself hard. That is information ABOUT the parity
+question rather than an obstacle to answering it — the reference agent's ceiling on this class of
+work is high enough that task-success comparison at this scale is the wrong instrument, not merely a
+saturated one. This is the measured case for the user's redirect: compete on DETERMINISM and
+SMALL-MODEL performance, where zakcode can differentiate and where the instruments already work
+(ADR-0152's byte-identical reproduction, ADR-0155's catalogue measurements), rather than on a
+task-success comparison whose ceiling both agents already sit at.
+
 ## ADR-0152: The determinism residual was never the engine's — it was the prompt, and then it was pytest's clock
 
 ADR-0150 pinned the sampler, measured a residual iteration spread of 9% / 36% / 0%, and wrote:

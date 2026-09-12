@@ -1,0 +1,18 @@
+{
+  "id": "08-mutation-leak",
+  "agent": "claude-code",
+  "success": true,
+  "cli_rc": 0,
+  "elapsed_s": 20.2,
+  "num_turns": 8,
+  "total_cost_usd": 0.28292550000000005,
+  "model": [
+    "claude-haiku-4-5-20251001",
+    "claude-opus-5[1m]"
+  ],
+  "verify_rc": 0,
+  "verify_out": "PASS: audit clean and still has teeth, summary correct, source records untouched, and normalize() no longer mutates its input",
+  "stderr_tail": "",
+  "error": null,
+  "workspace": "(cleaned)"
+}

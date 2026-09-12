@@ -1,0 +1,18 @@
+{
+  "id": "07-ttl-cache",
+  "agent": "claude-code",
+  "success": true,
+  "cli_rc": 0,
+  "elapsed_s": 29.5,
+  "num_turns": 7,
+  "total_cost_usd": 0.3763985,
+  "model": [
+    "claude-haiku-4-5-20251001",
+    "claude-opus-5[1m]"
+  ],
+  "verify_rc": 0,
+  "verify_out": "PASS: TTL reset on update, live-only len(), expired gets do not bump recency, expired entries reclaimed before live eviction, and LRU order correct",
+  "stderr_tail": "",
+  "error": null,
+  "workspace": "(cleaned)"
+}
