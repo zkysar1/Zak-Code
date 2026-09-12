@@ -93,10 +93,29 @@ def test_sidecar_health_reports_active_session(tmp_path: Path) -> None:
     # last_run_stop_reason joined this payload in g-369-28 so the env-server can end the
     # ENVIRONMENT when a bounded run finishes, instead of idling until the generic
     # idle-monitor reaps it and marks the run failed. None until this session's run ends.
+    #
+    # observation_intake joined in g-373-03: the perception bridge was unobservable from
+    # either end, so a 4xx read exactly like a delivered frame. It rides THIS payload
+    # rather than a new endpoint because the env-server already polls this one.
+    #
+    # Kept as whole-payload equality on purpose. This is a contract another service
+    # polls, so a subset assertion would let a field be dropped or renamed without a
+    # single test going red — and every counter is asserted PRESENT-and-zero because a
+    # counter that only appears after the first failure cannot tell "healthy" from
+    # "nobody called it" (guard-3169).
     assert body == {
         "status": "ok",
         "active_session_id": "sess-777",
         "last_run_stop_reason": None,
+        "observation_intake": {
+            "accepted": 0,
+            "superseded": 0,
+            "refused_bad_version": 0,
+            "refused_missing_ref": 0,
+            "refused_too_large": 0,
+            "last_frame_age_seconds": None,
+            "last_observed_at": None,
+        },
     }
 
 
@@ -106,6 +125,16 @@ def test_sidecar_health_active_session_none_before_first_turn(tmp_path: Path) ->
         "status": "ok",
         "active_session_id": None,
         "last_run_stop_reason": None,
+        # g-373-03 — see the note on the sibling test above.
+        "observation_intake": {
+            "accepted": 0,
+            "superseded": 0,
+            "refused_bad_version": 0,
+            "refused_missing_ref": 0,
+            "refused_too_large": 0,
+            "last_frame_age_seconds": None,
+            "last_observed_at": None,
+        },
     }
 
 
