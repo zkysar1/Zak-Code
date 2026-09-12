@@ -54,3 +54,21 @@ WHAT THIS CANNOT DO
   computed for rho and none will be quoted. Still no causal claim -- only a
   rewrite arm separates "low coverage causes failure" from "low coverage marks
   ambiguous skills".
+
+############ RESULT (2026-09-12T11:47, on zc-03, run after the pre-registration above) ############
+  C0  FULL 111/192 = 57.8%   (prior 58.3%; within 0.5 points)      HOLDS
+  C1  coverage vs BM25 recall@20  rho = +0.600  (sanity)             HOLDS
+  C2  coverage vs FULL accuracy   rho = +0.534  (the test)           HOLDS
+  C3  tertile spread +34.6 points (floor 25)                         HOLDS
+  C4  model less lexical than BM25 (+0.534 < +0.600)                 HOLDS
+
+    coverage tertile   skills   BM25 recall   FULL accuracy
+        lowest third       21         57.1%          38.1%
+        middle third       21         82.5%          61.9%
+       highest third       22         95.5%          72.7%
+
+VERDICT: REPLICATES. Fidelity holds on BOTH catalogues measured (ayoai-mind
+  rho +0.637 / spread 50; coach rho +0.534 / spread 34.6). Not "generalizes" --
+  two catalogues is "did not break on the second one". Per-skill table stayed
+  on-box at /root/coach-fidelity-per-skill.json; only these aggregates crossed.
+  Ran under TOPK co-tenancy (accepted in advance: latency, not correctness).
