@@ -1,0 +1,12 @@
+catalogue=145 skills   skills with 3 usable queries=140   queries=420   requests=1260
+FULL   253/420 = 60.2%   catalogue 97,907 chars
+FIRST  216/420 = 51.4%   catalogue 33,695 chars
+NAMES  95/420 = 22.6%   catalogue 3,250 chars
+
+--- verdict against the pre-registered rules ---
+control OK: FULL 60.2% (VOID below 25%).
+
+FULL minus FIRST: +8.8%   one-sided 95% upper bound +11.7%   (paired bootstrap over 140 skills)
+  NOT DEMONSTRATED: the bound reaches 11.7%, at or beyond the 5% margin. The recommendation stays unproven -- do not ship the shortened catalogue on the strength of this ADR.
+
+FULL minus NAMES: +37.6%   one-sided 95% upper bound +42.4%   (paired bootstrap over 140 skills)

@@ -7194,11 +7194,13 @@ fetched on demand exactly as bodies already are. Names alone save 97% and are pr
 to choose from; that is a judgement, not a measurement, and it is the one thing here that should be
 tested against a model rather than asserted.
 
-> **Both sentences above have since been MEASURED — see the third addendum.** "Too cryptic" held
-> (names lose 38.7 points, p≈0). "Keeping it choosable" did NOT come back clean: first sentences are
-> not separable from full descriptions at p<0.05, but the point estimate favours full by 4.9 points
-> and the 95% CI reaches +10.2, so the 66% saving is measured while its accuracy cost is bounded
-> rather than zero. Do not cite "keeping it choosable" from this paragraph without that interval.
+> **Both sentences above have since been MEASURED — see the FOURTH addendum, which supersedes the
+> third on this point.** "Too cryptic" held and strengthened (names lose 37.6 points, CI 31.9-43.3).
+> **"Keeping it choosable" is FALSE and the recommendation in this paragraph is RETRACTED**: a
+> properly powered non-inferiority run (420 queries over 140 skills, clustered by skill) puts the
+> first-sentence catalogue 8.8 points behind full descriptions, 95% CI (+5.5, +12.4) — the whole
+> interval above the 5-point margin pre-registered as the most a 15,038-token saving could justify.
+> Do not build the shape this paragraph recommends.
 
 **And the misattribution:** the sentence above reading "a 145-skill catalogue consumes ~89% of the
 window" is wrong. 89% is the whole per-iteration prompt (29,096 of 32,768); the catalogue's own
@@ -7270,7 +7272,9 @@ assertion. Names alone lose 38.7 points against full descriptions and 33.8 again
 both overwhelmingly. **The 97% saving is not available at any acceptable quality.**
 
 **The primary question resolves to "not retracted", and the honest statement of that is a bound, not
-a vindication.** The registered rule was a sign test at p<0.05; p=0.1185 does not reject, so the
+a vindication.** *(SUPERSEDED by the fourth addendum: the bound was honoured and the follow-up run
+landed inside it — 8.8 points, CI +5.5 to +12.4. The recommendation is now RETRACTED. The paragraph
+below is kept as written because its caveat proved load-bearing, not because its verdict stands.)* The registered rule was a sign test at p<0.05; p=0.1185 does not reject, so the
 recommendation stands. Two things must travel with it. First, **this is a superiority test, and
 failing to reject is not evidence of equivalence** — a non-inferiority design with a stated margin
 was the right instrument and was not what got registered; that is a design error to fix in the next
@@ -7312,3 +7316,80 @@ three or more. That caps what any catalogue shape can achieve and is why FULL to
 than higher. Re-scoring to a laxer "right family" metric would raise every arm and is exactly the
 post-hoc move pre-registration forbids; exact match stands as registered. Whether better-separated
 skill names beat any amount of description is a NEW question, not a re-reading of this one.
+
+**FOURTH ADDENDUM: RETRACTED. The name+first-sentence catalogue costs 8.8 points of choosability,
+and the earlier runs read low because they sampled the one paragraph that flatters it.** The third
+addendum left the primary question open, named its own design error — a superiority test, where
+failing to reject is not evidence of equivalence — and said a non-inferiority design with a stated
+margin was the right instrument. That was built and run.
+
+**Why a bigger sample was not available and what was.** n=142 was the whole catalogue, and
+measurement noise was exactly zero (two invocations returned byte-identical scores), so neither a
+larger population nor more repetitions existed. The open axis was QUERIES PER SKILL: 140 skills
+carry four or more usable body paragraphs, so three queries each gives 420 queries and 1,260
+requests, and each skill contributes a graded 0-3 score instead of a single 0/1 flip — which turns
+the 127 skills that tied uninformatively at n=142 into evidence. Queries drawn from one skill are
+NOT independent, so the unit of analysis is the SKILL and the bootstrap resamples SKILLS, never
+queries; resampling queries would discard the clustering and inflate significance. Margin fixed at
+5 points before any data, with the justification stated in advance so it could not be tuned
+afterwards: 15,038 tokens saved is worth up to 5 points of selection accuracy and no more
+(`bench/results/choosability-noninferiority-preregistration.log`).
+
+```
+arm      catalogue    420 queries          FULL minus arm (paired bootstrap, 140 skills)
+NAMES      3,250 ch    95/420  22.6%       +37.6%   95% CI (+31.9, +43.3)
+FIRST     33,695 ch   216/420  51.4%        +8.8%   95% CI  (+5.5, +12.4)
+FULL      97,907 ch   253/420  60.2%
+```
+
+Control valid: FULL 60.2% against the pre-registered 25% VOID floor.
+
+**The verdict is not merely "non-inferiority undemonstrated" — it is inferiority demonstrated.** The
+two-sided interval excludes zero, and its ENTIRE range sits above the 5-point margin. The
+recommendation fails its own pre-registered acceptance criterion by the widest reading available.
+**The second addendum's "name + first sentence … the shape worth building" is RETRACTED**, and the
+third addendum's "not retracted" is superseded by this one. Do not ship a shortened catalogue on the
+strength of this ADR.
+
+**Why the earlier runs read lower, and why this is a design lesson rather than a contradiction.**
+Accuracy by which body paragraph supplied the query:
+
+```
+query source   FULL    FIRST   gap
+paragraph 1   60.7%   55.7%   +5.0
+paragraph 2   66.4%   55.0%  +11.4
+paragraph 3   53.6%   43.6%  +10.0
+```
+
+The n=142 run used paragraph 1 ONLY — the paragraph nearest a skill's headline purpose, and so the
+one a first-sentence rendering covers best. It measured +4.9 points; this run measures **+5.0 points
+on that same paragraph.** Reproduction to a tenth of a point across separate runs, which validates
+the instrument and simultaneously shows the old design was **systematically biased toward the arm
+being recommended.** A single-query-per-item design does not merely lose power; when the query is
+drawn from the item's most representative content, it loses power *in a direction*. The mechanism is
+plain once seen: a first sentence states what a skill is FOR, so it competes well on headline
+material and loses on the specifics only the full description mentions.
+
+**What survives from the third addendum.** The "too cryptic" finding stands and strengthens: names
+alone lose 37.6 points (CI 31.9-43.3). The marginal-value curve stands — description TEXT is
+decisively load-bearing while its LENGTH has steeply diminishing returns — but "diminishing" now
+means 8.8 points for the last 15,038 tokens, not the 4.9 the underpowered run suggested, and 8.8
+points is a price this ADR is no longer willing to call cheap.
+
+**So the catalogue cannot be naively shortened, and the remaining levers are untested.** Paging or
+retrieval that injects only candidate skills, and better-separated skill names, are both unmeasured;
+either could beat both arms here, and neither is licensed by this ADR. The 62% ceiling reported in
+the third addendum is unchanged and is a property of the catalogue's sibling families, not of any
+rendering.
+
+**External-validity limits, recorded before this run's verdict was known**
+(`bench/results/choosability-external-validity.md`): the eval renders `- X: <desc>` while
+`render_catalog()` emits `- use_skill(name="X") — <desc>`; the wrapper is a constant per-entry cost,
+so the absolute saving is identical (15,038 tokens) and only the percentage moves (64% of the
+production catalogue, 66% of the eval's). More importantly the eval's TASK — an isolated
+multiple-choice question — is not production's `use_skill` call chosen mid-conversation. The arm
+comparison is internally valid; transfer of the absolute percentages to production selection is an
+assumption, the same class of gap ADR-0146 and ADR-0154 already record. The transferable claims are
+the ordering and the ratio, not the absolute rates. Finally, `tests/test_skills.py` uses
+single-word descriptions, so a first-sentence truncation is a no-op there and the current suite
+could not see such a change land correctly or incorrectly — relevant to any future attempt.

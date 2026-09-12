@@ -1,0 +1,3087 @@
+{
+ "k": 3,
+ "per_skill": {
+  "access-aws-services": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "access-email": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "access-roblox-studio": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "add-npc-task": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "agent-completion-report": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "analyze-npc-behavior": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "analyze-remote-corpus": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "archive-aws-graveyard": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "archive-efs-graveyard": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "aspirations": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "aspirations-all-blocked": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "aspirations-complete-review": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "aspirations-consolidate": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "aspirations-curate-memory": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "aspirations-evolve": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.6666666666666666
+  },
+  "aspirations-execute": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "aspirations-graceful-stop": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "aspirations-learning-gate": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "aspirations-precheck": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "aspirations-select": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.0
+  },
+  "aspirations-spark": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "aspirations-state-update": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "aspirations-strategic-scan": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "aspirations-verify": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "assert-tests-actually-executed": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "audit-goal-citations": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 1.0
+  },
+  "audit-public-web-surface": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 1.0
+  },
+  "audit-repo-secret-scopes": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 1.0,
+   "NAMES": 1.0
+  },
+  "backlog-report": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "backup-git-repo-offbox": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "boot": {
+   "FULL": 0.0,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "build-operator-job": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "call-shape-census": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.3333333333333333
+  },
+  "census-fleet-artifact": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.0
+  },
+  "check-deploy-hold-before-push": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "check-production-health": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "check-survivorship-denominator": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 1.0,
+   "NAMES": 1.0
+  },
+  "classify-alert-burst": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "compare-batch-vs-corpus-rate": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "create-aspiration": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "curriculum-gates": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "decode-email-body": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 1.0
+  },
+  "decompose": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "diff-mirrored-sets": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.6666666666666666
+  },
+  "drain-temp": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 1.0
+  },
+  "efs-file-put": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "encode-session": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.6666666666666666
+  },
+  "enforcement-triad-scaffold": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "env-list-baseline": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "establish-vocabulary-contract": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.6666666666666666
+  },
+  "extract-alert-conditions": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "extract-and-run-embedded-block": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "fan-out-repo-edit": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.3333333333333333
+  },
+  "felt-sense-checkin": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "fleet-capacity-snapshot": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "forge-skill": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "fresh-eyes-close": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "fresh-eyes-code": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "fresh-eyes-program": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "fresh-eyes-review": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "fresh-eyes-tree": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "generate-domain-goals": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "hypothesis-past-deadline": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "is-change-live": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "junit-xml-testcount": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "land-stranded-pr": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "launch-env-server-session": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "least-privilege-credential-cutover": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "manage-roblox-scripts": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 1.0
+  },
+  "measure-arc-two-arm-prereg": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "measure-predicate-fp": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "mutation-proof-regression-test": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "notify-user": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "open-questions": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "perception-verticle-scaffolding": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "precheck-corpus-freshness": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "prime": {
+   "FULL": 1.0,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "priority-review": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "probe-aws-capability": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "probe-doc-retrievability": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "probe-governed-store": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.6666666666666666
+  },
+  "promotion-day": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.3333333333333333
+  },
+  "purge-live-table-rows": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "read-fleet-boxlocal": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "reconcile-fleet-fork": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "reconcile-owncloud-conflicts": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.0,
+   "NAMES": 0.6666666666666666
+  },
+  "reconstruct-env-server-restart-timeline": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "reconstruct-web-funnel": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "recover-clobbered-store-field": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.0
+  },
+  "recurring-cycle-metric-close": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "reflect": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.6666666666666666
+  },
+  "reflect-maintain": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "reflect-on-outcome": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "reflect-on-self": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "reflect-tree-update": {
+   "FULL": 0.0,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "relay-inbox-directives": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "replay": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "replay-check-across-states": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "research-topic": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "respond": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "review-hypotheses": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "roblox-ayoai-worldprep": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 1.0,
+   "NAMES": 0.0
+  },
+  "roblox-place-geometry-check": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "roll-engine-config": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "run-dev-oneshot-demo": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "run-game-session": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "run-processor": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "run-test-circuit": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "scan-runtime-margin": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.3333333333333333
+  },
+  "scan-stale-jobs": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.0
+  },
+  "scratch-cognito-account-end-to-end": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "seed": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "session-chain-probe": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "session-dump-class-tally": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "ship-product-pr": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "ship-vinheim-runtime-endpoint": {
+   "FULL": 1.0,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "sprint-planning": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "ssm-run": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "start": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "state-replay": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "stop": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "strategic-pulse": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "sweep-customer-server-usage": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "sweep-efs-session-terminations": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "sweep-stale-claim-artifacts": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "symbol-birth-archaeology": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.3333333333333333
+  },
+  "transplant": {
+   "FULL": 1.0,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  },
+  "tree": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.3333333333333333
+  },
+  "tree-reader": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "triage-cis-alarm": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.6666666666666666
+  },
+  "triage-cited-fix-reachability": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "uncrossed-seams": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 1.0,
+   "NAMES": 0.3333333333333333
+  },
+  "update-framework": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.0
+  },
+  "verify-deployed-artifact": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.0
+  },
+  "verify-env-bridge": {
+   "FULL": 0.0,
+   "FIRST": 0.0,
+   "NAMES": 0.6666666666666666
+  },
+  "verify-forced-action-dispatch": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "verify-learning": {
+   "FULL": 0.3333333333333333,
+   "FIRST": 0.3333333333333333,
+   "NAMES": 0.0
+  },
+  "verify-learning-staleness": {
+   "FULL": 1.0,
+   "FIRST": 1.0,
+   "NAMES": 0.0
+  },
+  "worker-loop": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.0
+  },
+  "zakpod1-ledger-census": {
+   "FULL": 0.6666666666666666,
+   "FIRST": 0.6666666666666666,
+   "NAMES": 0.3333333333333333
+  }
+ },
+ "raw": {
+  "access-aws-services": {
+   "FULL": [
+    "read-fleet-boxlocal",
+    "ssm-run",
+    "ssm-run"
+   ],
+   "FIRST": [
+    "probe-governed-store",
+    "ssm-run",
+    "audit-public-web-surface"
+   ],
+   "NAMES": [
+    "replay",
+    "ssm-run",
+    "probe-aws-capability"
+   ]
+  },
+  "access-email": {
+   "FULL": [
+    "access-aws-services",
+    "access-email",
+    "relay-inbox-directives"
+   ],
+   "FIRST": [
+    "audit-repo-secret-scopes",
+    "access-email",
+    "relay-inbox-directives"
+   ],
+   "NAMES": [
+    "probe-aws-capability",
+    "access-email",
+    "decode-email-body"
+   ]
+  },
+  "access-roblox-studio": {
+   "FULL": [
+    "manage-roblox-scripts",
+    "access-roblox-studio",
+    "access-roblox-studio"
+   ],
+   "FIRST": [
+    "manage-roblox-scripts",
+    "access-roblox-studio",
+    "access-roblox-studio"
+   ],
+   "NAMES": [
+    "verify-env-bridge",
+    "manage-roblox-scripts",
+    "analyze-npc-behavior"
+   ]
+  },
+  "add-npc-task": {
+   "FULL": [
+    "add-npc-task",
+    "add-npc-task",
+    "roblox-ayoai-worldprep"
+   ],
+   "FIRST": [
+    "add-npc-task",
+    "add-npc-task",
+    "audit-roblox-deliverable"
+   ],
+   "NAMES": [
+    "manage-roblox-scripts",
+    "manage-roblox-scripts",
+    "manage-roblox-scripts"
+   ]
+  },
+  "agent-completion-report": {
+   "FULL": [
+    "prime",
+    "aspirations-consolidate",
+    "agent-completion-report"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "agent-completion-report",
+    "agent-completion-report"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "aspirations-complete-review",
+    "backlog-report"
+   ]
+  },
+  "analyze-npc-behavior": {
+   "FULL": [
+    "analyze-npc-behavior",
+    "verify-env-bridge",
+    "check-deploy-hold-before-push"
+   ],
+   "FIRST": [
+    "analyze-npc-behavior",
+    "aspirations-execute",
+    "check-deploy-hold-before-push"
+   ],
+   "NAMES": [
+    "aspirations-learning-gate",
+    "verify-env-bridge",
+    "check-deploy-hold-before-push"
+   ]
+  },
+  "analyze-remote-corpus": {
+   "FULL": [
+    "efs-file-put",
+    "recurring-cycle-metric-close",
+    "check-survivorship-denominator"
+   ],
+   "FIRST": [
+    "efs-file-put",
+    "verify-env-bridge",
+    "measure-predicate-fp"
+   ],
+   "NAMES": [
+    "forge-skill",
+    "establish-vocabulary-contract",
+    "verify-learning"
+   ]
+  },
+  "archive-aws-graveyard": {
+   "FULL": [
+    "archive-aws-graveyard",
+    "archive-aws-graveyard",
+    "archive-aws-graveyard"
+   ],
+   "FIRST": [
+    "archive-aws-graveyard",
+    "archive-aws-graveyard",
+    "archive-aws-graveyard"
+   ],
+   "NAMES": [
+    "archive-aws-graveyard",
+    "archive-efs-graveyard",
+    "archive-aws-graveyard"
+   ]
+  },
+  "archive-efs-graveyard": {
+   "FULL": [
+    "archive-aws-graveyard",
+    "archive-efs-graveyard",
+    "archive-efs-graveyard"
+   ],
+   "FIRST": [
+    "archive-efs-graveyard",
+    "archive-efs-graveyard",
+    "purge-live-table-rows"
+   ],
+   "NAMES": [
+    "archive-efs-graveyard",
+    "access-efs-data",
+    "verify-deployed-artifact"
+   ]
+  },
+  "aspirations": {
+   "FULL": [
+    "aspirations",
+    "aspirations-all-blocked",
+    "respond"
+   ],
+   "FIRST": [
+    "boot",
+    "aspirations-all-blocked",
+    "respond"
+   ],
+   "NAMES": [
+    "extract-and-run-embedded-block",
+    "aspirations-all-blocked",
+    "verify-forced-action-dispatch"
+   ]
+  },
+  "aspirations-all-blocked": {
+   "FULL": [
+    "aspirations-execute",
+    "aspirations-all-blocked",
+    "aspirations-all-blocked"
+   ],
+   "FIRST": [
+    "aspirations",
+    "aspirations-all-blocked",
+    "aspirations-all-blocked"
+   ],
+   "NAMES": [
+    "aspirations-execute",
+    "aspirations-evolve",
+    "aspirations-strategic-scan"
+   ]
+  },
+  "aspirations-complete-review": {
+   "FULL": [
+    "aspirations-complete-review",
+    "aspirations-complete-review",
+    "aspirations-complete-review"
+   ],
+   "FIRST": [
+    "aspirations-precheck",
+    "aspirations-complete-review",
+    "aspirations-complete-review"
+   ],
+   "NAMES": [
+    "aspirations-learning-gate",
+    "aspirations-curate-memory",
+    "aspirations-verify"
+   ]
+  },
+  "aspirations-consolidate": {
+   "FULL": [
+    "aspirations-graceful-stop",
+    "aspirations-consolidate",
+    "aspirations-state-update"
+   ],
+   "FIRST": [
+    "stop",
+    "aspirations-graceful-stop",
+    "fresh-eyes-code"
+   ],
+   "NAMES": [
+    "aspirations-graceful-stop",
+    "aspirations-graceful-stop",
+    "decode-email-body"
+   ]
+  },
+  "aspirations-curate-memory": {
+   "FULL": [
+    "aspirations-curate-memory",
+    "aspirations-curate-memory",
+    "aspirations-curate-memory"
+   ],
+   "FIRST": [
+    "aspirations-curate-memory",
+    "aspirations-curate-memory",
+    "aspirations-evolve"
+   ],
+   "NAMES": [
+    "aspirations-curate-memory",
+    "sweep-stale-claim-artifacts",
+    "aspirations-graceful-stop"
+   ]
+  },
+  "aspirations-evolve": {
+   "FULL": [
+    "prime",
+    "aspirations-evolve",
+    "aspirations-evolve"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "aspirations-evolve",
+    "aspirations-evolve"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "aspirations-evolve",
+    "aspirations-evolve"
+   ]
+  },
+  "aspirations-execute": {
+   "FULL": [
+    "prime",
+    "aspirations-execute",
+    "create-aspiration"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "aspirations-execute",
+    "create-aspiration"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "aspirations-strategic-scan",
+    "create-aspiration"
+   ]
+  },
+  "aspirations-graceful-stop": {
+   "FULL": [
+    "aspirations-graceful-stop",
+    "aspirations-graceful-stop",
+    "aspirations-graceful-stop"
+   ],
+   "FIRST": [
+    "aspirations-graceful-stop",
+    "aspirations-graceful-stop",
+    "aspirations-graceful-stop"
+   ],
+   "NAMES": [
+    "mode-invariant",
+    "aspirations-graceful-stop",
+    "aspirations-graceful-stop"
+   ]
+  },
+  "aspirations-learning-gate": {
+   "FULL": [
+    "aspirations-consolidate",
+    "aspirations-state-update",
+    "aspirations-state-update"
+   ],
+   "FIRST": [
+    "aspirations-consolidate",
+    "aspirations-execute",
+    "aspirations-state-update"
+   ],
+   "NAMES": [
+    "aspirations-curate-memory",
+    "aspirations-execute",
+    "aspirations-state-update"
+   ]
+  },
+  "aspirations-precheck": {
+   "FULL": [
+    "worker-loop",
+    "verify-forced-action-dispatch",
+    "aspirations-precheck"
+   ],
+   "FIRST": [
+    "aspirations-select",
+    "verify-forced-action-dispatch",
+    "aspirations-precheck"
+   ],
+   "NAMES": [
+    "boot",
+    "sweep-customer-server-usage",
+    "aspirations-precheck"
+   ]
+  },
+  "aspirations-select": {
+   "FULL": [
+    "aspirations-select",
+    "aspirations-select",
+    "aspirations-select"
+   ],
+   "FIRST": [
+    "aspirations-select",
+    "aspirations-select",
+    "aspirations-select"
+   ],
+   "NAMES": [
+    "relay-inbox-directives",
+    "aspirations-strategic-scan",
+    "aspirations-verify"
+   ]
+  },
+  "aspirations-spark": {
+   "FULL": [
+    "aspirations-spark",
+    "aspirations-spark",
+    "open-questions"
+   ],
+   "FIRST": [
+    "aspirations-spark",
+    "aspirations-spark",
+    "sprint-planning"
+   ],
+   "NAMES": [
+    "aspirations-spark",
+    "create-aspiration",
+    "relay-inbox-directives"
+   ]
+  },
+  "aspirations-state-update": {
+   "FULL": [
+    "aspirations-state-update",
+    "aspirations-state-update",
+    "prime"
+   ],
+   "FIRST": [
+    "aspirations-state-update",
+    "aspirations-state-update",
+    "precheck-corpus-freshness"
+   ],
+   "NAMES": [
+    "aspirations-execute",
+    "aspirations-execute",
+    "decode-email-body"
+   ]
+  },
+  "aspirations-strategic-scan": {
+   "FULL": [
+    "aspirations-strategic-scan",
+    "verify-learning-staleness",
+    "aspirations-strategic-scan"
+   ],
+   "FIRST": [
+    "aspirations-strategic-scan",
+    "verify-learning-staleness",
+    "aspirations-strategic-scan"
+   ],
+   "NAMES": [
+    "recurring-cycle-metric-close",
+    "decode-email-body",
+    "aspirations"
+   ]
+  },
+  "aspirations-verify": {
+   "FULL": [
+    "aspirations-state-update",
+    "aspirations-execute",
+    "aspirations-verify"
+   ],
+   "FIRST": [
+    "aspirations-state-update",
+    "aspirations-execute",
+    "worker-loop"
+   ],
+   "NAMES": [
+    "aspirations-curate-memory",
+    "aspirations-graceful-stop",
+    "worker-loop"
+   ]
+  },
+  "assert-tests-actually-executed": {
+   "FULL": [
+    "verify-env-bridge",
+    "junit-xml-testcount",
+    "assert-tests-actually-executed"
+   ],
+   "FIRST": [
+    "fresh-eyes-code",
+    "assert-tests-actually-executed",
+    "junit-xml-testcount"
+   ],
+   "NAMES": [
+    "forge-skill",
+    "junit-xml-testcount",
+    "analyze-npc-behavior"
+   ]
+  },
+  "audit-goal-citations": {
+   "FULL": [
+    "audit-goal-citations",
+    "audit-goal-citations",
+    "audit-goal-citations"
+   ],
+   "FIRST": [
+    "audit-goal-citations",
+    "audit-goal-citations",
+    "audit-goal-citations"
+   ],
+   "NAMES": [
+    "audit-goal-citations",
+    "audit-goal-citations",
+    "audit-goal-citations"
+   ]
+  },
+  "audit-public-web-surface": {
+   "FULL": [
+    "audit-public-web-surface",
+    "audit-public-web-surface",
+    "audit-public-web-surface"
+   ],
+   "FIRST": [
+    "audit-public-web-surface",
+    "audit-public-web-surface",
+    "audit-public-web-surface"
+   ],
+   "NAMES": [
+    "audit-public-web-surface",
+    "audit-public-web-surface",
+    "audit-public-web-surface"
+   ]
+  },
+  "audit-repo-secret-scopes": {
+   "FULL": [
+    "audit-repo-secret-scopes",
+    "probe-aws-capability",
+    "audit-repo-secret-scopes"
+   ],
+   "FIRST": [
+    "audit-repo-secret-scopes",
+    "audit-repo-secret-scopes",
+    "audit-repo-secret-scopes"
+   ],
+   "NAMES": [
+    "audit-repo-secret-scopes",
+    "audit-repo-secret-scopes",
+    "audit-repo-secret-scopes"
+   ]
+  },
+  "backlog-report": {
+   "FULL": [
+    "agent-completion-report",
+    "backlog-report",
+    "priority-review"
+   ],
+   "FIRST": [
+    "agent-completion-report",
+    "backlog-report",
+    "priority-review"
+   ],
+   "NAMES": [
+    "compare-batch-vs-corpus-rate",
+    "aspirations",
+    "aspirations-strategic-scan"
+   ]
+  },
+  "backup-git-repo-offbox": {
+   "FULL": [
+    "backup-git-repo-offbox",
+    "efs-file-put",
+    "backup-git-repo-offbox"
+   ],
+   "FIRST": [
+    "backup-git-repo-offbox",
+    "efs-file-put",
+    "backup-git-repo-offbox"
+   ],
+   "NAMES": [
+    "verify-deployed-artifact",
+    "efs-file-put",
+    "verify-deployed-artifact"
+   ]
+  },
+  "boot": {
+   "FULL": [
+    "prime",
+    "seed",
+    "sweep-efs-session-terminations"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "boot",
+    "sweep-efs-session-terminations"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "boot",
+    "sweep-efs-session-terminations"
+   ]
+  },
+  "build-operator-job": {
+   "FULL": [
+    "build-operator-job",
+    "build-operator-job",
+    "build-operator-job"
+   ],
+   "FIRST": [
+    "build-operator-job",
+    "build-operator-job",
+    "build-operator-job"
+   ],
+   "NAMES": [
+    "build-operator-job",
+    "build-operator-job",
+    "aspirations-strategic-scan"
+   ]
+  },
+  "call-shape-census": {
+   "FULL": [
+    "call-shape-census",
+    "call-shape-census",
+    "call-shape-census"
+   ],
+   "FIRST": [
+    "call-shape-census",
+    "call-shape-census",
+    "call-shape-census"
+   ],
+   "NAMES": [
+    "audit-repo-secret-scopes",
+    "measure-predicate-fp",
+    "call-shape-census"
+   ]
+  },
+  "census-fleet-artifact": {
+   "FULL": [
+    "census-fleet-artifact",
+    "census-fleet-artifact",
+    "census-fleet-artifact"
+   ],
+   "FIRST": [
+    "census-fleet-artifact",
+    "census-fleet-artifact",
+    "census-fleet-artifact"
+   ],
+   "NAMES": [
+    "reconcile-fleet-fork",
+    "check-survivorship-denominator",
+    "check-survivorship-denominator"
+   ]
+  },
+  "check-deploy-hold-before-push": {
+   "FULL": [
+    "check-deploy-hold-before-push",
+    "check-deploy-hold-before-push",
+    "check-deploy-hold-before-push"
+   ],
+   "FIRST": [
+    "check-deploy-hold-before-push",
+    "check-deploy-hold-before-push",
+    "check-deploy-hold-before-push"
+   ],
+   "NAMES": [
+    "audit-goal-citations",
+    "check-deploy-hold-before-push",
+    "check-deploy-hold-before-push"
+   ]
+  },
+  "check-production-health": {
+   "FULL": [
+    "access-aws-services",
+    "check-production-health",
+    "check-production-health"
+   ],
+   "FIRST": [
+    "check-production-health",
+    "check-production-health",
+    "scan-stale-jobs"
+   ],
+   "NAMES": [
+    "probe-aws-capability",
+    "sweep-customer-server-usage",
+    "drain-temp"
+   ]
+  },
+  "check-survivorship-denominator": {
+   "FULL": [
+    "check-survivorship-denominator",
+    "check-survivorship-denominator",
+    "measure-predicate-fp"
+   ],
+   "FIRST": [
+    "check-survivorship-denominator",
+    "check-survivorship-denominator",
+    "check-survivorship-denominator"
+   ],
+   "NAMES": [
+    "check-survivorship-denominator",
+    "check-survivorship-denominator",
+    "check-survivorship-denominator"
+   ]
+  },
+  "classify-alert-burst": {
+   "FULL": [
+    "classify-alert-burst",
+    "classify-alert-burst",
+    "classify-alert-burst"
+   ],
+   "FIRST": [
+    "classify-alert-burst",
+    "extract-alert-conditions",
+    "classify-alert-burst"
+   ],
+   "NAMES": [
+    "classify-alert-burst",
+    "decode-email-body",
+    "decode-email-body"
+   ]
+  },
+  "compare-batch-vs-corpus-rate": {
+   "FULL": [
+    "compare-batch-vs-corpus-rate",
+    "measure-arc-two-arm-prereg",
+    "check-survivorship-denominator"
+   ],
+   "FIRST": [
+    "measure-predicate-fp",
+    "session-chain-probe",
+    "measure-predicate-fp"
+   ],
+   "NAMES": [
+    "scorer-criterion-contribution-probe",
+    "measure-predicate-fp",
+    "measure-predicate-fp"
+   ]
+  },
+  "create-aspiration": {
+   "FULL": [
+    "create-aspiration",
+    "create-aspiration",
+    "prime"
+   ],
+   "FIRST": [
+    "create-aspiration",
+    "aspirations",
+    "precheck-corpus-freshness"
+   ],
+   "NAMES": [
+    "aspirations-execute",
+    "aspirations",
+    "decode-email-body"
+   ]
+  },
+  "curriculum-gates": {
+   "FULL": [
+    "prime",
+    "curriculum-gates",
+    "notify-user"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "curriculum-gates",
+    "promotion-day"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "promotion-day",
+    "aspirations-execute"
+   ]
+  },
+  "decode-email-body": {
+   "FULL": [
+    "decode-email-body",
+    "decode-email-body",
+    "decode-email-body"
+   ],
+   "FIRST": [
+    "decode-email-body",
+    "decode-email-body",
+    "decode-email-body"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "decode-email-body",
+    "decode-email-body"
+   ]
+  },
+  "decompose": {
+   "FULL": [
+    "agent-completion-report",
+    "decompose",
+    "review-hypotheses"
+   ],
+   "FIRST": [
+    "create-aspiration",
+    "decompose",
+    "analyze-npc-behavior"
+   ],
+   "NAMES": [
+    "verify-learning",
+    "decompose",
+    "aspirations-strategic-scan"
+   ]
+  },
+  "diff-mirrored-sets": {
+   "FULL": [
+    "diff-mirrored-sets",
+    "diff-mirrored-sets",
+    "assert-tests-actually-executed"
+   ],
+   "FIRST": [
+    "diff-mirrored-sets",
+    "diff-mirrored-sets",
+    "probe-doc-retrievability"
+   ],
+   "NAMES": [
+    "diff-mirrored-sets",
+    "diff-mirrored-sets",
+    "verify-learning"
+   ]
+  },
+  "drain-temp": {
+   "FULL": [
+    "drain-temp",
+    "drain-temp",
+    "drain-temp"
+   ],
+   "FIRST": [
+    "drain-temp",
+    "drain-temp",
+    "aspirations-consolidate"
+   ],
+   "NAMES": [
+    "drain-temp",
+    "drain-temp",
+    "drain-temp"
+   ]
+  },
+  "efs-file-put": {
+   "FULL": [
+    "efs-file-put",
+    "efs-file-put",
+    "ssm-run"
+   ],
+   "FIRST": [
+    "efs-file-put",
+    "efs-file-put",
+    "ssm-run"
+   ],
+   "NAMES": [
+    "ssm-run",
+    "verify-deployed-artifact",
+    "ssm-run"
+   ]
+  },
+  "encode-session": {
+   "FULL": [
+    "aspirations-spark",
+    "encode-session",
+    "scratch-cognito-account-end-to-end"
+   ],
+   "FIRST": [
+    "aspirations-spark",
+    "fresh-eyes-code",
+    "scratch-cognito-account-end-to-end"
+   ],
+   "NAMES": [
+    "encode-session",
+    "encode-session",
+    "scratch-cognito-account-end-to-end"
+   ]
+  },
+  "enforcement-triad-scaffold": {
+   "FULL": [
+    "enforcement-triad-scaffold",
+    "enforcement-triad-scaffold",
+    "enforcement-triad-scaffold"
+   ],
+   "FIRST": [
+    "enforcement-triad-scaffold",
+    "enforcement-triad-scaffold",
+    "enforcement-triad-scaffold"
+   ],
+   "NAMES": [
+    "build-operator-job",
+    "enforcement-triad-scaffold",
+    "enforcement-triad-scaffold"
+   ]
+  },
+  "env-list-baseline": {
+   "FULL": [
+    "census-fleet-artifact",
+    "census-fleet-artifact",
+    "access-efs-data"
+   ],
+   "FIRST": [
+    "check-survivorship-denominator",
+    "check-survivorship-denominator",
+    "check-survivorship-denominator"
+   ],
+   "NAMES": [
+    "census-fleet-artifact",
+    "sweep-efs-session-terminations",
+    "probe-governed-store"
+   ]
+  },
+  "establish-vocabulary-contract": {
+   "FULL": [
+    "establish-vocabulary-contract",
+    "establish-vocabulary-contract",
+    "check-deploy-hold-before-push"
+   ],
+   "FIRST": [
+    "establish-vocabulary-contract",
+    "establish-vocabulary-contract",
+    "precheck-corpus-freshness"
+   ],
+   "NAMES": [
+    "establish-vocabulary-contract",
+    "establish-vocabulary-contract",
+    "diff-mirrored-sets"
+   ]
+  },
+  "extract-alert-conditions": {
+   "FULL": [
+    "extract-alert-conditions",
+    "extract-alert-conditions",
+    "extract-alert-conditions"
+   ],
+   "FIRST": [
+    "extract-alert-conditions",
+    "relay-inbox-directives",
+    "extract-alert-conditions"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "decode-email-body",
+    "analyze-npc-behavior"
+   ]
+  },
+  "extract-and-run-embedded-block": {
+   "FULL": [
+    "extract-and-run-embedded-block",
+    "extract-and-run-embedded-block",
+    "assert-tests-actually-executed"
+   ],
+   "FIRST": [
+    "junit-xml-testcount",
+    "extract-and-run-embedded-block",
+    "assert-tests-actually-executed"
+   ],
+   "NAMES": [
+    "verify-learning",
+    "run-test-circuit",
+    "assert-tests-actually-executed"
+   ]
+  },
+  "fan-out-repo-edit": {
+   "FULL": [
+    "fan-out-repo-edit",
+    "fan-out-repo-edit",
+    "fan-out-repo-edit"
+   ],
+   "FIRST": [
+    "fan-out-repo-edit",
+    "fan-out-repo-edit",
+    "fan-out-repo-edit"
+   ],
+   "NAMES": [
+    "verify-deployed-artifact",
+    "aspirations-graceful-stop",
+    "fan-out-repo-edit"
+   ]
+  },
+  "felt-sense-checkin": {
+   "FULL": [
+    "encode-session",
+    "felt-sense-checkin",
+    "sprint-planning"
+   ],
+   "FIRST": [
+    "encode-session",
+    "aspirations-curate-memory",
+    "measure-predicate-fp"
+   ],
+   "NAMES": [
+    "tree",
+    "aspirations-curate-memory",
+    "verify-deployed-artifact"
+   ]
+  },
+  "fleet-capacity-snapshot": {
+   "FULL": [
+    "fleet-capacity-snapshot",
+    "diff-mirrored-sets",
+    "drain-temp"
+   ],
+   "FIRST": [
+    "fleet-capacity-snapshot",
+    "diff-mirrored-sets",
+    "aspirations-consolidate"
+   ],
+   "NAMES": [
+    "aspirations-strategic-scan",
+    "call-shape-census",
+    "aspirations-evolve"
+   ]
+  },
+  "forge-skill": {
+   "FULL": [
+    "forge-skill",
+    "forge-skill",
+    "prime"
+   ],
+   "FIRST": [
+    "forge-skill",
+    "forge-skill",
+    "precheck-corpus-freshness"
+   ],
+   "NAMES": [
+    "forge-skill",
+    "curriculum-gates",
+    "decode-email-body"
+   ]
+  },
+  "fresh-eyes-close": {
+   "FULL": [
+    "fresh-eyes-close",
+    "fresh-eyes-close",
+    "fresh-eyes-close"
+   ],
+   "FIRST": [
+    "fresh-eyes-close",
+    "fresh-eyes-code",
+    "fresh-eyes-close"
+   ],
+   "NAMES": [
+    "aspirations-verify",
+    "aspirations-learning-gate",
+    "fresh-eyes-review"
+   ]
+  },
+  "fresh-eyes-code": {
+   "FULL": [
+    "fresh-eyes-close",
+    "aspirations-execute",
+    "fresh-eyes-code"
+   ],
+   "FIRST": [
+    "fresh-eyes-code",
+    "aspirations-execute",
+    "fresh-eyes-code"
+   ],
+   "NAMES": [
+    "fresh-eyes-close",
+    "aspirations-curate-memory",
+    "prime"
+   ]
+  },
+  "fresh-eyes-program": {
+   "FULL": [
+    "enforcement-triad-scaffold",
+    "reconcile-owncloud-conflicts",
+    "verify-env-bridge"
+   ],
+   "FIRST": [
+    "enforcement-triad-scaffold",
+    "verify-forced-action-dispatch",
+    "verify-forced-action-dispatch"
+   ],
+   "NAMES": [
+    "aspirations-learning-gate",
+    "verify-learning",
+    "verify-forced-action-dispatch"
+   ]
+  },
+  "fresh-eyes-review": {
+   "FULL": [
+    "fresh-eyes-program",
+    "aspirations-select",
+    "fresh-eyes-review"
+   ],
+   "FIRST": [
+    "aspirations-evolve",
+    "aspirations-complete-review",
+    "aspirations-state-update"
+   ],
+   "NAMES": [
+    "aspirations-evolve",
+    "aspirations-curate-memory",
+    "drain-temp"
+   ]
+  },
+  "fresh-eyes-tree": {
+   "FULL": [
+    "enforcement-triad-scaffold",
+    "sweep-stale-claim-artifacts",
+    "verify-env-bridge"
+   ],
+   "FIRST": [
+    "enforcement-triad-scaffold",
+    "fresh-eyes-close",
+    "verify-forced-action-dispatch"
+   ],
+   "NAMES": [
+    "aspirations-learning-gate",
+    "aspirations-learning-gate",
+    "verify-forced-action-dispatch"
+   ]
+  },
+  "generate-domain-goals": {
+   "FULL": [
+    "generate-domain-goals",
+    "aspirations-strategic-scan",
+    "aspirations-select"
+   ],
+   "FIRST": [
+    "generate-domain-goals",
+    "aspirations-select",
+    "aspirations-select"
+   ],
+   "NAMES": [
+    "aspirations-curate-memory",
+    "aspirations-strategic-scan",
+    "relay-inbox-directives"
+   ]
+  },
+  "hypothesis-past-deadline": {
+   "FULL": [
+    "review-hypotheses",
+    "hypothesis-past-deadline",
+    "verify-deployed-artifact"
+   ],
+   "FIRST": [
+    "verify-learning",
+    "hypothesis-past-deadline",
+    "reconcile-owncloud-conflicts"
+   ],
+   "NAMES": [
+    "verify-learning-staleness",
+    "hypothesis-past-deadline",
+    "mutation-proof-regression-test"
+   ]
+  },
+  "is-change-live": {
+   "FULL": [
+    "is-change-live",
+    "is-change-live",
+    "assert-tests-actually-executed"
+   ],
+   "FIRST": [
+    "assert-tests-actually-executed",
+    "is-change-live",
+    "is-change-live"
+   ],
+   "NAMES": [
+    "check-deploy-hold-before-push",
+    "probe-aws-capability",
+    "verify-deployed-artifact"
+   ]
+  },
+  "junit-xml-testcount": {
+   "FULL": [
+    "run-test-circuit",
+    "junit-xml-testcount",
+    "junit-xml-testcount"
+   ],
+   "FIRST": [
+    "run-test-circuit",
+    "junit-xml-testcount",
+    "junit-xml-testcount"
+   ],
+   "NAMES": [
+    "fan-out-repo-edit",
+    "assert-tests-actually-executed",
+    "assert-tests-actually-executed"
+   ]
+  },
+  "land-stranded-pr": {
+   "FULL": [
+    "ship-product-pr",
+    "reconcile-fleet-fork",
+    "reconcile-fleet-fork"
+   ],
+   "FIRST": [
+    "ship-product-pr",
+    "check-deploy-hold-before-push",
+    "check-deploy-hold-before-push"
+   ],
+   "NAMES": [
+    "forge-skill",
+    "assert-tests-actually-executed",
+    "check-deploy-hold-before-push"
+   ]
+  },
+  "launch-env-server-session": {
+   "FULL": [
+    "launch-env-server-session",
+    "launch-env-server-session",
+    "launch-env-server-session"
+   ],
+   "FIRST": [
+    "launch-env-server-session",
+    "ship-vinheim-runtime-endpoint",
+    "launch-env-server-session"
+   ],
+   "NAMES": [
+    "scratch-cognito-account-end-to-end",
+    "verify-env-bridge",
+    "launch-env-server-session"
+   ]
+  },
+  "least-privilege-credential-cutover": {
+   "FULL": [
+    "call-shape-census",
+    "probe-aws-capability",
+    "least-privilege-credential-cutover"
+   ],
+   "FIRST": [
+    "call-shape-census",
+    "call-shape-census",
+    "least-privilege-credential-cutover"
+   ],
+   "NAMES": [
+    "sweep-customer-server-usage",
+    "audit-repo-secret-scopes",
+    "audit-repo-secret-scopes"
+   ]
+  },
+  "manage-roblox-scripts": {
+   "FULL": [
+    "manage-roblox-scripts",
+    "manage-roblox-scripts",
+    "manage-roblox-scripts"
+   ],
+   "FIRST": [
+    "manage-roblox-scripts",
+    "manage-roblox-scripts",
+    "manage-roblox-scripts"
+   ],
+   "NAMES": [
+    "manage-roblox-scripts",
+    "manage-roblox-scripts",
+    "manage-roblox-scripts"
+   ]
+  },
+  "measure-arc-two-arm-prereg": {
+   "FULL": [
+    "measure-arc-two-arm-prereg",
+    "measure-arc-two-arm-prereg",
+    "measure-arc-two-arm-prereg"
+   ],
+   "FIRST": [
+    "measure-arc-two-arm-prereg",
+    "measure-arc-two-arm-prereg",
+    "measure-arc-two-arm-prereg"
+   ],
+   "NAMES": [
+    "aspirations-execute",
+    "measure-arc-two-arm-prereg",
+    "measure-arc-two-arm-prereg"
+   ]
+  },
+  "measure-predicate-fp": {
+   "FULL": [
+    "measure-predicate-fp",
+    "measure-predicate-fp",
+    "check-survivorship-denominator"
+   ],
+   "FIRST": [
+    "measure-predicate-fp",
+    "measure-predicate-fp",
+    "check-survivorship-denominator"
+   ],
+   "NAMES": [
+    "measure-predicate-fp",
+    "enforcement-triad-scaffold",
+    "check-survivorship-denominator"
+   ]
+  },
+  "mutation-proof-regression-test": {
+   "FULL": [
+    "mutation-proof-regression-test",
+    "mutation-proof-regression-test",
+    "mutation-proof-regression-test"
+   ],
+   "FIRST": [
+    "mutation-proof-regression-test",
+    "uncrossed-seams",
+    "mutation-proof-regression-test"
+   ],
+   "NAMES": [
+    "verify-deployed-artifact",
+    "mutation-proof-regression-test",
+    "fan-out-repo-edit"
+   ]
+  },
+  "notify-user": {
+   "FULL": [
+    "relay-inbox-directives",
+    "enforcement-triad-scaffold",
+    "notify-user"
+   ],
+   "FIRST": [
+    "relay-inbox-directives",
+    "aspirations-learning-gate",
+    "notify-user"
+   ],
+   "NAMES": [
+    "relay-inbox-directives",
+    "aspirations-learning-gate",
+    "notify-user"
+   ]
+  },
+  "open-questions": {
+   "FULL": [
+    "prime",
+    "open-questions",
+    "open-questions"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "open-questions",
+    "open-questions"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "fleet-capacity-snapshot",
+    "relay-inbox-directives"
+   ]
+  },
+  "perception-verticle-scaffolding": {
+   "FULL": [
+    "perception-verticle-scaffolding",
+    "perception-verticle-scaffolding",
+    "assert-tests-actually-executed"
+   ],
+   "FIRST": [
+    "perception-verticle-scaffolding",
+    "perception-verticle-scaffolding",
+    "assert-tests-actually-executed"
+   ],
+   "NAMES": [
+    "fresh-eyes-code",
+    "perception-verticle-scaffolding",
+    "assert-tests-actually-executed"
+   ]
+  },
+  "precheck-corpus-freshness": {
+   "FULL": [
+    "precheck-corpus-freshness",
+    "verify-learning-staleness",
+    "fan-out-repo-edit"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "recurring-cycle-metric-close",
+    "fan-out-repo-edit"
+   ],
+   "NAMES": [
+    "precheck-corpus-freshness",
+    "verify-learning",
+    "verify-env-bridge"
+   ]
+  },
+  "prime": {
+   "FULL": [
+    "prime",
+    "prime",
+    "prime"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "prime",
+    "relay-inbox-directives"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "decode-email-body",
+    "relay-inbox-directives"
+   ]
+  },
+  "priority-review": {
+   "FULL": [
+    "prime",
+    "scorer-criterion-contribution-probe",
+    "aspirations-select"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "scorer-criterion-contribution-probe",
+    "aspirations-select"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "aspirations-strategic-scan",
+    "aspirations"
+   ]
+  },
+  "probe-aws-capability": {
+   "FULL": [
+    "probe-aws-capability",
+    "probe-aws-capability",
+    "probe-aws-capability"
+   ],
+   "FIRST": [
+    "probe-aws-capability",
+    "probe-aws-capability",
+    "archive-aws-graveyard"
+   ],
+   "NAMES": [
+    "least-privilege-credential-cutover",
+    "access-aws-services",
+    "probe-aws-capability"
+   ]
+  },
+  "probe-doc-retrievability": {
+   "FULL": [
+    "probe-doc-retrievability",
+    "probe-doc-retrievability",
+    "probe-doc-retrievability"
+   ],
+   "FIRST": [
+    "probe-doc-retrievability",
+    "probe-doc-retrievability",
+    "scorer-criterion-contribution-probe"
+   ],
+   "NAMES": [
+    "audit-goal-citations",
+    "audit-repo-secret-scopes",
+    "verify-learning"
+   ]
+  },
+  "probe-governed-store": {
+   "FULL": [
+    "probe-governed-store",
+    "probe-governed-store",
+    "probe-governed-store"
+   ],
+   "FIRST": [
+    "verify-deployed-artifact",
+    "probe-governed-store",
+    "probe-governed-store"
+   ],
+   "NAMES": [
+    "reconcile-fleet-fork",
+    "probe-governed-store",
+    "probe-governed-store"
+   ]
+  },
+  "promotion-day": {
+   "FULL": [
+    "promotion-day",
+    "check-deploy-hold-before-push",
+    "probe-governed-store"
+   ],
+   "FIRST": [
+    "ship-product-pr",
+    "check-deploy-hold-before-push",
+    "reconcile-owncloud-conflicts"
+   ],
+   "NAMES": [
+    "promotion-day",
+    "audit-roblox-deliverable",
+    "access-efs-data"
+   ]
+  },
+  "purge-live-table-rows": {
+   "FULL": [
+    "purge-live-table-rows",
+    "purge-live-table-rows",
+    "archive-aws-graveyard"
+   ],
+   "FIRST": [
+    "purge-live-table-rows",
+    "symbol-birth-archaeology",
+    "archive-aws-graveyard"
+   ],
+   "NAMES": [
+    "purge-live-table-rows",
+    "verify-deployed-artifact",
+    "archive-aws-graveyard"
+   ]
+  },
+  "read-fleet-boxlocal": {
+   "FULL": [
+    "read-fleet-boxlocal",
+    "read-fleet-boxlocal",
+    "census-fleet-artifact"
+   ],
+   "FIRST": [
+    "read-fleet-boxlocal",
+    "read-fleet-boxlocal",
+    "establish-vocabulary-contract"
+   ],
+   "NAMES": [
+    "analyze-npc-behavior",
+    "analyze-npc-behavior",
+    "read-fleet-boxlocal"
+   ]
+  },
+  "reconcile-fleet-fork": {
+   "FULL": [
+    "reconcile-fleet-fork",
+    "mutation-proof-regression-test",
+    "reconcile-fleet-fork"
+   ],
+   "FIRST": [
+    "reconcile-fleet-fork",
+    "assert-tests-actually-executed",
+    "reconcile-fleet-fork"
+   ],
+   "NAMES": [
+    "reconcile-fleet-fork",
+    "verify-learning",
+    "verify-env-bridge"
+   ]
+  },
+  "reconcile-owncloud-conflicts": {
+   "FULL": [
+    "reconcile-owncloud-conflicts",
+    "probe-governed-store",
+    "reconcile-owncloud-conflicts"
+   ],
+   "FIRST": [
+    "reconcile-fleet-fork",
+    "probe-governed-store",
+    "sweep-efs-session-terminations"
+   ],
+   "NAMES": [
+    "reconcile-owncloud-conflicts",
+    "reconcile-owncloud-conflicts",
+    "sweep-stale-claim-artifacts"
+   ]
+  },
+  "reconstruct-env-server-restart-timeline": {
+   "FULL": [
+    "access-operator-api",
+    "reconstruct-env-server-restart-timeline",
+    "reconstruct-env-server-restart-timeline"
+   ],
+   "FIRST": [
+    "probe-doc-retrievability",
+    "reconstruct-env-server-restart-timeline",
+    "roblox-place-geometry-check"
+   ],
+   "NAMES": [
+    "verify-env-bridge",
+    "probe-aws-capability",
+    "verify-learning"
+   ]
+  },
+  "reconstruct-web-funnel": {
+   "FULL": [
+    "enforcement-triad-scaffold",
+    "reconstruct-web-funnel",
+    "reconstruct-web-funnel"
+   ],
+   "FIRST": [
+    "aspirations-curate-memory",
+    "check-survivorship-denominator",
+    "reconstruct-web-funnel"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "verify-learning",
+    "reconstruct-web-funnel"
+   ]
+  },
+  "recover-clobbered-store-field": {
+   "FULL": [
+    "recover-clobbered-store-field",
+    "recover-clobbered-store-field",
+    "recover-clobbered-store-field"
+   ],
+   "FIRST": [
+    "recover-clobbered-store-field",
+    "recover-clobbered-store-field",
+    "recover-clobbered-store-field"
+   ],
+   "NAMES": [
+    "reconstruct-env-server-restart-timeline",
+    "efs-file-put",
+    "diff-mirrored-sets"
+   ]
+  },
+  "recurring-cycle-metric-close": {
+   "FULL": [
+    "probe-doc-retrievability",
+    "recurring-cycle-metric-close",
+    "recurring-cycle-metric-close"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "measure-arc-two-arm-prereg",
+    "recurring-cycle-metric-close"
+   ],
+   "NAMES": [
+    "guard-696",
+    "verify-env-bridge",
+    "recurring-cycle-metric-close"
+   ]
+  },
+  "reflect": {
+   "FULL": [
+    "reflect",
+    "reflect",
+    "prime"
+   ],
+   "FIRST": [
+    "reflect",
+    "reflect",
+    "precheck-corpus-freshness"
+   ],
+   "NAMES": [
+    "reflect",
+    "reflect",
+    "decode-email-body"
+   ]
+  },
+  "reflect-maintain": {
+   "FULL": [
+    "prime",
+    "aspirations-curate-memory",
+    "reflect-maintain"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "fresh-eyes-review",
+    "aspirations-curate-memory"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "aspirations-curate-memory",
+    "aspirations-evolve"
+   ]
+  },
+  "reflect-on-outcome": {
+   "FULL": [
+    "prime",
+    "sweep-stale-claim-artifacts",
+    "reflect-on-outcome"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "fresh-eyes-code",
+    "reflect-on-outcome"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "analyze-npc-behavior",
+    "aspirations-verify"
+   ]
+  },
+  "reflect-on-self": {
+   "FULL": [
+    "reflect-on-self",
+    "prime",
+    "review-hypotheses"
+   ],
+   "FIRST": [
+    "reflect-on-self",
+    "precheck-corpus-freshness",
+    "analyze-npc-behavior"
+   ],
+   "NAMES": [
+    "aspirations-evolve",
+    "decode-email-body",
+    "analyze-npc-behavior"
+   ]
+  },
+  "reflect-tree-update": {
+   "FULL": [
+    "prime",
+    "tree",
+    "encode-session"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "reflect-tree-update",
+    "encode-session"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "tree",
+    "decode-email-body"
+   ]
+  },
+  "relay-inbox-directives": {
+   "FULL": [
+    "relay-inbox-directives",
+    "access-email",
+    "relay-inbox-directives"
+   ],
+   "FIRST": [
+    "relay-inbox-directives",
+    "access-email",
+    "recurring-cycle-metric-close"
+   ],
+   "NAMES": [
+    "drain-temp",
+    "access-email",
+    "access-efs-data"
+   ]
+  },
+  "replay": {
+   "FULL": [
+    "reflect-tree-update",
+    "replay",
+    "prime"
+   ],
+   "FIRST": [
+    "reflect-tree-update",
+    "replay",
+    "precheck-corpus-freshness"
+   ],
+   "NAMES": [
+    "reflect",
+    "replay",
+    "decode-email-body"
+   ]
+  },
+  "replay-check-across-states": {
+   "FULL": [
+    "replay-check-across-states",
+    "assert-tests-actually-executed",
+    "replay-check-across-states"
+   ],
+   "FIRST": [
+    "replay-check-across-states",
+    "assert-tests-actually-executed",
+    "replay-check-across-states"
+   ],
+   "NAMES": [
+    "replay",
+    "assert-tests-actually-executed",
+    "fresh-eyes-code"
+   ]
+  },
+  "research-topic": {
+   "FULL": [
+    "research-topic",
+    "analyze-npc-behavior",
+    "research-topic"
+   ],
+   "FIRST": [
+    "research-topic",
+    "agent-completion-report",
+    "decompose"
+   ],
+   "NAMES": [
+    "precheck-corpus-freshness",
+    "analyze-remote-corpus",
+    "decompose"
+   ]
+  },
+  "respond": {
+   "FULL": [
+    "prime",
+    "respond",
+    "respond"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "respond",
+    "respond"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "decode-email-body",
+    "respond"
+   ]
+  },
+  "review-hypotheses": {
+   "FULL": [
+    "review-hypotheses",
+    "prime",
+    "reflect-on-outcome"
+   ],
+   "FIRST": [
+    "review-hypotheses",
+    "precheck-corpus-freshness",
+    "verify-learning"
+   ],
+   "NAMES": [
+    "aspirations-verify",
+    "decode-email-body",
+    "analyze-remote-corpus"
+   ]
+  },
+  "roblox-ayoai-worldprep": {
+   "FULL": [
+    "roblox-ayoai-worldprep",
+    "access-roblox-studio",
+    "roblox-ayoai-worldprep"
+   ],
+   "FIRST": [
+    "roblox-ayoai-worldprep",
+    "roblox-ayoai-worldprep",
+    "roblox-ayoai-worldprep"
+   ],
+   "NAMES": [
+    "verify-env-bridge",
+    "verify-env-bridge",
+    "boot"
+   ]
+  },
+  "roblox-place-geometry-check": {
+   "FULL": [
+    "roblox-place-geometry-check",
+    "roblox-place-geometry-check",
+    "roblox-place-geometry-check"
+   ],
+   "FIRST": [
+    "roblox-place-geometry-check",
+    "roblox-place-geometry-check",
+    "roblox-place-geometry-check"
+   ],
+   "NAMES": [
+    "roblox-place-geometry-check",
+    "probe-aws-capability",
+    "roblox-place-geometry-check"
+   ]
+  },
+  "roll-engine-config": {
+   "FULL": [
+    "roll-engine-config",
+    "roll-engine-config",
+    "measure-arc-two-arm-prereg"
+   ],
+   "FIRST": [
+    "roll-engine-config",
+    "roll-engine-config",
+    "measure-arc-two-arm-prereg"
+   ],
+   "NAMES": [
+    "roll-engine-config",
+    "aspirations-graceful-stop",
+    "verify-learning"
+   ]
+  },
+  "run-dev-oneshot-demo": {
+   "FULL": [
+    "access-roblox-studio",
+    "run-dev-oneshot-demo",
+    "run-dev-oneshot-demo"
+   ],
+   "FIRST": [
+    "access-roblox-studio",
+    "run-dev-oneshot-demo",
+    "verify-forced-action-dispatch"
+   ],
+   "NAMES": [
+    "verify-env-bridge",
+    "manage-roblox-scripts",
+    "extract-and-run-embedded-block"
+   ]
+  },
+  "run-game-session": {
+   "FULL": [
+    "probe-doc-retrievability",
+    "run-game-session",
+    "run-game-session"
+   ],
+   "FIRST": [
+    "audit-roblox-deliverable",
+    "recurring-cycle-metric-close",
+    "launch-env-server-session"
+   ],
+   "NAMES": [
+    "manage-roblox-scripts",
+    "aspirations-graceful-stop",
+    "sweep-efs-session-terminations"
+   ]
+  },
+  "run-processor": {
+   "FULL": [
+    "run-processor",
+    "run-processor",
+    "roll-engine-config"
+   ],
+   "FIRST": [
+    "run-processor",
+    "guard-3569",
+    "run-processor"
+   ],
+   "NAMES": [
+    "zakpod1-ledger-census",
+    "fresh-eyes-close",
+    "run-processor"
+   ]
+  },
+  "run-test-circuit": {
+   "FULL": [
+    "prime",
+    "run-test-circuit",
+    "aspirations-execute"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "run-test-circuit",
+    "aspirations-verify"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "run-test-circuit",
+    "verify-forced-action-dispatch"
+   ]
+  },
+  "scan-runtime-margin": {
+   "FULL": [
+    "scan-runtime-margin",
+    "scan-runtime-margin",
+    "scan-runtime-margin"
+   ],
+   "FIRST": [
+    "scan-runtime-margin",
+    "scan-runtime-margin",
+    "scan-runtime-margin"
+   ],
+   "NAMES": [
+    "scan-runtime-margin",
+    "audit-repo-secret-scopes",
+    "audit-repo-secret-scopes"
+   ]
+  },
+  "scan-stale-jobs": {
+   "FULL": [
+    "scan-stale-jobs",
+    "scan-stale-jobs",
+    "scan-stale-jobs"
+   ],
+   "FIRST": [
+    "scan-stale-jobs",
+    "scan-stale-jobs",
+    "scan-stale-jobs"
+   ],
+   "NAMES": [
+    "drain-temp",
+    "drain-temp",
+    "scan-runtime-margin"
+   ]
+  },
+  "scratch-cognito-account-end-to-end": {
+   "FULL": [
+    "scratch-cognito-account-end-to-end",
+    "scratch-cognito-account-end-to-end",
+    "assert-tests-actually-executed"
+   ],
+   "FIRST": [
+    "scratch-cognito-account-end-to-end",
+    "probe-aws-capability",
+    "assert-tests-actually-executed"
+   ],
+   "NAMES": [
+    "scratch-cognito-account-end-to-end",
+    "access-aws-services",
+    "extract-and-run-embedded-block"
+   ]
+  },
+  "seed": {
+   "FULL": [
+    "seed",
+    "seed",
+    "seed"
+   ],
+   "FIRST": [
+    "seed",
+    "transplant",
+    "seed"
+   ],
+   "NAMES": [
+    "transplant",
+    "transplant",
+    "update-framework"
+   ]
+  },
+  "session-chain-probe": {
+   "FULL": [
+    "session-chain-probe",
+    "session-chain-probe",
+    "sweep-efs-session-terminations"
+   ],
+   "FIRST": [
+    "measure-predicate-fp",
+    "check-survivorship-denominator",
+    "check-survivorship-denominator"
+   ],
+   "NAMES": [
+    "verify-learning",
+    "sweep-efs-session-terminations",
+    "sweep-efs-session-terminations"
+   ]
+  },
+  "session-dump-class-tally": {
+   "FULL": [
+    "session-dump-class-tally",
+    "session-dump-class-tally",
+    "session-dump-class-tally"
+   ],
+   "FIRST": [
+    "session-dump-class-tally",
+    "establish-vocabulary-contract",
+    "session-dump-class-tally"
+   ],
+   "NAMES": [
+    "extract-alert-conditions",
+    "verify-learning",
+    "diff-mirrored-sets"
+   ]
+  },
+  "ship-product-pr": {
+   "FULL": [
+    "ship-product-pr",
+    "ship-product-pr",
+    "ship-product-pr"
+   ],
+   "FIRST": [
+    "ship-product-pr",
+    "ship-product-pr",
+    "ship-product-pr"
+   ],
+   "NAMES": [
+    "ship-product-pr",
+    "check-deploy-hold-before-push",
+    "ship-product-pr"
+   ]
+  },
+  "ship-vinheim-runtime-endpoint": {
+   "FULL": [
+    "ship-vinheim-runtime-endpoint",
+    "ship-vinheim-runtime-endpoint",
+    "ship-vinheim-runtime-endpoint"
+   ],
+   "FIRST": [
+    "ship-vinheim-runtime-endpoint",
+    "establish-vocabulary-contract",
+    "forge-skill"
+   ],
+   "NAMES": [
+    "ship-vinheim-runtime-endpoint",
+    "establish-vocabulary-contract",
+    "access-operator-api"
+   ]
+  },
+  "sprint-planning": {
+   "FULL": [
+    "prime",
+    "scorer-criterion-contribution-probe",
+    "aspirations-execute"
+   ],
+   "FIRST": [
+    "precheck-corpus-freshness",
+    "scorer-criterion-contribution-probe",
+    "aspirations-evolve"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "aspirations",
+    "aspirations-evolve"
+   ]
+  },
+  "ssm-run": {
+   "FULL": [
+    "audit-repo-secret-scopes",
+    "ssm-run",
+    "ssm-run"
+   ],
+   "FIRST": [
+    "audit-goal-citations",
+    "ssm-run",
+    "ssm-run"
+   ],
+   "NAMES": [
+    "verify-env-bridge",
+    "ssm-run",
+    "probe-aws-capability"
+   ]
+  },
+  "start": {
+   "FULL": [
+    "start",
+    "reconcile-owncloud-conflicts",
+    "reconcile-fleet-fork"
+   ],
+   "FIRST": [
+    "start",
+    "purge-live-table-rows",
+    "aspirations-select"
+   ],
+   "NAMES": [
+    "decode-email-body",
+    "verify-forced-action-dispatch",
+    "verify-forced-action-dispatch"
+   ]
+  },
+  "state-replay": {
+   "FULL": [
+    "state-replay",
+    "reconcile-fleet-fork",
+    "access-efs-data"
+   ],
+   "FIRST": [
+    "state-replay",
+    "fan-out-repo-edit",
+    "access-efs-data"
+   ],
+   "NAMES": [
+    "analyze-npc-behavior",
+    "clone-if-absent",
+    "access-efs-data"
+   ]
+  },
+  "stop": {
+   "FULL": [
+    "stop",
+    "prime",
+    "decode-email-body"
+   ],
+   "FIRST": [
+    "stop",
+    "precheck-corpus-freshness",
+    "start"
+   ],
+   "NAMES": [
+    "reflect",
+    "boot",
+    "boot"
+   ]
+  },
+  "strategic-pulse": {
+   "FULL": [
+    "priority-review",
+    "strategic-pulse",
+    "strategic-pulse"
+   ],
+   "FIRST": [
+    "priority-review",
+    "aspirations-consolidate",
+    "strategic-pulse"
+   ],
+   "NAMES": [
+    "aspirations",
+    "aspirations-consolidate",
+    "aspirations-strategic-scan"
+   ]
+  },
+  "sweep-customer-server-usage": {
+   "FULL": [
+    "enforcement-triad-scaffold",
+    "sweep-customer-server-usage",
+    "efs-file-put"
+   ],
+   "FIRST": [
+    "enforcement-triad-scaffold",
+    "sweep-customer-server-usage",
+    "verify-learning-staleness"
+   ],
+   "NAMES": [
+    "verify-env-bridge",
+    "fleet-capacity-snapshot",
+    "verify-deployed-artifact"
+   ]
+  },
+  "sweep-efs-session-terminations": {
+   "FULL": [
+    "session-dump-class-tally",
+    "sweep-efs-session-terminations",
+    "state-replay"
+   ],
+   "FIRST": [
+    "session-dump-class-tally",
+    "sweep-efs-session-terminations",
+    "state-replay"
+   ],
+   "NAMES": [
+    "encode-session",
+    "sweep-efs-session-terminations",
+    "session-dump-class-tally"
+   ]
+  },
+  "sweep-stale-claim-artifacts": {
+   "FULL": [
+    "sweep-stale-claim-artifacts",
+    "sweep-stale-claim-artifacts",
+    "measure-predicate-fp"
+   ],
+   "FIRST": [
+    "sweep-stale-claim-artifacts",
+    "sweep-stale-claim-artifacts",
+    "measure-predicate-fp"
+   ],
+   "NAMES": [
+    "sweep-efs-session-terminations",
+    "verify-learning",
+    "extract-alert-conditions"
+   ]
+  },
+  "symbol-birth-archaeology": {
+   "FULL": [
+    "symbol-birth-archaeology",
+    "symbol-birth-archaeology",
+    "symbol-birth-archaeology"
+   ],
+   "FIRST": [
+    "symbol-birth-archaeology",
+    "symbol-birth-archaeology",
+    "symbol-birth-archaeology"
+   ],
+   "NAMES": [
+    "symbol-birth-archaeology",
+    "diff-mirrored-sets",
+    "forge-skill"
+   ]
+  },
+  "transplant": {
+   "FULL": [
+    "transplant",
+    "transplant",
+    "transplant"
+   ],
+   "FIRST": [
+    "transplant",
+    "env-list-baseline",
+    "transplant"
+   ],
+   "NAMES": [
+    "transplant",
+    "diff-mirrored-sets",
+    "backup-git-repo-offbox"
+   ]
+  },
+  "tree": {
+   "FULL": [
+    "tree",
+    "prime",
+    "enforcement-triad-scaffold"
+   ],
+   "FIRST": [
+    "tree",
+    "precheck-corpus-freshness",
+    "enforcement-triad-scaffold"
+   ],
+   "NAMES": [
+    "tree",
+    "decode-email-body",
+    "enforcement-triad-scaffold"
+   ]
+  },
+  "tree-reader": {
+   "FULL": [
+    "probe-doc-retrievability",
+    "tree-reader",
+    "respond"
+   ],
+   "FIRST": [
+    "probe-doc-retrievability",
+    "tree-reader",
+    "respond"
+   ],
+   "NAMES": [
+    "analyze-remote-corpus",
+    "fresh-eyes-close",
+    "prime"
+   ]
+  },
+  "triage-cis-alarm": {
+   "FULL": [
+    "triage-cis-alarm",
+    "triage-cis-alarm",
+    "triage-cis-alarm"
+   ],
+   "FIRST": [
+    "triage-cis-alarm",
+    "triage-cis-alarm",
+    "triage-cis-alarm"
+   ],
+   "NAMES": [
+    "triage-cis-alarm",
+    "audit-public-web-surface",
+    "triage-cis-alarm"
+   ]
+  },
+  "triage-cited-fix-reachability": {
+   "FULL": [
+    "precheck-corpus-freshness",
+    "probe-doc-retrievability",
+    "assert-tests-actually-executed"
+   ],
+   "FIRST": [
+    "check-survivorship-denominator",
+    "probe-doc-retrievability",
+    "verify-learning"
+   ],
+   "NAMES": [
+    "diff-mirrored-sets",
+    "probe-aws-capability",
+    "verify-learning"
+   ]
+  },
+  "uncrossed-seams": {
+   "FULL": [
+    "call-shape-census",
+    "uncrossed-seams",
+    "uncrossed-seams"
+   ],
+   "FIRST": [
+    "uncrossed-seams",
+    "uncrossed-seams",
+    "uncrossed-seams"
+   ],
+   "NAMES": [
+    "audit-repo-secret-scopes",
+    "call-shape-census",
+    "uncrossed-seams"
+   ]
+  },
+  "update-framework": {
+   "FULL": [
+    "update-framework",
+    "update-framework",
+    "update-framework"
+   ],
+   "FIRST": [
+    "update-framework",
+    "update-framework",
+    "update-framework"
+   ],
+   "NAMES": [
+    "boot",
+    "aspirations-graceful-stop",
+    "transplant"
+   ]
+  },
+  "verify-deployed-artifact": {
+   "FULL": [
+    "is-change-live",
+    "probe-aws-capability",
+    "efs-file-put"
+   ],
+   "FIRST": [
+    "is-change-live",
+    "forge-skill",
+    "census-fleet-artifact"
+   ],
+   "NAMES": [
+    "is-change-live",
+    "forge-skill",
+    "diff-mirrored-sets"
+   ]
+  },
+  "verify-env-bridge": {
+   "FULL": [
+    "assert-tests-actually-executed",
+    "sweep-efs-session-terminations",
+    "reconstruct-env-server-restart-timeline"
+   ],
+   "FIRST": [
+    "assert-tests-actually-executed",
+    "verify-forced-action-dispatch",
+    "assert-tests-actually-executed"
+   ],
+   "NAMES": [
+    "verify-env-bridge",
+    "verify-deployed-artifact",
+    "verify-env-bridge"
+   ]
+  },
+  "verify-forced-action-dispatch": {
+   "FULL": [
+    "verify-forced-action-dispatch",
+    "verify-forced-action-dispatch",
+    "session-chain-probe"
+   ],
+   "FIRST": [
+    "access-roblox-studio",
+    "verify-env-bridge",
+    "verify-forced-action-dispatch"
+   ],
+   "NAMES": [
+    "manage-roblox-scripts",
+    "sweep-efs-session-terminations",
+    "session-chain-probe"
+   ]
+  },
+  "verify-learning": {
+   "FULL": [
+    "verify-learning",
+    "verify-learning-staleness",
+    "verify-learning-staleness"
+   ],
+   "FIRST": [
+    "verify-learning",
+    "verify-learning-staleness",
+    "verify-learning-staleness"
+   ],
+   "NAMES": [
+    "aspirations-strategic-scan",
+    "fresh-eyes-close",
+    "decode-email-body"
+   ]
+  },
+  "verify-learning-staleness": {
+   "FULL": [
+    "verify-learning-staleness",
+    "verify-learning-staleness",
+    "verify-learning-staleness"
+   ],
+   "FIRST": [
+    "verify-learning-staleness",
+    "verify-learning-staleness",
+    "verify-learning-staleness"
+   ],
+   "NAMES": [
+    "fresh-eyes-close",
+    "aspirations-curate-memory",
+    "audit-repo-secret-scopes"
+   ]
+  },
+  "worker-loop": {
+   "FULL": [
+    "fresh-eyes-review",
+    "worker-loop",
+    "worker-loop"
+   ],
+   "FIRST": [
+    "fresh-eyes-review",
+    "worker-loop",
+    "worker-loop"
+   ],
+   "NAMES": [
+    "fresh-eyes-review",
+    "verify-learning",
+    "analyze-npc-behavior"
+   ]
+  },
+  "zakpod1-ledger-census": {
+   "FULL": [
+    "zakpod1-ledger-census",
+    "zakpod1-ledger-census",
+    "reconstruct-env-server-restart-timeline"
+   ],
+   "FIRST": [
+    "zakpod1-ledger-census",
+    "zakpod1-ledger-census",
+    "reconstruct-env-server-restart-timeline"
+   ],
+   "NAMES": [
+    "zakpod1-ledger-census",
+    "classify-alert-burst",
+    "decode-email-body"
+   ]
+  }
+ }
+}

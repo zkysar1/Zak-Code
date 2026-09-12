@@ -1,0 +1,56 @@
+PRE-REGISTRATION -- multi-query non-inferiority run              2026-09-12
+Written BEFORE the run. Fixes the design error the third addendum named in
+itself: the previous runs used a SUPERIORITY test, and failing to reject is
+not evidence of equivalence.
+
+WHY THE PREVIOUS RUN COULD NOT SETTLE THIS, AND WHY REPEATING IT WON'T
+  n=142 was the WHOLE catalogue -- the population is exhausted, and measurement
+  noise is zero (two invocations returned byte-identical scores), so neither a
+  larger sample nor more repetitions exists to be had. FULL vs FIRST produced
+  only 15 discordant pairs (11-4, p=0.1185) because each skill contributes a
+  single 0/1 outcome, and 127 of 142 skills flipped the same way in both arms
+  and carried no information at all.
+  The available axis is QUERIES PER SKILL, not skills. 140 skills have >=4
+  usable body paragraphs, so 3 queries each = 420 queries per arm. Each skill
+  then contributes a GRADED 0-3 score per arm, and a skill where FIRST scores
+  2/3 against FULL's 3/3 becomes evidence instead of a tie.
+
+CLUSTERING -- the analysis must respect it
+  Three queries drawn from ONE skill are NOT independent observations. Treating
+  420 queries as 420 independent trials would inflate significance. The unit of
+  analysis is therefore the SKILL: per arm, score each skill 0-3; the paired
+  comparison runs over the 140 skill-level differences, never over raw queries.
+
+PRIMARY -- non-inferiority of FIRST against FULL
+  MARGIN: 5 percentage points, fixed here, before data. Justification stated in
+  advance so it cannot be tuned afterwards: FIRST saves 15,038 tokens per
+  iteration (46% of a 32,768 window, 11.5% of the deployed 131,072). A loss of
+  up to 5pp of skill-selection accuracy is worth that saving; a loss beyond 5pp
+  is not.
+  TEST: one-sided 95% upper confidence bound on (FULL - FIRST) over skill-level
+  mean scores, via the paired bootstrap over SKILLS (resample skills, not
+  queries -- that is what preserves the clustering).
+    upper bound <  5pp -> NON-INFERIOR. The 66% saving is safe to build, and
+                          the addendum's "cannot exclude a 10pp loss" caveat is
+                          discharged and must be updated in place.
+    upper bound >= 5pp -> NOT DEMONSTRATED. The recommendation stays unproven;
+                          say so and do not ship the shortened catalogue on the
+                          strength of this ADR.
+  Note both outcomes are reportable and neither is a failure. "Not demonstrated"
+  is the honest result if the interval stays wide.
+
+SECONDARY -- NAMES against FULL, same machinery
+  Expected to reconfirm decisively. NAMES is NOT a non-inferiority candidate;
+  it is reported as a superiority comparison for continuity with the n=142 run.
+
+CONTROL -- FULL remains the positive control
+  VOID below 25%, as in the full-catalogue run, and for the same reason: a
+  boundary placed at the observed value is satisfiable by stasis (guard-5645).
+  Empty completions abort as INSTRUMENT failures, never score as wrong answers
+  (guard-6562).
+
+WHAT WILL NOT BE DONE
+  The margin will not be moved after seeing the interval. Exact match stays the
+  metric. Queries are drawn by the SAME rule as before (body paragraphs, front
+  matter and headings and code spans stripped) -- only the COUNT per skill
+  changes, so the previous runs remain comparable.
