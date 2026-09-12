@@ -67,3 +67,17 @@ KNOWN CONFOUND, stated in advance
   from arm aggregates -- it needs per-query join of retrieval hit vs correctness,
   which choosability-topk-matrix.json supports and should be computed before any
   claim rests on the 85.2%.
+
+=== 14:49 INSTRUMENT DEFECT FOUND AFTER THE VERDICT -- re-measurement pre-registered
+Every arm above rendered 11 of 140 skills as "- name: >-": the loader read a YAML block-scalar description as its
+indicator (bench/_frontmatter.py, Zak-Code #404). Those 11 scored FULL 0.364 vs 0.623 for the rest and 0.091 in every
+TOPK arm (BM25 cannot retrieve a name-only entry): a drag of ~2 points on every TOPK-FULL difference, the size of the
+deficits the verdict rests on. So the R3 verdict was read off a defective instrument and is VOID until re-measured.
+Re-measurement: all four arms (FULL, TOPK10/20/40), same 140 skills, same queries, same model and temperature, with
+the fixed loader + assert_sane. Predictions, fixed now: (a) the 11 skills' TOPK accuracy rises from 0.091 toward their
+FULL level; (b) every TOPK-FULL difference moves toward zero by ~1-2 points; (c) whether TOPK20 beats FULL on the
+point estimate is NOT predicted -- R3 is re-decided by the pre-registered primary (TOPK20-FULL, paired bootstrap over
+skills, 95% CI) exactly as before, with the same 5-point non-inferiority bar for a cost-only reading; (d) the FULL
+control moves by less than 3 points (the 11 gain a real description; nothing else changes). Fidelity with the fixed
+loader, same NI-matrix accuracies: F2 rho +0.550 (was +0.637), tertile spread 41.3% -> 78.7%; recorded in ADR-0158's
+second addendum with the excluding-the-11 variant beside it.

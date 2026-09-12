@@ -82,3 +82,38 @@ def test_llama_cpp_context_overflow_maps_to_context_window_exceeded() -> None:
     )
     mapped = LiteLLMProvider._map_error(exc)
     assert isinstance(mapped, ContextWindowExceeded)
+
+
+def test_loop_key_is_per_session_by_default_and_per_workspace_when_identity_is_stable() -> None:
+    """The key is an input the endpoint acts on (ADR-0157 fourth addendum): under
+    stable_prompt_identity it must not vary with the session, and must still separate workspaces."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from zakcode.agent.loop import AgentLoop
+
+    stub = SimpleNamespace(
+        settings=SimpleNamespace(stable_prompt_identity=False),
+        session=SimpleNamespace(id="abc"),
+        workspace_root=Path("/w"),
+    )
+    assert AgentLoop._prompt_cache_key(stub) == "zakcode/abc"
+    stub.settings.stable_prompt_identity = True
+    stable = AgentLoop._prompt_cache_key(stub)
+    assert stable.startswith("zakcode/ws-") and stable != "zakcode/abc"
+    stub.session.id = "def"
+    assert AgentLoop._prompt_cache_key(stub) == stable  # a new session: same key
+    stub.workspace_root = Path("/elsewhere")
+    assert AgentLoop._prompt_cache_key(stub) != stable  # a different workspace: a different key
+
+
+def test_every_provider_call_site_in_the_loop_uses_the_helper() -> None:
+    """Three call sites carried the literal f-string; a fourth added the same way would silently
+    reintroduce the per-run variation under the flag."""
+    from pathlib import Path
+
+    loop_py = Path(__file__).resolve().parent.parent / "src/zakcode/agent/loop.py"
+    src = loop_py.read_text(encoding="utf-8")
+    without_helper = src.replace('        return f"zakcode/{self.session.id}"', "")
+    assert 'f"zakcode/{self.session.id}"' not in without_helper
+    assert src.count("prompt_cache_key=self._prompt_cache_key()") == 3

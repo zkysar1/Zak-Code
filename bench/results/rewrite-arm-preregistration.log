@@ -69,3 +69,13 @@ DECISION RULES
 WHAT THIS CANNOT DO
   One catalogue, one rewriter, one model. A causal result here licenses the
   coach replication as the next step, not a fleet rollout on its own.
+
+=== 14:43 SCORE PHASE KILLED BY HAND -- the target set is contaminated by an instrument defect
+W1 failed (coverage rose on 17/45, floor 35). Then: 11 of the 45 targets -- the entire lowest-coverage tertile's
+bottom -- have orig == ">-". choosability_eval.py reads the description with ^description:\s*(.+)$, so a YAML
+folded/literal block scalar ("description: >-" + indented lines) is read as the two-character indicator. Those 11
+skills had coverage ~0 by artifact, sat in the catalogue the MODEL saw as ">-", scored FULL 0.364 vs 0.623 for the
+other 129 and 0.091 in every TOPK arm (BM25 cannot retrieve a name-only entry). The score phase would have compared
+rewritten real descriptions against ">-" for those 11 and manufactured a gain. Killed at 14:43:13; no W0-W4
+verdicts from this pass are valid. Repair: parser fix + loader guard, then the fidelity and shortlisting numbers are
+recomputed / re-measured under their own pre-registrations before any rewrite arm is re-attempted.

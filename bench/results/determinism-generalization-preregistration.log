@@ -75,3 +75,15 @@ ARM C -- added 11:41, BEFORE any 03-lru Claude Code run; arms A/B still unrun
   G4 HOLDS (predicted >=2 distinct; observed 3). G5 HOLDS (3/3 pass).
   The reference arm's nondeterminism is not task-specific: 2 states on the short
   task (9 runs, 2 batches), 3 states on the harder one.
+
+=== ARMS A/B RESULTS 14:36 (03-lru, zds-qwen3.6-35b, zc-03, temp 0, N=3 each; ran 14:09-14:36 with a second
+model serving another experiment on the same pod)
+ARM A (pre-fix real-user cell: workspace pinned, fresh uuid4, session id in the prompt): 3 DISTINCT byte-states of 3
+      (lru.py f6ee84 / fc4a08 / a86a74; test_lru.py differs too), turns [14,14,13], 3/3 pass.       G1 HOLDS
+ARM B (same + ZAKCODE_STABLE_PROMPT_IDENTITY=1):                 IDENTICAL 3/3, every file, turns [14,14,14], 3/3 pass.
+      G2 predicted "fewer distinct states than A, not one" -> G2 FAILS in the favourable direction: the fix removed
+      the divergence entirely on the hardest known task. G3: pass rate 3/3 in both arms, recorded separately.
+Decision rule applied: "B identical AND A not -> the fix generalizes to the hardest known task."
+Note for the ADR: arm B reproduced WITH a fresh per-run prompt_cache_key, while the same fix cell on 07-ttl-cache
+split (D1 27b: 2 states; D2 35b: 3 states) at the first model response. So the key is not sufficient to split a run;
+whether it is necessary for the 07 split is what D3 (constant key) measures.

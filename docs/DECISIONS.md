@@ -7873,6 +7873,61 @@ Standing table on `02-median-bug`, all arms at temperature 0 where the knob exis
 | zakcode, real-user cell, `ZAKCODE_STABLE_PROMPT_IDENTITY=1` | 6 | 1 |
 | **zakcode, same cell, second machine** | 3 | **1 — the first machine's bytes** |
 
+### ADR-0157 FOURTH ADDENDUM — the fix generalizes, a second model, and the cache key was the last per-run input (2026-09-12)
+
+Three pre-registered passes on the same day, each on the real-user cell (stable workspace, fresh
+uuid4 session, `ZAKCODE_TEMPERATURE=0`, `ZAKCODE_STABLE_PROMPT_IDENTITY=1`), all N=3:
+
+**The hardest known task.** `03-lru` on the 35B (`determinism-generalization-preregistration.log`,
+rules G1–G5): arm A (the pre-fix cell, session id in the prompt) gave **3 distinct byte-states**;
+arm B (the fix) gave **byte-identical 3/3**, 14 turns every run. G1 held; G2 had predicted "fewer
+states than A, not one" and failed in the favourable direction. Rule applied as written: the fix
+generalizes to the hardest known task.
+
+**A second, smaller model.** The pod's `zds-qwen3.8-27b`, zc-01's own default
+(`determinism-model27b-preregistration.log`): the provider probe reproduced 5/5 at temperature 0 on
+both prompt shapes with a live positive control (temperature 1.0 diverged 3/3); `02-median-bug` and
+`06-plugin-conventions` reproduced 3/3; `07-ttl-cache` and `08-mutation-leak` each **split once
+in three** into two substantively different, both-passing solutions. Capability: the 27B passed
+all four tasks **12/12**, including the three ADR-0156 built to discriminate — and on `07` it was
+the steadier model (11–14 turns) while the 35B, run as the control on the same task, wandered
+30+ turns in two of three runs and split three ways.
+
+**Where the split enters.** The arm now dumps every provider call per run (#402) and
+`bench/results/_firstdiff.py` classifies the first differing message. On `07`, for both models,
+the first divergence was **the model's first response** — relative-path `read_file` versus
+absolute-path `read_file` — on messages that were byte-identical; the only wire-level difference
+between the runs was `prompt_cache_key`, `zakcode/<session uuid>`, fresh every run. A second,
+independent source appeared between two other runs: pytest's timing line (`4 passed in 0.02s`
+versus `0.01s`) in a tool result, which changed a trajectory by one turn and not the bytes.
+Holding the key constant (the bench's pin-both mode) reproduced `07` on the 27B **3/3**, with the
+timing line as the only residual difference — converging again. The key is itself an input the
+endpoint acts on: the pod's prefix-cache routing perturbs a near-tie first token, which is exactly
+the kind of token the provider probe's fixed prompts never contain. This is the third per-run
+input this ADR has removed from the prompt path — temperature, session id, and now the routing
+key — and it is why the identity flag was already the right home for it.
+
+**The fix.** Under `stable_prompt_identity` the loop's three call sites take the key from one
+helper that returns `zakcode/ws-<sha256(workspace_root)[:16]>` instead of `zakcode/<session>`.
+Affinity is preserved — every run of one workspace still lands on one engine — and the per-run
+variation is gone. Default behaviour is unchanged. Two tests: the helper's semantics on a stub,
+and a source check that every call site uses it (a fourth site added with the literal would
+silently bring the variation back).
+
+**Standing table on `02-median-bug`** is unchanged. Added, all with the fix:
+
+| task, model | runs | distinct byte-states |
+|---|---|---|
+| `03-lru`, 35B | 3 | 1 (arm A without the fix: 3) |
+| `07-ttl-cache`, 27B, fresh key | 3 + 3 | 2 in each batch |
+| `07-ttl-cache`, 27B, constant key | 3 | **1** |
+| `07-ttl-cache`, 35B, fresh key | 3 | 3 |
+
+**Not claimed yet:** that the shipped per-workspace key reproduces `07` and `08` in the real-user
+cell on both models — that is the next pre-registered confirmation, and it is where the timing-line
+source will show whether it ever changes bytes on a longer task. Normalising volatile tool output
+is a separate design question this addendum does not open.
+
 ## ADR-0158
 
 **Small-model skill selection is driven by description fidelity; catalogue size, description
@@ -8014,3 +8069,56 @@ on the same pod was serving another experiment, and its bytes were unaffected.
 (a `--top-k` product knob would ship nothing measurable). The description-fidelity rewrite arm,
 already queued, is the last live hypothesis in this lane; its W0–W4 verdicts land as the next
 addendum.
+
+### ADR-0158 SECOND ADDENDUM — the catalogue instrument was defective; the TOPK verdict and the rewrite arm are VOID pending re-measurement (2026-09-12)
+
+**The defect.** Every choosability script read a skill's description with the regex
+`^description:\s*(.+)$`. A YAML block scalar puts only its *indicator* on that line (`>-`, `|`),
+so **11 of the 140 catalogue skills rendered as `- name: >-`** — a name and no description — in
+every arm this ADR and its first addendum report, and one coach skill did the same on-box. Nothing
+downstream noticed: the catalogue parsed, the arms ran, the FULL control sat comfortably above its
+VOID floor. The 11 were found by reading the rendered catalogue, not by any check.
+
+**What it did to the numbers.** Those 11 skills scored **0.364 under FULL** against 0.623 for the
+other 129, and **0.091 in every TOPK arm** — BM25 cannot retrieve an entry that has no words. A
+name-only entry therefore drags each TOPK−FULL difference by roughly two points, and the deficits
+the first addendum's R3 verdict rests on are −1.4, −1.9 and −2.6. The verdict was read off a
+defective instrument and is **VOID** until re-measured; the decision it carried ("shortlisting
+retired as an accuracy lever") is suspended, not reversed.
+
+**Fidelity, recomputed with the fixed loader** (`bench/_frontmatter.py`, #404: collect the
+indented continuation lines; `assert_sane` refuses any catalogue that still carries an indicator or
+a stub) against the *same* NI-matrix accuracies:
+
+| population | skills | ρ coverage→BM25 recall | ρ coverage→FULL accuracy | tertiles (low / mid / high) |
+|---|---|---|---|---|
+| all, fixed descriptions | 140 | +0.687 | **+0.550** (was +0.637) | 41.3 / 60.3 / 78.7 |
+| excluding the 11 | 129 | — | **+0.643** | 38.0 / 62.8 / 86.0 |
+
+The 140-skill figure pairs the 11 skills' *new* coverage with accuracies measured while they had
+*no* description, which is a mismatch by construction — so the honest number today is the
+129-skill +0.643, and the 140-skill one is re-read once the fixed catalogue has been scored. The
+finding this ADR rests on — coverage predicts the model's full-catalogue accuracy — is robust to
+the defect in both directions.
+
+**The rewrite arm** (pre-registered W0–W4 in `rewrite-arm-preregistration.log`) rewrote the 45
+lowest-coverage targets; W1, the mechanism check, failed — coverage rose on **17/45** against a
+floor of 35 (mean 0.112 → 0.122) — and its rule ("no verdict on causality; do not widen the
+rewriter's view") was applied. The score phase was then killed by hand at 14:43 when the defect
+surfaced: **11 of the 45 targets were the indicator artifacts**, selected *because* an empty
+description has zero coverage. The target set was contaminated, the arm is void, and it is not
+re-run until targets are re-selected from the fixed catalogue.
+
+**Re-measurement, pre-registered** (`retrieval-lever-preregistration.log`, 14:49, before any arm
+reported): all four arms, same 140 skills, same 420 queries, same model and temperature, fixed
+loader. Predictions: (a) the 11 skills' TOPK accuracy rises from 0.091 toward their FULL level;
+(b) every TOPK−FULL difference moves toward zero by 1–2 points; (c) whether TOPK20 beats FULL is
+*not* predicted — R3 is re-decided by the same primary (TOPK20−FULL, paired bootstrap over skills,
+95% CI) with the same 5-point non-inferiority bar for a cost-only reading; (d) the FULL control
+moves by less than 3 points. Results land as the third addendum; the coach recompute lands beside
+them.
+
+**Instrument correction that travels.** A regex over front matter is not a YAML reader. Every
+bench catalogue now goes through the shared reader and refuses on an indicator (`RuntimeError:
+catalogue instrument failure`), with a parity test pinning the coach's inline copy to it; the
+same class — a catalogue that *parses* and is wrong — is guard-2903's fifth shape.

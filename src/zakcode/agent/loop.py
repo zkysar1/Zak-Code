@@ -95,6 +95,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -2060,6 +2061,24 @@ class AgentLoop:
             provider = getattr(provider, "inner", None)
         return None
 
+    def _prompt_cache_key(self) -> str:
+        """The affinity-routing key sent with every provider call (``prompt_cache_key``).
+
+        Per session by default: an affinity-routing pod pins the conversation to the engine
+        holding its KV prefix, and a fresh key per session keeps sessions' caches apart. Under
+        ``stable_prompt_identity`` the key is per WORKSPACE instead, because the key is itself an
+        input the endpoint acts on. Measured 2026-09-12 (ADR-0157 fourth addendum): the same task
+        at temperature 0, with the session id already out of the prompt, still split at the
+        model's FIRST response between runs whose only wire-level difference was this key, and
+        reproduced 3/3 once the key was held constant -- the pod's prefix-cache routing perturbs a
+        near-tie token. A per-workspace key keeps the affinity purpose (every run of one workspace
+        lands on one engine) and removes the per-run variation.
+        """
+        if self.settings.stable_prompt_identity:
+            digest = hashlib.sha256(str(self.workspace_root).encode("utf-8")).hexdigest()[:16]
+            return f"zakcode/ws-{digest}"
+        return f"zakcode/{self.session.id}"
+
     def _dump_trace(self) -> None:
         """Write the current turn's trace to ``<trace_dir>/<session>/turn_<n>.jsonl`` when
         configured.
@@ -2236,7 +2255,7 @@ class AgentLoop:
                 lambda call_kw: summarizer.acomplete(
                     [Message.user(prompt)],
                     system=instruction,
-                    prompt_cache_key=f"zakcode/{self.session.id}",
+                    prompt_cache_key=self._prompt_cache_key(),
                     **call_kw,
                 )
             )
@@ -3959,7 +3978,7 @@ class AgentLoop:
                 messages,
                 system=system,
                 tools=tools,
-                prompt_cache_key=f"zakcode/{self.session.id}",
+                prompt_cache_key=self._prompt_cache_key(),
                 **call_kw,
             )
             # Per-request usage on the decision trace: the one point every
@@ -7286,11 +7305,12 @@ class AgentLoop:
                             call_messages,
                             system=system,
                             tools=tool_defs or None,
-                            # One stable key per session: an affinity-routing pod
+                            # One stable key per session (per workspace under
+                            # stable_prompt_identity): an affinity-routing pod
                             # pins the conversation to the engine holding its KV
                             # prefix; OpenAI uses the same field the same way.
                             # Non-OpenAI-compatible providers ignore it.
-                            prompt_cache_key=f"zakcode/{self.session.id}",
+                            prompt_cache_key=self._prompt_cache_key(),
                             **call_kw,
                         ):
                             if isinstance(ev, StreamThinkingDelta):

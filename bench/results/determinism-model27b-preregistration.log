@@ -1,0 +1,149 @@
+=== PRE-REGISTRATION 2026-09-12 12:38 — does the deterministic configuration hold on the pod's SMALLER model?
+Context: the pod (zakpod1) serves three ids: zds-qwen3.5-35b, zds-qwen3.6-35b, zds-qwen3.8-27b. Every result so far
+is on zds-qwen3.6-35b. zc-01's user config defaults to zds-qwen3.8-27b (27B < 35B: the user's direction is "work on
+smaller models"). Box: zc-01, ZAKCODE_HOME isolated, same tree/lock as the cross-box test, pod shared with the local
+TOPK40 run (co-tenancy accepted: the 35b cross-box cells reproduced under the same co-tenancy).
+Cells (all temperature 0):
+  P0  provider probe (bench/probe_provider_determinism.py) with the zakpick map pointed at zds-qwen3.8-27b:
+      raw /chat/completions, 5 calls per arm, byte-identical content?  PREDICTION: identical (the 35b was 5/5).
+  M1  real-user cell + fix (ZBENCH_PIN_MODE=workspace, ZAKCODE_STABLE_PROMPT_IDENTITY=1), 02-median-bug, N=3,
+      every zakpick category on zds-qwen3.8-27b.  PREDICTION: 3/3 byte-identical IF P0 holds; verify_rc unknown
+      (the 27b has never run a bench task).  A refusal (rc 4/5) is an instrument failure, not a result.
+Decision rules:
+  P0 identical, M1 3/3 identical      -> the configuration is a LOOP property that carries to a second model; record
+                                         verify_rc as the 27b's first capability datapoint; extend to 06/07/08 next.
+  P0 identical, M1 splits             -> the split is inside zakcode's loop for this model (tool-call parsing, thinking
+                                         handling): dump requests and diff before attributing (as in ADR-0157).
+  P0 NOT identical                    -> the pod is nondeterministic for the 27b at temp 0; M1 cannot be expected to
+                                         hold; report both, no loop claim either way.
+  M1 verify_rc: 3/3 pass or 3/3 fail  -> reported as-is; a deterministic FAIL is still a determinism result.
+Nothing about the 27b's capability is predicted; only its reproducibility.
+
+=== RESULTS 12:52 (zc-01, ZAKCODE_HOME isolated, pod shared with the local TOPK40 run)
+P0  provider probe on zds-qwen3.8-27b: positive control temp 1.0 -> 3/3 DISTINCT (instrument live); temp 0 short 5/5
+    identical, temp 0 long 5/5 identical (16,685 chars, 4000 completion tokens each).  HOLDS
+M1  real-user cell + fix, 02-median-bug, N=3 on zds-qwen3.8-27b: 3/3 verify_rc==0, turns [6,6,6], every file identical
+    (6 files; stats.py ced38beb0704 -- a different answer from the 35b's 7bff3055078d, as a different model should give).
+    HOLDS.  First capability datapoint for the 27b: PASSES 02-median-bug, 3/3.
+Rule applied: "P0 identical, M1 3/3 identical -> the configuration is a LOOP property that carries to a second model;
+extend to 06/07/08 next."  Log: bench/results/determinism-model27b-p0m1.log; JSON: ...02-median-bug.qwen3.8-27b.json
+
+=== PRE-REGISTRATION (extension) 12:52 -- the three discriminating tasks on the 27b
+Cells: 06-plugin-conventions, 07-ttl-cache, 08-mutation-leak; real-user cell + fix, temp 0, N=3 each, zds-qwen3.8-27b,
+zc-01, same isolation. ADR-0156 measured the 35b passing all three 3/3 (matching Claude Code on Opus 5).
+Predictions: within-task byte-identical 3/3 for each of the three (the loop property, now with longer, multi-file
+tasks). Capability is NOT predicted: verify_rc per task is the 27b's datapoint, reported as measured, and a 3/3 FAIL
+that is byte-identical is still a determinism HOLD. A refusal (rc 4/5) is an instrument failure, not a result.
+Decision rules: 3/3 identical on all three -> ADR (the deterministic configuration is model-independent on this pod:
+two models, four tasks); any split -> dump requests and diff before attributing (ADR-0157 protocol); verify_rc
+tallies go into the capability table beside the 35b's 3/3s.
+
+=== INTERIM 13:20 -- extension results so far + a SPLIT
+06-plugin-conventions on the 27b: 3/3 verify_rc==0, turns [14,14,14], all 10 files identical.  HOLDS
+07-ttl-cache on the 27b:          3/3 verify_rc==0, turns [11,14,13], cache.py 318ed1a38806 / 318ed1a38806 / 5fb5a1fc912f
+                                  -> 2 distinct byte-states.  SPLIT.  Runs 1 and 2 reached the SAME final bytes by
+                                  DIFFERENT trajectories (11 vs 14 turns), so the divergence is mid-trajectory and the
+                                  final answer is robust to it. Rule: dump requests and diff before attributing.
+
+=== PRE-REGISTRATION (diagnosis) 13:20 -- where does the 07 split enter?
+Instrument: determinism_arm.py now gives each run its own ZBENCH_DUMP_REQUESTS subdir (run-k), so runs can be diffed
+call by call with bench/results/_diffcalls.py, which classifies the FIRST difference as a dump-only field, a
+server-minted id, or real content.
+  D1  07-ttl-cache, 27b, real-user cell + fix, temp 0, N=3, dumps on, zc-01.
+  D2  07-ttl-cache, 35b (zds-qwen3.6-35b), same cell, N=3, dumps on, zc-01 -- the task-vs-model control.
+Reading the first content difference between any two diverging runs:
+  (i)  the first differing call differs in its INPUT (a tool result -- e.g. a pytest timing line or a listing order)
+       while every earlier call is identical -> the split enters through the ENVIRONMENT; the loop is deterministic
+       given its inputs; remedy candidates are at the tool-output layer (normalising volatile fields), pre-registered
+       separately before any is shipped.
+  (ii) the first differing call has IDENTICAL input and a different assistant message follows -> the split is the
+       PROVIDER's (the 27b under long agentic prompts), despite P0's 5/5 on fixed prompts; the 35b control decides
+       whether it is model-specific.
+  (iii) no split reproduces in D1 (3/3 identical) -> the earlier split was a low-rate event; report the rate over
+       all 6 runs, no attribution.
+Predictions: D1 splits at least once (2 of 3 already did); D2 -- not predicted (never measured on 07).
+The 35b's 3/3 on 06/07/08 in ADR-0156 measured capability, not bytes.
+
+=== EXTENSION RESULTS 13:27 (zc-01, 27b, real-user cell + fix, temp 0, N=3 each)
+06-plugin-conventions  3/3 pass  turns [14,14,14]  10 files, ALL identical                      HOLDS
+07-ttl-cache           3/3 pass  turns [11,14,13]  cache.py differs in run 3 (2 states)          SPLIT
+08-mutation-leak       3/3 pass  turns [11,11,11]  pipeline/normalize.py differs in run 3 (2 states)  SPLIT
+Capability tally for zds-qwen3.8-27b: 02/06/07/08 = 12/12 verify_rc==0 -- the 27b passes every task the 35b passed in
+ADR-0156, including the three built to discriminate. Determinism: 2 of 4 tasks byte-identical 3/3; the two longer
+tasks each split once in three, in the third run. Rule applied: "any split -> dump requests and diff before
+attributing" -> D1/D2 (pre-registered above) now running.
+
+=== D1 RESULTS (07-ttl-cache, 27b, real-user cell + fix, N=3, dumps on; 13:27-13:43)
+Split REPRODUCED with the same two attractors: cache.py [5fb5a1fc912f, 318ed1a38806, 5fb5a1fc912f], turns [12,14,13],
+3/3 pass. Dumps: 14/16/15 calls. First divergence, pairwise (bench/results/_firstdiff.py, ids + uuids normalised):
+  run-1 vs run-2: call 2, message 1, role=assistant -- the model's FIRST response differs on messages that are
+                  byte-identical: run-1 opened with two read_file calls on absolute paths, run-2 with one relative
+                  read_file. The only wire-level difference in call 1 is kwargs.prompt_cache_key = zakcode/<session
+                  uuid4>, fresh per run in this cell (the #287 per-session cache key).
+  run-2 vs run-3: same call 2 / message 1 / assistant divergence (run-3 took run-1's opening).
+  run-1 vs run-3: identical through call 7; call 8, message 14, role=tool: pytest "4 passed in 0.02s" vs "0.01s"
+                  (ENVIRONMENT) -- and both runs still ended on the same cache.py bytes (5fb5a1).
+Reading against the pre-registration: (ii) PROVIDER-side entry at the first response -- with one caveat the
+pre-registration did not anticipate: the two runs' wire inputs were not identical, they differed in
+prompt_cache_key. That is a single, controllable variable, so it gets its own cell before any attribution.
+
+=== PRE-REGISTRATION (D3) -- is the per-session prompt_cache_key the lever?
+H-CACHEKEY: with a CONSTANT prompt_cache_key across runs, the 27b reproduces 07-ttl-cache 3/3, because the pod's
+prefix-cache routing (slot / cached-prefix chunking) is what perturbs a near-tie first token, not the sampler.
+  D3  07-ttl-cache, 27b, temp 0, N=3, dumps on, ZBENCH_PIN_MODE=1 (constant session id 000..0, hence constant
+      prompt_cache_key zakcode/000..0; the prompt carries no session id either way). zc-01, queued behind D2.
+Predictions: 3/3 byte-identical AND the first assistant response identical across the three runs.
+Decision rules:
+  D3 holds  -> the lever is the cache key: ZAKCODE_STABLE_PROMPT_IDENTITY must also pin prompt_cache_key (a per-
+               workspace key, e.g. zakcode/ws-<hash of workspace_root>), designed and shipped behind the same flag;
+               then re-run the real-user cell on 07 and 08 with the fix (N=3 each) before claiming.
+  D3 splits with call 1 byte-identical INCLUDING the key -> provider nondeterminism on identical wire input under
+               long agentic prompts (prefix cache / batching numerics); the loop cannot remove it; the ADR records it
+               as the boundary, with the environment-side timing line (run-1 vs run-3) as the second, separate source.
+  Instrument refusal (rc 4/5) -> not a result.
+D2 (the 35b on 07) reads independently: it says whether the 27b is special, not whether the key is the lever.
+
+=== D2 RESULTS (07-ttl-cache, 35b zds-qwen3.6-35b, real-user cell + fix, N=3, dumps on; 13:43-14:28)
+3 DISTINCT byte-states in 3 runs (cache.py 38c5b5 / 6f2d49 / c3ed46), turns [10, 30, 33], wall 332 / 1006 / 1340 s,
+3/3 pass; runs 2 and 3 went through failing tests (pytest lastfailed present) before converging. Dumps 12/32/35 calls.
+First divergence: run-1 vs run-2 and run-1 vs run-3: call 2, message 1, role=assistant -- the FIRST model response
+differs on byte-identical messages (relative read_file + list_dir vs absolute-path read_file), the same entry point
+as the 27b's D1. run-2 vs run-3: call 4, message 0, a user-ROLE message that is loop-injected plan/progress text
+derived from earlier model output ("[x] 1 Read existing test file ...") -- model-derived content, so provider-side
+upstream, not environment. Wire inputs identical except prompt_cache_key (fresh uuid per run).
+Reading: the 27b is NOT special. Both models split on 07 at the first response; the 35b splits MORE (3 states vs 2)
+and wanders more (30+ turns in 2 of 3 runs vs 11-14 for the 27b). The 27b is the steadier model on this task.
+D3 (constant cache key) now decides whether the key is the lever.
+
+=== D3 RESULTS 14:43 (07-ttl-cache, 27b, PIN_MODE=1 = constant session id => constant prompt_cache_key, N=3, dumps on)
+IDENTICAL 3/3, every file (cache.py one state), turns [12,12,13], 3/3 pass, wall 270/261/220 s. Dumps 43 calls.
+H-CACHEKEY HOLDS on the pre-registered primary (bytes). Rule applied: "the lever is the cache key: stable_prompt_identity
+must also pin prompt_cache_key (a per-workspace key), designed and shipped behind the same flag; then re-run the
+real-user cell on 07 and 08 with the fix (N=3 each) before claiming." Turn-count 13 in run 3 with identical bytes is
+a converging trajectory difference; its entry point is read from the dumps below.
+
+=== 15:05 PRE-REGISTRATION (C1-C3) -- does the SHIPPED per-workspace key reproduce 07/08 in the real-user cell?
+Fix: Zak-Code #405, commit 4c7d2c8 (src rsynced to zc-01:/opt/zak-code-bench; helper present at all three call sites).
+Cells: the real-user cell exactly as D1/D2 (ZBENCH_PIN_MODE=workspace: stable workspace, fresh uuid4 session id,
+ZAKCODE_TEMPERATURE=0, identity stable, ZAKCODE_HOME=/root/zbench-home), N=3 each, dumps on, on zc-01, sequential:
+  C1  07-ttl-cache      on zds-qwen3.8-27b   (D1 cell: split 1-of-3 in two batches with fresh keys; D3 held 3/3 constant key)
+  C2  08-mutation-leak  on zds-qwen3.8-27b   (split 1-of-3 with fresh keys; never run with a constant key)
+  C3  07-ttl-cache      on zds-qwen3.6-35b   (D2 cell: 3 distinct states, turns 10/30/33, fresh keys)
+Predictions, fixed before launch:
+  P1  C1 byte-identical 3/3. The shipped key is constant per workspace, which is what D3 pinned by hand.
+  P2  C2 byte-identical 3/3 -- same mechanism, different task; the cell that tests the lever's generality rather than
+      repeating D3.
+  P3  C3 fewer than 3 distinct states. Identical 3/3 is NOT predicted: the 35B ran 30+ turns here and the pytest
+      timing line has more turns to act on.
+Decision rules:
+  R1  P1 and P2 both hold -> the cache key was the lever behind the 27B's 07/08 splits; claim it (ADR-0157 fifth
+      addendum: standing table gains the rows, the fourth addendum's "not claimed yet" paragraph is closed by reference).
+  R2  C1 or C2 splits -> dump-diff with _firstdiff.py. First divergence = assistant on byte-identical inputs INCLUDING
+      the key -> provider-side nondeterminism at temperature 0 (batching/scheduling): the key was necessary, not
+      sufficient; record, do not claim. First divergence = a tool result (timing line or other environment text) ->
+      environment residual; record which, and whether it changed bytes.
+  R3  C3 >= 2 states while P1/P2 hold -> the lever is established on the 27B only; the 35B on 07 is a separate question
+      (its first-divergence class names the next hypothesis).
+  R4  Instrument refusals (rc 4/5, missing reports) are not results; re-run that cell once, then record the refusal.
+Load: nothing else on zc-01; the local box runs the TOPK re-measurement on the same pod concurrently (an accuracy
+measurement -- and wall time is already known not to move bytes on this pod).
