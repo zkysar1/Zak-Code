@@ -132,7 +132,11 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool
         "num_turns": rep.get("iterations"),
         "total_cost_usd": rep.get("session_cost_usd"),
         "verify_rc": 0 if rep.get("success") else 1,
-        "verify_out": str(rep.get("stop_reason"))[:300],
+        # The runner's report carries the verifier's own tail under `verify_out`; until 2026-09-12
+        # this stored the run's stop_reason there instead, so a GAP row could never name its
+        # verify reason (the CC arm below always stored the real tail). stop_reason keeps its own key.
+        "verify_out": str(rep.get("verify_out") or "")[:300],
+        "stop_reason": str(rep.get("stop_reason")),
         # A report has a `success` key even when the task failed; its absence means the child
         # never got as far as running the agent (crash, config refusal, import error).
         "no_report": "success" not in rep,

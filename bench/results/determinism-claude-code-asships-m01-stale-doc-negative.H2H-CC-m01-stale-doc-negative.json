@@ -1,0 +1,50 @@
+{
+  "task": "m01-stale-doc-negative",
+  "arm": "claude-code",
+  "cell": "asships",
+  "n": 2,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "elapsed_s": 14.6,
+      "num_turns": 4,
+      "total_cost_usd": 0.22744225,
+      "verify_rc": 0,
+      "verify_out": "PASS: verdict EXISTS with a cited command \u2014 the stale doc was checked, not repeated",
+      "stderr_tail": "",
+      "digests": {
+        "NOTES.md": "f07917f2b18797c42f7180130721ab6029498a8a25891e4a9a81d5cf0b446acb",
+        "finding.md": "071851000522f8d39edb06422311981da39f9a697ed2a98f07ac7dd32c6fa046",
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e",
+        "stale_index.txt": "1937337feda08d114a7324496cb659674e947337860eb5661f9250e6f49b8ab8"
+      },
+      "py_digests": {
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e"
+      },
+      "sources": {
+        "src/handlers/retry.py": "\"\"\"Retry helpers for the ingest pipeline.\"\"\"\n\n\ndef handle_retry(attempt: int, max_attempts: int = 3) -> bool:\n    \"\"\"Return True when another attempt should be made.\"\"\"\n    return attempt < max_attempts\n\n\ndef backoff_seconds(attempt: int) -> float:\n    return min(2.0**attempt, 30.0)\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "elapsed_s": 13.7,
+      "num_turns": 6,
+      "total_cost_usd": 0.24371600000000002,
+      "verify_rc": 0,
+      "verify_out": "PASS: verdict EXISTS with a cited command \u2014 the stale doc was checked, not repeated",
+      "stderr_tail": "",
+      "digests": {
+        "NOTES.md": "f07917f2b18797c42f7180130721ab6029498a8a25891e4a9a81d5cf0b446acb",
+        "finding.md": "f822bb79d4d2d96f4b5668515500030378e593f44ae452ec550034cdb34fc61e",
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e",
+        "stale_index.txt": "1937337feda08d114a7324496cb659674e947337860eb5661f9250e6f49b8ab8"
+      },
+      "py_digests": {
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e"
+      },
+      "sources": {
+        "src/handlers/retry.py": "\"\"\"Retry helpers for the ingest pipeline.\"\"\"\n\n\ndef handle_retry(attempt: int, max_attempts: int = 3) -> bool:\n    \"\"\"Return True when another attempt should be made.\"\"\"\n    return attempt < max_attempts\n\n\ndef backoff_seconds(attempt: int) -> float:\n    return min(2.0**attempt, 30.0)\n"
+      }
+    }
+  ]
+}

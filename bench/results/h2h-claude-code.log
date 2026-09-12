@@ -1,0 +1,97 @@
+=== H2H claude-code start 22:22:25 2.1.267 (Claude Code)
+=== H2H-CC-m01-stale-doc-negative 22:22:25
+determinism arm: m01-stale-doc-negative x2 through claude-code (as it ships)
+  run 1/2  (mem available 2592MB) ...
+    verify_rc=0 turns=4 cost=$0.2274 14.6s files=4
+  run 2/2  (mem available 2627MB) ...
+    verify_rc=0 turns=6 cost=$0.2437 13.7s files=4
+==============================================================================
+RESULTS  m01-stale-doc-negative  N=2  arm=claude-code  (as it ships, no pinning available)
+==============================================================================
+P2 outcome stability : 2/2 verify_rc==0
+P3 turn variance     : [4, 6]  -> spread 2
+PRIMARY (every file): 2 DISTINCT output states across 2 runs
+    DIFFERS  finding.md                   ['071851000522', 'f822bb79d4d2']
+secondary (*.py only): IDENTICAL across all runs
+wrote /opt/zak-code/bench/results/determinism-claude-code-asships-m01-stale-doc-negative.json
+--- H2H-CC-m01-stale-doc-negative arm rc=0
+=== H2H-CC-m02-ambiguous-zero 22:22:54
+determinism arm: m02-ambiguous-zero x2 through claude-code (as it ships)
+  run 1/2  (mem available 2646MB) ...
+    verify_rc=0 turns=4 cost=$0.2391 15.7s files=3
+  run 2/2  (mem available 2628MB) ...
+    verify_rc=0 turns=4 cost=$0.2523 20.1s files=3
+==============================================================================
+RESULTS  m02-ambiguous-zero  N=2  arm=claude-code  (as it ships, no pinning available)
+==============================================================================
+P2 outcome stability : 2/2 verify_rc==0
+P3 turn variance     : [4, 4]  -> spread 0
+PRIMARY (every file): 2 DISTINCT output states across 2 runs
+    DIFFERS  report.md                    ['259451c970d4', 'c4faed61dd2d']
+secondary (*.py only): IDENTICAL across all runs
+wrote /opt/zak-code/bench/results/determinism-claude-code-asships-m02-ambiguous-zero.json
+--- H2H-CC-m02-ambiguous-zero arm rc=0
+=== H2H-CC-m03-minimal-diff 22:23:30
+determinism arm: m03-minimal-diff x2 through claude-code (as it ships)
+  run 1/2  (mem available 2647MB) ...
+    verify_rc=0 turns=5 cost=$0.2169 10.8s files=2
+  run 2/2  (mem available 2668MB) ...
+    verify_rc=0 turns=5 cost=$0.2179 11.5s files=2
+==============================================================================
+RESULTS  m03-minimal-diff  N=2  arm=claude-code  (as it ships, no pinning available)
+==============================================================================
+P2 outcome stability : 2/2 verify_rc==0
+P3 turn variance     : [5, 5]  -> spread 0
+PRIMARY (every file): IDENTICAL across all runs
+secondary (*.py only): IDENTICAL across all runs
+wrote /opt/zak-code/bench/results/determinism-claude-code-asships-m03-minimal-diff.json
+--- H2H-CC-m03-minimal-diff arm rc=0
+=== H2H-CC-m04-assert-not-hedge 22:23:52
+determinism arm: m04-assert-not-hedge x2 through claude-code (as it ships)
+  run 1/2  (mem available 2631MB) ...
+    verify_rc=0 turns=3 cost=$0.1887 8.5s files=2
+  run 2/2  (mem available 2677MB) ...
+    verify_rc=0 turns=4 cost=$0.2168 12.5s files=2
+==============================================================================
+RESULTS  m04-assert-not-hedge  N=2  arm=claude-code  (as it ships, no pinning available)
+==============================================================================
+P2 outcome stability : 2/2 verify_rc==0
+P3 turn variance     : [3, 4]  -> spread 1
+PRIMARY (every file): 2 DISTINCT output states across 2 runs
+    DIFFERS  count.md                     ['249c8183f086', '698929bd97bc']
+secondary (*.py only): IDENTICAL across all runs
+wrote /opt/zak-code/bench/results/determinism-claude-code-asships-m04-assert-not-hedge.json
+--- H2H-CC-m04-assert-not-hedge arm rc=0
+=== H2H-CC-m05-read-before-edit 22:24:13
+determinism arm: m05-read-before-edit x2 through claude-code (as it ships)
+  run 1/2  (mem available 2677MB) ...
+    verify_rc=0 turns=5 cost=$0.2218 11.7s files=3
+  run 2/2  (mem available 2638MB) ...
+    verify_rc=0 turns=5 cost=$0.2194 11.4s files=3
+==============================================================================
+RESULTS  m05-read-before-edit  N=2  arm=claude-code  (as it ships, no pinning available)
+==============================================================================
+P2 outcome stability : 2/2 verify_rc==0
+P3 turn variance     : [5, 5]  -> spread 0
+PRIMARY (every file): IDENTICAL across all runs
+secondary (*.py only): IDENTICAL across all runs
+wrote /opt/zak-code/bench/results/determinism-claude-code-asships-m05-read-before-edit.json
+--- H2H-CC-m05-read-before-edit arm rc=0
+=== H2H-CC-06-plugin-conventions 22:24:36
+determinism arm: 06-plugin-conventions x2 through claude-code (as it ships)
+  run 1/2  (mem available 2672MB) ...
+    verify_rc=0 turns=16 cost=$0.5313 48.4s files=11
+  run 2/2  (mem available 2672MB) ...
+    verify_rc=0 turns=16 cost=$0.5876 65.9s files=11
+==============================================================================
+RESULTS  06-plugin-conventions  N=2  arm=claude-code  (as it ships, no pinning available)
+==============================================================================
+P2 outcome stability : 2/2 verify_rc==0
+P3 turn variance     : [16, 16]  -> spread 0
+PRIMARY (every file): 2 DISTINCT output states across 2 runs
+    DIFFERS  plugins/yaml_out.py          ['fde8c4dbd3bf', '6d5be657c412']
+secondary (*.py only): 2 DISTINCT output states across 2 runs
+    DIFFERS  plugins/yaml_out.py          ['fde8c4dbd3bf', '6d5be657c412']
+wrote /opt/zak-code/bench/results/determinism-claude-code-asships-06-plugin-conventions.json
+--- H2H-CC-06-plugin-conventions arm rc=0
+=== H2H claude-code COMPLETE 22:26:31
