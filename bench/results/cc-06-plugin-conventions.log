@@ -1,0 +1,18 @@
+{
+  "id": "06-plugin-conventions",
+  "agent": "claude-code",
+  "success": true,
+  "cli_rc": 0,
+  "elapsed_s": 23.4,
+  "num_turns": 17,
+  "total_cost_usd": 0.3486545,
+  "model": [
+    "claude-haiku-4-5-20251001",
+    "claude-opus-5[1m]"
+  ],
+  "verify_rc": 0,
+  "verify_out": "PASS: yaml renderer is stdlib-only, registered, exported, round-trips, raises PluginError, and is covered by the existing parametrized test",
+  "stderr_tail": "",
+  "error": null,
+  "workspace": "(cleaned)"
+}

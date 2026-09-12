@@ -1,0 +1,8 @@
+{
+  "id": "06-plugin-conventions",
+  "title": "Add a YAML renderer to an existing plugin package",
+  "max_iterations": 40,
+  "max_cost_usd": 1.0,
+  "verify_timeout_s": 120,
+  "prompt": "This workspace contains a small renderer plugin package. Add a renderer that outputs YAML, registered under the name `yaml`, in `plugins/yaml_out.py`. It should turn a list of flat dictionaries into a YAML string."
+}

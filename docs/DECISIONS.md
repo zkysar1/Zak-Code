@@ -6924,6 +6924,45 @@ gap this suite has ever shown.
 Cost asymmetry, recorded because it is the standing argument for the local arm at all: $1.08 for
 five tasks against ~$0 on the pod.
 
+**ADDENDUM (2026-09-12): the first attempt at the prescribed fix — convention-inference — raises
+effort 2.7x and does NOT break the ceiling.** This ADR's prescription is "extend the suite until
+Claude Code fails part of it", so `06-plugin-conventions` was built to do exactly that, on the axis
+ADR-0154 identified as the bench's blind spot: every existing task states its full contract in the
+prompt, while production work means inferring a codebase's conventions from the codebase.
+
+The task gives a plugin package with two sibling renderers and a `CONTRIBUTING.md` stating four hard
+rules, and asks only for "a renderer that outputs YAML". Nothing else is stated. The load-bearing
+rule is stdlib-only: `import yaml` is the obvious implementation, **pyyaml IS installed so it would
+run fine**, and the project forbids it — a convention the interpreter does not enforce, which is the
+kind real repositories are made of.
+
+Validated in three directions BEFORE any agent ran, because a failure on an unvalidated task is
+ambiguous between "the agent failed" and "the task is impossible":
+
+```
+untouched workspace        FAIL   the verifier is not vacuous
+correct stdlib solution    PASS   the task is possible
+`import yaml` (obvious)    FAIL   the task discriminates on the trap
+```
+
+**Result: Claude Code PASSED — 17 turns, 23.4s, $0.3487.** Against a mean of 6.2 turns across the
+five saturated tasks, that is **2.7x the effort and still a pass.** So convention-inference sits
+inside the reference agent's ceiling. The suite remains saturated and parity remains unmeasurable.
+
+**What this buys, since the goal was not met.** The negative result is directional, not just a
+miss: difficulty on the DISCOVERABILITY axis — hidden-but-findable requirements — costs turns
+without costing correctness, because a capable agent simply reads the file. That axis is therefore
+the wrong lever for discrimination, and this is now measured rather than assumed. The remaining
+candidates are axes where finding the requirement is not the hard part: constraints that INTERACT
+(satisfying one naively breaks another), semantic traps where the natural implementation passes
+every visible test and fails a held-out invariant, and long-range consistency across many call
+sites. `05-ledger`'s atomicity is in that family and is the one task zakcode has ever failed, which
+is corroborating evidence for the family rather than for this one.
+
+The task is kept in the suite regardless of the saturation verdict: it is well-formed, its verifier
+is non-vacuous, and at 2.7x turns it is the most demanding task here — a useful effort baseline even
+while it carries no parity signal.
+
 ## ADR-0152: The determinism residual was never the engine's — it was the prompt, and then it was pytest's clock
 
 ADR-0150 pinned the sampler, measured a residual iteration spread of 9% / 36% / 0%, and wrote:
