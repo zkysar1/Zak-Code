@@ -1,0 +1,29 @@
+=== ARM A: temp0 only (pre-fix real-user cell)
+  run 1/3  (mem available 2582MB) ...
+=== TOPK pid 1304009 exited at 14:09:09; pod is quiet. Starting 03-lru arms.
+=== ARM A: temp0 only (pre-fix real-user cell)
+  run 1/3  (mem available 2631MB) ...
+    verify_rc=0 turns=14 cost=$0.0000 303.7s files=6
+  run 2/3  (mem available 2668MB) ...
+    verify_rc=0 turns=14 cost=$0.0000 268.7s files=6
+  run 3/3  (mem available 2674MB) ...
+    verify_rc=0 turns=13 cost=$0.0000 268.6s files=6
+P2 outcome stability : 3/3 verify_rc==0
+P3 turn variance     : [14, 14, 13]  -> spread 1
+PRIMARY (every file): 3 DISTINCT output states across 3 runs
+    DIFFERS  .pytest_cache/v/cache/nodeids ['84be29f06492', 'cfd758673313', '4cb5ea90d519']
+    DIFFERS  lru.py                       ['f6ee8432dc04', 'fc4a08903e0a', 'a86a74d2fc2f']
+    DIFFERS  test_lru.py                  ['f594023cf811', '3098738521a7', '8d14c60f6b70']
+    DIFFERS  lru.py                       ['f6ee8432dc04', 'fc4a08903e0a', 'a86a74d2fc2f']
+    DIFFERS  test_lru.py                  ['f594023cf811', '3098738521a7', '8d14c60f6b70']
+=== ARM B: temp0 + stable_prompt_identity
+  run 1/3  (mem available 2673MB) ...
+    verify_rc=0 turns=14 cost=$0.0000 281.0s files=6
+  run 2/3  (mem available 2670MB) ...
+    verify_rc=0 turns=14 cost=$0.0000 263.5s files=6
+  run 3/3  (mem available 2647MB) ...
+    verify_rc=0 turns=14 cost=$0.0000 261.6s files=6
+P2 outcome stability : 3/3 verify_rc==0
+P3 turn variance     : [14, 14, 14]  -> spread 0
+PRIMARY (every file): IDENTICAL across all runs
+=== GENERALIZATION ARMS A/B COMPLETE at 14:36:36

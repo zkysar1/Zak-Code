@@ -8014,3 +8014,56 @@ on the same pod was serving another experiment, and its bytes were unaffected.
 (a `--top-k` product knob would ship nothing measurable). The description-fidelity rewrite arm,
 already queued, is the last live hypothesis in this lane; its W0–W4 verdicts land as the next
 addendum.
+
+### ADR-0158 SECOND ADDENDUM — the catalogue instrument was defective; the TOPK verdict and the rewrite arm are VOID pending re-measurement (2026-09-12)
+
+**The defect.** Every choosability script read a skill's description with the regex
+`^description:\s*(.+)$`. A YAML block scalar puts only its *indicator* on that line (`>-`, `|`),
+so **11 of the 140 catalogue skills rendered as `- name: >-`** — a name and no description — in
+every arm this ADR and its first addendum report, and one coach skill did the same on-box. Nothing
+downstream noticed: the catalogue parsed, the arms ran, the FULL control sat comfortably above its
+VOID floor. The 11 were found by reading the rendered catalogue, not by any check.
+
+**What it did to the numbers.** Those 11 skills scored **0.364 under FULL** against 0.623 for the
+other 129, and **0.091 in every TOPK arm** — BM25 cannot retrieve an entry that has no words. A
+name-only entry therefore drags each TOPK−FULL difference by roughly two points, and the deficits
+the first addendum's R3 verdict rests on are −1.4, −1.9 and −2.6. The verdict was read off a
+defective instrument and is **VOID** until re-measured; the decision it carried ("shortlisting
+retired as an accuracy lever") is suspended, not reversed.
+
+**Fidelity, recomputed with the fixed loader** (`bench/_frontmatter.py`, #404: collect the
+indented continuation lines; `assert_sane` refuses any catalogue that still carries an indicator or
+a stub) against the *same* NI-matrix accuracies:
+
+| population | skills | ρ coverage→BM25 recall | ρ coverage→FULL accuracy | tertiles (low / mid / high) |
+|---|---|---|---|---|
+| all, fixed descriptions | 140 | +0.687 | **+0.550** (was +0.637) | 41.3 / 60.3 / 78.7 |
+| excluding the 11 | 129 | — | **+0.643** | 38.0 / 62.8 / 86.0 |
+
+The 140-skill figure pairs the 11 skills' *new* coverage with accuracies measured while they had
+*no* description, which is a mismatch by construction — so the honest number today is the
+129-skill +0.643, and the 140-skill one is re-read once the fixed catalogue has been scored. The
+finding this ADR rests on — coverage predicts the model's full-catalogue accuracy — is robust to
+the defect in both directions.
+
+**The rewrite arm** (pre-registered W0–W4 in `rewrite-arm-preregistration.log`) rewrote the 45
+lowest-coverage targets; W1, the mechanism check, failed — coverage rose on **17/45** against a
+floor of 35 (mean 0.112 → 0.122) — and its rule ("no verdict on causality; do not widen the
+rewriter's view") was applied. The score phase was then killed by hand at 14:43 when the defect
+surfaced: **11 of the 45 targets were the indicator artifacts**, selected *because* an empty
+description has zero coverage. The target set was contaminated, the arm is void, and it is not
+re-run until targets are re-selected from the fixed catalogue.
+
+**Re-measurement, pre-registered** (`retrieval-lever-preregistration.log`, 14:49, before any arm
+reported): all four arms, same 140 skills, same 420 queries, same model and temperature, fixed
+loader. Predictions: (a) the 11 skills' TOPK accuracy rises from 0.091 toward their FULL level;
+(b) every TOPK−FULL difference moves toward zero by 1–2 points; (c) whether TOPK20 beats FULL is
+*not* predicted — R3 is re-decided by the same primary (TOPK20−FULL, paired bootstrap over skills,
+95% CI) with the same 5-point non-inferiority bar for a cost-only reading; (d) the FULL control
+moves by less than 3 points. Results land as the third addendum; the coach recompute lands beside
+them.
+
+**Instrument correction that travels.** A regex over front matter is not a YAML reader. Every
+bench catalogue now goes through the shared reader and refuses on an indicator (`RuntimeError:
+catalogue instrument failure`), with a parity test pinning the coach's inline copy to it; the
+same class — a catalogue that *parses* and is wrong — is guard-2903's fifth shape.

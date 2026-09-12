@@ -1,0 +1,30 @@
+=== P0 provider probe, zds-qwen3.8-27b 12:38:18
+endpoint=http://10.0.0.250:9090/v1  model=zds-qwen3.8-27b
+--- INSTRUMENT POSITIVE CONTROL (must be identical=False, or every result below is void)
+temp1.0 long (control)             n=3 temp=1.0  distinct=3/3 identical=False  chars=[11598, 9257, 10153]  completion_tokens=[2722, 2240, 2307]  nonempty_fields=['content', 'reasoning_content']  first_divergence_at_char=13
+    ...{"content": ">>>HERE<<<Wait, the prompt says \"Output only the code.\" I will just ...
+--- TEMP-0 ARMS (the measurement)
+temp0 short                        n=5 temp=0.0  distinct=1/5 identical=True  chars=[97, 97, 97, 97, 97]  completion_tokens=[16, 16, 16, 16, 16]  nonempty_fields=['reasoning_content']
+temp0 long                         n=5 temp=0.0  distinct=1/5 identical=True  chars=[16685, 16685, 16685, 16685, 16685]  completion_tokens=[4000, 4000, 4000, 4000, 4000]  nonempty_fields=['content', 'reasoning_content']
+--- VERDICT (against the pre-registered rule)
+instrument OK: temp 1.0 diverges, so 'identical' below is a real reading.
+PROVIDER REPRODUCES at temp 0 for both shapes -> third candidate eliminated for
+single-call reproduction; ADR-0150's engine attribution SURVIVES this control.
+=== M1: real-user cell + fix, 02-median-bug, N=3, zds-qwen3.8-27b 12:48:50
+determinism arm: 02-median-bug x3 through zakcode (pin=ON, ZAKCODE_TEMPERATURE=0)
+  run 1/3  (mem available 1964MB) ...
+    verify_rc=0 turns=6 cost=$0.0000 45.7s files=6
+  run 2/3  (mem available 1964MB) ...
+    verify_rc=0 turns=6 cost=$0.0000 53.4s files=6
+  run 3/3  (mem available 1964MB) ...
+    verify_rc=0 turns=6 cost=$0.0000 25.6s files=6
+==============================================================================
+RESULTS  02-median-bug  N=3  arm=zakcode  (determinism feature ON)
+==============================================================================
+P2 outcome stability : 3/3 verify_rc==0
+P3 turn variance     : [6, 6, 6]  -> spread 0
+PRIMARY (every file): IDENTICAL across all runs
+secondary (*.py only): IDENTICAL across all runs
+wrote /opt/zak-code-bench/bench/results/determinism-zakcode-pinworkspace-temp0-02-median-bug.json
+=== M1 digests 12:50:55:
+  instrument_failure=None ['ced38beb0704'] verify_rc [0, 0, 0] turns [6, 6, 6] files [6, 6, 6]

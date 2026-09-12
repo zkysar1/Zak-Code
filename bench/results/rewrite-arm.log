@@ -1,0 +1,13 @@
+=== arms A/B complete; pod quiet. REWRITE phase starting 14:37:17
+  .. 10/45 rewritten
+  .. 20/45 rewritten
+  .. 30/45 rewritten
+  .. 40/45 rewritten
+
+W1 mechanism check: coverage rose on 17/45 targets (pre-registered floor 35)  mean 0.112 -> 0.122
+W1 FAILS -- no verdict on causality; do not widen the rewriter's view
+=== SCORE phase starting 14:40:21
+  .. ORIG 60 queries
+  .. ORIG 120 queries
+Terminated
+=== REWRITE ARM COMPLETE 14:43:12
