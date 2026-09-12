@@ -125,7 +125,7 @@ from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker,
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate
 from zakcode.build_info import install_changed, running_build
-from zakcode.config import PermissionTier, Settings, load_settings
+from zakcode.config import PermissionTier, Settings, load_settings, zakcode_home
 from zakcode.events import (
     AgentDone,
     AgentEvent,
@@ -5143,7 +5143,8 @@ class AgentLoop:
 
         Written BESIDE the session store, in a ``transcripts`` directory that is the sibling of
         its ``sessions`` one (ADR-0061, mirroring ADR-0032). The terminal client's store is
-        ``~/.zakcode/sessions``, so this stays ``~/.zakcode/transcripts`` — unchanged. A SERVED
+        ``~/.zakcode/sessions`` (re-rooted with it by ``ZAKCODE_HOME``, ADR-0159), so this stays
+        ``~/.zakcode/transcripts`` — unchanged for a real user. A SERVED
         workspace's store is ``<workspace>/.zakcode/sessions``, so the projection of that mind's
         conversation stays inside that mind's home. It followed ``Path.home()`` until then, which
         pooled the FULL conversation text of every mind served by one host user into one shared
@@ -5171,9 +5172,10 @@ class AgentLoop:
             )
             # Sibling of the store's own directory, so the projection shares the conversation's
             # lifetime and isolation instead of the serving host's (ADR-0061). No store injected
-            # (a bare AgentLoop) keeps the historical per-user home.
+            # (a bare AgentLoop) keeps the per-user config home, which honours ZAKCODE_HOME
+            # (ADR-0159) -- a bare Path.home() here leaked every test run's transcripts.
             store = self.store
-            root = store.base_dir.parent if store is not None else Path.home() / ".zakcode"
+            root = store.base_dir.parent if store is not None else zakcode_home()
             directory = root / "transcripts"
             directory.mkdir(parents=True, exist_ok=True)
             ignore = directory / ".gitignore"

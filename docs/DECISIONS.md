@@ -8347,3 +8347,34 @@ Shortlisting is a cost lever within a 5-point margin at N=420 (third addendum) a
 lever. Rewriting by the model is retired. The next question for small models is end-to-end — task
 outcomes under a shortlisted catalogue — and it is pre-registered before it runs.
 
+
+## ADR-0159
+
+**`ZAKCODE_HOME` re-roots the terminal client's session store and its transcript projection — the
+per-user config home is one directory, not two.** 2026-09-12.
+
+The user config home is `~/.zakcode`, and `ZAKCODE_HOME` overrides it "for tests and portable
+installs" (D20, issue #14). Two writers never asked: `SessionStore()` defaulted to
+`Path.home() / ".zakcode" / "sessions"`, and the hook-transcript projection of a store-less loop
+(ADR-0061) fell back to `Path.home() / ".zakcode"`. The test suite's autouse fixture isolates
+`ZAKCODE_HOME` and nothing else, so every pytest run wrote real session files and full transcripts
+into the developer's real home. Measured on one box (g-115-9776, 2026-09-11): 7,180 transcript files
+/ 31 MB, 34,630 of 34,630 records carrying a `/tmp/pytest-of-root/…` cwd. On the box that fixed it:
+7,811 files / 33 MB, of which 1,257 were written on 09-11 and 594 on 09-12 by suite runs alone.
+
+**Decision.** Both defaults go through `zakcode_home()`. For a real user nothing moves: with
+`ZAKCODE_HOME` unset the function *is* `Path.home() / ".zakcode"`, and the existing location tests
+— which delete `ZAKCODE_HOME` and fake `HOME` — pass unchanged. Under the suite every session and
+transcript now lands in the per-test temp home. Mutation proof on the same box: the four test files
+that had produced the residue ran with the fix and the real `transcripts/` count did not move
+(7,811 before and after; the same files had added 594 that morning). Two regression tests pin the
+re-rooting and assert the fake home stays empty.
+
+**Not changed.** The cockpit's `say-history` / `say-ledger.jsonl` still read
+`Path.home() / ".zakcode"`, and identity / rules / skills / plugins / MCP config read
+`~/.config/zakcode` — a different root (config, not state). Neither is written by the suite; they
+are noted, not folded in. This ADR is scoped to what the test suite leaks.
+
+**Residue.** Nothing is deleted by this change. The leaked files are inert — the transcript
+directory is a projection, not the session index — and clearing them from a real home is a
+separate, archive-first action for the box owner.
