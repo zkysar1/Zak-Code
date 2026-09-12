@@ -1,0 +1,15 @@
+145 skills, 140 with 3 queries, 420 queries -- no model calls
+
+  baseline (shipped)     recall@10  67.6%  @20  72.6%  @40  80.7%
+  keep 2-char tokens     recall@10  66.9%  @20  71.9%  @40  79.3%
+  stemmed                recall@10  64.8%  @20  72.4%  @40  79.5%
+  stemmed + bigrams      recall@10  66.0%  @20  71.9%  @40  79.0%
+
+--- REPRODUCTION CHECK (baseline must match the pre-registered ceilings)
+  recall@10  registered  68.3%  measured  67.6%  match
+  recall@20  registered  72.9%  measured  72.6%  match
+  recall@40  registered  81.0%  measured  80.7%  match
+
+--- R4 VERDICT (pre-registered: a cheap tokenizer change lifts recall@20 by >= 3 points)
+  best cheap variant: stemmed  recall@20 72.4%  gain -0.2 points
+  R4 FAILS -- the cheap route is SHUT. Tokenizer tweaks do not move recall materially, so any further retrieval work needs a real embedding retriever, which is a build rather than a tweak. H-RETRIEVAL survives; its cheap test does not.

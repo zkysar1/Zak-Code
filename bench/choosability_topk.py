@@ -170,6 +170,21 @@ def main(argv: list[str]) -> int:
             mc = sum(chars[arm]) / len(chars[arm])
             print(f"{arm:7} {hits}/{total} = {hits/total:5.1%}   recall@K {recall[arm]/total:5.1%}   "
                   f"mean catalogue {mc:8,.0f} ch ({mc/len(full_cat)*100:4.0f}% of FULL)")
+            # WRITE THE MATRIX AFTER EVERY ARM, not once at the end. The end-of-run write is
+            # reached only if every arm completes, so a run killed by its own timeout mid-way
+            # yields NOTHING analysable -- the per-arm point estimates survive in this log, but
+            # per_skill (and therefore the pre-registered paired bootstrap CI, the PRIMARY
+            # decision rule) is lost. Measured 2026-09-12: the first full pass was on course to
+            # die ~20 minutes into the last arm, which would have discarded a completed primary
+            # arm's per-skill data. An arm that finished is a result; do not make it contingent
+            # on the arms after it.
+            Path("bench/results/choosability-topk-matrix.json").write_text(
+                json.dumps({"per_skill": per_skill,
+                            "arms_completed": arms[: arms.index(arm) + 1],
+                            "recall": {a: recall[a] / total for a in arms if chars[a]},
+                            "mean_chars": {a: sum(chars[a]) / len(chars[a])
+                                           for a in arms if chars[a]}}, indent=1),
+                encoding="utf-8")
 
     Path("bench/results/choosability-topk-matrix.json").write_text(
         json.dumps({"per_skill": per_skill,
