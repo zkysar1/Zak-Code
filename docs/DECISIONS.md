@@ -6963,6 +6963,53 @@ The task is kept in the suite regardless of the saturation verdict: it is well-f
 is non-vacuous, and at 2.7x turns it is the most demanding task here — a useful effort baseline even
 while it carries no parity signal.
 
+**SECOND ATTEMPT — interacting constraints — also passes, and it passes CHEAPER, which inverts the
+expectation the first attempt set.** `07-ttl-cache` was built on the axis the paragraph above
+prescribed: an LRU cache with TTL where every rule is stated explicitly in the prompt, so finding
+the requirement is trivial and satisfying the rules TOGETHER is the whole difficulty. Four traps,
+each independently checked by a held-out oracle: an expired `get` must not bump recency; expired
+entries must be reclaimed before a live LRU is evicted; `put` on an existing key resets the TTL;
+`len()` counts live entries only. The workspace ships basic visible tests, and the control that
+matters is that **a natural `OrderedDict` implementation passes all four visible tests and fails the
+oracle** — the property the first task lacked.
+
+```
+control              visible tests    held-out oracle
+no cache.py          n/a              FAIL   verifier is not vacuous
+correct solution     4 passed         PASS   task is possible
+naive solution       4 passed         FAIL   task discriminates on the trap
+```
+
+**Claude Code PASSED at 7 turns, 29.5s, $0.3764** — against a 6.2-turn baseline, that is **1.1x the
+effort**, less than half the 17 turns the convention task cost.
+
+**The comparison across the two axes is the finding, and it is worth more than either task.**
+
+```
+axis                                        turns   vs baseline   result
+original five (stated, local)                 6.2        1.0x      PASS
+06 discoverability (rules must be inferred)    17        2.7x      PASS
+07 interaction (4 traps, all stated)            7        1.1x      PASS
+```
+
+**Exploration costs turns; intricacy, fully specified, costs almost nothing.** A fully-specified
+problem — however many ways its rules interact — is a well-posed engineering task, and that is
+exactly what this reference agent is strongest at. Difficulty that lives in the SPECIFICATION does
+not transfer into difficulty for the agent. So **local correctness is not a lever against this
+reference agent at all**, and two independent attempts now say so rather than one.
+
+What remains untested is difficulty that is neither local nor discoverable: SCALE (many call sites,
+where one missed site breaks a non-obvious case), HORIZON (enough steps that attention degrades),
+and verifiers that check PROCESS rather than outcome — `m03-minimal-diff` is the existing instance
+of that last family and is the only style of task here that constrains HOW rather than WHAT.
+
+**And the honest strategic reading:** two attempts, two passes, both cheap in wall-clock, on the two
+most obvious axes. Constructing a FAIR, well-formed software task that Opus 5 fails is itself hard,
+which is information about the parity question rather than an obstacle to it — the reference agent's
+ceiling on this class of work is very high. That strengthens the case for the user's redirect
+(determinism and small-model performance, where zakcode can differentiate and where measurement is
+already working) over continuing to chase a saturated task-success comparison.
+
 ## ADR-0152: The determinism residual was never the engine's — it was the prompt, and then it was pytest's clock
 
 ADR-0150 pinned the sampler, measured a residual iteration spread of 9% / 36% / 0%, and wrote:
