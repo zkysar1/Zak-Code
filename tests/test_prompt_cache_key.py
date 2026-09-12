@@ -93,7 +93,7 @@ def test_loop_key_is_per_session_by_default_and_per_workspace_when_identity_is_s
     from zakcode.agent.loop import AgentLoop
 
     stub = SimpleNamespace(
-        settings=SimpleNamespace(stable_prompt_identity=False, prompt_cache_seed=""),
+        settings=SimpleNamespace(stable_prompt_identity=False),
         session=SimpleNamespace(id="abc"),
         workspace_root=Path("/w"),
     )
@@ -105,31 +105,6 @@ def test_loop_key_is_per_session_by_default_and_per_workspace_when_identity_is_s
     assert AgentLoop._prompt_cache_key(stub) == stable  # a new session: same key
     stub.workspace_root = Path("/elsewhere")
     assert AgentLoop._prompt_cache_key(stub) != stable  # a different workspace: a different key
-
-
-def test_prompt_cache_seed_rerolls_the_workspace_key_and_only_under_stable_identity() -> None:
-    """A stable key can freeze a WRONG program (ADR-0157 fifth addendum: 07-ttl-cache on the
-    27B passed 0/3 under one key after 3/3 under fresh ones). The seed is the reproducible way
-    out: same seed, same key; new seed, new key; no effect while keys are per-session."""
-    from pathlib import Path
-    from types import SimpleNamespace
-
-    from zakcode.agent.loop import AgentLoop
-
-    stub = SimpleNamespace(
-        settings=SimpleNamespace(stable_prompt_identity=True, prompt_cache_seed=""),
-        session=SimpleNamespace(id="abc"),
-        workspace_root=Path("/w"),
-    )
-    seedless = AgentLoop._prompt_cache_key(stub)
-    stub.settings.prompt_cache_seed = "reroll-1"
-    rerolled = AgentLoop._prompt_cache_key(stub)
-    assert rerolled != seedless and rerolled.startswith("zakcode/ws-")
-    assert AgentLoop._prompt_cache_key(stub) == rerolled  # same seed: same key, every run
-    stub.settings.prompt_cache_seed = "reroll-2"
-    assert AgentLoop._prompt_cache_key(stub) not in (seedless, rerolled)
-    stub.settings.stable_prompt_identity = False
-    assert AgentLoop._prompt_cache_key(stub) == "zakcode/abc"  # per-session keys ignore the seed
 
 
 def test_every_provider_call_site_in_the_loop_uses_the_helper() -> None:
