@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent
+sys.path.insert(0, str(BENCH))  # so `import intervention_coverage` resolves beside this file
 TASKS_DIR = BENCH / "tasks"
 RESULTS_DIR = BENCH / "results"
 
@@ -185,6 +186,19 @@ def main(argv: list[str]) -> int:
         encoding="utf-8",
     )
     print(f"\nwrote {out_path}")
+
+    # Run the intervention-coverage ratchet against the pass we just wrote. A sweep with no call
+    # site is indistinguishable from a sweep that always returns clean -- this campaign has
+    # recorded that failure three times, so the detector gets wired at the same time it is built.
+    # It REPORTS and never changes the return code: a robustness path that stopped firing may be a
+    # fixed bug or a broken instrument, and this runner cannot tell which. Saying so is the job.
+    try:
+        from intervention_coverage import main as coverage_main  # noqa: PLC0415
+
+        print("\n--- intervention coverage ratchet")
+        coverage_main(["--ratchet", str(out_path)])
+    except Exception as exc:  # never let the detector break the pass it observes
+        print(f"  (ratchet unavailable: {type(exc).__name__}: {exc})")
     return 0
 
 

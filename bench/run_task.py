@@ -134,6 +134,23 @@ def _build_agent(workspace: Path, spec: dict):
         enable_mcp=False,
         enable_plugins=False,
     )
+    # ZBENCH_PIN_IDENTITY=1 makes two runs of one task receive a BYTE-IDENTICAL system prompt.
+    # Measured with ZBENCH_DUMP_REQUESTS: two runs at pinned temperature 0 diverge on the SECOND
+    # provider call, and the diff is exactly two fields of the Environment block --
+    #   `Workspace root (cwd): /tmp/zbench-m05-...-7ivyx7rq` vs `...-t69j5nfx`   (mkdtemp suffix)
+    #   `Session id: 0be668f9...` vs `531dc5ca...`                               (uuid4 hex, ADR-0072)
+    # -- after which the assistant text itself differs ("reading both files" vs "reading the
+    # relevant files"). So the two runs were never given the same input, and the provider, which
+    # reproduces 4,000 greedy tokens byte-for-byte five times on identical input
+    # (bench/probe_provider_determinism.py), was behaving correctly.
+    # This matters beyond the bench: EVERY zakcode run injects a fresh uuid4 into its system
+    # prompt, so byte-identical reproduction is impossible by construction for any user, whatever
+    # they do with temperature. Both values are deliberate (the workspace path is load-bearing;
+    # ADR-0072 put the session id there so the model can answer "which session are you?"), so this
+    # knob is a MEASUREMENT instrument and not a proposed default.
+    if os.environ.get("ZBENCH_PIN_IDENTITY"):
+        agent.session.id = "0" * 32
+        print(f"[bench] pinned session id: {agent.session.id}", file=sys.stderr)
     # ZBENCH_COMPACT_FRACTION moves the compaction THRESHOLD without touching anything else.
     # The obvious way to force compaction -- declare a smaller context_window -- is CONFOUNDED:
     # _window() feeds three consumers, so shrinking it also cuts the seam clamp in
@@ -157,7 +174,117 @@ def _build_agent(workspace: Path, spec: dict):
     if frac and agent.compactor is not None:
         agent.compactor.config.threshold_fraction = float(frac)
         print(f"[bench] compaction threshold_fraction={frac}", file=sys.stderr)
+    # ZBENCH_MAX_TOKENS lowers the per-completion output cap, which is the ONLY way this bench can
+    # reach ADR-0056's reasoning-overflow path. That mechanism was built from a real field incident
+    # (a thinking model consumed all 8,192 completion tokens on `reasoning_content` and emitted
+    # empty `content`, which the loop read as silence and ended `gave_up`), and it had NEVER fired
+    # in any recorded bench run -- one of the 45 intervention kinds the suite has never exercised.
+    # `bench/probe_provider_determinism.py` confirmed the trigger shape is one knob away on this
+    # pod: at max_tokens=16 the model returns `content: ""` with `reasoning_content` populated.
+    # Single-consumer, so this is one variable and not the ADR-0146 window confound:
+    # `_MAX_COMPLETION_TOKENS` is declared once in litellm_provider and read at exactly one call
+    # site. Patched on the MODULE (the name is resolved per call), so it reaches every provider
+    # instance including ones built later by routing.
+    # ZBENCH_DUMP_REQUESTS=<dir> writes the canonical INPUT of every provider call (system + the
+    # full message list + the tool schemas) as one JSON file per call. It exists to answer a
+    # question the whole determinism lane had been ANSWERING BY INFERENCE: when two runs of an
+    # identical configuration diverge, was the ENGINE non-deterministic, or were the two runs never
+    # given the same input? Those are opposite verdicts with opposite remedies, and nothing here
+    # could tell them apart -- ADR-0150 partitioned variance into `sampler + engine` and attributed
+    # the residual to the engine without ever checking that the inputs matched.
+    # `bench/probe_provider_determinism.py` established the other half: this pod reproduces 4,000
+    # greedy tokens byte-for-byte five times, so a divergence downstream of identical input would
+    # be the engine's -- and a divergence from NON-identical input is not evidence about the engine
+    # at all.
+    # Messages are pydantic models: dump with model_dump(mode="json"), never `default=str`, which
+    # would stamp `<object at 0x7f...>` memory addresses into the payload and manufacture a
+    # guaranteed difference between any two runs -- an instrument that always reports "different"
+    # is exactly as useless as one that always reports "same".
+    dump_dir = os.environ.get("ZBENCH_DUMP_REQUESTS")
+    if dump_dir:
+        from zakcode.providers.litellm_provider import LiteLLMProvider
+
+        target = Path(dump_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        counter = {"n": 0}
+        original_acomplete = LiteLLMProvider.acomplete
+
+        async def dumping_acomplete(self, messages, *, system=None, tools=None, **kw):
+            counter["n"] += 1
+            idx = counter["n"]
+            try:
+                payload = {
+                    "system": system,
+                    "messages": [m.model_dump(mode="json") for m in messages],
+                    "tools": tools,
+                    # EVERY other kwarg too, and the instance-level sampling state. The first
+                    # version of this dump recorded only system/messages/tools, and that gap read
+                    # as a positive result: two runs whose dumps were byte-identical produced
+                    # different completions, which looked like provider non-determinism until the
+                    # same payload replayed 5/5 identical. What a dump omits, it silently
+                    # exonerates.
+                    "kwargs": {k: repr(v) for k, v in sorted(kw.items())},
+                    "provider_state": {
+                        "temperature": repr(getattr(self, "temperature", None)),
+                        "extra_body": repr(getattr(self, "extra_body", None)),
+                        "model": repr(getattr(self, "model", None)),
+                    },
+                }
+                (target / f"call-{idx:04d}.json").write_text(
+                    json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception as exc:  # a dump failure must never change the run it observes
+                (target / f"call-{idx:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
+            return await original_acomplete(self, messages, system=system, tools=tools, **kw)
+
+        LiteLLMProvider.acomplete = dumping_acomplete
+
+        # ...and the ACTUAL wire body. The layer above records what the ENGINE passes; litellm then
+        # builds the request, and everything it adds, renames or drops is invisible there. That gap
+        # is not theoretical: a replay reconstructed from the engine-level dump reproduced 5/5 with
+        # itself and matched NEITHER run (3,757 chars against the real call's 5,085), so it was
+        # measuring a request zakcode never sends -- while looking like a clean result. Dumping the
+        # body litellm is handed is the only payload a replay can honestly claim to re-send.
+        import litellm as _litellm  # noqa: PLC0415
+
+        original_acompletion = _litellm.acompletion
+
+        async def dumping_acompletion(**call_kwargs):
+            try:
+                (target / f"wire-{counter['n']:04d}.json").write_text(
+                    json.dumps({k: v for k, v in sorted(call_kwargs.items()) if k != "api_key"},
+                               indent=2, sort_keys=True, ensure_ascii=False, default=repr),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                (target / f"wire-{counter['n']:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
+            return await original_acompletion(**call_kwargs)
+
+        _litellm.acompletion = dumping_acompletion
+        print(f"[bench] dumping provider requests to {target}", file=sys.stderr)
+    mt = os.environ.get("ZBENCH_MAX_TOKENS")
+    if mt:
+        from zakcode.providers import litellm_provider as _lp
+
+        _lp._MAX_COMPLETION_TOKENS = int(mt)
+        print(f"[bench] max_completion_tokens={_lp._MAX_COMPLETION_TOKENS}", file=sys.stderr)
     return agent
+
+
+def _effective_max_completion_tokens() -> int | None:
+    """The cap that actually took effect, read back from the provider module.
+
+    Never the env string: a knob that silently failed to apply and a knob that was never set
+    both leave ``ZBENCH_MAX_TOKENS`` looking the same in a report, and ADR-0150's temperature arm
+    already lost one pass to exactly that ambiguity.
+    """
+    try:
+        from zakcode.providers import litellm_provider as _lp
+
+        return int(_lp._MAX_COMPLETION_TOKENS)
+    except Exception:
+        return None
 
 
 def _usage_snapshot(agent) -> dict:
@@ -210,7 +337,15 @@ def preflight(task_dir: Path) -> int:
 
 def run(task_dir: Path) -> int:
     spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
-    ws = Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
+    if os.environ.get("ZBENCH_PIN_IDENTITY"):
+        # A constant NAME with fresh CONTENT: reusing the directory as-is would carry the previous
+        # run's files into this one, which is a far worse confound than the one being removed.
+        # Serial execution only -- two parallel tasks would collide on the fixed path.
+        ws = Path(tempfile.gettempdir()) / f"zbench-pinned-{spec['id']}"
+        shutil.rmtree(ws, ignore_errors=True)
+        ws.mkdir(parents=True)
+    else:
+        ws = Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
     seed = task_dir / "workspace"
     if seed.is_dir():
         shutil.copytree(seed, ws, dirs_exist_ok=True)
@@ -237,6 +372,10 @@ def run(task_dir: Path) -> int:
         "compact_fraction": os.environ.get("ZBENCH_COMPACT_FRACTION"),
         "tool_deny": os.environ.get("ZBENCH_TOOL_DENY"),
         "rules_root": os.environ.get("ZBENCH_RULES_ROOT"),
+        "max_completion_tokens": _effective_max_completion_tokens(),
+        "pin_identity": bool(os.environ.get("ZBENCH_PIN_IDENTITY")),
+        "session_id": getattr(getattr(agent, "session", None), "id", None),
+        "workspace": str(ws),
     }
 
     err = None

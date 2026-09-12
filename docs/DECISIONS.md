@@ -6896,3 +6896,75 @@ gap this suite has ever shown.
 
 Cost asymmetry, recorded because it is the standing argument for the local arm at all: $1.08 for
 five tasks against ~$0 on the pod.
+
+## ADR-0152: The determinism residual was never the engine's — it was the prompt, and then it was pytest's clock
+
+ADR-0150 pinned the sampler, measured a residual iteration spread of 9% / 36% / 0%, and wrote:
+"That is variance the engine owns." It named `03-lru`'s 36% as the campaign's actionable target.
+That attribution was an elimination over a two-member candidate list — sampler, engine — and there
+is a third member: **non-deterministic INPUT**. Both of this ADR's findings are that third term.
+
+**Cause A: two random values reach the model in every system prompt.** Two runs at pinned
+temperature 0 were dumped call-by-call and diffed. `call-0001` matched; `call-0002` differed in the
+system prompt at exactly two fields, and `call-0003`'s assistant text differed as a consequence:
+
+```
+Workspace root (cwd): /tmp/zbench-m05-...-7ivyx7rq   vs   ...-t69j5nfx    (mkdtemp suffix)
+Session id:           0be668f92d274d19b9f528b66a87f030 vs 531dc5ca...     (uuid4, ADR-0072)
+-> "I'll start by reading both files"  vs  "I'll start by reading the relevant files"
+```
+
+The two runs were never given the same input, so nothing about the engine follows from their
+disagreement. The bench mints the workspace suffix; `Session.id` is a uuid4 the engine writes into
+the Environment block on purpose. **Consequence beyond the bench: every zakcode run stamps a fresh
+uuid4 into its system prompt, so byte-identical reproduction across sessions is impossible by
+construction, at any temperature.** The HTTP API accepts a caller-supplied `session_id`, so a
+harness that wants reproducibility can pin it; a fresh CLI session cannot.
+
+**With both pinned, the engine reproduces.** `m05-read-before-edit` at the default cap: assistant
+text byte-identical, and the only differences are server-minted tool-call ids. The same task at
+`ZBENCH_MAX_TOKENS=64` — 22 iterations through a degraded path with four reasoning overflows —
+reproduced **3/3 exactly**: same iterations, same intervention counts, and 61.9 / 62.0 / 62.0s
+wall-clock, against the 31%-median wall-clock noise ADR-0147 measured as this bench's worst signal.
+
+**Cause B: the task's own test runner reports its wall clock into the agent's context.** `03-lru`
+stayed variable with identity pinned — 14, 11, 11 and 15, 11 — so the pair was dumped again. The
+first EIGHT calls reproduce byte-for-byte (only server-minted ids differ). Call nine differs by one
+character:
+
+```
+- ============================== 10 passed in 0.01s ==============================
++ ============================== 10 passed in 0.02s ==============================
+```
+
+From that one digit the runs took **15 and 11 iterations**. The mechanism reproduces outside the
+bench: three runs of one unchanged test file print `0.00s`, `0.00s`, `0.01s`. `03-lru` writes
+`test_lru.py` and runs it; `m05` edits a config file and runs nothing — which is exactly the split
+between the task that reproduces and the task that does not.
+
+**So ADR-0150's actionable target is not an engine defect.** `03-lru`'s spread is substantially its
+own test runner's clock, and no change to zakcode removes it. A bench that wants to measure engine
+determinism must pin identity AND avoid tasks that report their own wall clock, or normalize such
+output before it enters context.
+
+**The confound this ADR does not resolve.** The pinned arm reads 25% against ADR-0150's 36%, but it
+changed TWO things — identity pinning and solo execution, removing the co-tenancy ADR-0150 flagged
+as unresolved. The reduction is not attributable to pinning alone and is not claimed as such.
+
+**Instruments, and the correction one of them forced.** `ZBENCH_DUMP_REQUESTS` records what the
+engine passes to the provider; a second layer records the exact kwargs handed to
+`litellm.acompletion`. That second layer exists because the first is not enough to replay from: a
+`--replay` mode that RECONSTRUCTED the request from the engine-level dump reproduced 5/5 with
+itself and matched **neither** of the two runs it was built to explain — 3,757 chars against the
+real call's 5,085 — because the reconstruction had no `response_format`, no `drop_params`, and a
+per-call `enable_thinking` that is False on the classifier call and True on the agent's. A
+self-consistent answer to the wrong question is the most expensive kind: it looks like a result.
+`--replay-wire` re-sends the recorded body verbatim and reports 5/5 identical on the agent's real
+25-tool call.
+
+**What stays open, stated as open.** Whether a byte-identical wire body can ever produce a
+different completion is not settled here. An earlier pair appeared to show it at call one, but that
+dump did not record kwargs, so the requests were never shown to be identical; the pair re-run with
+the complete dump reproduced through eight calls. Every replay also runs against an already-warm
+prefix cache, which is precisely the condition a first call does not have. The honest statement is
+that no instrument here has yet asked a cold server the same question twice.
