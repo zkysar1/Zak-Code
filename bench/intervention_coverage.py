@@ -65,18 +65,52 @@ def emitted_kinds() -> dict[str, list[str]]:
     return dict(out)
 
 
-def recorded_kinds(files: list[Path]) -> collections.Counter:
-    seen: collections.Counter = collections.Counter()
+#: Knobs that change WHICH intervention paths a run can reach. A baseline drawn from rows with
+#: different knobs is not a baseline: a forced-compaction arm or a low-max_tokens arm reaches paths
+#: an ordinary pass cannot, so comparing across them reports "went dark" on every ordinary pass --
+#: an alarm that always fires is exactly as useless as one that never does. Measured: the first
+#: version of this ratchet flagged six kinds against a clean 7-task pass.
+_KNOB_KEYS = ("compact_fraction", "tool_deny", "max_completion_tokens", "pin_identity")
+
+
+def _knob_signature(row: dict) -> tuple | None:
+    """The row's knob configuration, or ``None`` when the row does not record one.
+
+    ABSENCE OF THE FIELD IS NOT EVIDENCE OF ITS VALUE. Rows predating the `knobs` key would map to
+    an all-``None`` tuple and become indistinguishable from a modern default-knob row -- measured:
+    that put 183 rows in a baseline and flagged three kinds that had only ever fired under knobs the
+    rows never recorded. An unknown configuration is excluded from every baseline instead.
+    """
+    k = row.get("knobs")
+    if not isinstance(k, dict):
+        return None
+    return tuple(k.get(name) for name in _KNOB_KEYS)
+
+
+def _rows(files: list[Path]) -> list[dict]:
+    out: list[dict] = []
     for f in files:
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             continue
         rows = d.get("tasks") if isinstance(d, dict) and "tasks" in d else [d]
-        for row in rows or []:
-            if isinstance(row, dict):
-                for k, v in (row.get("trace_interventions") or {}).items():
-                    seen[k] += v
+        out.extend(r for r in (rows or []) if isinstance(r, dict))
+    return out
+
+
+def recorded_kinds(files: list[Path], signature: tuple | None = None) -> collections.Counter:
+    """Intervention kinds recorded across ``files``.
+
+    ``signature`` restricts the tally to rows whose knob configuration matches -- required for the
+    ratchet, where a mismatched baseline manufactures false alarms.
+    """
+    seen: collections.Counter = collections.Counter()
+    for row in _rows(files):
+        if signature is not None and _knob_signature(row) != signature:
+            continue
+        for k, v in (row.get("trace_interventions") or {}).items():
+            seen[k] += v
     return seen
 
 
@@ -89,8 +123,33 @@ def main(argv: list[str]) -> int:
             print("--ratchet needs a results JSON path", file=sys.stderr)
             return 2
         corpus = sorted(p for p in RESULTS.rglob("*.json") if p != newest)
-        was = set(recorded_kinds(corpus))
-        now = set(recorded_kinds([newest]))
+        new_rows = _rows([newest])
+        sigs = {sig for r in new_rows if (sig := _knob_signature(r)) is not None}
+        if not sigs:
+            # Two different diagnoses, and conflating them sends the reader to the wrong fix: an
+            # unparseable file is usually a run still in flight (measured while writing this), a
+            # parseable one without `knobs` is a pass from before the field existed.
+            why = ("could not be parsed -- is a run still writing it?" if not new_rows
+                   else "records no `knobs` for any row")
+            print(f"{newest.name} {why}, so its configuration is UNKNOWN.")
+            print("A ratchet cannot compare an unknown configuration to anything: BLIND, not clean.")
+            return 2
+        if len(sigs) != 1:
+            print(f"MIXED KNOBS in {newest.name}: {len(sigs)} configurations in one pass.")
+            print("No single baseline is comparable, so this ratchet is BLIND here, not clean.")
+            print("Report the pass per-arm, or re-run each arm as its own pass.")
+            return 2
+        signature = next(iter(sigs))
+        baseline_rows = [r for r in _rows(corpus) if _knob_signature(r) == signature]
+        was = set(recorded_kinds(corpus, signature))
+        now = set(recorded_kinds([newest], signature))
+        print(f"knobs {dict(zip(_KNOB_KEYS, signature, strict=True))}")
+        print(f"baseline rows with these knobs: {len(baseline_rows)}")
+        if not baseline_rows:
+            print("NO COMPARABLE BASELINE EXISTS -- this configuration has never been recorded")
+            print("before, so nothing can have gone dark. That is BLINDNESS, not a clean report:")
+            print("this pass BECOMES the baseline, and the next one is the first real reading.")
+            return 0
         gone = sorted(was - now)
         print(f"previously exercised: {len(was)}   in {newest.name}: {len(now)}")
         if gone:
