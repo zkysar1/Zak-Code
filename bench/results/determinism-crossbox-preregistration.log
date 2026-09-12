@@ -1,0 +1,84 @@
+PRE-REGISTRATION -- cross-BOX reproducibility of the deterministic configuration   2026-09-12
+Written at 12:12, BEFORE any run on zc-01. Prompted by the user opening zc-01/zc-02
+("those three boxes all use the same zakpod1").
+
+WHY THIS MATTERS
+  ADR-0157's claim is single-box: with ZAKCODE_TEMPERATURE=0 and
+  ZAKCODE_STABLE_PROMPT_IDENTITY=1, runs on THIS box reproduce byte-for-byte.
+  A user promised "reproducible runs" will expect the same bytes on a DIFFERENT
+  machine against the same model. Nothing has measured that.
+
+WHAT IS KNOWN BEFORE THE RUN
+  - zc-01 platform.platform() == this box's, exactly:
+    Linux-6.8.0-139-generic-x86_64-with-glibc2.39. The Environment block's OS
+    line is therefore identical across the two boxes. (Had it differed, byte
+    identity would be impossible by construction and this would be a one-line
+    finding instead of an experiment.)
+  - Same pod (zakpod1, 10.0.0.250:9090), same model, same source: the bench tree
+    is rsync'd from this checkout (src identical to main 7ed0b90, the merged fix).
+  - Pinned workspace path is a constant (/tmp/zbench-pinned-02-median-bug) on
+    both boxes; the fix removes the session id from the prompt.
+  - KNOWN THREAT, named now: tool OUTPUTS reach the model, and the task's pytest
+    output carries a wall-clock duration ("10 passed in 0.01s"). ADR-0152 found
+    that string varying within one box at higher iteration counts. Across boxes
+    with different CPUs (20 vs this box's), the timing string is a plausible
+    cross-box divergence source that is the TASK's, not the engine's.
+
+CELLS on zc-01, 02-median-bug, N=3 each, ZAKCODE_TEMPERATURE=0
+  X1  pin-both (bench instrument: constant workspace + constant session id)
+  X3  real-user cell WITH the fix (workspace pinned, fresh uuid4, stable id ON)
+  The local reference digests for the same two cells are recorded below BEFORE
+  the zc-01 runs.
+
+PREDICTIONS
+  X1 zc-01 reproduces within itself: 3/3 byte-identical.
+  X2 zc-01's X1 digest EQUALS this box's pin-both digest (7bff3055...): the
+     deterministic configuration is reproducible ACROSS machines with matching
+     platform strings. Predicted to HOLD. If it fails, the first diverging
+     provider call must be diffed (ZBENCH_DUMP_REQUESTS + _diffcalls.py) before
+     any attribution; the pytest timing line is the expected culprit, and if it
+     IS the culprit the limit is the task's tool output, not the loop.
+  X3 the fix cell reproduces within zc-01: 3/3 identical (the shipped claim,
+     on a second machine) -- and its digest equals this box's fix-cell digest.
+
+DECISION RULES
+  X1 fails -> zc-01 + pod is not deterministic even with everything pinned;
+     stop, diff the dumps, no cross-box claim.
+  X1 holds, X2 holds, X3 holds -> ADR-0157 addendum: "reproducible across
+     machines sharing the platform string, on this task". Scoped exactly so.
+  X1 holds, X2 fails -> within-box yes, cross-box no. Diff the dumps; if the
+     divergence is a tool-output timing string, record that cross-machine
+     reproducibility is bounded by nondeterministic TOOL OUTPUT (a real-world
+     limit any agent has) and consider whether the bench should normalise it.
+  Anything else -> report the cell table and claim nothing beyond it.
+
+CO-TENANCY: runs during the TOPK eval (short task, ~6 calls per run). Accepted
+  in advance as latency-only, per the load control in ADR-0157's addendum.
+LOCAL REFERENCE  pin1-temp0             n=3  stats.py digests: ['7bff3055078d']
+LOCAL REFERENCE  pinworkspace-temp0     n=6  stats.py digests: ['7bff3055078d']
+
+=== ADDENDUM 12:28 (written BEFORE any re-run) -- env reconciliation + instrument incident
+The first cross-box attempt (12:19) is VOID. All six child runs (X1 n=3, X3 n=3) crashed at startup in ~1.7s with
+  zakcode.providers.endpoints.LocalOnlyViolation
+because zc-01's user config (~/.zakcode -> /etc/zakcode/.env) sets ZAKCODE_LOCAL_ONLY, which the zc-03 reference
+runs never saw (zc-03 has no ~/.zakcode/.env; its process env is exactly OPENAI_API_KEY + OPENAI_BASE_URL +
+ZAKCODE_ZAKPICK_MODELS + ZAKCODE_TEMPERATURE + ZBENCH_*). The arm nonetheless printed
+  "PRIMARY (every file): IDENTICAL across all runs"
+over the UNTOUCHED seed files (digest 1bb446844e2f, files=2, verify_rc=1, turns=None) -- guard-2903 class, one
+level above the empty-digest refusal shipped this morning. Crashed JSONs archived at zc-01:/root/zb-vacuous/.
+Instrument fix (branch det-noreport-refusal): determinism_arm.py records no_report per run and refuses (rc=5)
+when any run produced no report; a report with success=false still counts as a measurement.
+Reconciliation rule, decided now: the bench child on zc-01 runs with ZAKCODE_HOME=/root/zbench-home (an EMPTY
+dir), so no user .env is loaded and the process env has the local shape. The pod ignores the bearer token
+(/models and chat/completions both HTTP 200 without auth), so the differing placeholder keys cannot reach the model.
+X1/X2/X3 decision rules unchanged. Reference digests unchanged: 7bff3055078d.
+
+=== RESULTS 12:35 (zc-01, ZAKCODE_HOME isolated, during TOPK co-tenancy on the pod; instrument = PR #397 build)
+X1  pin-both, temp0, N=3 on zc-01: 3/3 verify_rc==0, turns [6,6,6], EVERY file identical within zc-01 (6 files).  HOLDS
+X2  zc-01 X1 digest == zc-03 pin-both digest: stats.py 7bff3055078d on both; all 6 files (stats.py, test_stats.py,
+    4 .pytest_cache files) byte-identical across machines.  HOLDS
+X3  fix cell (workspace pin, fresh uuid4, ZAKCODE_STABLE_PROMPT_IDENTITY=1), temp0, N=3 on zc-01: 3/3 verify_rc==0,
+    turns [6,6,6], every file identical within zc-01 -- AND equal to zc-03's X3 set (n=6) on all 6 files.  HOLDS
+Per the pre-registered rule "X1 holds, X2 holds, X3 holds -> ADR-0157 addendum". Wall times per run on zc-01 (2 GB,
+2 vCPU): 69.6/36.7/46.4 s (X1), 32.3-92.9 s (X3) -- timing varied 3x, bytes did not.
+Stored: bench/results/determinism-zakcode-pin1-temp0-02-median-bug.zc-01.json, ...pinworkspace-temp0-...zc-01.json

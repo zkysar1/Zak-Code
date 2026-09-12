@@ -7822,6 +7822,57 @@ the flag on, and DIFFERENT prompts with it off. Asserting only that the line dis
 against a builder that never rendered the id at all — an invariance assertion that is green when
 broken (guard-2903).
 
+### ADR-0157 THIRD ADDENDUM — the deterministic configuration reproduces across machines (2026-09-12)
+
+The second addendum showed one box producing the same bytes six times. That leaves open whether
+the property belongs to the box or to the loop. The user pointed out that zc-01 and zc-02 can be
+commanded too, and that all three boxes share the same pod — so they add no model throughput, but
+they allow exactly this test: does the deterministic configuration produce the same bytes on a
+*different machine* against the same pod? Pre-registered in
+`bench/results/determinism-crossbox-preregistration.log` (cells, reference digests and decision
+rules written before any run), executed on zc-01 (2 GB / 2 vCPU; same platform string
+`Linux-6.8.0-139-generic-x86_64-with-glibc2.39`; the repo rsynced with `src` at main `7ed0b90`;
+the same lock; the same `zds-qwen3.6-35b` on the same pod), during co-tenancy with a running
+retrieval experiment on that pod.
+
+| cell (all `ZAKCODE_TEMPERATURE=0`, `02-median-bug`, every file digested) | zc-03 | zc-01 | across |
+|---|---|---|---|
+| X1 bench pin-both (constant workspace + constant session id) | 3/3 identical | 3/3 identical | **all 6 files equal** |
+| X3 real-user cell + `ZAKCODE_STABLE_PROMPT_IDENTITY=1` (fresh uuid4) | 6/6 identical | 3/3 identical | **all 6 files equal** |
+
+`stats.py` is `7bff3055…` in every one of the 15 runs across the two machines; the other five
+files (`test_stats.py` and four pytest cache files) match too. Turn counts were 6 in every run.
+Wall time per run on zc-01 varied threefold (32–93 s, the pod was shared); the bytes did not.
+The pre-registered rule for "X1 holds, X2 holds, X3 holds" was this addendum, scoped as written
+there: **reproducible across machines that share the platform string, on this task, against the
+same pod.** A different OS, libc or CPU string is not covered — those reach the prompt through
+the environment block and were deliberately held constant here.
+
+**The first attempt was void, and the instrument said the opposite.** On zc-01 every child crashed
+at startup in 1.7 s: that box's user config (`~/.zakcode/.env`) sets `ZAKCODE_LOCAL_ONLY=true`,
+and the bench runner sets `api_base=None` on purpose (belt-and-suspenders against paid endpoints),
+so the two composed into `LocalOnlyViolation` — a refusal neither side produces alone. The arm
+then digested the untouched seed files of three crashes and printed
+`PRIMARY (every file): IDENTICAL across all runs`. That is the guard-2903 vacuity one level above
+the empty-digest case the arm already refused: the digest set was non-empty, it just never
+measured the agent. Two changes: the arm now records whether each run produced a report at all
+and refuses a verdict (rc=5, last stderr line printed) when one did not, with a positive control
+that three *reported* failures with identical bytes still render (#397); and the bench child on a
+second machine runs with `ZAKCODE_HOME` pointed at an empty directory, so the box's user config is
+not part of the measurement. The general fact behind that: **a machine's `~/.zakcode/.env` is part
+of the reproducibility surface.** The two documented variables reproduce a run only relative to
+the same effective configuration; a user comparing runs across machines has to hold the config
+equal the way this test did, and `zakcode config` is the tool that shows what is effective.
+
+Standing table on `02-median-bug`, all arms at temperature 0 where the knob exists:
+
+| arm | runs | distinct byte-states |
+|---|---|---|
+| Claude Code, as it ships | 9 (2 batches) | 2 in each batch |
+| zakcode, real-user cell, no fix | 9 (2 batches) | 2 |
+| zakcode, real-user cell, `ZAKCODE_STABLE_PROMPT_IDENTITY=1` | 6 | 1 |
+| **zakcode, same cell, second machine** | 3 | **1 — the first machine's bytes** |
+
 ## ADR-0158
 
 **Small-model skill selection is driven by description fidelity; catalogue size, description
