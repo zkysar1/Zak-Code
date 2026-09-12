@@ -7966,3 +7966,51 @@ full pass was on course to be killed by its own timeout twenty minutes into the 
 would have discarded the pre-registered primary's per-skill data. The `| tail` on a long ssh
 pipeline hid all interim output until EOF and reproduced the zero-byte-log ambiguity this campaign
 keeps meeting; liveness was read on-box from the run's own progress lines instead.
+
+### ADR-0158 ADDENDUM — shortlisting's pre-registered verdict: no TOPK arm beats FULL (2026-09-12)
+
+The pre-registration (`bench/results/retrieval-lever-preregistration.log`, written 11:06 before
+TOPK20 or TOPK40 reported) staked H-RETRIEVAL — *retriever recall is the binding constraint* — on
+four predictions. All four arms are now in, 420 queries each over the same 140 skills, one model,
+temperature 0:
+
+| arm | accuracy | recall@K | conditional (acc ÷ recall) | catalogue chars | vs FULL, paired bootstrap over skills (95% CI) |
+|---|---|---|---|---|---|
+| FULL | 60.2% | 100% | 60.2% | 97,907 (100%) | — |
+| TOPK10 | 57.6% | 67.6% | 85.2% | 8,221 (8%) | −2.6 (−6.7, +1.2) |
+| **TOPK20 (pre-registered primary)** | 58.8% | 72.6% | 81.0% | 16,511 (17%) | **−1.4 (−5.2, +2.1)** |
+| TOPK40 | 58.3% | 80.7% | 72.2% | 32,610 (33%) | −1.9 (−5.5, +1.7) |
+
+- **R1 holds**: conditional accuracy falls monotonically with K (85.2 → 81.0 → 72.2). More
+  siblings in the shortlist is the sibling-confusion mechanism, as predicted.
+- **R2 fails**: TOPK40 is not the best TOPK arm; TOPK20 is. Recall rose 68 → 81 and the
+  conditional fell faster than that bought back.
+- **R3 fails**: no TOPK arm beats FULL on the point estimate, at any K tried.
+- **R4 failed first** (tokenizer variants moved recall@20 by −0.2 points; the cheap retriever
+  route was already shut).
+
+The decision rule for R3 failing, applied as written: *conditional accuracy is not high enough to
+overcome the recall loss at any K tried; shortlisting is dead as a product move regardless of how
+attractive the conditional number looked. The 85.2% conditional was a TRUE observation that did
+NOT translate.* It did not translate because it was never a property of the model: this ADR's own
+selection-effect finding — retrieval-hard ≡ model-hard — means the queries a shortlist keeps are
+the ones the model was going to get right anyway, so accuracy ÷ recall flatters every K by the
+same mechanism. That confound was named in the pre-registration's "known confound" section and it
+decided the outcome.
+
+**The cost reading is also not a claim this data supports.** TOPK20 delivers FULL's accuracy
+within noise at 17% of the catalogue characters, and the pre-registration set the bar for a
+cost-only claim at the same 5-point non-inferiority margin the earlier shortening run was
+retracted against; the lower bound is −5.2. Consistent with non-inferiority, not shown. A larger
+N would be needed to say it, and nothing here motivates spending it: the catalogue is not the
+cost that matters on a self-hosted pod.
+
+Instrument notes: the FULL control stayed at 60.2% (the VOID floor was 45%); TOPK10 reproduced
+its 242/420 exactly across the killed first pass and this one, so the arm itself is
+deterministic at temperature 0; TOPK40 ran three times slower than TOPK20 because a second model
+on the same pod was serving another experiment, and its bytes were unaffected.
+
+**Decision**: retrieval recall is not the lever and shortlisting is retired as an accuracy lever
+(a `--top-k` product knob would ship nothing measurable). The description-fidelity rewrite arm,
+already queued, is the last live hypothesis in this lane; its W0–W4 verdicts land as the next
+addendum.
