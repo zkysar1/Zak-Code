@@ -24,6 +24,7 @@ Usage:  ./.venv/bin/python bench/determinism_cc.py bench/tasks/02-median-bug [N]
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import shutil
@@ -68,6 +69,9 @@ def _capture_sources(ws: Path) -> dict[str, str]:
     return out
 
 
+_RUN_COUNTER = itertools.count(1)  # per-process run index, for per-run request dumps
+
+
 def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool = True) -> dict:
     """zakcode arm, WITH ZBENCH_PIN_IDENTITY -- its determinism feature switched ON.
 
@@ -84,6 +88,13 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool
     env = dict(os.environ, ZBENCH_KEEP_WORKSPACE="1")
     if pin:
         env["ZBENCH_PIN_IDENTITY"] = os.environ.get("ZBENCH_PIN_MODE", "1")
+    # ZBENCH_DUMP_REQUESTS (run_task.py) writes call-NNN.json into ONE directory, so N children
+    # sharing the arm's environment would overwrite each other and the diff the pre-registered
+    # protocol calls for ("dump requests and diff before attributing", ADR-0157) would compare a
+    # run with itself. Each run gets its own subdirectory.
+    k = next(_RUN_COUNTER)
+    if os.environ.get("ZBENCH_DUMP_REQUESTS"):
+        env["ZBENCH_DUMP_REQUESTS"] = str(Path(os.environ["ZBENCH_DUMP_REQUESTS"]) / f"run-{k}")
     t0 = time.perf_counter()
     try:
         proc = subprocess.run(

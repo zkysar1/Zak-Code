@@ -126,3 +126,20 @@ def test_one_run_zakcode_marks_a_missing_report(monkeypatch, tmp_path):
     monkeypatch.setattr(mod.subprocess, "run", failed_but_reported)
     r = mod.one_run_zakcode(task, spec, pin=True)
     assert r["no_report"] is False and r["verify_rc"] == 1 and r["num_turns"] == 4
+
+
+def test_request_dumps_get_a_per_run_subdirectory(monkeypatch, tmp_path):
+    """ZBENCH_DUMP_REQUESTS is ONE directory in run_task.py; N runs must not overwrite it."""
+    mod, task = _load(monkeypatch, tmp_path)
+    monkeypatch.setenv("ZBENCH_DUMP_REQUESTS", str(tmp_path / "dumps"))
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(kw["env"].get("ZBENCH_DUMP_REQUESTS"))
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    mod.one_run_zakcode(task, {"id": "unit-dump"}, pin=True)
+    mod.one_run_zakcode(task, {"id": "unit-dump"}, pin=True)
+    assert [Path(p).name for p in seen] == ["run-1", "run-2"]
+    assert all(Path(p).parent == tmp_path / "dumps" for p in seen)
