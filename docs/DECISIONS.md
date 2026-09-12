@@ -7524,3 +7524,56 @@ assumption, the same class of gap ADR-0146 and ADR-0154 already record. The tran
 the ordering and the ratio, not the absolute rates. Finally, `tests/test_skills.py` uses
 single-word descriptions, so a first-sentence truncation is a no-op there and the current suite
 could not see such a change land correctly or incorrectly — relevant to any future attempt.
+
+## ADR-0156: zakcode on a 35b local model matched Claude Code on Opus 5, 3/3, on the three tasks built to discriminate
+
+ADR-0151 found the suite saturated for both agents and prescribed harder tasks; its addendum records
+three attempts, all of which Claude Code passed. Three tasks were built and the reference arm run —
+and then, for a while, the subject arm was not run at all. That is the defect this ADR corrects:
+**one arm's data is not a comparison**, and three tasks with only a Claude Code column had been
+treated as a result for several hours.
+
+```
+task                     zakcode (zds-qwen3.6-35b, local)   claude-code (Opus 5)
+06-plugin-conventions    PASS  16 iters   596.2s            PASS  17 turns  $0.3487  23.4s
+07-ttl-cache             PASS  13 iters   851.7s            PASS   7 turns  $0.3764  29.5s
+08-mutation-leak         PASS  14 iters   253.1s            PASS   8 turns  $0.2829  20.2s
+                         3/3   $0 marginal  1,701s          3/3            $1.0080     73s
+```
+
+**Every pre-registered prediction was wrong** (`bench/results/zakcode-new-tasks-predictions.log`).
+P1 called `06` a FAIL or near-miss and was the strongest of the three, on the reasoning that its cost
+to the reference agent was EXPLORATION and a smaller model would write the obvious `import yaml`.
+P2 called `07` even odds; P3 called `08` more likely to fail. Aggregate prediction: 0-1 of 3. Actual:
+3 of 3. The predictions were made with the reference arm already visible, which makes them EASIER,
+and they were still wrong in the same direction three times: **zakcode was underestimated.**
+
+**What this does NOT establish.** It is not strict parity, and it is model-confounded exactly as
+ADR-0151 describes — though note the confound runs in zakcode's favour here rather than against it:
+a 35b local model matched Opus 5. By this ADR's own pre-registered rule ("3 of 3 pass -> the tasks
+are saturated for both arms exactly like the original five"), **the decision to stop unsaturating
+the suite this way stands unqualified**, and these three tasks carry no more resolving power than
+the original five.
+
+**What it DOES establish, and it is not vacuous.** These are not easy tasks that both agents happened
+to clear. Each was validated against controls BEFORE either arm ran, and in every case the
+natural-but-wrong solution FAILS the oracle: `import yaml` is the obvious implementation of `06` and
+pyyaml is installed so it would run; a plain `OrderedDict` cache passes all four of `07`'s visible
+tests and fails the oracle; both plausible symptom fixes for `08` are rejected while the root fix
+passes. So the tasks reject wrong answers, and both agents supply right ones. On the three most
+demanding tasks in this suite, **a 35b model driven by zakcode produced the same outcomes as Opus 5
+driven by Claude Code.**
+
+**The differentiator is not correctness, it is cost and latency.** $0 marginal against $1.0080, and
+1,701s against 73s — **23x slower, and free.** That is the shape of the user's redirect stated as a
+measurement rather than an aspiration: zakcode's value is not beating Claude Code at task success,
+it is matching task success on a model that costs nothing to run. On `06` — the exploration task —
+zakcode took 16 iterations against Claude Code's 17 turns, essentially identical; the wall-clock gap
+is per-step latency on a local 35b, not extra steps.
+
+**Method note: this run was lost once and nearly twice.** The box has 4 GB of RAM. Running the
+choosability TOPK eval, the coach replication and this arm concurrently drove it into OOM; the
+reaper took the TOPK run after ~57 minutes with a ZERO-BYTE log, and took the waiter watching both.
+This arm had already written its results and survived. The earlier decision to parallelise was
+justified on the grounds that shared load costs latency and not correctness — true of the pod, false
+of local memory, which was not considered. Re-run TOPK alone.

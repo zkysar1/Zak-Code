@@ -1,0 +1,38 @@
+PREDICTIONS -- zakcode arm on the three new tasks          2026-09-12
+Written BEFORE the run completes. Claude Code's results are already known
+(all three PASS, at 17 / 7 / 8 turns), so these predictions are made with the
+reference arm visible -- that is stated plainly rather than hidden, because it
+makes the predictions EASIER and they should be discounted accordingly.
+
+WHAT THIS RUN CAN AND CANNOT SHOW (ADR-0151, rb-10756)
+  It is MODEL-CONFOUNDED by construction: zakcode runs zds-qwen3.6-35b on the
+  pod, Claude Code ran Opus 5. A gap is NOT evidence about the agent loop. What
+  a gap DOES establish is that the new tasks have resolving power at all -- if
+  zakcode fails where Claude Code passes, these three tasks are the first in the
+  suite that separate ANY two arms, which is exactly what ADR-0151 said the
+  suite lacks. That is worth having even though it does not answer parity.
+
+PREDICTIONS
+  P1  06-plugin-conventions -- FAIL or near-miss. It is the task that cost the
+      reference agent the most (2.7x turns), and the cost was EXPLORATION:
+      reading CONTRIBUTING.md, noticing the stdlib-only rule, and resisting the
+      obvious `import yaml`. A smaller model is most likely to write the obvious
+      thing. This is my strongest prediction.
+  P2  07-ttl-cache -- roughly even odds. Fully specified, so no exploration is
+      needed, and stated intricacy cost the reference agent almost nothing
+      (1.1x). But four interacting traps is exactly the shape of 05-ledger's
+      atomicity, which is the ONE task zakcode has ever failed.
+  P3  08-mutation-leak -- FAIL more likely than pass. Requires tracing a cause
+      three modules from its symptom, and the two decoy fixes (silence the
+      audit, reload around it) are both more obvious than the root fix.
+
+  Aggregate: I expect 0-1 of 3 to pass.
+
+WHAT EACH OUTCOME MEANS, fixed in advance
+  0-2 of 3 pass -> the new tasks DISCRIMINATE. The suite is no longer saturated
+      for both arms, ADR-0151's addendum understated the tasks' value, and the
+      "stop unsaturating this way" decision must be SOFTENED: the tasks failed
+      to separate Claude Code from a ceiling, but they separate the two ARMS,
+      which is a different and useful property.
+  3 of 3 pass -> the tasks are saturated for both arms exactly like the
+      original five, and the decision to stop stands unqualified.
