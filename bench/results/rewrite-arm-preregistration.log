@@ -1,0 +1,71 @@
+PRE-REGISTRATION -- the REWRITE arm: is description fidelity CAUSAL?     2026-09-12
+Written at 11:57, BEFORE any rewrite is generated or scored. Pod is held by the
+TOPK eval and the 03-lru determinism arms until ~14:40; this runs after.
+
+WHAT IS ESTABLISHED (ADR-0158, merged 7ed0b90)
+  Description fidelity -- per-skill token coverage of a skill's queries by its
+  name+description -- predicts full-catalogue selection accuracy on two
+  independent catalogues (rho +0.637 / +0.534; tertile spreads 50 / 34.6).
+  Size, length and family size are falsified. NO causal claim was made: low
+  coverage may CAUSE misses, or may merely MARK intrinsically ambiguous skills.
+  Only an intervention separates those. This is that intervention.
+
+THE TAUTOLOGY TRAP, and the holdout that avoids it
+  Queries are paragraphs 2-4 of each skill's body (queries_for: paras[1:4] of
+  the >200-char paragraphs). A rewriter shown the whole body would raise
+  coverage of exactly those paragraphs BY CONSTRUCTION, and a lift would prove
+  only that descriptions can be made to echo their queries.
+  HOLDOUT: the rewriter sees the skill NAME, the ORIGINAL description, and the
+  body with the three query-source paragraphs REMOVED. It never sees a query.
+  Any coverage gain then comes from describing the skill better, not from
+  copying the test. Skills with fewer than 2 long paragraphs left after the
+  holdout are EXCLUDED and counted, not silently kept.
+
+DESIGN
+  Population: ayoai-mind, 140 skills, 420 queries -- the same set as every arm
+  in this arc. Target: the LOWEST-coverage tertile (46 skills) by the measure in
+  description_fidelity.py. Rewriter: zds-qwen3.6-35b at temperature 0 (the same
+  model, so a Mind could run this autonomously; deterministic per ADR-0157), one
+  call per skill, instructed to write a 1-3 sentence description of what the
+  skill does and when to use it, from the holdout body.
+  Arms, each the FULL 145-skill catalogue rendered identically:
+    ORIG     original descriptions                      (control; must reproduce)
+    REWRITE  the 46 target descriptions replaced; the other 94 untouched
+  Both arms score ALL 420 queries: rewriting 46 descriptions changes the
+  confusability of the other 94 too, and a rewrite that helps its targets by
+  hurting the rest is a net loss that a targets-only score would hide.
+
+PREDICTIONS, fixed before any rewrite exists
+  W0 ORIG reproduces: FULL within 3 points of 60.2% (three prior runs: 60.2,
+     60.2, 60.2). VOID below 45%.
+  W1 (mechanism check, no model scoring needed) the rewritten descriptions have
+     HIGHER coverage than the originals on at least 35 of the 46 targets. If the
+     rewriter did not raise coverage, the arm is not a fidelity test at all.
+  W2 (THE TEST) target-skill accuracy rises under REWRITE: paired bootstrap over
+     the 46 target skills, two-sided 95% CI on (REWRITE - ORIG); point estimate
+     >= +10 points, CI excludes zero. The targets sit at 35.5%; +10 is set well
+     inside the predicted direction, not at it (guard-5645).
+  W3 (non-inferiority of the untouched 94) their accuracy under REWRITE is not
+     more than 5 points below ORIG -- the same margin as the retracted
+     shortening run, in the same direction.
+  W4 (direction only) the model picks a rewritten TARGET skill for a query
+     belonging to an UNTOUCHED skill more often under REWRITE than ORIG --
+     rewritten descriptions become more attractive decoys. Predicted, so it is
+     not read as a surprise; W3 is what bounds it.
+
+DECISION RULES
+  W0 fails -> arm drifted; no verdict.
+  W1 fails -> the rewriter did not change what it was meant to; NO verdict on
+     causality, and do not rescue it by letting the rewriter see more body.
+  W1 AND W2 AND W3 hold -> FIDELITY IS CAUSAL. The rewrite is a product action:
+     file a goal to apply the same rewrite procedure to the real catalogue,
+     fleet-wide, with the coach replication as the second check.
+  W1 holds, W2 fails -> coverage rose and accuracy did not: fidelity is a
+     MARKER of intrinsic ambiguity, not a cause. Retire the rewrite lever and
+     say so in ADR-0158's addendum; the correlation stands, the remedy does not.
+  W2 holds, W3 fails -> the lift is paid for by the untouched skills; report
+     the net over all 140 and do not ship a rewrite that moves errors around.
+
+WHAT THIS CANNOT DO
+  One catalogue, one rewriter, one model. A causal result here licenses the
+  coach replication as the next step, not a fleet rollout on its own.
