@@ -7194,6 +7194,12 @@ fetched on demand exactly as bodies already are. Names alone save 97% and are pr
 to choose from; that is a judgement, not a measurement, and it is the one thing here that should be
 tested against a model rather than asserted.
 
+> **Both sentences above have since been MEASURED — see the third addendum.** "Too cryptic" held
+> (names lose 38.7 points, p≈0). "Keeping it choosable" did NOT come back clean: first sentences are
+> not separable from full descriptions at p<0.05, but the point estimate favours full by 4.9 points
+> and the 95% CI reaches +10.2, so the 66% saving is measured while its accuracy cost is bounded
+> rather than zero. Do not cite "keeping it choosable" from this paragraph without that interval.
+
 **And the misattribution:** the sentence above reading "a 145-skill catalogue consumes ~89% of the
 window" is wrong. 89% is the whole per-iteration prompt (29,096 of 32,768); the catalogue's own
 share is **69%**. The conclusion is unchanged and the arithmetic was not — a share of the total got
@@ -7203,3 +7209,101 @@ labelled as a share of one component, which is the same error as the first adden
 coach's 65 is the real deployment figure and was measured, not assumed. Coach's median and max
 include conversation history, so only the minimum bounds its floor. The bench figure is tokens per
 iteration and coach's is tokens per call; they are comparable in magnitude, not to the digit.
+
+**THIRD ADDENDUM: measured. The "too cryptic" guess was right; the recommendation survives on the
+pre-registered test but cannot be called safe without its bound; and the first run measured its own
+bug.** The second addendum flagged one sentence as a judgement that should be tested against a model
+rather than asserted. It was tested — three arms over the same catalogue, queries drawn from skill
+BODIES so FULL could not win by string-matching its own descriptions (`bench/choosability_eval.py`).
+
+**The first run returned 0/30 on every arm, and the reason is worth more than the result.** The eval
+posted raw JSON with `chat_template_kwargs` nested under `extra_body`. That is a litellm/openai-SDK
+kwarg those clients *flatten* into the request body; a raw `httpx` POST sends it verbatim, the server
+ignores an unknown `extra_body` key, and the chat template never sees `enable_thinking: False`.
+Thinking stayed on, the 32-token cap went entirely to `reasoning_content`, and every arm returned an
+empty string. Measured side by side — nested: `content=''`, `reasoning=125ch`, `finish=length`;
+top-level: `content='reflect'`, `reasoning=0ch`, `finish=stop`.
+
+The NAMES arm therefore scored 0/30 — **verbatim the conclusion this ADR had already asserted.** The
+run survived only because FULL was pre-registered as a control whose expected result was *high*:
+FULL at 0/30 is impossible under any true state of the world, so the run VOIDed instead of confirming
+the guess. Had the two cheap arms shipped alone, a request-shape bug would have been published as a
+capability finding about small models. A control that fails in the same direction as your hypothesis
+is not a control; it is a second copy of your hypothesis (`guard-6562`). The eval now aborts on an
+empty completion as an INSTRUMENT failure rather than scoring it as a wrong answer — at a scoreboard
+those two are the same row, so every arm degrades together and nothing looks anomalous.
+
+**The 30-skill run could not settle the primary question and was not allowed to pretend otherwise.**
+Corrected shape gave FULL 15/30, FIRST 13/30, NAMES 6/30, reproduced byte-identically across two
+separate invocations (measurement noise is zero at temperature 0, so repetition buys nothing — only
+population does). But FIRST-vs-FULL rested on 4 discordant pairs split 3-1, p=0.6250, and *both* the
+tolerance band and the VOID threshold were decided by a single question each — `guard-5645`'s shape
+exactly. So the whole catalogue was run instead, pre-registered first
+(`bench/results/choosability-full-preregistration.log`).
+
+**The result, all 145 skills, 142 with a usable body-derived query, no sampling:**
+
+```
+arm      catalogue    tokens      score           marginal cost of that rung
+NAMES      3,250 ch      761   33/142  23.2%
+FIRST     33,695 ch    7,891   81/142  57.0%    +7,130 tok bought +33.8pp =    901 ch/pt
+FULL      97,907 ch   22,929   88/142  62.0%   +15,038 tok bought  +4.9pp = 13,026 ch/pt
+```
+
+Control valid: FULL 62.0% against a pre-registered VOID floor of 25% (set well away from the
+observed value on purpose — a boundary placed at the number it tests is satisfiable by stasis).
+These sizes reconcile exactly with the second addendum's, which counted raw content; the difference
+is this eval's list markup (`- `, `: `, newlines), 434 to 724 chars, every byte accounted for.
+
+**Paired exact two-sided sign tests on discordant pairs — the registered rule, since all three arms
+answer the identical queries and comparing marginal totals discards that pairing:**
+
+```
+FULL vs NAMES   58-3  (n=61)   p = 0.0000   NAMES loses 38.7%  (95% CI 30.0% to 47.4%)
+FIRST vs NAMES  52-4  (n=56)   p = 0.0000   NAMES loses 33.8%  (95% CI 25.1% to 42.5%)
+FULL vs FIRST   11-4  (n=15)   p = 0.1185   not separable at p<0.05
+                                            point estimate +4.9%, 95% CI -0.4% to +10.2%
+```
+
+**The secondary question is settled: the "too cryptic" guess HOLDS,** now at n=142 rather than by
+assertion. Names alone lose 38.7 points against full descriptions and 33.8 against first sentences,
+both overwhelmingly. **The 97% saving is not available at any acceptable quality.**
+
+**The primary question resolves to "not retracted", and the honest statement of that is a bound, not
+a vindication.** The registered rule was a sign test at p<0.05; p=0.1185 does not reject, so the
+recommendation stands. Two things must travel with it. First, **this is a superiority test, and
+failing to reject is not evidence of equivalence** — a non-inferiority design with a stated margin
+was the right instrument and was not what got registered; that is a design error to fix in the next
+run, not to relitigate in this one. Second, **the interval is what a builder should read**: the
+point estimate favours full descriptions by 4.9 points and the 95% CI runs to +10.2, so this run
+**cannot exclude a ten-point choosability loss.** Anyone shipping the first-sentence catalogue should
+treat the 66% saving as measured and the accuracy cost as bounded-but-real, not as zero.
+
+**A stale decision rule nearly inverted this verdict.** The eval's printed verdict line applied
+`FIRST >= FULL - 2` — the absolute band registered for the 30-skill sample, left in place when
+`--all` was added. At n=142 that is a ±1.4pp equivalence bar almost nothing can clear, and it printed
+"the ADR's recommendation must be RETRACTED" on a difference the registered test does not resolve.
+The pre-registration file names the sign test as PRIMARY, so the sign test governs. The code now
+computes the registered test. Worth stating plainly because the stale rule pointed at the *harsher*
+answer: it was caught by re-reading the pre-registration, not by the output looking wrong.
+
+**What is robust regardless of where the FIRST-vs-FULL truth lies:** the marginal value of catalogue
+bytes collapses. First sentences buy 33.8 points for 7,130 tokens; the entire remaining description
+buys 4.9 points for 15,038 tokens — **14.5x worse per point, and 46% of a 32k context window.** Two
+thirds of what a small model currently spends its window on is the least informative two thirds.
+
+**Where this lands in the engine.** `SkillRegistry.render_catalog()` (`src/zakcode/skills/__init__.py`)
+is the single site emitting full descriptions into the system prompt. A precedent already ships on a
+sibling path: `providers/routing.py` caps descriptions at `_SKILL_DESC_CAP = 100` for the classify
+side-call — *more* aggressive than the first-sentence shape measured here. The catalogue is also a
+property of the WORKSPACE, not of zakcode: `default_skill_dirs` merges bundled (1 skill) with the
+project's `.zakcode/skills` and `.claude/skills`, so this cost is paid only where zakcode runs as a
+Mind runtime — 145 here, and 65 on coach (58 in `.claude/skills` + 7 in `.zakcode/skills`, re-verified
+on zc-03). An ordinary repo carries one skill and none of this applies.
+
+**Caveat on the near-miss structure.** FULL's misses are dominated by sibling confusions
+(`aspirations-complete-review` → `aspirations-precheck`), and 36% of the catalogue sits in a family of
+three or more. That caps what any catalogue shape can achieve and is why FULL tops out at 62% rather
+than higher. Re-scoring to a laxer "right family" metric would raise every arm and is exactly the
+post-hoc move pre-registration forbids; exact match stands as registered. Whether better-separated
+skill names beat any amount of description is a NEW question, not a re-reading of this one.

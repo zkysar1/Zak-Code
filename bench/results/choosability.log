@@ -1,0 +1,21 @@
+catalogue=145 skills   sample=30   usable queries=30
+FULL   15/30 = 50%   catalogue 97,907 chars
+       miss: wanted 'analyze-remote-corpus' got 'efs-file-put'
+       miss: wanted 'aspirations-complete-review' got 'aspirations-precheck'
+       miss: wanted 'aspirations-consolidate' got 'aspirations-graceful-stop'
+       miss: wanted 'aspirations-evolve' got 'prime'
+FIRST  13/30 = 43%   catalogue 33,695 chars
+       miss: wanted 'analyze-remote-corpus' got 'efs-file-put'
+       miss: wanted 'aspirations' got 'boot'
+       miss: wanted 'aspirations-complete-review' got 'aspirations-precheck'
+       miss: wanted 'aspirations-consolidate' got 'stop'
+NAMES  6/30 = 20%   catalogue 3,250 chars
+       miss: wanted 'analyze-npc-behavior' got 'aspirations-learning-gate'
+       miss: wanted 'analyze-remote-corpus' got 'forge-skill'
+       miss: wanted 'aspirations' got 'extract-and-run-embedded-block'
+       miss: wanted 'aspirations-complete-review' got 'aspirations-learning-gate'
+
+--- verdict against the pre-registered rules ---
+control OK: FULL=15/30.
+FIRST vs FULL: -2 -- the recommended shape holds
+NAMES vs FULL: -9 -- the 'too cryptic' guess holds

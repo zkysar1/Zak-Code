@@ -1,0 +1,49 @@
+PRE-REGISTRATION -- full-catalogue choosability run            2026-09-12
+Written BEFORE the run. The 30-skill result is known; this fixes what the
+145-skill result will be allowed to mean, so neither outcome can be read
+into the recommendation after the fact.
+
+WHAT THE 30-SKILL RUN SETTLED AND DID NOT
+  settled: NAMES is decisively worse. 9-0 discordant vs FULL (exact two-sided
+           sign test p=0.0039), 8-1 vs FIRST (p=0.0391). The ADR's "probably
+           too cryptic" guess is CONFIRMED; the 97% saving is not available.
+  NOT settled: FIRST vs FULL. Only 4 discordant pairs, split 3-1, p=0.6250.
+           Underpowered, not equal. The recommendation is neither vindicated
+           nor retracted by that run.
+  noise floor: ZERO. Two separate process invocations returned byte-identical
+           scores (15/13/6) and identical misses. So repetition buys nothing;
+           only a larger population can separate FIRST from FULL.
+
+POPULATION
+  All 145 skills that yield a usable body-derived query. No sampling, so the
+  30-skill draw's unlucky composition (aspirations-* 7 of 30 against 3.1
+  expected; 14 of 30 in a >=3-member sibling family) cannot apply. Queries and
+  rendering are UNCHANGED from the 30-skill run -- only the population grows.
+
+PRIMARY -- FULL vs FIRST, paired exact two-sided sign test on discordant pairs
+  p <  0.05 and FULL ahead -> the second addendum's recommendation is RETRACTED.
+        Name+first-sentence measurably loses choosability; the 66% saving costs
+        accuracy and must not be built on the strength of this ADR.
+  p <  0.05 and FIRST ahead -> a surprise; record it, do not act on it this pass.
+  p >= 0.05 -> the two shapes are indistinguishable ACROSS THE WHOLE CATALOGUE.
+        The recommendation is SAFE TO BUILD. Report the bound: with n discordant
+        pairs, state the largest true difference this run could still have missed
+        rather than claiming equality.
+
+SECONDARY -- FULL vs NAMES
+  Expected to reconfirm the 30-skill finding. If it does NOT reproduce at n=145,
+  the 30-skill result was a sampling artifact and the "too cryptic" confirmation
+  is withdrawn along with it.
+
+CONTROL -- FULL is the positive control, as before
+  VOID the run if FULL scores below 25%. Deliberately NOT set at the observed
+  50%: a boundary placed at the value it is tested against is satisfiable by
+  stasis and carries almost no information (guard-5645). 25% is far above the
+  0.7% chance rate of a 145-way choice, so it still catches a dead instrument.
+  An empty completion aborts the run as an INSTRUMENT failure, never scores as
+  a wrong answer (guard-6562).
+
+WHAT WILL NOT BE DONE
+  No re-scoring to a laxer "right family" metric. Exact match was registered and
+  stays. The sibling-confusion structure is a NEW question for a future run, not
+  a re-reading of this one.
