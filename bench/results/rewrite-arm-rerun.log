@@ -1,0 +1,27 @@
+=== REWRITE ARM RE-RUN launch 18:47:08 HEAD=6780cc8
+=== PHASE prepare 18:47:08
+140 skills; lowest-coverage tertile = 46; targets with >= 2 long paragraphs after holdout = 45; EXCLUDED = 1
+  target coverage: mean 0.155, max 0.210   (rest of catalogue: 0.318)
+  holdout chars: median 3000
+wrote /opt/zak-code/bench/results/rewrite-targets.json
+=== PHASE prepare exited rc=0 18:47:09
+=== PHASE rewrite 18:47:09
+  .. 10/45 rewritten
+  .. 20/45 rewritten
+  .. 30/45 rewritten
+  .. 40/45 rewritten
+
+W1 mechanism check: coverage rose on 5/45 targets (pre-registered floor 35)  mean 0.155 -> 0.121
+W1 FAILS -- no verdict on causality; do not widen the rewriter's view
+=== PHASE rewrite exited rc=0 18:49:28
+=== PHASE score 18:49:28
+  .. ORIG 60 queries
+  .. ORIG 120 queries
+  .. ORIG 180 queries
+  .. ORIG 240 queries
+  .. ORIG 300 queries
+  .. ORIG 360 queries
+  .. ORIG 420 queries
+ORIG     270/420 = 64.3%
+  .. REWRITE 480 queries
+  .. REWRITE 540 queries

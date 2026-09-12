@@ -8221,3 +8221,80 @@ them.
 bench catalogue now goes through the shared reader and refuses on an indicator (`RuntimeError:
 catalogue instrument failure`), with a parity test pinning the coach's inline copy to it; the
 same class — a catalogue that *parses* and is wrong — is guard-2903's fifth shape.
+
+### ADR-0158 THIRD ADDENDUM — re-measured on the fixed instrument: no accuracy lever, a cost lever within the margin, and the control moved with the defect (2026-09-12)
+
+**Re-measurement** (`retrieval-lever-preregistration.log`, pre-registered 14:49, results 18:46; log
+`choosability-topk-fixedparser.log`; matrix `choosability-topk-matrix.json`, the defective one kept as
+`choosability-topk-matrix.defectiveparser.json`). Same 140 skills, same 420 queries, same model
+(zds-qwen3.6-35b) and temperature, fixed loader with `assert_sane`; 1,680 requests, 15:22–18:45.
+
+| arm | accuracy | recall@K | acc ÷ recall | catalogue chars | vs FULL, paired bootstrap over skills (95% CI) | was (void run) |
+|---|---|---|---|---|---|---|
+| FULL (control) | **270/420 = 64.3%** | 100% | — | 107,388 | — | 60.2% |
+| TOPK10 | 272/420 = 64.8% | 73.1% | 88.7% | 8,352 (8%) | +0.5 (−3.6, +4.5) | −2.6 |
+| **TOPK20 (pre-registered primary)** | 268/420 = 63.8% | 77.4% | 82.4% | 16,712 (16%) | **−0.5 (−4.0, +3.3)** | −1.4 (−5.2, +2.1) |
+| TOPK40 | 275/420 = 65.5% | 85.2% | 76.9% | 33,224 (31%) | +1.2 (−2.4, +5.0) | −1.9 |
+
+The acc ÷ recall column is the quotient guard-6584 warns about — the un-retrieved skills are not a
+random sample of the catalogue, so it overstates what the model does with a shortlist — and it is
+kept only because R1 is defined on it.
+
+**Predictions, as fixed at 14:49.** (a) **HOLDS**: the 11 repaired skills went from 0.091 to
+0.818 / 0.818 / 0.848 under TOPK10/20/40 and from 0.364 to 0.818 under FULL, while the other 129
+moved by at most 1.5 points in any arm (FULL 0.623 → 0.628, TOPK10 0.618 → 0.633, TOPK20
+0.630 → 0.623, TOPK40 0.625 → 0.638) — the whole change is the 11. (b) **HOLDS in direction,
+overshoots in size**: every TOPK−FULL difference moved toward zero, by 0.9 to 3.1 points against the
+predicted 1–2, and two arms crossed it. (c) was not predicted: TOPK20 does not beat FULL on the
+point estimate; TOPK10 and TOPK40 do, and every interval spans zero. (d) **FAILED**: the FULL
+control moved **+4.1 points**, not under 3. The prediction assumed "the 11 gain a description;
+nothing else changes" — but a name-only entry had also depressed the control: with a name alone the
+model chose those skills for 36% of their queries, with a description for 82%. **A control arm is a
+control within an instrument version, not across versions**: it is fair to compare arms measured
+on the same catalogue and unsafe to compare a control across a repair of the catalogue. The
+first-addendum control reproduced the void number exactly on kill-and-relaunch (270/420 both
+times, 15:14 and 18:45), so the +4.1 is the repair, not run-to-run noise.
+
+**Rules, applied as written.** R1 holds (acc ÷ recall falls 88.7 → 82.4 → 76.9 with K). R2 now
+holds (TOPK40 is the best TOPK arm; it failed on the void run). R3 on the primary: TOPK20−FULL =
+−0.5, 95% CI (−4.0, +3.3) — **no accuracy gain demonstrated**, so the claim reduces to cost, and
+the cost-only reading is decided at the same 5-point non-inferiority margin the shortening run was
+retracted against: the lower bound is **−4.0, inside the margin** (the void run's −5.2 was not).
+TOPK40's bound is −2.4 and TOPK10's −3.6; those are secondaries and reported, not decided.
+
+**What that supports, exactly.** Shortlisting stays **retired as an accuracy lever** — the
+suspension of the second addendum is lifted in the same direction the first addendum decided. It is
+now a **measured cost lever**: on this catalogue, this model and these 420 queries, a 20-entry
+shortlist carries 16% of the catalogue's characters at a routing-accuracy cost bounded at 4 points
+(95%). The cost that matters on a small model is context budget, not dollars; the pass clears the
+margin by one point on one sample, and the catalogue block is one input to a task, so whether a
+shortlist ships is an end-to-end question — task outcomes under a shortlisted catalogue — which is
+pre-registered separately before it runs, never inferred from this table.
+
+**Coach recompute, fixed reader** (`fidelity-coach-preregistration.log`, pre-registered 17:14, run
+18:47–18:49 on-box; aggregates only cross the wire): FULL 110/192 = 57.3% (prior 58.3%); ρ
+coverage→BM25 recall +0.689; **ρ coverage→FULL accuracy +0.514** (prior +0.534, inside the ±0.05
+band — (a) holds); tertiles 39.7 / 60.3 / 71.2, spread +31.5 against the floor of 25; the one
+repaired coach skill's coverage 0.023 → 0.278 with its FULL accuracy unchanged at 0.667 ((b)
+holds); coverage changed on exactly 1 of 64 skills ((c) holds). Verdict, as the script prints it:
+*replicates — fidelity holds on both catalogues measured; "both", never "generalizes".*
+
+**Rewrite arm, re-run on the fixed catalogue** (`rewrite-arm-preregistration.log`, pre-registered
+17:14; log `rewrite-arm-rerun.log`): targets re-selected — 45 of the lowest-coverage tertile of 46,
+one excluded, 34 of the 45 shared with the void target set; the void targets and rewrites are kept as
+`rewrite-targets.void.json` / `rewrite-descriptions.void.json`. **W1 fails a second time, and
+harder**: coverage rose on **5/45** targets against the floor of 35, and the mean *fell*, 0.155 →
+0.121 (void run: 17/45, 0.112 → 0.122 — the gain it did show was the 11 artifacts). The rewriter,
+given the skill body, writes descriptions that cover the held-out paragraphs *less* than the
+human-written ones. Rule applied: no verdict on causality; the rewriter's view is not widened.
+The score phase (840 calls) was left to run because the pre-registration did not gate it on W1;
+its ORIG arm is an independent replication of the FULL control and its W2/W3 are descriptive
+only. It lands as the fourth addendum. One instrument note ahead of it: the script's W0 constant
+still reads 60.2% while the re-run pre-registered 64.3%; the printed W0 line of this run is
+therefore wrong by construction and W0 is applied from the log, with the constant corrected in
+the same change.
+
+**Standing.** The catalogue instrument is fixed and parity-tested; fidelity (coverage predicts
+full-catalogue accuracy) is replicated on two catalogues and is not shown to be causal; shortlisting
+is not an accuracy lever and is a cost lever within a 5-point margin at N=420. Nothing in the
+loop changes on this addendum.

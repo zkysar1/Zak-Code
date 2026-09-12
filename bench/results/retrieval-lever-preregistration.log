@@ -81,3 +81,33 @@ skills, 95% CI) exactly as before, with the same 5-point non-inferiority bar for
 control moves by less than 3 points (the 11 gain a real description; nothing else changes). Fidelity with the fixed
 loader, same NI-matrix accuracies: F2 rho +0.550 (was +0.637), tertile spread 41.3% -> 78.7%; recorded in ADR-0158's
 second addendum with the excluding-the-11 variant beside it.
+
+=== 15:14 INTERIM (fixed-parser re-measurement, FULL arm only): FULL 270/420 = 64.3% (was 253/420 = 60.2%), catalogue 107,388 ch (was 97,907).
+Prediction (d) "FULL moves by less than 3 points" FAILS: +4.1 points. The 11 repaired skills account for at most ~2 points
+(33 queries x ~0.26); the rest is other skills' picks moving because the catalogue text changed -- so the FULL arm is a
+control WITHIN a catalogue version, not across versions. R3 is still decided by the paired TOPK20-FULL primary inside this
+measurement, as pre-registered. Recorded before TOPK10/20/40 reported.
+
+=== 15:22 INSTRUMENT EVENT: the fixed-parser run was KILLED at 550 cumulative queries (15:21) by the harness memory policy on the
+4 GB box (a full test-suite run for #406 spiked memory beside it). FULL had completed (270/420) and its per-skill matrix is kept as
+choosability-topk-matrix.fixedparser-run1-FULLonly.json. Relaunched DETACHED (setsid nohup) 15:22:48, same arms, same catalogue; the
+re-run of FULL is a free reproduction check (TOPK10 reproduced 242/420 exactly across two passes earlier today).
+
+=== 15:26 STAMP CORRECTION: see determinism-model27b-preregistration.log 15:26 -- the 15:14 and 15:22 headers above were first
+written as 15:20 and 15:50 (estimated), now anchored to the TOPK log timestamps.
+
+=== 18:46 RESULTS (fixed-parser re-measurement complete, TOPK exited rc=0 18:45:32, log choosability-topk-fixedparser.log,
+matrix choosability-topk-matrix.json; the defective-parser matrix kept as choosability-topk-matrix.defectiveparser.json)
+  FULL   270/420 = 64.3%  recall 100%      catalogue 107,388 ch
+  TOPK10 272/420 = 64.8%  recall@10 73.1%   8,352 ch   TOPK10-FULL +0.5  95% CI (-3.6, +4.5)   conditional 88.7%
+  TOPK20 268/420 = 63.8%  recall@20 77.4%  16,712 ch   TOPK20-FULL -0.5  95% CI (-4.0, +3.3)   conditional 82.4%   [PRIMARY]
+  TOPK40 275/420 = 65.5%  recall@40 85.2%  33,224 ch   TOPK40-FULL +1.2  95% CI (-2.4, +5.0)   conditional 76.9%
+Predictions: (a) HOLDS (the 11 repaired skills, per-skill means printed above this block in the transcript, rise in every TOPK
+arm); (b) HOLDS in direction, overshoots in size: every TOPK-FULL difference moved toward zero (+0.9 to +3.1 points; two arms
+crossed zero); (c) was not predicted; (d) FAILED (+4.1, recorded 15:14).
+Rules applied as written: R1 HOLDS (conditional falls 88.7 -> 82.4 -> 76.9). R2 now HOLDS (TOPK40 is the best TOPK arm). R3 on the
+PRIMARY: TOPK20-FULL = -0.5, CI (-4.0, +3.3) -> no accuracy gain demonstrated; the claim reduces to cost, and the cost-only reading
+CLEARS the 5-point non-inferiority margin this time (lower bound -4.0 vs -5.2 on the void run): TOPK20 is non-inferior to FULL
+within 5 points at 16% of the catalogue characters; TOPK40 within 2.4 points at 31%. Shortlisting stays retired as an ACCURACY
+lever (unchanged decision) and becomes a measured COST lever -- the cost that matters is context budget on small models, not
+dollars; whether that ships is an end-to-end question (task outcomes under a shortlisted catalogue), pre-registered separately.
