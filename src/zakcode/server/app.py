@@ -45,6 +45,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -1298,6 +1299,57 @@ def create_app(
             return None
         return reason
 
+    #: Perception-intake observability (g-373-03). Cumulative, in-process, and reported on
+    #: /sidecar/health so a reader can tell a bridge that is delivering from one that has
+    #: gone silent. EVERY field is present from process start — a counter that appears only
+    #: after the first failure cannot distinguish "healthy" from "nobody called it"
+    #: (guard-3169), so these read as explicit zeros rather than absent keys.
+    _observation_stats: dict[str, Any] = {
+        "accepted": 0,
+        "superseded": 0,
+        "refused_bad_version": 0,
+        "refused_missing_ref": 0,
+        "refused_too_large": 0,
+        "last_frame_age_seconds": None,
+        "last_observed_at": None,
+    }
+
+    def _frame_age_seconds(observed_at: Any) -> float | None:
+        """Age of a frame at DELIVERY, in seconds, or None when unparseable.
+
+        §16.3 — a stale frame delivered at the next spawn's first iteration must be
+        visible. Delivery time is the only moment both halves are known, so the age is
+        computed here and never reconstructed later.
+
+        TWO SHAPES REACH THIS, AND BOTH ARE REAL. This receiver's own tests and
+        ``discovery_ledger`` speak ISO-8601; the vessel's ``PerceptionBridgeVerticle``
+        puts ``System.currentTimeMillis()`` — a NUMBER — into the same field, which
+        ``ObserveRequest`` declares ``str``. Parsing one shape and guessing at the other
+        would make the age silently wrong for whichever side lost, so both are handled
+        and anything else is None rather than a fabricated number.
+
+        NOT CLAMPED AT ZERO: a negative age means the vessel's clock is ahead of the
+        mind's, and that skew is a real diagnostic worth seeing rather than rounding away.
+        """
+        if observed_at is None:
+            return None
+        raw = str(observed_at).strip()
+        if not raw:
+            return None
+        now = time.time()
+        if raw.isdigit():  # epoch millis — the vessel's shape
+            try:
+                return round(now - (int(raw) / 1000.0), 3)
+            except (ValueError, OverflowError):
+                return None
+        try:  # ISO-8601 — this receiver's tests and the discovery ledger
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return round(now - parsed.timestamp(), 3)
+
     def _count_findings() -> int:
         """Count entries in the agent's research findings list (spec sec 10.2).
 
@@ -1366,6 +1418,11 @@ def create_app(
             # None until this session's run ends; consumed by the env-server to end
             # the environment on a bounded-run completion (g-369-28).
             "last_run_stop_reason": _current_run_stop_reason(),
+            # Perception intake by outcome, plus how stale the last frame was when it
+            # landed (g-373-03). Beside last_run_stop_reason deliberately: this is the
+            # surface the env-server already polls, so the bridge becomes observable
+            # without a new endpoint or a new poller.
+            "observation_intake": dict(_observation_stats),
         }
 
     # ── PEARL viewer nudge (§Layer-4) ─────────────────────────────────────────────
@@ -1437,6 +1494,7 @@ def create_app(
         own tree). It stages a frame; the mind decides what, if anything, to encode.
         """
         if request.envelopeVersion != OBSERVATION_ENVELOPE_VERSION:
+            _observation_stats["refused_bad_version"] += 1
             # Refuse rather than best-effort parse: acting on a mis-read frame is worse
             # than acting on no frame, and P4 already makes the absent case safe.
             raise HTTPException(
@@ -1448,10 +1506,12 @@ def create_app(
             )
         ref = (request.externalClientRef or "").strip()
         if not ref:
+            _observation_stats["refused_missing_ref"] += 1
             raise HTTPException(status_code=400, detail="externalClientRef required")
 
         payload = json.dumps(request.observation, ensure_ascii=False, sort_keys=True)
         if len(payload) > OBSERVATION_MAX_CHARS:
+            _observation_stats["refused_too_large"] += 1
             # The vessel budgets and names what it shed in droppedSlices; this is the
             # receiver's independent floor, because P4 makes producer cooperation optional.
             raise HTTPException(
@@ -1476,6 +1536,24 @@ def create_app(
         tmp = target.with_name(f".observation.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(staged, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(tmp, target)
+        age = _frame_age_seconds(request.observedAt)
+        _observation_stats["accepted"] += 1
+        if superseded:
+            _observation_stats["superseded"] += 1
+        _observation_stats["last_frame_age_seconds"] = age
+        _observation_stats["last_observed_at"] = request.observedAt
+        # One line per accepted frame. `perception-intake` is the marker a log filter
+        # anchors on and no sibling line emits it; an unparseable observedAt logs
+        # age=None rather than a fabricated number, so a broken clock or a changed
+        # envelope shape is visible here instead of silently reading as fresh.
+        logger.info(
+            "perception-intake ref=%s age_s=%s superseded=%s slices=%d dropped=%d",
+            ref,
+            age,
+            superseded,
+            len(request.observation),
+            len(request.droppedSlices),
+        )
         return {
             "accepted": True,
             "superseded": superseded,
