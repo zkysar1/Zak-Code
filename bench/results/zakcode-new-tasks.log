@@ -1,0 +1,28 @@
+running 3 task(s), 1 at a time: ['06-plugin-conventions', '07-ttl-cache', '08-mutation-leak']
+
+  done: 06-plugin-conventions PASS  completed       it= 16 quick_code $0.00000  tok= 220971 (in 217053/out 3918) 596.2s
+  done: 07-ttl-cache     PASS  completed       it= 13 deep_code  $0.00000  tok= 182963 (in 174977/out 7986) 851.7s
+  done: 08-mutation-leak PASS  completed       it= 14 deep_code  $0.00000  tok= 173392 (in 168355/out 5037) 253.1s
+
+====================================================================================================
+SUITE: 3/3 passed
+  06-plugin-conventions PASS  completed       it= 16 quick_code $0.00000  tok= 220971 (in 217053/out 3918) 596.2s
+  07-ttl-cache     PASS  completed       it= 13 deep_code  $0.00000  tok= 182963 (in 174977/out 7986) 851.7s
+  08-mutation-leak PASS  completed       it= 14 deep_code  $0.00000  tok= 173392 (in 168355/out 5037) 253.1s
+----------------------------------------------------------------------------------------------------
+  total cost      $0.00000   (avg $0.00000/task)
+  total tokens    577,326   (in 560,385 / out 16,941 / cached 495,237)
+  input fraction  97.1%   cache-hit fraction 88.4% of input
+  total iters     43   (avg 14.3/task)   cost/iter $0.00000
+  per-model:
+    openai/zds-qwen3.6-35b         $0.00000   577,326 tok
+====================================================================================================
+
+wrote /opt/zak-code/bench/results/suite-3tasks.json
+
+--- intervention coverage ratchet
+knobs {'compact_fraction': None, 'tool_deny': None, 'max_completion_tokens': 8192, 'pin_identity': False}
+baseline rows with these knobs: 0
+NO COMPARABLE BASELINE EXISTS -- this configuration has never been recorded
+before, so nothing can have gone dark. That is BLINDNESS, not a clean report:
+this pass BECOMES the baseline, and the next one is the first real reading.
