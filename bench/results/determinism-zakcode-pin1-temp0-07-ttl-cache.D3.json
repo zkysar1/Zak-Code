@@ -1,0 +1,95 @@
+{
+  "task": "07-ttl-cache",
+  "arm": "zakcode",
+  "cell": "pin1-temp0",
+  "n": 3,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-07-ttl-cache",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 269.7,
+      "num_turns": 12,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "gine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] pinned session id: 00000000000000000000000000000000\n[bench] dumping provider requests to /root/zb-dumps/D3/run-1",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "764c6935c80173f5dd1bc54d47f8b2c30c698fbfdbabf16afab373fbc4addae5",
+        "cache.py": "02b9e3abbb41d105e0b47a515b879ad788c32aee8a9b71c985db512828cbe071",
+        "tests/test_cache.py": "018b57e84b0f3947c8c18e03dfca201bda6edf228592bdfe2b564fa7847ad045"
+      },
+      "py_digests": {
+        "cache.py": "02b9e3abbb41d105e0b47a515b879ad788c32aee8a9b71c985db512828cbe071",
+        "tests/test_cache.py": "018b57e84b0f3947c8c18e03dfca201bda6edf228592bdfe2b564fa7847ad045"
+      },
+      "sources": {
+        "cache.py": "\"\"\"LRU cache with time-to-live (TTL).\"\"\"\n\nimport time\nfrom collections import OrderedDict\n\n\nclass Cache:\n    \"\"\"An LRU cache where every entry expires after *ttl_seconds* of inactivity.\n\n    An entry is **expired** when ``now() - last_write_time >= ttl_seconds``.\n    Expired entries never occupy capacity and are never returned by ``get``.\n    \"\"\"\n\n    def __init__(self, capacity: int, ttl_seconds: float,\n                 now: callable = time.monotonic):\n        self._capacity = capacity\n        self._ttl = ttl_seconds\n        self._now = now\n        # OrderedDict: insertion order = LRU order (left = least-recently-used).\n        # Values are ``(timestamp, value)`` tuples.\n        self._store: OrderedDict = OrderedDict()\n\n    # ------------------------------------------------------------------\n    # Helpers\n    # ------------------------------------------------------------------\n\n    def _is_expired(self, ts: float) -> bool:\n        return self._now() - ts >= self._ttl\n\n    def _drop_expired(self) -> None:\n        \"\"\"Remove every expired entry.  Called before eviction on ``put``.\"\"\"\n        expired_keys = [k for k, (ts, _) in self._store.items()\n                        if self._is_expired(ts)]\n        for k in expired_keys:\n            del self._store[k]\n\n    # ------------------------------------------------------------------\n    # Public API\n    # ------------------------------------------------------------------\n\n    def put(self, key, value) -> None:\n        \"\"\"Insert or update *key* with *value*.\n\n        The entry becomes the most-recently-used and its TTL clock resets.\n        If the cache is full, expired entries are dropped first; if still\n        full the least-recently-used live entry is evicted.\n        \"\"\"\n        # If key already exists, update it in-place (resets TTL, moves to end).\n        if key in self._store:\n            self._store[key] = (self._now(), value)\n            self._store.move_to_end(key)  # most-recently-used\n            return\n\n        # Need room?  Drop expired first, then evict LRU if still full.\n        if len(self._store) >= self._capacity:\n            self._drop_expired()\n            if len(self._store) >= self._capacity:\n                # Evict least-recently-used (first item).\n                self._store.popitem(last=False)\n\n        self._store[key] = (self._now(), value)\n\n    def get(self, key):\n        \"\"\"Return the value for *key*, or ``None`` if absent or expired.\n\n        A live hit becomes the most-recently-used.\n        An expired hit is removed and does **not** change recency.\n        \"\"\"\n        if key not in self._store:\n            return None\n\n        ts, value = self._store[key]\n\n        if self._is_expired(ts):\n            # Remove expired entry without touching recency.\n            del self._store[key]\n            return None\n\n        # Live hit \u2014 move to end (most-recently-used).\n        self._store.move_to_end(key)\n        return value\n\n    def __len__(self) -> int:\n        \"\"\"Number of live (non-expired) entries.\"\"\"\n        # We must count only live entries; expired ones may linger in the\n        # dict until next put/get touches them.  Prune expired keys first.\n        self._drop_expired()\n        return len(self._store)\n\n    def keys(self) -> list:\n        \"\"\"Return live keys in LRU-first order (least-recently-used first).\"\"\"\n        self._drop_expired()\n        return list(self._store.keys())\n",
+        "tests/test_cache.py": "\"\"\"Basic coverage. These pass for a naive implementation -- they are not the whole contract.\"\"\"\nimport pytest\n\nfrom cache import Cache\n\n\nclass Clock:\n    def __init__(self): self.t = 1000.0\n    def __call__(self): return self.t\n    def advance(self, d): self.t += d\n\n\ndef test_put_get():\n    c = Cache(capacity=2, ttl_seconds=10, now=Clock())\n    c.put(\"a\", 1)\n    assert c.get(\"a\") == 1\n    assert c.get(\"missing\") is None\n\n\ndef test_evicts_when_full():\n    c = Cache(capacity=2, ttl_seconds=100, now=Clock())\n    c.put(\"a\", 1); c.put(\"b\", 2); c.put(\"c\", 3)\n    assert c.get(\"a\") is None\n    assert c.get(\"b\") == 2 and c.get(\"c\") == 3\n\n\ndef test_expiry():\n    clk = Clock()\n    c = Cache(capacity=2, ttl_seconds=10, now=clk)\n    c.put(\"a\", 1)\n    clk.advance(11)\n    assert c.get(\"a\") is None\n\n\ndef test_update_value():\n    c = Cache(capacity=2, ttl_seconds=100, now=Clock())\n    c.put(\"a\", 1); c.put(\"a\", 2)\n    assert c.get(\"a\") == 2\n    assert len(c) == 1\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-07-ttl-cache",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 261.4,
+      "num_turns": 12,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "gine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] pinned session id: 00000000000000000000000000000000\n[bench] dumping provider requests to /root/zb-dumps/D3/run-2",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "764c6935c80173f5dd1bc54d47f8b2c30c698fbfdbabf16afab373fbc4addae5",
+        "cache.py": "02b9e3abbb41d105e0b47a515b879ad788c32aee8a9b71c985db512828cbe071",
+        "tests/test_cache.py": "018b57e84b0f3947c8c18e03dfca201bda6edf228592bdfe2b564fa7847ad045"
+      },
+      "py_digests": {
+        "cache.py": "02b9e3abbb41d105e0b47a515b879ad788c32aee8a9b71c985db512828cbe071",
+        "tests/test_cache.py": "018b57e84b0f3947c8c18e03dfca201bda6edf228592bdfe2b564fa7847ad045"
+      },
+      "sources": {
+        "cache.py": "\"\"\"LRU cache with time-to-live (TTL).\"\"\"\n\nimport time\nfrom collections import OrderedDict\n\n\nclass Cache:\n    \"\"\"An LRU cache where every entry expires after *ttl_seconds* of inactivity.\n\n    An entry is **expired** when ``now() - last_write_time >= ttl_seconds``.\n    Expired entries never occupy capacity and are never returned by ``get``.\n    \"\"\"\n\n    def __init__(self, capacity: int, ttl_seconds: float,\n                 now: callable = time.monotonic):\n        self._capacity = capacity\n        self._ttl = ttl_seconds\n        self._now = now\n        # OrderedDict: insertion order = LRU order (left = least-recently-used).\n        # Values are ``(timestamp, value)`` tuples.\n        self._store: OrderedDict = OrderedDict()\n\n    # ------------------------------------------------------------------\n    # Helpers\n    # ------------------------------------------------------------------\n\n    def _is_expired(self, ts: float) -> bool:\n        return self._now() - ts >= self._ttl\n\n    def _drop_expired(self) -> None:\n        \"\"\"Remove every expired entry.  Called before eviction on ``put``.\"\"\"\n        expired_keys = [k for k, (ts, _) in self._store.items()\n                        if self._is_expired(ts)]\n        for k in expired_keys:\n            del self._store[k]\n\n    # ------------------------------------------------------------------\n    # Public API\n    # ------------------------------------------------------------------\n\n    def put(self, key, value) -> None:\n        \"\"\"Insert or update *key* with *value*.\n\n        The entry becomes the most-recently-used and its TTL clock resets.\n        If the cache is full, expired entries are dropped first; if still\n        full the least-recently-used live entry is evicted.\n        \"\"\"\n        # If key already exists, update it in-place (resets TTL, moves to end).\n        if key in self._store:\n            self._store[key] = (self._now(), value)\n            self._store.move_to_end(key)  # most-recently-used\n            return\n\n        # Need room?  Drop expired first, then evict LRU if still full.\n        if len(self._store) >= self._capacity:\n            self._drop_expired()\n            if len(self._store) >= self._capacity:\n                # Evict least-recently-used (first item).\n                self._store.popitem(last=False)\n\n        self._store[key] = (self._now(), value)\n\n    def get(self, key):\n        \"\"\"Return the value for *key*, or ``None`` if absent or expired.\n\n        A live hit becomes the most-recently-used.\n        An expired hit is removed and does **not** change recency.\n        \"\"\"\n        if key not in self._store:\n            return None\n\n        ts, value = self._store[key]\n\n        if self._is_expired(ts):\n            # Remove expired entry without touching recency.\n            del self._store[key]\n            return None\n\n        # Live hit \u2014 move to end (most-recently-used).\n        self._store.move_to_end(key)\n        return value\n\n    def __len__(self) -> int:\n        \"\"\"Number of live (non-expired) entries.\"\"\"\n        # We must count only live entries; expired ones may linger in the\n        # dict until next put/get touches them.  Prune expired keys first.\n        self._drop_expired()\n        return len(self._store)\n\n    def keys(self) -> list:\n        \"\"\"Return live keys in LRU-first order (least-recently-used first).\"\"\"\n        self._drop_expired()\n        return list(self._store.keys())\n",
+        "tests/test_cache.py": "\"\"\"Basic coverage. These pass for a naive implementation -- they are not the whole contract.\"\"\"\nimport pytest\n\nfrom cache import Cache\n\n\nclass Clock:\n    def __init__(self): self.t = 1000.0\n    def __call__(self): return self.t\n    def advance(self, d): self.t += d\n\n\ndef test_put_get():\n    c = Cache(capacity=2, ttl_seconds=10, now=Clock())\n    c.put(\"a\", 1)\n    assert c.get(\"a\") == 1\n    assert c.get(\"missing\") is None\n\n\ndef test_evicts_when_full():\n    c = Cache(capacity=2, ttl_seconds=100, now=Clock())\n    c.put(\"a\", 1); c.put(\"b\", 2); c.put(\"c\", 3)\n    assert c.get(\"a\") is None\n    assert c.get(\"b\") == 2 and c.get(\"c\") == 3\n\n\ndef test_expiry():\n    clk = Clock()\n    c = Cache(capacity=2, ttl_seconds=10, now=clk)\n    c.put(\"a\", 1)\n    clk.advance(11)\n    assert c.get(\"a\") is None\n\n\ndef test_update_value():\n    c = Cache(capacity=2, ttl_seconds=100, now=Clock())\n    c.put(\"a\", 1); c.put(\"a\", 2)\n    assert c.get(\"a\") == 2\n    assert len(c) == 1\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-07-ttl-cache",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 219.8,
+      "num_turns": 13,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "gine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] pinned session id: 00000000000000000000000000000000\n[bench] dumping provider requests to /root/zb-dumps/D3/run-3",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "764c6935c80173f5dd1bc54d47f8b2c30c698fbfdbabf16afab373fbc4addae5",
+        "cache.py": "02b9e3abbb41d105e0b47a515b879ad788c32aee8a9b71c985db512828cbe071",
+        "tests/test_cache.py": "018b57e84b0f3947c8c18e03dfca201bda6edf228592bdfe2b564fa7847ad045"
+      },
+      "py_digests": {
+        "cache.py": "02b9e3abbb41d105e0b47a515b879ad788c32aee8a9b71c985db512828cbe071",
+        "tests/test_cache.py": "018b57e84b0f3947c8c18e03dfca201bda6edf228592bdfe2b564fa7847ad045"
+      },
+      "sources": {
+        "cache.py": "\"\"\"LRU cache with time-to-live (TTL).\"\"\"\n\nimport time\nfrom collections import OrderedDict\n\n\nclass Cache:\n    \"\"\"An LRU cache where every entry expires after *ttl_seconds* of inactivity.\n\n    An entry is **expired** when ``now() - last_write_time >= ttl_seconds``.\n    Expired entries never occupy capacity and are never returned by ``get``.\n    \"\"\"\n\n    def __init__(self, capacity: int, ttl_seconds: float,\n                 now: callable = time.monotonic):\n        self._capacity = capacity\n        self._ttl = ttl_seconds\n        self._now = now\n        # OrderedDict: insertion order = LRU order (left = least-recently-used).\n        # Values are ``(timestamp, value)`` tuples.\n        self._store: OrderedDict = OrderedDict()\n\n    # ------------------------------------------------------------------\n    # Helpers\n    # ------------------------------------------------------------------\n\n    def _is_expired(self, ts: float) -> bool:\n        return self._now() - ts >= self._ttl\n\n    def _drop_expired(self) -> None:\n        \"\"\"Remove every expired entry.  Called before eviction on ``put``.\"\"\"\n        expired_keys = [k for k, (ts, _) in self._store.items()\n                        if self._is_expired(ts)]\n        for k in expired_keys:\n            del self._store[k]\n\n    # ------------------------------------------------------------------\n    # Public API\n    # ------------------------------------------------------------------\n\n    def put(self, key, value) -> None:\n        \"\"\"Insert or update *key* with *value*.\n\n        The entry becomes the most-recently-used and its TTL clock resets.\n        If the cache is full, expired entries are dropped first; if still\n        full the least-recently-used live entry is evicted.\n        \"\"\"\n        # If key already exists, update it in-place (resets TTL, moves to end).\n        if key in self._store:\n            self._store[key] = (self._now(), value)\n            self._store.move_to_end(key)  # most-recently-used\n            return\n\n        # Need room?  Drop expired first, then evict LRU if still full.\n        if len(self._store) >= self._capacity:\n            self._drop_expired()\n            if len(self._store) >= self._capacity:\n                # Evict least-recently-used (first item).\n                self._store.popitem(last=False)\n\n        self._store[key] = (self._now(), value)\n\n    def get(self, key):\n        \"\"\"Return the value for *key*, or ``None`` if absent or expired.\n\n        A live hit becomes the most-recently-used.\n        An expired hit is removed and does **not** change recency.\n        \"\"\"\n        if key not in self._store:\n            return None\n\n        ts, value = self._store[key]\n\n        if self._is_expired(ts):\n            # Remove expired entry without touching recency.\n            del self._store[key]\n            return None\n\n        # Live hit \u2014 move to end (most-recently-used).\n        self._store.move_to_end(key)\n        return value\n\n    def __len__(self) -> int:\n        \"\"\"Number of live (non-expired) entries.\"\"\"\n        # We must count only live entries; expired ones may linger in the\n        # dict until next put/get touches them.  Prune expired keys first.\n        self._drop_expired()\n        return len(self._store)\n\n    def keys(self) -> list:\n        \"\"\"Return live keys in LRU-first order (least-recently-used first).\"\"\"\n        self._drop_expired()\n        return list(self._store.keys())\n",
+        "tests/test_cache.py": "\"\"\"Basic coverage. These pass for a naive implementation -- they are not the whole contract.\"\"\"\nimport pytest\n\nfrom cache import Cache\n\n\nclass Clock:\n    def __init__(self): self.t = 1000.0\n    def __call__(self): return self.t\n    def advance(self, d): self.t += d\n\n\ndef test_put_get():\n    c = Cache(capacity=2, ttl_seconds=10, now=Clock())\n    c.put(\"a\", 1)\n    assert c.get(\"a\") == 1\n    assert c.get(\"missing\") is None\n\n\ndef test_evicts_when_full():\n    c = Cache(capacity=2, ttl_seconds=100, now=Clock())\n    c.put(\"a\", 1); c.put(\"b\", 2); c.put(\"c\", 3)\n    assert c.get(\"a\") is None\n    assert c.get(\"b\") == 2 and c.get(\"c\") == 3\n\n\ndef test_expiry():\n    clk = Clock()\n    c = Cache(capacity=2, ttl_seconds=10, now=clk)\n    c.put(\"a\", 1)\n    clk.advance(11)\n    assert c.get(\"a\") is None\n\n\ndef test_update_value():\n    c = Cache(capacity=2, ttl_seconds=100, now=Clock())\n    c.put(\"a\", 1); c.put(\"a\", 2)\n    assert c.get(\"a\") == 2\n    assert len(c) == 1\n"
+      }
+    }
+  ]
+}

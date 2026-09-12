@@ -1,0 +1,143 @@
+{
+  "task": "08-mutation-leak",
+  "arm": "zakcode",
+  "cell": "pinworkspace-temp0",
+  "n": 3,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-08-mutation-leak",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 181.6,
+      "num_turns": 11,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "df892a7464c104c5780046994744e52082823df29079269da2f89d5b851bccef",
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "669c4d0d11282a8599749316f50bd00e87001909bcdcbe06be76e699e577ea10",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      },
+      "py_digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "669c4d0d11282a8599749316f50bd00e87001909bcdcbe06be76e699e577ea10",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      },
+      "sources": {
+        "pipeline/__init__.py": "from pipeline.audit import audit\nfrom pipeline.enrich import enrich\nfrom pipeline.load import load_records\nfrom pipeline.normalize import normalize\nfrom pipeline.report import summarize\n\n__all__ = [\"run\", \"audit\", \"enrich\", \"load_records\", \"normalize\", \"summarize\"]\n\n\ndef run(path=\"records.json\"):\n    raw = load_records(path)\n    summary = summarize(enrich(normalize(raw)))\n    return summary, audit(summary)\n",
+        "pipeline/audit.py": "from pipeline.load import load_records\n\n\ndef audit(summary):\n    \"\"\"Independent cross-check: recompute the record count straight from the raw\n    records, and confirm every raw amount is still the untouched source value.\n\n    The audit exists because the pipeline is allowed to derive new values but is\n    NOT allowed to alter the source data it was handed.\n    \"\"\"\n    raw = load_records()\n    problems = []\n    if summary[\"count\"] != len(raw):\n        problems.append(f\"count mismatch: report {summary['count']} vs raw {len(raw)}\")\n    for r in raw:\n        if not isinstance(r[\"amount\"], str):\n            problems.append(f\"raw record {r['id']} amount is {type(r['amount']).__name__}, \"\n                            f\"expected the untouched source string\")\n    return problems\n",
+        "pipeline/enrich.py": "RATES = {\"USD\": 1.0, \"EUR\": 1.1, \"GBP\": 1.27}\n\n\ndef enrich(records):\n    out = []\n    for r in records:\n        e = dict(r)\n        e[\"usd\"] = round(r[\"amount\"] * RATES[r[\"currency\"]], 2)\n        out.append(e)\n    return out\n",
+        "pipeline/load.py": "import json\nfrom pathlib import Path\n\n_CACHE = None\n\n\ndef load_records(path=\"records.json\"):\n    \"\"\"Load the raw records ONCE and hand the same list to every consumer.\n\n    Caching is deliberate: the pipeline and the audit must agree on exactly which\n    records were processed, so both are given the result of a single read.\n    \"\"\"\n    global _CACHE\n    if _CACHE is None:\n        _CACHE = json.loads(Path(path).read_text(encoding=\"utf-8\"))\n    return _CACHE\n\n\ndef reset_cache():\n    global _CACHE\n    _CACHE = None\n",
+        "pipeline/normalize.py": "def normalize(records):\n    \"\"\"Coerce amounts to float and tidy the currency code.\"\"\"\n    out = []\n    for r in records:\n        out.append({\n            \"id\": r[\"id\"],\n            \"amount\": float(r[\"amount\"]),\n            \"currency\": r[\"currency\"].strip().upper(),\n        })\n    return out\n",
+        "pipeline/report.py": "def summarize(enriched):\n    total = round(sum(e[\"usd\"] for e in enriched), 2)\n    return {\"count\": len(enriched), \"total_usd\": total}\n",
+        "tests/test_pipeline.py": "\"\"\"Existing coverage. Note these pass today even though `audit` reports problems.\"\"\"\nfrom pipeline import enrich, normalize, summarize\n\n\ndef test_normalize_coerces():\n    out = normalize([{\"id\": 1, \"amount\": \"3.50\", \"currency\": \" usd \"}])\n    assert out[0][\"amount\"] == 3.5\n    assert out[0][\"currency\"] == \"USD\"\n\n\ndef test_enrich_converts():\n    out = enrich([{\"id\": 1, \"amount\": 2.0, \"currency\": \"EUR\"}])\n    assert out[0][\"usd\"] == 2.2\n\n\ndef test_summarize_totals():\n    s = summarize([{\"usd\": 1.5}, {\"usd\": 2.5}])\n    assert s == {\"count\": 2, \"total_usd\": 4.0}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-08-mutation-leak",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 192.6,
+      "num_turns": 11,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "df892a7464c104c5780046994744e52082823df29079269da2f89d5b851bccef",
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "669c4d0d11282a8599749316f50bd00e87001909bcdcbe06be76e699e577ea10",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      },
+      "py_digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "669c4d0d11282a8599749316f50bd00e87001909bcdcbe06be76e699e577ea10",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      },
+      "sources": {
+        "pipeline/__init__.py": "from pipeline.audit import audit\nfrom pipeline.enrich import enrich\nfrom pipeline.load import load_records\nfrom pipeline.normalize import normalize\nfrom pipeline.report import summarize\n\n__all__ = [\"run\", \"audit\", \"enrich\", \"load_records\", \"normalize\", \"summarize\"]\n\n\ndef run(path=\"records.json\"):\n    raw = load_records(path)\n    summary = summarize(enrich(normalize(raw)))\n    return summary, audit(summary)\n",
+        "pipeline/audit.py": "from pipeline.load import load_records\n\n\ndef audit(summary):\n    \"\"\"Independent cross-check: recompute the record count straight from the raw\n    records, and confirm every raw amount is still the untouched source value.\n\n    The audit exists because the pipeline is allowed to derive new values but is\n    NOT allowed to alter the source data it was handed.\n    \"\"\"\n    raw = load_records()\n    problems = []\n    if summary[\"count\"] != len(raw):\n        problems.append(f\"count mismatch: report {summary['count']} vs raw {len(raw)}\")\n    for r in raw:\n        if not isinstance(r[\"amount\"], str):\n            problems.append(f\"raw record {r['id']} amount is {type(r['amount']).__name__}, \"\n                            f\"expected the untouched source string\")\n    return problems\n",
+        "pipeline/enrich.py": "RATES = {\"USD\": 1.0, \"EUR\": 1.1, \"GBP\": 1.27}\n\n\ndef enrich(records):\n    out = []\n    for r in records:\n        e = dict(r)\n        e[\"usd\"] = round(r[\"amount\"] * RATES[r[\"currency\"]], 2)\n        out.append(e)\n    return out\n",
+        "pipeline/load.py": "import json\nfrom pathlib import Path\n\n_CACHE = None\n\n\ndef load_records(path=\"records.json\"):\n    \"\"\"Load the raw records ONCE and hand the same list to every consumer.\n\n    Caching is deliberate: the pipeline and the audit must agree on exactly which\n    records were processed, so both are given the result of a single read.\n    \"\"\"\n    global _CACHE\n    if _CACHE is None:\n        _CACHE = json.loads(Path(path).read_text(encoding=\"utf-8\"))\n    return _CACHE\n\n\ndef reset_cache():\n    global _CACHE\n    _CACHE = None\n",
+        "pipeline/normalize.py": "def normalize(records):\n    \"\"\"Coerce amounts to float and tidy the currency code.\"\"\"\n    out = []\n    for r in records:\n        out.append({\n            \"id\": r[\"id\"],\n            \"amount\": float(r[\"amount\"]),\n            \"currency\": r[\"currency\"].strip().upper(),\n        })\n    return out\n",
+        "pipeline/report.py": "def summarize(enriched):\n    total = round(sum(e[\"usd\"] for e in enriched), 2)\n    return {\"count\": len(enriched), \"total_usd\": total}\n",
+        "tests/test_pipeline.py": "\"\"\"Existing coverage. Note these pass today even though `audit` reports problems.\"\"\"\nfrom pipeline import enrich, normalize, summarize\n\n\ndef test_normalize_coerces():\n    out = normalize([{\"id\": 1, \"amount\": \"3.50\", \"currency\": \" usd \"}])\n    assert out[0][\"amount\"] == 3.5\n    assert out[0][\"currency\"] == \"USD\"\n\n\ndef test_enrich_converts():\n    out = enrich([{\"id\": 1, \"amount\": 2.0, \"currency\": \"EUR\"}])\n    assert out[0][\"usd\"] == 2.2\n\n\ndef test_summarize_totals():\n    s = summarize([{\"usd\": 1.5}, {\"usd\": 2.5}])\n    assert s == {\"count\": 2, \"total_usd\": 4.0}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-08-mutation-leak",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 285.4,
+      "num_turns": 11,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "df892a7464c104c5780046994744e52082823df29079269da2f89d5b851bccef",
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "7db4e80c6b90a0d337de5dedabafbcd8ec07dee98daada4cf677e1053ee1f430",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      },
+      "py_digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "7db4e80c6b90a0d337de5dedabafbcd8ec07dee98daada4cf677e1053ee1f430",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      },
+      "sources": {
+        "pipeline/__init__.py": "from pipeline.audit import audit\nfrom pipeline.enrich import enrich\nfrom pipeline.load import load_records\nfrom pipeline.normalize import normalize\nfrom pipeline.report import summarize\n\n__all__ = [\"run\", \"audit\", \"enrich\", \"load_records\", \"normalize\", \"summarize\"]\n\n\ndef run(path=\"records.json\"):\n    raw = load_records(path)\n    summary = summarize(enrich(normalize(raw)))\n    return summary, audit(summary)\n",
+        "pipeline/audit.py": "from pipeline.load import load_records\n\n\ndef audit(summary):\n    \"\"\"Independent cross-check: recompute the record count straight from the raw\n    records, and confirm every raw amount is still the untouched source value.\n\n    The audit exists because the pipeline is allowed to derive new values but is\n    NOT allowed to alter the source data it was handed.\n    \"\"\"\n    raw = load_records()\n    problems = []\n    if summary[\"count\"] != len(raw):\n        problems.append(f\"count mismatch: report {summary['count']} vs raw {len(raw)}\")\n    for r in raw:\n        if not isinstance(r[\"amount\"], str):\n            problems.append(f\"raw record {r['id']} amount is {type(r['amount']).__name__}, \"\n                            f\"expected the untouched source string\")\n    return problems\n",
+        "pipeline/enrich.py": "RATES = {\"USD\": 1.0, \"EUR\": 1.1, \"GBP\": 1.27}\n\n\ndef enrich(records):\n    out = []\n    for r in records:\n        e = dict(r)\n        e[\"usd\"] = round(r[\"amount\"] * RATES[r[\"currency\"]], 2)\n        out.append(e)\n    return out\n",
+        "pipeline/load.py": "import json\nfrom pathlib import Path\n\n_CACHE = None\n\n\ndef load_records(path=\"records.json\"):\n    \"\"\"Load the raw records ONCE and hand the same list to every consumer.\n\n    Caching is deliberate: the pipeline and the audit must agree on exactly which\n    records were processed, so both are given the result of a single read.\n    \"\"\"\n    global _CACHE\n    if _CACHE is None:\n        _CACHE = json.loads(Path(path).read_text(encoding=\"utf-8\"))\n    return _CACHE\n\n\ndef reset_cache():\n    global _CACHE\n    _CACHE = None\n",
+        "pipeline/normalize.py": "def normalize(records):\n    \"\"\"Coerce amounts to float and tidy the currency code.\"\"\"\n    out = []\n    for r in records:\n        n = dict(r)\n        n[\"amount\"] = float(n[\"amount\"])\n        n[\"currency\"] = n[\"currency\"].strip().upper()\n        out.append(n)\n    return out\n",
+        "pipeline/report.py": "def summarize(enriched):\n    total = round(sum(e[\"usd\"] for e in enriched), 2)\n    return {\"count\": len(enriched), \"total_usd\": total}\n",
+        "tests/test_pipeline.py": "\"\"\"Existing coverage. Note these pass today even though `audit` reports problems.\"\"\"\nfrom pipeline import enrich, normalize, summarize\n\n\ndef test_normalize_coerces():\n    out = normalize([{\"id\": 1, \"amount\": \"3.50\", \"currency\": \" usd \"}])\n    assert out[0][\"amount\"] == 3.5\n    assert out[0][\"currency\"] == \"USD\"\n\n\ndef test_enrich_converts():\n    out = enrich([{\"id\": 1, \"amount\": 2.0, \"currency\": \"EUR\"}])\n    assert out[0][\"usd\"] == 2.2\n\n\ndef test_summarize_totals():\n    s = summarize([{\"usd\": 1.5}, {\"usd\": 2.5}])\n    assert s == {\"count\": 2, \"total_usd\": 4.0}\n"
+      }
+    }
+  ]
+}
