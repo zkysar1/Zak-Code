@@ -189,3 +189,34 @@ def test_storeless_loop_keeps_the_user_home(fake_home: Path, tmp_path: Path) -> 
     path = Path(_agent_on(ws, None).loop._cc_transcript_path())
 
     assert path.parent == fake_home / ".zakcode" / "transcripts"
+
+
+# --- ZAKCODE_HOME re-roots the terminal client's store and its transcript projection
+# (ADR-0159). The autouse conftest fixture sets ZAKCODE_HOME for every test, and both paths
+# ignored it: every pytest run wrote real session files and full transcripts into the
+# developer's ~/.zakcode (7,180 files / 31 MB on one box, every record with a pytest tmp cwd).
+
+
+def test_zakcode_home_re_roots_the_terminal_store(
+    fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "zakcode-home"
+    monkeypatch.setenv("ZAKCODE_HOME", str(home))
+
+    assert SessionStore().base_dir == home / "sessions"
+    assert not (fake_home / ".zakcode").exists()
+
+
+def test_zakcode_home_re_roots_the_storeless_transcript(
+    fake_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "zakcode-home"
+    monkeypatch.setenv("ZAKCODE_HOME", str(home))
+    ws = tmp_path / "project"
+    ws.mkdir()
+
+    path = Path(_agent_on(ws, None).loop._cc_transcript_path())
+
+    assert path.parent == home / "transcripts"
+    assert path.is_file()
+    assert not (fake_home / ".zakcode").exists()

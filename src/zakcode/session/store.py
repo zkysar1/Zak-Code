@@ -43,6 +43,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 
 from zakcode.artifacts import ArtifactRef
+from zakcode.config import zakcode_home
 from zakcode.messages import Message
 from zakcode.tasks import TaskNetwork
 from zakcode.usage import Usage
@@ -271,8 +272,9 @@ class SessionStore:
     """Reads and writes :class:`Session` documents on disk.
 
     Each session is stored as ``<base_dir>/<id>.json``. ``base_dir`` defaults to
-    ``~/.zakcode/sessions`` (the terminal client's store; a served workspace uses
-    :meth:`for_workspace`) and is created on construction. Session ids are validated as
+    ``<zakcode_home>/sessions`` -- ``~/.zakcode/sessions`` unless ``ZAKCODE_HOME`` re-roots
+    it (the terminal client's store; a served workspace uses :meth:`for_workspace`) -- and is
+    created on construction. Session ids are validated as
     safe single filename components (:func:`_is_safe_session_id`) on save/load/delete, so a
     request-supplied id can never traverse out of ``base_dir`` — load/delete treat an unsafe
     id as not-found, and save rejects it.
@@ -284,7 +286,11 @@ class SessionStore:
 
     def __init__(self, base_dir: str | os.PathLike[str] | None = None) -> None:
         if base_dir is None:
-            base_dir = Path.home() / ".zakcode" / "sessions"
+            # The per-user config home honours ``ZAKCODE_HOME`` (tests / portable installs).
+            # A bare ``Path.home()`` here bypassed it, so every pytest run wrote real session
+            # files -- and, beside them, full transcripts -- into the developer's ~/.zakcode
+            # (ADR-0159).
+            base_dir = zakcode_home() / "sessions"
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
