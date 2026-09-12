@@ -1,0 +1,68 @@
+{
+  "task": "m02-ambiguous-zero",
+  "arm": "zakcode",
+  "cell": "pinworkspace-temp0",
+  "n": 3,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m02-ambiguous-zero",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 30.3,
+      "num_turns": 7,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "222bc3e4797b957b0e3a2117dc30c6647b50498dd2a29a73e2cd8c5206b0e04c"
+      },
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m02-ambiguous-zero",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 30.0,
+      "num_turns": 7,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "222bc3e4797b957b0e3a2117dc30c6647b50498dd2a29a73e2cd8c5206b0e04c"
+      },
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m02-ambiguous-zero",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 30.0,
+      "num_turns": 7,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "222bc3e4797b957b0e3a2117dc30c6647b50498dd2a29a73e2cd8c5206b0e04c"
+      },
+      "py_digests": {},
+      "sources": {}
+    }
+  ]
+}

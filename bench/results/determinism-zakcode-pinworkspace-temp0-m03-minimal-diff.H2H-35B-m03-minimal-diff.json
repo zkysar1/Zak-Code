@@ -1,0 +1,77 @@
+{
+  "task": "m03-minimal-diff",
+  "arm": "zakcode",
+  "cell": "pinworkspace-temp0",
+  "n": 3,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m03-minimal-diff",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 14.8,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "py_digests": {
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "sources": {
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if len(values) == 0:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m03-minimal-diff",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 14.4,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "py_digests": {
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "sources": {
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if len(values) == 0:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m03-minimal-diff",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 14.5,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "py_digests": {
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "sources": {
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if len(values) == 0:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    }
+  ]
+}

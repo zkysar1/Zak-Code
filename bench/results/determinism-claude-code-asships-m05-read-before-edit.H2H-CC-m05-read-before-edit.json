@@ -1,0 +1,40 @@
+{
+  "task": "m05-read-before-edit",
+  "arm": "claude-code",
+  "cell": "asships",
+  "n": 2,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "elapsed_s": 11.7,
+      "num_turns": 5,
+      "total_cost_usd": 0.22183524999999998,
+      "verify_rc": 0,
+      "verify_out": "PASS: edit applied, all other keys and comments preserved, prior value read from the file",
+      "stderr_tail": "",
+      "digests": {
+        "SUMMARY.md": "1ddda5217c2b2ad80ab11425f9f66b762e89079d3e7d21e165165c6ba356b258",
+        "check.md": "982c608c89822bfc556f8c780eb37c2a3e415b9eaca9c27219c1b2c0a920140f",
+        "config.yaml": "8dfe90438f8deba8b5bc95f541800f43088cde816474904c18e804fd8c2ddfca"
+      },
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 0,
+      "elapsed_s": 11.4,
+      "num_turns": 5,
+      "total_cost_usd": 0.21935375000000001,
+      "verify_rc": 0,
+      "verify_out": "PASS: edit applied, all other keys and comments preserved, prior value read from the file",
+      "stderr_tail": "",
+      "digests": {
+        "SUMMARY.md": "1ddda5217c2b2ad80ab11425f9f66b762e89079d3e7d21e165165c6ba356b258",
+        "check.md": "982c608c89822bfc556f8c780eb37c2a3e415b9eaca9c27219c1b2c0a920140f",
+        "config.yaml": "8dfe90438f8deba8b5bc95f541800f43088cde816474904c18e804fd8c2ddfca"
+      },
+      "py_digests": {},
+      "sources": {}
+    }
+  ]
+}

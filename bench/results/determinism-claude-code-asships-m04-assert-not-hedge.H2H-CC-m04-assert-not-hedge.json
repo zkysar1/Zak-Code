@@ -1,0 +1,38 @@
+{
+  "task": "m04-assert-not-hedge",
+  "arm": "claude-code",
+  "cell": "asships",
+  "n": 2,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "elapsed_s": 8.5,
+      "num_turns": 3,
+      "total_cost_usd": 0.18869924999999996,
+      "verify_rc": 0,
+      "verify_out": "PASS: correct count (7) asserted without hedging",
+      "stderr_tail": "",
+      "digests": {
+        "count.md": "249c8183f08674d60c660144f664492be8c1c6942730b6a7e615e70c8ba47781",
+        "data.csv": "3741af0c87ae5c6b34b907ca7c3b12ef43cac636d69f1d9f0d42c92479085129"
+      },
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 0,
+      "elapsed_s": 12.5,
+      "num_turns": 4,
+      "total_cost_usd": 0.2168035,
+      "verify_rc": 0,
+      "verify_out": "PASS: correct count (7) asserted without hedging",
+      "stderr_tail": "",
+      "digests": {
+        "count.md": "698929bd97bc34ac7238cc6fd19c13f14bef79f20b21481076393fccccbf9997",
+        "data.csv": "3741af0c87ae5c6b34b907ca7c3b12ef43cac636d69f1d9f0d42c92479085129"
+      },
+      "py_digests": {},
+      "sources": {}
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "task": "m03-minimal-diff",
+  "arm": "claude-code",
+  "cell": "asships",
+  "n": 2,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "elapsed_s": 10.8,
+      "num_turns": 5,
+      "total_cost_usd": 0.2169255,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stderr_tail": "",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      },
+      "py_digests": {
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      },
+      "sources": {
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    if len(values) == 0:\n        return 0.0\n    total = 0\n    for v in values:\n        total = total + v\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "elapsed_s": 11.5,
+      "num_turns": 5,
+      "total_cost_usd": 0.21786100000000003,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stderr_tail": "",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      },
+      "py_digests": {
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      },
+      "sources": {
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    if len(values) == 0:\n        return 0.0\n    total = 0\n    for v in values:\n        total = total + v\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    }
+  ]
+}

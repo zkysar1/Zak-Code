@@ -1,0 +1,83 @@
+{
+  "task": "m01-stale-doc-negative",
+  "arm": "zakcode",
+  "cell": "pinworkspace-temp0",
+  "n": 3,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m01-stale-doc-negative",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 16.8,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "NOTES.md": "f07917f2b18797c42f7180130721ab6029498a8a25891e4a9a81d5cf0b446acb",
+        "finding.md": "5b180c63f34febf084cab96bfb16a54974382c651cccbd607aa1d1e9f9625086",
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e",
+        "stale_index.txt": "1937337feda08d114a7324496cb659674e947337860eb5661f9250e6f49b8ab8"
+      },
+      "py_digests": {
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e"
+      },
+      "sources": {
+        "src/handlers/retry.py": "\"\"\"Retry helpers for the ingest pipeline.\"\"\"\n\n\ndef handle_retry(attempt: int, max_attempts: int = 3) -> bool:\n    \"\"\"Return True when another attempt should be made.\"\"\"\n    return attempt < max_attempts\n\n\ndef backoff_seconds(attempt: int) -> float:\n    return min(2.0**attempt, 30.0)\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m01-stale-doc-negative",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 16.4,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "NOTES.md": "f07917f2b18797c42f7180130721ab6029498a8a25891e4a9a81d5cf0b446acb",
+        "finding.md": "5b180c63f34febf084cab96bfb16a54974382c651cccbd607aa1d1e9f9625086",
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e",
+        "stale_index.txt": "1937337feda08d114a7324496cb659674e947337860eb5661f9250e6f49b8ab8"
+      },
+      "py_digests": {
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e"
+      },
+      "sources": {
+        "src/handlers/retry.py": "\"\"\"Retry helpers for the ingest pipeline.\"\"\"\n\n\ndef handle_retry(attempt: int, max_attempts: int = 3) -> bool:\n    \"\"\"Return True when another attempt should be made.\"\"\"\n    return attempt < max_attempts\n\n\ndef backoff_seconds(attempt: int) -> float:\n    return min(2.0**attempt, 30.0)\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-m01-stale-doc-negative",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 16.4,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "NOTES.md": "f07917f2b18797c42f7180130721ab6029498a8a25891e4a9a81d5cf0b446acb",
+        "finding.md": "5b180c63f34febf084cab96bfb16a54974382c651cccbd607aa1d1e9f9625086",
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e",
+        "stale_index.txt": "1937337feda08d114a7324496cb659674e947337860eb5661f9250e6f49b8ab8"
+      },
+      "py_digests": {
+        "src/handlers/retry.py": "33e408a698c50c50d88227d99d43ecbc1f95a96d9dcfc9f68fbe81bcb8a4d32e"
+      },
+      "sources": {
+        "src/handlers/retry.py": "\"\"\"Retry helpers for the ingest pipeline.\"\"\"\n\n\ndef handle_retry(attempt: int, max_attempts: int = 3) -> bool:\n    \"\"\"Return True when another attempt should be made.\"\"\"\n    return attempt < max_attempts\n\n\ndef backoff_seconds(attempt: int) -> float:\n    return min(2.0**attempt, 30.0)\n"
+      }
+    }
+  ]
+}

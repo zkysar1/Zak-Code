@@ -1,0 +1,113 @@
+=== 22:22 PRE-REGISTRATION (H2H) -- head-to-head on the tasks built to discriminate: zakcode (35B and 27B, local) vs Claude Code (as ships)
+Written before any run. Why: the campaign goal is parity with Claude Code as an agent; ADR-0156 measured 3/3 vs 3/3 on 06/07/08
+(N=1) and no head-to-head has ever been run on the Mind-turn tasks m01-m05, which test agent BEHAVIOUR (checking a negative claim,
+not reading a 0 as a measurement, minimal diffs, asserting not hedging, reading before editing) rather than code-writing.
+Tasks (6): m01-stale-doc-negative, m02-ambiguous-zero, m03-minimal-diff, m04-assert-not-hedge, m05-read-before-edit,
+06-plugin-conventions. Every workspace ships WITHOUT any .claude/rules -- both agents run as they ship, no rule text injected.
+Arms:
+  CC       Claude Code 2.1.267 on this box, model claude-fable-5-1 (the operator default; probe: 1 turn, $0.148), the arm's
+           canonical invocation (claude -p <prompt> --allowedTools Read,Write,Edit,Bash,Glob,Grep --output-format json), N=2
+           per task (Claude Code exposes no temperature; the repeat measures its own consistency). Expected cost ~$3-4.
+  ZAK-35B  zakcode on zds-qwen3.6-35b, zc-01, temp 0, ZAKCODE_STABLE_PROMPT_IDENTITY=1, ZBENCH_PIN_MODE=workspace, bench default
+           (no catalogue, no rules), N=3 per task.
+  ZAK-27B  same on zds-qwen3.8-27b, N=3 per task. The 27B is the small-model target; the 35B is the coach's classify engine.
+Per-task verdicts (the task is the replication unit -- rb-10837; no pooled parity score is claimed):
+  PARITY   CC passes >= 1/2 and zakcode passes >= 2/3.
+  GAP      CC passes >= 1/2 and zakcode passes <= 1/3 -- named, with the verify reason, as the next fix cycle's input.
+  CEILING  CC passes 0/2 -- the task is beyond the reference too; zakcode's result on it is reported, not judged.
+  EDGE     CC passes 0/2 and zakcode passes >= 2/3 -- reported as such; one task never establishes superiority.
+Predictions: P1 CC passes all six (>= 1/2 each). P2 ZAK-35B: m02 FAILS 0/3 (m02-arms.log: 0/6 on the quick_code arm), 06 passes
+(ADR-0156), m01/m03/m05 pass (ADR-0147's stable instrument), m04 not predicted. P3 ZAK-27B passes no more tasks than ZAK-35B and
+passes 06 3/3 (tonight's CAT NONE cell). P4 the expected GAP list is {m02} for the 35B and {m02, possibly m04} for the 27B.
+Instrument refusals (not results): a run without a report (no_report), a verify that cannot run, a CC run with is_error.
+Reported beside the verdicts: seconds per run, CC dollars per run, turns/iterations. Results appended below, box-clock stamped.
+
+=== 22:22 LAUNCHED zakcode arms on zc-01 (/root/zb-h2h.sh -> /root/zb-h2h.log, detached; 35B first, then 27B).
+
+=== 22:22 LAUNCHED Claude Code arm on this box (/tmp/cc-h2h.sh -> bench/results/h2h-claude-code.log, detached).
+
+=== 22:40 UTC 2026-09-12 -- ADDENDUM registered BEFORE the cells run (35B arm complete 22:32; 27B arm on its last cell, 06, since 22:36)
+Observed so far (35B arm, all cells written): m01-m05 PASS 3/3 each, byte-identical; 06-plugin-conventions FAIL 0/3
+(verify: "plugins/yaml_out.py imports 'yaml'; CONTRIBUTING.md rule 1 is stdlib-only"), all three runs `import yaml`.
+Claude Code's two 06 runs (own transcripts under ~/.claude/projects/-tmp-zbench-det-06-*): first tool call is a
+`find <ws> -type f` survey, then it READS CONTRIBUTING.md (2nd/5th read) before writing a stdlib-only emitter.
+The 27B's CAT dumps (both arms, 6 runs) show list_dir on the root, then plugins/__init__, json_out, csv_out,
+tests/test_plugins -- CONTRIBUTING.md is listed and NEVER opened. NONE passed by basin luck (no yaml import);
+FULL imported yaml.
+
+Two cells queued on zc-01 behind the running chain (one arm at a time; each waits on the prior marker):
+  MECH  H2H-35B-06-mech    : 06 as-ships, 35B, N=1, ZBENCH_DUMP_REQUESTS on -> tool-call trace (/root/h2h-mech.py).
+        Question: does the 35B list the root and skip CONTRIBUTING.md (the 27B's shape), or never survey at all?
+  ARM B H2H-35B-06b-agentsmd: task copy `06b-plugin-conventions-agentsmd` = the 06 workspace as it ships PLUS an
+        AGENTS.md that is a byte copy of CONTRIBUTING.md (cmp-verified; verify.py identical; prompt unchanged).
+        zakcode folds AGENTS.md into the system prompt deterministically (prompt.py discover_context), so the
+        conventions are IN CONTEXT without discovery. 35B, N=3, temp 0, identity, pinned workspace, dumps on.
+Pre-registered rules for ARM B:
+  B1  >=2/3 verify PASS  -> DISCOVERY gap: the model obeys rule 1 when it can see it; the product lever is a
+      deterministic step that puts repo conventions in front of a small model (fold CONTRIBUTING.md into the
+      discovered project context, or a first-turn workspace survey that names convention files). Next fix cycle.
+  B2  <=1/3 verify PASS  -> ADHERENCE gap: the rule in context is not enough; a prompt-side lever will not fix
+      06 on the 35B, and the only deterministic remedy is post-write enforcement (a repo-local check), which is
+      domain-specific and NOT a product change. Record; do not build.
+  B3  Whatever B says, the H2H verdict for 06 on the 35B stays GAP -- arm B is a mechanism probe, not a re-run.
+Prediction: B1 (the 27B obeyed nothing it never read; the 35B passed 06 once at N=1 in ADR-0156 on a different
+basin, so the capability to write a stdlib emitter exists in the family).
+
+=== 22:44 UTC 2026-09-12 RESULTS -- H2H complete (CC 22:26:31; zakcode 35B 22:32, 27B 22:40:50; MECH cell 22:42:34; box clock)
+task                      CC pass   CC $   CC s |   35B      s verdict        |   27B      s verdict
+m01-stale-doc-negative        2/2   0.47   14.1 |   3/3     17 PARITY         |   3/3     16 PARITY        
+m02-ambiguous-zero            2/2   0.49   17.9 |   3/3     32 PARITY         |   3/3     30 PARITY        
+m03-minimal-diff              2/2   0.43   11.2 |   3/3     14 PARITY         |   3/3     14 PARITY        
+m04-assert-not-hedge          2/2   0.41   10.5 |   3/3     12 PARITY         |   3/3      9 PARITY        
+m05-read-before-edit          2/2   0.44   11.6 |   3/3     16 PARITY         |   3/3     15 PARITY        
+06-plugin-conventions         2/2   1.12   57.2 |   0/3     86 GAP            |   3/3     86 PARITY        
+(CC $ = total for the 2 runs; s = median seconds per run; zakcode $0 marginal on the pod.)
+Verdicts: 35B PARITY on m01,m02,m03,m04,m05 and GAP on 06; 27B PARITY on all six. No CEILING, no EDGE.
+Predictions: P1 HELD (CC 12/12). P2 FAILED on m02 -- the 35B passed m02 3/3 byte-identical (the 0/6 in
+m02-arms.log was the quick_code category model under the old routing, not the 35B; ZBENCH_POD_MODEL routes every
+category to one model) -- and FAILED on 06 (0/3; ADR-0156's N=1 PASS was a different basin: temp default, no
+identity pin, this box, 16 iters/596 s vs 22/17/17 turns, 84-116 s tonight). m01/m03/m05 HELD. P3 HELD: the 27B
+passed no fewer tasks than the 35B (it passed MORE: 6 vs 5) and 06 3/3. P4 FAILED: the GAP list is {06} for the
+35B and {} for the 27B, not {m02}.
+Replication: the 27B's H2H 06 cell is byte-identical to tonight's CAT NONE 06 cell on all 10 files, 14 turns in
+all six runs, ~3 h apart (same config: temp 0, identity, pinned workspace, no catalogue) -- the deterministic
+basin reproduces across cells, not only within one.
+GAP 06 on the 35B, verify reason (verify.py run by hand on the surviving third-run workspace, and `sources` of
+all three runs): "plugins/yaml_out.py imports 'yaml'; CONTRIBUTING.md rule 1 is stdlib-only". Each run's
+yaml_out.py imports exactly ['yaml'].
+MECH cell (35B, 06, N=1, dumps, 22:42): verify FAIL, 17 turns, 18 tool calls: list_dir root (CONTRIBUTING.md is
+in that listing), list_dir plugins, list_dir tests, read_file plugins/__init__ + json_out + csv_out +
+tests/test_plugins, write_file yaml_out.py (`import yaml`), edits to __init__.py, pytest x3. CONTRIBUTING.md
+NEVER opened; rule-1 text never appears in any tool result; tests/test_plugins.py never edited (rule 4).
+Same shape as the 27B's six CAT-dump runs (list root, open four files, never CONTRIBUTING.md); the 27B passes
+because its basin happens not to import yaml. Claude Code opened CONTRIBUTING.md in 2/2 runs after a `find`
+survey. So the gap is DISCOVERY-shaped on both local models: a convention file that is listed is not read.
+Arm B (rule in context via AGENTS.md) decides discovery vs adherence -- running (started 22:42:46).
+Instrument note: determinism_arm.py stored the run's stop_reason under `verify_out` for the zakcode arm (the
+runner's report carries the verifier's tail in its own `verify_out`); the CC arm stores the real verifier tail.
+Fixed after this block was written; the 12 JSONs above carry stop reasons in that field.
+R6 re-check (ADR-0160): cat-dumps.py counted use_skill via an OpenAI-shaped `tool_calls` key that this dump
+format does not carry (messages carry `blocks`), so its 0 was structural. Re-counted over `blocks` on all 30
+CAT runs: use_skill 0, save_skill 0. R6 stands; the instrument was wrong for the right answer.
+
+=== 22:48 UTC 2026-09-12 ARM B RESULT (cell ran 22:42:46-22:47:09 on zc-01; box clock)
+H2H-35B-06b-agentsmd (06 workspace + AGENTS.md = byte copy of CONTRIBUTING.md; 35B; N=3; temp 0; identity; pinned):
+  verify PASS 3/3, byte-identical on all 11 files, 10 turns each, 103.8 / 84.6 / 75.0 s, 12 tool calls per run.
+  yaml_out.py imports only `plugins` (hand-written stdlib emitter); tests/test_plugins.py gains the yaml case
+  (rule 4, skipped by every as-ships run); CONTRIBUTING.md still never opened -- it did not need to be.
+  Trace: list_dir root, list_dir plugins, read __init__/json_out/csv_out/test_plugins, write yaml_out, edit
+  __init__ x2, edit test_plugins, pytest, smoke render. (As-ships: 18 calls, three pytest loops around a wrong
+  emitter.)
+  RULE B1 HOLDS -> DISCOVERY gap (prediction B1 held). B3: the H2H verdict for 06 on the 35B stays GAP.
+  The 27B was not run on arm B (it passes as-ships by basin; nothing to separate).
+Instrument: results JSON committed as bench/results/determinism-zakcode-pinworkspace-temp0-06b-plugin-conventions-agentsmd.H2H-35B-06b-agentsmd.json;
+the 06b task dir exists only on zc-01 (/opt/zak-code-bench/bench/tasks/06b-plugin-conventions-agentsmd), built by cp + cmp as
+recorded in the 22:40 addendum. Dumps: /root/zb-dumps/H2H-35B-06b-agentsmd (never committed).
+NEXT (pre-registered here, to run after ADR-0161 merges): ARM C = product change, `CONTRIBUTING.md` added to the
+deterministically discovered project-context set (prompt.py discover_context), 06 AS IT SHIPS, 35B N=3 and 27B N=3,
+plus m01-m05 on the 35B N=3 as a no-change control (those workspaces carry no CONTRIBUTING.md).
+  C1  35B 06 >= 2/3 PASS -> the lever works; ship it default-on.  C2  35B 06 <= 1/3 -> arm B's AGENTS.md effect was
+  positional/labelling, not content; record, do not ship.  C3  any m-task cell not byte-identical to tonight's H2H
+  bytes -> the change leaked into workspaces without the file; refuse until explained.  C4  27B 06 stays 3/3
+  (prediction: bytes CHANGE -- the folded rules alter the prompt -- but the outcome holds).
+Prediction: C1, C3 clean, C4 holds.

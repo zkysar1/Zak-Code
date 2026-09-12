@@ -8437,3 +8437,131 @@ and reproducibility on two of four tasks. That build is pre-registered as a late
 same-trajectory tasks, with the routing cost carried as its known price. (3) A 27B deployment that
 never uses skills should not carry the catalogue; that is already the bench default and is now a
 measured recommendation. (4) Nothing in the loop changes on this ADR.
+
+## ADR-0161: head-to-head, zakcode on two local models vs Claude Code on Fable 5.1 — parity on 11 of 12 cells, one GAP, and the GAP is discovery-shaped
+
+**Date:** 2026-09-12 · **Status:** accepted · **Pre-registration:** `bench/results/head-to-head-preregistration.log`
+(22:22 UTC design + predictions, 22:22 launches, 22:40 addendum, results block stamped after the last cell) ·
+**Instrument:** `bench/determinism_arm.py` (both arms), `bench/head_to_head.py` (verdicts) · **Results:**
+`bench/results/*.H2H-{CC,35B,27B}-*.json`, `bench/results/h2h-claude-code.log`.
+
+### The question
+
+The campaign's standing directive is "as good as Claude Code at being an agent", and the redirect that governs
+this cycle is "make it work on smaller models". Every earlier comparison in this log had one of two defects:
+one arm only (ADR-0147's m-tasks were never run under Claude Code), or N=1 on a re-rolled basin (ADR-0156's
+3/3 — see below). This ADR is the first measurement with BOTH arms, N>1, and the verdict rules written down
+before any cell ran.
+
+### Design (verbatim from the 22:22 pre-registration)
+
+* **Tasks:** `m01-stale-doc-negative`, `m02-ambiguous-zero`, `m03-minimal-diff`, `m04-assert-not-hedge`,
+  `m05-read-before-edit` (the ADR-0147 stable instrument) and `06-plugin-conventions`. Workspaces ship with no
+  `.claude/rules`; both agents run as they ship.
+* **CC arm:** Claude Code 2.1.267 on this box, `claude-fable-5-1`,
+  `claude -p <prompt> --allowedTools Read,Write,Edit,Bash,Glob,Grep --output-format json`, N=2 per task.
+* **Zakcode arms:** `zds-qwen3.6-35b` and `zds-qwen3.8-27b` on zc-01 against the shared pod, temperature 0,
+  `ZAKCODE_STABLE_PROMPT_IDENTITY=1`, pinned workspace, no catalogue, no rules, N=3 per task
+  (`/root/zb-h2h.sh`, one arm at a time on the 2 GB box).
+* **Per-task verdicts, no pooled score:** PARITY = CC ≥1/2 and zakcode ≥2/3; GAP = CC ≥1/2 and zakcode ≤1/3;
+  CEILING = CC 0/2; EDGE = CC 0/2 and zakcode ≥2/3.
+* **Predictions:** P1 CC passes all six. P2 35B: m02 FAILS 0/3, 06 passes, m01/m03/m05 pass. P3 27B passes no
+  more tasks than the 35B, and 06 3/3. P4 GAP list {m02} for the 35B, {m02, maybe m04} for the 27B.
+
+### Results
+
+| task | CC pass | CC $ (2 runs) | CC s | CC turns | 35B pass | 35B s | 35B turns | 27B pass | 27B s | 27B turns | verdict 35B | verdict 27B |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| m01-stale-doc-negative | 2/2 | $0.47 | 14 s | 4-6 | 3/3 | 17 s | 4 | 3/3 | 16 s | 4 | **PARITY** | **PARITY** |
+| m02-ambiguous-zero | 2/2 | $0.49 | 18 s | 4 | 3/3 | 32 s | 7 | 3/3 | 30 s | 7 | **PARITY** | **PARITY** |
+| m03-minimal-diff | 2/2 | $0.43 | 11 s | 5 | 3/3 | 14 s | 4 | 3/3 | 14 s | 4 | **PARITY** | **PARITY** |
+| m04-assert-not-hedge | 2/2 | $0.41 | 10 s | 3-4 | 3/3 | 12 s | 3-4 | 3/3 | 9 s | 3 | **PARITY** | **PARITY** |
+| m05-read-before-edit | 2/2 | $0.44 | 12 s | 5 | 3/3 | 16 s | 3 | 3/3 | 15 s | 3 | **PARITY** | **PARITY** |
+| 06-plugin-conventions | 2/2 | $1.12 | 57 s | 16 | 0/3 | 86 s | 17-22 | 3/3 | 86 s | 14 | **GAP** | **PARITY** |
+
+CC dollars are the two-run total; seconds are the per-run median; the pod costs $0 marginal. Every zakcode
+cell was byte-identical across its three runs (m01–m05 on both models, 06 on both models). CC's runs are not
+byte-identical (no temperature control; two different passing emitters on 06).
+
+**Verdicts:** 35B PARITY on m01–m05, GAP on 06. 27B PARITY on all six. No CEILING, no EDGE.
+
+**Predictions:** P1 HELD (12/12). P2 FAILED twice: the 35B passed m02 3/3 — the "0/6 on m02" it was predicted
+from (`m02-arms.log`) was the quick_code category model under the old routing, not the 35B; and the 35B FAILED
+06 0/3 where ADR-0156 had it passing. P3 HELD (the 27B passed 6, the 35B 5; 06 3/3). P4 FAILED: the GAP list is
+{06} for the 35B and empty for the 27B.
+
+**Replication across cells:** the 27B's H2H 06 cell is byte-identical to tonight's CAT NONE 06 cell (ADR-0160)
+on all 10 files, 14 turns in all six runs, three hours apart. At temperature 0 with pinned prompts the basin
+reproduces across cells, not only within one.
+
+### The GAP, mechanism first
+
+The verifier's reason (run by hand on the surviving workspace; `sources` of all three runs agree):
+
+    FAIL: plugins/yaml_out.py imports 'yaml'; CONTRIBUTING.md rule 1 is stdlib-only
+
+A dumped N=1 mechanism cell (`H2H-35B-06-mech`, 22:42, `/root/h2h-mech.py` over the request dumps) shows the
+35B's whole trajectory: `list_dir` on the workspace root — whose listing contains `CONTRIBUTING.md` —
+`list_dir plugins`, `list_dir tests`, `read_file` on `plugins/__init__.py`, `json_out.py`, `csv_out.py`,
+`tests/test_plugins.py`, then `write_file plugins/yaml_out.py` with `import yaml`, edits to `__init__.py`,
+pytest three times. `CONTRIBUTING.md` is never opened; the rule-1 text never appears in any tool result;
+`tests/test_plugins.py` is never edited (rule 4). The 27B's six dumped CAT runs have the same shape — root
+listed, four files opened, the conventions file never — and it passes only because its basin does not import
+yaml. Claude Code's own session transcripts for its two 06 runs open with a `find <ws> -type f` survey and
+then **Read CONTRIBUTING.md** (second and fifth read) before writing a stdlib-only emitter.
+
+So on both local models the failure is not "cannot write a YAML emitter" (ADR-0156's 35B run wrote one) and
+not "ignores rules it has read": it is **a convention file that is listed is not read.** Zakcode folds
+`AGENTS.md` / `CLAUDE.md` / `ZAK.md` and the README into the prompt deterministically
+(`src/zakcode/agent/prompt.py::discover_context`); `CONTRIBUTING.md` is not in that set, and neither local
+model goes and gets it.
+
+### Arm B: the rule in context, deterministically
+
+Pre-registered at 22:40, before the cell ran: a copy of the 06 task whose workspace additionally holds an
+`AGENTS.md` that is a byte copy of its `CONTRIBUTING.md` (`cmp`-verified; `verify.py` identical; prompt
+unchanged). Zakcode folds `AGENTS.md` into the system prompt deterministically, so the conventions are in
+context without any discovery. Rules: B1 ≥2/3 pass → discovery gap; B2 ≤1/3 → adherence gap; B3 the H2H
+verdict stays GAP either way.
+
+Result (35B, N=3, 22:42–22:47): **3/3 PASS, byte-identical, 10 turns each (75–104 s), 12 tool calls.**
+`yaml_out.py` imports only `plugins` (a hand-written stdlib emitter); `tests/test_plugins.py` gains the yaml
+case (rule 4, which every as-ships run also skipped); `CONTRIBUTING.md` is still never opened — it did not
+need to be. The as-ships runs spent their extra turns (17–22) re-running pytest around a wrong emitter.
+**B1 holds: this is a discovery gap.** The 35B obeys a repository convention it can see and does not go
+looking for one it cannot. Results JSON:
+`bench/results/determinism-zakcode-pinworkspace-temp0-06b-plugin-conventions-agentsmd.H2H-35B-06b-agentsmd.json`;
+the variant task dir lives only on zc-01.
+
+### ADR-0156 was a basin, not a capability
+
+ADR-0156 recorded the 35B passing 06 at N=1 (16 iterations, 596 s, default temperature, no identity pin, this
+box). Tonight, under temperature 0 and a pinned prompt, the same model lands in an `import yaml` basin three
+times out of three and once more in the mechanism cell. Neither result is wrong; N=1 at default temperature
+samples a basin, N=3 at temperature 0 pins one (rb-10837). The comparison ADR-0156 drew — "a 35B matched Opus 5
+3/3" — was true of the basins it sampled and is not a property of the model on this task.
+
+### Instrument corrections made while writing this
+
+* `bench/determinism_arm.py` stored the run's `stop_reason` under `verify_out` for the zakcode arm, so a GAP row
+  could never name its verify reason from the JSON (the runner's report carries the verifier's tail in its own
+  `verify_out`; the CC arm always stored the real tail). Fixed: `verify_out` is now the verifier's tail and
+  `stop_reason` has its own key; `bench/head_to_head.py` prints both. The 12 JSONs in this ADR carry stop
+  reasons in `verify_out`; the reason above comes from the hand run and from `sources`.
+* ADR-0160's R6 ("0 `use_skill` calls") was computed by a parser reading an OpenAI-shaped `tool_calls` key
+  that this dump format never carries (messages carry `blocks`), so its zero was structural (guard-2298).
+  Re-counted over `blocks` on all 30 CAT runs: `use_skill` 0, `save_skill` 0. R6 stands; the instrument did
+  not deserve the credit.
+
+### Decision
+
+1. **Parity is measured, not asserted:** on the five m-tasks, zakcode on a 27B and on a 35B produces the
+   same outcomes as Claude Code on Fable 5.1, deterministically, at $0 marginal, in comparable wall time. The
+   directive's first half ("as good as Claude Code" on this instrument) is met on 11 of 12 model×task cells.
+2. **The GAP list for the next fix cycle is {06 on the 35B}, and its shape is discovery.** The lever is the
+   deterministic one the redirect asks for: put the repository's conventions in front of a small model
+   without asking it to find them. Arm B shows the rule in context is sufficient. Next cycle, pre-registered in the
+   log as ARM C: fold `CONTRIBUTING.md` into the discovered project context (`discover_context`), re-run 06 as it
+   ships on both models plus m01–m05 as a byte-identity control, ship default-on only if C1 and C3 hold.
+3. **No pooled score, no "N% of Claude Code".** Six tasks at N=2/3 support per-task verdicts and nothing
+   finer; the next instrument step is more tasks, not more repeats (rb-10837).
