@@ -160,6 +160,16 @@ class Settings(BaseSettings):
     # what a field deployment hit (2026-08-26, ADR-0018). Set a value only when you truly
     # need one; it is then sent verbatim to every model.
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    # Omit the session id from the system prompt's Environment block. Default OFF: ADR-0072 put
+    # the id there deliberately, so a model asked "which session are you?" can answer.
+    # Turn it ON for REPRODUCIBLE runs. Measured 2026-09-12 (ADR-0157): with temperature pinned
+    # to 0 and a stable workspace -- which is every real user, who runs in their project dir --
+    # runs still diverged, 3 of 9 producing different output bytes, and the fresh uuid4 session id
+    # in this block was the only remaining varying input. Pin both and 12 of 12 runs across four
+    # batches were byte-identical, including under concurrent server load.
+    # This does NOT change the session's real id: persistence, resume and hook payloads keep the
+    # uuid4. Only the PROMPT stops carrying it, so nothing keyed by session id is affected.
+    stable_prompt_identity: bool = Field(default=False)
     # How tools are offered to the model. ``auto`` (default) uses native
     # function-calling when the model supports it and transparently falls back to a
     # text protocol when it does not (so tool-less local models still work). In

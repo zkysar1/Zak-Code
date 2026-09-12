@@ -53,7 +53,8 @@ here — adding a Settings field without documenting it fails CI.
 | `fallback_model` | `ZAKCODE_FALLBACK_MODEL` | unset | Model to switch to (once per turn) when the primary call fails with a non-rate-limit error. With `default_model=auto` it is the explicit override of the auto chain — tried before auto re-resolution. |
 | `auto_model_preference` | `ZAKCODE_AUTO_MODEL_PREFERENCE` | `groq, openai, anthropic` | External provider order the `auto` resolver tries after local (comma/space/JSON list). |
 | `model_roles` | `ZAKCODE_MODEL_ROLES` | `{}` | Per-role overrides (JSON; keys `planner` / `subagent` / `summarizer` / `judge`) so cheap roles can use a cheap model. |
-| `temperature` | `ZAKCODE_TEMPERATURE` | `0.0` | Sampling temperature, 0.0–2.0. |
+| `temperature` | `ZAKCODE_TEMPERATURE` | *(unset)* | Sampling temperature, 0.0–2.0. **Unset by default, which sends NO temperature** — each backend applies its own (ADR-0018). Set `0` for reproducible runs. |
+| `stable_prompt_identity` | `ZAKCODE_STABLE_PROMPT_IDENTITY` | `false` | Omit the session id from the system prompt's Environment block so repeated runs of the same work get a byte-identical prompt. Set it **with `ZAKCODE_TEMPERATURE=0`** for reproducible runs: measured, the pair takes a stable-workspace run from 2 distinct output states in 6 to 6/6 byte-identical (ADR-0157). The session keeps its real id — persistence, resume and hook payloads are unaffected; only the model is not told it. |
 | `tool_calling_mode` | `ZAKCODE_TOOL_CALLING_MODE` | `auto` | `auto` \| `native` \| `text` — how tools reach the model; `auto` self-resolves per provider. |
 | `ollama_base_url` | `ZAKCODE_OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint. |
 | `api_base` | `ZAKCODE_API_BASE` | unset | Any OpenAI-compatible endpoint override (llama.cpp / BitNet / vLLM / LM Studio). |

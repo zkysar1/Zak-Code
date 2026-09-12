@@ -7711,3 +7711,45 @@ is a configuration no user is ever in. The workspace-only cell is the user's, an
 original reading. **A cell that isolates a variable is not automatically the cell that answers the
 question** — the arm has to match the population the claim is about, which is guard-6563's
 registered-for-one-population failure arriving through the experimental-design door.
+
+### ADR-0157 SECOND ADDENDUM — the fix is shipped and measured (2026-09-12)
+
+The first addendum identified the uuid4 session id as the single remaining barrier for a real
+user. That is now fixed, behind a default-off setting, and measured before and after on the same
+cell at the same N.
+
+**`ZAKCODE_STABLE_PROMPT_IDENTITY=1`** omits the session id from the system prompt's Environment
+block (`agent/prompt.py`, one condition). It does **not** change the session's real id: persistence,
+`resume()`, and hook payloads keep the uuid4. Only the prompt stops carrying it, so nothing keyed
+by session id is affected. Default is OFF because ADR-0072 put the id there deliberately, so a
+model asked "which session are you?" can answer — that capability is traded away only when a user
+explicitly asks for reproducibility.
+
+| real-user cell: stable workspace, fresh uuid4, `ZAKCODE_TEMPERATURE=0` | distinct byte-states |
+|---|---|
+| before the fix, N=6 | 2 (split 4 / 2) |
+| **after the fix, N=6** | **1 — byte-identical 6/6** |
+
+The intervention was positively asserted before the result was read, not inferred from it: the
+dumped 9,827-character agent prompt still carries `Workspace root` and no longer carries
+`Session id`, while the pre-fix dump of the same call carries both. That control is what caught the
+first attempt at this check reading the wrong field — `Session id: absent` looked like success
+until `Workspace root: absent` showed the probe was inspecting the small classify call, not the
+agent prompt.
+
+**So zakcode now has a user-reachable configuration that reproduces byte-for-byte, and the
+reference agent does not expose one.** Two environment variables, both documented. That is the
+first thing this campaign has found where zakcode is better than Claude Code rather than equal to
+it, and it is shipped rather than merely observed.
+
+**A documentation defect found on the way and fixed:** `docs/CONFIG.md` documented
+`temperature`'s default as `0.0`. The actual default is `None`, which sends no temperature at all
+and lets each backend apply its own (ADR-0018). For a user chasing reproducible runs that was the
+single most misleading cell in the table — it says the sampler is already pinned when it is not.
+The `determinism-partition.log` pass had found the same fact in the code the night before; the doc
+was never reconciled to it.
+
+The test carries a NEGATIVE CONTROL: two different session ids must produce the SAME prompt with
+the flag on, and DIFFERENT prompts with it off. Asserting only that the line disappeared would pass
+against a builder that never rendered the id at all — an invariance assertion that is green when
+broken (guard-2903).
