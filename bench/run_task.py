@@ -217,6 +217,18 @@ def _build_agent(workspace: Path, spec: dict):
                     "system": system,
                     "messages": [m.model_dump(mode="json") for m in messages],
                     "tools": tools,
+                    # EVERY other kwarg too, and the instance-level sampling state. The first
+                    # version of this dump recorded only system/messages/tools, and that gap read
+                    # as a positive result: two runs whose dumps were byte-identical produced
+                    # different completions, which looked like provider non-determinism until the
+                    # same payload replayed 5/5 identical. What a dump omits, it silently
+                    # exonerates.
+                    "kwargs": {k: repr(v) for k, v in sorted(kw.items())},
+                    "provider_state": {
+                        "temperature": repr(getattr(self, "temperature", None)),
+                        "extra_body": repr(getattr(self, "extra_body", None)),
+                        "model": repr(getattr(self, "model", None)),
+                    },
                 }
                 (target / f"call-{idx:04d}.json").write_text(
                     json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False),
@@ -227,6 +239,29 @@ def _build_agent(workspace: Path, spec: dict):
             return await original_acomplete(self, messages, system=system, tools=tools, **kw)
 
         LiteLLMProvider.acomplete = dumping_acomplete
+
+        # ...and the ACTUAL wire body. The layer above records what the ENGINE passes; litellm then
+        # builds the request, and everything it adds, renames or drops is invisible there. That gap
+        # is not theoretical: a replay reconstructed from the engine-level dump reproduced 5/5 with
+        # itself and matched NEITHER run (3,757 chars against the real call's 5,085), so it was
+        # measuring a request zakcode never sends -- while looking like a clean result. Dumping the
+        # body litellm is handed is the only payload a replay can honestly claim to re-send.
+        import litellm as _litellm  # noqa: PLC0415
+
+        original_acompletion = _litellm.acompletion
+
+        async def dumping_acompletion(**call_kwargs):
+            try:
+                (target / f"wire-{counter['n']:04d}.json").write_text(
+                    json.dumps({k: v for k, v in sorted(call_kwargs.items()) if k != "api_key"},
+                               indent=2, sort_keys=True, ensure_ascii=False, default=repr),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                (target / f"wire-{counter['n']:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
+            return await original_acompletion(**call_kwargs)
+
+        _litellm.acompletion = dumping_acompletion
         print(f"[bench] dumping provider requests to {target}", file=sys.stderr)
     mt = os.environ.get("ZBENCH_MAX_TOKENS")
     if mt:
