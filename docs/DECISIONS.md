@@ -7571,3 +7571,108 @@ cheaply. Recorded here so the claim is not later cited as though it were measure
 P3 (FIRST still loses to FULL, direction only — the one prediction where the magnitude was
 deliberately not predicted) is confirmed. P2 (NAMES collapses by less on the smaller catalogue) came
 in at 35.9 against 37.6, but the intervals overlap heavily and it is not claimed.
+
+## ADR-0157
+
+**zakcode has a byte-deterministic configuration; Claude Code as it ships does not — and zakcode's
+is not reachable by a user.** 2026-09-12.
+
+The parity campaign had two blockers: suite saturation and the model confound. Saturation closed by
+measurement (ADR-0151/0156 — both arms pass everything, including three tasks purpose-built to
+reject wrong answers). The model confound looked equally fatal, because holding the model fixed on
+this box is impossible.
+
+It is not fatal on this axis. **Determinism is a property of the loop, not of the model**: each
+agent is measured on the run-to-run variance of *its own* outputs, so nothing is compared across
+models and nothing is confounded by them. This is the first axis in the campaign where zakcode can
+be measurably better rather than merely equal, and it is the user's redirect stated literally
+("more deterministic").
+
+Pre-registered in `bench/results/determinism-arm-preregistration.log` and
+`bench/results/determinism-load-preregistration.log`, both before any run.
+
+### What was measured
+
+One task (`02-median-bug`, the cheapest), N=3 runs per cell, metric = SHA-256 of every file the
+agent left in the workspace. Both arms digested by the same function in `bench/determinism_arm.py`,
+because two different measurements would make any difference between arms unattributable.
+
+| arm / configuration | distinct byte-states / 3 | batches |
+|---|---|---|
+| **Claude Code, as it ships** | **2 / 3** | 1 |
+| zakcode, temperature default (pin ON or OFF) | 3 / 3 | 2 |
+| zakcode, temperature 0, identity pin OFF | 1/3, 2/3, 1/3 | 3 |
+| **zakcode, temperature 0 + identity pin ON** | **1 / 3 — byte-identical** | 3 (9 runs) |
+
+All cells passed 3/3. Correctness was never the variable.
+
+**Cross-batch reproduction survives.** The two preserved pinned temp-0 batches produced the same
+`stats.py` digest (`7bff3055…`) as each other, not merely within themselves — stronger than
+ADR-0152's "batch-local" caveat. That same digest is what Claude Code produced in 2 of its 3 runs:
+the deterministic zakcode configuration converges on exactly the fix the reference agent most often
+writes.
+
+**Both knobs are required.** Temperature 0 alone is not enough — one of three unpinned batches still
+produced two distinct states. `Settings.temperature` defaults to `None`, which sends no temperature
+at all, so the main agent loop runs at the serving stack's own default (`config.py:162`, ADR-0018's
+deliberate product choice). The classify call pins 0.0; nothing else does.
+
+**The serving stack is not the source.** `probe_provider_determinism.py` reproduces 5/5 byte-identical
+at temperature 0 on both a 16-token and a 4,000-token generation, with a working positive control
+(temperature 1.0 gives 3/3 distinct). Batch-composition nondeterminism was a live hypothesis and is
+not supported here.
+
+### The actionable finding
+
+`ZBENCH_PIN_IDENTITY` lives in `bench/run_task.py`. It is a measurement instrument, not a product
+feature. `run_task.py:177` states the consequence plainly: *every* zakcode run injects a fresh uuid4
+session id and an mkdtemp workspace path into its system prompt, so byte-identical reproduction is
+impossible by construction for any actual user.
+
+So the honest claim is narrower and more useful than "zakcode is more deterministic": **zakcode's
+engine is demonstrably byte-deterministic, and two specific injected values are the whole barrier
+between that and a shippable guarantee.** Both are deliberate (the workspace path is load-bearing;
+ADR-0072 put the session id there so the model can answer "which session am I?"). Making them
+stable-per-request is a bounded change, and it is the one place this campaign has found where
+zakcode could offer something the reference agent does not.
+
+### What this adds over `determinism-partition.log`
+
+That pass (2026-09-11) established the sampler/engine partition and the residual in ITERATION
+counts, and its own text calls that metric coarse: "a provider can return different prose on every
+call while still converging in the same number of steps." This pass measures BYTES, which is the
+strong form of the same claim, and it measures the REFERENCE AGENT, which nothing in this campaign
+had ever done.
+
+### Corrections this pass made to itself
+
+**The instrument scored a perfect verdict on nothing.** The first zakcode arm digested a workspace
+`run_task.py` had already deleted, captured zero files, and printed "IDENTICAL across all runs" —
+an empty digest set compares equal to an empty digest set. It was caught by the `files=` count
+printed beside the verdict, not by the verdict looking wrong. `determinism_arm.py` now refuses to
+render a verdict when any run captured zero files, and the refusal was positive-controlled (rc=4)
+before the green path was trusted.
+
+**A rate was claimed from N=3 after pre-registering that N=3 cannot estimate a rate.** One clean
+unpinned temp-0 batch produced "temperature is the whole story, the pin is irrelevant"; the next
+batch of the same cell reversed it. The pre-registration says verbatim that N=3 "can demonstrate
+EXISTENCE and it can fail to demonstrate it. No rate will be claimed." It was claimed anyway, for
+one turn.
+
+**Liveness was asserted from a cumulative counter.** The re-run of the TOPK eval was declared
+"genuinely alive" from a single `rchar` reading of 14.3 MB. A cumulative total is not a rate; two
+readings 30 minutes apart were identical, and the process was in fact hung in `do_poll` on an
+ESTABLISHED socket. A zero-byte log had by then meant three different things on three occasions —
+block-buffered start, OOM death, socket hang. `choosability_topk.py` now runs unbuffered and prints
+a flushed progress line every 25 queries, so a stalled log is a stalled run.
+
+**Prior art was on disk and unread.** `determinism-partition.log` already documented the
+temperature-defaults-to-None finding, pre-registered the night before. It was re-derived from
+scratch this pass. Retrieval before starting would have cost one `ls`.
+
+### Scope
+
+N=3 per cell, one task, one model per arm. No rate is claimed. Claude Code was measured in a single
+batch. The comparison is "zakcode with a knob available only in the bench" against "Claude Code as
+it ships", and it stays stated that way — no pinning equivalent exists to apply to the reference
+agent, which is itself part of the finding.

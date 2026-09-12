@@ -1,0 +1,64 @@
+PRE-REGISTRATION -- zakcode determinism under POD LOAD          2026-09-12
+Written BEFORE any zakcode determinism run on 02-median-bug.
+
+WHAT IS ALREADY KNOWN AT THIS MOMENT (stated so nothing here reads as fresh)
+  - Claude Code, 02-median-bug, N=3, as it ships: 3/3 PASS, turns [7,6,6],
+    TWO distinct output states -- runs 1+2 identical, run 3 a different
+    stats.py. Recorded in bench/results/determinism-claude-code-02-median-bug.json.
+  - zakcode, m05 at cap=64, N=3, WITH ZBENCH_PIN_IDENTITY: byte-identical 3/3
+    (ADR-0152). DIFFERENT TASK. That is the confound this run closes.
+
+THE NEW QUESTION, and why it is not a caveat
+  The pod is currently serving the TOPK eval. A vLLM server batches concurrent
+  requests, and batch COMPOSITION changes which kernels run; that perturbs
+  floating-point reduction order, which can flip an argmax even at temperature
+  0 with a byte-identical prompt. So "zakcode reproduces exactly" may be a
+  property of a QUIET pod rather than of the loop.
+  This is worth measuring rather than avoiding: a determinism claim that holds
+  only on an idle server is much weaker than one that survives contention, and
+  a user running a shared local model is ALWAYS in the loaded case. It is also
+  a question Claude Code's users cannot ask at all -- they do not own the
+  server -- so it is native to zakcode's actual deployment story.
+
+DESIGN
+  Batch A -- 3 runs of 02-median-bug with ZBENCH_PIN_IDENTITY=1 while the TOPK
+             eval is concurrently hitting the same pod (LOADED).
+  Batch B -- the identical 3 runs after TOPK exits (QUIET).
+  Same task, same pin, same digest function as the reference arm
+  (_digest_tree in bench/determinism_arm.py) -- one instrument, both arms, so a
+  difference between arms cannot be an artifact of two different measurements.
+
+PREDICTIONS, fixed before data
+  P4 Batch B (QUIET) will be byte-identical 3/3. This is the ADR-0152 result
+     carried to a new task; if it fails, ADR-0152's claim does not generalise
+     across tasks and that is the finding.
+  P5 Batch A (LOADED) will ALSO be byte-identical 3/3. I am predicting the
+     batching effect does NOT surface here, because 02-median-bug is a short
+     task with few tokens of divergence opportunity. Stated as the prediction
+     I expect to be RIGHT, which is exactly why the next line matters.
+  P6 If A and B differ, the difference is LOAD, not the loop -- and the
+     determinism claim must be stated as conditional on server quiescence.
+
+DECISION RULES
+  A identical AND B identical -> zakcode reproduces byte-for-byte on this task
+     under BOTH conditions. Combined with the Claude Code result above, the
+     claim "zakcode with pinning ON is more deterministic than the reference
+     agent as it ships" is supported ON THIS TASK at N=3 per arm. It stays a
+     claim about an AVAILABLE CAPABILITY vs A SHIPPED DEFAULT, never about two
+     loops under identical treatment -- no pinning equivalent exists to apply
+     to Claude Code.
+  B identical, A not -> the determinism feature is real but LOAD-CONDITIONAL.
+     Report it that way, prominently, and do not let the quiet-pod number
+     travel without the loaded one. This is the outcome most likely to be
+     quietly dropped, so it is named here first.
+  B not identical -> ADR-0152 does not generalise to this task. The zakcode
+     determinism claim is then TASK-SPECIFIC and must be re-scoped; do not
+     rescue it by switching tasks until one reproduces.
+  EITHER batch failing to PASS 3/3 -> report the pass rate separately; a
+     correctness failure is not a determinism result and must not be scored
+     as one.
+
+WHAT N=3 CANNOT DO
+  N=3 per batch cannot estimate a RATE of nondeterminism. It can demonstrate
+  EXISTENCE (one differing run proves it) and it can fail to demonstrate it.
+  "3/3 identical" is not evidence of a zero rate. No rate will be claimed.

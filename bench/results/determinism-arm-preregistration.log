@@ -1,0 +1,65 @@
+PRE-REGISTRATION -- cross-agent determinism arm            2026-09-12
+Written BEFORE any Claude Code determinism run.
+
+WHY THIS AXIS, WHEN TASK SUCCESS IS EXHAUSTED
+  The parity question has TWO blockers (ADR-0151, rb-10756): saturation, and the
+  model confound. Three measured attempts closed the saturation route -- both
+  arms pass everything, including three tasks purpose-built to reject wrong
+  answers (ADR-0156). The model confound looked equally fatal because holding
+  the model fixed is impossible on this box.
+  IT IS NOT FATAL ON THIS AXIS. Determinism is a property of the LOOP, not of
+  the model: each agent runs its own model and is measured on RUN-TO-RUN
+  VARIANCE of its own outputs. Nothing is compared across models, so nothing is
+  confounded by them. This is also the user's redirect stated literally --
+  "more deterministic" -- and it is the first axis in this campaign where
+  zakcode could be measurably BETTER rather than merely equal.
+
+WHAT IS ALREADY MEASURED (zakcode side, ADR-0152)
+  With ZBENCH_PIN_IDENTITY set, m05 at cap=64 reproduced 3/3 EXACTLY: 22
+  iterations every run, identical stop-reason histogram {reasoning_overflow: 4,
+  stuck: 1}, wall clock 61.9 / 62.0 / 62.0s. Byte-identical outputs.
+  The two causes of residual nondeterminism were found and are NOT the engine:
+  a uuid4 session id and an mkdtemp suffix reaching the system prompt, and the
+  task's own pytest wall-clock duration ("10 passed in 0.01s" vs "0.02s").
+  Reproduction is BATCH-LOCAL: identical config reproduces exactly within a
+  batch, not necessarily across batches.
+
+WHAT IS NOT MEASURED (the gap this closes)
+  Claude Code's run-to-run variance on the same task. NOTHING in this campaign
+  has measured it. Without it, "zakcode is more deterministic" is an assertion.
+
+DESIGN
+  Task: 02-median-bug -- the cheapest task ($0.1531, 7 turns, 7.1s), so N runs
+  are affordable and fast. N = 3, matching ADR-0152's zakcode N.
+  Each run: identical prompt, identical seed workspace, identical --allowedTools,
+  fresh temp workspace. Record per run: verify_rc, num_turns, total_cost_usd,
+  elapsed_s, and the SHA-256 of every file the agent left in the workspace.
+  The file digest is the real measurement -- turns and cost are coarse proxies
+  and can coincide while the produced code differs.
+
+PREDICTIONS, fixed before data
+  P1 Claude Code will NOT be byte-identical across the 3 runs. Its sampling is
+     not pinned, and no identity-pinning equivalent to ZBENCH_PIN_IDENTITY was
+     applied. I expect differing file digests on at least 2 of 3.
+  P2 It WILL be outcome-stable: 3/3 verify_rc == 0. Correctness is not the
+     variable here.
+  P3 num_turns will vary by at least 1 across the 3 runs.
+
+DECISION RULES
+  CC digests differ AND zakcode's are identical -> zakcode is measurably MORE
+     DETERMINISTIC than the reference agent on the same task shape. That is a
+     parity-relevant claim that is NOT model-confounded, and the first one this
+     campaign can make in zakcode's favour.
+  CC digests identical across 3 -> the reference agent is also deterministic
+     here; the claimed advantage does not exist at N=3 and must be withdrawn,
+     not restated with a larger N chosen after the fact.
+  MIXED (some identical, some not) -> report the counts, claim nothing stronger
+     than the counts, and state N=3 is too small to resolve a rate.
+
+HONESTY CONSTRAINT
+  zakcode's 3/3 was measured WITH identity pinning, which is a deliberate
+  intervention. Claude Code gets no equivalent because none exists to apply.
+  So the comparison is "zakcode with its determinism feature ON" vs "Claude Code
+  as it ships". That is the HONEST framing and it must be stated with the
+  result -- it is a claim about an available capability, not about the two loops
+  under identical treatment.

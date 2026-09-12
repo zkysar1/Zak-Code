@@ -508,12 +508,17 @@ def run(task_dir: Path) -> int:
         "verify_rc": verify_rc,
         "verify_out": verify_out,
         "error": err,
-        "workspace": str(ws) if not success else "(cleaned)",
+        "workspace": str(ws) if (not success or os.environ.get("ZBENCH_KEEP_WORKSPACE")) else "(cleaned)",
     }
     print(json.dumps(report, indent=2))
 
     # Keep the workspace for inspection on failure/crash; clean it on success.
-    if success:
+    # ZBENCH_KEEP_WORKSPACE=1 suppresses the success-cleanup so a CALLER can inspect what the
+    # agent actually produced. Needed by bench/determinism_arm.py, which digests the finished
+    # workspace: without it the workspace is gone by the time the caller looks, and a digest of
+    # a deleted directory is an EMPTY SET that compares equal to any other empty set -- a
+    # silently vacuous "identical" verdict (measured 2026-09-12).
+    if success and not os.environ.get("ZBENCH_KEEP_WORKSPACE"):
         shutil.rmtree(ws, ignore_errors=True)
     return 0
 
