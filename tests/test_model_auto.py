@@ -82,7 +82,7 @@ _OK = (200, "{}")
 def _resolver(probe: FakeProbe, preference: list[str] | None = None) -> AvailabilityResolver:
     return AvailabilityResolver(
         ollama_base_url="http://localhost:11434",
-        preference=preference or ["groq", "openai", "anthropic"],
+        preference=preference or ["openai", "anthropic"],
         probe=probe,
     )
 
@@ -98,26 +98,29 @@ def test_local_ollama_wins_when_up() -> None:
 
 
 def test_first_viable_external_when_local_down(monkeypatch) -> None:
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
-    probe = FakeProbe({"api/tags": _DOWN, "api.groq.com": _OK})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    probe = FakeProbe({"api/tags": _DOWN, "api.openai.com": _OK})
     resolved = _resolver(probe).resolve(require_tools=True)
-    # gpt-oss-120b and llama-3.3-70b are both tools_unreliable, so the first tools-viable
-    # groq candidate is qwen3-32b.
-    assert resolved.model == "groq/qwen/qwen3-32b"
-    assert resolved.source == "groq"
+    # openai is first in the preference order and both its candidates are tools-reliable,
+    # so the first one wins.
+    assert resolved.model == "openai/gpt-4o-mini"
+    assert resolved.source == "openai"
 
 
 def test_preference_order_is_configurable(monkeypatch) -> None:
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
-    probe = FakeProbe({"api/tags": _DOWN, "api.groq.com": _OK, "api.openai.com": _OK})
-    resolved = _resolver(probe, preference=["openai", "groq"]).resolve(require_tools=True)
+    probe = FakeProbe({"api/tags": _DOWN, "api.anthropic.com": _OK, "api.openai.com": _OK})
+    resolved = _resolver(probe, preference=["openai", "anthropic"]).resolve(require_tools=True)
     assert resolved.source == "openai"
     assert resolved.model == "openai/gpt-4o-mini"
+    # Reversing the order picks the other provider — the order, not a hardcoded winner.
+    clear_probe_cache()
+    flipped = _resolver(probe, preference=["anthropic", "openai"]).resolve(require_tools=True)
+    assert flipped.source == "anthropic"
 
 
 def test_missing_keys_skip_without_probing(monkeypatch) -> None:
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     probe = FakeProbe({"api/tags": (200, json.dumps({"models": [{"name": "x"}]}))})
@@ -127,7 +130,6 @@ def test_missing_keys_skip_without_probing(monkeypatch) -> None:
 
 
 def test_nothing_viable_is_loud_with_diagnosis(monkeypatch) -> None:
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     probe = FakeProbe({"api/tags": _DOWN})
@@ -135,16 +137,15 @@ def test_nothing_viable_is_loud_with_diagnosis(monkeypatch) -> None:
         _resolver(probe).resolve(require_tools=True)
     message = str(info.value)
     assert "local ollama" in message
-    assert "GROQ_API_KEY not set" in message
+    assert "ANTHROPIC_API_KEY not set" in message
     assert "OPENAI_API_KEY not set" in message
     assert "ZAKCODE_DEFAULT_MODEL" in message  # the fix guidance
 
 
 def test_rejected_key_is_named(monkeypatch) -> None:
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_bad")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_bad")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    probe = FakeProbe({"api/tags": _OLLAMA_EMPTY, "api.groq.com": (401, "")})
+    probe = FakeProbe({"api/tags": _OLLAMA_EMPTY, "api.openai.com": (401, "")})
     with pytest.raises(ModelResolutionError) as info:
         _resolver(probe).resolve(require_tools=True)
     assert "present but rejected" in str(info.value)
@@ -153,43 +154,82 @@ def test_rejected_key_is_named(monkeypatch) -> None:
 # ── tools-unreliable is capability metadata (D21 ruling) ─────────────────────
 
 
-def test_groq_open_tool_models_marked_tools_unreliable() -> None:
-    caps = get_capabilities("groq/llama-3.3-70b-versatile")
-    assert caps.supports_tools is True  # nominal support stays true
-    assert caps.tools_unreliable is True  # ...but the resolver must skip it
-    # gpt-oss-120b is ALSO tools_unreliable (item 2): a reasoning model that emits malformed
-    # native tool calls Groq rejects, and returns empty content in text mode — broken both ways.
-    oss = get_capabilities("groq/openai/gpt-oss-120b")
-    assert oss.supports_tools is True
-    assert oss.tools_unreliable is True
+def test_tools_unreliable_gates_tool_use_only() -> None:
+    """The ``tools_unreliable`` predicate, asserted against SYNTHETIC capabilities.
+
+    These two tests used to pin the flag on Groq rows. Retiring Groq (g-369-295) took
+    every ``tools_unreliable: True`` entry out of the registry with it, so a
+    registry-keyed assertion here would now pass vacuously — the exact defect the
+    sibling ``test_decommissioned_flag_actually_discriminates`` was written to prevent.
+    The flag is still LIVE machinery (``resolve._tools_viable``,
+    ``structured.py`` forces ``json_object_only`` from it), so the teeth move to the
+    predicate itself and no longer depend on any provider being in the catalog.
+    """
+    from zakcode.providers import resolve as rv
+
+    caps = {
+        "synthetic/flaky-tools": Capabilities(supports_tools=True, tools_unreliable=True),
+        "synthetic/solid-tools": Capabilities(supports_tools=True, tools_unreliable=False),
+    }
     assert Capabilities().tools_unreliable is False  # unknown models default reliable
+
+    original = rv.get_capabilities
+    rv.get_capabilities = lambda m: caps.get(m, Capabilities())  # type: ignore[assignment]
+    try:
+        # Reliability gates TOOL USE ONLY — the same model stays usable tools-free.
+        assert rv._tools_viable("synthetic/flaky-tools", require_tools=True) is False
+        assert rv._tools_viable("synthetic/flaky-tools", require_tools=False) is True
+        assert rv._tools_viable("synthetic/solid-tools", require_tools=True) is True
+    finally:
+        rv.get_capabilities = original  # type: ignore[assignment]
 
 
 def test_resolver_skips_tools_unreliable_models(monkeypatch) -> None:
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
-    probe = FakeProbe({"api/tags": _DOWN, "api.groq.com": _OK})
-    # With the reliable candidates excluded, only llama-3.3 remains in groq — it is
-    # skipped when tools are required...
+    """End-to-end: an unreliable candidate is skipped for a tools session, used without."""
+    from zakcode.providers import resolve as rv
+
+    fake = {
+        "synthetic": rv._ExternalSource(
+            name="synthetic",
+            key_env="SYNTHETIC_API_KEY",
+            models_url="https://api.synthetic.test/v1/models",
+            candidates=("synthetic/flaky-tools", "synthetic/solid-tools"),
+        )
+    }
+    caps = {
+        "synthetic/flaky-tools": Capabilities(supports_tools=True, tools_unreliable=True),
+        "synthetic/solid-tools": Capabilities(supports_tools=True, tools_unreliable=False),
+    }
+    monkeypatch.setattr(rv, "_EXTERNAL_SOURCES", fake)
+    monkeypatch.setattr(rv, "get_capabilities", lambda m: caps.get(m, Capabilities()))
+    monkeypatch.setenv("SYNTHETIC_API_KEY", "k_test")
+    probe = FakeProbe({"api/tags": _DOWN, "api.synthetic.test": _OK})
+
+    # flaky-tools sorts FIRST but is skipped when tools are required.
+    resolved = _resolver(probe, preference=["synthetic"]).resolve(require_tools=True)
+    assert resolved.model == "synthetic/solid-tools"
+
+    # With the reliable one excluded there is no tools-viable candidate left...
+    clear_probe_cache()
     with pytest.raises(ModelResolutionError) as info:
-        _resolver(probe, preference=["groq"]).resolve(
-            require_tools=True,
-            exclude={"groq/openai/gpt-oss-120b", "groq/qwen/qwen3-32b"},
+        _resolver(probe, preference=["synthetic"]).resolve(
+            require_tools=True, exclude={"synthetic/solid-tools"}
         )
     assert "no tools-viable candidate" in str(info.value)
-    # ...but viable for a tools-free session: reliability gates only tool use.
+
+    # ...but it IS viable for a tools-free session: reliability gates only tool use.
     clear_probe_cache()
-    resolved = _resolver(probe, preference=["groq"]).resolve(
-        require_tools=False,
-        exclude={"groq/openai/gpt-oss-120b", "groq/qwen/qwen3-32b"},
+    free = _resolver(probe, preference=["synthetic"]).resolve(
+        require_tools=False, exclude={"synthetic/solid-tools"}
     )
-    assert resolved.model == "groq/llama-3.3-70b-versatile"
+    assert free.model == "synthetic/flaky-tools"
 
 
 def test_exclude_moves_to_the_next_candidate(monkeypatch) -> None:
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
-    probe = FakeProbe({"api/tags": _DOWN, "api.groq.com": _OK})
-    resolved = _resolver(probe).resolve(require_tools=True, exclude={"groq/openai/gpt-oss-120b"})
-    assert resolved.model == "groq/qwen/qwen3-32b"
+    monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
+    probe = FakeProbe({"api/tags": _DOWN, "api.openai.com": _OK})
+    resolved = _resolver(probe).resolve(require_tools=True, exclude={"openai/gpt-4o-mini"})
+    assert resolved.model == "openai/gpt-4o"
 
 
 # ── probe caching: cached for the process, fresh on the failover path ────────
@@ -266,19 +306,17 @@ def test_fallback_model_is_the_explicit_failover_override(monkeypatch, tmp_path:
 
 
 def test_auto_failover_reresolves_excluding_failed(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
     monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
-    probe = FakeProbe({"api/tags": _DOWN, "api.groq.com": _OK, "api.openai.com": _OK})
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    probe = FakeProbe({"api/tags": _DOWN, "api.openai.com": _OK})
     _patch_probe(monkeypatch, probe)
     agent = zakcode.Agent(default_model="auto", workspace_root=tmp_path)
-    # The only tools-viable groq candidate is qwen3-32b (gpt-oss-120b + llama-3.3 are
-    # tools_unreliable), so auto resolves there first.
-    assert agent._active_model == "groq/qwen/qwen3-32b"
+    # auto resolves to openai's first candidate.
+    assert agent._active_model == "openai/gpt-4o-mini"
     switched = agent._model_failover(RequestFailed("boom"))
     assert switched is not None
-    # Excluding the failed qwen3-32b empties groq's tools-viable set, so failover crosses
-    # provider to the first openai candidate.
-    assert agent._active_model == "openai/gpt-4o-mini"
+    # Excluding the failed gpt-4o-mini moves to the next candidate in the same source.
+    assert agent._active_model == "openai/gpt-4o"
 
 
 def test_explicit_model_without_fallback_never_fails_over(monkeypatch, tmp_path: Path) -> None:

@@ -78,8 +78,8 @@ def model_uses_generic_endpoint(model: str) -> bool:
 
     True for the OpenAI-compatible generic path — a bare model name, or an ``openai`` /
     ``openai_like`` / ``hosted_vllm`` / ``text-completion-openai`` prefix (the self-hosted
-    llama-server case the base is configured for). False for any NAMED provider (``groq/``,
-    ``anthropic/``, ``ollama_chat/``, …) that litellm routes via its own base URL.
+    llama-server case the base is configured for). False for any NAMED provider
+    (``anthropic/``, ``ollama_chat/``, …) that litellm routes via its own base URL.
     """
     prefix = provider_prefix(model)
     if not prefix:
@@ -134,7 +134,7 @@ def classify_destination(
     * Ollama (``ollama``/``ollama_chat``) — a local daemon, always free.
     * A generic-OpenAI model WITH an ``api_base`` — the base redirects the call to a
       self-hosted server, so no cloud is reached. This is the self-hosted-pod case.
-    * Everything else is metered: a named cloud prefix (``groq/``, ``anthropic/``) ignores
+    * Everything else is metered: a named cloud prefix (``anthropic/``, ``openai/``) ignores
       ``api_base`` entirely by the allowlist above, and a generic model WITHOUT a base goes
       to the vendor's own default host (``openai/gpt-4o`` -> api.openai.com).
 

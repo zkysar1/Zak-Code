@@ -100,7 +100,7 @@ def test_info_rows_name_the_window_its_source_and_a_refusal(
         "openai/zds-qwen3.8-27b: unknown — REFUSES TO RUN"
     )
     # A category left at its built-in default resolves through the registry.
-    assert rows["Context window (zakpick 'summarize')"].endswith("131,072 (registry)")
+    assert rows["Context window (zakpick 'summarize')"].endswith("128,000 (registry)")
 
 
 def test_banner_lines_carry_warnings_then_the_flagged_skills() -> None:

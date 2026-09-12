@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     # External-provider order the 'auto' resolver tries after local (D19). Names map to
     # known sources in zakcode.providers.resolve. Comma/space/JSON list from the env.
     auto_model_preference: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["groq", "openai", "anthropic"],
+        default_factory=lambda: ["openai", "anthropic"],
         description="External provider order for default_model='auto' (after local).",
     )
     # Optional per-ROLE model overrides so a mind can route cheap/local models to cheap roles
@@ -137,7 +137,7 @@ class Settings(BaseSettings):
         description="Seam B: N attempts at a stalled step to select among (1 = off).",
     )
     # Per-CATEGORY model assignments for ``default_model="zakpick"`` (inert otherwise) — the
-    # zakpick interface. Each value is a {model, source} pair (source defaults to "groq"); the
+    # zakpick interface. Each value is a {model, source} pair (source defaults to "openai"); the
     # user parks a model on each task category (keys: quick_code | deep_code | summarize | plan |
     # delegate | classify). Unset categories use the built-in Groq defaults (see
     # ``zakcode.providers.routing.DEFAULT_CATEGORY_MODELS``), so zakpick works out of the box.
@@ -150,7 +150,7 @@ class Settings(BaseSettings):
         description=(
             "Per-category model assignments for default_model='zakpick' (JSON; keys "
             "quick_code | deep_code | summarize | plan | delegate | classify; each value "
-            "{model, source}, source defaults to 'groq'). Unset categories use Groq defaults."
+            "{model, source}, source defaults to 'openai'). Unset categories use OpenAI defaults."
         ),
     )
     # None (the default) sends NO temperature, so every backend runs at its own intended

@@ -50,9 +50,10 @@ def test_litellm_string(model: str, source: str, expected: str) -> None:
     assert ZakpickModel(model=model, source=source).litellm_string == expected
 
 
-def test_source_defaults_to_groq() -> None:
-    assert ZakpickModel(model="qwen/qwen3-32b").source == "groq"
-    assert ZakpickModel(model="qwen/qwen3-32b").litellm_string == "groq/qwen/qwen3-32b"
+def test_source_defaults_to_openai() -> None:
+    # Was "groq" until that provider was retired (g-369-295).
+    assert ZakpickModel(model="gpt-4o-mini").source == "openai"
+    assert ZakpickModel(model="gpt-4o-mini").litellm_string == "openai/gpt-4o-mini"
 
 
 # ── built-in defaults + overrides ────────────────────────────────────────────────
@@ -64,29 +65,31 @@ def test_default_category_models_cover_every_category() -> None:
         assert category in r.DEFAULT_CATEGORY_MODELS
 
 
-def test_defaults_are_groq_and_graduated() -> None:
+def test_defaults_are_all_first_party_openai() -> None:
+    """Every category defaults to gpt-4o-mini since Groq was retired (g-369-295).
+
+    The cost/capability tier split COLLAPSED with that provider: the cheap tier was
+    Groq's open models, and gpt-4o-mini is this repo's own twice-measured choice
+    (routing.py, 2026-06-18 + re-tested 2026-07-29). Re-tiering is an open question,
+    so this test pins the uniform state deliberately rather than by omission.
+    """
     s = Settings(default_model="zakpick", workspace_root=".")
-    assert r.model_for_category("classify", s) == "groq/llama-3.1-8b-instant"  # cheapest
-    assert r.model_for_category("summarize", s) == "groq/openai/gpt-oss-20b"  # no-tool prose
-    # Repointed 2026-07-29 (g-016-83): Groq decommissioned qwen3-32b ~2026-07-19
-    # (confirmed ABSENT from the live /v1/models catalog); qwen3.6-27b is the
-    # catalog successor and the same tool-capable tier.
-    assert r.model_for_category("quick_code", s) == "groq/qwen/qwen3.6-27b"  # tools-reliable Groq
-    assert r.model_for_category("plan", s) == "groq/qwen/qwen3.6-27b"
-    # deep_code/delegate moved to a first-party model whose native tool-calling is reliable
-    # (Groq's open models emit tool calls its strict parser rejects — see routing.py rationale).
-    assert r.model_for_category("deep_code", s) == "openai/gpt-4o-mini"  # reliable native + cached
-    assert r.model_for_category("delegate", s) == "openai/gpt-4o-mini"
+    for category in ("classify", "summarize", "quick_code", "plan", "deep_code", "delegate"):
+        assert r.model_for_category(category, s) == "openai/gpt-4o-mini", category
 
 
 def test_default_avoids_tools_unreliable_model() -> None:
     # A TOOL-USING routed category must never default to a tools_unreliable model (its tool calls
     # would flake — gpt-oss-20b/120b, llama-3.3-70b). summarize/classify do NO tool calls, so the
     # flag is moot for them and they may stay on the cheap (flagged) model.
+    from zakcode.providers.base import Capabilities
     from zakcode.providers.registry import get_capabilities
 
     s = Settings(default_model="zakpick", workspace_root=".")
-    assert get_capabilities("groq/openai/gpt-oss-20b").tools_unreliable is True  # the cheap tier
+    # Positive control: the flag still discriminates. Every registry row carrying it was a
+    # Groq row, so after g-369-295 the registry population is zero and a registry-keyed
+    # control here would be vacuous (see test_model_auto's synthetic-capabilities tests).
+    assert Capabilities(supports_tools=True, tools_unreliable=True).tools_unreliable is True
     for category in ("quick_code", "deep_code", "delegate", "plan"):
         model = r.model_for_category(category, s)
         assert get_capabilities(model).tools_unreliable is False, (category, model)
@@ -100,7 +103,7 @@ def test_deep_tier_uses_reliable_first_party_native_tool_calling() -> None:
     s = Settings(default_model="zakpick", workspace_root=".")
     for category in ("deep_code", "delegate"):
         spec = r.model_spec_for_category(category, s)
-        assert spec.source != "groq", f"{category} must not be a Groq open model"
+        assert spec.source == "openai", f"{category} must be first-party OpenAI"
         assert "gpt-oss" not in spec.model and "llama-3.3" not in spec.model
 
 
@@ -111,7 +114,7 @@ def test_user_override_wins_and_flips_source() -> None:
         zakpick_models={"deep_code": {"model": "qwen3:32b", "source": "local"}},
     )
     assert r.model_for_category("deep_code", s) == "ollama_chat/qwen3:32b"  # overridden → local
-    assert r.model_for_category("quick_code", s) == "groq/qwen/qwen3.6-27b"  # still default
+    assert r.model_for_category("quick_code", s) == "openai/gpt-4o-mini"  # still default
 
 
 # ── classifier (the one automatic decision) ──────────────────────────────────────
@@ -252,18 +255,31 @@ def test_agent_zakpick_startup_uses_deep_code_model(tmp_path: Path) -> None:
 
 
 def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
-    agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
+    # An OVERRIDE supplies the two distinct models. The built-in defaults are uniform since
+    # Groq was retired (g-369-295), so relying on them would stop exercising the per-model
+    # provider cache this test exists for.
+    agent = zakcode.Agent(
+        default_model="zakpick",
+        workspace_root=tmp_path,
+        zakpick_models={"summarize": {"model": "gpt-4o", "source": "openai"}},
+    )
     summ_provider, summ_model = agent._resolve_task_provider("summarize")
     deep_provider, deep_model = agent._resolve_task_provider("deep_code")
-    assert summ_model == "groq/openai/gpt-oss-20b"
+    assert summ_model == "openai/gpt-4o"
     assert deep_model == "openai/gpt-4o-mini"
     assert summ_provider is not deep_provider  # different models → distinct cached providers
 
 
 def test_agent_main_provider_updates_active_model(tmp_path: Path) -> None:
-    agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
+    # Distinct models come from an override — the defaults are uniform post-g-369-295, and a
+    # uniform pair could not show that _active_model TRACKS the category.
+    agent = zakcode.Agent(
+        default_model="zakpick",
+        workspace_root=tmp_path,
+        zakpick_models={"quick_code": {"model": "gpt-4o", "source": "openai"}},
+    )
     agent._main_provider_for("quick_code")
-    assert agent._active_model == "groq/qwen/qwen3.6-27b"  # easy turn → reliable quick coder
+    assert agent._active_model == "openai/gpt-4o"  # easy turn → the configured quick coder
     agent._main_provider_for("deep_code")
     assert agent._active_model == "openai/gpt-4o-mini"  # hard turn → reliable deep coder
 
