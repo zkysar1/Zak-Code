@@ -7928,6 +7928,51 @@ cell on both models — that is the next pre-registered confirmation, and it is 
 source will show whether it ever changes bytes on a longer task. Normalising volatile tool output
 is a separate design question this addendum does not open.
 
+### ADR-0157 FIFTH ADDENDUM — the key was the lever, and a stable key can freeze a wrong program (2026-09-12)
+
+**Confirmation cells, pre-registered before launch** (`determinism-model27b-preregistration.log`,
+C1–C3, rules R1–R4) on the shipped per-workspace key (#405), real-user cell, 27B, N=3, request
+dumps on, zc-01, with the TOPK re-measurement loading the same pod throughout:
+
+| cell | runs | distinct byte-states | turns | verify |
+|---|---|---|---|---|
+| C1 `07-ttl-cache` | 3 | **1** | 16 / 16 / 16 | **0 / 3** |
+| C2 `08-mutation-leak` | 3 | **1** | 11 / 11 / 11 | 3 / 3 |
+
+P1 and P2 hold, so R1 applies as written: **the per-run cache key was the lever behind the 27B's
+splits on 07 and 08.** The dumps, compared without normalisation, show C1's three requests
+byte-identical apart from message timestamps (no session-id line: 9,826 system chars), with the
+pytest timing line (`0.01s` vs `0.05s`) differing once at call 17 of 18 and moving no bytes.
+
+**What was not predicted.** C1 reproduced a **wrong program** three times. The 27B wrote a
+linked-list cache whose `keys()` order fails the held-out verifier (rule 7) while passing the
+workspace's visible tests — exactly the trap the task was built to set. Under fresh keys (D1) the
+same model, same prompt bytes, had produced two distinct programs in three runs and both passed
+(an `OrderedDict` cache). D1 and C1 share the prompt byte-for-byte and diverge at the model's
+*first* response; the only wire-level difference is the key value. So the chain is: the key value
+selects the prefix-cache state the pod serves the workspace from → that state decides a near-tie
+first token → the token decides the basin. A per-workspace key pins the basin, and **the pinned
+basin can be a wrong one**. Reproducible is not correct; the stable configuration turns a
+1-in-N failure into a 100% failure *for that workspace path* — and, equally, a 100% reproduction
+of it for whoever debugs it.
+
+(Reading the fourth addendum's D3 precisely: pin-both mode held the key constant *and* carried a
+constant zero session-id line in the prompt, so D3's program differs from C1's for a prompt reason,
+not a key-value one. The D1→C1 comparison above is the clean one.)
+
+**Design consequence, shipped with this addendum:** `prompt_cache_seed`
+(`ZAKCODE_PROMPT_CACHE_SEED`). Under `stable_prompt_identity` any non-empty seed folds into the
+workspace hash — a different key, a different prefix-cache state, a re-rolled near-tie — while
+every run with the same seed stays byte-identical. Empty keeps the seedless key, so every
+reproduction above still holds. Without it a user on a frozen wrong basin had no exit that kept
+reproducibility (temperature or the identity flag would trade it away). Whether one re-roll
+reaches a different basin is pre-registered as cell C4 (P4: identical 3/3 under the seed; P5, not
+guaranteed: a different trajectory from C1's), with the 35B cell C3; both land in the next
+addendum.
+
+**Standing table** gains the two rows above. Still open: the 35B on the long task (C3), and the
+timing-line residual on a task long enough for it to move bytes.
+
 ## ADR-0158
 
 **Small-model skill selection is driven by description fidelity; catalogue size, description
