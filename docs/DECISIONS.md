@@ -7873,6 +7873,61 @@ Standing table on `02-median-bug`, all arms at temperature 0 where the knob exis
 | zakcode, real-user cell, `ZAKCODE_STABLE_PROMPT_IDENTITY=1` | 6 | 1 |
 | **zakcode, same cell, second machine** | 3 | **1 — the first machine's bytes** |
 
+### ADR-0157 FOURTH ADDENDUM — the fix generalizes, a second model, and the cache key was the last per-run input (2026-09-12)
+
+Three pre-registered passes on the same day, each on the real-user cell (stable workspace, fresh
+uuid4 session, `ZAKCODE_TEMPERATURE=0`, `ZAKCODE_STABLE_PROMPT_IDENTITY=1`), all N=3:
+
+**The hardest known task.** `03-lru` on the 35B (`determinism-generalization-preregistration.log`,
+rules G1–G5): arm A (the pre-fix cell, session id in the prompt) gave **3 distinct byte-states**;
+arm B (the fix) gave **byte-identical 3/3**, 14 turns every run. G1 held; G2 had predicted "fewer
+states than A, not one" and failed in the favourable direction. Rule applied as written: the fix
+generalizes to the hardest known task.
+
+**A second, smaller model.** The pod's `zds-qwen3.8-27b`, zc-01's own default
+(`determinism-model27b-preregistration.log`): the provider probe reproduced 5/5 at temperature 0 on
+both prompt shapes with a live positive control (temperature 1.0 diverged 3/3); `02-median-bug` and
+`06-plugin-conventions` reproduced 3/3; `07-ttl-cache` and `08-mutation-leak` each **split once
+in three** into two substantively different, both-passing solutions. Capability: the 27B passed
+all four tasks **12/12**, including the three ADR-0156 built to discriminate — and on `07` it was
+the steadier model (11–14 turns) while the 35B, run as the control on the same task, wandered
+30+ turns in two of three runs and split three ways.
+
+**Where the split enters.** The arm now dumps every provider call per run (#402) and
+`bench/results/_firstdiff.py` classifies the first differing message. On `07`, for both models,
+the first divergence was **the model's first response** — relative-path `read_file` versus
+absolute-path `read_file` — on messages that were byte-identical; the only wire-level difference
+between the runs was `prompt_cache_key`, `zakcode/<session uuid>`, fresh every run. A second,
+independent source appeared between two other runs: pytest's timing line (`4 passed in 0.02s`
+versus `0.01s`) in a tool result, which changed a trajectory by one turn and not the bytes.
+Holding the key constant (the bench's pin-both mode) reproduced `07` on the 27B **3/3**, with the
+timing line as the only residual difference — converging again. The key is itself an input the
+endpoint acts on: the pod's prefix-cache routing perturbs a near-tie first token, which is exactly
+the kind of token the provider probe's fixed prompts never contain. This is the third per-run
+input this ADR has removed from the prompt path — temperature, session id, and now the routing
+key — and it is why the identity flag was already the right home for it.
+
+**The fix.** Under `stable_prompt_identity` the loop's three call sites take the key from one
+helper that returns `zakcode/ws-<sha256(workspace_root)[:16]>` instead of `zakcode/<session>`.
+Affinity is preserved — every run of one workspace still lands on one engine — and the per-run
+variation is gone. Default behaviour is unchanged. Two tests: the helper's semantics on a stub,
+and a source check that every call site uses it (a fourth site added with the literal would
+silently bring the variation back).
+
+**Standing table on `02-median-bug`** is unchanged. Added, all with the fix:
+
+| task, model | runs | distinct byte-states |
+|---|---|---|
+| `03-lru`, 35B | 3 | 1 (arm A without the fix: 3) |
+| `07-ttl-cache`, 27B, fresh key | 3 + 3 | 2 in each batch |
+| `07-ttl-cache`, 27B, constant key | 3 | **1** |
+| `07-ttl-cache`, 35B, fresh key | 3 | 3 |
+
+**Not claimed yet:** that the shipped per-workspace key reproduces `07` and `08` in the real-user
+cell on both models — that is the next pre-registered confirmation, and it is where the timing-line
+source will show whether it ever changes bytes on a longer task. Normalising volatile tool output
+is a separate design question this addendum does not open.
+
 ## ADR-0158
 
 **Small-model skill selection is driven by description fidelity; catalogue size, description
