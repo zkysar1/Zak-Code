@@ -7100,3 +7100,52 @@ through a benchmark that touches 11 of 52 intervention paths and cannot separate
 three model generations. The cheapest real improvement available is not a better score — it is
 running the census against production regularly and closing the PRODUCTION ONLY list, because every
 entry there is a path that real users take and no test here defends.
+
+## ADR-0155: The bench's prompt floor is three to five times smaller than production's, and the skill catalogue is the reason
+
+ADR-0154 found seven of the eight production-only intervention paths gated behind `enable_skills`,
+so `ZBENCH_SKILLS_ROOT` was built to seed a mind's `.claude/skills` into the workspace and turn the
+flag on. The pre-registered expectation was that the flag would be necessary but not sufficient —
+the tasks are self-contained coding requests that imply no skill — and that is what happened: 145
+skills seeded, `use_skill` exposed (tool surface 25 → 27), `interventions={}`, not one skill-gated
+path fired. **The flag alone bought no coverage, which is worth saying plainly because it was the
+hard part to build and the temptation afterwards is to count it as progress.**
+
+**What it did buy is a measurement nobody had taken.**
+
+```
+                      system prompt        input tokens/iteration    tool surface
+skills OFF             9,989 chars               9,576               25 tools / 25,304 chars
+skills ON (145)       93,369 chars              29,096               27 tools / 27,343 chars
+                          9.3x                   +204%                   +2 tools
+```
+
+All 145 skill names appear in the system prompt and the catalogue spans 98% of it. **Skill BODIES
+are paged — the prompt itself documents that a body too large for the window is delivered section by
+section — and the CATALOGUE is not.** Every skill's name and description is inlined unconditionally,
+on every call, whether or not any skill is used.
+
+**And production confirms the bench floor is fiction.** Coach carries 65 skills (7 in
+`.zakcode/skills`, 58 in `.claude/skills`, 2.42 MB of `SKILL.md`), and across 307 `usage` records
+its prompt tokens read **min 28,950, median 49,999, max 106,418**. The minimum is the fair floor
+proxy — the median and max carry accumulated conversation. So production's SMALLEST prompt is three
+times the bench's per-iteration floor, and its median is over five times.
+
+**This retires the transferable half of ADR-0149.** That ADR measured the tool schema at 6,732
+tokens — 70% of the bench's floor — and a deny-list saving 43-45% per iteration. Against
+production's floor of ~29,000 the same schema is ~23%, so the saving cannot transfer at anything
+like that size. Coach had already falsified the deny-list itself (seven of the seventeen "never
+called" tools are in live use). Two independent reasons, one measured on each side: what survives
+from ADR-0149 is the MECHANISM — saving tracks floor share — and not the number.
+
+**The small-model lever is the catalogue, and this is the first measurement that points at it.** On
+a 32,768-token model a 145-skill catalogue consumes ~89% of the window before any work begins; at
+coach's 65 it would still dominate. Unlike a tool trim, paging or filtering the catalogue costs no
+capability: it is a lookup the model needs only when choosing a skill, and the machinery to deliver
+text on demand already exists one level down for bodies. That is a concrete engine target with a
+measured payoff, arrived at by building an arm for an unrelated purpose and pricing it.
+
+**Caveats that travel with the numbers.** 145 is this Mind's full set and is unusually large;
+coach's 65 is the real deployment figure and was measured, not assumed. Coach's median and max
+include conversation history, so only the minimum bounds its floor. The bench figure is tokens per
+iteration and coach's is tokens per call; they are comparable in magnitude, not to the digit.
