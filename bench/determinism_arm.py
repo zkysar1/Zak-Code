@@ -122,6 +122,9 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool
         "total_cost_usd": rep.get("session_cost_usd"),
         "verify_rc": 0 if rep.get("success") else 1,
         "verify_out": str(rep.get("stop_reason"))[:300],
+        # A report has a `success` key even when the task failed; its absence means the child
+        # never got as far as running the agent (crash, config refusal, import error).
+        "no_report": "success" not in rep,
         "stderr_tail": stderr_tail,
         "digests": digests,
         "py_digests": {k: v for k, v in digests.items() if k.endswith(".py")},
@@ -238,16 +241,31 @@ def main(argv: list[str]) -> int:
     # 0 files, and rendered a perfect determinism verdict. It was caught by the `files=` count
     # printed beside the verdict, not by the verdict looking wrong. Refuse instead.
     empty = [i + 1 for i, r in enumerate(runs) if not r["digests"]]
-    if empty:
-        print(f"\nINSTRUMENT FAILURE: run(s) {empty} captured ZERO files. An empty digest set "
-              "compares equal to an empty digest set, so a determinism verdict here would be "
-              "vacuous. Refusing to render one. Fix the capture, then re-run.")
-        out = Path(__file__).resolve().parent / "results" / f"determinism-{arm}-{cell}-{spec['id']}.json"
-        out.parent.mkdir(exist_ok=True)
+    # The same vacuity one level up (measured 2026-09-12, first cross-box run): the child
+    # crashed at startup on a config check, produced NO report, and left the SEEDED task files
+    # untouched -- a non-empty digest set that is identical across runs because nothing ran.
+    # "IDENTICAL across all runs" printed over three 1.7s crashes. A run that produced no report
+    # has not measured the agent, so it cannot contribute to an identity verdict either way.
+    # (0/N verify_rc==0 with reports IS a result -- deterministic wrong output -- and stays.)
+    noreport = [i + 1 for i, r in enumerate(runs) if r.get("no_report")]
+    if empty or noreport:
+        if empty:
+            print(f"\nINSTRUMENT FAILURE: run(s) {empty} captured ZERO files. An empty digest set "
+                  "compares equal to an empty digest set, so a determinism verdict here would be "
+                  "vacuous. Refusing to render one. Fix the capture, then re-run.")
+        if noreport:
+            print(f"\nINSTRUMENT FAILURE: run(s) {noreport} produced NO report -- the child exited "
+                  "before the agent ran, so the digested files are the untouched seed. Refusing to "
+                  "render an identity verdict over runs that never ran. Last stderr line of each:")
+            for i in noreport:
+                print(f"    run {i}: {runs[i - 1].get('stderr_tail', '').strip().splitlines()[-1:] or ['(no stderr)']}")
+        out = BENCH / "results" / f"determinism-{arm}-{cell}-{spec['id']}.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({"task": spec["id"], "arm": arm, "cell": cell, "n": n,
-                                   "instrument_failure": f"runs {empty} captured zero files",
+                                   "instrument_failure": (f"runs {empty} captured zero files; " if empty else "")
+                                   + (f"runs {noreport} produced no report" if noreport else ""),
                                    "runs": runs}, indent=2), encoding="utf-8")
-        return 4
+        return 4 if empty else 5
 
     for label, key in (("PRIMARY (every file)", "digests"), ("secondary (*.py only)", "py_digests")):
         sets = [json.dumps(r[key], sort_keys=True) for r in runs]
@@ -260,8 +278,8 @@ def main(argv: list[str]) -> int:
             if len(set(vals)) > 1:
                 print(f"    DIFFERS  {name:28} {vals}")
 
-    out = Path(__file__).resolve().parent / "results" / f"determinism-{arm}-{cell}-{spec['id']}.json"
-    out.parent.mkdir(exist_ok=True)
+    out = BENCH / "results" / f"determinism-{arm}-{cell}-{spec['id']}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"task": spec["id"], "arm": arm, "cell": cell, "n": n, "runs": runs}, indent=2), encoding="utf-8")
     print(f"\nwrote {out}")
     return 0
