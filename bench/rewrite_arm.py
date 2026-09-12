@@ -6,6 +6,7 @@ Three phases, each persisting its output before the next runs (a killed run keep
   prepare  no model calls: pick the lowest-coverage tertile, build HOLDOUT bodies, count exclusions
   rewrite  one call per target -- the model writes a new description from the holdout body
   score    840 calls -- ORIG and REWRITE catalogues over all 420 queries; W0-W4 verdicts
+  verdict  no model calls -- re-apply W0-W4 to the saved rewrite-scores.json
 
 THE HOLDOUT IS THE DESIGN. Queries are paragraphs 2-4 of each skill's body (queries_for). The
 rewriter is shown the skill name, the original description, and the body with those three
@@ -235,6 +236,17 @@ def score() -> int:
             print(f"{arm:8} {hits}/{len(qmap) * 3} = {hits / (len(qmap) * 3):.1%}")
             SCORES_F.write_text(json.dumps({"per_skill": per_skill, "picks": picks}, indent=1))
 
+    return _verdict(per_skill, picks, targets, untouched)
+
+
+def _verdict(
+    per_skill: dict[str, dict[str, float]],
+    picks: dict[str, dict[str, list[str]]],
+    targets: list[str],
+    untouched: list[str],
+) -> int:
+    """W0-W4 over scored arms. Shared by ``score`` (live) and ``verdict`` (saved scores)."""
+    cats = ("ORIG", "REWRITE")
     full = statistics.mean(v["ORIG"] for v in per_skill.values())
     print("\n--- VERDICT (pre-registered rules)")
     if full < VOID_BELOW or abs(full - W0_REFERENCE) > 0.03:
@@ -280,6 +292,25 @@ def score() -> int:
     return 0
 
 
+def verdict() -> int:
+    """Re-apply W0-W4 to the SAVED scores -- no model calls.
+
+    The 2026-09-12 19:02 score run printed W0 against the stale 60.2% constant and returned
+    before W2-W4 (ADR-0158 fourth addendum). The scores it saved are complete, so the
+    pre-registered rules are applied to them here, as written, instead of by hand in a log.
+    """
+    rw = json.loads(REWRITES_F.read_text())
+    saved = json.loads(SCORES_F.read_text())
+    per_skill, picks = saved["per_skill"], saved["picks"]
+    targets = [n for n in rw if n in per_skill]
+    untouched = [n for n in per_skill if n not in rw]
+    print(
+        f"verdict from {SCORES_F.name}: {len(per_skill)} skills, "
+        f"{len(targets)} targets, {len(untouched)} untouched"
+    )
+    return _verdict(per_skill, picks, targets, untouched)
+
+
 if __name__ == "__main__":
     phase = sys.argv[1] if len(sys.argv) > 1 else "prepare"
-    sys.exit({"prepare": prepare, "rewrite": rewrite, "score": score}[phase]())
+    sys.exit({"prepare": prepare, "rewrite": rewrite, "score": score, "verdict": verdict}[phase]())

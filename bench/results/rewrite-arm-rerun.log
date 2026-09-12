@@ -25,3 +25,22 @@ W1 FAILS -- no verdict on causality; do not widen the rewriter's view
 ORIG     270/420 = 64.3%
   .. REWRITE 480 queries
   .. REWRITE 540 queries
+  .. REWRITE 600 queries
+  .. REWRITE 660 queries
+  .. REWRITE 720 queries
+  .. REWRITE 780 queries
+  .. REWRITE 840 queries
+REWRITE  269/420 = 64.0%
+
+--- VERDICT (pre-registered rules)
+W0 FAILS: ORIG 64.3% not within 3 points of 60.2%. No verdict.
+=== PHASE score exited rc=4 19:02:58
+verdict from rewrite-scores.json: 140 skills, 45 targets, 95 untouched
+
+--- VERDICT (pre-registered rules)
+W0 holds: ORIG 64.3%
+W2 targets (n=45): REWRITE - ORIG = -7.4 points, 95% CI (-13.3, -1.5)  -> FAILS
+W3 untouched (n=95): +3.2 points, CI (+0.4, +6.0)  -> HOLDS
+W4 decoy picks (untouched query -> target skill): ORIG 22  REWRITE 12
+
+COVERAGE ROSE AND ACCURACY DID NOT (if W1 held): fidelity is a MARKER, not a cause. Retire the lever.
