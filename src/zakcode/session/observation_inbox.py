@@ -220,9 +220,7 @@ def narrate_observation(envelope: dict[str, Any] | None) -> list[str]:
     if not isinstance(observation, dict):
         return []
     lines = (
-        _narrate_changes(observation)
-        + _narrate_place(observation)
-        + _narrate_company(observation)
+        _narrate_changes(observation) + _narrate_place(observation) + _narrate_company(observation)
     )
     lines = lines[:NARRATION_MAX_LINES]
     dropped = envelope.get("droppedSlices") or []
