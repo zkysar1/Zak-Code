@@ -1,0 +1,77 @@
+PRE-REGISTRATION -- does the determinism fix GENERALIZE?        2026-09-12
+Written BEFORE any 03-lru determinism run.
+
+WHY THIS RUN EXISTS
+  Every determinism number in ADR-0157 comes from ONE task, 02-median-bug, chosen
+  because it is the CHEAPEST (6 iterations, ~27s). A reproducibility claim measured
+  only on the shortest task in the suite is the weakest possible version of itself:
+  divergence opportunity grows with token count, so the easy task is exactly where
+  byte-identity is most likely for reasons that have nothing to do with the fix.
+
+THE TASK, and why this one
+  03-lru. determinism-partition.log names it as THE actionable target: with the
+  sampler pinned it still swung 36% in iteration count (15/11/16), the worst
+  residual of any deep task, against 04-todo-cli's 0%. It is also 11-16 iterations
+  and 261-614s, i.e. 2-3x the length of 02-median-bug.
+  NOTE the partition log's pinned arm did NOT have stable_prompt_identity, so its
+  36% residual INCLUDES the session-id effect this fix removes. That is precisely
+  what makes 03-lru the informative task rather than merely the hard one.
+
+ARMS (real-user configuration in both -- stable workspace, fresh uuid4)
+  A  ZAKCODE_TEMPERATURE=0 alone                      (the pre-fix real-user cell)
+  B  ZAKCODE_TEMPERATURE=0 + ZAKCODE_STABLE_PROMPT_IDENTITY=1   (with the fix)
+  N=3 each. Same instrument as ADR-0157 (bench/determinism_arm.py), which refuses
+  a verdict if any run captures zero files.
+
+PREDICTIONS, fixed before data
+  G1 Arm A will NOT be byte-identical. It is the pre-fix configuration on a longer
+     task; if it IS identical, 03-lru has less divergence opportunity than
+     02-median-bug despite being 2-3x longer, and the task choice was wrong.
+  G2 Arm B will NOT be byte-identical either. I predict the fix does NOT fully
+     generalize: 03-lru carries residual the prompt fix cannot touch, and more
+     tokens means more chances for a near-tie to break differently. I expect
+     FEWER distinct states than arm A, not one.
+  G3 Pass rate is not the measurement. Record it separately; a correctness failure
+     is not a determinism result.
+
+DECISION RULES
+  B identical AND A not -> the fix generalizes to the hardest known task. ADR-0157's
+     claim strengthens from "on 02-median-bug" to "on the task with the worst
+     measured residual", and G2 is falsified in the direction that favours the fix --
+     which is exactly the direction I must be most suspicious of, so the arms must be
+     re-run once before the stronger claim is written.
+  B fewer distinct states than A, neither identical -> the fix REDUCES divergence
+     without eliminating it. Report both counts. The honest headline then becomes
+     task-dependent: byte-reproducible on short tasks, variance-reduced on long ones,
+     and ADR-0157's summary line must be amended to say so.
+  B == A -> the fix does not help here. The session id was not the barrier on this
+     task, ADR-0157's claim is SCOPED TO 02-median-bug, and the generalization is
+     withdrawn rather than restated with a caveat.
+  EITHER arm failing to capture files -> instrument failure, no verdict (the tool
+     already refuses; do not hand-read the digests around it).
+
+WHAT THIS CANNOT DO
+  N=3 per arm on one additional task. It can show the fix does or does not survive a
+  harder case. It cannot establish a rate, and no rate will be claimed. Two tasks is
+  not "generalizes"; it is "did not break on the second one".
+
+ARM C -- added 11:41, BEFORE any 03-lru Claude Code run; arms A/B still unrun
+  (paused for pod co-tenancy). Claude Code as it ships, 03-lru, N=3. Runs off-pod
+  (Anthropic API), so it does not contend with the TOPK eval.
+  G4 Arm C will NOT be byte-identical: at least 2 distinct output states of 3,
+     matching its 02-median-bug behaviour (2 states in each of 2 batches).
+  G5 Arm C passes 3/3 -- correctness is not the variable, same as every cell so far.
+  Decision: G4 holds -> the reference arm's nondeterminism is not task-specific
+     either, and the A/B/C comparison on 03-lru is a like-for-like three-way.
+     G4 fails (identical 3/3) -> Claude Code is byte-stable on the HARDER task,
+     which would be the more surprising result and must be reported over the
+     02-median-bug one, not beside it.
+
+############ ARM C RESULT (11:41:37, before arms A/B have run) ############
+  Claude Code as it ships, 03-lru, N=3: PASS 3/3, turns [5,6,6], cost $1.18 total.
+  PRIMARY: 3 DISTINCT output states across 3 runs -- lru.py AND test_lru.py differ
+  on every run (the task has no seed workspace; the agent writes both files, and
+  writes them differently each time).
+  G4 HOLDS (predicted >=2 distinct; observed 3). G5 HOLDS (3/3 pass).
+  The reference arm's nondeterminism is not task-specific: 2 states on the short
+  task (9 runs, 2 batches), 3 states on the harder one.
