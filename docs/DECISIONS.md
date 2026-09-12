@@ -6600,3 +6600,70 @@ flattered the result.
 
 Per-iteration, the instrument performs as claimed: 9,577 / 9,583 / 9,599 (0.23% spread) against
 5,348 / 5,346 / 5,320 (0.52% spread), i.e. a 44% effect read against a 0.3% noise floor.
+
+## ADR-0148: 58% of the advertised tool surface was never called, and removing it is a 44% token cut where the prompt floor dominates
+
+Across 22 recorded task-runs the agent called **eight** distinct tools: `update_plan` 62,
+`write_file` 40, `bash` 36, `read_file` 36, `edit_file` 16, `glob` 6, `list_dir` 6, `grep` 2. The
+other seventeen — office/document, image, web, `plan_recall`, `deep_think`, `schedule_wakeup`,
+`await_user`, `powershell`, `secret_names` — were never called once, and cost **3,907 tokens: 58%
+of the 6,732-token tool schema surface and 44% of the whole 8,956-token fixed prompt floor.**
+
+That floor is 6.8% of a 131,072-token window and **27.3% of a 32,768 one**, so it is a burden that
+scales badly toward exactly the models this campaign targets.
+
+**`update_plan` is not the fat, against expectation.** It is the single most expensive schema at
+1,549 tokens (23% of the surface) and it is the most-called tool in the corpus (62 calls). The
+cheap-looking target earns its cost; measuring before trimming is what kept it.
+
+**Result.** Denying the seventeen via `ToolRegistry.set_exposure_filter` — documented
+least-privilege, already shipped, operator-set, so this is configuration rather than a code change
+— over a full suite pass plus three interleaved runs per arm on `m05`:
+
+```
+10/10 PASS, and NOT ONE denied tool was ever requested (tool_calls across all ten tasks
+contains only the eight survivors, so the model never even tried to reach for one).
+
+per-iteration input tokens, rows whose ITERATION COUNT was unchanged (no accumulation confound):
+  02-median-bug      9,982 ->  5,720   -43%    floor share 89.7%
+  m01                9,646 ->  5,376   -44%    floor share 92.8%
+  m02                9,783 ->  5,538   -43%    floor share 91.5%
+  m04                9,403 ->  5,141   -45%    floor share 95.2%
+  (m05, 3 runs/arm:  9,586 ->  5,338   -44%    spread 0.23% vs 0.52%)
+```
+
+**The saving tracks FLOOR SHARE, and that is the load-bearing finding — not the 44%.**
+
+```
+floor share 89.7-95.2%  ->  -43% to -45%
+floor share 70.7%       ->  -37%
+floor share 63.4%       ->  -25%
+floor share 47.8%       ->  +2%     (05-ledger, the longest task: NO benefit at all)
+```
+
+A fixed subtraction from a variable total shrinks as the variable part grows. So the trim pays where
+the byte-identical prefix dominates — short tasks — and pays **nothing** on the longest one, where
+accumulated tool output is ~52% of each prompt. `04-todo-cli` (-51% at 44.2% floor share) is the
+lone exception and is confounded: its iterations fell 17 -> 15, which reduced accumulation and
+inflated the apparent per-iteration saving.
+
+**This retires a claim I had been making.** The argument that a small model mis-selects among 25
+mostly-irrelevant tools, and would choose better among 8, is **unsupported**. Deep-task iterations
+went 8->10, 8->13, 17->15, 17->18 — three of four UP with fewer tools. Deep-task iteration counts
+carry 24-60% noise so N=1 cannot resolve it, but there is no evidence for the hypothesis and a hint
+against it. Dropped until measured properly.
+
+**Scope, and the two caveats that must travel with any citation.** This is a CODING benchmark of ten
+tasks; a user asking for a chart or a web lookup needs precisely the tools unused here, which is why
+`set_exposure_filter` is operator-set and static rather than automatic. Nothing here argues zakcode
+should ship fewer tools. And the COST saving is serving-stack-dependent: this pod cache-reads 87-90%
+of input, so 44% fewer input tokens is largely 44% fewer *cached* tokens. **Window pressure is not
+cache-dependent** — on a 32,768-token model the floor falls from 27.3% of the window to 15.4%
+whatever the cache does, and that is the claim worth carrying.
+
+**Where this leaves the small-model lever.** Two measurements now bracket it. The prompt floor is
+trimmable by 44% and that helps short tasks only (this ADR). The long tasks are dominated by
+accumulated tool output, which is compaction's job, and compaction costs +25% iterations and 10x
+iteration variance when it binds (ADR-0147). So for the hardest small-model cases the tool surface
+is **not** the lever — context accumulation is, and the mechanism that manages it is the expensive
+one.
