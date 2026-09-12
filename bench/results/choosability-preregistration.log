@@ -1,0 +1,67 @@
+# ===== PRE-REGISTRATION, before any data, 2026-09-12 =====
+# CAN A MODEL STILL PICK THE RIGHT SKILL FROM A SHORTENED CATALOGUE?
+#
+# ADR-0155's second addendum prices three catalogue shapes and recommends "name + first sentence"
+# (66% cheaper, 24% of a 32k window against today's 69%). It also asserts that names alone are
+# "probably too cryptic to choose from" and flags that sentence, in the ADR itself, as the one claim
+# that is a judgement rather than a measurement. This measures it.
+#
+# WHY IT MATTERS BEFORE ANY CODE. A cheaper catalogue that the model cannot choose from is not a
+# saving, it is a capability regression paid for in tokens. The whole reason the catalogue looked
+# like a free win was that it is a LOOKUP -- and a lookup that stops working is not free.
+#
+# DESIGN. For a sample of skills, construct a query from the skill's BODY (not its description),
+# present the catalogue in three shapes, and ask the model to name the single best skill.
+#   arm FULL   : name + full description       (today: ~22,759 tok)
+#   arm FIRST  : name + first sentence         (~7,722 tok)
+#   arm NAMES  : name only                     (~659 tok)
+# The query is drawn from the body so that a correct answer cannot come from lexical overlap with
+# the very text the shortened arms remove -- otherwise FULL wins by construction and the experiment
+# measures nothing but string matching.
+#
+# PRE-REGISTERED DECISION RULES:
+# (1) PRIMARY: accuracy of FIRST against FULL. If FIRST is within a few points of FULL, the
+#     recommended shape is safe and the 66% saving is real. If FIRST drops materially, the
+#     recommendation in the addendum is WRONG and must be retracted before anything is built.
+# (2) SECONDARY: NAMES against FULL. The addendum guesses NAMES is too cryptic. If NAMES holds up,
+#     that guess was wrong and the available saving is 97%, not 66% -- a materially better outcome
+#     than the one I recommended, which is exactly why the guess had to be tested rather than
+#     shipped.
+# (3) A CEILING CONTROL IS REQUIRED. If FULL itself scores poorly, the task is too hard or the
+#     query construction is broken, and NO arm comparison means anything. FULL is the instrument's
+#     own positive control: a low FULL voids the run rather than making the cheap arms look good.
+# (4) Ties and refusals count as misses in every arm, scored identically.
+# (5) Sample is 30 skills, fixed by a seeded shuffle recorded in the log BEFORE the runs, so the
+#     sample cannot be reselected after seeing an arm's score.
+[
+ "analyze-npc-behavior",
+ "analyze-remote-corpus",
+ "aspirations",
+ "aspirations-complete-review",
+ "aspirations-consolidate",
+ "aspirations-curate-memory",
+ "aspirations-evolve",
+ "aspirations-learning-gate",
+ "aspirations-precheck",
+ "audit-goal-citations",
+ "audit-repo-secret-scopes",
+ "audit-roblox-deliverable",
+ "backlog-report",
+ "create-aspiration",
+ "env-list-baseline",
+ "extract-and-run-embedded-block",
+ "felt-sense-checkin",
+ "fresh-eyes-code",
+ "measure-arc-two-arm-prereg",
+ "promotion-day",
+ "run-processor",
+ "scorer-criterion-contribution-probe",
+ "scratch-cognito-account-end-to-end",
+ "sprint-planning",
+ "ssm-run",
+ "state-replay",
+ "sweep-customer-server-usage",
+ "tree",
+ "uncrossed-seams",
+ "verify-deployed-artifact"
+]
