@@ -170,6 +170,17 @@ class Settings(BaseSettings):
     # This does NOT change the session's real id: persistence, resume and hook payloads keep the
     # uuid4. Only the PROMPT stops carrying it, so nothing keyed by session id is affected.
     stable_prompt_identity: bool = Field(default=False)
+    # A reproducible RE-ROLL for stable_prompt_identity runs. The per-workspace cache key selects
+    # which prefix-cache state an affinity-routing endpoint serves a workspace from, and the FIRST
+    # token of a near-tie is decided by that state. Measured 2026-09-12 (ADR-0157 fifth
+    # addendum): on 07-ttl-cache the 27B reproduced a WRONG program byte-for-byte three times
+    # under one key, after three fresh keys had all produced passing ones. A user who lands on
+    # such a basin has no way out that keeps reproducibility -- temperature or the identity flag
+    # would trade it away. Any non-empty string here derives a different key
+    # (zakcode/ws-<hash(workspace, seed)>): every run with the same seed stays byte-identical,
+    # a new seed re-rolls the near-tie. Ignored unless stable_prompt_identity is on; empty keeps
+    # the seedless key, so existing reproductions are unaffected.
+    prompt_cache_seed: str = Field(default="")
     # How tools are offered to the model. ``auto`` (default) uses native
     # function-calling when the model supports it and transparently falls back to a
     # text protocol when it does not (so tool-less local models still work). In

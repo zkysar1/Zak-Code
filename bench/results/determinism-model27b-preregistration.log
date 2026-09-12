@@ -122,7 +122,7 @@ must also pin prompt_cache_key (a per-workspace key), designed and shipped behin
 real-user cell on 07 and 08 with the fix (N=3 each) before claiming." Turn-count 13 in run 3 with identical bytes is
 a converging trajectory difference; its entry point is read from the dumps below.
 
-=== 15:05 PRE-REGISTRATION (C1-C3) -- does the SHIPPED per-workspace key reproduce 07/08 in the real-user cell?
+=== 15:00 PRE-REGISTRATION (C1-C3) -- does the SHIPPED per-workspace key reproduce 07/08 in the real-user cell?
 Fix: Zak-Code #405, commit 4c7d2c8 (src rsynced to zc-01:/opt/zak-code-bench; helper present at all three call sites).
 Cells: the real-user cell exactly as D1/D2 (ZBENCH_PIN_MODE=workspace: stable workspace, fresh uuid4 session id,
 ZAKCODE_TEMPERATURE=0, identity stable, ZAKCODE_HOME=/root/zbench-home), N=3 each, dumps on, on zc-01, sequential:
@@ -147,3 +147,49 @@ Decision rules:
   R4  Instrument refusals (rc 4/5, missing reports) are not results; re-run that cell once, then record the refusal.
 Load: nothing else on zc-01; the local box runs the TOPK re-measurement on the same pod concurrently (an accuracy
 measurement -- and wall time is already known not to move bytes on this pod).
+
+=== 15:16 INTERIM (C1, before the arm verdict; run-3 at 4 calls): run-1 vs run-2 are byte-identical on the wire through call 16 of
+18 -- the D1 first-response split is GONE with the shipped per-workspace key -- and first diverge at call 17, message 31, a TOOL
+result: pytest "4 passed in 0.01s" vs "0.05s" (ENVIRONMENT). Both runs made 18 calls. Whether the timing line moved any bytes is
+the arm's verdict to give, not this note's.
+
+=== 15:23 C1 RESULT (arm verdict, zc-01 log 15:21): PRIMARY (every file) IDENTICAL 3/3, turns 16/16/16, elapsed 384/414/401 s.
+P1 HOLDS. Not predicted and recorded as found: verify_rc=1 on ALL THREE runs (0/3 pass) -- the 27B produced the SAME failing solution
+three times. In D1 (fresh keys) and D3 (constant zero key) the 27B PASSED 07. The only input that differs from D3 is the key VALUE
+(zakcode/ws-<hash> vs zakcode/0..0), i.e. which engine/prefix-cache state the pod routes to. Reproducibility froze one continuation
+of a near-tie; this time the frozen continuation is wrong. Where C1 departs from D3 is measured below, before C2/C3 report.
+
+=== 15:26 STAMP CORRECTION: the five headers above dated 15:05/15:14/15:16/15:22/15:23 (and their twins in retrieval-lever-
+preregistration.log) were first written with ESTIMATED clock times up to 27 minutes ahead of the box clock (15:24:54 when caught).
+They are now anchored to logged events: the C1-C3 block was appended before the chain started (zc-01 log: CONFIRMATION START
+15:01:03); the C1 interim while run-3 was at 4 calls (C1 COMPLETE 15:21:02); the kill/relaunch to the TOPK log (RELAUNCH 15:22:48).
+Order of writing is what pre-registration rests on, and the transcript preserves it; the clock labels merely had to match it.
+
+=== 15:28 CONFOUND CHECK (dumps, no normalisation): D1, D2 and C1 first requests carry NO "Session id" line (identity flag ON, system
+9,826 chars) and are byte-identical across runs except the message created_at metadata; D3 (PIN_MODE=1, flag OFF) carried the pinned
+zero id line (9,981 chars). So: (a) the D1 attribution stands -- D1 runs differed on the wire ONLY in prompt_cache_key; (b) the D3-vs-C1
+solution difference is a PROMPT difference (155 chars), not evidence about the key value; (c) D1-vs-C1 share the prompt byte-for-byte
+and diverge at the FIRST response (absolute-path read vs relative read + list_dir): the key VALUE selects the slot/prefix state and
+thereby the basin. D1 basins (fresh keys, 2 distinct) both PASSED; the ws-key basin FAILS. Reproducible != correct.
+
+=== 15:33 C1 FAILURE NAMED: verify.py on the C1 solution (linked-list _Node implementation, write_file + one edit_file) -> "FAIL: rule 7:
+keys() returned [a]; expected [b,c,a] (least-recently-used first, and a live get() makes an entry most-recent)". The D1 run-1
+solution reconstructed from its dump (OrderedDict implementation) -> PASS on all traps. So the ws-key basin is a genuine wrong
+program, reproduced byte-for-byte three times; the visible workspace tests pass on it (4 passed), which is what the task was built to
+allow. A user on this workspace path would get this failure every time -- reproducible, and without a reproducible way to re-roll.
+
+=== 15:40 C2 RESULT (arm verdict, zc-01 log 15:28:44): 08-mutation-leak on the 27B, PRIMARY IDENTICAL 3/3, turns 11/11/11, verify_rc=0
+3/3, 39 calls. P2 HOLDS. With P1 (C1 bytes identical 3/3) that is R1: the cache key WAS the lever behind the 27B splits on 07 and
+08 -- claim it, with the C1 verification failure reported beside it. C3 (35B on 07) is running.
+
+=== 15:40 PRE-REGISTRATION (C4) -- is a SEED on the per-workspace key a reproducible re-roll?
+Change under test: settings.prompt_cache_seed (ZAKCODE_PROMPT_CACHE_SEED) folded into the ws-hash when non-empty; empty keeps the
+seedless key (worktree /opt/zak-code-seed, PR to follow). Cell: C4 = C1 exactly (07-ttl-cache, 27B, flag ON, PIN_MODE=workspace,
+temp 0, N=3, dumps on) plus ZAKCODE_PROMPT_CACHE_SEED=reroll-1; src rsynced to zc-01 only AFTER C3 completes (never mid-chain).
+Predictions: P4 byte-identical 3/3 (the seed only changes the key VALUE; the mechanism is C1s). P5, moderate confidence: the C4
+trajectory differs from C1s (different first response or different program) -- D1 saw 2 basins in 3 fresh keys, and a slot collision
+is possible. Pass/fail of the C4 basin is NOT predicted: a re-roll is a re-roll.
+Decision rules: R5 P4 holds -> the seed is a reproducible re-roll; ship it behind the flag (already implemented; the PR lands
+regardless of P5, since same-seed reproducibility is the property being sold). R6 P4 fails -> the seed introduced variation the
+hash cannot have; instrument or code defect; do not ship until found. R7 P5 fails (C4 program == C1 program) -> run one more cell
+with seed reroll-2 (C4b) and report the collision rate honestly; R5 still decides shipping. R8 instrument refusals are not results.
