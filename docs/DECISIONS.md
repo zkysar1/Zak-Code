@@ -7393,3 +7393,50 @@ assumption, the same class of gap ADR-0146 and ADR-0154 already record. The tran
 the ordering and the ratio, not the absolute rates. Finally, `tests/test_skills.py` uses
 single-word descriptions, so a first-sentence truncation is a no-op there and the current suite
 could not see such a change land correctly or incorrectly — relevant to any future attempt.
+
+**FIFTH ADDENDUM: the retraction REPLICATES on the real deployment, and the prediction that catalogue
+SIZE drives choosability is FALSIFIED.** Every measurement above comes from one catalogue
+(ayoai-mind, 145 skills), so the fourth addendum's retraction could have been a property of that
+catalogue rather than of catalogues. The standing directive is to test hypotheses against coach, the
+actual deployment, so the arms were re-run there — ON zc-03, with coach's skill text never crossing
+the wire and only scores returned (`bench/results/choosability-coach-preregistration.log`, written
+before the run).
+
+Identical extraction, rendering, scoring, clustering and bootstrap as the 420-query run, and the
+script refuses to report a comparison if the configured model differs from the one the ayoai-mind
+runs used. 64 skills x 3 queries = 192 queries, 576 requests.
+
+```
+                     coach (64 skills)          ayoai-mind (145 skills)
+FULL                 112/192  58.3%             253/420  60.2%
+FIRST                 95/192  49.5%             216/420  51.4%
+NAMES                 43/192  22.4%              95/420  22.6%
+FULL - FIRST         +8.9%  CI (+3.6, +14.6)    +8.8%  CI (+5.5, +12.4)
+FULL - NAMES        +35.9%  CI (+28.1, +43.8)  +37.6%  CI (+31.9, +43.3)
+```
+
+**The pre-registered primary rule resolves: the CI excludes zero and is positive, so THE RETRACTION
+HOLDS ON THE REAL DEPLOYMENT.** The fourth addendum is not scoped to a 145-skill catalogue; it
+generalises. The effect reproduces to within a tenth of a point across catalogues of very different
+size and domain, which is a stronger result than either run alone.
+
+**And a pre-registered prediction was FALSIFIED, which is the more useful half.** P1 stated that all
+arms would score HIGHER on coach because a 64-way choice is easier than a 145-way one, and named the
+consequence in advance: *if they do not, catalogue SIZE is not the driver*. They did not — all three
+arms scored slightly LOWER (58.3/49.5/22.4 against 60.2/51.4/22.6) on a catalogue 38% the size.
+
+**So catalogue size is not what makes skill selection hard, and that retires the intuition this
+whole line of work rested on.** The shortening programme assumed the problem was volume; it is not.
+That is also why shortening descriptions could not help — it was attacking a quantity that does not
+drive the outcome.
+
+**The next hypothesis, stated as a hypothesis because two catalogues cannot establish a
+relationship:** sibling density rather than size. Coach carries 39% of its skills in families of
+three or more against ayoai-mind's 36%, and coach scored slightly lower on every arm — consistent in
+direction, on n=2, which is suggestive and nothing more. It is testable: a catalogue's family
+structure is measurable without any model call, so a third and fourth deployment would settle it
+cheaply. Recorded here so the claim is not later cited as though it were measured.
+
+P3 (FIRST still loses to FULL, direction only — the one prediction where the magnitude was
+deliberately not predicted) is confirmed. P2 (NAMES collapses by less on the smaller catalogue) came
+in at 35.9 against 37.6, but the intervals overlap heavily and it is not claimed.
