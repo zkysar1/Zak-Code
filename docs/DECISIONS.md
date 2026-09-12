@@ -8298,3 +8298,52 @@ the same change.
 full-catalogue accuracy) is replicated on two catalogues and is not shown to be causal; shortlisting
 is not an accuracy lever and is a cost lever within a 5-point margin at N=420. Nothing in the
 loop changes on this addendum.
+
+### ADR-0158 FOURTH ADDENDUM — the rewrite arm on the fixed catalogue: the rewriter lowers coverage and accuracy together, so rewriting is retired and causality stays untested (2026-09-12)
+
+**The run** (`rewrite-arm-preregistration.log`, pre-registered 17:14, results 19:10; log
+`rewrite-arm-rerun.log`; scores `rewrite-scores.json`). 45 targets, 840 calls on the 35B at
+temperature 0, 18:49–19:02. The running process printed W0 against the stale 60.2% constant and
+returned before W2–W4; the scores it saved are complete, so a `verdict` phase now re-applies the
+pre-registered rules to them with no model calls — the correction lives in the script, not in a
+hand calculation.
+
+| check | pre-registered rule | result | verdict |
+|---|---|---|---|
+| W0 | ORIG within 3 points of 64.3% | **270/420 = 64.3%** | holds |
+| W1 | coverage rises on ≥ 35/45 targets | 5/45; mean 0.155 → 0.121 | **fails** |
+| W2 | targets' accuracy lift ≥ 10 points, lower bound > 0 | 57/135 → 47/135: **−7.4 (−13.3, −1.5)** | **fails** |
+| W3 | untouched skills within the 5-point margin | 213/285 → 222/285: +3.2 (+0.4, +6.0) | holds |
+| W4 | decoy picks, untouched query → target skill | 22 → 12 | direction only |
+
+Net over all 140 skills: 270 → 269 of 420.
+
+**Rule applied as written.** W1 failed, so there is **no verdict on causality**; the script's
+closing line is conditional on W1 and does not apply. What the run shows, descriptively, is one
+confounded observation in the direction fidelity predicts: the rewriter lowered the mechanism
+variable and the targets' accuracy fell with it, while the untouched skills gained because the
+rewritten descriptions drew fewer of their queries. It is not a test — a rewrite changes length,
+style and specificity at once — and it is not read as one.
+
+**Product conclusion, independent of the causal question.** Descriptions the 35B writes from a
+skill's own body route *worse* than the human-written ones for the skills they describe, by 7.4
+points with an interval that excludes zero. **Rewriting descriptions with this model is retired as
+a product action.** The lever that survives ADR-0158 is the human one: a description that covers
+its body's held-out paragraphs is the one the model can route to, and the catalogue's low-coverage
+tertile is where a human should look first.
+
+**Two instrument notes.** (1) The pre-registration did not make the score phase conditional on
+W1, so 840 calls bought descriptive numbers; the rule for the next two-stage arm is written down —
+the outcome phase runs only if the mechanism check holds. (2) The ORIG arm reproduced the 18:45
+FULL arm **per skill on 140 of 140 skills** — two independent 420-query passes, three hours apart,
+identical to the query on every skill; the count 270/420 has now been returned three times today.
+Single-call routing at temperature 0 on this pod is reproducible run to run. That is the same
+endpoint whose long multi-turn generations split at near-tie tokens (ADR-0157, sixth addendum):
+the residual there is a property of long generations, not of the endpoint at large.
+
+**Standing — ADR-0158 closes.** Fidelity (description coverage predicts full-catalogue accuracy)
+is replicated on two catalogues and is a *marker* by every test run; no causal test has been passed.
+Shortlisting is a cost lever within a 5-point margin at N=420 (third addendum) and not an accuracy
+lever. Rewriting by the model is retired. The next question for small models is end-to-end — task
+outcomes under a shortlisted catalogue — and it is pre-registered before it runs.
+

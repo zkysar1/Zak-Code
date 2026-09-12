@@ -97,3 +97,16 @@ as rewrite-targets.void.json / rewrite-descriptions.void.json). W1 FAILS: covera
 (not gated on W1 by this pre-registration); its ORIG arm doubles as an independent FULL replication. NOTE: the script W0
 constant was still 0.602 when this run launched; W0 is applied from the pre-registered 64.3% by hand, and W0_REFERENCE=0.643
 is corrected in the same PR (the running process prints the stale line).
+
+=== 19:08 RE-RUN RESULTS (score phase exited 19:02:58; W0-W4 re-applied by the new `verdict` phase over the saved rewrite-scores.json,
+because the running process printed W0 against the stale 60.2% constant and returned rc=4 before W2-W4):
+  ORIG 270/420 = 64.3% -- per-skill IDENTICAL to the 18:45 FULL arm on 140/140 skills (two independent passes); third 270/420 today.
+  W0 HOLDS (pre-registered reference 64.3%).  W1 FAILS (5/45, mean 0.155 -> 0.121; recorded 18:56).
+  W2 FAILS: targets (n=45) 57/135 -> 47/135 = -7.4 points, 95% CI (-13.3, -1.5) -- the rewritten skills lose their own queries.
+  W3 HOLDS: untouched (n=95) 213/285 -> 222/285 = +3.2 (+0.4, +6.0).  W4 decoy picks (untouched query -> target) 22 -> 12.
+  Net over 140: 270 -> 269 of 420 (-0.2).
+Rule applied as written: W1 failed -> NO verdict on causality; the script closing line is conditional on W1 and does not apply.
+Descriptive reading (one confounded observation, not a test): coverage fell and the targets accuracy fell together, while the
+untouched skills gained because the rewritten descriptions attracted fewer of their queries. Product conclusion independent of
+the causal question: descriptions written by the 35B from the skill body route WORSE than the human-written ones for the skills
+they describe; rewriting is retired as a product action. Recorded in ADR-0158 fourth addendum.
