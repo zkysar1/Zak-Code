@@ -7794,6 +7794,22 @@ reference agent does not expose one.** Two environment variables, both documente
 first thing this campaign has found where zakcode is better than Claude Code rather than equal to
 it, and it is shipped rather than merely observed.
 
+**The reference arm was the weakest link and has been strengthened.** Claude Code was originally
+measured once at N=3. It is now 9 runs across two independent batches (N=3 and N=6) and produced
+**2 distinct output states in both** — the nondeterminism is robust, not a small-N artifact. Final
+standing on `02-median-bug`, all arms at temperature 0 where the knob exists:
+
+| arm | runs | distinct byte-states |
+|---|---|---|
+| Claude Code, as it ships | 9 (2 batches) | 2 in each batch |
+| zakcode, real-user cell, no fix | 9 (2 batches) | 2 |
+| **zakcode, real-user cell, `ZAKCODE_STABLE_PROMPT_IDENTITY=1`** | 6 | **1 — byte-identical** |
+
+zakcode-without-the-fix and Claude Code sit at the same place; the fix is what separates them. And
+zakcode's single deterministic output (`7bff3055…`) is one of the two variants Claude Code
+produces, so the pinned run is not converging on something idiosyncratic — it is picking one of the
+reference agent's own answers, every time.
+
 **A documentation defect found on the way and fixed:** `docs/CONFIG.md` documented
 `temperature`'s default as `0.0`. The actual default is `None`, which sends no temperature at all
 and lets each backend apply its own (ADR-0018). For a user chasing reproducible runs that was the
