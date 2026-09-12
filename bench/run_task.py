@@ -224,6 +224,20 @@ def run(task_dir: Path) -> int:
     # "instrument that stopped measuring" shape this bench keeps finding (ADR-0145).
     _defs = agent.registry.definitions()
     tool_surface = {"exposed": len(_defs), "schema_chars": sum(len(json.dumps(x)) for x in _defs)}
+    # EVERY EXPERIMENTAL KNOB RECORDS ITS VALUE HERE, because an arm LABEL kept outside the
+    # artifact is an assumption about which env var was set when this process started. Measured
+    # 2026-09-12: a 6-pass temperature experiment lost every pass to a filename error, and the one
+    # surviving file could only be assigned to an arm by MTIME ORDERING -- the data itself did not
+    # say. compaction records threshold_tokens and the tool filter records tool_surface.exposed,
+    # and both of those let an inert knob be told apart from a genuine null result; temperature had
+    # no such field. `temperature` is read off the RESOLVED Settings (what actually took effect),
+    # not off the env string (what was requested).
+    knobs = {
+        "temperature": getattr(getattr(agent, "settings", None), "temperature", None),
+        "compact_fraction": os.environ.get("ZBENCH_COMPACT_FRACTION"),
+        "tool_deny": os.environ.get("ZBENCH_TOOL_DENY"),
+        "rules_root": os.environ.get("ZBENCH_RULES_ROOT"),
+    }
 
     err = None
     stop_reason = iterations = routed_category = routed_escalated = degraded = None
@@ -315,6 +329,7 @@ def run(task_dir: Path) -> int:
         **snap,
         "compaction": compaction,
         "tool_surface": tool_surface,
+        "knobs": knobs,
         "tool_calls": tool_calls,
         "tool_errors": tool_errors,
         "trace_events": trace_events,
