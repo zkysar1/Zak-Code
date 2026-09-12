@@ -83,7 +83,7 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool
     # capture has to actually work for the arm to produce a result at all.
     env = dict(os.environ, ZBENCH_KEEP_WORKSPACE="1")
     if pin:
-        env["ZBENCH_PIN_IDENTITY"] = "1"
+        env["ZBENCH_PIN_IDENTITY"] = os.environ.get("ZBENCH_PIN_MODE", "1")
     t0 = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -199,7 +199,7 @@ def main(argv: list[str]) -> int:
     task_dir = Path(argv[0]).resolve()
     n = int(argv[1]) if len(argv) > 1 else 3
     runner = ((lambda td, sp: one_run_zakcode(td, sp, pin=pin)) if arm == "zakcode" else one_run)
-    cell = (f"pin{'ON' if pin else 'OFF'}-temp{os.environ.get('ZAKCODE_TEMPERATURE','default')}"
+    cell = (f"pin{(os.environ.get('ZBENCH_PIN_MODE','1') if pin else 'OFF')}-temp{os.environ.get('ZAKCODE_TEMPERATURE','default')}"
             if arm == "zakcode" else "asships")
     spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     print(f"determinism arm: {spec['id']} x{n} through {arm}"

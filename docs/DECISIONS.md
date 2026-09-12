@@ -7676,3 +7676,38 @@ N=3 per cell, one task, one model per arm. No rate is claimed. Claude Code was m
 batch. The comparison is "zakcode with a knob available only in the bench" against "Claude Code as
 it ships", and it stays stated that way — no pinning equivalent exists to apply to the reference
 agent, which is itself part of the finding.
+
+### ADR-0157 ADDENDUM — the barrier is ONE value for a real user, not two (2026-09-12)
+
+The body above says "two specific injected values are the whole barrier". True in the bench,
+misleading for the product. Isolating each value, all cells at temperature 0, N=3, **with a load
+control** (the known-good pin-both cell re-run under genuine concurrent pod load from the TOPK
+eval, which reproduced IDENTICAL — so load is not a factor and these cells are attributable to pin
+scope alone):
+
+| cell | distinct byte-states / 3 |
+|---|---|
+| pin BOTH — constant workspace + constant session id | **1 / 3 — identical** (4 batches, incl. under load) |
+| pin SESSION only — session id constant, workspace path varies | 3 / 3 |
+| pin WORKSPACE only — workspace constant, fresh uuid4 session id | **2 / 3** |
+| pin NEITHER | 1/3, 2/3, 1/3 across three batches |
+
+Both injected values contribute and neither alone suffices, which is why the body's claim is
+literally correct. But the bench is not the user's situation: **a real user runs in a stable
+project directory**, so the workspace path is already constant for them. Their actual configuration
+is the *pin-WORKSPACE-only* row — stable cwd, fresh uuid4 — and that row is 2 distinct / 3.
+
+**So for a zakcode user at temperature 0, the uuid4 session id is the single remaining barrier to
+byte-identical reproduction.** Stabilising one value — a `ZAKCODE_SESSION_ID` knob, or deriving the
+id from workspace+task rather than `uuid4()` — moves a real user from the 2/3 row to the 1/3 row.
+That is a much smaller change than the body implies, and it is the concrete shippable form of the
+only axis where this campaign has found zakcode able to beat the reference agent rather than match
+it.
+
+Two predictions were made and both were wrong, in opposite directions. First: "only the session id
+matters for real users" — tested with the session-only pin, which came back 3/3, apparently
+refuting it. That test was the wrong cell: pinning the session id while letting the workspace vary
+is a configuration no user is ever in. The workspace-only cell is the user's, and it restores the
+original reading. **A cell that isolates a variable is not automatically the cell that answers the
+question** — the arm has to match the population the claim is about, which is guard-6563's
+registered-for-one-population failure arriving through the experimental-design door.

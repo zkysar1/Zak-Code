@@ -179,7 +179,7 @@ def _build_agent(workspace: Path, spec: dict):
     # they do with temperature. Both values are deliberate (the workspace path is load-bearing;
     # ADR-0072 put the session id there so the model can answer "which session are you?"), so this
     # knob is a MEASUREMENT instrument and not a proposed default.
-    if os.environ.get("ZBENCH_PIN_IDENTITY"):
+    if os.environ.get("ZBENCH_PIN_IDENTITY") not in (None, "", "workspace"):
         agent.session.id = "0" * 32
         print(f"[bench] pinned session id: {agent.session.id}", file=sys.stderr)
     # ZBENCH_COMPACT_FRACTION moves the compaction THRESHOLD without touching anything else.
@@ -368,7 +368,10 @@ def preflight(task_dir: Path) -> int:
 
 def run(task_dir: Path) -> int:
     spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
-    if os.environ.get("ZBENCH_PIN_IDENTITY"):
+    if os.environ.get("ZBENCH_PIN_IDENTITY") == "session":
+        # session-only: pin the uuid4 (in _build_agent), leave the workspace path varying.
+        ws = Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
+    elif os.environ.get("ZBENCH_PIN_IDENTITY"):
         # A constant NAME with fresh CONTENT: reusing the directory as-is would carry the previous
         # run's files into this one, which is a far worse confound than the one being removed.
         # Serial execution only -- two parallel tasks would collide on the fixed path.

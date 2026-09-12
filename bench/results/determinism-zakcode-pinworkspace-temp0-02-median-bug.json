@@ -1,0 +1,92 @@
+{
+  "task": "02-median-bug",
+  "arm": "zakcode",
+  "cell": "pinworkspace-temp0",
+  "n": 3,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-02-median-bug",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 33.9,
+      "num_turns": 6,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "d1994a7cd8f09085e0a95df02c1b3c82bf83c73b7e2179118b3fe602c2b3a31e",
+        "stats.py": "7bff3055078d895dd7e8a12a3291912c865971e9ec22739dd5b14173a6921155",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "py_digests": {
+        "stats.py": "7bff3055078d895dd7e8a12a3291912c865971e9ec22739dd5b14173a6921155",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "sources": {
+        "stats.py": "\"\"\"Small stats helpers.\"\"\"\n\n\ndef median(nums):\n    \"\"\"Return the median of a list of numbers.\n\n    For an odd-length list this is the middle element; for an even-length list\n    it is the average of the two middle elements.\n    \"\"\"\n    s = sorted(nums)\n    n = len(s)\n    if n % 2 == 1:\n        return s[n // 2]\n    return (s[n // 2 - 1] + s[n // 2]) / 2\n",
+        "test_stats.py": "from stats import median\n\n\ndef test_odd():\n    assert median([3, 1, 2]) == 2\n\n\ndef test_even():\n    assert median([1, 2, 3, 4]) == 2.5\n\n\ndef test_even_two():\n    assert median([10, 20]) == 15.0\n\n\ndef test_single():\n    assert median([42]) == 42\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-02-median-bug",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 29.4,
+      "num_turns": 6,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "d1994a7cd8f09085e0a95df02c1b3c82bf83c73b7e2179118b3fe602c2b3a31e",
+        "stats.py": "7bff3055078d895dd7e8a12a3291912c865971e9ec22739dd5b14173a6921155",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "py_digests": {
+        "stats.py": "7bff3055078d895dd7e8a12a3291912c865971e9ec22739dd5b14173a6921155",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "sources": {
+        "stats.py": "\"\"\"Small stats helpers.\"\"\"\n\n\ndef median(nums):\n    \"\"\"Return the median of a list of numbers.\n\n    For an odd-length list this is the middle element; for an even-length list\n    it is the average of the two middle elements.\n    \"\"\"\n    s = sorted(nums)\n    n = len(s)\n    if n % 2 == 1:\n        return s[n // 2]\n    return (s[n // 2 - 1] + s[n // 2]) / 2\n",
+        "test_stats.py": "from stats import median\n\n\ndef test_odd():\n    assert median([3, 1, 2]) == 2\n\n\ndef test_even():\n    assert median([1, 2, 3, 4]) == 2.5\n\n\ndef test_even_two():\n    assert median([10, 20]) == 15.0\n\n\ndef test_single():\n    assert median([42]) == 42\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-pinned-02-median-bug",
+      "pin": true,
+      "temperature_env": "0",
+      "elapsed_s": 31.9,
+      "num_turns": 6,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "completed",
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "d1994a7cd8f09085e0a95df02c1b3c82bf83c73b7e2179118b3fe602c2b3a31e",
+        "stats.py": "5e29d644ad19e38e45bf35f10e71e803bde09d08af7f892c849a136b3acb901c",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "py_digests": {
+        "stats.py": "5e29d644ad19e38e45bf35f10e71e803bde09d08af7f892c849a136b3acb901c",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "sources": {
+        "stats.py": "\"\"\"Small stats helpers.\"\"\"\n\n\ndef median(nums):\n    \"\"\"Return the median of a list of numbers.\n\n    For an odd-length list this is the middle element; for an even-length list\n    it is the average of the two middle elements.\n    \"\"\"\n    s = sorted(nums)\n    n = len(s)\n    # BUG: this returns the upper-middle element for even-length lists instead of\n    # averaging the two middle elements. Correct it.\n    if n % 2 == 1:\n        return s[n // 2]\n    return (s[n // 2 - 1] + s[n // 2]) / 2\n",
+        "test_stats.py": "from stats import median\n\n\ndef test_odd():\n    assert median([3, 1, 2]) == 2\n\n\ndef test_even():\n    assert median([1, 2, 3, 4]) == 2.5\n\n\ndef test_even_two():\n    assert median([10, 20]) == 15.0\n\n\ndef test_single():\n    assert median([42]) == 42\n"
+      }
+    }
+  ]
+}
