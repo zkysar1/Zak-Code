@@ -6439,6 +6439,29 @@ threshold is 19,660, which sits 1.8x above the largest m-task peak (10,714) and 
 `04-todo-cli` (30,147) and `05-ledger` (27,726). The first draft used 0.2, where `05-ledger`'s
 margin was 5.8% against a metric that varies by 40% — a positive arm that might simply not fire.
 
+**PRODUCTION CONFIRMATION — measured on a real deployment 2026-09-12, and it is the strongest
+evidence in this ADR because it could not come from the bench.** This ADR's claim is a *negative*
+about the instrument: the bench cannot see the compaction path. A negative about coverage is only
+as good as the other side of it, and the other side is a deployment that exercises the path. Coach
+(`zc-03`, `/opt/coach-mind`) has a 1,174-transcript corpus, and **64 tool results carry
+`[tool output elided at compaction`** — the marker `Compactor.elision_note` writes and nothing else
+produces. **Compaction fires routinely in production while firing zero times in 20 instrumented
+bench runs.** The blindness is not hypothetical.
+
+Two disciplines this measurement had to obey, both of which changed what it could claim. The
+aggregates were computed ON THE BOX and only counts crossed the wire — coach carries third-party
+health content that must never leave it. And the population was checked before any rate: of 10,437
+records, 5,310 are real `/opt/coach-mind` usage and **5,021 (~48%) are pytest residue**, so every
+count over the whole corpus is about half test traffic. That is sufficient for the EXISTENCE claim
+above (one genuine elision would be) and insufficient for any rate, so no rate is stated here.
+
+**And the retraction that had to precede it.** I recorded earlier in this campaign that coach was
+unreachable, because `/opt/coach-mind` is absent on this box. That was a single signal about the
+WRONG box, never corroborated against the host the notes name. zc-03 answers, and the path is
+there. A negative conclusion from one signal — asserted while writing the guardrails about exactly
+that — cost this ADR its confirming evidence for most of a campaign.
+
+
 ## ADR-0146: Three micro-tasks are the only instrument here with enough precision to see an engine change
 
 The suite's binary metric is saturated. Three model generations now pass essentially everything:
@@ -6668,6 +6691,27 @@ iteration variance when it binds (ADR-0147). So for the hardest small-model case
 is **not** the lever — context accumulation is, and the mechanism that manages it is the expensive
 one.
 
+**FALSIFIED AS A PRODUCTION RECOMMENDATION, measured on coach 2026-09-12.** The caveat above says a
+user asking for a chart or a web lookup needs precisely the tools unused here. That was reasoning;
+it is now a reading. Coach called **20 distinct tools, not 8, and SEVEN of the seventeen I proposed
+denying are among them**: `web_fetch` 48, `schedule_wakeup` 28, `web_search` 26, `save_image` 4,
+`await_user` 2, `secret_names` 1, `deep_think` 1 — ~110 calls against a surface this ADR measured as
+dead. Applying this trim to coach would break it.
+
+Two things that does NOT overturn. The measurement stands exactly as taken: on a ten-task coding
+suite those seventeen are dead weight and removing them cuts the per-iteration prompt 43-45% where
+the fixed floor dominates. And the remedy was already the right shape — `set_exposure_filter` is
+operator-set and per-deployment precisely so a coding harness and an assistant can expose different
+surfaces. What changes is the caveat's standing: it stops being a hedge a reader may skip and
+becomes the measured reason the trim must not be a default.
+
+A third reading makes the scope gap sharper than "different workload". Coach also calls tools that
+are **not in the bench's 25 at all** — `echo` 297, `use_skill` 208, `read` 33, `task` 4 — because
+skills are enabled there. A deny-list computed against the bench registry does not even *describe*
+coach's tool surface, let alone prune it correctly. The same population caveat as ADR-0145 applies:
+~48% of the corpus is pytest residue, so these counts support the existence claims made and no rate.
+
+
 ## ADR-0149: Most of the variance this bench measures is the sampler's, not the engine's
 
 Every determinism statement made from this suite before now was about an unpartitioned quantity.
@@ -6731,3 +6775,53 @@ hit exactly that. That reasoning is untouched here; nothing above measures a pro
 claim is narrower and only about measurement: **to attribute variance to the engine you must pin the
 sampler, exactly as you must hold the model fixed to attribute a failure to a mechanism.** The bench
 should pin it; the product should not.
+
+## ADR-0150: Both agents score 100% on this suite, so it cannot answer the parity question it was built for
+
+The campaign's directive is parity with Claude Code. Until 2026-09-12 that comparison had never been
+run — every measurement was zakcode against zakcode. So I ran the reference arm:
+`bench/run_claude_code.py` puts the same task prompt in the same workspace, with `--allowedTools`
+scoped to the same operations, and grades it with the task's OWN `verify.py`.
+
+```
+02-median-bug   PASS  7 turns   7.1s  $0.1531
+03-lru          PASS  5 turns  12.4s  $0.2018
+04-todo-cli     PASS  7 turns  15.8s  $0.2657
+05-ledger       PASS  7 turns  21.0s  $0.3392
+m05             PASS  5 turns   5.9s  $0.1224
+                5/5           $1.08
+```
+
+**5/5 — including `05-ledger`, the only task zakcode has ever failed.** Against zakcode's 20/20 on
+two consecutive passes and 49/50 across three model generations, that is the decision:
+
+**The suite is saturated for BOTH agents, so it cannot demonstrate parity or its absence.** This is
+not a hedge, it is a measured property of the instrument. A benchmark on which the reference agent
+also scores 100% has no resolving power between them at all: every task is answering "is this task
+easy" and none is answering "which agent is better". The saturation finding (ADR-0146) is now
+extended to the reference agent, and it is what makes the parity question unanswerable HERE rather
+than merely unanswered.
+
+**The fix is concrete and it is the only one that helps: extend the suite until Claude Code fails
+part of it.** Only from that point does a zakcode score carry information about parity. Every other
+improvement to this bench — more replicates, tighter variance, better instrumentation — buys
+precision on a quantity that is pinned at its ceiling.
+
+**The one visible gap is turns, and it is model-confounded by construction — do not cite it as an
+engine finding.** Claude Code converges in 5-7 turns where zakcode takes 3-21 iterations; on
+`05-ledger` that is 7 turns/21.0s against 16-21 iterations/~500s. That is a large gap and it cannot
+be attributed to the agent loop, because the two arms did not run the same model: Claude Code ran
+Opus 5 and zakcode ran a 35b local model. Holding the model fixed is not possible on this box —
+zakcode has no `ANTHROPIC_API_KEY`, `providers/claude_code.py` is an in-session text bridge that
+needs an injected callable rather than a headless provider, and Claude Code cannot be pointed at the
+pod. So the loop-vs-loop comparison the directive asks for is **not currently constructible here**,
+and the honest report is that sentence rather than a number.
+
+What the arm DOES establish, on top of the saturation verdict: the tasks are well-formed (an
+independent agent satisfies every `verify.py`, so no task encodes a zakcode-specific assumption),
+the verifiers are not vacuous, and `05-ledger` is hard for zakcode specifically rather than
+ambiguous in its specification — which promotes it from "flaky task" to the one genuine capability
+gap this suite has ever shown.
+
+Cost asymmetry, recorded because it is the standing argument for the local arm at all: $1.08 for
+five tasks against ~$0 on the pod.
