@@ -1,0 +1,110 @@
+TOPK re-measurement launch 14:58:53 HEAD=3932086 parser=161a39b6
+145 skills   140 with 3 queries   420 queries   1680 requests
+  .. FULL 25 queries  14:59:51
+  .. FULL 50 queries  15:00:16
+  .. FULL 75 queries  15:00:39
+  .. FULL 100 queries  15:01:01
+  .. FULL 125 queries  15:01:24
+  .. FULL 150 queries  15:01:46
+  .. FULL 175 queries  15:02:07
+  .. FULL 200 queries  15:02:30
+  .. FULL 225 queries  15:02:52
+  .. FULL 250 queries  15:03:13
+  .. FULL 275 queries  15:03:36
+  .. FULL 300 queries  15:03:58
+  .. FULL 325 queries  15:04:21
+  .. FULL 350 queries  15:04:42
+  .. FULL 375 queries  15:05:03
+  .. FULL 400 queries  15:05:25
+FULL    270/420 = 64.3%   recall@K 100.0%   mean catalogue  107,388 ch ( 100% of FULL)
+  .. TOPK10 425 queries  15:06:05
+  .. TOPK10 450 queries  15:09:40
+  .. TOPK10 475 queries  15:12:59
+  .. TOPK10 500 queries  15:16:08
+  .. TOPK10 525 queries  15:18:46
+  .. TOPK10 550 queries  15:20:52
+=== RELAUNCH 15:22:48 detached; HEAD=090fe75 parser=161a39b6
+145 skills   140 with 3 queries   420 queries   1680 requests
+  .. FULL 25 queries  15:23:46
+  .. FULL 50 queries  15:24:08
+  .. FULL 75 queries  15:24:31
+  .. FULL 100 queries  15:24:53
+  .. FULL 125 queries  15:25:16
+  .. FULL 150 queries  15:25:38
+  .. FULL 175 queries  15:25:59
+  .. FULL 200 queries  15:26:22
+  .. FULL 225 queries  15:26:44
+  .. FULL 250 queries  15:27:06
+  .. FULL 275 queries  15:27:28
+  .. FULL 300 queries  15:27:50
+  .. FULL 325 queries  15:28:13
+  .. FULL 350 queries  15:28:35
+  .. FULL 375 queries  15:28:56
+  .. FULL 400 queries  15:29:18
+FULL    270/420 = 64.3%   recall@K 100.0%   mean catalogue  107,388 ch ( 100% of FULL)
+  .. TOPK10 425 queries  15:29:50
+  .. TOPK10 450 queries  15:32:34
+  .. TOPK10 475 queries  15:35:12
+  .. TOPK10 500 queries  15:40:00
+  .. TOPK10 525 queries  15:43:07
+  .. TOPK10 550 queries  15:44:59
+  .. TOPK10 575 queries  15:48:36
+  .. TOPK10 600 queries  15:53:24
+  .. TOPK10 625 queries  15:57:57
+  .. TOPK10 650 queries  15:59:35
+  .. TOPK10 675 queries  16:00:54
+  .. TOPK10 700 queries  16:06:08
+  .. TOPK10 725 queries  16:10:41
+  .. TOPK10 750 queries  16:13:22
+  .. TOPK10 775 queries  16:14:52
+  .. TOPK10 800 queries  16:18:01
+  .. TOPK10 825 queries  16:23:42
+TOPK10  272/420 = 64.8%   recall@K 73.1%   mean catalogue    8,352 ch (   8% of FULL)
+  .. TOPK20 850 queries  16:26:36
+  .. TOPK20 875 queries  16:32:23
+  .. TOPK20 900 queries  16:35:17
+  .. TOPK20 925 queries  16:39:21
+  .. TOPK20 950 queries  16:43:22
+  .. TOPK20 975 queries  16:48:32
+  .. TOPK20 1000 queries  16:52:49
+  .. TOPK20 1025 queries  16:59:09
+  .. TOPK20 1050 queries  17:03:47
+  .. TOPK20 1075 queries  17:08:51
+  .. TOPK20 1100 queries  17:11:54
+  .. TOPK20 1125 queries  17:14:11
+  .. TOPK20 1150 queries  17:17:13
+  .. TOPK20 1175 queries  17:20:25
+  .. TOPK20 1200 queries  17:22:40
+  .. TOPK20 1225 queries  17:24:47
+  .. TOPK20 1250 queries  17:27:09
+TOPK20  268/420 = 63.8%   recall@K 77.4%   mean catalogue   16,712 ch (  16% of FULL)
+  .. TOPK40 1275 queries  17:30:36
+  .. TOPK40 1300 queries  17:35:14
+  .. TOPK40 1325 queries  17:39:44
+  .. TOPK40 1350 queries  17:44:12
+  .. TOPK40 1375 queries  17:48:32
+  .. TOPK40 1400 queries  17:52:54
+  .. TOPK40 1425 queries  17:57:21
+  .. TOPK40 1450 queries  18:01:14
+  .. TOPK40 1475 queries  18:05:58
+  .. TOPK40 1500 queries  18:10:00
+  .. TOPK40 1525 queries  18:14:52
+  .. TOPK40 1550 queries  18:18:59
+  .. TOPK40 1575 queries  18:22:40
+  .. TOPK40 1600 queries  18:27:20
+  .. TOPK40 1625 queries  18:31:37
+  .. TOPK40 1650 queries  18:37:05
+  .. TOPK40 1675 queries  18:43:28
+TOPK40  275/420 = 65.5%   recall@K 85.2%   mean catalogue   33,224 ch (  31% of FULL)
+
+--- verdict against the pre-registered rules ---
+control OK: FULL 64.3% (VOID below 45%).
+
+TOPK10 minus FULL [secondary]: +0.5%  95% CI (-3.6%, +4.5%)
+
+TOPK20 minus FULL [PRIMARY]: -0.5%  95% CI (-4.0%, +3.3%)
+  No accuracy gain demonstrated; the claim reduces to COST only, which must
+  then clear the same 5-point non-inferiority margin as the retracted run.
+
+TOPK40 minus FULL [secondary]: +1.2%  95% CI (-2.4%, +5.0%)
+TOPK exited rc=0 18:45:32

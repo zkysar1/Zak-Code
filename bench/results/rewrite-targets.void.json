@@ -1,6 +1,72 @@
 {
  "targets": [
   {
+   "name": "env-list-baseline",
+   "coverage_orig": 0.0,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 12
+  },
+  {
+   "name": "triage-cited-fix-reachability",
+   "coverage_orig": 0.008547008547008546,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 10
+  },
+  {
+   "name": "check-survivorship-denominator",
+   "coverage_orig": 0.010101010101010102,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 11
+  },
+  {
+   "name": "verify-env-bridge",
+   "coverage_orig": 0.011919568822553897,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 13
+  },
+  {
+   "name": "is-change-live",
+   "coverage_orig": 0.018470230334637114,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 16
+  },
+  {
+   "name": "scratch-cognito-account-end-to-end",
+   "coverage_orig": 0.022222222222222223,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 14
+  },
+  {
+   "name": "worker-loop",
+   "coverage_orig": 0.023412698412698413,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 17
+  },
+  {
+   "name": "verify-deployed-artifact",
+   "coverage_orig": 0.026838432635534083,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 7
+  },
+  {
+   "name": "compare-batch-vs-corpus-rate",
+   "coverage_orig": 0.03180938558297049,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 12
+  },
+  {
+   "name": "sweep-efs-session-terminations",
+   "coverage_orig": 0.03223499361430396,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 30
+  },
+  {
+   "name": "audit-repo-secret-scopes",
+   "coverage_orig": 0.034188034188034185,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 11
+  },
+  {
    "name": "reflect-on-outcome",
    "coverage_orig": 0.07361581920903955,
    "holdout_chars": 3000,
@@ -203,72 +269,6 @@
    "coverage_orig": 0.18464701960689817,
    "holdout_chars": 3000,
    "remaining_long_paras": 14
-  },
-  {
-   "name": "start",
-   "coverage_orig": 0.18820624546114742,
-   "holdout_chars": 3000,
-   "remaining_long_paras": 55
-  },
-  {
-   "name": "access-email",
-   "coverage_orig": 0.1886710239651416,
-   "holdout_chars": 1736,
-   "remaining_long_paras": 3
-  },
-  {
-   "name": "replay",
-   "coverage_orig": 0.18875,
-   "holdout_chars": 3000,
-   "remaining_long_paras": 45
-  },
-  {
-   "name": "least-privilege-credential-cutover",
-   "coverage_orig": 0.1920120320855615,
-   "holdout_chars": 3000,
-   "remaining_long_paras": 10
-  },
-  {
-   "name": "notify-user",
-   "coverage_orig": 0.194916142557652,
-   "holdout_chars": 3000,
-   "remaining_long_paras": 11
-  },
-  {
-   "name": "reconstruct-env-server-restart-timeline",
-   "coverage_orig": 0.19651416122004356,
-   "holdout_chars": 3000,
-   "remaining_long_paras": 10
-  },
-  {
-   "name": "aspirations-graceful-stop",
-   "coverage_orig": 0.19995590828924162,
-   "holdout_chars": 3000,
-   "remaining_long_paras": 6
-  },
-  {
-   "name": "open-questions",
-   "coverage_orig": 0.2,
-   "holdout_chars": 1506,
-   "remaining_long_paras": 3
-  },
-  {
-   "name": "aspirations-complete-review",
-   "coverage_orig": 0.20116033065061398,
-   "holdout_chars": 1634,
-   "remaining_long_paras": 2
-  },
-  {
-   "name": "enforcement-triad-scaffold",
-   "coverage_orig": 0.20962220962220962,
-   "holdout_chars": 2050,
-   "remaining_long_paras": 5
-  },
-  {
-   "name": "roll-engine-config",
-   "coverage_orig": 0.2104360916860917,
-   "holdout_chars": 3000,
-   "remaining_long_paras": 6
   }
  ],
  "excluded": [

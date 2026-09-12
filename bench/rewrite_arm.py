@@ -43,6 +43,10 @@ VOID_BELOW = 0.45
 MIN_HOLDOUT_PARAS = 2
 MARGIN = 0.05  # W3 non-inferiority margin, same as the retracted shortening run
 PREDICTED_LIFT = 0.10  # W2 point-estimate floor, set inside the predicted direction
+# W0 reference: the FULL control measured on the CURRENT catalogue instrument. It was 0.602 on
+# the defective loader (ADR-0158, first addendum) and is 0.643 on the fixed one (third addendum);
+# a control is a control within an instrument version, so this moves whenever the loader does.
+W0_REFERENCE = 0.643
 
 
 def coverage(name: str, desc: str, qs: list[str]) -> float:
@@ -233,8 +237,8 @@ def score() -> int:
 
     full = statistics.mean(v["ORIG"] for v in per_skill.values())
     print("\n--- VERDICT (pre-registered rules)")
-    if full < VOID_BELOW or abs(full - 0.602) > 0.03:
-        print(f"W0 FAILS: ORIG {full:.1%} not within 3 points of 60.2%. No verdict.")
+    if full < VOID_BELOW or abs(full - W0_REFERENCE) > 0.03:
+        print(f"W0 FAILS: ORIG {full:.1%} not within 3 points of {W0_REFERENCE:.1%}. No verdict.")
         return 4
     print(f"W0 holds: ORIG {full:.1%}")
     pt, lo, hi = boot(per_skill, "REWRITE", "ORIG", targets)

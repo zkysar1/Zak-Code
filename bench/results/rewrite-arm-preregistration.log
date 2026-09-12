@@ -79,3 +79,21 @@ other 129 and 0.091 in every TOPK arm (BM25 cannot retrieve a name-only entry). 
 rewritten real descriptions against ">-" for those 11 and manufactured a gain. Killed at 14:43:13; no W0-W4
 verdicts from this pass are valid. Repair: parser fix + loader guard, then the fidelity and shortlisting numbers are
 recomputed / re-measured under their own pre-registrations before any rewrite arm is re-attempted.
+
+=== 17:14 RE-RUN PRE-REGISTRATION (fixed catalogue; written before prepare/rewrite/score run again)
+The first run is void (11 of 45 targets were the indicator artifacts). Re-run after the TOPK re-measurement finishes, with
+bench/rewrite_arm.py unchanged except lint (prompt bytes identical) reading the catalogue through the fixed loader:
+  prepare  re-selects the lowest-coverage tertile from the FIXED catalogue; prediction: none of the 11 repaired skills is a
+           target (their coverage is no longer zero), so the target set changes and the count may differ from 45.
+  W0       ORIG reproduces: FULL within 3 points of 64.3% (the fixed-parser FULL, 270/420), no longer 60.2%.
+  W1-W4    unchanged, same floors (W1 coverage rises on >= 35 of N targets, scaled: >= 78% of N if N != 45; W2 paired
+           bootstrap lift with lower bound > 0 and point >= PREDICTED_LIFT; W3 untouched skills within the 5-point margin;
+           W4 decoy direction).
+Decision rules unchanged from the block above. Instrument refusals (assert_sane) are not results.
+
+=== 18:56 RE-RUN INTERIM: prepare 140 skills, tertile 46, targets 45 (EXCLUDED 1; 34 of 45 shared with the void set; void artifacts kept
+as rewrite-targets.void.json / rewrite-descriptions.void.json). W1 FAILS: coverage rose on 5/45 (floor 35), mean 0.155 -> 0.121
+(void run 17/45, 0.112 -> 0.122). Rule applied: no verdict on causality; rewriter view not widened. Score phase left running
+(not gated on W1 by this pre-registration); its ORIG arm doubles as an independent FULL replication. NOTE: the script W0
+constant was still 0.602 when this run launched; W0 is applied from the pre-registered 64.3% by hand, and W0_REFERENCE=0.643
+is corrected in the same PR (the running process prints the stale line).

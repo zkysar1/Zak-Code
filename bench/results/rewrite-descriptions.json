@@ -1,249 +1,183 @@
 {
- "env-list-baseline": {
-  "orig": ">-",
-  "new": "Use this skill to audit the alignment between an account's member rows and the actual filesystem directories it serves, identifying silent drifts where candidates and listed items diverge. It validates environment existence and serving status by checking for UUID-shaped directories and account dir presence, distinguishing between legitimate zeros and genuine defects.",
-  "coverage_orig": 0.0,
-  "coverage_new": 0.1575248281130634
- },
- "triage-cited-fix-reachability": {
-  "orig": ">-",
-  "new": "Verify if a cited commit SHA is actually landed and determine its current location if it is not. Use this skill when you need to confirm the landing status of a specific SHA and identify whether it is stranded on a worker ref, pending in a PR, or needs to be pushed.",
-  "coverage_orig": 0.008547008547008546,
-  "coverage_new": 0.1331138831138831
- },
- "check-survivorship-denominator": {
-  "orig": ">-",
-  "new": "Use this skill to audit whether reported rates are based on the correct denominator of all attempts rather than just successful artifacts, preventing survivorship bias. It helps identify when a metric is unmeasurable due to missing start-side records and ensures the correct denominator is explicitly stated before any rate is emitted.",
-  "coverage_orig": 0.010101010101010102,
-  "coverage_new": 0.15451730931607094
- },
- "verify-env-bridge": {
-  "orig": ">-",
-  "new": "Diagnose why an environment variable is missing from a server-side rendered app by checking if it is set in the hosting console and if a bake line exists in the build config. Use this skill when an SSR app fails to read a variable at build time to determine which half of the wiring is broken.",
-  "coverage_orig": 0.011919568822553897,
-  "coverage_new": 0.15121475953565505
- },
- "is-change-live": {
-  "orig": ">-",
-  "new": "Determine if a specific commit is currently live on a target surface by verifying the running artifact's SHA is a descendant of the commit and the build job has successfully completed. Use this skill when you need to confirm whether your specific merge has reached production, rather than checking if the main branch is deployed or if the latest job is running.",
-  "coverage_orig": 0.018470230334637114,
-  "coverage_new": 0.135312012679909
- },
- "scratch-cognito-account-end-to-end": {
-  "orig": ">-",
-  "new": "Create and register a new scratch Cognito account by following seven deterministic steps, ensuring the address is mandatory and the deployed artifact matches the source code. Use this skill when you need to provision a credit-ineligible agent-origin account and must verify the verification code from the raw S3 object immediately to prevent data corruption.",
-  "coverage_orig": 0.022222222222222223,
-  "coverage_new": 0.15353535353535355
- },
- "worker-loop": {
-  "orig": ">-",
-  "new": "Execute a single work unit by selecting, claiming, and processing it within a thin loop, then park and wait for the reducer to merge the divergent working memory. Use this skill when an agent needs to perform isolated execution tasks without handling state updates, learning, or goal generation, which are reserved for the reducer.",
-  "coverage_orig": 0.023412698412698413,
-  "coverage_new": 0.12936507936507935
- },
- "verify-deployed-artifact": {
-  "orig": ">-",
-  "new": "Verify that the currently deployed artifact matches the expected content and excludes retired elements, specifically handling cases where identity probes fail or resources are unreadable. Use this skill when you need to confirm the actual state of a deployed resource rather than relying on repository copies or assuming absence due to access denials.",
-  "coverage_orig": 0.026838432635534083,
-  "coverage_new": 0.11674718196457326
- },
- "compare-batch-vs-corpus-rate": {
-  "orig": ">-",
-  "new": "Compare the rate of a specific shape or indicator in a selected batch against its rate in the full corpus to determine if the finding is a property of the phenomenon or an artifact of the selection. Use this skill whenever you are about to encode a batch finding to ensure it is not biased by the sampling method, particularly when the batch and corpus rates differ significantly.",
-  "coverage_orig": 0.03180938558297049,
-  "coverage_new": 0.1797981892321515
- },
- "sweep-efs-session-terminations": {
-  "orig": ">-",
-  "new": "Analyze the termination status of recent experiment sessions on the remote shared filesystem by classifying their exit signals and halt conditions. Use this skill to determine if sessions failed to start, stalled, or completed normally, ensuring accurate reporting of session health without relying on raw SSH connections.",
-  "coverage_orig": 0.03223499361430396,
-  "coverage_new": 0.18932311621966794
- },
- "audit-repo-secret-scopes": {
-  "orig": ">-",
-  "new": "Audit the scopes and usage of a specific secret across all repositories and environments to determine if the old credential is still active. Use this skill when you need to verify secret rotation status or identify which repos hold a specific secret, ensuring you account for repo-level, environment-level, and org-level scopes.",
-  "coverage_orig": 0.034188034188034185,
-  "coverage_new": 0.15151515151515152
- },
  "reflect-on-outcome": {
-  "orig": "\"Reflects on a just-resolved hypothesis or goal outcome: builds the Antecedent-Behavior-Consequence (ABC) chain, captures execution pattern signatures, and processes batched micro-hypotheses. Use whenever a hypothesis resolves in the pipeline and reflection depth is \\\"outcome\\\" (not full self-model reflection), or /reflect dispatches with --on-hypothesis / --on-execution / --batch-micro. Produces reasoning-bank entries and new pattern signatures.\"",
-  "new": "Reflects on resolved hypotheses or execution outcomes by building Antecedent-Behavior-Consequence chains and extracting pattern signatures to update the reasoning bank. Use this skill when a hypothesis resolves in the pipeline and the reflection depth is set to \"outcome,\" or when the /reflect command is dispatched with --on-hypothesis, --on-execution, or --batch-micro flags.",
+  "orig": "Reflects on a just-resolved hypothesis or goal outcome: builds the Antecedent-Behavior-Consequence (ABC) chain, captures execution pattern signatures, and processes batched micro-hypotheses. Use whenever a hypothesis resolves in the pipeline and reflection depth is \\\"outcome\\\" (not full self-model reflection), or /reflect dispatches with --on-hypothesis / --on-execution / --batch-micro. Produces reasoning-bank entries and new pattern signatures.",
+  "new": "Analyze the Antecedent-Behavior-Consequence chain and extract pattern signatures from resolved hypotheses or execution outcomes to update the reasoning bank. Use this skill when a hypothesis resolves in the pipeline and the reflection depth is set to \"outcome,\" or when explicitly dispatched via --on-hypothesis, --on-execution, or --batch-micro flags.",
   "coverage_orig": 0.07361581920903955,
-  "coverage_new": 0.06037664783427495
+  "coverage_new": 0.07158192090395481
  },
  "decompose": {
-  "orig": "\"Performs HTN (Hierarchical Task Network) decomposition: breaks a compound goal into a sequence of primitive, directly-executable sub-goals. Use whenever a selected goal is too abstract or multi-step to execute as-is (selector or Phase 4 flags it as compound), the user says \\\"break down this goal\\\", or /aspirations-execute encounters a goal whose primary action would span multiple atomic operations. Produces child goals linked back to the parent.\"",
-  "new": "Breaks down complex, multi-step goals into a sequence of primitive, directly-executable sub-goals using HTN decomposition. Use this skill when a goal is too abstract to execute as-is, when the user explicitly asks to break down a goal, or when an action would span multiple atomic operations.",
+  "orig": "Performs HTN (Hierarchical Task Network) decomposition: breaks a compound goal into a sequence of primitive, directly-executable sub-goals. Use whenever a selected goal is too abstract or multi-step to execute as-is (selector or Phase 4 flags it as compound), the user says \\\"break down this goal\\\", or /aspirations-execute encounters a goal whose primary action would span multiple atomic operations. Produces child goals linked back to the parent.",
+  "new": "Breaks down complex, multi-step goals into a sequence of primitive, directly-executable sub-goals using HTN decomposition. Use this skill when a goal is too abstract to execute as-is, when the user explicitly requests a breakdown, or when a primary action spans multiple atomic operations.",
   "coverage_orig": 0.08308346624136098,
-  "coverage_new": 0.08097820308346625
+  "coverage_new": 0.07431153641679958
  },
  "reflect-maintain": {
-  "orig": "\"Performs maintenance reflection: curates memory (reasoning-bank entries, tree nodes, pattern signatures), applies active forgetting to low-utility items, grooms aspirations, and detects stuck goals that may need unblock conversion or archival. Use whenever the loop hits the maintenance cadence, the reasoning bank exceeds healthy size, the knowledge tree accumulates low-confidence nodes, or goals have stalled without progress. Invoked via /reflect --curate-memory or /reflect --curate-aspirations.\"",
-  "new": "Curates the reasoning bank and knowledge tree by retiring stale artifacts and applying active forgetting, or detects and resolves stalled aspirations that have converged on blockers. Use this skill during maintenance cycles, when memory exceeds healthy size, or when goals stall without progress.",
+  "orig": "Performs maintenance reflection: curates memory (reasoning-bank entries, tree nodes, pattern signatures), applies active forgetting to low-utility items, grooms aspirations, and detects stuck goals that may need unblock conversion or archival. Use whenever the loop hits the maintenance cadence, the reasoning bank exceeds healthy size, the knowledge tree accumulates low-confidence nodes, or goals have stalled without progress. Invoked via /reflect --curate-memory or /reflect --curate-aspirations.",
+  "new": "Curates memory by retiring stale artifacts and applying active forgetting, or grooms aspirations by detecting and resolving stuck goals that have stalled without progress. Use this skill during maintenance cycles, when the reasoning bank exceeds healthy size, or when goals remain blocked despite converging evidence.",
   "coverage_orig": 0.0891408481652384,
-  "coverage_new": 0.09814985717424742
+  "coverage_new": 0.0810107668644254
  },
  "aspirations-evolve": {
-  "orig": "\"Runs the autonomous evolution engine: assesses developmental stage, tunes config parameters, performs self-driven gap analysis, applies novelty filters, enforces caps, calibrates pattern signatures, archives strategies, runs the /forge-skill check, and curates skill health. Use whenever Phase 9 performance-based triggers fire, the user runs /aspirations evolve, or the orchestrator schedules a mandatory evolution pass. Internal sub-skill of /aspirations.\"",
-  "new": "Evaluates developmental stage, performs self-driven gap analysis, and tunes configuration parameters to autonomously evolve aspirations and strategies. Use this skill when Phase 9 performance triggers fire, the user invokes /aspirations evolve, or the orchestrator schedules a mandatory evolution pass.",
+  "orig": "Runs the autonomous evolution engine: assesses developmental stage, tunes config parameters, performs self-driven gap analysis, applies novelty filters, enforces caps, calibrates pattern signatures, archives strategies, runs the /forge-skill check, and curates skill health. Use whenever Phase 9 performance-based triggers fire, the user runs /aspirations evolve, or the orchestrator schedules a mandatory evolution pass. Internal sub-skill of /aspirations.",
+  "new": "Evaluates developmental stage, performs self-driven gap analysis, and tunes configuration parameters to autonomously evolve aspirations and curate skill health. Use this skill when Phase 9 performance-based triggers fire, the user explicitly runs /aspirations evolve, or the orchestrator schedules a mandatory evolution pass.",
   "coverage_orig": 0.09279461279461279,
-  "coverage_new": 0.09907968574635241
+  "coverage_new": 0.10514029180695847
  },
  "analyze-npc-behavior": {
-  "orig": "\"Runs autonomous behavioral analysis on recorded NPC game sessions via /state-replay: downloads session data from EFS, executes analysis modules, scores NPCs on the 13-criterion Overall Humanness Score (OHS) rubric, compares against baselines, and generates improvement goals. Use whenever the user says \\\"analyze NPC behavior\\\", \\\"check if NPCs feel human\\\", \\\"evaluate game session quality\\\", \\\"run behavioral analysis\\\", or the agent needs data-driven signal on NPC quality regressions or improvements.\"",
-  "new": "Score NPCs on a 12-criterion humanness rubric by analyzing recorded game sessions to identify quality regressions and generate improvement goals. Use this skill whenever the user asks to evaluate NPC behavior, check if NPCs feel human, or assess game session quality.",
+  "orig": "Runs autonomous behavioral analysis on recorded NPC game sessions via /state-replay: downloads session data from EFS, executes analysis modules, scores NPCs on the 13-criterion Overall Humanness Score (OHS) rubric, compares against baselines, and generates improvement goals. Use whenever the user says \\\"analyze NPC behavior\\\", \\\"check if NPCs feel human\\\", \\\"evaluate game session quality\\\", \\\"run behavioral analysis\\\", or the agent needs data-driven signal on NPC quality regressions or improvements.",
+  "new": "Score NPCs on the Overall Humanness Score rubric by analyzing recorded game sessions to identify quality regressions and generate improvement goals. Use this skill whenever the user asks to evaluate game session quality, check if NPCs feel human, or needs data-driven signals on NPC behavior.",
   "coverage_orig": 0.10675213675213675,
   "coverage_new": 0.060341880341880344
  },
  "fresh-eyes-tree": {
-  "orig": "\"Periodic local self-audit of the knowledge tree's top-level taxonomy \u2014 fires when the every-200-goals precheck cadence trips, or on user demand (/fresh-eyes-tree). Assembles a briefing covering L1 distribution skew (S1), L1 pick-rate trends (S9), candidate L2 promotions, candidate L1 retirements, and SPROUT/REPARENT history, writes it to agents/{agent}/temp/ (a staging file drained to the knowledge tree), and posts a one-line summary to the coordination board. No email push, no user-approval gate. The user can invoke l1-domain-add.sh / l1-domain-rename.sh manually if taxonomy changes are desired. Closes the 'tree has no taxonomy-level review' gap.\"",
+  "orig": "Periodic local self-audit of the knowledge tree's top-level taxonomy \u2014 fires when the every-200-goals precheck cadence trips, or on user demand (/fresh-eyes-tree). Assembles a briefing covering L1 distribution skew (S1), L1 pick-rate trends (S9), candidate L2 promotions, candidate L1 retirements, and SPROUT/REPARENT history, writes it to agents/{agent}/temp/ (a staging file drained to the knowledge tree), and posts a one-line summary to the coordination board. No email push, no user-approval gate. The user can invoke l1-domain-add.sh / l1-domain-rename.sh manually if taxonomy changes are desired. Closes the 'tree has no taxonomy-level review' gap.",
   "new": "Periodically audits the knowledge tree's top-level taxonomy to identify distribution skew, pick-rate trends, and candidates for promotion or retirement. Use this skill to assess whether the current L1 categories remain appropriate for the accumulated goal history.",
   "coverage_orig": 0.1112484237074401,
   "coverage_new": 0.06870113493064313
  },
  "aspirations-learning-gate": {
-  "orig": "\"Enforces learning obligations inside the aspirations loop: the learning gate, retrieval gate, meta-learning signal, periodic reflection cadence, conclusion audit, and batch reflection. Use whenever a goal completes and the loop must verify that encoding, retrieval, and reflection actually happened before moving to the next goal. Catches sessions that ship commits without producing tree encodings or hypothesis resolutions. Internal sub-skill \u2014 never invoke directly.\"",
-  "new": "Enforces learning obligations by verifying that encoding, retrieval, and reflection occurred before allowing the aspirations loop to continue to the next goal. Use this skill whenever a goal completes to prevent knowledge debt and ensure the agent is not merely executing tasks without actual learning.",
+  "orig": "Enforces learning obligations inside the aspirations loop: the learning gate, retrieval gate, meta-learning signal, periodic reflection cadence, conclusion audit, and batch reflection. Use whenever a goal completes and the loop must verify that encoding, retrieval, and reflection actually happened before moving to the next goal. Catches sessions that ship commits without producing tree encodings or hypothesis resolutions. Internal sub-skill \u2014 never invoke directly.",
+  "new": "Enforces learning obligations by verifying that encoding, retrieval, and reflection occurred before allowing the aspirations loop to continue to the next goal. Use this skill whenever a goal completes to prevent knowledge debt and ensure the agent is not just busy but actually learning.",
   "coverage_orig": 0.11290467222670612,
-  "coverage_new": 0.13654978626730038
+  "coverage_new": 0.13090006875317609
  },
  "access-aws-services": {
-  "orig": "\"Runs authenticated AWS CLI and boto3 operations against AyoAI cloud resources: DynamoDB queries, CloudWatch metrics and logs, S3 objects, Lambda invocations, EC2 inspection and SSM send-command. Use whenever the agent needs to inspect or modify AWS infrastructure \u2014 querying tables, reading logs, listing buckets, invoking Lambdas, checking EC2 or Parameter Store. Credentials come from .env.local via env-read.sh; MUST use world/scripts/aws-exec.sh \u2014 never raw aws CLI with hardcoded keys.\"",
-  "new": "Use this skill to inspect or modify AWS infrastructure by running authenticated CLI commands against DynamoDB, CloudWatch, S3, Lambda, and EC2 resources. It is the correct tool for querying tables, reading logs, listing buckets, invoking Lambdas, or checking EC2 instances and Parameter Store. Always use the provided aws-exec.sh script for credential management and never invoke raw AWS CLI commands with hardcoded keys.",
+  "orig": "Runs authenticated AWS CLI and boto3 operations against AyoAI cloud resources: DynamoDB queries, CloudWatch metrics and logs, S3 objects, Lambda invocations, EC2 inspection and SSM send-command. Use whenever the agent needs to inspect or modify AWS infrastructure \u2014 querying tables, reading logs, listing buckets, invoking Lambdas, checking EC2 or Parameter Store. Credentials come from .env.local via env-read.sh; MUST use world/scripts/aws-exec.sh \u2014 never raw aws CLI with hardcoded keys.",
+  "new": "Use this skill to inspect or modify AWS infrastructure by running authenticated CLI commands against DynamoDB, CloudWatch, S3, Lambda, and EC2 resources. Invoke it whenever you need to query tables, read logs, list buckets, or check system status, ensuring you always use the provided execution script for secure credential handling.",
   "coverage_orig": 0.11507936507936509,
   "coverage_new": 0.12698412698412698
  },
  "agent-completion-report": {
-  "orig": "\"Produces an agent completion report showing what changed since the last status marker: completed goals, new tree encodings, emitted findings, resolved hypotheses, and in-flight work. Use whenever the user asks \\\"what have you done\\\", \\\"what's the status\\\", \\\"give me a recap\\\", or requests a dashboard; also use when the agent needs to summarize progress before a handoff, stop, or consolidation checkpoint. Writes {agent}/COMPLETION-REPORT.md (its git history is the permanent archive; the reports/ directory is abolished).\"",
-  "new": "Generates a delta summary of completed goals, new findings, and in-flight work since the last status marker to provide a comprehensive progress recap. Use this skill whenever the user asks for a status update, a recap of recent actions, or when the agent needs to summarize progress before a handoff or checkpoint.",
+  "orig": "Produces an agent completion report showing what changed since the last status marker: completed goals, new tree encodings, emitted findings, resolved hypotheses, and in-flight work. Use whenever the user asks \\\"what have you done\\\", \\\"what's the status\\\", \\\"give me a recap\\\", or requests a dashboard; also use when the agent needs to summarize progress before a handoff, stop, or consolidation checkpoint. Writes {agent}/COMPLETION-REPORT.md (its git history is the permanent archive; the reports/ directory is abolished).",
+  "new": "Generates a delta summary of completed goals, new findings, and in-flight work since the last status marker to provide a clear progress recap. Use this skill whenever the user asks for a status update, a recap of recent actions, or when the agent needs to summarize progress before a handoff or checkpoint.",
   "coverage_orig": 0.11583612306711302,
   "coverage_new": 0.06546150167384027
  },
  "reflect-tree-update": {
-  "orig": "\"Implements the Shared Tree Update Protocol used by every reflection path: identifies the affected knowledge-tree node, updates the target's content and metadata, propagates signals upward through parent nodes, and logs capability events. Use whenever any reflection or encoding writes to a tree node and parents must reflect the change (confidence rollup, capability-level propagation). Called automatically by /reflect-on-outcome (Hypothesis mode) and /reflect-on-self (Patterns mode).\"",
-  "new": "Propagate new insights and confidence changes upward through the memory tree hierarchy after any reflection or encoding action. Use this skill whenever a reflection updates a tree node and parent nodes must reflect the change, such as during capability rollups or pattern discovery.",
+  "orig": "Implements the Shared Tree Update Protocol used by every reflection path: identifies the affected knowledge-tree node, updates the target's content and metadata, propagates signals upward through parent nodes, and logs capability events. Use whenever any reflection or encoding writes to a tree node and parents must reflect the change (confidence rollup, capability-level propagation). Called automatically by /reflect-on-outcome (Hypothesis mode) and /reflect-on-self (Patterns mode).",
+  "new": "Propagate new insights and capability changes upward through the memory tree hierarchy after any reflection or encoding writes to a node. Use this skill whenever a reflection updates a target node and parent nodes must reflect the change, such as for confidence rollups or capability-level propagation.",
   "coverage_orig": 0.1171620876089595,
-  "coverage_new": 0.1050248262164846
+  "coverage_new": 0.12301004082533377
  },
  "aspirations-spark": {
-  "orig": "\"Runs the Spark Check (Phase 6) and Immediate Learning (Phase 6.5) of the aspirations loop: adaptive spark questions, all sq-XXX handlers (including sq-012 self-purpose update), aspiration-level spark, and immediate capture of reasoning-bank entries, guardrails, and forge awareness. Use whenever a goal completes \u2014 this is the recursive self-improvement mechanism that captures learning in-flight instead of deferring to /reflect. Internal sub-skill of /aspirations.\"",
-  "new": "Execute this skill immediately after any goal completion to run the Spark Check and Immediate Learning phases, capturing in-flight reasoning insights, guardrails, and forge awareness before the goal enters the shared queue. Use this to ensure critical learning is prioritized via handoff bonuses rather than waiting for the deferred /reflect process.",
+  "orig": "Runs the Spark Check (Phase 6) and Immediate Learning (Phase 6.5) of the aspirations loop: adaptive spark questions, all sq-XXX handlers (including sq-012 self-purpose update), aspiration-level spark, and immediate capture of reasoning-bank entries, guardrails, and forge awareness. Use whenever a goal completes \u2014 this is the recursive self-improvement mechanism that captures learning in-flight instead of deferring to /reflect. Internal sub-skill of /aspirations.",
+  "new": "Capture immediate learning insights, guardrails, and reasoning bank entries upon goal completion to boost task priority and prevent work from rotting in the queue. Use this skill whenever a goal finishes to trigger the recursive self-improvement spark check and prevent redundant firing via sentinel deduplication.",
   "coverage_orig": 0.12630675612420034,
-  "coverage_new": 0.13126506128534526
+  "coverage_new": 0.08759383505833811
  },
  "backlog-report": {
-  "orig": "\"Generates a complete sprint-planning backlog as copy-pasteable markdown: all aspirations, goals, scores, blockers, and user action items, written to {agent}/BACKLOG.md with a compact terminal summary. Use whenever the user says \\\"show me the backlog\\\", \\\"give me sprint planning material\\\", \\\"what's in the queue\\\", or needs pasteable content for a planning doc or standup. User-invocable AND agent-callable; valid in any mode including reader.\"",
-  "new": "Generates a comprehensive, copy-pasteable markdown backlog of aspirations, goals, blockers, and action items for sprint planning or standups. Use this skill whenever the user asks to see the backlog, needs planning material, or requires a structured summary of the current queue.",
+  "orig": "Generates a complete sprint-planning backlog as copy-pasteable markdown: all aspirations, goals, scores, blockers, and user action items, written to {agent}/BACKLOG.md with a compact terminal summary. Use whenever the user says \\\"show me the backlog\\\", \\\"give me sprint planning material\\\", \\\"what's in the queue\\\", or needs pasteable content for a planning doc or standup. User-invocable AND agent-callable; valid in any mode including reader.",
+  "new": "Generates a comprehensive, copy-pasteable markdown backlog of goals, aspirations, blockers, and action items for sprint planning or standups. Use this skill whenever the user asks to see the backlog, needs planning material, or requires a structured summary of the current queue.",
   "coverage_orig": 0.12704174228675136,
   "coverage_new": 0.09800362976406533
  },
  "review-hypotheses": {
-  "orig": "\"Resolves open hypotheses whose horizons have elapsed, extracts lessons from each outcome, calculates per-category accuracy stats, and generates a calibration report. Use whenever the aspirations loop hits the hypothesis-review cadence, the user says \\\"how accurate are my predictions\\\" or \\\"review my hypotheses\\\", or enough hypotheses have reached their horizon to warrant a batch resolve. Modes: --resolve, --learn, --accuracy-report, --full-cycle, --category-comparison.\"",
-  "new": "Resolves active hypotheses that have reached their deadline by detecting outcomes, handling expired or unmeasurable records, and updating their status. Use this skill when the user asks to review hypotheses, check prediction accuracy, or when a batch of hypotheses has passed their horizon to ensure the active pool remains clean and accurate.",
+  "orig": "Resolves open hypotheses whose horizons have elapsed, extracts lessons from each outcome, calculates per-category accuracy stats, and generates a calibration report. Use whenever the aspirations loop hits the hypothesis-review cadence, the user says \\\"how accurate are my predictions\\\" or \\\"review my hypotheses\\\", or enough hypotheses have reached their horizon to warrant a batch resolve. Modes: --resolve, --learn, --accuracy-report, --full-cycle, --category-comparison.",
+  "new": "Resolves hypotheses that have reached their deadline by recording outcomes and archiving expired records, then extracts lessons and calculates accuracy stats to generate a calibration report. Use this skill when the user asks to review prediction accuracy, when hypotheses have passed their horizon, or during the scheduled hypothesis-review cadence.",
   "coverage_orig": 0.13071850581284544,
-  "coverage_new": 0.0800381170192491
+  "coverage_new": 0.09395082904516866
  },
  "encode-session": {
-  "orig": "\"Runs a structured learning pass on the current chat session: encode reusable insights to the knowledge tree / reasoning bank / guardrails / patterns / experience archive; file Maintain goals for inline completions; re-probe blockers our work may have falsified; surface new aspirations / goals / forge gaps; propose /verify-learning checks for framework changes; check meta-strategy and Self for evolution signals. Use only when the user explicitly types /encode-session or says 'encode this chat session' \u2014 does NOT auto-fire on conversational close-out language. Hybrid: user-invocable AND agent-callable.\"",
+  "orig": "Runs a structured learning pass on the current chat session: encode reusable insights to the knowledge tree / reasoning bank / guardrails / patterns / experience archive; file Maintain goals for inline completions; re-probe blockers our work may have falsified; surface new aspirations / goals / forge gaps; propose /verify-learning checks for framework changes; check meta-strategy and Self for evolution signals. Use only when the user explicitly types /encode-session or says 'encode this chat session' \u2014 does NOT auto-fire on conversational close-out language. Hybrid: user-invocable AND agent-callable.",
   "new": "Encode reusable insights, update goals, and refresh guardrails from the current chat session by running structured learning passes on the conversation history. Use this skill only when the user explicitly requests it via the /encode-session command or similar phrasing, as it does not auto-fire on conversation close.",
   "coverage_orig": 0.13701996927803378,
   "coverage_new": 0.1477726574500768
  },
  "boot": {
-  "orig": "\"Entry point for autonomous mode \u2014 runs the status report (hypothesis readiness, pipeline state, accuracy stats, meta-memory counts), invokes /prime for full context load, then hands off to the /aspirations loop. Use only when /start activates autonomous mode or when recovering the loop after autocompact. NEVER invoke from assistant or reader mode; those modes use /prime alone without handing off to the loop.\"",
-  "new": "Initialize the agent's autonomous mode by loading full context, resolving pending hypotheses, and handing off to the aspirations loop. Use this skill only when /start activates autonomous mode or when recovering the loop after autocompact.",
+  "orig": "Entry point for autonomous mode \u2014 runs the status report (hypothesis readiness, pipeline state, accuracy stats, meta-memory counts), invokes /prime for full context load, then hands off to the /aspirations loop. Use only when /start activates autonomous mode or when recovering the loop after autocompact. NEVER invoke from assistant or reader mode; those modes use /prime alone without handing off to the loop.",
+  "new": "Initialize the agent's autonomous mode by loading full context, resolving pending hypotheses, and handing off to the aspirations loop. Use this skill only when /start activates autonomous mode or when recovering the loop after an autocompact event.",
   "coverage_orig": 0.13727422003284073,
   "coverage_new": 0.12169129720853858
  },
  "fresh-eyes-program": {
-  "orig": "\"Periodic local self-audit of world/program.md \u2014 fires when the every-100-goals precheck cadence trips, or on user demand (/fresh-eyes-program). Assembles a briefing (The Program body, both agents' Self summaries, cross-agent aspiration portfolio, recent completions, drift signals), writes it to agents/{agent}/temp/ (a staging file drained to the knowledge tree), and posts a one-line summary to the coordination board. No email push, no user-approval gate \u2014 the user reviews changes via git log and tracked signals at their own pace. Sibling to /fresh-eyes-review (per-agent Self, 25 goals). Closes the 'program.md has no systematic evolution path' gap.\"",
-  "new": "Periodically audits the world's shared purpose and team alignment by generating a briefing on program relevance and agent drift, triggered every 100 goals or on user demand. Use this skill to systematically evaluate whether the overarching program remains valid and if agents are staying true to it, without requiring user approval.",
+  "orig": "Periodic local self-audit of world/program.md \u2014 fires when the every-100-goals precheck cadence trips, or on user demand (/fresh-eyes-program). Assembles a briefing (The Program body, both agents' Self summaries, cross-agent aspiration portfolio, recent completions, drift signals), writes it to agents/{agent}/temp/ (a staging file drained to the knowledge tree), and posts a one-line summary to the coordination board. No email push, no user-approval gate \u2014 the user reviews changes via git log and tracked signals at their own pace. Sibling to /fresh-eyes-review (per-agent Self, 25 goals). Closes the 'program.md has no systematic evolution path' gap.",
+  "new": "Periodically or on demand, this skill audits the world's shared purpose and team alignment by generating a comprehensive briefing of program status, agent self-summaries, and drift signals. Use it to systematically evaluate whether the current program remains the right shared purpose and if agents are still serving it effectively.",
   "coverage_orig": 0.13731896518781767,
   "coverage_new": 0.08326646031564064
  },
  "aspirations-precheck": {
-  "orig": "\"Runs pre-selection checks at the start of every aspirations-loop iteration: completion runners, aspiration health, guardrail checks, blocker resolution re-probe, zombie-aspiration scan (Phase 0.5.0a), and recurring-goal surfacing. Use whenever the aspirations loop starts a new iteration and needs to tidy state before /aspirations-select runs. Internal sub-skill \u2014 invoked only from inside the orchestrator, never by the user.\"",
-  "new": "Executes pre-selection checks including completion runners, health assessments, guardrails, and blocker resolution to tidy state before goal selection. Use this internal skill whenever the aspirations loop starts a new iteration and needs to validate conditions before running /aspirations-select.",
+  "orig": "Runs pre-selection checks at the start of every aspirations-loop iteration: completion runners, aspiration health, guardrail checks, blocker resolution re-probe, zombie-aspiration scan (Phase 0.5.0a), and recurring-goal surfacing. Use whenever the aspirations loop starts a new iteration and needs to tidy state before /aspirations-select runs. Internal sub-skill \u2014 invoked only from inside the orchestrator, never by the user.",
+  "new": "Executes a comprehensive pre-selection sweep including health checks, guardrail validation, blocker resolution, and recurring goal surfacing to tidy state before goal selection. Use this internal orchestrator skill at the start of every aspirations-loop iteration to ensure system stability and data integrity prior to running aspiration selection.",
   "coverage_orig": 0.141640866873065,
-  "coverage_new": 0.08109735122119023
+  "coverage_new": 0.11919504643962849
  },
  "aspirations-select": {
-  "orig": "\"Selects the next goal for execution: runs the mandatory goal-selector.sh scoring pass, metacognitive assessment, batch candidacy check, blocker gate, context pre-fetch, and full goal-detail loading. Use whenever the aspirations loop needs the highest-priority unclaimed unblocked goal for the next iteration. Always called immediately after /aspirations-precheck; never invoked directly by the user. Output determines whether execution, all-blocked handling, or evolution fires next.\"",
-  "new": "Selects the highest-priority unclaimed goal for execution by running algorithmic scoring and metacognitive assessment, determining whether to proceed with execution, handle blockers, or evolve the plan. Use this skill whenever the aspirations loop needs to identify the next action, specifically immediately after /aspirations-precheck.",
+  "orig": "Selects the next goal for execution: runs the mandatory goal-selector.sh scoring pass, metacognitive assessment, batch candidacy check, blocker gate, context pre-fetch, and full goal-detail loading. Use whenever the aspirations loop needs the highest-priority unclaimed unblocked goal for the next iteration. Always called immediately after /aspirations-precheck; never invoked directly by the user. Output determines whether execution, all-blocked handling, or evolution fires next.",
+  "new": "Selects the highest-priority unclaimed and unblocked goal for execution by running algorithmic scoring and metacognitive assessment, and is used whenever the aspirations loop needs to determine the next action.",
   "coverage_orig": 0.14251207729468598,
-  "coverage_new": 0.13526570048309178
+  "coverage_new": 0.12008281573498965
  },
  "run-game-session": {
-  "orig": "\"Runs a live Roblox game session via AyoBridge, monitors NPC activity during the run, and verifies that cell data was generated and written to EFS afterwards. Use whenever the agent needs live NPC behavior data \u2014 testing a Processor run in the wild, validating a recent deploy, exercising a new NPC task, or producing fresh session data for /analyze-npc-behavior. Pulls outcomes from Studio Bridge (SYSTEM HALTED console scan \u2014 the authoritative client-integration error signal), Operator API, and the alert@ayoai.com S3 archive (infrastructure errors only; client-integration errors route out-of-band \u2014 see Step 5.5).\"",
-  "new": "Launch a live Roblox game session to monitor NPC activity and verify generated cell data, using this skill when you need to test processor runs, validate recent deployments, or produce fresh session data for analysis.",
+  "orig": "Runs a live Roblox game session via AyoBridge, monitors NPC activity during the run, and verifies that cell data was generated and written to EFS afterwards. Use whenever the agent needs live NPC behavior data \u2014 testing a Processor run in the wild, validating a recent deploy, exercising a new NPC task, or producing fresh session data for /analyze-npc-behavior. Pulls outcomes from Studio Bridge (SYSTEM HALTED console scan \u2014 the authoritative client-integration error signal), Operator API, and the alert@ayoai.com S3 archive (infrastructure errors only; client-integration errors route out-of-band \u2014 see Step 5.5).",
+  "new": "Launch a live Roblox game session to monitor NPC activity and verify generated cell data, specifically when you need to test a Processor run, validate a recent deploy, or produce fresh session data for analysis.",
   "coverage_orig": 0.14925870398134267,
-  "coverage_new": 0.09527054654490937
+  "coverage_new": 0.08447291505762271
  },
  "respond": {
-  "orig": "\"Handles every user message in assistant and autonomous modes: activates persona, runs mandatory 3-tier retrieval escalation (tree \u2192 codebase \u2192 web), detects and routes user directives (new aspirations, corrections, preferences), performs knowledge-freshness reconciliation, and captures interaction-level learning into reasoning bank and guardrails. Use whenever the user sends a message \u2014 every user turn MUST route through /respond, otherwise Claude may answer from amnesia instead of retrieving learned knowledge.\"",
-  "new": "Use this skill to process every user message by activating the persona, executing mandatory three-tier knowledge retrieval, and routing directives to ensure answers are grounded in fresh, learned context.",
+  "orig": "Handles every user message in assistant and autonomous modes: activates persona, runs mandatory 3-tier retrieval escalation (tree \u2192 codebase \u2192 web), detects and routes user directives (new aspirations, corrections, preferences), performs knowledge-freshness reconciliation, and captures interaction-level learning into reasoning bank and guardrails. Use whenever the user sends a message \u2014 every user turn MUST route through /respond, otherwise Claude may answer from amnesia instead of retrieving learned knowledge.",
+  "new": "Use this skill to process every user message by activating the persona, executing mandatory three-tier knowledge retrieval, and routing directives to ensure responses are grounded in fresh, learned context.",
   "coverage_orig": 0.15505582137161084,
   "coverage_new": 0.15160021265284424
  },
  "priority-review": {
-  "orig": "\"Shows the priority dashboard (all active aspirations ranked by aggregate goal score) and lets the user interactively reorder priorities to update the aspiration queue. Use whenever the user says \\\"what are you working on next\\\", \\\"re-rank my priorities\\\", \\\"show me the priority dashboard\\\", \\\"show the queue\\\", or invokes /priority-review directly. Closes the feedback loop between autonomous goal selection and user strategic direction. Valid in any mode including reader.\"",
-  "new": "Displays a ranked dashboard of active aspirations and allows interactive reordering to align autonomous goal selection with user intent. Use this skill when the user asks what you are working on next, requests to re-rank priorities, or invokes the priority review command.",
+  "orig": "Shows the priority dashboard (all active aspirations ranked by aggregate goal score) and lets the user interactively reorder priorities to update the aspiration queue. Use whenever the user says \\\"what are you working on next\\\", \\\"re-rank my priorities\\\", \\\"show me the priority dashboard\\\", \\\"show the queue\\\", or invokes /priority-review directly. Closes the feedback loop between autonomous goal selection and user strategic direction. Valid in any mode including reader.",
+  "new": "Displays a ranked dashboard of active aspirations and allows the user to interactively reorder priorities to update the aspiration queue. Use this skill when the user asks what you are working on next, requests to re-rank priorities, or invokes the priority review command.",
   "coverage_orig": 0.15728395061728395,
-  "coverage_new": 0.1511111111111111
+  "coverage_new": 0.1562962962962963
  },
  "curriculum-gates": {
-  "orig": "\"Evaluates all graduation gates for the agent's current curriculum stage and promotes to the next stage if every gate passes. Gates include metric_threshold, count_check, log_scan, and command_check types. Use whenever /aspirations-consolidate hits session end, /aspirations-evolve runs a mandatory evolution pass, or the agent completes enough goals to plausibly graduate. Promotion unlocks new capabilities (self-edits, forge-skill, parallelism) per curriculum.yaml.\"",
-  "new": "Promotes the agent to the next curriculum stage by verifying all graduation gates pass, unlocking new capabilities like self-edits and parallelism. Use this skill when session ends, during mandatory evolution passes, or after completing enough goals to plausibly graduate.",
+  "orig": "Evaluates all graduation gates for the agent's current curriculum stage and promotes to the next stage if every gate passes. Gates include metric_threshold, count_check, log_scan, and command_check types. Use whenever /aspirations-consolidate hits session end, /aspirations-evolve runs a mandatory evolution pass, or the agent completes enough goals to plausibly graduate. Promotion unlocks new capabilities (self-edits, forge-skill, parallelism) per curriculum.yaml.",
+  "new": "Promotes the agent to the next curriculum stage by verifying that all graduation gates pass, unlocking new capabilities like self-edits and parallelism. Use this skill when session ends, during mandatory evolution passes, or when the agent completes enough goals to plausibly graduate.",
   "coverage_orig": 0.1580650037792895,
   "coverage_new": 0.14445956160241874
  },
  "sprint-planning": {
-  "orig": "\"Full sprint-planning exercise over the world + agent queues: runs /backlog-report, gathers the priority dashboard, probes every live agent's selector vantage against standing directives, sweeps hygiene lanes (duplicates, routing, priority mismatches, recurring health, reclaim-routed-work, zombie aspirations), applies every change through canonical scripts with live-state verification and a write ledger, and publishes the plan (decisions board + coordination heads-up + per-agent queues). Use when the user says \\\"sprint planning\\\", \\\"plan the sprint\\\", \\\"clean up the backlog and set priorities\\\", or when the recurring sprint-planning goal fires. User-invocable AND agent-callable.\"",
-  "new": "Execute a full sprint planning cycle to analyze, verify, and apply backlog changes to agent queues, ensuring all modifications survive live-state verification before publication. Use this skill when the user requests sprint planning, backlog cleanup, or priority setting, or when the recurring sprint-planning goal triggers.",
+  "orig": "Full sprint-planning exercise over the world + agent queues: runs /backlog-report, gathers the priority dashboard, probes every live agent's selector vantage against standing directives, sweeps hygiene lanes (duplicates, routing, priority mismatches, recurring health, reclaim-routed-work, zombie aspirations), applies every change through canonical scripts with live-state verification and a write ledger, and publishes the plan (decisions board + coordination heads-up + per-agent queues). Use when the user says \\\"sprint planning\\\", \\\"plan the sprint\\\", \\\"clean up the backlog and set priorities\\\", or when the recurring sprint-planning goal fires. User-invocable AND agent-callable.",
+  "new": "Execute a full sprint-planning cycle to analyze backlog hygiene, verify proposed changes against live state, and apply queue updates to establish priorities. Use this skill when the user requests sprint planning, backlog cleanup, or when the recurring sprint-planning goal triggers.",
   "coverage_orig": 0.1611904761904762,
-  "coverage_new": 0.08857142857142858
+  "coverage_new": 0.07404761904761904
  },
  "verify-learning": {
-  "orig": "\"Runs post-test verification: checks the agent's state against a comprehensive checklist of learning artifacts (tree encodings, resolved hypotheses, reflections, skill return-protocols, guardrails, pattern signatures) and reports missing or drifted items. Use whenever the user says /verify-learning, after major framework changes to confirm the loop still produces learning, after a session with many commits and no encodings, or when framework-level health needs a diagnostic sweep. User-invocable AND agent-callable.\"",
-  "new": "Verify the integrity of learning artifacts and framework health by running a comprehensive, windowed checklist of checks against the agent's state. Use this skill after major framework changes, following sessions with many commits but no encodings, or whenever a diagnostic sweep of the learning loop is needed.",
+  "orig": "Runs post-test verification: checks the agent's state against a comprehensive checklist of learning artifacts (tree encodings, resolved hypotheses, reflections, skill return-protocols, guardrails, pattern signatures) and reports missing or drifted items. Use whenever the user says /verify-learning, after major framework changes to confirm the loop still produces learning, after a session with many commits and no encodings, or when framework-level health needs a diagnostic sweep. User-invocable AND agent-callable.",
+  "new": "Verify the integrity of learning artifacts by running a comprehensive, windowed checklist of checks against the agent's state to identify missing or drifted items. Use this skill after major framework changes, following sessions with many commits but no encodings, or whenever a diagnostic sweep of framework-level health is needed.",
   "coverage_orig": 0.16229603729603728,
-  "coverage_new": 0.14352314352314352
+  "coverage_new": 0.13116050616050617
  },
  "aspirations-execute": {
-  "orig": "\"Phase 4 of the aspirations loop: executes a selected goal end-to-end with precondition checks, LLM-driven intelligent retrieval, memory deliberation, subagent delegation, primary execution, fail-fast cascade, experience archival, context-utilization feedback, domain post-execution steps (commit/push per world/conventions), knowledge reconciliation, and batch execution. Fires only when called from inside the /aspirations orchestrator \u2014 after /aspirations-select has chosen a goal and /decompose has broken it into primitives. Never invoke directly from reader or assistant mode.\"",
-  "new": "Executes a selected goal end-to-end by handling precondition checks, intelligent retrieval, subagent delegation, and domain-specific post-steps like commit or push. Use this skill only when invoked by the /aspirations orchestrator after a goal has been selected and decomposed into primitives.",
+  "orig": "Phase 4 of the aspirations loop: executes a selected goal end-to-end with precondition checks, LLM-driven intelligent retrieval, memory deliberation, subagent delegation, primary execution, fail-fast cascade, experience archival, context-utilization feedback, domain post-execution steps (commit/push per world/conventions), knowledge reconciliation, and batch execution. Fires only when called from inside the /aspirations orchestrator \u2014 after /aspirations-select has chosen a goal and /decompose has broken it into primitives. Never invoke directly from reader or assistant mode.",
+  "new": "Executes a selected goal end-to-end by handling precondition checks, intelligent retrieval, subagent delegation, and domain-specific post-steps like code commits. Use this skill only when invoked by the /aspirations orchestrator after a goal has been selected and decomposed into primitives.",
   "coverage_orig": 0.1691812865497076,
   "coverage_new": 0.0890448343079922
  },
  "state-replay": {
-  "orig": "\"Replays and analyzes a recorded NPC game session from EFS data: loads the session archive, reconstructs world state at each tick, lets the agent navigate the timeline, and surfaces NPC behavior for analysis. Use whenever the agent needs to diagnose why a specific NPC behaved a certain way, validate a behavior-tree change against real sessions, audit a reported session incident, or support /analyze-npc-behavior's scoring phase. Accepts session IDs and optional step/timestamp filters.\"",
-  "new": "Replays recorded NPC game sessions from EFS data to reconstruct world state and analyze behavior at specific timestamps. Use this skill to diagnose why an NPC acted a certain way, validate behavior-tree changes against real sessions, or audit reported incidents.",
+  "orig": "Replays and analyzes a recorded NPC game session from EFS data: loads the session archive, reconstructs world state at each tick, lets the agent navigate the timeline, and surfaces NPC behavior for analysis. Use whenever the agent needs to diagnose why a specific NPC behaved a certain way, validate a behavior-tree change against real sessions, audit a reported session incident, or support /analyze-npc-behavior's scoring phase. Accepts session IDs and optional step/timestamp filters.",
+  "new": "Replays recorded NPC game sessions to reconstruct world state and behavior at each tick, enabling agents to diagnose specific NPC actions, validate behavior-tree changes, or audit incidents. Use this skill when you need to step through a session timeline, inspect NPC positions and intents, or compare performance metrics against baselines to verify code deployments.",
   "coverage_orig": 0.1705420054200542,
-  "coverage_new": 0.11079945799457995
+  "coverage_new": 0.09756097560975609
  },
  "reflect-on-self": {
-  "orig": "\"Runs deep self-model reflection: synthesizes patterns across recent outcomes, extracts strategies into the archive, updates the Level 2 self-model, and calibrates confidence scores. Use whenever the loop hits the self-reflection cadence, sq-012 fires (\\\"does this outcome change my core purpose?\\\"), cumulative learning warrants rewriting self.md, or /reflect dispatches with --extract-patterns / --calibration-check. Produces self-model updates, not outcome-level insights.\"",
+  "orig": "Runs deep self-model reflection: synthesizes patterns across recent outcomes, extracts strategies into the archive, updates the Level 2 self-model, and calibrates confidence scores. Use whenever the loop hits the self-reflection cadence, sq-012 fires (\\\"does this outcome change my core purpose?\\\"), cumulative learning warrants rewriting self.md, or /reflect dispatches with --extract-patterns / --calibration-check. Produces self-model updates, not outcome-level insights.",
   "new": "Synthesizes patterns from recent outcomes to extract reusable strategies, update the strategic self-model, and calibrate confidence scores. Use this skill when the self-reflection cadence triggers, when cumulative learning warrants rewriting the self-model, or when explicitly dispatched to extract patterns or check calibration.",
   "coverage_orig": 0.17095238095238094,
   "coverage_new": 0.1570899470899471
  },
  "aspirations-verify": {
-  "orig": "\"Phase 5 of the aspirations loop: verifies a just-executed goal using hypothesis outcomes, unified outcome/check evaluation, Q1-Q4 escalation, streak tracking, and dependent-goal unblocking. Use when /aspirations-execute finishes and the loop must confirm the goal met its criteria before state-update fires. Internal sub-skill with two callers: the aspirations loop, and worker-loop Phase 4a at scope=own-unit; assumes the just-executed goal is still in working context.\"",
-  "new": "Verify whether a just-executed goal met its success criteria using structured checks or the Q1-Q4 escalation protocol for unstructured outcomes. Use this skill immediately after /aspirations-execute to confirm goal completion before updating state, particularly when handling hypothesis goals or collaborative legs.",
+  "orig": "Phase 5 of the aspirations loop: verifies a just-executed goal using hypothesis outcomes, unified outcome/check evaluation, Q1-Q4 escalation, streak tracking, and dependent-goal unblocking. Use when /aspirations-execute finishes and the loop must confirm the goal met its criteria before state-update fires. Internal sub-skill with two callers: the aspirations loop, and worker-loop Phase 4a at scope=own-unit; assumes the just-executed goal is still in working context.",
+  "new": "Verify whether a just-executed goal met its success criteria by running structured checks or escalating to Q1-Q4 LLM judgment for novel research. Use this skill immediately after /aspirations-execute to confirm goal completion and handle dependent-goal unblocking before updating state.",
   "coverage_orig": 0.17526832292080208,
-  "coverage_new": 0.14700126064759675
+  "coverage_new": 0.12502350655049208
  },
  "aspirations": {
-  "orig": "\"Runs the autonomous aspiration loop \u2014 the perpetual heartbeat that selects, executes, verifies, reflects on, and evolves goals forever. This is the core orchestrator for autonomous mode. Use whenever /boot finishes in autonomous mode, when re-entering the loop after autocompact recovery, or when the user runs /aspirations {sub-command} (status, next, loop, evolve, complete, add). Must NEVER be invoked from reader or assistant mode \u2014 loop restrictions enforce this.\"",
-  "new": "Executes the autonomous goal loop by selecting, verifying, and evolving objectives to drive continuous agent learning. Use this skill after booting into autonomous mode, recovering from autocompact, or when explicitly invoking aspiration sub-commands like status, next, or evolve.",
+  "orig": "Runs the autonomous aspiration loop \u2014 the perpetual heartbeat that selects, executes, verifies, reflects on, and evolves goals forever. This is the core orchestrator for autonomous mode. Use whenever /boot finishes in autonomous mode, when re-entering the loop after autocompact recovery, or when the user runs /aspirations {sub-command} (status, next, loop, evolve, complete, add). Must NEVER be invoked from reader or assistant mode \u2014 loop restrictions enforce this.",
+  "new": "Executes the autonomous aspiration loop to continuously select, execute, and evolve goals, serving as the core orchestrator for autonomous mode. Use this skill whenever the agent boots into autonomous mode, recovers from autocompact, or when the user explicitly invokes the /aspirations command.",
   "coverage_orig": 0.17612021857923496,
-  "coverage_new": 0.12435792349726776
+  "coverage_new": 0.15903688524590165
  },
  "add-npc-task": {
-  "orig": "\"Registers a new NPC task type end-to-end across all four AyoAI layers in one pass: Lambda API routes, Java server (IAUS) handlers, Python Processor (BT generation) workers, and Roblox Lua task definitions. Use whenever the agent is adding a new NPC behavior, action, or capability (speak, wait, sit, examine, dance, etc.) that must be wired through the full stack. Editing layers manually risks inconsistent task IDs and silent NPC-action misfires \u2014 always use this skill.\"",
-  "new": "Use this skill to register a new NPC behavior, such as speaking or dancing, across the entire AyoAI stack including Lambda, Java, Python, and RobLua layers in a single automated pass. It ensures consistent task wiring and prevents silent misfires that occur when editing these layers manually.",
+  "orig": "Registers a new NPC task type end-to-end across all four AyoAI layers in one pass: Lambda API routes, Java server (IAUS) handlers, Python Processor (BT generation) workers, and Roblox Lua task definitions. Use whenever the agent is adding a new NPC behavior, action, or capability (speak, wait, sit, examine, dance, etc.) that must be wired through the full stack. Editing layers manually risks inconsistent task IDs and silent NPC-action misfires \u2014 always use this skill.",
+  "new": "Use this skill to register a new NPC behavior across the entire AyoAI stack, including Lambda, Java, Python, and RobLua layers, ensuring consistent task IDs and preventing silent failures. It automates the end-to-end wiring required for actions like speaking, waiting, or dancing that must be executed by the game server.",
   "coverage_orig": 0.17619030320643225,
-  "coverage_new": 0.13940351641964546
+  "coverage_new": 0.13527438729051633
  },
  "strategic-pulse": {
   "orig": "Surface portfolio-shape patterns the user should consider acting on. Tail consolidation pressure, work-class skew, aged aspirations, all-blocked aspirations. Hybrid skill \u2014 user-invocable AND agent-callable. Auto-fires every 50 completed goals via aspirations-precheck cadence.",
@@ -252,21 +186,87 @@
   "coverage_new": 0.08187890540831717
  },
  "sweep-customer-server-usage": {
-  "orig": "\"Sweeps the operator usage API for fleet spend and probes authoritative per-server liveness, reporting the run-over-run delta against a persisted baseline. Handles the three parse traps that silently invert this read (nine-digit lastFlushAt, ayo-prefixed POST body, envelope-vs-data.streamingStatus). Use for the g-335-09 customer-server monitoring cadence, or whenever asked what the fleet is spending or how many customer servers are actually up. Delegates termination class-mix classification to sweep-efs-session-terminations.\"",
-  "new": "Monitors fleet spend and per-server liveness by parsing the operator API while explicitly handling nine-digit timestamp and envelope parsing traps to prevent silent data inversion. Use this skill to report run-over-run spend deltas and live server counts for the g-335-09 monitoring cadence, delegating session termination analysis to sweep-efs-session-terminations.",
+  "orig": "Sweeps the operator usage API for fleet spend and probes authoritative per-server liveness, reporting the run-over-run delta against a persisted baseline. Handles the three parse traps that silently invert this read (nine-digit lastFlushAt, ayo-prefixed POST body, envelope-vs-data.streamingStatus). Use for the g-335-09 customer-server monitoring cadence, or whenever asked what the fleet is spending or how many customer servers are actually up. Delegates termination class-mix classification to sweep-efs-session-terminations.",
+  "new": "Monitors fleet spend and per-server liveness by parsing the operator API while explicitly handling nine-digit timestamp and envelope parsing traps to prevent silent data inversion. Use this skill to report run-over-run spend deltas and actual server counts, or whenever you need to verify if customer servers are truly live versus just reporting success.",
   "coverage_orig": 0.18105413105413107,
-  "coverage_new": 0.13105413105413105
+  "coverage_new": 0.144017094017094
  },
  "reconstruct-web-funnel": {
-  "orig": "\"Reconstructs a PER-TENANT web funnel from the shared web-analytics table: sessions grouped per visitor, deduped path sequences, referrer and landing rollups, auth rate, bounce rate, and the terminal event each host actually emits. Use whenever a goal or the owner asks 'where are signups coming from', 'what is the conversion rate', 'how many US visitors', 'who is converting', 'rebuild the funnel', 'analytics readout', or raises any acquisition, traffic, landing-page, geographic or signup-behaviour question over ayoai.com or vinheim.com. MUST use world/scripts/web-funnel-pull.sh -- never a hand-rolled aws dynamodb scan, which is where the projection creeps back in, where pagination stops at page one, and where a bare site = ayoai predicate (it matches ZERO rows) gets written. Fires BEFORE any published traffic, conversion or geographic figure. Never publishes a combined ayoai+vinheim number.\"",
-  "new": "Reconstruct per-tenant web funnels for ayoai.com and vinheim.com by running the mandatory web-funnel-pull.sh script to analyze sessions, conversion rates, and geographic traffic. Use this skill whenever a user asks about acquisition sources, signup behavior, or specific traffic metrics, ensuring you never combine data across tenants or use raw DynamoDB scans.",
+  "orig": "Reconstructs a PER-TENANT web funnel from the shared web-analytics table: sessions grouped per visitor, deduped path sequences, referrer and landing rollups, auth rate, bounce rate, and the terminal event each host actually emits. Use whenever a goal or the owner asks 'where are signups coming from', 'what is the conversion rate', 'how many US visitors', 'who is converting', 'rebuild the funnel', 'analytics readout', or raises any acquisition, traffic, landing-page, geographic or signup-behaviour question over ayoai.com or vinheim.com. MUST use world/scripts/web-funnel-pull.sh -- never a hand-rolled aws dynamodb scan, which is where the projection creeps back in, where pagination stops at page one, and where a bare site = ayoai predicate (it matches ZERO rows) gets written. Fires BEFORE any published traffic, conversion or geographic figure. Never publishes a combined ayoai+vinheim number.",
+  "new": "Reconstruct per-tenant web funnels from shared analytics to answer questions about acquisition, conversion rates, and geographic traffic for ayoai.com or vinheim.com. Use this skill whenever a user asks about signup sources, bounce rates, or visitor behavior, ensuring you strictly use the provided script to avoid data projection errors and never combine tenant data.",
   "coverage_orig": 0.18403431680267837,
-  "coverage_new": 0.1252563297761038
+  "coverage_new": 0.1307177233730906
  },
  "generate-domain-goals": {
-  "orig": "\"Supply-side domain goal generation: read the domain's product surfaces through six generation lenses (metric-driven, journey-driven, code-reality, revenue-path, distribution, critic), generate evidence-backed user-story candidates, adversarially VERIFY every evidence claim BEFORE filing, then file survivors into the domain's aspiration lanes with dedup handling and a board announcement. Use when the user says 'generate product work', 'inject goals', 'we need more domain work', or when the recurring generation goal fires. User-invocable AND agent-callable.\"",
-  "new": "Generate evidence-backed, user-story-shaped domain goals from real product surfaces and file them into aspiration lanes when the user requests product work or when the system detects a need for more domain supply. Use this skill to outwardly assess portfolio health and create new work items, ensuring they are verified against current code and metrics before being added to the backlog.",
+  "orig": "Supply-side domain goal generation: read the domain's product surfaces through six generation lenses (metric-driven, journey-driven, code-reality, revenue-path, distribution, critic), generate evidence-backed user-story candidates, adversarially VERIFY every evidence claim BEFORE filing, then file survivors into the domain's aspiration lanes with dedup handling and a board announcement. Use when the user says 'generate product work', 'inject goals', 'we need more domain work', or when the recurring generation goal fires. User-invocable AND agent-callable.",
+  "new": "Generate evidence-backed, user-story-shaped domain goals by analyzing real product surfaces and filing verified candidates into aspiration lanes when the user requests product work or when the system detects a need for more domain supply.",
   "coverage_orig": 0.18464701960689817,
-  "coverage_new": 0.1778155296914785
+  "coverage_new": 0.12905130244102267
+ },
+ "start": {
+  "orig": "Creates or resumes an agent in reader (read-only), assistant (user-directed), or autonomous mode (perpetual loop), initializing new agents (Self, program, paths, aspirations, curriculum) and transitioning existing ones. USER-ONLY: the user types /start {agent-name} [--mode {mode}]; Claude must NEVER invoke it. Enforces the one-autonomous-session-per-agent invariant and supports observer sessions alongside running loops. Auto-recovers zombie sessions (state=RUNNING + stale heartbeat + no pending obligations) inline so /start {name} just works after a crash; --recover is reserved for the --force override path.",
+  "new": "Use this command to create a new agent or resume an existing one in reader, assistant, or autonomous mode, automatically recovering from crashes if the session is stale. This skill is strictly for user input via the /start command and must never be invoked by the agent itself.",
+  "coverage_orig": 0.18820624546114742,
+  "coverage_new": 0.13018155410312274
+ },
+ "access-email": {
+  "orig": "Sends outbound email and reads the agent inbox (agents@ayoai.com) for deployment alerts, error notifications, and user replies. Use whenever the agent needs to check for new mail, verify a GitHub Actions deployment success email (guard-013), poll for a user answer to a pending question, or send a low-level transactional message. Prefer /notify-user for user-facing notifications \u2014 this skill is the lower-level transport used by SendInfoAlert / SendErrorAlert.",
+  "new": "Send outbound emails and monitor the agent inbox for deployment alerts, error notifications, and user replies. Use this skill to verify GitHub Actions deployment success, poll for pending user answers, or send low-level transactional messages when direct email transport is required.",
+  "coverage_orig": 0.1886710239651416,
+  "coverage_new": 0.16176470588235292
+ },
+ "replay": {
+  "orig": "Performs hippocampal replay on resolved hypotheses: compressed sharp-wave review for reconsolidation, reverse-order recency scan, selective encoding-queue replay, category-scoped replay, or domain-transfer bundling. Use whenever the aspirations loop hits the replay cadence, /aspirations-consolidate schedules a replay pass, the user says \\\"replay recent learning\\\" or \\\"cross-reference resolved hypotheses\\\", or the orchestrator needs to bootstrap cross-domain transfer. Mode selected via --sharp-wave / --reverse / --selective / --category / --domain-transfer.",
+  "new": "Review resolved hypotheses to consolidate learning, detect strategy drift, or transfer insights across domains by replaying high-surprise outcomes. Use this skill when the user requests a replay of recent learning, when the system schedules a consolidation pass, or when cross-domain transfer is needed.",
+  "coverage_orig": 0.18875,
+  "coverage_new": 0.16333333333333333
+ },
+ "least-privilege-credential-cutover": {
+  "orig": "Moves a running service off a broad or root AWS credential onto a least-privilege scoped one, by enumerating exactly which IAM actions the service actually invokes. Use whenever the user says 'cut over to a scoped credential', 'least privilege', 'scope down these permissions', 'rotate off the root key', or 'what permissions does this service actually need'. Fires whenever an agent is about to author, narrow, or review an IAM policy for a service whose source it can read. MUST use this skill and its companion sweep rather than hand-listing actions \u2014 a hand-built list undercounts (a measured 16-vs-24 miss), and every missed action costs a full cutover cycle to rediscover one AccessDenied at a time.",
+  "new": "Enumerate the exact IAM actions a running service invokes to generate a least-privilege policy, preventing the costly cycle of runtime AccessDenied errors. Use this skill whenever you need to scope down permissions, rotate off broad credentials, or author a precise IAM policy for a service.",
+  "coverage_orig": 0.1920120320855615,
+  "coverage_new": 0.07196969696969698
+ },
+ "notify-user": {
+  "orig": "Use whenever the agent needs to send a user-facing notification \u2014 completion reports, new aspirations created, blocker escalations, decisions that need user review, forged-skill announcements, decomposition handoffs, or any other event the user should see. Fires when core or domain skills instruct to 'notify the user', 'reach out to the user', 'alert the user', 'inform the user', or 'email the user'. Sends email via agents@ayoai.com with agent self-identification; gracefully falls back to pending-questions or participant goals when email is unavailable. Prefer this skill over composing ad-hoc notifications \u2014 it handles rate limiting, self-identity, and fallback cascade.",
+  "new": "Send user-facing notifications, such as completion reports, blocker escalations, or decisions requiring review, whenever an agent needs to alert, inform, or reach out to the user. Use this skill to handle email delivery with self-identification and graceful fallbacks, ensuring deduplication and proper routing instead of composing ad-hoc messages.",
+  "coverage_orig": 0.194916142557652,
+  "coverage_new": 0.17043276430068882
+ },
+ "reconstruct-env-server-restart-timeline": {
+  "orig": "Reconstructs why an environment-server restarted: separates real JVM starts from log rotations, measures each boot to its port-bind milestone, correlates the restarts with the healer that caused them, and diffs the measured gaps and abnormal-exit count against the watchdog's named constants. Use whenever someone asks 'why did the env-server restart', 'why is the server restarting', 'reconstruct the restart timeline', 'was the boot grace too short', 'did the watchdog heal this server', 'how long did the server take to boot', or when an environment-server has restarted repeatedly and a cause is being sought. MUST use this skill instead of hand-rolling the timeline over remote logs \u2014 two agents hand-rolled it four days apart and reached opposite conclusions, and the hand arithmetic is where the errors live. Also fires before proposing any boot-grace, heal-cooldown, or heal-attempt remedy, because this is the measurement that decides whether such a remedy is warranted at all.",
+  "new": "Reconstructs the environment-server restart timeline by distinguishing real JVM starts from log rotations and correlating them with healer actions to identify the true cause of restarts. Use this skill whenever investigating why a server restarted, assessing boot grace issues, or determining if a watchdog heal was responsible, especially before proposing any configuration remedies.",
+  "coverage_orig": 0.19651416122004356,
+  "coverage_new": 0.1326797385620915
+ },
+ "aspirations-graceful-stop": {
+  "orig": "Handles the graceful-stop path for the aspirations loop: recovers in-flight iteration checkpoints, completes pending verify/state-update obligations, and runs the deferred stop sequence D1-D7. Use whenever {agent}/session/stop-requested is detected at Phase -1.4 of the aspirations loop, or the loop needs to exit cleanly without dropping in-flight work. Internal handler \u2014 only /aspirations invokes it; the user-facing /stop command writes stop-requested which this handler then reads.",
+  "new": "Executes the full graceful stop sequence to recover in-flight checkpoints and complete pending obligations, ensuring no learning is lost before transitioning the agent to an IDLE state. Use this skill when the aspirations loop detects a stop request at Phase -1.4 or needs to exit cleanly without dropping in-flight work.",
+  "coverage_orig": 0.19995590828924162,
+  "coverage_new": 0.1862874779541446
+ },
+ "open-questions": {
+  "orig": "Shows the user dashboard: pending questions the agent has logged for the user, goals with participants including user, and blocked goals grouped by blocker reason. Use whenever the user says \\\"what do you need from me\\\", \\\"what's blocked\\\", \\\"what questions do you have\\\", \\\"what am I on the hook for\\\", or invokes /open-questions directly. USER-ONLY \u2014 Claude must never invoke this autonomously. Primes context first so follow-up is knowledge-informed.",
+  "new": "Display the user dashboard showing pending questions, assigned goals, and blocked goals grouped by reason. Use this when the user asks what they need to do, what is blocking progress, or what questions the agent has logged for them.",
+  "coverage_orig": 0.2,
+  "coverage_new": 0.13555555555555557
+ },
+ "aspirations-complete-review": {
+  "orig": "Reviews aspirations approaching completion: sweeps remaining goals for outstanding work, checks motivation fulfillment, runs the maturity gate (Phase 7.4 intent satisfaction), decides archival or continuation, and creates replacement aspirations. Use whenever an aspiration reaches high completion_ratio, the zombie scan (aspirations-precheck Phase 0.5.0a) surfaces high-completion-stale-blocked aspirations, or an aspiration's last executable goal finishes.",
+  "new": "Review aspirations that have completed all non-recurring goals to check for outstanding work, verify motivation fulfillment, and decide whether to archive the aspiration or create replacement goals. Use this skill when an aspiration reaches high completion, the zombie scan identifies stale high-completion aspirations, or the final executable goal finishes.",
+  "coverage_orig": 0.20116033065061398,
+  "coverage_new": 0.18966607777705075
+ },
+ "enforcement-triad-scaffold": {
+  "orig": "Scaffold a complete enforcement triad (shared predicate module + PreToolUse gate + .sh wrapper + Layer-B rule + Layer-C detective + behavioural tests + settings.json entry) from one spec. Use when adding a new write-time gate for a repeatedly-rediscovered mistake.",
+  "new": "Scaffold a complete enforcement triad including a shared predicate module, PreToolUse gate, shell wrapper, and tests from a single specification. Use this skill when adding a new write-time gate to prevent a repeatedly occurring mistake that can be detected from the tool payload.",
+  "coverage_orig": 0.20962220962220962,
+  "coverage_new": 0.18412818412818413
+ },
+ "roll-engine-config": {
+  "orig": "Roll configuration on the live zakpod1 inference engines without severing in-flight calls \u2014 change an engines.d setting, recycle an engine, retune PARALLEL/MAX_INFLIGHT, or borrow an engine for a trial and restore it. Use whenever you are about to systemctl restart llama-server@*, edit /etc/zds-inference/engines.d/*.env, swap a model or engine env, flip a fast-lane/cache/reasoning-budget setting, or restart zds-inference-server on a pod that is serving traffic. Also use when you need to know WHICH existing roll script to run \u2014 the capability is already built and the common failure is re-deriving it from scratch.",
+  "new": "Perform zero-downtime configuration changes on live inference engines by selecting the correct existing roll script, mutating settings, and reloading the proxy registry without severing in-flight calls. Use this skill whenever you need to change engine settings, recycle an engine, or adjust parallelism and budget configurations on a pod serving traffic.",
+  "coverage_orig": 0.2104360916860917,
+  "coverage_new": 0.15915889665889665
  }
 }

@@ -72,3 +72,18 @@ VERDICT: REPLICATES. Fidelity holds on BOTH catalogues measured (ayoai-mind
   two catalogues is "did not break on the second one". Per-skill table stayed
   on-box at /root/coach-fidelity-per-skill.json; only these aggregates crossed.
   Ran under TOPK co-tenancy (accepted in advance: latency, not correctness).
+
+=== 17:14 COACH RECOMPUTE PRE-REGISTRATION (fixed reader on-box; written before coach_fidelity.py is re-run on zc-03)
+The on-box reader rendered one coach skill as a block-scalar indicator. /root/coach_choosability.py now carries the fixed reader
+(verbatim copy of bench/_frontmatter.py, parity-tested); the catalogue parses 64 entries, min description 277 chars. Re-run
+coach_fidelity.py unchanged (FULL arm, 3 queries per skill, zds-qwen3.6-35b), aggregates only cross the wire.
+Predictions: (a) rho coverage->FULL accuracy within +/-0.05 of +0.534; (b) the repaired skill coverage rises from 0 to > 0.05 and
+its FULL accuracy is >= its old value; (c) no other skill description changes (the reader change is a no-op on plain scalars).
+Rules: (a) fails -> the coach finding was carried by the artifact; report and mark the coach row of ADR-0158 void. (c) fails ->
+instrument defect in the reader; stop. Refusals are not results.
+
+=== 18:56 COACH RECOMPUTE RESULT (fixed reader, on-box 18:47-18:49, aggregates only): FULL 110/192 = 57.3% (prior 58.3%);
+C1 rho +0.689; C2 rho +0.514 (prior +0.534, within +-0.05 -> (a) HOLDS); tertiles 39.7/60.3/71.2, spread +31.5 (floor 25);
+C4 True. (b) HOLDS: the one repaired coach skill coverage 0.023 -> 0.278 (>0.05), its FULL accuracy 0.667 -> 0.667 (>= old).
+(c) HOLDS: coverage changed on exactly 1 of 64 skills. Verdict printed by the script: REPLICATES -- both catalogues, never
+"generalizes". Recorded in ADR-0158 third addendum.
