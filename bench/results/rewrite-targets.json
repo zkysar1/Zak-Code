@@ -1,0 +1,284 @@
+{
+ "targets": [
+  {
+   "name": "env-list-baseline",
+   "coverage_orig": 0.0,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 12
+  },
+  {
+   "name": "triage-cited-fix-reachability",
+   "coverage_orig": 0.008547008547008546,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 10
+  },
+  {
+   "name": "check-survivorship-denominator",
+   "coverage_orig": 0.010101010101010102,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 11
+  },
+  {
+   "name": "verify-env-bridge",
+   "coverage_orig": 0.011919568822553897,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 13
+  },
+  {
+   "name": "is-change-live",
+   "coverage_orig": 0.018470230334637114,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 16
+  },
+  {
+   "name": "scratch-cognito-account-end-to-end",
+   "coverage_orig": 0.022222222222222223,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 14
+  },
+  {
+   "name": "worker-loop",
+   "coverage_orig": 0.023412698412698413,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 17
+  },
+  {
+   "name": "verify-deployed-artifact",
+   "coverage_orig": 0.026838432635534083,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 7
+  },
+  {
+   "name": "compare-batch-vs-corpus-rate",
+   "coverage_orig": 0.03180938558297049,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 12
+  },
+  {
+   "name": "sweep-efs-session-terminations",
+   "coverage_orig": 0.03223499361430396,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 30
+  },
+  {
+   "name": "audit-repo-secret-scopes",
+   "coverage_orig": 0.034188034188034185,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 11
+  },
+  {
+   "name": "reflect-on-outcome",
+   "coverage_orig": 0.07361581920903955,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 26
+  },
+  {
+   "name": "decompose",
+   "coverage_orig": 0.08308346624136098,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 13
+  },
+  {
+   "name": "reflect-maintain",
+   "coverage_orig": 0.0891408481652384,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 9
+  },
+  {
+   "name": "aspirations-evolve",
+   "coverage_orig": 0.09279461279461279,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 30
+  },
+  {
+   "name": "analyze-npc-behavior",
+   "coverage_orig": 0.10675213675213675,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 25
+  },
+  {
+   "name": "fresh-eyes-tree",
+   "coverage_orig": 0.1112484237074401,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 15
+  },
+  {
+   "name": "aspirations-learning-gate",
+   "coverage_orig": 0.11290467222670612,
+   "holdout_chars": 2939,
+   "remaining_long_paras": 8
+  },
+  {
+   "name": "access-aws-services",
+   "coverage_orig": 0.11507936507936509,
+   "holdout_chars": 1306,
+   "remaining_long_paras": 2
+  },
+  {
+   "name": "agent-completion-report",
+   "coverage_orig": 0.11583612306711302,
+   "holdout_chars": 2637,
+   "remaining_long_paras": 4
+  },
+  {
+   "name": "reflect-tree-update",
+   "coverage_orig": 0.1171620876089595,
+   "holdout_chars": 1042,
+   "remaining_long_paras": 2
+  },
+  {
+   "name": "aspirations-spark",
+   "coverage_orig": 0.12630675612420034,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 48
+  },
+  {
+   "name": "backlog-report",
+   "coverage_orig": 0.12704174228675136,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 10
+  },
+  {
+   "name": "review-hypotheses",
+   "coverage_orig": 0.13071850581284544,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 15
+  },
+  {
+   "name": "encode-session",
+   "coverage_orig": 0.13701996927803378,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 18
+  },
+  {
+   "name": "boot",
+   "coverage_orig": 0.13727422003284073,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 11
+  },
+  {
+   "name": "fresh-eyes-program",
+   "coverage_orig": 0.13731896518781767,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 17
+  },
+  {
+   "name": "aspirations-precheck",
+   "coverage_orig": 0.141640866873065,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 67
+  },
+  {
+   "name": "aspirations-select",
+   "coverage_orig": 0.14251207729468598,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 8
+  },
+  {
+   "name": "run-game-session",
+   "coverage_orig": 0.14925870398134267,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 5
+  },
+  {
+   "name": "respond",
+   "coverage_orig": 0.15505582137161084,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 43
+  },
+  {
+   "name": "priority-review",
+   "coverage_orig": 0.15728395061728395,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 5
+  },
+  {
+   "name": "curriculum-gates",
+   "coverage_orig": 0.1580650037792895,
+   "holdout_chars": 1911,
+   "remaining_long_paras": 4
+  },
+  {
+   "name": "sprint-planning",
+   "coverage_orig": 0.1611904761904762,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 6
+  },
+  {
+   "name": "verify-learning",
+   "coverage_orig": 0.16229603729603728,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 11
+  },
+  {
+   "name": "aspirations-execute",
+   "coverage_orig": 0.1691812865497076,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 33
+  },
+  {
+   "name": "state-replay",
+   "coverage_orig": 0.1705420054200542,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 5
+  },
+  {
+   "name": "reflect-on-self",
+   "coverage_orig": 0.17095238095238094,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 9
+  },
+  {
+   "name": "aspirations-verify",
+   "coverage_orig": 0.17526832292080208,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 17
+  },
+  {
+   "name": "aspirations",
+   "coverage_orig": 0.17612021857923496,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 18
+  },
+  {
+   "name": "add-npc-task",
+   "coverage_orig": 0.17619030320643225,
+   "holdout_chars": 1356,
+   "remaining_long_paras": 4
+  },
+  {
+   "name": "strategic-pulse",
+   "coverage_orig": 0.17916397328162034,
+   "holdout_chars": 2614,
+   "remaining_long_paras": 3
+  },
+  {
+   "name": "sweep-customer-server-usage",
+   "coverage_orig": 0.18105413105413107,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 10
+  },
+  {
+   "name": "reconstruct-web-funnel",
+   "coverage_orig": 0.18403431680267837,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 9
+  },
+  {
+   "name": "generate-domain-goals",
+   "coverage_orig": 0.18464701960689817,
+   "holdout_chars": 3000,
+   "remaining_long_paras": 14
+  }
+ ],
+ "excluded": [
+  {
+   "name": "research-topic",
+   "coverage_orig": 0.16465420488408994,
+   "holdout_chars": 983,
+   "remaining_long_paras": 1
+  }
+ ],
+ "tertile_size": 46,
+ "n_skills": 140
+}
