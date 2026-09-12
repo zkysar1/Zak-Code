@@ -7166,6 +7166,39 @@ The mechanism is also sharper than "skills are expensive". The cost is almost en
 skill**. A deployment's floor therefore scales with how verbosely its skills describe themselves,
 which is an authoring property nobody currently measures, not a fixed cost of having skills.
 
+**SECOND ADDENDUM: the cheap fix this ADR's correction recommended is dead, and one number above
+is misattributed.** The correction closed by saying description verbosity "is cheaper to fix than
+the paging work, and worth measuring before building anything." The measurement was run and it
+falsifies that recommendation:
+
+```
+145 descriptions: total 94,367 chars   median 623   mean 651   max 1,440   min 2
+top 10 skills = 13% of the catalogue           (no outliers to trim)
+capping EVERY description at the median saves 4%
+```
+
+The distribution is flat. The catalogue costs what it costs because there are 145 skills, not
+because any of them is verbose, so there is no authoring-side fix and **paging or shortening the
+catalogue is the only lever.** Three shapes, priced at the 4.27 chars/token measured on this
+content:
+
+```
+names only                         2,816 chars   ~   659 tok    2.9% of today    2% of a 32k window
+name + first sentence             32,971 chars   ~ 7,722 tok   33.9% of today   24% of a 32k window
+name + full description (today)   97,183 chars   ~22,759 tok    100% of today   69% of a 32k window
+```
+
+First sentences are a real description at 196 chars median, so **name + first sentence cuts the
+catalogue 66% while keeping it choosable** — the shape worth building, with the full description
+fetched on demand exactly as bodies already are. Names alone save 97% and are probably too cryptic
+to choose from; that is a judgement, not a measurement, and it is the one thing here that should be
+tested against a model rather than asserted.
+
+**And the misattribution:** the sentence above reading "a 145-skill catalogue consumes ~89% of the
+window" is wrong. 89% is the whole per-iteration prompt (29,096 of 32,768); the catalogue's own
+share is **69%**. The conclusion is unchanged and the arithmetic was not — a share of the total got
+labelled as a share of one component, which is the same error as the first addendum, one level down.
+
 **Caveats that travel with the numbers.** 145 is this Mind's full set and is unusually large;
 coach's 65 is the real deployment figure and was measured, not assumed. Coach's median and max
 include conversation history, so only the minimum bounds its floor. The bench figure is tokens per
