@@ -26,6 +26,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # noqa: E402 -- sibling module
+from _frontmatter import assert_sane, read_description  # noqa: E402
+
 import httpx
 
 SKILLS = Path("/opt/ayoai-mind/.claude/skills")
@@ -37,9 +40,10 @@ def entries() -> list[tuple[str, str]]:
     out = []
     for sk in sorted(SKILLS.glob("*/SKILL.md")):
         head = sk.read_text(encoding="utf-8", errors="replace")[:6000]
-        m = re.search(r"^description:\s*(.+)$", head, re.M)
-        if m:
-            out.append((sk.parent.name, m.group(1).strip()))
+        desc = read_description(head)
+        if desc:
+            out.append((sk.parent.name, desc))
+    assert_sane(out)
     return out
 
 
