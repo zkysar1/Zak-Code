@@ -7003,12 +7003,57 @@ where one missed site breaks a non-obvious case), HORIZON (enough steps that att
 and verifiers that check PROCESS rather than outcome — `m03-minimal-diff` is the existing instance
 of that last family and is the only style of task here that constrains HOW rather than WHAT.
 
-**And the honest strategic reading:** two attempts, two passes, both cheap in wall-clock, on the two
-most obvious axes. Constructing a FAIR, well-formed software task that Opus 5 fails is itself hard,
-which is information about the parity question rather than an obstacle to it — the reference agent's
-ceiling on this class of work is very high. That strengthens the case for the user's redirect
-(determinism and small-model performance, where zakcode can differentiate and where measurement is
-already working) over continuing to chase a saturated task-success comparison.
+**THIRD ATTEMPT — cross-module root cause — also passes, at 1.3x.** `08-mutation-leak` was built on
+the axis the second result pointed at: maximise the DISTANCE between symptom and cause rather than
+local intricacy, since exploration is the only thing measured to cost effort. A small ETL package
+where the symptom surfaces in `audit.py`, the defect is in `normalize.py`, and the mechanism joining
+them — a deliberately shared cache — is in `load.py`. None of the three is wrong on its own reading.
+The oracle is outcome-based (any fix achieving the invariant is accepted, no file is mandated) but
+pins the ROOT two ways: it calls `normalize()` on a caller-owned list and requires it untouched, and
+it corrupts a raw record to check the audit still has teeth. Four controls, and all four PASS THE
+VISIBLE TESTS, so the shipped suite discriminates nothing and the oracle does all the work:
+
+```
+untouched (buggy)      3 passed   oracle FAIL   audit problems
+correct root fix       3 passed   oracle PASS   task is possible
+silence the audit      3 passed   oracle FAIL   audit lost its teeth
+reload around it       3 passed   oracle FAIL   same check catches it
+```
+
+**Claude Code PASSED at 8 turns, 20.2s, $0.2829.**
+
+**THE CONSOLIDATED RESULT — three independent axes, three passes:**
+
+```
+task                     axis                      turns   vs baseline   result
+original five            stated, local               6.2        1.0x      PASS
+06-plugin-conventions    DISCOVERABILITY              17        2.7x      PASS
+07-ttl-cache             INTERACTION (all stated)      7        1.1x      PASS
+08-mutation-leak         CROSS-MODULE ROOT CAUSE       8        1.3x      PASS
+```
+
+**Only EXPLORATION costs effort, and 2.7x effort is still a pass.** Neither intricacy, nor
+interacting constraints, nor a root cause three modules from its symptom with two plausible decoy
+fixes, moves this reference agent off a pass. Each task was validated against controls BEFORE any
+agent ran, and in every case the natural-but-wrong solution fails the oracle — so these are not weak
+tasks that failed to discriminate; they discriminate correctly and the reference agent is simply not
+caught.
+
+**DECISION: stop trying to unsaturate this suite with well-formed small-to-medium tasks.** That was
+this ADR's prescribed route and three measured attempts say the route is not cheap and may not be
+available at this scale. What remains untried is genuine SCALE and HORIZON — many files, enough
+steps that attention degrades — which is expensive to build, expensive to run, and would test
+context management rather than the agent loop. Verifiers that check PROCESS rather than outcome
+(`m03-minimal-diff` is the existing instance) are the one cheap family left.
+
+**The strategic reading, now with three data points instead of one:** constructing a FAIR,
+well-formed software task that Opus 5 fails is itself hard. That is information ABOUT the parity
+question rather than an obstacle to answering it — the reference agent's ceiling on this class of
+work is high enough that task-success comparison at this scale is the wrong instrument, not merely a
+saturated one. This is the measured case for the user's redirect: compete on DETERMINISM and
+SMALL-MODEL performance, where zakcode can differentiate and where the instruments already work
+(ADR-0152's byte-identical reproduction, ADR-0155's catalogue measurements), rather than on a
+task-success comparison whose ceiling both agents already sit at.
 
 ## ADR-0152: The determinism residual was never the engine's — it was the prompt, and then it was pytest's clock
 
