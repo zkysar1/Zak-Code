@@ -124,12 +124,43 @@ def _build_agent(workspace: Path, spec: dict):
             f"(ZAKCODE_LEAN_RULES={lean})",
             file=sys.stderr,
         )
+    # ZBENCH_SKILLS_ROOT seeds a mind's .claude/skills into the workspace and turns skill support
+    # on. It exists because of a MEASURED coverage gap, not a guess: censusing coach's trace store
+    # against the bench's results corpus (ADR-0154) found production reaching 13 distinct
+    # intervention kinds in SIXTEEN turns against the bench's 11 across its whole history, agreeing
+    # on five -- and SEVEN of the eight production-only kinds are gated behind `enable_skills`
+    # (`plan` via `_adopt_implied_skill`, plus the whole skill_* paging family and
+    # `user_only_skill`). `plan` alone leads production's census at 13 of 64 and has never fired
+    # here once. One flag, seven paths.
+    #
+    # Mirrors ZBENCH_RULES_ROOT exactly, including its failure posture: LOUD on a bad root rather
+    # than degrading to zero skills, because a silent fallback would manufacture precisely the dead
+    # instrument this arm exists to remove -- a run that reports "skills arm" while exercising none.
+    skills_root = os.environ.get("ZBENCH_SKILLS_ROOT")
+    enable_skills = False
+    if skills_root:
+        src_skills = Path(skills_root) / ".claude" / "skills"
+        if not src_skills.is_dir():
+            raise SystemExit(f"ZBENCH_SKILLS_ROOT={skills_root!r}: no .claude/skills directory")
+        dst_skills = workspace / ".claude" / "skills"
+        dst_skills.mkdir(parents=True, exist_ok=True)
+        seeded_skills = 0
+        for skill_dir in sorted(p for p in src_skills.iterdir() if (p / "SKILL.md").is_file()):
+            shutil.copytree(skill_dir, dst_skills / skill_dir.name, dirs_exist_ok=True)
+            seeded_skills += 1
+        if seeded_skills == 0:
+            raise SystemExit(
+                f"ZBENCH_SKILLS_ROOT={skills_root!r}: .claude/skills holds no */SKILL.md"
+            )
+        enable_skills = True
+        print(f"[bench] skills arm ON: seeded {seeded_skills} skill(s) from {src_skills}",
+              file=sys.stderr)
     settings = base.model_copy(update=update)
     agent = Agent(
         settings=settings,
         enable_compaction=True,   # needed so long tasks survive the context window
         enable_rules=enable_rules,  # default OFF; ZBENCH_RULES_ROOT turns it on (see above)
-        enable_skills=False,      # OFF: no skill dirs
+        enable_skills=enable_skills,  # default OFF; ZBENCH_SKILLS_ROOT turns it on (above)
         enable_subagents=False,   # OFF: keep the baseline single-agent (enable later for a "full" run)
         enable_mcp=False,
         enable_plugins=False,
@@ -372,6 +403,7 @@ def run(task_dir: Path) -> int:
         "compact_fraction": os.environ.get("ZBENCH_COMPACT_FRACTION"),
         "tool_deny": os.environ.get("ZBENCH_TOOL_DENY"),
         "rules_root": os.environ.get("ZBENCH_RULES_ROOT"),
+        "skills_root": os.environ.get("ZBENCH_SKILLS_ROOT"),
         "max_completion_tokens": _effective_max_completion_tokens(),
         "pin_identity": bool(os.environ.get("ZBENCH_PIN_IDENTITY")),
         "session_id": getattr(getattr(agent, "session", None), "id", None),
