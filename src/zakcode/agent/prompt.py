@@ -359,10 +359,13 @@ class SystemPromptBuilder:
             )
         else:
             shell = "the `bash` tool runs commands through a POSIX shell (/bin/sh)"
+        # `stable_prompt_identity` suppresses this line so two runs of the same work receive a
+        # byte-identical prompt (ADR-0157). The session still HAS its id -- hooks and persistence
+        # are untouched; the model simply is not told it.
         session = (
             f"\n- Session id: {session_id} (this conversation; every hook receives it as "
             "`session_id` — use it when a framework keys state by session)"
-            if session_id
+            if session_id and not settings.stable_prompt_identity
             else ""
         )
         return (

@@ -1,0 +1,72 @@
+{
+  "task": "02-median-bug",
+  "n": 3,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "elapsed_s": 7.2,
+      "num_turns": 7,
+      "total_cost_usd": 0.14307399999999998,
+      "verify_rc": 0,
+      "verify_out": "PASS: median correct on 6 held-out cases (incl. even-length averaging)",
+      "stderr_tail": "",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "d1994a7cd8f09085e0a95df02c1b3c82bf83c73b7e2179118b3fe602c2b3a31e",
+        ".pytest_cache/v/cache/stepwise": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "stats.py": "7bff3055078d895dd7e8a12a3291912c865971e9ec22739dd5b14173a6921155",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "py_digests": {
+        "stats.py": "7bff3055078d895dd7e8a12a3291912c865971e9ec22739dd5b14173a6921155",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "elapsed_s": 7.5,
+      "num_turns": 6,
+      "total_cost_usd": 0.1399645,
+      "verify_rc": 0,
+      "verify_out": "PASS: median correct on 6 held-out cases (incl. even-length averaging)",
+      "stderr_tail": "",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "d1994a7cd8f09085e0a95df02c1b3c82bf83c73b7e2179118b3fe602c2b3a31e",
+        ".pytest_cache/v/cache/stepwise": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "stats.py": "7bff3055078d895dd7e8a12a3291912c865971e9ec22739dd5b14173a6921155",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "py_digests": {
+        "stats.py": "7bff3055078d895dd7e8a12a3291912c865971e9ec22739dd5b14173a6921155",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "elapsed_s": 6.3,
+      "num_turns": 6,
+      "total_cost_usd": 0.13888949999999997,
+      "verify_rc": 0,
+      "verify_out": "PASS: median correct on 6 held-out cases (incl. even-length averaging)",
+      "stderr_tail": "",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "d1994a7cd8f09085e0a95df02c1b3c82bf83c73b7e2179118b3fe602c2b3a31e",
+        ".pytest_cache/v/cache/stepwise": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "stats.py": "831acf2e620b96b4c366df42247d8c219b9b3435e20bacb0b941aa096425067d",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      },
+      "py_digests": {
+        "stats.py": "831acf2e620b96b4c366df42247d8c219b9b3435e20bacb0b941aa096425067d",
+        "test_stats.py": "551af4824da38242d396eacac92c7e93a233affd5cabbdcf9bcd53446087f422"
+      }
+    }
+  ]
+}

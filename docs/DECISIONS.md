@@ -7623,3 +7623,201 @@ reaper took the TOPK run after ~57 minutes with a ZERO-BYTE log, and took the wa
 This arm had already written its results and survived. The earlier decision to parallelise was
 justified on the grounds that shared load costs latency and not correctness — true of the pod, false
 of local memory, which was not considered. Re-run TOPK alone.
+
+## ADR-0157
+
+**zakcode has a byte-deterministic configuration; Claude Code as it ships does not — and zakcode's
+is not reachable by a user.** 2026-09-12.
+
+The parity campaign had two blockers: suite saturation and the model confound. Saturation closed by
+measurement (ADR-0151/0156 — both arms pass everything, including three tasks purpose-built to
+reject wrong answers). The model confound looked equally fatal, because holding the model fixed on
+this box is impossible.
+
+It is not fatal on this axis. **Determinism is a property of the loop, not of the model**: each
+agent is measured on the run-to-run variance of *its own* outputs, so nothing is compared across
+models and nothing is confounded by them. This is the first axis in the campaign where zakcode can
+be measurably better rather than merely equal, and it is the user's redirect stated literally
+("more deterministic").
+
+Pre-registered in `bench/results/determinism-arm-preregistration.log` and
+`bench/results/determinism-load-preregistration.log`, both before any run.
+
+### What was measured
+
+One task (`02-median-bug`, the cheapest), N=3 runs per cell, metric = SHA-256 of every file the
+agent left in the workspace. Both arms digested by the same function in `bench/determinism_arm.py`,
+because two different measurements would make any difference between arms unattributable.
+
+| arm / configuration | distinct byte-states / 3 | batches |
+|---|---|---|
+| **Claude Code, as it ships** | **2 / 3** | 1 |
+| zakcode, temperature default (pin ON or OFF) | 3 / 3 | 2 |
+| zakcode, temperature 0, identity pin OFF | 1/3, 2/3, 1/3 | 3 |
+| **zakcode, temperature 0 + identity pin ON** | **1 / 3 — byte-identical** | 3 (9 runs) |
+
+All cells passed 3/3. Correctness was never the variable.
+
+**Cross-batch reproduction survives.** The two preserved pinned temp-0 batches produced the same
+`stats.py` digest (`7bff3055…`) as each other, not merely within themselves — stronger than
+ADR-0152's "batch-local" caveat. That same digest is what Claude Code produced in 2 of its 3 runs:
+the deterministic zakcode configuration converges on exactly the fix the reference agent most often
+writes.
+
+**Both knobs are required.** Temperature 0 alone is not enough — one of three unpinned batches still
+produced two distinct states. `Settings.temperature` defaults to `None`, which sends no temperature
+at all, so the main agent loop runs at the serving stack's own default (`config.py:162`, ADR-0018's
+deliberate product choice). The classify call pins 0.0; nothing else does.
+
+**The serving stack is not the source.** `probe_provider_determinism.py` reproduces 5/5 byte-identical
+at temperature 0 on both a 16-token and a 4,000-token generation, with a working positive control
+(temperature 1.0 gives 3/3 distinct). Batch-composition nondeterminism was a live hypothesis and is
+not supported here.
+
+### The actionable finding
+
+`ZBENCH_PIN_IDENTITY` lives in `bench/run_task.py`. It is a measurement instrument, not a product
+feature. `run_task.py:177` states the consequence plainly: *every* zakcode run injects a fresh uuid4
+session id and an mkdtemp workspace path into its system prompt, so byte-identical reproduction is
+impossible by construction for any actual user.
+
+So the honest claim is narrower and more useful than "zakcode is more deterministic": **zakcode's
+engine is demonstrably byte-deterministic, and two specific injected values are the whole barrier
+between that and a shippable guarantee.** Both are deliberate (the workspace path is load-bearing;
+ADR-0072 put the session id there so the model can answer "which session am I?"). Making them
+stable-per-request is a bounded change, and it is the one place this campaign has found where
+zakcode could offer something the reference agent does not.
+
+### What this adds over `determinism-partition.log`
+
+That pass (2026-09-11) established the sampler/engine partition and the residual in ITERATION
+counts, and its own text calls that metric coarse: "a provider can return different prose on every
+call while still converging in the same number of steps." This pass measures BYTES, which is the
+strong form of the same claim, and it measures the REFERENCE AGENT, which nothing in this campaign
+had ever done.
+
+### Corrections this pass made to itself
+
+**The instrument scored a perfect verdict on nothing.** The first zakcode arm digested a workspace
+`run_task.py` had already deleted, captured zero files, and printed "IDENTICAL across all runs" —
+an empty digest set compares equal to an empty digest set. It was caught by the `files=` count
+printed beside the verdict, not by the verdict looking wrong. `determinism_arm.py` now refuses to
+render a verdict when any run captured zero files, and the refusal was positive-controlled (rc=4)
+before the green path was trusted.
+
+**A rate was claimed from N=3 after pre-registering that N=3 cannot estimate a rate.** One clean
+unpinned temp-0 batch produced "temperature is the whole story, the pin is irrelevant"; the next
+batch of the same cell reversed it. The pre-registration says verbatim that N=3 "can demonstrate
+EXISTENCE and it can fail to demonstrate it. No rate will be claimed." It was claimed anyway, for
+one turn.
+
+**Liveness was asserted from a cumulative counter.** The re-run of the TOPK eval was declared
+"genuinely alive" from a single `rchar` reading of 14.3 MB. A cumulative total is not a rate; two
+readings 30 minutes apart were identical, and the process was in fact hung in `do_poll` on an
+ESTABLISHED socket. A zero-byte log had by then meant three different things on three occasions —
+block-buffered start, OOM death, socket hang. `choosability_topk.py` now runs unbuffered and prints
+a flushed progress line every 25 queries, so a stalled log is a stalled run.
+
+**Prior art was on disk and unread.** `determinism-partition.log` already documented the
+temperature-defaults-to-None finding, pre-registered the night before. It was re-derived from
+scratch this pass. Retrieval before starting would have cost one `ls`.
+
+### Scope
+
+N=3 per cell, one task, one model per arm. No rate is claimed. Claude Code was measured in a single
+batch. The comparison is "zakcode with a knob available only in the bench" against "Claude Code as
+it ships", and it stays stated that way — no pinning equivalent exists to apply to the reference
+agent, which is itself part of the finding.
+
+### ADR-0157 ADDENDUM — the barrier is ONE value for a real user, not two (2026-09-12)
+
+The body above says "two specific injected values are the whole barrier". True in the bench,
+misleading for the product. Isolating each value, all cells at temperature 0, N=3, **with a load
+control** (the known-good pin-both cell re-run under genuine concurrent pod load from the TOPK
+eval, which reproduced IDENTICAL — so load is not a factor and these cells are attributable to pin
+scope alone):
+
+| cell | distinct byte-states / 3 |
+|---|---|
+| pin BOTH — constant workspace + constant session id | **1 / 3 — identical** (4 batches, incl. under load) |
+| pin SESSION only — session id constant, workspace path varies | 3 / 3 |
+| pin WORKSPACE only — workspace constant, fresh uuid4 session id | **2 / 3** |
+| pin NEITHER | 1/3, 2/3, 1/3 across three batches |
+
+Both injected values contribute and neither alone suffices, which is why the body's claim is
+literally correct. But the bench is not the user's situation: **a real user runs in a stable
+project directory**, so the workspace path is already constant for them. Their actual configuration
+is the *pin-WORKSPACE-only* row — stable cwd, fresh uuid4 — and that row is 2 distinct / 3.
+
+**So for a zakcode user at temperature 0, the uuid4 session id is the single remaining barrier to
+byte-identical reproduction.** Stabilising one value — a `ZAKCODE_SESSION_ID` knob, or deriving the
+id from workspace+task rather than `uuid4()` — moves a real user from the 2/3 row to the 1/3 row.
+That is a much smaller change than the body implies, and it is the concrete shippable form of the
+only axis where this campaign has found zakcode able to beat the reference agent rather than match
+it.
+
+Two predictions were made and both were wrong, in opposite directions. First: "only the session id
+matters for real users" — tested with the session-only pin, which came back 3/3, apparently
+refuting it. That test was the wrong cell: pinning the session id while letting the workspace vary
+is a configuration no user is ever in. The workspace-only cell is the user's, and it restores the
+original reading. **A cell that isolates a variable is not automatically the cell that answers the
+question** — the arm has to match the population the claim is about, which is guard-6563's
+registered-for-one-population failure arriving through the experimental-design door.
+
+### ADR-0157 SECOND ADDENDUM — the fix is shipped and measured (2026-09-12)
+
+The first addendum identified the uuid4 session id as the single remaining barrier for a real
+user. That is now fixed, behind a default-off setting, and measured before and after on the same
+cell at the same N.
+
+**`ZAKCODE_STABLE_PROMPT_IDENTITY=1`** omits the session id from the system prompt's Environment
+block (`agent/prompt.py`, one condition). It does **not** change the session's real id: persistence,
+`resume()`, and hook payloads keep the uuid4. Only the prompt stops carrying it, so nothing keyed
+by session id is affected. Default is OFF because ADR-0072 put the id there deliberately, so a
+model asked "which session are you?" can answer — that capability is traded away only when a user
+explicitly asks for reproducibility.
+
+| real-user cell: stable workspace, fresh uuid4, `ZAKCODE_TEMPERATURE=0` | distinct byte-states |
+|---|---|
+| before the fix, N=6 | 2 (split 4 / 2) |
+| **after the fix, N=6** | **1 — byte-identical 6/6** |
+
+The intervention was positively asserted before the result was read, not inferred from it: the
+dumped 9,827-character agent prompt still carries `Workspace root` and no longer carries
+`Session id`, while the pre-fix dump of the same call carries both. That control is what caught the
+first attempt at this check reading the wrong field — `Session id: absent` looked like success
+until `Workspace root: absent` showed the probe was inspecting the small classify call, not the
+agent prompt.
+
+**So zakcode now has a user-reachable configuration that reproduces byte-for-byte, and the
+reference agent does not expose one.** Two environment variables, both documented. That is the
+first thing this campaign has found where zakcode is better than Claude Code rather than equal to
+it, and it is shipped rather than merely observed.
+
+**The reference arm was the weakest link and has been strengthened.** Claude Code was originally
+measured once at N=3. It is now 9 runs across two independent batches (N=3 and N=6) and produced
+**2 distinct output states in both** — the nondeterminism is robust, not a small-N artifact. Final
+standing on `02-median-bug`, all arms at temperature 0 where the knob exists:
+
+| arm | runs | distinct byte-states |
+|---|---|---|
+| Claude Code, as it ships | 9 (2 batches) | 2 in each batch |
+| zakcode, real-user cell, no fix | 9 (2 batches) | 2 |
+| **zakcode, real-user cell, `ZAKCODE_STABLE_PROMPT_IDENTITY=1`** | 6 | **1 — byte-identical** |
+
+zakcode-without-the-fix and Claude Code sit at the same place; the fix is what separates them. And
+zakcode's single deterministic output (`7bff3055…`) is one of the two variants Claude Code
+produces, so the pinned run is not converging on something idiosyncratic — it is picking one of the
+reference agent's own answers, every time.
+
+**A documentation defect found on the way and fixed:** `docs/CONFIG.md` documented
+`temperature`'s default as `0.0`. The actual default is `None`, which sends no temperature at all
+and lets each backend apply its own (ADR-0018). For a user chasing reproducible runs that was the
+single most misleading cell in the table — it says the sampler is already pinned when it is not.
+The `determinism-partition.log` pass had found the same fact in the code the night before; the doc
+was never reconciled to it.
+
+The test carries a NEGATIVE CONTROL: two different session ids must produce the SAME prompt with
+the flag on, and DIFFERENT prompts with it off. Asserting only that the line disappeared would pass
+against a builder that never rendered the id at all — an invariance assertion that is green when
+broken (guard-2903).

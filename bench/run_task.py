@@ -179,7 +179,7 @@ def _build_agent(workspace: Path, spec: dict):
     # they do with temperature. Both values are deliberate (the workspace path is load-bearing;
     # ADR-0072 put the session id there so the model can answer "which session are you?"), so this
     # knob is a MEASUREMENT instrument and not a proposed default.
-    if os.environ.get("ZBENCH_PIN_IDENTITY"):
+    if os.environ.get("ZBENCH_PIN_IDENTITY") not in (None, "", "workspace"):
         agent.session.id = "0" * 32
         print(f"[bench] pinned session id: {agent.session.id}", file=sys.stderr)
     # ZBENCH_COMPACT_FRACTION moves the compaction THRESHOLD without touching anything else.
@@ -368,7 +368,10 @@ def preflight(task_dir: Path) -> int:
 
 def run(task_dir: Path) -> int:
     spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
-    if os.environ.get("ZBENCH_PIN_IDENTITY"):
+    if os.environ.get("ZBENCH_PIN_IDENTITY") == "session":
+        # session-only: pin the uuid4 (in _build_agent), leave the workspace path varying.
+        ws = Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
+    elif os.environ.get("ZBENCH_PIN_IDENTITY"):
         # A constant NAME with fresh CONTENT: reusing the directory as-is would carry the previous
         # run's files into this one, which is a far worse confound than the one being removed.
         # Serial execution only -- two parallel tasks would collide on the fixed path.
@@ -508,12 +511,17 @@ def run(task_dir: Path) -> int:
         "verify_rc": verify_rc,
         "verify_out": verify_out,
         "error": err,
-        "workspace": str(ws) if not success else "(cleaned)",
+        "workspace": str(ws) if (not success or os.environ.get("ZBENCH_KEEP_WORKSPACE")) else "(cleaned)",
     }
     print(json.dumps(report, indent=2))
 
     # Keep the workspace for inspection on failure/crash; clean it on success.
-    if success:
+    # ZBENCH_KEEP_WORKSPACE=1 suppresses the success-cleanup so a CALLER can inspect what the
+    # agent actually produced. Needed by bench/determinism_arm.py, which digests the finished
+    # workspace: without it the workspace is gone by the time the caller looks, and a digest of
+    # a deleted directory is an EMPTY SET that compares equal to any other empty set -- a
+    # silently vacuous "identical" verdict (measured 2026-09-12).
+    if success and not os.environ.get("ZBENCH_KEEP_WORKSPACE"):
         shutil.rmtree(ws, ignore_errors=True)
     return 0
 

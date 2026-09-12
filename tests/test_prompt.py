@@ -424,6 +424,30 @@ def test_environment_section_names_the_session_id(tmp_path: Path) -> None:
     )
 
 
+def test_stable_prompt_identity_suppresses_the_session_id_line(tmp_path: Path) -> None:
+    # ADR-0157: with temperature pinned to 0 and a stable workspace -- every real user, who runs
+    # in their project directory -- runs still diverged (3 of 9 produced different output bytes),
+    # and the fresh uuid4 session id in the Environment block was the only remaining varying
+    # input. This flag removes it so two runs of the same work get a byte-identical prompt.
+    settings = load_settings(workspace_root=tmp_path, default_model="openai/gpt-4o")
+    stable_settings = settings.model_copy(update={"stable_prompt_identity": True})
+
+    # The whole point: two DIFFERENT session ids must yield the SAME prompt. Asserting only that
+    # the line is gone would pass for a builder that dropped the id and varied somewhere else.
+    a = SystemPromptBuilder().build(stable_settings, session_id="sid-aaa")
+    b = SystemPromptBuilder().build(stable_settings, session_id="sid-bbb")
+    assert a == b
+    assert "Session id" not in a
+
+    # Negative control -- without the flag the same two ids MUST differ, or this test would pass
+    # against a builder that never rendered the id at all and the flag would be doing nothing.
+    unpinned_a = SystemPromptBuilder().build(settings, session_id="sid-aaa")
+    unpinned_b = SystemPromptBuilder().build(settings, session_id="sid-bbb")
+    assert unpinned_a != unpinned_b
+    # Default is OFF: the shipped prompt still names the id (ADR-0072).
+    assert "- Session id: sid-aaa" in SystemPromptBuilder().build(settings, session_id="sid-aaa")
+
+
 def test_skill_paging_contract_is_in_the_stable_tier(tmp_path: Path) -> None:
     # Asked what happens when a skill is larger than the window, a served model recalled a
     # mechanism instead of reading one. The contract (paging, the status line, the stop reason,
