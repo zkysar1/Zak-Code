@@ -1,0 +1,251 @@
+{
+  "summary": {
+    "n": 3,
+    "passed": 3,
+    "total_cost_usd": 0,
+    "total_tokens": 577326,
+    "input_tokens": 560385,
+    "output_tokens": 16941,
+    "cache_read_tokens": 495237,
+    "total_iterations": 43,
+    "per_model": {
+      "openai/zds-qwen3.6-35b": {
+        "cost_usd": 0.0,
+        "total_tokens": 577326
+      }
+    }
+  },
+  "tasks": [
+    {
+      "id": "06-plugin-conventions",
+      "title": "Add a YAML renderer to an existing plugin package",
+      "success": true,
+      "stop_reason": "completed",
+      "iterations": 16,
+      "routed_category": "quick_code",
+      "routed_escalated": false,
+      "degraded": false,
+      "turn_error": "",
+      "elapsed_s": 596.2,
+      "tok_per_s": 6.6,
+      "turn_cost_usd": 0.0,
+      "turn_tokens": 220733,
+      "session_cost_usd": 0.0,
+      "session_prompt_tokens": 217053,
+      "session_completion_tokens": 3918,
+      "session_total_tokens": 220971,
+      "cache_read_tokens": 183948,
+      "per_model": {
+        "openai/zds-qwen3.6-35b": {
+          "cost_usd": 0.0,
+          "prompt_tokens": 217053,
+          "completion_tokens": 3918,
+          "total_tokens": 220971
+        }
+      },
+      "compaction": {
+        "checks": 17,
+        "fired": 0,
+        "peak_context_tokens": 18896,
+        "threshold_tokens": 104857,
+        "context_window": 131072
+      },
+      "tool_surface": {
+        "exposed": 25,
+        "schema_chars": 25304
+      },
+      "knobs": {
+        "temperature": null,
+        "compact_fraction": null,
+        "tool_deny": null,
+        "rules_root": null,
+        "skills_root": null,
+        "max_completion_tokens": 8192,
+        "pin_identity": false,
+        "session_id": "992420025a24426d869f0e532230daa0",
+        "workspace": "/tmp/zbench-06-plugin-conventions-bz6hd6lz"
+      },
+      "tool_calls": {
+        "read_file": 5,
+        "edit_file": 5,
+        "bash": 5,
+        "list_dir": 3,
+        "write_file": 3
+      },
+      "tool_errors": 1,
+      "trace_events": {
+        "tool": 21,
+        "usage": 16,
+        "route": 1,
+        "stop": 1
+      },
+      "trace_interventions": {},
+      "verify_rc": 0,
+      "verify_out": "PASS: yaml renderer is stdlib-only, registered, exported, round-trips, raises PluginError, and is covered by the existing parametrized test",
+      "error": null,
+      "workspace": "(cleaned)",
+      "engine_warnings": [
+        "[engine] WARNING LiteLLM: litellm: could not pre-load bedrock-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'",
+        "[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'"
+      ]
+    },
+    {
+      "id": "07-ttl-cache",
+      "title": "LRU cache with TTL where the rules interact",
+      "success": true,
+      "stop_reason": "completed",
+      "iterations": 13,
+      "routed_category": "deep_code",
+      "routed_escalated": true,
+      "degraded": false,
+      "turn_error": "",
+      "elapsed_s": 851.7,
+      "tok_per_s": 9.4,
+      "turn_cost_usd": 0.0,
+      "turn_tokens": 178291,
+      "session_cost_usd": 0.0,
+      "session_prompt_tokens": 174977,
+      "session_completion_tokens": 7986,
+      "session_total_tokens": 182963,
+      "cache_read_tokens": 153039,
+      "per_model": {
+        "openai/zds-qwen3.6-35b": {
+          "cost_usd": 0.0,
+          "prompt_tokens": 174977,
+          "completion_tokens": 7986,
+          "total_tokens": 182963
+        }
+      },
+      "compaction": {
+        "checks": 14,
+        "fired": 0,
+        "peak_context_tokens": 16627,
+        "threshold_tokens": 104857,
+        "context_window": 131072
+      },
+      "tool_surface": {
+        "exposed": 25,
+        "schema_chars": 25304
+      },
+      "knobs": {
+        "temperature": null,
+        "compact_fraction": null,
+        "tool_deny": null,
+        "rules_root": null,
+        "skills_root": null,
+        "max_completion_tokens": 8192,
+        "pin_identity": false,
+        "session_id": "2c2d07d72f584e179f37fa19df996700",
+        "workspace": "/tmp/zbench-07-ttl-cache-rkj1zkle"
+      },
+      "tool_calls": {
+        "update_plan": 4,
+        "read_file": 2,
+        "write_file": 2,
+        "bash": 2,
+        "list_dir": 1
+      },
+      "tool_errors": 0,
+      "trace_events": {
+        "usage": 13,
+        "tool": 10,
+        "intervention": 4,
+        "route": 1,
+        "stop": 1
+      },
+      "trace_interventions": {
+        "plan": 1,
+        "plan_first": 1,
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "verify_rc": 0,
+      "verify_out": "PASS: TTL reset on update, live-only len(), expired gets do not bump recency, expired entries reclaimed before live eviction, and LRU order correct",
+      "error": null,
+      "workspace": "(cleaned)",
+      "engine_warnings": [
+        "[engine] WARNING LiteLLM: litellm: could not pre-load bedrock-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'",
+        "[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'"
+      ]
+    },
+    {
+      "id": "08-mutation-leak",
+      "title": "A cross-module mutation leak whose symptom is three modules from its cause",
+      "success": true,
+      "stop_reason": "completed",
+      "iterations": 14,
+      "routed_category": "deep_code",
+      "routed_escalated": true,
+      "degraded": false,
+      "turn_error": "",
+      "elapsed_s": 253.1,
+      "tok_per_s": 19.9,
+      "turn_cost_usd": 0.0,
+      "turn_tokens": 170171,
+      "session_cost_usd": 0.0,
+      "session_prompt_tokens": 168355,
+      "session_completion_tokens": 5037,
+      "session_total_tokens": 173392,
+      "cache_read_tokens": 158250,
+      "per_model": {
+        "openai/zds-qwen3.6-35b": {
+          "cost_usd": 0.0,
+          "prompt_tokens": 168355,
+          "completion_tokens": 5037,
+          "total_tokens": 173392
+        }
+      },
+      "compaction": {
+        "checks": 15,
+        "fired": 0,
+        "peak_context_tokens": 13962,
+        "threshold_tokens": 104857,
+        "context_window": 131072
+      },
+      "tool_surface": {
+        "exposed": 25,
+        "schema_chars": 25304
+      },
+      "knobs": {
+        "temperature": null,
+        "compact_fraction": null,
+        "tool_deny": null,
+        "rules_root": null,
+        "skills_root": null,
+        "max_completion_tokens": 8192,
+        "pin_identity": false,
+        "session_id": "300eaaa36b454e09b851e894c0a76cf5",
+        "workspace": "/tmp/zbench-08-mutation-leak-djdkmha4"
+      },
+      "tool_calls": {
+        "read_file": 8,
+        "update_plan": 4,
+        "list_dir": 3,
+        "bash": 3,
+        "edit_file": 2
+      },
+      "tool_errors": 0,
+      "trace_events": {
+        "tool": 19,
+        "usage": 14,
+        "intervention": 4,
+        "route": 1,
+        "stop": 1
+      },
+      "trace_interventions": {
+        "plan": 1,
+        "plan_first": 1,
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "verify_rc": 0,
+      "verify_out": "PASS: audit clean and still has teeth, summary correct, source records untouched, and normalize() no longer mutates its input",
+      "error": null,
+      "workspace": "(cleaned)",
+      "engine_warnings": [
+        "[engine] WARNING LiteLLM: litellm: could not pre-load bedrock-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'",
+        "[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'"
+      ]
+    }
+  ]
+}
