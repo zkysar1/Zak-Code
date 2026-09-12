@@ -7145,6 +7145,27 @@ capability: it is a lookup the model needs only when choosing a skill, and the m
 text on demand already exists one level down for bodies. That is a concrete engine target with a
 measured payoff, arrived at by building an arm for an unrelated purpose and pricing it.
 
+**CORRECTION, immediately after merge: the causal claim in this ADR's title is measured for the
+BENCH and only partly true for PRODUCTION.** The decomposition was never run on coach, and running
+it changes the size of the claim. Coach's 65 skills carry **37,013 bytes of `description:` lines**.
+Converting with the ratio measured on this exact content rather than a rule of thumb — the Mind's
+catalogue added 83,380 chars and 19,520 input tokens per iteration, so 4.27 chars/token — that is
+**~8,670 tokens, about 30% of coach's 28,950-token floor**. A composed estimate of the rest (base
+prompt ~2,500 tokens, tool schemas ~6,300) leaves roughly a third of that floor unaccounted for
+here; rules injection and a larger deployed tool set are the obvious candidates and neither was
+measured.
+
+So the accurate statement is: **the skill catalogue is 98% of the system-prompt growth in the
+bench arm (measured directly) and roughly a third of production's floor (measured, with the
+remainder unattributed).** "The skill catalogue is why" is right about the bench experiment and
+overstated about coach. The conclusions that do not move: production's floor is 3-5x the bench's,
+the catalogue is a large unpaged component of it, and paging it is a capability-free saving.
+
+The mechanism is also sharper than "skills are expensive". The cost is almost entirely
+`description:` text — 94,367 of the Mind's 98,923 catalogue chars, averaging **651 chars per
+skill**. A deployment's floor therefore scales with how verbosely its skills describe themselves,
+which is an authoring property nobody currently measures, not a fixed cost of having skills.
+
 **Caveats that travel with the numbers.** 145 is this Mind's full set and is unusually large;
 coach's 65 is the real deployment figure and was measured, not assumed. Coach's median and max
 include conversation history, so only the minimum bounds its floor. The bench figure is tokens per
