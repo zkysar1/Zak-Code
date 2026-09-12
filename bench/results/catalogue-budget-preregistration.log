@@ -1,0 +1,74 @@
+=== 19:51 PRE-REGISTRATION (CAT) -- does carrying the FULL skill catalogue hurt the 27B on tasks that never use a skill?
+Written before any run. Follows ADR-0158 fourth addendum ("the next question for small models is end-to-end"). The extreme
+is tested before the middle: if a 146-skill catalogue the model never needs costs nothing end to end, a top-K shortlist
+cannot be worth building for outcomes (only for latency/cost), and vice versa.
+
+Cells (zc-01, pod zakpod1, model zds-qwen3.8-27b, temperature 0, ZAKCODE_STABLE_PROMPT_IDENTITY=1, ZBENCH_PIN_MODE=workspace,
+ZAKCODE_HOME=/root/zbench-home, request dumps on, N=3 runs per task per arm, determinism_arm.py as the runner):
+  NONE  the bench default: no skills root, enable_skills off (no catalogue, no use_skill/save_skill tools)
+  FULL  ZBENCH_SKILLS_ROOT=/opt/mind-skills-root (Ayoai-Mind's committed .claude/skills, 146 SKILL.md, rendered catalogue
+        83,164 chars ~20k tokens on this Mind) -> enable_skills on: catalogue in the stable tier + use_skill/save_skill tools.
+        The arm therefore measures "carrying skills" as a package (catalogue + two tools), not the catalogue text alone.
+Tasks: 02-median-bug, 03-lru, 06-plugin-conventions, 07-ttl-cache, 08-mutation-leak (none needs a skill; 27B baselines today:
+02 3/3, 03 12/12, 06 3/3, 07 10/18, 08 6/6). 5 tasks x 2 arms x 3 = 30 runs. Order: per task, NONE then FULL.
+Positive control (instrument): the FULL arm's dumped system prompt carries the "Available skills" block and is >= 60,000 chars
+longer than NONE's for the same task; NONE's carries no such block. Either failing = instrument refusal, not a result.
+
+Predictions (H1: the catalogue crowds the small model):
+  P1 pooled pass count over 15 runs/arm: FULL < NONE.
+  P2 wall time: FULL median elapsed_s per run > NONE (extra prefill on every cache miss; ADR-0157 showed cache state moves).
+  P3 turns: FULL mean num_turns >= NONE; any use_skill call in a FULL run is counted (distraction into skills on a code task).
+  P4 byte-identity: unchanged by the arm -- 02/06/08 identical 3/3 in BOTH arms (the catalogue is a static prefix).
+Decision rules:
+  R1 FULL passes <= NONE passes - 3  -> the catalogue costs OUTCOMES on the 27B; the budget lever is real; build the shortlist.
+  R2 |FULL - NONE| <= 2 passes       -> no outcome effect at N=15; the lever is latency/cost only; the shortlist is not built
+                                        for outcomes (a smaller catalogue may still be shipped for latency, decided on P2).
+  R3 FULL >= NONE + 3                -> surprising; record; no claim without replication.
+  R4 P2 ratio (FULL/NONE median elapsed) > 1.25 -> latency cost is material and reported as such; <= 1.25 -> not material.
+  R5 P4 broken in FULL only (identity lost where NONE keeps it) -> the longer static prefix changes the endpoint's numerics;
+                                        record beside ADR-0157; no product change.
+  R6 any FULL run that calls use_skill -> counted and named; if >= 3 of 15 runs wander into skills, that mechanism is reported
+                                        as the cost even when R2 holds.
+Not claimed by any outcome: anything about the 35B, the coach's 58-skill catalogue, or tasks that DO need a skill (none exists
+in the bench yet). Results are appended below, stamped with the box clock.
+
+=== 19:52 LAUNCHED on zc-01 (/root/zb-cat.sh -> /root/zb-cat.log, detached). Correction: the seeded root holds 145 SKILL.md (the 146 above counted the registry on this box, which adds one skill from a second directory); the FULL catalogue is therefore 145 entries.
+
+=== 20:53 INTERIM (6 of 10 cells in; verdict withheld until all 15 runs per arm are in)
+  02: NONE 3/3 identical (78.7/26.3/25.8 s), FULL 3/3 identical (78.4/128.7/31.9 s), 6 turns everywhere.
+  03: NONE 3/3 identical on 16/18/18 turns (~405 s), FULL 3/3 but 3 distinct states (run 1 differs from runs 2-3 on lru.py;
+      test file differs on all three) -- the R5 shape, identity lost in FULL only.
+  06: NONE 3/3 identical (14 turns), FULL 0/3 (20/11/20 turns, 2 states). Cause, from the surviving workspace + dumps:
+      plugins/yaml_out.py imports pyyaml in all three FULL runs; CONTRIBUTING.md rule 1 is stdlib-only. NEITHER arm read
+      CONTRIBUTING.md; both arms read the same four files (__init__, json_out, csv_out, test_plugins). From identical evidence
+      the model mirrored the siblings stdlib convention 3/3 without the catalogue and reached for pyyaml 3/3 with it.
+      No use_skill or save_skill call in any FULL run so far (R6 not triggered); tools 27 vs 25; system prompt 93,204 vs
+      9,824 chars (positive control HOLDS, delta +83,380).
+  Pooled so far: NONE 9/9, FULL 6/9.
+
+=== 22:08 RESULTS (all 10 cells; CAT COMPLETE 22:06:24 on zc-01; JSONs determinism-zakcode-pinworkspace-temp0-<task>.CAT-<ARM>-<task>.json;
+rules applied by bench/catalogue_budget.py over those files; dump counts by /root/cat-dumps.py on zc-01)
+  task                   NONE pass  identical  med s   turns | FULL pass  identical  med s   turns | elapsed ratio
+  02-median-bug            3/3        yes       26.3    6.0  |   3/3        yes       78.4    6.0  |  2.98
+  03-lru                   3/3        yes      405.6   17.3  |   3/3        no (3)   365.1   15.3  |  0.90
+  06-plugin-conventions    3/3        yes       86.7   14.0  |   0/3        no (2)   164.9   17.0  |  1.90
+  07-ttl-cache             0/3        no (2)   316.8   14.3  |   3/3        no (3)   841.1   31.7  |  2.65
+  08-mutation-leak         3/3        yes      150.1   11.0  |   3/3        yes      211.0   11.0  |  1.41
+  pooled                  12/15                 153.2   12.5  |  12/15                 211.0   16.2  |  1.38
+Positive control HOLDS: main-loop system prompt 93,207 vs 9,827 chars (delta +83,380), skills block only in FULL, 27 vs 25 tools.
+Predictions: P1 FAILED (pooled passes equal); P2 HELD (median 1.38x, slower on 4 of 5 tasks); P3 HELD (mean turns 16.2 vs 12.5,
+carried by 06 and 07); P4 FAILED on 2 of the 4 tasks NONE reproduced (03 and 06 lost byte-identity under FULL; 02 and 08 kept it).
+Rules as written: R2 (FULL - NONE = 0 passes -> no outcome effect at N=15; the lever is latency/cost only; the shortlist is not
+built for outcomes). R4 1.38 > 1.25 -> latency cost MATERIAL. R5 identity lost in FULL only on 03-lru and 06-plugin-conventions.
+R6 not triggered: 0 use_skill and 0 save_skill calls in 15 FULL runs -- the catalogue acted purely as context.
+What the pooled count hides: two 3-to-0 reversals in opposite directions on the two tasks the 27B is marginal on (06 lost, 07 won).
+At temperature 0 with pinned prompts the three repeats of a cell are a reproducibility check, not three samples (02/06/08 NONE were
+byte-identical), so the effective replication unit is the task: 5 conditions per arm, and each reversal is one re-rolled basin --
+the 83,380-char prefix is a prompt change like any other (ADR-0157). The pre-registration counted 15 runs as if independent; this
+limitation is recorded, and the pooled R2 verdict is read as "no net effect across five tasks", not as a 15-sample estimate.
+06 mechanism (dumps): both arms read the same four files and never CONTRIBUTING.md; from identical evidence the model mirrored the
+siblings' stdlib convention 3/3 without the catalogue and imported pyyaml 3/3 with it. 07: under FULL the model roughly doubled its
+turns (30-33), added a conftest and more tests, and passed with three different programs; without it, 13-16 turns, the two failing
+linked-list designs from the C cells. Same-trajectory latency (identical turns, 02 and 08): FULL 1.4-3.0x slower per run with the
+prefix cache warm from run 2 on -- the cost of attending over ~23k extra tokens per step on the 27B, not of extra work.
+Decision recorded as ADR-0160.

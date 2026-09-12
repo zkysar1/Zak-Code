@@ -8378,3 +8378,62 @@ are noted, not folded in. This ADR is scoped to what the test suite leaks.
 **Residue.** Nothing is deleted by this change. The leaked files are inert — the transcript
 directory is a projection, not the session index — and clearing them from a real home is a
 separate, archive-first action for the box owner.
+
+## ADR-0160
+
+**Carrying the full skill catalogue on the 27B changes which marginal tasks it passes, not how many;
+it costs 1.4× wall time and two of four reproducible tasks; and three repeats at temperature 0 are a
+reproducibility check, not three samples.** 2026-09-12.
+
+ADR-0158 closed on an end-to-end question: does the catalogue's context budget matter to a small model
+at all? The extreme was tested before any shortlist was built: NONE (the bench default, no catalogue,
+no `use_skill`/`save_skill`) against FULL (`ZBENCH_SKILLS_ROOT` seeding Ayoai-Mind's 145 skills — a
+93,207-character system prompt against 9,827, 27 tools against 25) on `zds-qwen3.8-27b`, temperature
+0, stable identity, pinned workspace, five tasks that never need a skill, three runs each.
+Pre-registered 19:51 in `catalogue-budget-preregistration.log`; launched 19:52; complete 22:06; rules
+applied by `bench/catalogue_budget.py` over the ten `*.CAT-*.json` files.
+
+| task | NONE pass | identical | median s | turns | FULL pass | identical | median s | turns | s ratio |
+|---|---|---|---|---|---|---|---|---|---|
+| 02-median-bug | 3/3 | yes | 26.3 | 6 | 3/3 | yes | 78.4 | 6 | 2.98 |
+| 03-lru | 3/3 | yes | 405.6 | 17.3 | 3/3 | no (3 states) | 365.1 | 15.3 | 0.90 |
+| 06-plugin-conventions | 3/3 | yes | 86.7 | 14 | **0/3** | no (2) | 164.9 | 17 | 1.90 |
+| 07-ttl-cache | **0/3** | no (2) | 316.8 | 14.3 | **3/3** | no (3) | 841.1 | 31.7 | 2.65 |
+| 08-mutation-leak | 3/3 | yes | 150.1 | 11 | 3/3 | yes | 211.0 | 11 | 1.41 |
+| pooled | 12/15 | | 153.2 | 12.5 | 12/15 | | 211.0 | 16.2 | **1.38** |
+
+The positive control held (skills block only in FULL, +83,380 characters). No FULL run called
+`use_skill` or `save_skill`: the catalogue acted purely as context.
+
+**Rules as written.** R2: FULL − NONE = 0 passes — no outcome effect; the shortlist is **not built
+for outcomes**. R4: 1.38 > 1.25 — the latency cost is **material**. R5: byte-identity lost under
+FULL on 03 and 06, kept on 02 and 08. R6: not triggered. Predictions: P1 (fewer passes) failed;
+P2 (slower) held; P3 (more turns) held, carried by 06 and 07; P4 (identity unchanged) failed on two
+of four.
+
+**What the pooled count hides, and the design flaw it exposes.** The two tasks the 27B is marginal
+on reversed 3-to-0 in opposite directions: it lost 06 and won 07. Both arms' 06 runs read the same
+four files and never `CONTRIBUTING.md`; from identical evidence the model mirrored the sibling
+renderers' stdlib convention three times without the catalogue and imported pyyaml three times with
+it. On 07 the FULL arm doubled its turns, added a conftest and more tests, and passed with three
+different programs where the bare arm produced the afternoon's two failing designs. Neither is a
+capability effect that survives the other; each is one re-rolled basin — the 83k-character prefix is
+a prompt change like any other (ADR-0157, sixth addendum). At temperature 0 with pinned prompts the
+three repeats of a cell are a *reproducibility* measurement (02, 06 and 08 were byte-identical
+under NONE), so the replication unit is the task and the arm compared five conditions, not fifteen
+samples. The pre-registration counted runs as if independent. R2 is therefore read as "no net
+effect across five tasks", and the rule for the next arm is written down: **replicate across
+prompt conditions, not across repeats of one**.
+
+**Same-trajectory latency.** On 02 and 08 both arms took identical turn counts, and FULL was still
+1.4–3.0× slower with the prefix cache warm from the second run on. That is the cost of attending
+over roughly 23k extra tokens on every decode step of a 27B, not the cost of extra work — the part of
+the budget a shortlist would recover.
+
+**Decision.** (1) The shortlist is not built for outcomes. (2) It is worth building **for latency
+and reproducibility** on small models: a 20-entry shortlist keeps routing within 4 points (ADR-0158
+third addendum), cuts the prefix by roughly 80%, and this arm says the prefix costs 1.4× wall time
+and reproducibility on two of four tasks. That build is pre-registered as a latency arm on
+same-trajectory tasks, with the routing cost carried as its known price. (3) A 27B deployment that
+never uses skills should not carry the catalogue; that is already the bench default and is now a
+measured recommendation. (4) Nothing in the loop changes on this ADR.
