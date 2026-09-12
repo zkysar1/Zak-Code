@@ -193,3 +193,76 @@ Decision rules: R5 P4 holds -> the seed is a reproducible re-roll; ship it behin
 regardless of P5, since same-seed reproducibility is the property being sold). R6 P4 fails -> the seed introduced variation the
 hash cannot have; instrument or code defect; do not ship until found. R7 P5 fails (C4 program == C1 program) -> run one more cell
 with seed reroll-2 (C4b) and report the collision rate honestly; R5 still decides shipping. R8 instrument refusals are not results.
+
+=== 15:46 C3 RESULT (arm verdict, zc-01 log 15:44:23): 07-ttl-cache on the 35B, per-workspace key: 2 DISTINCT byte-states in 3 runs, turns
+17/9/12, verify 1/0/0 (run-1 FAIL cache.py afb0b9fc.., runs 2-3 PASS e981ef1a.. -- identical on every file despite 9 vs 12 turns).
+P3 HOLDS (2 < 3; identical was not predicted). R3 applies: the lever is established on the 27B only. First-divergence classes:
+run-1 vs run-2 and run-1 vs run-3 = PROVIDER at the model FIRST response on identical wire input INCLUDING the key (relative read
+vs absolute read) -- the class R2 called provider-side nondeterminism at temperature 0; run-2 vs run-3 = ENVIRONMENT (pytest
+0.01s vs 0.02s at call 7), a different path (9 vs 12 turns) to the SAME bytes -- first measured case of the timing line moving the
+trajectory and not the product. The TOPK arm loaded this same 35B engine with other keys throughout.
+H-FIRSTRUN: the outlier is the FIRST request under a key on that engine (prefix-cache MISS, full-prefill numerics); later runs are
+HITs on the state run-1 left. The 27B near-ties were insensitive to that difference (C1/C2/D3 run-1 matched runs 2-3); the 35B on 07
+is not.
+
+=== 15:46 PRE-REGISTRATION (C5) -- does the 35B on 07 have exactly two states under one key (miss path, hit path)?
+Cell: C3 repeated unchanged (07-ttl-cache, zds-qwen3.6-35b, flag ON, PIN_MODE=workspace, temp 0, seedless ws-key = C3 key, N=3,
+dumps on), queued on zc-01 behind C4 (seed build installed; the seedless key is byte-identical under it).
+Predictions: P6 every C5 run lands in one of exactly the two C3 states {afb0b9.. FAIL, e981ef1a.. PASS}; no third state. Which state
+each run takes is NOT predicted (TOPK churn on the same engine can evict the prefix between runs).
+Decision rules: R9 a third state -> H-FIRSTRUN is insufficient: the 35B varies beyond miss/hit at temperature 0; record, and make no
+product claim for the 35B on this task. R10 only the two states -> H-FIRSTRUN survives; product statement narrows to reproducible
+from the second run under a key on a warm engine, first run may differ -- to be tested directly with a cold-vs-warm cell.
+R11 instrument refusals (rc 4/5) are not results.
+
+=== 15:46 C3 run-1 FAILURE NAMED (program reconstructed from its dump: three write_file calls, linked-list _Node design, 4,144 bytes):
+verify.py -> "FAIL: T4: len() returned 2 with every entry expired; it must count LIVE entries only" (rule 6). Both failing programs
+seen today -- C1 on the 27B (rule 7) and C3 run-1 on the 35B (T4) -- chose the hand-rolled doubly-linked list at their first code
+write; the passing D1 program chose OrderedDict. The near-tie the key/cache state resolves is a DESIGN choice, and one design
+family carries the rule-interaction traps this task was built around.
+
+=== 16:23 C4 RESULT (arm verdict, zc-01 log 16:14:26): 07-ttl-cache, 27B, seed reroll-1: 2 DISTINCT byte-states, turns 16/28/16, verify 1/0/1.
+P4 FAILS (byte-identical 3/3 was predicted). R6 asked for the cause before any further claim -- found in the dumps: runs 1 and 3 are
+identical on every shared call (18 calls each); run-2 first differs at the model THIRD response on byte-identical input INCLUDING the key
+(the plan-step text it wrote: "0/2 steps ... File must contain" vs "0/1 steps ... File contains"), surfacing in the loop-built
+auxiliary call 4. That is the C3 class -- provider-side variation under a constant key -- not a seed defect: the seed cannot vary a
+hash. So the overclaim is the OTHER half of #408: "every run with the same seed stays byte-identical" holds only as far as the
+endpoint reproduces under a constant key, and today that is 3/3 in D3, C1, C2 and 2-states in C3, C4 (5 constant-key cells, 2 split;
+neither split is a first-run effect -- C4 odd run is run-2). Correction PR to follow (CONFIG.md + config comment); no code change.
+P5 FAILS too, and harder than R7 anticipated: C4 runs 1 and 3 are byte-for-byte C1 program (cache.py 1d1f1a1e, 16 turns, rule 7
+failure) under a DIFFERENT key. The key value does not select the basin; the basin is the model modal output for this prompt on the
+pod as it stands, and D1 two passing programs (5fb5a1fc x2, 318ed1a3; ~14:2x, before the TOPK re-measurement loaded the pod)
+came from a different endpoint state. R7 applies as written: C4b with seed reroll-2, queued behind C5.
+=== 16:23 PRE-REGISTRATION (C4b): C4 with ZAKCODE_PROMPT_CACHE_SEED=reroll-2, N=3. P7 at least 2 of 3 runs produce cache.py 1d1f1a1e
+(the modal program is key-independent). P8 any split is again a model response on identical input (provider class), never the key.
+R12 P7 holds -> the seed is documented as a different KEY, not a different basin; the re-roll story is retired from CONFIG.md.
+R13 P7 fails with a new program on 2+ runs -> the key does influence the basin sometimes; report the rate over C1/C4/C4b (9 runs,
+3 keys). R14 refusals are not results.
+
+=== 16:24 TIME-SHIFT OBSERVATION (27B, 07, identical prompt bytes, temp 0, every key scheme):
+  ~14:1x-14:3x fresh keys (first 27B cell): 318ed1a3, 318ed1a3, 5fb5a1fc -- all PASS
+  ~14:3x       fresh keys (D1):             5fb5a1fc, 318ed1a3, 5fb5a1fc -- all PASS
+  ~14:4x       zero key + id line (D3):     02b9e3ab x3 -- PASS
+  15:01-15:21  ws-key (C1):                 1d1f1a1e x3 -- FAIL (rule 7)
+  15:44-16:14  seeded key (C4):             1d1f1a1e, bc1ed879, 1d1f1a1e -- FAIL/PASS/FAIL
+The modal program for this prompt moved from the passing pair {5fb5a1fc, 318ed1a3} to the failing 1d1f1a1e around 15:00, across
+two different constant keys, while zakcode sent identical bytes. So which basin is served is a property of the ENDPOINT STATE at the
+time (what else it is serving, what its caches hold), not of anything zakcode sends; a constant key raises the reproduction rate
+(3 of 5 constant-key cells fully identical vs 0 of 3 fresh-key cells) but cannot fix the basin. The reproducibility ceiling on this
+pod is the pod own numerics; the lever beyond zakcode is on the pod (deterministic batching / single slot), which is the pod
+owner call (guard-4809: never restart engines from here). C5 and C4b decide the shape of the residual before this is written up.
+
+=== 16:49 C5 RESULT (arm verdict, zc-01 log 16:47:56): C3 repeated (35B, 07, same ws-key): PRIMARY 3 DISTINCT byte-states, turns 26/23/27,
+verify 3/3 PASS, files 7/8/7. P6 FAILS: none of the runs landed in a C3 state -- cache.py is a FOURTH program, c3ed4651 (OrderedDict),
+and it is the SAME in all three runs; the distinct states come from files beside the deliverable (breakdown recorded next). R9
+applies as written: H-FIRSTRUN is insufficient, the 35B varies beyond miss/hit at temperature 0, no product claim for the 35B on this
+task. First divergences, all provider-class on identical input including the key: run-1 vs run-2 at the model 2nd response (plan
+prose, surfacing in auxiliary call 4); run-1 vs run-3 at the 6th response (update_plan outcome prose); the code they wrote agreed.
+The TOPK re-measurement was streaming other-key requests into this same 35B engine throughout (TOPK10 -> TOPK20).
+
+=== 17:11 C4b RESULT (arm verdict, zc-01 log 17:08:37): seed reroll-2, 27B, 07: 2 DISTINCT states, turns 16/16/13, verify 0/3. cache.py
+1d1f1a1e, 1d1f1a1e, ace5ad58. P7 HOLDS (2 of 3 = the C1 program; runs 1-2 retrace C1 byte-for-byte, 18 calls). P8 HOLDS (run-3
+leaves at the model 5th response on identical input, call 6). R12 applies: the seed is a different KEY, not a different basin; the
+re-roll story is retired -- and the field with it (a knob whose measured effect is nil is removed, not documented). Tally, 07 on the
+27B under three constant keys (C1, C4, C4b): 7 of 9 runs retrace one failing trajectory; the two odd runs leave at responses 3 and 5.
+Under constant keys across the day: fully identical cells 3 of 7 (D3, C1, C2); deliverable identical 4 of 7 (+C5).

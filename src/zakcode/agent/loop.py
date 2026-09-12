@@ -2073,17 +2073,9 @@ class AgentLoop:
         reproduced 3/3 once the key was held constant -- the pod's prefix-cache routing perturbs a
         near-tie token. A per-workspace key keeps the affinity purpose (every run of one workspace
         lands on one engine) and removes the per-run variation.
-
-        ``prompt_cache_seed`` folds into the hash: a stable key can just as well freeze a WRONG
-        program (ADR-0157 fifth addendum -- one key reproduced a failing solution 3/3 on a task
-        that three fresh keys had all passed), and the seed is the way to re-roll that near-tie
-        while every run with the same seed stays byte-identical.
         """
         if self.settings.stable_prompt_identity:
-            material = str(self.workspace_root)
-            if self.settings.prompt_cache_seed:
-                material = f"{material}\n{self.settings.prompt_cache_seed}"
-            digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+            digest = hashlib.sha256(str(self.workspace_root).encode("utf-8")).hexdigest()[:16]
             return f"zakcode/ws-{digest}"
         return f"zakcode/{self.session.id}"
 

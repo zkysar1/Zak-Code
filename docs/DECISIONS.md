@@ -7973,6 +7973,60 @@ addendum.
 **Standing table** gains the two rows above. Still open: the 35B on the long task (C3), and the
 timing-line residual on a task long enough for it to move bytes.
 
+### ADR-0157 SIXTH ADDENDUM — the ceiling is the endpoint's: the seed is withdrawn and the claim restated (2026-09-12)
+
+Four more pre-registered cells (`determinism-model27b-preregistration.log`: C3–C5, C4b), real-user
+cell, N=3, request dumps on, zc-01, with the TOPK re-measurement streaming other-key requests
+into the 35B engine throughout:
+
+| cell | task, model | key | distinct byte-states | `cache.py` | verify | where the odd run leaves |
+|---|---|---|---|---|---|---|
+| C3 | 07, 35B | ws | 2 | 2 programs | 2 / 3 | the model's 1st response |
+| C5 (= C3 again) | 07, 35B | ws | 3 | **1** program (the fourth seen today) | 3 / 3 | 2nd and 6th responses — the *tests* it wrote differ, the program does not |
+| C4 | 07, 27B | ws + seed 1 | 2 | 2 programs | 1 / 3 | 3rd response |
+| C4b | 07, 27B | ws + seed 2 | 2 | 2 programs | 0 / 3 | 5th response |
+
+Every odd run leaves at a **model response to byte-identical input, key included** (the dumps,
+compared without normalisation). Nothing zakcode sends differs between the runs of one cell any
+more — that half of this ADR is finished. What remains is the endpoint's: on a self-hosted pod a
+near-tie token at temperature 0 resolves by whatever numerics the engine has at that moment
+(batch composition, cache state), and no client controls that.
+
+**The key value does not choose the basin — the seed is withdrawn.** Seven of nine runs under
+three different keys (C1, C4, C4b) retraced one 18-call trajectory byte-for-byte and left the same
+failing program (`1d1f1a1e`); the two that did not diverged at the third and fifth responses, never
+at the first. A different key is therefore not a different basin, and the fifth addendum's
+`prompt_cache_seed` — shipped an hour earlier as a reproducible re-roll — does what a hash does
+and nothing a user needs. This change removes it (field, docs row, test). A knob whose measured
+effect is nil is worse than no knob; the fifth addendum stands as the dated record of why it was
+tried, and the pre-registered rule for this outcome (R12) is applied one step further than it was
+written.
+
+**The basin is the endpoint's state.** On this prompt the 27B's modal program moved during the
+day while zakcode's bytes did not: before 15:00, two passing programs (`5fb5a1fc`, `318ed1a3`; 9
+of 9 runs) and, under the pin-both key, a third (`02b9e3ab`, 3 of 3); from 15:01, the failing
+`1d1f1a1e` (10 of 15 runs) beside one passing and two failing alternatives. That also corrects the
+fourth addendum's capability line: the 27B's 12/12 on 02/06/07/08 was a morning sample, and over
+the day `07` stands at **10 passes in 18 runs** (02, 06 and 08 unchanged at 3/3, 3/3, 6/6).
+
+**Constant keys help less than the fourth addendum implied.** Fully identical cells: 0 of 3 under
+fresh keys (D1, D2, the first 27B cell) against 3 of 7 under constant keys (D3, C1, C2 — not C3,
+C4, C4b, C5); but D1's fresh keys also shared a program in 2 of 3 runs, so at these N the key's
+own contribution is modest. The per-workspace key stays: it removes the last per-run input on our
+side and costs nothing. It is not a reproduction guarantee.
+
+**Restated claim (this supersedes the "reproduces 3/3" reading of the fourth addendum).** With
+`ZAKCODE_TEMPERATURE=0` and `ZAKCODE_STABLE_PROMPT_IDENTITY=1`, zakcode sends byte-identical
+requests for byte-identical work, and every remaining run-to-run difference begins inside the
+endpoint. On zakpod1 today: byte-identical 3/3 in 3 of 7 constant-key cells, the deliverable
+identical in 4 of 7, and the 35B's variation on the long task confined to the tests it wrote. The
+lever beyond this ADR is on the pod — engine-side determinism (one slot, a fixed batch
+composition) — and it is measurable with these same cells the day it is switched on.
+
+**Residuals, still documented and unshipped:** the pytest timing line moved a trajectory twice
+today (C1 at call 17; C3 runs 2–3, 9 versus 12 turns to identical bytes) and never changed a
+deliverable.
+
 ## ADR-0158
 
 **Small-model skill selection is driven by description fidelity; catalogue size, description
