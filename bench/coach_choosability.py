@@ -16,6 +16,53 @@ ROOTS = [Path("/opt/coach-mind/.claude/skills"), Path("/opt/coach-mind/.zakcode/
 VOID_BELOW = 0.45
 
 
+# --- verbatim copy of bench/_frontmatter.py (SSOT); tests/test_bench_frontmatter.py pins the two to one AST ---
+_KEY = re.compile(r"^description:[ \t]*(.*)$", re.M)
+YAML_INDICATORS = frozenset({">", ">-", ">+", "|", "|-", "|+"})
+
+
+def read_description(text: str) -> str | None:
+    """The ``description:`` value of a SKILL.md front matter, folded to ONE line.
+
+    Handles plain scalars, quoted scalars, and block scalars (``>``/``|`` with a chomping
+    indicator), whose continuation lines are the indented lines that follow. A multi-line plain
+    scalar's indented continuation lines are folded in the same way. Returns ``None`` when there
+    is no description or it is empty -- never the indicator itself.
+    """
+    m = _KEY.search(text)
+    if not m:
+        return None
+    first = m.group(1).strip()
+    rest = text[m.end() :].splitlines()[1:]  # lines after the ``description:`` line
+    continuation: list[str] = []
+    for line in rest:
+        if line.strip() == "":
+            continue  # a blank line inside a block folds to nothing; it does not end the block
+        if not line.startswith((" ", "\t")):
+            break
+        continuation.append(line.strip())
+    if first in YAML_INDICATORS:
+        return " ".join(continuation).strip() or None
+    if len(first) >= 2 and first[0] == first[-1] and first[0] in "\"'":
+        first = first[1:-1].strip()
+    folded = " ".join([first, *continuation]).strip()
+    return folded or None
+
+
+def assert_sane(entries: list[tuple], min_chars: int = 12) -> None:
+    """Refuse a catalogue whose descriptions include a YAML indicator or (near-)empty text.
+
+    An instrument that renders ``- name: >-`` does not error; it measures something else and
+    reports it with full confidence. ``entries`` are ``(name, description, ...)`` tuples.
+    """
+    bad = [e[0] for e in entries if not e[1] or e[1] in YAML_INDICATORS or len(e[1]) < min_chars]
+    if bad:
+        raise RuntimeError(
+            f"catalogue instrument failure: {len(bad)} skill(s) with a missing, indicator-only or "
+            f"<{min_chars}-char description: {bad[:8]}{' ...' if len(bad) > 8 else ''}"
+        )
+
+
 def entries():
     out, seen = [], set()
     for r in ROOTS:
@@ -23,10 +70,11 @@ def entries():
             if sk.parent.name in seen:
                 continue
             h = sk.read_text(encoding="utf-8", errors="replace")[:6000]
-            m = re.search(r"^description:\s*(.+)$", h, re.M)
-            if m:
+            desc = read_description(h)
+            if desc:
                 seen.add(sk.parent.name)
-                out.append((sk.parent.name, m.group(1).strip(), sk))
+                out.append((sk.parent.name, desc, sk))
+    assert_sane(out)
     return out
 
 
