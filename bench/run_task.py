@@ -17,6 +17,7 @@ cost/permission API WITHOUT any LLM call (cheap API smoke).
 """
 from __future__ import annotations
 
+import asyncio
 import collections
 import json
 import os
@@ -25,7 +26,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
+from typing import Any
 
 
 def _ensure_interpreter_on_path() -> None:
@@ -366,6 +369,53 @@ def preflight(task_dir: Path) -> int:
         shutil.rmtree(ws, ignore_errors=True)
 
 
+def _drive_turn(agent: Any, prompt: str) -> Any:
+    """Run one turn through the driver ``ZBENCH_DRIVER`` names.
+
+    ``buffered`` (default) is ``run_turn`` -- the driver every bench number before 2026-09-12 came
+    from. ``stream`` is ``astream_turn`` -- the driver the CLI, the server and the client run, i.e.
+    production. The stream's terminal ``AgentDone`` mirrors ``TurnResult`` except for
+    ``assistant_messages`` / ``tool_results``, which are recovered from the session messages the
+    turn appended, so the report reads the same fields either way. Pre-registered as ARM D
+    (``bench/results/driver-parity-preregistration.log``): the question is whether the numbers the
+    buffered driver produced transfer to the driver production runs.
+    """
+    driver = os.environ.get("ZBENCH_DRIVER", "buffered")
+    if driver == "buffered":
+        return agent.run_turn(prompt)
+    if driver != "stream":
+        raise SystemExit(f"ZBENCH_DRIVER must be 'buffered' or 'stream', got {driver!r}")
+    before = len(agent.session.messages)
+
+    async def _go() -> Any:
+        done = None
+        async for ev in agent.astream_turn(prompt):
+            if getattr(ev, "event", None) == "done":
+                done = ev
+        if done is None:
+            raise RuntimeError("stream driver ended without an AgentDone event")
+        return done
+
+    done = asyncio.run(_go())
+    new = agent.session.messages[before:]
+    return types.SimpleNamespace(
+        stop_reason=done.stop_reason,
+        iterations=done.iterations,
+        routed_category=done.routed_category,
+        routed_escalated=done.routed_escalated,
+        degraded=done.degraded,
+        error=done.error,
+        usage=done.usage,
+        trace=done.trace,
+        open_steps=done.open_steps,
+        assistant_messages=[m for m in new if m.role == "assistant"],
+        tool_results=[
+            b for m in new for b in m.blocks if getattr(b, "type", None) == "tool_result"
+        ],
+    )
+
+
+
 def run(task_dir: Path) -> int:
     spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     if os.environ.get("ZBENCH_PIN_IDENTITY") == "session":
@@ -423,7 +473,7 @@ def run(task_dir: Path) -> int:
     trace_interventions: dict = {}
     t0 = time.perf_counter()
     try:
-        result = agent.run_turn(spec["prompt"])
+        result = _drive_turn(agent, spec["prompt"])
         stop_reason = result.stop_reason
         iterations = result.iterations
         routed_category = result.routed_category
@@ -490,6 +540,7 @@ def run(task_dir: Path) -> int:
         "id": spec["id"],
         "title": spec.get("title", ""),
         "success": success,
+        "driver": os.environ.get("ZBENCH_DRIVER", "buffered"),
         "stop_reason": stop_reason,
         "iterations": iterations,
         "routed_category": routed_category,
