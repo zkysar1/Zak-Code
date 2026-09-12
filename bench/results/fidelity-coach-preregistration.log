@@ -1,0 +1,56 @@
+PRE-REGISTRATION -- does DESCRIPTION FIDELITY replicate on coach?   2026-09-12
+Written at 11:24, BEFORE any coach per-skill data exists. The coach FULL arm ran
+once (58.3%, 2026-09-12 ~10:27) but persisted only aggregates; per-skill scores
+have never been seen.
+
+WHY REPLICATE
+  The fidelity finding (rho +0.637 coverage-vs-accuracy, 50-point tertile spread)
+  rests on ONE catalogue, ayoai-mind's 140 skills. Two catalogues is not
+  "generalizes" -- it is "did not break on the second one" -- but one catalogue is
+  a single observation, and the arc has already retired three drivers that looked
+  solid on one catalogue.
+
+CONSTRAINTS (unchanged from the ADR-0155 coach run)
+  Coach's skill text never leaves zc-03. The script runs ON the box, stdlib only,
+  and prints correlations, tertile means and counts -- never a description, a
+  query, or a skill name. Coverage is computed on-box from the same tokenizer BM25
+  uses. Pod credentials come from /etc/zakcode/.env via _dotenv(), never printed.
+
+CO-TENANCY, stated because the last run repeated the lesson
+  The TOPK eval holds the pod (shortlist arms, ~7s/query). Coach FULL is 192
+  prefix-cached queries at ~1s each -- a 3-4 minute burst. It costs TOPK latency,
+  not correctness: the provider reproduces 5/5 byte-identically at temp 0 under
+  load (probe_provider_determinism.py), and the determinism load control
+  reproduced IDENTICAL under this same TOPK load. Accepted and recorded.
+
+MEASURE (identical to description_fidelity.py, ported to stdlib)
+  Per skill: mean over its 3 queries of (query tokens present in name+description)
+  / (query tokens), same tokenizer as BM25. Outcome: FULL-catalogue accuracy per
+  skill, re-run now with per-skill persistence. Sanity: BM25 recall@20 per skill.
+
+PREDICTIONS, fixed before data
+  C0 FULL reproduces: within 5 points of the prior 58.3%. VOID below 45%.
+  C1 (sanity) coverage vs BM25 recall@20: rho >= +0.15. Near-tautological; if it
+     fails the on-box coverage port is broken and NOTHING else counts.
+  C2 (the test) coverage vs FULL accuracy: rho >= +0.15, positive.
+  C3 tertile spread (highest-third FULL accuracy minus lowest-third) >= 25 points
+     -- half the 50 observed on ayoai-mind, a boundary strictly inside the
+     predicted direction (guard-5645), not at the observed value.
+  C4 F3 holds again: rho(C2) < rho(C1) -- the model is less lexical than BM25.
+
+DECISION RULES
+  C0 fails -> the arm drifted or the instrument broke; no verdict on anything.
+  C1 fails -> coverage port broken; no verdict on C2-C4.
+  C2 AND C3 hold -> fidelity REPLICATES on an independent catalogue. The ADR may
+     say "on both catalogues measured", never "generalizes".
+  C2 holds, C3 fails -> replicates in DIRECTION, weaker in magnitude. Report both
+     numbers; the ayoai-mind spread does not transfer as a magnitude.
+  C2 fails -> DOES NOT REPLICATE. The fidelity finding is SCOPED to ayoai-mind's
+     catalogue, and that scoping goes in the ADR headline, not a footnote. Do not
+     rescue it by changing the coverage measure until one correlates.
+
+WHAT THIS CANNOT DO
+  64 skills, 192 queries. A correlation on n=64 has wide uncertainty; no CI is
+  computed for rho and none will be quoted. Still no causal claim -- only a
+  rewrite arm separates "low coverage causes failure" from "low coverage marks
+  ambiguous skills".
