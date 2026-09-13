@@ -8722,3 +8722,86 @@ letter is kept and the data are stated beside it.)
    file) follows as hardening; L4–L6 wait for tasks whose contract lives in tests or in other convention files.
 3. **Wall time on the shared pod is not a per-run measurement.** Report medians, and separate driver from pod
    with interleaved controls; a single slow run is a stall until proven otherwise.
+
+
+## ADR-0164: a turn-1 workspace survey in the prompt — review lever L2, measured
+
+**Date:** 2026-09-13 · **Status:** Accepted (setting ships opt-in, default off) · **Pre-registration:** `bench/results/workspace-survey-preregistration.log`
+(00:01, before any code existed) · **Change:** `src/zakcode/agent/prompt.py` (`workspace_survey`,
+`SURVEY_MAX_ENTRIES`, `SURVEY_MAX_DEPTH`, the fold), `src/zakcode/config.py` (`context_workspace_survey`),
+`tests/test_prompt.py`, `docs/CONFIG.md` · **Results:** `bench/results/*.ARME-SURVEY-*.json` (arm E), `*.ARME2-SURVEY-*.json` (replication on the fixed build), `*.ARME3-NOSURVEY-*.json` (load control).
+
+### Why
+
+The determinism review (ADR-0163) ranked a workspace survey as the next model-free lever: on 06 as it shipped
+the 35B spent its first three tool calls on `list_dir` (root, `plugins`, `tests`) and the 27B did the same;
+every m-task trajectory opens with a listing or a read; Claude Code opens with `find <ws> -type f`. Handing
+every model that listing costs one directory walk at prompt build and removes the turns a small model spends
+discovering what a frontier model discovers faster.
+
+### The change
+
+`workspace_survey(root)` walks the workspace top-down with directory names sorted at every level, prunes with
+the same ignore rules `list_dir` applies (`.git`, `__pycache__`, virtualenvs, `.gitignore` / `.zakcodeignore`),
+stops at depth 3, lists at most 150 files as workspace-relative POSIX paths, and says how many it listed of
+how many it saw. `SystemPromptBuilder` folds it into the dynamic tier after the project-context files when
+`context_workspace_survey` is on, and snapshots it **once per builder and workspace**: the survey describes the
+workspace the task started in, so the cached prefix does not move between the turns of a session (a file the
+agent creates is not re-listed — the model knows what it wrote). Setting default: **off** — `context_workspace_survey=false`, env `ZAKCODE_CONTEXT_WORKSPACE_SURVEY`.
+
+### Pre-registered rules and results
+
+E1 outcomes hold on every task; E2 06 and 02 finish in fewer median turns than their reference cells by at
+least the listing calls the survey replaces (06 ≥2, 02 ≥1); E3 m01–m05 outcomes hold and turns do not
+increase; E4 bytes change versus the references (the prompt changed) but hold within each cell; E5 the survey
+block stays under 2,000 characters on these workspaces. Verdict rule: E1 & E2 & E3 & E4 → ship default-on;
+E1 & E3 & E4 without E2 → keep the setting default-off; any of E1/E3/E4 failing → refuse.
+
+**Arm E (35B, N=3, `.busy` still listed):** E1 held on all seven tasks; E2 held (06 median 13 → 9, 02 7 → 6);
+E3 held (m01 4 → 3, m04 median 4 → 3, m02/m03/m05 unchanged); E5 held (135 chars on 06, 61 on 02; system
+prompt 10,930 → 11,067 chars). **E4 failed** on 06 (run 3 diverged after the first pytest call, whose output
+carries pytest's clock, into a 25-turn `-W error` investigation and a different, passing emitter) and on m04
+(`count.md` digest differs between run 1 and runs 2–3; content not captured — see instrument note). The system
+prompt was byte-identical across the three 06 runs (sha `8264e62555`), so the survey itself is deterministic.
+The dumps also showed the listing carried `.busy` — zakcode's own say-inbox lease marker — ahead of
+`CONTRIBUTING.md`: fixed (`_SURVEY_HIDDEN`), test added, replication queued on the fixed build.
+
+**Arm E2 (fixed build, 06 + 02, N=3):** 06 **0/3**, turns [8, 8, 8], byte-identical, system prompt sha
+`c355028b6e` in all three runs, no `.busy`; 02 3/3, turns [7, 6, 6], two output states (run 1 kept the two
+`# BUG:` comment lines). The only difference between the E and E2 main-turn prompts is the listing line
+`.busy` and the count (11,067 → 11,061 chars). With that line the 35B opened `CONTRIBUTING.md` as its fifth
+read in 3/3 runs and wrote a `- ` list emitter that round-trips; without it, it skipped the read in 3/3 runs and
+wrote an emitter that renders every row as bare `key: value` lines, so the verifier's round-trip returns only
+the last row. Neither emitter imports yaml; the rule text has been in the prompt since ADR-0162 and the file
+holds no output-format example, so the read added no information — the emitter design is a near-tie decided
+by context shape (ADR-0160's class, now at the granularity of one prompt line).
+
+**Arm E3 (no-survey load control, same build, back to back):** 06 3/3, turns **[56, 9, 9]**, two output
+states — run 1 stopped `recipe_stalled` after 470 s in the same `python -m plugins.yaml_out` RuntimeWarning
+rabbit hole as E's run 3 and still passed; runs 2–3 wrote a third emitter (`091a99d3`) in 9 turns where the
+same prompt wrote `0c2bf7b9` in 13 turns three hours earlier (ADR-0162, 3/3 identical). m04 3/3, turns [4, 3, 4], **byte-identical to the ADR-0161/0162 cell**: the pod reproduces a wide-basin task
+exactly in the same minutes it moves 06 between basins, so tonight's instability is confined to the near-tie.
+
+| cell | prompt | verify | turns | within-cell bytes |
+|---|---|---|---|---|
+| ADR-0162 (22:5x) | no survey | 3/3 | 13, 13, 13 | identical |
+| E (00:03) | survey, `.busy` listed | 3/3 | 9, 9, 25 | 2 states |
+| E2 (00:19) | survey, `.busy` hidden | **0/3** | 8, 8, 8 | identical |
+| E3 (00:24) | no survey | 3/3 | 56, 9, 9 | 2 states |
+
+**Reading, by the pre-registered letters.** E2-1 fails (06 0/3); E2-2 fails on 02; E2-4 holds. EL2: a
+no-survey cell flips within itself, so the pod is not batch-invariant at near-ties for any prompt tonight — E4
+is not evaluable, and the E3 cell's own drift from ADR-0162's bytes says the same. The 00:01 verdict rule
+("any of E1/E3/E4 failing → refuse") is met twice over: refuse default-on.
+
+### Decision
+
+The survey ships as an **opt-in setting, default off**, with the `.busy` fix and its tests; nothing in the
+default prompt changes, so every ADR-0161/0162/0163 cell stays comparable. It stays a lever worth re-running
+under a quiet pod (same rules, same cells, N≥3, outcomes first), because the turn savings were real on every
+task it touched. Two findings outlive the arm and go into `docs/DETERMINISM-REVIEW.md` as **F9**: (1) a
+model-free prompt lever is a basin move — it must be scored on outcomes at N≥3 on the near-tie tasks (06 on
+the 35B is the sentinel), never on turns or bytes alone; (2) the durable fix for a near-tie is a check the
+model cannot skip (L4/L6: a round-trip or project test the loop runs), not a better prompt — the E2 emitter
+passed the model's own pytest run and failed only the verifier. Instrument: `determinism_arm.py` now
+captures every small text file in `sources`, so the next m04-style digest difference is inspectable.

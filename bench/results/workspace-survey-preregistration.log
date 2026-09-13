@@ -1,0 +1,109 @@
+=== 00:01 UTC 2026-09-13 PRE-REGISTRATION -- ARM E (review lever L2): a turn-1 workspace survey folded into the prompt, model-free
+Motivation (ADR-0161 dumps, ADR-0163 review F2/L2): on 06 as it shipped the 35B spent its first three tool calls on
+list_dir (root, plugins, tests) and the 27B the same; every m-task trajectory opens with a listing or a read. Claude
+Code opens with `find <ws> -type f`. A capped, ignore-aware survey of the workspace in the system prompt hands every
+model that listing for free. Deterministic by construction; the question is what it buys and what it costs.
+Design: prompt.py gains `workspace_survey(root, *, max_entries, max_depth)` -- os.walk under the workspace root,
+IgnoreSpec-filtered (the same rules list_dir applies: .git, __pycache__, node_modules, venvs, .zakcodeignore/.gitignore),
+sorted, depth-capped (3) and count-capped (150 entries; a truncation line states N shown of M). Rendered in the
+dynamic tier after the project-context files as "Workspace files (N of M, depth <= 3): ...". Snapshotted ONCE per
+builder+workspace (the first build) so the prefix stays byte-stable across the turns of one session: the survey
+describes the workspace the task STARTED in; files the agent creates are not re-listed (the model knows what it wrote).
+Setting `context_workspace_survey` (env ZAKCODE_CONTEXT_WORKSPACE_SURVEY), default OFF for the arm; ships default-on
+only if E1 and E2 hold. Cells: SURVEY vs the ADR-0162/0163 buffered cells (same build otherwise), 35B, N=3, temp 0,
+identity, pinned: 06-plugin-conventions, 02-median-bug (the two long trajectories), m01-m05 (control).
+Rules:
+  E1  outcomes hold on every task (3/3 stays 3/3) -- a survey that flips an outcome is refused, whatever the turns.
+  E2  06 and 02 finish in FEWER turns (median) than their reference cells (06: 13, 02: 7), by at least the listing
+      calls it replaces (06: >= 2 fewer; 02: >= 1 fewer). Wall time reported but not a rule (pod-minute property).
+  E3  m01-m05: outcomes hold; turns must not INCREASE on any task (a survey that distracts a 3-turn task is a cost).
+  E4  bytes are expected to CHANGE on every task (the prompt changed); byte identity WITHIN each cell must hold
+      (3/3 identical) or the survey is nondeterministic (ordering, mtime leakage) and is refused.
+  E5  prompt growth measured from dumps on 06: the survey block's size in chars; must stay < 2,000 chars on these
+      workspaces (they are small; the cap is what bounds a real repo).
+Prediction: E1 holds; E2 holds on 06 (13 -> 10 or 11) and probably on 02 (7 -> 6); E3 holds; E4 holds; E5 holds.
+Verdict rule: E1 & E2 & E3 & E4 -> ship default-on (ADR-0164); E1 & E3 & E4 but not E2 -> keep the setting,
+default off, record; any of E1/E3/E4 failing -> refuse.
+
+=== 00:13 UTC 2026-09-13 ARM E INTERIM + ARM E2 PRE-REGISTRATION (E2 queued behind the running chain; the build for it is staged, not yet swapped in)
+Interim, 06 SURVEY cell (00:03-00:10): verify 3/3 (E1 holds), turns 9 / 9 / 25 (median 9 vs 13: E2 holds by median),
+within-cell bytes DIFFER on plugins/yaml_out.py (run 3) -> E4 FAILS as written. Mechanism check from the dumps: the
+system prompt is byte-identical across the three runs (sha 8264e62555), so the survey itself is deterministic;
+runs 1 and 3 are identical through their first 10 tool calls and diverge right after the first pytest call, whose
+output carries pytest's clock -- the ADR-0152 residual at a near-tie decision (run 3 then spent 15 bash calls on a
+`-W error` import-warning investigation before converging to a different, passing emitter). E4's remedy clause
+("the survey is nondeterministic ... refused") presumed a mechanism the dumps falsify; the rule's LETTER still fails,
+and the pre-registered verdict for this arm therefore cannot be "ship". Two further findings from the same dumps:
+the survey listed `.busy` -- zakcode's own say-inbox lease marker written into the workspace root -- ahead of
+CONTRIBUTING.md (a defect: fixed, `_SURVEY_HIDDEN` hides .busy/.current-session/.run-stop-reason, test added);
+and with the listing in the prompt the 35B opened CONTRIBUTING.md on its own (5th read) in every run.
+ARM E2 (replication on the fixed build; staged at /opt/zak-code-stage/src on zc-01, swapped in only after the ARME
+marker): 06 and 02 SURVEY cells, 35B, N=3, dumps on, same env.
+  E2-1 outcomes hold (3/3 each).
+  E2-2 within-cell byte identity holds on BOTH -> the 00:10 flip was a pod-minute event on a near-tie; E4 is then
+       satisfied on the replication and the verdict rule of 00:01 applies to E2's cells together with E's m01-m05 rows.
+  E2-3 a within-cell flip recurs on 06 -> the survey moves 06 onto a near-tie basin (ADR-0160 class: the prompt
+       decides which marginal basin a task sits in); keep the setting default-off; record; no third attempt tonight.
+  E2-4 system prompt on 06 must no longer contain ".busy" (positive control for the fix), and the survey block must
+       be byte-identical across runs (as in E).
+Prediction: E2-1 holds; E2-2 vs E2-3 -- no prediction (one flip in three runs is not a rate).
+
+=== 00:20 UTC 2026-09-13 ARM E LOAD CONTROL (E3) PRE-REGISTRATION -- queued behind E2 on zc-01
+Arm E final rows (00:18): E1 holds on all seven tasks; E2 holds (06 median 13 -> 9, 02 7 -> 6); E3 holds (m01 4 -> 3,
+m04 median 4 -> 3, others unchanged, none longer); E5 holds (survey block 135 chars on 06, 61 on 02); E4 FAILS on 06
+(run 3 diverged after the first pytest call) AND on m04 (count.md differs between run 1 and runs 2-3 by its trailing
+bytes only -- the model's last token flipped on a byte-identical prompt, 3/3/3 turns). Verdict as pre-registered:
+REFUSE default-on. Both flips are near-tie flips on byte-identical prompts, which tonight's ~60 earlier cells never
+showed; the pod may be nondeterministic under its current load rather than the survey moving tasks onto near-ties.
+E3 control, same build (the survey is OFF by default, so its prompt is the ADR-0162 prompt), 35B, N=3:
+  06-plugin-conventions NO-survey, then m04-assert-not-hedge NO-survey, back to back after E2's cells.
+  EL1  both no-survey cells within-cell IDENTICAL (as at 22:5x/23:0x) while E2's survey cells flip -> the survey
+       moves these tasks onto near-tie basins (ADR-0160 class); keep default-off; record.
+  EL2  a no-survey cell ALSO flips within itself now -> the pod is currently non-batch-invariant at near-ties for
+       ANY prompt; E4 is not evaluable tonight; keep default-off; re-run arm E under a quiet pod (a later night).
+  EL3  no-survey identical AND E2's survey cells identical -> the 00:10 flips were a pod-minute event; the 00:01
+       verdict rule applies to the E2 cells with E's m01-m05 rows -> ship default-on.
+Prediction: none between EL1/EL2; EL3 is the hoped-for reading, not a prediction.
+  CORRECTION (00:20): the 'trailing bytes only' reading of m04 above is WITHDRAWN -- determinism_arm.py captures
+  `sources` for Python files only, so count.md's content is not in the JSON (len 0 in both runs); the fact is a digest
+  difference on count.md between run 1 and runs 2-3 with 3/3/3 turns, content unknown. Instrument gap noted for ADR-0164.
+
+=== 00:28 UTC 2026-09-13 ARM E2 RESULTS (fixed build, prompt.py sha bb341dba8feb, 35B, N=3, dumps on; ran 00:19:01-00:24:34)
+  06-plugin-conventions SURVEY: verify 0/3 (E: 3/3; ADR-0162 no-survey: 3/3), turns [8, 8, 8], within-cell IDENTICAL,
+     system prompt sha c355028b6e in all three runs, contains ".busy" = False, wall [96.1, 74.9, 74.6] s.
+  02-median-bug SURVEY: verify 3/3, turns [7, 6, 6], within-cell DIFFER (2 output states: run 1 kept the two
+     "# BUG: ..." comment lines in stats.py, runs 2-3 removed them; both correct), system prompt sha aa3642e990 in all
+     three runs, contains ".busy" = False, wall [30.2, 30.5, 25.7] s.
+  E2-1 FAILS on 06 (0/3), holds on 02.   E2-2 holds on 06, FAILS on 02.   E2-3 (a flip recurring ON 06) did not
+  occur as written: 06 is identical but sits in a FAILING basin; the within-cell flip moved to 02.   E2-4 holds.
+  Verdict by the letter of the 00:01 rule ("any of E1/E3/E4 failing -> refuse"): E1 fails on 06 under the fixed
+  build -> REFUSE default-on; keep the setting default-off (E2-3's remedy clause, the closest match); no third
+  attempt tonight. E3 (no-survey control) decides only whether the pod is currently trustworthy (EL1 vs EL2);
+  EL3 is already excluded by E2-1 and E2-2.
+  Measured cause (dumps): the ONLY difference between the E and E2 main-turn system prompts is the listing line
+  ".busy" and the count "(6" -> "(5" (11,067 -> 11,061 chars). With that line present the 35B opened CONTRIBUTING.md
+  as its 5th read in 3/3 runs and wrote a "- " list emitter (round-trips); without it the model skipped that read
+  in 3/3 runs and wrote an emitter that renders each row as bare "key: value" lines with no list marker, so the
+  verifier's round-trip returns only the last row. Neither emitter imports yaml (rule 1 held in all six runs --
+  the rule text is in the system prompt since ADR-0162, and CONTRIBUTING.md carries no output-format example), so
+  the extra read added no information: the emitter design is a near-tie decided by context shape. ADR-0160 class,
+  now measured at the granularity of ONE prompt line. The 02 flip (7 vs 6 turns on a byte-identical prompt) is the
+  pod-side residual seen at 00:10 on 06 and on m04.
+
+=== 00:37 UTC 2026-09-13 ARM E3 RESULTS (no-survey load control, same build bb341dba8feb, 35B, N=3; ran 00:24:44-00:36:00)
+  06-plugin-conventions NO-survey: verify 3/3, turns [56, 9, 9] (ADR-0162 reference [13, 13, 13]), within-cell DIFFER
+     (2 states), wall [470.7, 79.1, 66.7] s. Run 1 stopped recipe_stalled at 56 turns inside the same
+     "python -m plugins.yaml_out" RuntimeWarning investigation as E's run 3 (warnings.filterwarnings + ImportError
+     stubs in its emitter) and still passed; runs 2-3 wrote a third emitter (yaml_out.py 091a99d3, 1,749 chars) in 9
+     turns where the same prompt wrote 0c2bf7b9 (2,049 chars) in 13 turns at 22:5x. No dumps in this cell; "same
+     prompt" is by construction (the survey is off by default and nothing else in _build_context changed).
+  m04-assert-not-hedge NO-survey: verify 3/3, turns [4, 3, 4], within-cell IDENTICAL and byte-identical to the
+     ADR-0161/0162 reference cell, wall [13.5, 33.3, 12.2] s.
+  EL1 not met (06 flipped). EL2 MET by the letter: a no-survey cell flips within itself -> the pod is not
+  batch-invariant at near-ties tonight; E4 is not evaluable; keep default-off; re-run arm E under a quiet pod.
+  EL3 excluded (already by E2-1/E2-2). Measured beside the letter: the instability is confined to 06 -- m04
+  reproduces exactly in the same minutes -- so "for ANY prompt" in EL2 reads "for any prompt on a near-tie task".
+  The m04 SURVEY flip at 00:17 (count.md) therefore has no control explanation at N=3: either the survey prompt
+  put m04 on a near-tie or it was a pod minute; recorded, not decided.
+  FINAL VERDICT (E + E2 + E3): REFUSE default-on, by outcomes (E2-1: 06 0/3 on the fixed build vs 3/3 without,
+  back to back) and by E4 (not evaluable). The setting ships opt-in, default off, with the .busy fix. ADR-0164.

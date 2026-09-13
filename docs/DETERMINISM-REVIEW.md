@@ -115,12 +115,28 @@ is why routing never entered the head-to-head; on the coach (zakpick, classify o
 selection, catalogue size costs 1.4× wall time and reproducibility on a 27B, shortlisting is a cost
 lever only. Nothing new here; the review just declines to re-open it.
 
+**F9 — A model-free prompt lever is a basin move, not a free win (ADR-0164).** The workspace survey
+(L2) is deterministic code and saved turns on every task it touched; it also flipped 06 on the 35B from
+3/3 to 0/3, byte-identical both times, between two builds whose main-turn system prompts differ in
+**one listing line** (a zakcode lease marker hidden, 11,067 → 11,061 chars). With the line the model
+opened `CONTRIBUTING.md` as a fifth read and wrote a `- ` list emitter; without it, it skipped the read
+and wrote a flat `key: value` emitter whose round-trip keeps only the last row. The read carried no
+information (the rule text is already in the prompt since ADR-0162; the file has no format example): the
+emitter design is a near-tie decided by context shape. Consequence for the smaller-model goal: every
+prompt-side lever, including the ones ranked model-free in §5, must be scored on **outcomes** at N≥3 on
+the near-tie tasks (06 on the 35B is the sentinel), never on turns or bytes alone; and the durable fix for
+a near-tie is a check the model cannot skip (L4/L6: a round-trip or project test the loop runs), not a
+better prompt. The pod adds its own residual on byte-identical prompts (02 7 vs 6 turns, m04's `count.md`),
+which the no-survey control in the same log measured directly: without the survey, 06 flipped within its own
+cell too (56 / 9 / 9 turns, a third emitter where ADR-0162 had 13 / 13 / 13) while m04 reproduced ADR-0162's
+bytes exactly — the pod's instability is confined to the near-tie task, and E4 was not evaluable that night.
+
 ## 5. Levers, ranked
 
 | # | Lever | Property (§1) | Seam | How it is measured | Status |
 |---|---|---|---|---|---|
 | L1 | **One turn driver** (or a standing driver-parity cell in the bench) | reproducible, enforced | `loop.py` `_run_turn` / `astream_turn` | ARM D byte identity; then the full suite + bench byte identity as the refactor's control | ARM D running |
-| L2 | **Turn-1 workspace survey** — capped, ignore-aware file tree folded into the dynamic tier | model-free | `prompt.py` `_build_context` | turns and wall time on 06/02 (same-trajectory latency arm, ADR-0160's design); outcomes must hold; bytes will change | pre-register next |
+| L2 | **Turn-1 workspace survey** — capped, ignore-aware file tree folded into the dynamic tier | model-free | `prompt.py` `_build_context` | turns and wall time on 06/02 (same-trajectory latency arm, ADR-0160's design); outcomes must hold; bytes will change | **measured (ADR-0164): refused default-on** — turns fell (06 13→9, 02 7→6, m01 4→3) but 06's outcome flipped 3/3→0/3 on a one-line change to the listing; shipped as the opt-in `context_workspace_survey` (F9) |
 | L3 | **`edit_file` refuses a path not read this session** (a write of the same path counts) | enforced | pre-execution veto seam (`loop.py:4292` class) — in both drivers | no regression on m01–m05/06/02; refusal counter in the results JSON | after L1 |
 | L4 | **Auto-derived `verify_command`** (detect `pytest`/`pyproject`/`Makefile test`) | model-free | `VerificationGate` construction | tasks whose tests encode the contract; needs at least one new task of that shape | needs tasks |
 | L5 | **More convention filenames** (`pyproject.toml [tool.*]`, `Makefile` targets, `.editorconfig`) | model-free | `CONVENTION_FILENAMES` | needs a task whose rule lives in such a file | needs tasks |
@@ -143,3 +159,6 @@ descriptions with the 35B (ADR-0158 fourth addendum).
   a `kind=` intervention so the census can see it fire.
 * `determinism_arm.py` stores the verifier's tail under `verify_out` and the stop reason under
   `stop_reason` since ADR-0161; older JSONs carry the stop reason in `verify_out`.
+* `determinism_arm.py` captures `sources` for every small text file (`.py`, `.md`, `.txt`, `.csv`,
+  `.json`, `.toml`, `.yaml`, `.cfg`, `.ini`, ≤4 KB) since ADR-0164; before that only `*.py`, so ADR-0164's
+  m04 digest difference on `count.md` is a difference of unknown content.

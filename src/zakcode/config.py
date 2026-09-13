@@ -332,6 +332,14 @@ class Settings(BaseSettings):
     context_include_readme: bool = Field(
         default=True, description="Fold the workspace README.md into the agent's project context."
     )
+    # Turn-1 workspace survey: a capped, ignore-aware listing of the workspace folded into the
+    # project context once per session (review lever L2, ADR-0164). A small model otherwise
+    # spends its first tool calls on list_dir (ADR-0161). Default off until the pre-registered
+    # arm reports; the bench turns it on per cell.
+    context_workspace_survey: bool = Field(
+        default=False,
+        description="Fold a capped, ignore-aware workspace file survey into the project context.",
+    )
     # Render the mind's behavioral RULES as a COMPACT INDEX (one line per rule: name + summary +
     # path) instead of the full concatenated bodies — the "Vinheim Lever A" lean path. The index is
     # ~8x smaller (~1.35k vs ~8.2k tokens for 30 rules) AND more complete (the full render drops

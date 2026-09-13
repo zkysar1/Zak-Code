@@ -23,6 +23,7 @@ Usage:  ./.venv/bin/python bench/determinism_cc.py bench/tasks/02-median-bug [N]
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import itertools
 import json
@@ -55,17 +56,25 @@ def _digest_tree(ws: Path) -> dict[str, str]:
     return out
 
 
+_SOURCE_SUFFIXES = (".py", ".md", ".txt", ".csv", ".json", ".toml", ".yaml", ".yml", ".cfg", ".ini")
+
+
 def _capture_sources(ws: Path) -> dict[str, str]:
-    """Text of the task's own small source files. A digest says THAT two runs differ; only the
+    """Text of the task's own small output files. A digest says THAT two runs differ; only the
     content says HOW, and 'differs in a comment' and 'differs in the algorithm' are not the same
-    finding. Bounded at 4 KB/file so this can never become the reason a run is unaffordable."""
+    finding. Bounded at 4 KB/file so this can never become the reason a run is unaffordable.
+
+    Captured Python only until ADR-0164: an m-task whose output is a ``count.md`` produced a
+    within-cell digest difference that could not be inspected afterwards (both sources empty).
+    Now every small text file the task can write; binaries are skipped by the decode error."""
     out: dict[str, str] = {}
-    for p in sorted(ws.rglob("*.py")):
-        if "__pycache__" not in p.parts:
-            try:
-                out[str(p.relative_to(ws))] = p.read_text(encoding="utf-8")[:4096]
-            except (OSError, UnicodeDecodeError):
-                pass
+    for p in sorted(ws.rglob("*")):
+        if not p.is_file() or p.suffix not in _SOURCE_SUFFIXES or "__pycache__" in p.parts:
+            continue
+        if any(part.startswith(".") for part in p.relative_to(ws).parts):
+            continue  # zakcode's own markers / VCS dirs are not task output
+        with contextlib.suppress(OSError, UnicodeDecodeError):
+            out[str(p.relative_to(ws))] = p.read_text(encoding="utf-8")[:4096]
     return out
 
 

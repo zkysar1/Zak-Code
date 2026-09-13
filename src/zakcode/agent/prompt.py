@@ -29,11 +29,13 @@ discovery, and no provider/vendor imports.
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 from pathlib import Path
 
 from zakcode.config import PermissionTier, Settings
 from zakcode.tools.base import ToolSpec
+from zakcode.tools.builtins._ignore import load_ignore
 
 #: Marker separating the stable (cacheable) prefix from the dynamic context suffix.
 #: A provider's cache breakpoint is positioned here; nothing above it may change mid-session.
@@ -60,6 +62,19 @@ CONVENTION_FILENAMES = ("CONTRIBUTING.md",)
 #: ``Settings.context_include_readme`` is on. Read ONLY at the workspace root — a README is a
 #: project-root file, so (unlike the guides) the ancestor chain is not searched for it.
 README_FILENAME = "README.md"
+
+#: Turn-1 workspace survey (review lever L2, ADR-0164): a capped, ignore-aware listing of the
+#: workspace folded into the dynamic tier when ``Settings.context_workspace_survey`` is on, so a
+#: small model gets for free what it otherwise spends its first tool calls on (ADR-0161 dumps:
+#: three ``list_dir`` calls before the first read on 06). Depth- and count-capped so a real repo
+#: cannot flood the prompt; snapshotted once per builder+workspace so the cached prefix stays
+#: byte-stable across the turns of one session.
+SURVEY_MAX_ENTRIES = 150
+SURVEY_MAX_DEPTH = 3
+#: zakcode's own runtime markers in the workspace root (the say-inbox busy lease, the server's
+#: current-session and run-stop-reason files). They are not project files, and the first survey
+#: cell listed `.busy` ahead of CONTRIBUTING.md (ADR-0164) -- hidden at any depth.
+_SURVEY_HIDDEN = frozenset({".busy", ".current-session", ".run-stop-reason"})
 
 #: Markers that identify a project (VCS) root. The context-file ascent stops here, INCLUSIVE: a
 #: guide ABOVE the project — ``~/CLAUDE.md``, a shared-box ``/home/.../AGENTS.md`` the operator
@@ -229,6 +244,9 @@ class SystemPromptBuilder:
         self.extra_instructions = extra_instructions
         self.rules = rules
         self.output_style = output_style
+        # One survey per workspace per builder: the prefix must not move between the turns of
+        # a session (see ``workspace_survey``).
+        self._survey_cache: dict[str, str] = {}
 
     def build(
         self,
@@ -345,6 +363,13 @@ class SystemPromptBuilder:
         )
         if context_files:
             sections.append(context_files)
+
+        if settings.context_workspace_survey:
+            key = str(settings.workspace_root)
+            if key not in self._survey_cache:
+                self._survey_cache[key] = workspace_survey(Path(settings.workspace_root))
+            if self._survey_cache[key]:
+                sections.append(self._survey_cache[key])
 
         if extra_context and extra_context.strip():
             sections.append("Additional context:\n" + extra_context.strip())
@@ -494,6 +519,56 @@ def discover_context(
     return discovered
 
 
+def workspace_survey(
+    root: Path, *, max_entries: int = SURVEY_MAX_ENTRIES, max_depth: int = SURVEY_MAX_DEPTH
+) -> str:
+    """A deterministic, ignore-aware listing of the files under ``root``.
+
+    Walks top-down with directory names sorted at every level (so the order is a property of the
+    tree, not of the filesystem), prunes ignored directories with the same :class:`IgnoreSpec`
+    rules ``list_dir`` applies (``.git``, ``__pycache__``, virtualenvs, ``.gitignore`` /
+    ``.zakcodeignore`` patterns), stops descending at ``max_depth``, and lists at most
+    ``max_entries`` files as workspace-relative POSIX paths. The header says how many were listed
+    of how many were seen within the depth cap. Returns ``""`` for a missing or empty root, and
+    never raises: an unreadable directory is skipped.
+    """
+    try:
+        base = Path(root).resolve()
+    except OSError:
+        return ""
+    if not base.is_dir():
+        return ""
+    try:
+        ignore = load_ignore(base)
+    except Exception:  # a malformed ignore file must not take the prompt down
+        ignore = None
+
+    listed: list[str] = []
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(base, onerror=lambda _e: None):
+        here = Path(dirpath)
+        rel = here.relative_to(base)
+        depth = len(rel.parts)
+        kept: list[str] = []
+        for name in sorted(dirnames):
+            if ignore is not None and ignore.is_ignored_path(here / name, base, is_dir=True):
+                continue
+            kept.append(name)
+        dirnames[:] = kept if depth + 1 < max_depth else []
+        for name in sorted(filenames):
+            if name in _SURVEY_HIDDEN:
+                continue
+            if ignore is not None and ignore.is_ignored_path(here / name, base, is_dir=False):
+                continue
+            seen += 1
+            if len(listed) < max_entries:
+                listed.append((rel / name).as_posix())
+    if not listed:
+        return ""
+    shown = f"{len(listed)} of {seen}" if seen > len(listed) else f"{seen}"
+    return f"Workspace files ({shown}, depth <= {max_depth}):\n" + "\n".join(listed)
+
+
 __all__ = [
     "AGENT_GUIDE_FILENAMES",
     "CONVENTION_FILENAMES",
@@ -501,6 +576,9 @@ __all__ = [
     "MAX_CONTEXT_FILE_CHARS",
     "MAX_CONTEXT_TOTAL_CHARS",
     "README_FILENAME",
+    "SURVEY_MAX_DEPTH",
+    "SURVEY_MAX_ENTRIES",
+    "workspace_survey",
     "SystemPromptBuilder",
     "discover_context",
 ]
