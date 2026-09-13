@@ -98,7 +98,10 @@ from zakcode.session.framework_signal import (
     framework_agent_mode,
     set_framework_signal,
 )
-from zakcode.session.framework_stop import request_framework_stop
+from zakcode.session.framework_stop import (
+    framework_stop_complete,
+    request_framework_stop,
+)
 from zakcode.session.observation_inbox import (
     CHANGES_SLICE,
     KIND_CHANGE,
@@ -1955,6 +1958,9 @@ def create_app(
     #: a hard cap. Clamped, the digest simply gets the whole remaining window.
     effective_reserve = 0.0
     run_stopping = asyncio.Event()
+    # Monotonic deadline while the mind runs its OWN graceful stop; None when no raise
+    # is in flight. Opened once by `_begin_framework_stop`, read by `_keep_beating`.
+    framework_stop_until: float | None = None
     run_ended = asyncio.Event()
 
     def _arm_run_deadlines() -> None:
@@ -2162,6 +2168,44 @@ def create_app(
             logger.warning("framework stop raise failed (%s: %s)", type(exc).__name__, exc)
             return False
 
+    async def _begin_framework_stop() -> None:
+        """Raise the mind's own stop ONCE and open the window it needs to run it.
+
+        Idempotent across the three callers that can end a run (the human's
+        ``/run/stop``, the mid-turn cap watcher, the between-beats cap check) so they
+        share ONE window rather than each restarting the grace.
+        """
+        nonlocal framework_stop_until
+        if framework_stop_until is not None:
+            return
+        if await _raise_framework_stop():
+            framework_stop_until = time.monotonic() + _framework_stop_grace()
+
+    def _keep_beating() -> bool:
+        """Whether the say consumer gets another beat.
+
+        THE DEFECT THIS EXISTS FOR (g-373-16, measured on two live dev vessels):
+        raising a framework stop writes signals the mind reads at the TOP of its next
+        beat (Phase -1.4). Setting `run_stopping` in the same breath ended the loop
+        before that beat could happen, so the mind NEVER read the signal it had just
+        been sent -- `stop-requested` landed, `stop-loop` and `handoff.yaml` never
+        appeared, and the vessel died at grace expiry with no consolidation. The
+        served process IS the mind's only reader (`zakcode-serve.service` runs one
+        unit), so stopping the beat removes the reader.
+
+        While a raise is in flight we therefore keep beating, bounded BOTH ways: the
+        mind's own sign-off ends the wait early, and the grace ends it at all. A
+        wedged mind can never hold a paid vessel open -- which is why the grace is
+        checked FIRST and the filesystem read only after.
+        """
+        if framework_stop_until is not None:
+            if time.monotonic() >= framework_stop_until:
+                return False
+            return not framework_stop_complete(
+                resolved_settings.workspace_root, resolved_settings.run_stop_agent or ""
+            )
+        return not run_stopping.is_set()
+
     async def _watch_turn_deadline() -> None:
         """Raise the workspace interrupt when the cap lands MID-turn.
 
@@ -2183,7 +2227,8 @@ def create_app(
             if turn_deadline is None or not inflight:
                 continue
             if time.monotonic() >= turn_deadline:
-                if await _raise_framework_stop():
+                await _begin_framework_stop()
+                if framework_stop_until is not None:
                     # The mind is now ending itself. Keep watching, but only to BOUND it:
                     # the interrupt stops being the ending and becomes the backstop for an
                     # overrun. A stop that lands inside its grace never sees an interrupt,
@@ -2209,7 +2254,7 @@ def create_app(
         _arm_run_deadlines()
         deadline_watcher = asyncio.create_task(_watch_turn_deadline())
         try:
-            while not run_stopping.is_set():
+            while _keep_beating():
                 # Read the CLOCK, never a remembered timestamp, and read it on this
                 # process's own monotonic base so a wall-clock adjustment mid-run can
                 # neither shorten nor extend a paid run.
@@ -2221,7 +2266,15 @@ def create_app(
                 # the work nobody comes back to — and the digest turn IS that return.
                 if turn_deadline is not None and time.monotonic() >= turn_deadline:
                     run_stop_reason = "duration_cap"
-                    break
+                    # The cap can land BETWEEN beats, where the mid-turn watcher never
+                    # fires (it skips whenever nothing is `inflight`), so the raise has
+                    # to happen here too or the cap path ends with no graceful stop at
+                    # all. Idempotent when the watcher already opened the window.
+                    await _begin_framework_stop()
+                    # No window (not a framework seed, or the raise failed) => the
+                    # ending is exactly what it was before this change: break now.
+                    if framework_stop_until is None or not _keep_beating():
+                        break
                 try:
                     ran = await _consume_one_say()
                 except asyncio.CancelledError:
@@ -2324,7 +2377,7 @@ def create_app(
             # A human ending the run IS the framework's /stop. Raise it before the loop
             # winds down so the mind consolidates and hands off, rather than being
             # cancelled mid-thought; `_graceful_stop_budget` holds the door for it.
-            await _raise_framework_stop()
+            await _begin_framework_stop()
             run_stopping.set()
         return {"stopping": True, "reason": run_stop_reason}
 
