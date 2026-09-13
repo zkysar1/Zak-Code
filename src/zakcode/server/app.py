@@ -1517,6 +1517,17 @@ def create_app(
         """
         if request.envelopeVersion != OBSERVATION_ENVELOPE_VERSION:
             _observation_stats["refused_bad_version"] += 1
+            # LOG EVERY REFUSAL, not just the accepts. P4 makes failure on this channel a
+            # SILENT DROP by design, so a receiver that logs only successes leaves an
+            # operator unable to tell "no vessel is sending" from "every frame is being
+            # rejected" — the two states look identical in serve.log. WARNING, not INFO:
+            # a refusal is the actionable half.
+            logger.warning(
+                "perception-intake REFUSED ref=%s reason=bad_version got=%s want=%s",
+                request.externalClientRef,
+                request.envelopeVersion,
+                OBSERVATION_ENVELOPE_VERSION,
+            )
             # Refuse rather than best-effort parse: acting on a mis-read frame is worse
             # than acting on no frame, and P4 already makes the absent case safe.
             raise HTTPException(
@@ -1529,11 +1540,20 @@ def create_app(
         ref = (request.externalClientRef or "").strip()
         if not ref:
             _observation_stats["refused_missing_ref"] += 1
+            logger.warning("perception-intake REFUSED ref=<missing> reason=missing_ref")
             raise HTTPException(status_code=400, detail="externalClientRef required")
 
         payload = json.dumps(request.observation, ensure_ascii=False, sort_keys=True)
         if len(payload) > OBSERVATION_MAX_CHARS:
             _observation_stats["refused_too_large"] += 1
+            # Sized, not just named: an operator who can see the overshoot can decide
+            # whether the vessel's budget is wrong or the cap is.
+            logger.warning(
+                "perception-intake REFUSED ref=%s reason=too_large chars=%d cap=%d",
+                ref,
+                len(payload),
+                OBSERVATION_MAX_CHARS,
+            )
             # The vessel budgets and names what it shed in droppedSlices; this is the
             # receiver's independent floor, because P4 makes producer cooperation optional.
             raise HTTPException(
