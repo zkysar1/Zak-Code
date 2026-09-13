@@ -1,0 +1,62 @@
+=== 23:22 UTC 2026-09-12 PRE-REGISTRATION -- ARM D: does the bench measure the turn driver production runs?
+Finding that motivates this (determinism review, inventory pass): src/zakcode/agent/loop.py carries TWO turn drivers --
+`_run_turn` (buffered, ~1,376 lines) behind the sync `run_turn()` the bench calls (bench/run_task.py:426), and
+`astream_turn` (streaming, ~1,738 lines) that the CLI, the server and the client use -- i.e. what the coach runs. A
+static census finds the same 36 intervention kinds in both, but the streaming driver calls helpers the buffered one
+does not (`_prompt_cache_key`, `_rejection_retry_temperature`, `_retry_delay`, `_busy_lease`, `_anchor_prompt`,
+`_execute_tool_call` vs `_call_provider`/`_execute_batch`). Every bench number in ADR-0147..0162 was produced by the
+buffered driver. Whether those numbers transfer to production is therefore an EMPIRICAL question, and a cheap one.
+Design: add ZBENCH_DRIVER=stream to bench/run_task.py -- when set, the task is driven through `astream_turn` (the
+production driver) and the same report fields are derived from the final event; default stays `run_turn`. Same build
+(main @ b0ee395), same env as the H2H/ARMC cells (35B, temp 0, identity, pinned workspace, no catalogue), N=3.
+Tasks: m01-m05, 06-plugin-conventions (its ARMC cell = run_turn reference), 02-median-bug (ADR-0157 reference cell
+re-run on run_turn tonight so both drivers are measured on the same build).
+Rules:
+  D1  every task byte-identical across drivers (stream cell digests == run_turn cell digests, all runs) AND same
+      verify outcomes AND same turn counts -> the bench measures production's driver; prior ADRs transfer as-is.
+  D2  any task whose bytes differ across drivers -> named, with the first differing file; outcomes compared; a
+      differing task with the SAME outcome is a determinism finding (two code paths, two basins), a differing
+      OUTCOME is an instrument-validity finding that goes into the review as its first item.
+  D3  a stream cell that cannot produce a report (no final event, exception) is an instrument refusal, not a result.
+Prediction: D1 holds on m01, m03, m04, m05 (short, 3-4 turns); 06 and 02 and m02 are where a helper-path
+difference (retry temperature, cache key timing) could show, so no prediction on those beyond "outcomes hold".
+
+=== 23:37 UTC 2026-09-12 ARM D ADDENDUM (registered while the chain runs; the control cells start only after ARMD COMPLETE)
+Observed so far: stream cells match the buffered ones in outcome and turn count (m01 4/4/4, m02 7/7/7, m03 4/4/4) but
+take 3-5x the wall time (m03: 57/70/97 s stream vs 16/18/33 s buffered at 23:05). Two explanations, not separable
+from the chain's own timing because the buffered references ran 30 min earlier: (a) pod load rose (the coach is live);
+(b) the streaming driver is slower per turn on this box (per-token event handling on a 2 GB box, or the SSE path).
+Control (queued as /root/zb-armd-lat.sh, runs after the ARMD marker): m03 buffered N=3, then m03 stream N=3, then m03
+buffered N=3 again, back to back on the same pod minute. Rules:
+  DL1  median stream / median(buffered before, buffered after) >= 2.0 with the two buffered cells within 1.5x of each
+       other -> the DRIVER is slower; goes into the review as F1's latency half (production pays it; the bench never saw it).
+  DL2  the buffered cells are themselves >= 2x slower than at 23:05 -> pod load; the stream numbers above are not the
+       driver's. DL3  neither -> inconclusive at N=3; report.
+Prediction: none -- both mechanisms are plausible.
+
+=== 23:55 UTC 2026-09-12 ARM D RESULTS (chain 23:25:18-23:54:43 on zc-01, main@b0ee395 + the ZBENCH_DRIVER knob in bench/run_task.py; box clock)
+  m01-stale-doc-negative   bytes IDENTICAL | verify stream [0, 0, 0] buf [0, 0, 0] | turns stream [4, 4, 4] buf [4, 4, 4] | stop stream ['completed'] buf ['completed'] -> D1
+  m02-ambiguous-zero       bytes IDENTICAL | verify stream [0, 0, 0] buf [0, 0, 0] | turns stream [7, 7, 7] buf [7, 7, 7] | stop stream ['completed'] buf ['completed'] -> D1
+  m03-minimal-diff         bytes IDENTICAL | verify stream [0, 0, 0] buf [0, 0, 0] | turns stream [4, 4, 4] buf [4, 4, 4] | stop stream ['completed'] buf ['completed'] -> D1
+  m04-assert-not-hedge     bytes IDENTICAL | verify stream [0, 0, 0] buf [0, 0, 0] | turns stream [4, 3, 4] buf [4, 3, 4] | stop stream ['completed'] buf ['completed'] -> D1
+  m05-read-before-edit     bytes IDENTICAL | verify stream [0, 0, 0] buf [0, 0, 0] | turns stream [3, 3, 3] buf [3, 3, 3] | stop stream ['completed'] buf ['completed'] -> D1
+  06-plugin-conventions    bytes IDENTICAL | verify stream [0, 0, 0] buf [0, 0, 0] | turns stream [13, 13, 13] buf [13, 13, 13] | stop stream ['completed'] buf ['completed'] -> D1
+  02-median-bug            bytes IDENTICAL | verify stream [0, 0, 0] buf [0, 0, 0] | turns stream [7, 7, 7] buf [7, 7, 7] | stop stream ['completed'] buf ['completed'] -> D1
+  VERDICT: D1 holds on every task -- the bench measures production's driver
+  Per cell (stream): m01 4/4/4 turns 22/37/80 s; m02 7/7/7 109/80/70 s; m03 4/4/4 57/70/97 s; m04 4/3/4 69/114/71 s;
+  m05 3/3/3 45/40/87 s; 06 13/13/13 159/173/127 s; 02 7/7/7 58/72/29 s. Buffered 02 reference: 7/7/7, 30/34/37 s.
+  D1 HOLDS ON EVERY TASK: 21 streaming runs, every file byte-identical to the buffered cell, same verify outcomes,
+  same turn counts (including m04's 4/3/4 pattern, which reproduces across drivers), same stop reasons. No D3
+  refusal: the knob produced a report on all 21 runs. Prediction held on m01/m03/m04/m05; 06/02/m02 also D1.
+  So every bench number in ADR-0147..0162 transfers to the driver the coach runs. The two drivers differ in wall
+  time in this chain (stream 2-5x slower per run); whether that is the driver or the pod's load at 23:30-23:55 is
+  the addendum's control (ARMDLAT, running).
+
+=== 23:59 UTC 2026-09-12 ARM D LATENCY CONTROL RESULT (23:54:56-23:58:02 on zc-01; box clock)
+  buffered-1 15.4/14.3/14.2 s (med 14.3) | stream 14.3/14.3/14.2 s (med 14.3) | buffered-2 70.9/14.3/14.2 s (med 14.3);
+  turns 4/4/4 in all nine runs. stream/buffered = 1.00; buffered spread 1.00; buffered vs the 23:05 reference 0.79x.
+  By the pre-registered letter this is DL3 (neither DL1's >=2.0 ratio nor DL2's persistent load), and the letter
+  undersells the data: measured back to back, THE STREAMING DRIVER COSTS NOTHING (ratio 1.00 at N=3), and the
+  chain's 2-5x came from the shared pod -- a 70.9 s stall appeared inside the buffered-2 cell too, in a run that is
+  byte-identical to its 14 s neighbours. Wall time on this pod is a property of the pod minute, not the driver;
+  medians and back-to-back controls only (the H2H/CAT comparisons already use medians).

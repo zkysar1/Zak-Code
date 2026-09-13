@@ -8637,3 +8637,88 @@ Fable 5.1, with every zakcode cell reproducible byte-for-byte and $0 marginal. T
    Claude Code passes and a small model might not — not more repeats (rb-10837). Candidates are the shapes
    ADR-0161 exposed: a rule that lives in a file the model would have to find, and a task whose correct
    answer requires reading a test the model did not write.
+
+## ADR-0163: the determinism review — an inventory of where zakcode asks the model, a ranked lever list, and the first measurement it forced
+
+**Date:** 2026-09-12 · **Status:** accepted · **Review:** `docs/DETERMINISM-REVIEW.md` (living) ·
+**Pre-registration:** `bench/results/driver-parity-preregistration.log` (23:22, ARM D) · **Results:**
+`bench/results/*.ARMD-{BUF,STREAM}-*.json`.
+
+### Why a review, and why now
+
+The head-to-head instrument reads 12/12 PARITY with Claude Code after ADR-0162, so "as good as Claude Code"
+is met on the only instrument that has both arms, and the directive's second half — *more deterministic,
+better on smaller models* — becomes the work. That needs a map before another lever: which behaviours
+zakcode decides by code, which it asks the model for, and which of the model-judgment points a small
+model has actually been measured failing. The review is that map; this ADR records what it found and the
+one measurement it could not defer.
+
+### What the inventory found (details and line references in the review)
+
+* The deterministic surface is large and mostly untested by the bench: iteration and cost caps, thirteen
+  stop reasons, provider retries, degenerate-argument vetoes, doom-loop and stuck ladders, ~15 regex
+  conclusion gates, write grounding with a real `compile()`, the edit tool's exact-match refusals, the
+  content firewall, path sandboxing, permissions, the dependency gate, project-context discovery.
+* Model judgment remains at: completion critic, plan critique, quality gate (fail-open, one off by
+  default), the compaction summary, the routing side-call's difficulty hint, skill selection, and two
+  things the prompt merely asks for — *read before you edit* and *find and follow the repo's conventions*.
+* Two gaps are structural rather than judgment: project verification is inert unless an operator sets
+  `verify_command`, and a provider-rejected tool call is retried at temperature ≥0.5 (the one sampling
+  path under the byte-deterministic configuration).
+* **And one instrument finding outranks all of it: `loop.py` carries two turn drivers.** The bench calls
+  `run_turn` → `_run_turn` (buffered, 1,376 lines); the CLI, the server and the client — the coach —
+  call `astream_turn` (streaming, 1,738 lines). Every bench number from ADR-0147 to ADR-0162 came from
+  the driver production does not run. A static census finds the same 36 intervention kinds in both,
+  but the streaming driver reaches the provider through different helpers.
+
+### ARM D: does the bench measure production's driver?
+
+Pre-registered 23:22 before any code ran. `bench/run_task.py` gained `ZBENCH_DRIVER=stream`, which drives
+`astream_turn` and derives the same report from its terminal `AgentDone` (session messages supply the
+tool-call and error counts); `buffered` stays the default and the report records which ran. Seven tasks
+on the 35B, N=3, temperature 0, stable identity, pinned workspace, main@b0ee395 on both drivers: m01–m05
+and 06 against the ADR-0162 buffered cells, 02 against a fresh buffered cell on the same build. Rules:
+**D1** every task byte-identical across drivers with the same outcomes and turn counts → the bench
+measures production's driver and prior ADRs transfer as-is; **D2** any task that differs → named, with
+outcomes compared (same outcome = a determinism finding; different outcome = an instrument-validity
+finding that heads the review); **D3** a stream cell without a report is a refusal, not a result.
+
+**Result: D1 holds on every task.**
+
+| task | stream pass | buffered pass | turns stream / buffered | bytes | stop reason |
+|---|---|---|---|---|---|
+| m01-stale-doc-negative | 3/3 | 3/3 | 4,4,4 / 4,4,4 | identical | completed / completed |
+| m02-ambiguous-zero | 3/3 | 3/3 | 7,7,7 / 7,7,7 | identical | completed / completed |
+| m03-minimal-diff | 3/3 | 3/3 | 4,4,4 / 4,4,4 | identical | completed / completed |
+| m04-assert-not-hedge | 3/3 | 3/3 | 4,3,4 / 4,3,4 | identical | completed / completed |
+| m05-read-before-edit | 3/3 | 3/3 | 3,3,3 / 3,3,3 | identical | completed / completed |
+| 06-plugin-conventions | 3/3 | 3/3 | 13,13,13 / 13,13,13 | identical | completed / completed |
+| 02-median-bug | 3/3 | 3/3 | 7,7,7 / 7,7,7 | identical | completed / completed |
+
+Twenty-one streaming runs, every file byte-identical to its buffered cell, same outcomes, same turn counts
+— including m04's 4/3/4 pattern, which reproduces across drivers and is therefore the pod's, not the
+driver's — same stop reasons, no refusal. Every bench number from ADR-0147 to ADR-0162 transfers to the
+driver the coach runs. The knob stays (`ZBENCH_DRIVER=stream`, recorded in each report as `driver`), so
+the driver-parity cell can be re-run whenever `loop.py` changes.
+
+**Latency.** The chain's streaming cells ran 2–5× slower per run than the buffered references taken thirty
+minutes earlier, so an interleaved control was pre-registered and queued: m03 buffered, stream, buffered,
+back to back. Medians 14.3 / 14.3 / 14.3 s, turns 4/4/4 in all nine runs — **the streaming driver costs
+nothing** (ratio 1.00). A 70.9 s run appeared inside the second buffered cell, byte-identical to its 14 s
+neighbours: the shared pod stalls sporadically, and that, not the driver, was the chain's 2–5×. Wall time on
+this pod is a property of the pod minute; medians and back-to-back controls are the only readable form of
+it. (By the pre-registered letter the control reads DL3, because DL2 was written as *persistent* load; the
+letter is kept and the data are stated beside it.)
+
+### Decision
+
+1. **The instrument is valid across drivers.** Every prior bench ADR transfers to production's driver; the
+   review's F1 loses its emergency and keeps its engineering point (two drivers, every lever twice).
+   `ZBENCH_DRIVER=stream` stays in the bench; re-run the driver-parity cell whenever either driver changes.
+2. **The review is the map for this cycle.** `docs/DETERMINISM-REVIEW.md` ranks the levers; the next measured
+   arm is **L2, a turn-1 workspace survey** — a model-free fold that should remove the exploratory `list_dir`
+   turns both local models spend (three of the 35B's eighteen tool calls on 06 as it shipped), pre-registered
+   as a same-trajectory latency arm on 06 and 02 with outcomes required to hold. L3 (edit refuses an unread
+   file) follows as hardening; L4–L6 wait for tasks whose contract lives in tests or in other convention files.
+3. **Wall time on the shared pod is not a per-run measurement.** Report medians, and separate driver from pod
+   with interleaved controls; a single slow run is a stall until proven otherwise.
