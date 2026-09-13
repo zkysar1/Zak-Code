@@ -1424,10 +1424,9 @@ def create_app(
             findings_dir = research / "findings"
             if findings_dir.is_dir():
                 files = [
-                    p
-                    for p in findings_dir.iterdir()
-                    if p.is_file() and not p.name.startswith(".")
+                    p for p in findings_dir.iterdir() if p.is_file() and not p.name.startswith(".")
                 ]
+
                 # Newest first by mtime. Tie-break on name so equal mtimes — common when a
                 # batch is written in one turn — do not come back in arbitrary iterdir order.
                 def _mtime(path: Path) -> float:
