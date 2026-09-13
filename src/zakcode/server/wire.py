@@ -289,6 +289,22 @@ class SessionInfo(BaseModel):
     created_at: str = ""
     message_count: int = 0
     usage: Usage = Field(default_factory=Usage)
+    #: Per-model split of ``usage``, for consumers that meter by model (g-373-45).
+    #:
+    #: ``usage`` is a SUM ACROSS MODELS, so its own ``model`` field is empty by
+    #: construction -- see ``Usage.model``, "Empty ... for aggregate totals (a sum
+    #: across models has no single model)". A meter that reads only ``usage`` therefore
+    #: has no model to price against and must bucket the whole session as unpriced:
+    #: measured 2026-09-13 against the live fleet, 98.12% of 234,959,029 metered tokens
+    #: landed in one such bucket, at ~358,540 tokens per call against ~335 for the
+    #: per-call path -- the ~1000x tell of bulk cumulative sums, not mislabeled calls.
+    #: Stamping a single id on the sum would misattribute a multi-model session, so the
+    #: split travels ALONGSIDE the total rather than replacing it.
+    #:
+    #: Untagged entries (legacy records, calls made before model tagging) are dropped,
+    #: so every key here is a real model id. The unattributed remainder stays derivable
+    #: as ``usage`` minus the sum of these values.
+    usage_by_model: dict[str, Usage] = Field(default_factory=dict)
 
     @classmethod
     def from_session(cls, session: Session) -> SessionInfo:
@@ -299,6 +315,7 @@ class SessionInfo(BaseModel):
             created_at=session.created_at,
             message_count=len(session.messages),
             usage=session.cumulative_usage(),
+            usage_by_model={m: u for m, u in session.usage_by_model().items() if m},
         )
 
 
