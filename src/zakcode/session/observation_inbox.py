@@ -14,9 +14,15 @@ workspace inbox, and it is deliberately NOT a third say:
 
 Semantics:
 
-- **Latest-wins.** Only the newest envelope is ever on disk. There is no queue and no
-  :func:`requeue` counterpart to ``say_inbox.requeue_say`` — a failed turn does not put a
-  stale perception back, because by then the world has moved.
+- **Latest-wins, with one scoped exception.** Only the newest envelope is ever on disk. There
+  is no queue and no :func:`requeue` counterpart to ``say_inbox.requeue_say`` — a failed turn
+  does not put a stale perception back, because by then the world has moved. The exception is
+  ``changesPerception``: a change is an EVENT, not a reading of current state, so
+  :func:`merge_changes` carries the unread envelope's list forward when a newer frame
+  supersedes it (the route peeks via :func:`peek_observation` to do that). Two envelopes can
+  land inside one ReAct iteration, and dropping the first list tells the mind only the second
+  half of its own history. This bounds that loss rather than removing it — the EVENT_DRIVEN
+  FIFO (perception-module.md §5.1) is still the v2 answer.
 - **Exactly-once delivery.** Reading consumes (read then delete), so a stale frame is never
   perceived twice.
 - **Fail-open, and self-clearing on corruption.** Any OS error yields "nothing perceived".
@@ -56,6 +62,35 @@ def observation_pending(path: Path) -> bool:
     return path.exists()
 
 
+def _parse_envelope(raw: str) -> dict[str, Any] | None:
+    """The envelope validation both readers share, so a peek can never disagree with a
+    consume about what counts as a readable frame."""
+    try:
+        envelope = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    if envelope.get("envelopeVersion") != OBSERVATION_ENVELOPE_VERSION:
+        return None
+    return envelope
+
+
+def peek_observation(path: Path) -> dict[str, Any] | None:
+    """Read the staged envelope WITHOUT consuming it — the merge path's reader.
+
+    The deliberate opposite of :func:`read_observation` on exactly one axis: the file stays
+    on disk. ``POST /observe`` needs to look at an unread envelope in order to carry its
+    change list into the frame that supersedes it, and consuming there would DELIVER that
+    envelope to nobody — the exactly-once guarantee turned into exactly-never.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:  # includes FileNotFoundError — nothing pending
+        return None
+    return _parse_envelope(raw)
+
+
 def read_observation(path: Path) -> dict[str, Any] | None:
     """Consume the staged perception envelope, if any: read then DELETE (exactly-once).
 
@@ -72,15 +107,7 @@ def read_observation(path: Path) -> dict[str, Any] | None:
     # Consume unconditionally: whatever was on disk has now been taken, valid or not.
     with contextlib.suppress(OSError):
         path.unlink()
-    try:
-        envelope = json.loads(raw)
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(envelope, dict):
-        return None
-    if envelope.get("envelopeVersion") != OBSERVATION_ENVELOPE_VERSION:
-        return None
-    return envelope
+    return _parse_envelope(raw)
 
 
 #: The narration is BOUNDED. A dense round can carry dozens of changed files and a whole
@@ -153,6 +180,61 @@ def _narrate_changes(observation: dict[str, Any]) -> list[str]:
         else:
             lines.append(f"{name} changed")
     return lines
+
+
+def _coalesce_rows(previous_row: Any, incoming_row: Any) -> Any:
+    """One entity that changed in BOTH envelopes, as a single row.
+
+    A mapping cannot hold two values for one key, so this is the only place the merge has to
+    DECIDE rather than concatenate. Keep the newest row — it is the current state — but widen
+    its byte span back to where the older envelope saw the entity start, so the surviving row
+    describes the whole window instead of only its second half. Any row without a readable
+    ``previousBytes``/``bytes`` pair is passed through exactly as it arrived: guessing a span
+    would invent a perception, which is worse than reporting a narrower true one.
+    """
+    if not isinstance(previous_row, dict) or not isinstance(incoming_row, dict):
+        return incoming_row
+    before = previous_row.get("previousBytes")
+    if not _is_count(before) or not _is_count(incoming_row.get("bytes")):
+        return incoming_row
+    widened = dict(incoming_row)
+    widened["previousBytes"] = before
+    return widened
+
+
+def merge_changes(previous: Any, incoming: Any) -> Any:
+    """Concatenate two ``changesPerception`` slices, OLDEST FIRST.
+
+    Changes are the one slice where latest-wins is WRONG, and the distinction is the whole
+    point: every other slice is current world STATE, where the newest reading simply is the
+    truth, but a change is an EVENT — and an event that gets overwritten before the mind
+    reads it never happened as far as the mind is concerned. Two envelopes can land inside a
+    single ReAct iteration, so plain supersession collapses a red->green under the following
+    green->red and the mind is told only the second half of its own history.
+
+    Shape-preserving on purpose. ``changesPerception`` still has no producer, and
+    :func:`_narrate_changes` therefore accepts EITHER a mapping of ``{name: row}`` or a flat
+    list of already-worded strings; choosing between them here would be this consumer making
+    a decision that is explicitly not its to make. Same-shape pairs merge in that shape, and
+    a mixed pair normalises through the narrator to the list form — the only representation
+    that can hold both.
+
+    This is the v1 substitute for the EVENT_DRIVEN FIFO (perception-module.md §5.1), which
+    stays v2: it bounds the loss rather than removing it, because a third envelope still
+    merges into the second's result rather than queueing behind it.
+    """
+    if not previous:
+        return incoming
+    if not incoming:
+        return previous
+    if isinstance(previous, list) and isinstance(incoming, list):
+        return [*previous, *incoming]
+    if isinstance(previous, dict) and isinstance(incoming, dict):
+        merged = dict(previous)
+        for name, row in incoming.items():
+            merged[name] = _coalesce_rows(merged.get(name), row)
+        return merged
+    return _narrate_changes({CHANGES_SLICE: previous}) + _narrate_changes({CHANGES_SLICE: incoming})
 
 
 def _narrate_place(observation: dict[str, Any]) -> list[str]:

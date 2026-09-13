@@ -8,6 +8,12 @@ The behaviour worth pinning is where this route deliberately DIFFERS from its si
 /say and /nudge carry a person's words and refuse a second one with 429, because losing
 one is the failure. A perception frame is continuous world state and is worthless once
 superseded, so here the newest frame WINS.
+
+With ONE scoped exception (g-373-35): ``changesPerception`` is carried forward across a
+supersession instead of being overwritten, because a change is an EVENT rather than a
+reading of current state, and an event dropped before the mind reads it never happened as
+far as the mind is concerned. Everything else stays latest-wins, and the tests below pin
+both halves — the exception and its scope.
 """
 
 from __future__ import annotations
@@ -86,6 +92,105 @@ def test_observe_latest_wins_and_reports_superseded(tmp_path: Path) -> None:
     assert second.status_code == 200, "a second frame must NOT be refused (P4)"
     assert second.json()["superseded"] is True
     assert _staged(tmp_path)["observation"] == {"aPerception": {"v": 2}}, "newest frame wins"
+
+
+def test_observe_merges_change_lists_when_superseding_unread_frame(tmp_path: Path) -> None:
+    """THE exception to latest-wins, and the reason it is an exception.
+
+    A state slice is a reading of the world, so the newest one is simply the truth. A CHANGE
+    is an event, and an event overwritten before the mind reads it never happened as far as
+    the mind is concerned — two envelopes inside one ReAct iteration would report only the
+    second file's change. The `aPerception` assertion is the positive control: it pins that
+    the exception is scoped to changes and did not turn every slice into an accumulator.
+    """
+    client = _client(tmp_path)
+    first = client.post(
+        "/observe",
+        json=_envelope(
+            observation={
+                "changesPerception": ["brief.md changed, 812 -> 1,204 bytes"],
+                "aPerception": {"v": 1},
+            }
+        ),
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/observe",
+        json=_envelope(
+            observation={
+                "changesPerception": ["notes.md changed"],
+                "aPerception": {"v": 2},
+            }
+        ),
+    )
+    assert second.status_code == 200
+    assert second.json()["superseded"] is True
+    staged = _staged(tmp_path)["observation"]
+    assert staged["changesPerception"] == [
+        "brief.md changed, 812 -> 1,204 bytes",
+        "notes.md changed",
+    ], "both change lists survive, oldest first"
+    assert staged["aPerception"] == {"v": 2}, "state slices stay latest-wins"
+
+
+def test_observe_carries_changes_into_a_frame_that_has_none(tmp_path: Path) -> None:
+    """The asymmetric case: the vessel reported changes, then a quiet frame superseded it.
+
+    Dropping the list here would be the same loss by a different route, so the staged frame
+    gains a slice the incoming envelope never carried — and `slices` reports what was staged.
+    """
+    client = _client(tmp_path)
+    client.post("/observe", json=_envelope(observation={"changesPerception": ["a.md changed"]}))
+    second = client.post("/observe", json=_envelope(observation={"aPerception": {"v": 9}}))
+    assert second.status_code == 200
+    assert second.json()["slices"] == 2, "the carried slice counts toward what was staged"
+    staged = _staged(tmp_path)["observation"]
+    assert staged["changesPerception"] == ["a.md changed"]
+    assert staged["aPerception"] == {"v": 9}
+
+
+def test_observe_widens_byte_span_when_one_entity_changes_twice(tmp_path: Path) -> None:
+    """The mapping shape cannot hold two rows for one key, so the merge must DECIDE.
+
+    Keeping only the newest row would reintroduce exactly the loss this change exists to
+    stop: 812 -> 1,204 then 1,204 -> 900 would be told to the mind as 1,204 -> 900, which
+    asserts the file started where it never started. The surviving row spans both frames.
+    """
+    client = _client(tmp_path)
+    client.post(
+        "/observe",
+        json=_envelope(
+            observation={"changesPerception": {"brief.md": {"previousBytes": 812, "bytes": 1204}}}
+        ),
+    )
+    client.post(
+        "/observe",
+        json=_envelope(
+            observation={"changesPerception": {"brief.md": {"previousBytes": 1204, "bytes": 900}}}
+        ),
+    )
+    row = _staged(tmp_path)["observation"]["changesPerception"]["brief.md"]
+    assert row == {"previousBytes": 812, "bytes": 900}, "span covers both frames"
+
+
+def test_observe_drops_the_carry_rather_than_exceed_the_size_floor(tmp_path: Path) -> None:
+    """The receiver's floor governs what it WRITES, not only what it accepts.
+
+    The 413 above sizes the INCOMING payload, so without a second check a long supersession
+    streak could grow the staged file past the cap behind its back. Two frames that each fit
+    can merge into one that does not; the newest then stands alone — lossy, which P4 already
+    obliges the mind to tolerate, and far better than a staged frame nothing will read.
+    """
+    client = _client(tmp_path)
+    half = OBSERVATION_MAX_CHARS // 2
+    first = client.post("/observe", json=_envelope(observation={"changesPerception": ["a" * half]}))
+    assert first.status_code == 200, "each frame fits on its own"
+    second = client.post(
+        "/observe", json=_envelope(observation={"changesPerception": ["b" * half]})
+    )
+    assert second.status_code == 200, "and the second is still accepted, never refused"
+    staged = _staged(tmp_path)["observation"]
+    assert staged["changesPerception"] == ["b" * half], "newest alone when the merge cannot fit"
 
 
 def test_observe_rejects_unknown_envelope_version(tmp_path: Path) -> None:

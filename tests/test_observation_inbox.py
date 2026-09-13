@@ -21,9 +21,11 @@ from pathlib import Path
 from zakcode.session.observation_inbox import (
     NARRATION_MAX_LINES,
     OBSERVATION_ENVELOPE_VERSION,
+    merge_changes,
     narrate_observation,
     observation_path,
     observation_pending,
+    peek_observation,
     read_observation,
     render_observation,
     take_observation,
@@ -314,3 +316,62 @@ def test_narrate_observation_tolerates_a_junk_envelope() -> None:
     assert narrate_observation(None) == []
     assert narrate_observation({}) == []
     assert narrate_observation({"observation": "not a map"}) == []
+
+
+# ── the change-merge path (g-373-35) ────────────────────────────────────────────────────
+
+
+def test_peek_reads_without_consuming_while_read_consumes(tmp_path: Path) -> None:
+    """The one axis the two readers differ on, and the property the merge rests on.
+
+    ``POST /observe`` peeks an unread envelope to carry its change list forward. If that peek
+    consumed, the envelope would be delivered to NOBODY — exactly-once turned into
+    exactly-never — so this asymmetry is load-bearing rather than stylistic.
+    """
+    path = observation_path(tmp_path)
+    _stage(tmp_path, _envelope())
+
+    assert peek_observation(path) is not None
+    assert observation_pending(path), "a peek must leave the frame for its real consumer"
+    assert peek_observation(path) is not None, "and must therefore be repeatable"
+
+    assert read_observation(path) is not None
+    assert not observation_pending(path), "a read still consumes"
+
+
+def test_peek_refuses_a_foreign_version_but_leaves_it_on_disk(tmp_path: Path) -> None:
+    """Peek shares the consume path's validation and NOT its self-clearing.
+
+    A corrupt or foreign envelope must still be consumed by ``read_observation`` (else it
+    wedges the inbox), but a peek deleting it would make the merge path a second consumer.
+    """
+    path = observation_path(tmp_path)
+    _stage(tmp_path, _envelope(envelopeVersion=OBSERVATION_ENVELOPE_VERSION + 1))
+    assert peek_observation(path) is None, "same version guard as the consuming read"
+    assert observation_pending(path), "but the peek is not the thing that clears it"
+
+
+def test_merge_changes_is_identity_when_either_side_is_empty() -> None:
+    """The common case by far: most frames carry no changes at all, and the merge must not
+    invent a slice or wrap a lone list in anything."""
+    assert merge_changes(None, ["b changed"]) == ["b changed"]
+    assert merge_changes(["a changed"], None) == ["a changed"]
+    assert merge_changes([], ["b changed"]) == ["b changed"]
+    assert merge_changes(None, None) is None
+
+
+def test_merge_changes_normalises_mixed_shapes_to_worded_lines() -> None:
+    """``changesPerception`` still has no producer, so the two shapes the narrator accepts
+    can legitimately both appear. A list cannot hold a mapping's rows, so the merge falls
+    back to the worded-line form — the only representation that carries both."""
+    merged = merge_changes(
+        {"brief.md": {"previousBytes": 812, "bytes": 1204}}, ["notes.md changed"]
+    )
+    assert merged == ["brief.md changed, 812 -> 1,204 bytes", "notes.md changed"]
+
+
+def test_merge_changes_keeps_a_row_it_cannot_widen() -> None:
+    """A row without a readable byte pair is passed through as it arrived: guessing a span
+    would invent a perception, which is worse than reporting a narrower true one."""
+    merged = merge_changes({"brief.md": {"note": "touched"}}, {"brief.md": {"bytes": 900}})
+    assert merged == {"brief.md": {"bytes": 900}}

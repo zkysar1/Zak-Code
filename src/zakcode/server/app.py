@@ -94,6 +94,11 @@ from zakcode.server.wire import (
     events_schema,
 )
 from zakcode.session.framework_stop import request_framework_stop
+from zakcode.session.observation_inbox import (
+    CHANGES_SLICE,
+    merge_changes,
+    peek_observation,
+)
 from zakcode.session.say_inbox import (
     busy_elsewhere,
     busy_path,
@@ -1491,6 +1496,12 @@ def create_app(
         overwritten rather than refused. ``superseded`` reports when that happened — a
         sustained true is the signal that the mind is not keeping up with its vessel.
 
+        ``changesPerception`` is the one slice exempt from that, because it is not a reading
+        of current state: it is a list of EVENTS, and an event overwritten before the mind
+        reads it never happened as far as the mind is concerned. When this frame supersedes
+        an unread one, the pending change list is carried forward (oldest first) and every
+        other slice still takes the newest value.
+
         This route NEVER writes the knowledge tree (P2 — the mind is the only writer of its
         own tree). It stages a frame; the mind decides what, if anything, to encode.
         """
@@ -1524,11 +1535,39 @@ def create_app(
         target = root / ".observation"
         superseded = target.exists()
         root.mkdir(parents=True, exist_ok=True)
+        observation: dict[str, Any] = dict(request.observation)
+        merged_changes = False
+        if superseded:
+            # Changes are EVENTS, not state. Two envelopes can land inside one ReAct
+            # iteration, and plain latest-wins drops the unread one's change list wholesale,
+            # so the mind is told only the second half of its own history. Carry it forward.
+            # Every OTHER slice stays latest-wins: the newest reading of the world IS the
+            # world. PEEK, never read — consuming here would deliver that envelope to
+            # nobody, turning exactly-once into exactly-never.
+            pending = peek_observation(target)
+            pending_observation = (pending or {}).get("observation")
+            carried = (
+                pending_observation.get(CHANGES_SLICE)
+                if isinstance(pending_observation, dict)
+                else None
+            )
+            if carried:
+                candidate = dict(observation)
+                candidate[CHANGES_SLICE] = merge_changes(carried, observation.get(CHANGES_SLICE))
+                # The receiver's floor governs what it WRITES, not only what it accepts: the
+                # check above sized the INCOMING payload, and a long supersession streak must
+                # not grow the staged file past that cap behind its back. On overflow the
+                # newest frame alone stands — lossy, which P4 already obliges the mind to
+                # tolerate, and visible as merged=False in the log line below.
+                merged_payload = json.dumps(candidate, ensure_ascii=False, sort_keys=True)
+                if len(merged_payload) <= OBSERVATION_MAX_CHARS:
+                    observation = candidate
+                    merged_changes = True
         staged = {
             "envelopeVersion": request.envelopeVersion,
             "externalClientRef": ref,
             "observedAt": request.observedAt,
-            "observation": request.observation,
+            "observation": observation,
             "droppedSlices": list(request.droppedSlices),
             # The frame travels WITH the payload so whatever reads this file cannot
             # present untrusted world text to the model unframed (P1).
@@ -1548,17 +1587,18 @@ def create_app(
         # age=None rather than a fabricated number, so a broken clock or a changed
         # envelope shape is visible here instead of silently reading as fresh.
         logger.info(
-            "perception-intake ref=%s age_s=%s superseded=%s slices=%d dropped=%d",
+            "perception-intake ref=%s age_s=%s superseded=%s merged=%s slices=%d dropped=%d",
             ref,
             age,
             superseded,
-            len(request.observation),
+            merged_changes,
+            len(observation),
             len(request.droppedSlices),
         )
         return {
             "accepted": True,
             "superseded": superseded,
-            "slices": len(request.observation),
+            "slices": len(observation),
             "droppedSlices": list(request.droppedSlices),
         }
 
