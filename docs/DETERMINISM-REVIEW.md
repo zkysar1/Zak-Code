@@ -170,14 +170,25 @@ text and starved by the right one; and a pre-registered rule set for a harness c
 reason and the harness runs per turn, not only passes and turns — arm H passed on its letter while every
 run ended `recipe_stalled`. Arm I (both fixes, six unpinned basins per arm): harness runs per turn 1 → **0** in 6 of 6, `completed` 6 of 6 against `recipe_stalled` 6 of 6 on #422 alone, passes 5/6 vs 6/6 (the one failure a write-time design choice), median turns 11 → 10.
 
+**F11 — A tool that reports success on a no-op feeds the small-model doom loop (ADR-0168).** Arm K's three
+`doom_loop` runs on 10/35B share one shape: the model finishes a step, resends the plan byte-for-byte (statuses
+untouched, sometimes an `outcome` on the finished step), and `update_plan` — a full-replace that compared
+nothing — answers "Plan updated: 0/4 steps done · current: 1 …" with the rail "now do the step marked current".
+The model reads that something moved and resends; the third identical batch trips the exact-repeat guard, whose
+nudge is generic ("READ it now… take a DIFFERENT approach"), and the model writes a meta-plan and ends
+`doom_loop` — two of the three before the export the task needs. The trigger is rare (3 of 163 dumped runs,
+`bench/plan_resends.py`) and entirely a receipt defect: the fix is the tool saying "Plan unchanged … nothing was
+updated" with the step-specific way forward, on the first resend, one iteration before the guard. Lever M
+(#431), default-on; arm M measures whether the fired runs still end `doom_loop`.
+
 ## 5. Levers, ranked
 
 | # | Lever | Property (§1) | Seam | How it is measured | Status |
 |---|---|---|---|---|---|
 | L1 | **One turn driver** (or a standing driver-parity cell in the bench) | reproducible, enforced | `loop.py` `_run_turn` / `astream_turn` | ARM D byte identity; then the full suite + bench byte identity as the refactor's control | ARM D held D1 on all 7 tasks (ADR-0163): the bench measures production's driver, so a one-driver refactor has its control; the refactor itself is unmeasured and unscheduled |
-| L2 | **Turn-1 workspace survey** — capped, ignore-aware file tree folded into the dynamic tier | model-free | `prompt.py` `_build_context` | turns and wall time on 06/02 (same-trajectory latency arm, ADR-0160's design); outcomes must hold; bytes will change | **shipped default-on (ADR-0164 addendum)** — refused first on one pinned basin (06 3/3→0/3 on a one-line listing change), then measured by basin sampling over six unpinned paths: 6/6 vs 5/6, median turns 18→10, long runs 3→1, `CONTRIBUTING.md` opened 5/6 vs 1/6 (F9) — **reopened by arm J** (ADR-0164 second addendum: 35B on 10 3/3 → 1/3 with the survey, a docstring rule the lint would catch; 0 opening listing calls vs 3 on every pair; 27B on 10 15 → 8–11 turns); arm K (basin sampling, N=6 per arm) decides the default |
+| L2 | **Turn-1 workspace survey** — capped, ignore-aware file tree folded into the dynamic tier | model-free | `prompt.py` `_build_context` | turns and wall time on 06/02 (same-trajectory latency arm, ADR-0160's design); outcomes must hold; bytes will change | **shipped default-on (ADR-0164 addendum)** — refused first on one pinned basin (06 3/3→0/3 on a one-line listing change), then measured by basin sampling over six unpinned paths: 6/6 vs 5/6, median turns 18→10, long runs 3→1, `CONTRIBUTING.md` opened 5/6 vs 1/6 (F9) — **reopened by arm J** (ADR-0164 second addendum: 35B on 10 3/3 → 1/3 with the survey, a docstring rule the lint would catch; 0 opening listing calls vs 3 on every pair; 27B on 10 15 → 8–11 turns); arm K decided it (ADR-0164 third addendum): **5/6 vs 5/6** over six unpinned basins per arm, listing calls 3 → 0 in every run — **the default stays on**; the live failure on 10 is F11's doom loop, not the docstring |
 | L3 | **`edit_file` refuses a path not read this session** (a write of the same path counts) | enforced | pre-execution veto seam (`loop.py:4292` class) — in both drivers | no regression on m01–m05/06/02; refusal counter in the results JSON | measured (`bench/unread_edits.py`, #427): **0 of 361** `edit_file` calls in 127 pod runs touched a path the run had not read or written (control: with reads discounted, 157 of 361); the 361 known edits failed once — these models read before they edit, so the refusal has no trigger here |
-| L4 | **Auto-derived `verify_command`** (detect `pytest`/`pyproject`/`Makefile test`) | model-free | `VerificationGate` construction | tasks whose tests encode the contract; needs at least one new task of that shape | **built opt-in (#429, `verify_auto`)**: a Makefile's lint/check/test recipes (else a pyproject ruff config) become the R1 gate's command; arm J found the trigger (the 35B never runs task 10's lint and ships a docstring the lint rejects under the survey); arm L (survey ON vs ON + auto on 10/35B, basin-sampled) decides the default |
+| L4 | **Auto-derived `verify_command`** (detect `pytest`/`pyproject`/`Makefile test`) | model-free | `VerificationGate` construction | tasks whose tests encode the contract; needs at least one new task of that shape | **built opt-in (#429, `verify_auto`)**: a Makefile's lint/check/test recipes (else a pyproject ruff config) become the R1 gate's command; arm J found the trigger (the 35B never runs task 10's lint and ships a docstring the lint rejects under the survey); arm L stays drafted: arm K's twelve basins produced 0 lint-rejected outputs, so the gate would not have fired; launch when a basin census shows a lint-class failure |
 | L5 | **More convention filenames** (`pyproject.toml [tool.*]`, `Makefile` targets, `.editorconfig`) | model-free | `CONVENTION_FILENAMES` | needs a task whose rule lives in such a file | needs tasks |
 | L6 | **Test-file hint on edit** (append `tests/test_<name>.py` to the edit result when it exists) | model-free | grounding message | same tasks as L4 | needs tasks |
 | L7 | **Repair, not bounce, a truncated `write_file`** | model-free | `loop.py:4295` `cut_off=True` | count of `cut_off` bounces on the pod first (unmeasured) | measured (`bench/undecodable_bounces.py`, #426): **0** bounces in 127 pod runs / 1,817 tool calls across 43 cells (27B + 35B, 2026-09-12 → 13; positive control 397 shell results) — the trigger is a long single-call module (ADR-0081's coach case) and no bench task is that size; nothing to repair until a task of that shape exists (joins L4–L6's "needs tasks") |
@@ -209,6 +220,10 @@ descriptions with the 35B (ADR-0158 fourth addendum).
   its first response — the hole-length instrument behind F10 / ADR-0166. The injection itself fires on
   every 06 run, so "calls after it" is the quantity a fix moves; `harness verify at call N` with no
   message means the model ran its own file before finishing and the harness never had to.
+* `bench/plan_resends.py <dumps-root> [cell …]` replays every run's recorded `update_plan` calls through the
+  real tool on a fresh network and prints one receipt letter per call (U updated, N unchanged, C cleared) — the
+  positive control for ADR-0168's rail (fires in exactly the three arm-K doom loops over 163 runs, 12 receipts,
+  and in no other run). Since that ADR the loop notes each unchanged receipt as `kind="plan_unchanged"`.
 * Since #425 the loop notes every harness-issued run as an intervention (`kind="harness_verify"` with
   the target basename, the command form — tests / import / module / script — the exit code and the
   error flag; `kind="project_verify"` for the project checks), so `intervention_coverage.py` counts

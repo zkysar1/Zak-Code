@@ -773,6 +773,25 @@ class TaskNetwork(BaseModel):
         """
         return repr([(t.id, t.kind, t.title) for t in self._iter()])
 
+    def state_signature(self) -> str:
+        """A stable snapshot of EVERYTHING the author can set — id, kind, status, title, note,
+        outcome, and dependencies of every task — in document order.
+
+        Two networks with equal state signatures are the same plan as far as ``update_plan``
+        can express it: nothing the model could have sent differs. The tool compares this
+        across its own full-replace (ADR-0168) to tell an EDIT from a RESEND — a plan sent
+        back byte-for-byte after a step was completed is the small-model doom loop measured
+        on the bench, and its receipt must say "unchanged", not "updated". It includes the
+        fields :meth:`progress_signature` leaves out on purpose (a note or outcome edit is a
+        real edit here, not progress), so the two are not interchangeable.
+        """
+        return repr(
+            [
+                (t.id, t.kind, t.status, t.title, t.note, t.outcome, tuple(t.blocked_by))
+                for t in self._iter()
+            ]
+        )
+
     # ── structural quality (ADR-0050 — the ayoai-processor evaluate_candidate port) ─────
 
     def quality(self) -> tuple[float, list[str]]:

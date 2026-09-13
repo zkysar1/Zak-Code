@@ -8852,6 +8852,20 @@ pinned N=3 is one sample of one basin and cannot score an outcome rate (rb-10849
 (#429): the project's own `Makefile` targets derived into the R1 verify gate, the check the model cannot skip
 that F9 names as the durable fix.
 
+**Addendum (2026-09-13, arm K — basin sampling of the survey on 10/35B; Zak-Code #431).** Pre-registered in
+`bench/results/survey-basin-10-preregistration.log` (K1–K4, stamped 04:20 UTC): NOSURVEY vs SURVEY on
+`10-rule-in-pyproject`, `--no-pin`, N=6 per arm interleaved in threes, build 8ea8bacece34 (#429's, with
+`verify_auto` off in both). **K2 by the letter: 5/6 vs 5/6 — a basin, not a rate; the survey default stays
+ON.** The J3 miss was one pinned basin (rb-10849's warning realized). K4's mechanism reproduces in every
+sampled basin: opening listing calls 3 → 0 in every run, first read `pyproject.toml` 6/6 without the survey and
+`__init__.py`/`slug.py` 6/6 with it, turns medians 13.0 vs 13.5, wall medians 196 vs 217 s, all twelve outputs
+distinct. The failure class is not arm J's docstring rule — 0 of 12 runs failed the lint — but an
+`update_plan` doom loop in 3 of 12 (one NOSURVEY, two SURVEY; two FAIL before the export, one PASS after the
+work was done): after `write_file(duration.py)` the model resends its plan byte-for-byte, reads "Plan updated"
+each time, and the exact-repeat guard ends the turn (`stuck`, `doom_recovery` and `doom_loop` recorded by the
+census for the first time). Arm L (lever L4) stays drafted and unlaunched: its gate fires only in basins that
+produce lint-rejected code, and none of the twelve did. The doom loop is ADR-0168's lever.
+
 ## ADR-0165: two task shapes the review could not measure — contract-in-tests and rule-in-pyproject — with their baselines
 
 **Date:** 2026-09-13 · **Status:** Accepted · **Pre-registration:** `bench/results/new-tasks-baseline-preregistration.log`
@@ -9146,3 +9160,63 @@ result files, every arm since ADR-0147 — never entered the census at all; #427
 have been read by nothing. The reader now takes `runs` rows too (a synthetic arm-shaped file carrying
 `harness_verify` is counted; the real census is unchanged until an arm row records a kind). Arm rows
 carry no `knobs`, so the ratchet's signature filter still excludes them by design.
+
+## ADR-0168: an unchanged plan is answered "unchanged" — the `update_plan` receipt for a resend, built from arm K's doom loops
+
+**Date:** 2026-09-13 · **Status:** accepted (ships default-on; arm M pre-registered) · **Review:**
+`docs/DETERMINISM-REVIEW.md` F11 · **Pre-registration:** `bench/results/plan-unchanged-10-preregistration.log` ·
+**Instrument:** `bench/plan_resends.py` · **Trigger corpus:** every provider dump on zc-01 — 163 runs, 313
+`update_plan` calls, 2026-09-12 → 13.
+
+### Context
+
+Arm K (ADR-0164, third addendum) sampled six unpinned basins per survey arm on `10-rule-in-pyproject` with the
+35B and found the task's live failure class is not the docstring rule arm J saw: 0 of 12 runs failed the lint,
+and both failures — plus one run that passed — ended `stop_reason=doom_loop` inside an `update_plan` loop. The
+dumps give the mechanism. The model finishes a step (`write_file` of `utils/duration.py`), then resends its plan
+byte-for-byte: every step still `pending`, the finished one carrying an `outcome` but no status change — or, in
+the third run, one step `done` and the current one untouched. The tool full-replaces the plan with itself and
+answers **"Plan updated: 0/4 steps done · current: 1 Create utils/duration.py"**, with the standing rail "now do
+the step marked current". The model reads a receipt that says something moved, resends, and resends; the loop's
+exact-repeat guard (`DOOM_LOOP_THRESHOLD = 3`) refuses the third identical batch and injects the generic "you
+repeated the EXACT same action" nudge, the model writes a meta-plan ("Investigate: what the result…"), and the
+turn ends `doom_loop` before `utils/__init__.py` exports the function.
+
+The tool's receipt was the lie in the loop. ADR-0124 made the result a receipt rather than the plan; the receipt
+still said "updated" for an edit that changed nothing, because nothing compared the network across the replace.
+
+### Trigger, measured before building (rb-10855)
+
+Identical consecutive `update_plan` arguments occur in exactly **3 of 163** dumped runs — the three arm-K doom
+loops — and in none of the other 72 runs that used a plan. The rail below, replayed over every recorded plan
+call through the real tool (`bench/plan_resends.py`), fires **12 times in those 3 runs (4 each) and 0 times in
+the other 160** — the positive control in both directions, before a bench minute was spent.
+
+### The change (#431)
+
+`TaskNetwork.state_signature()` — a snapshot of everything the author can set (id, kind, status, title, note,
+outcome, dependencies), beside the two signatures that already served staleness and shape. `UpdatePlanTool`
+takes it and the event count before `replace_from_author` and, when neither moved, returns an `ok` result — not
+an error: nothing failed, and ADR-0036's blocker guard counts errors — that reads **"Plan unchanged: k/N steps
+done · current: <id> <title>. Nothing was updated — this is the plan already in force."** with the rail *"Do not
+resend the same plan. If step <id> is finished, resend the plan with its status 'done' (and its result in
+'outcome') and the next step 'in_progress'; if it is not, do it now with a tool call."*, prefixed *"Step <id>
+already carries an outcome but its status is still '<status>'."* when the step in hand has an outcome — the
+shape of two of the three loops. A finished plan resent gets the ADR-0108 verdict rail. Both halves of the
+predicate are needed: a null close the harness hands back (ADR-0116) leaves the state as it was but records the
+challenge, and that advisory must reach the model — the ledger test caught the first draft dropping it. The loop
+notes each firing as `kind="plan_unchanged"`, so `intervention_coverage.py` counts it without the dumps.
+
+The rail fires on the FIRST resend, one iteration before the generic exact-repeat guard, and says what the guard
+cannot: which step, and the two ways forward in the plan's own vocabulary. It is deterministic and model-free,
+and inert on every run that never resends (160 of 163).
+
+### Consequences
+
+* Arm M, pre-registered and stamped before launch: OLD (arm K's build) vs NEW (this rail) on 10/35B, basin-sampled,
+  N=9 per arm interleaved in threes. M1–M5 score the trigger, the wiring (the row's note beside the dump's
+  receipt), whether the fired runs still end `doom_loop`, outcomes, and the instrument's zero on OLD. Results
+  land as an addendum here.
+* A tool that reports success on a no-op feeds the small-model doom loop: the model has no other way to learn
+  that nothing happened. The general rule — compare state across the operation and say "unchanged" — applies to
+  any full-replace tool, and the census note is what lets the bench see how often it is needed.
