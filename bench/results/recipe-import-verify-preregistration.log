@@ -1,0 +1,92 @@
+=== 02:07 UTC 2026-09-13 PRE-REGISTRATION -- ARM H: the recipe gate verifies a library module by import, not by -m (written before launch)
+Cause (measured in the wire dumps of 4 of 4 long 06 runs on the 35B -- E run 3, arm G NOSURVEY b1 run 3, b2 runs 1-2):
+after the first green pytest the model wrote its finishing summary; the recipe gate then ran the written module
+itself as "python -m plugins.yaml_out"; because plugins/__init__.py imports its renderers, runpy warned
+"'plugins.yaml_out' found in sys.modules after import of package 'plugins'" at exit code 0; the harness injected
+"[harness] I ran the file to verify it: <warning> [exit code: 0]"; the model read a warning the harness manufactured
+as a defect and spent 15-45 calls "fixing" it (-W error probes, warnings.filterwarnings, ImportError stubs).
+Change (src/zakcode/agent/recipe.py, both drivers share _try_harness_verify): a module inside a package with NO
+"if __name__ == '__main__'" block is a library and is verified as 'cd "<root>"; python -c "import pkg.mod"';
+a module WITH the block keeps the -m form; _executed_targets credits the import form; unreadable files keep -m.
+83 recipe tests pass (3 new). Old build = main@6563bbe (survey default-on, #421); new build = old + this change.
+Cells: 06-plugin-conventions on zds-qwen3.6-35b, --no-pin (basin sampling, rb-10849), ZAKCODE_TEMPERATURE=0,
+ZAKCODE_STABLE_PROMPT_IDENTITY=1, survey on by default in BOTH arms, dumps on, zc-01. Blocks interleaved:
+OLD x3, NEW x3, OLD x3, NEW x3 (12 runs); the bench src is swapped only between blocks, never mid-block.
+Rules:
+  H1 instrument: 12 distinct workspace paths; each NEW-arm dump must show the harness verify line with the -c import
+     form (or no harness run at all) and no runpy RuntimeWarning in a harness-injected message; each OLD-arm dump
+     is expected to show the -m form when the harness ran (positive control that the swap happened).
+  H2 outcomes: p_new >= p_old - 1 required (the change must not cost passes; arm G's SURVEY arm was 6/6).
+  H3 long runs (> 20 turns): OLD count vs NEW count. NEW == 0 with OLD >= 1 -> the trigger is removed (ship);
+     NEW >= 1 -> read the NEW long run's dumps for its trigger before any verdict (a different hole is a different
+     lever); OLD == 0 -> the control did not exhibit the hole this time; H4 decides.
+  H4 median turns: NEW <= OLD expected; with H1 holding and H2 holding, ship on H4 alone if H3 is uninformative
+     (OLD == 0), because the change removes a harness-manufactured warning at zero measured cost.
+Prediction: OLD 1-3 long runs of 6 (arm G SURVEY: 1/6; NOSURVEY: 3/6); NEW 0 of 6; p_old = 5-6, p_new = 5-6;
+NEW median turns <= OLD median.
+--- 02:13 UTC pre-launch clarification of the H1 instrument (still before launch; nothing has run):
+the harness-injected message carries the command's OUTPUT plus the tool's "[exit code: N]" line, never the
+command itself (loop.py _try_harness_verify; bash.py appends the exit line). Importing a library prints
+nothing, so an import-form verify shows a bare "[exit code: 0]" body; -m on the cycle-importing package
+shows the runpy RuntimeWarning. H1 therefore reads: NEW-arm harness messages carry no RuntimeWarning and
+(when the module prints nothing at import) a bare exit-code body; OLD-arm messages are expected to carry
+the RuntimeWarning when the harness ran. The build under test is positively controlled by the recipe.py
+sha256 the chain prints at every swap: old a2bd86df2301, new 571b595aa176 (staged on zc-01 at 02:13).
+--- 02:17 UTC instrument added MID-CHAIN (OLD b1's three runs complete, no NEW run started; descriptive only, no rule
+changed): /root/armh-hole.py reports per run the call at which the harness verify message first appears, its body
+kind, the number of calls after it, and the model's first tool call in response. Positive control on arm G's dumps:
+the harness verify fired in 6/6 runs of two cells (SURVEY b1, NOSURVEY b2) at call 10-11, always RUNPY-WARNING;
+calls after it were 0, 1, 12 (SURVEY b1) and 3, 13, 31 (NOSURVEY b2) -- the injection is universal on this task
+and the hole LENGTH is the basin variable. OLD b1 so far: runs 1-2 verified at calls 10 and 9, RUNPY-WARNING,
+4 and 3 calls after (first response: edit_file plugins/__init__.py in both).
+=== 02:31 UTC ARM H RESULTS (chain 02:13:32-02:28:32 on zc-01; OLD recipe.py a2bd86df2301, NEW 571b595aa176 = main@7dd88a0 / #422)
+OLD: pass 4/6, turns [13, 11, 13, 8, 13, 9] median 12, >20 turns 0, stop completed 6/6, wall [99, 87, 90, 68, 83, 66] s.
+     harness verify fired 1x in 6/6 runs at call 9-10, RUNPY-WARNING in all six; calls after it [4, 3, 4, 0, 4, 1];
+     first responses: edit plugins/__init__.py x2, a "python -W error -c" probe, none, edit yaml_out.py, read __init__.py.
+     failures: import yaml (run b1-2), round-trip mismatch (b2-1) -- both decided at write time, before the injection.
+NEW: pass 3/6, turns [11, 11, 10, 11, 10, 10] median 10.5, >20 turns 0, stop recipe_stalled 6/6, wall [63, 71, 63, 71, 65, 75] s.
+     harness verify fired 3x in 6/6 runs (the attempt cap), bare "[exit code: 0]" body every time, no RuntimeWarning;
+     calls after the first [2, 2, 2, 2, 2, 2] -- text, harness, text, harness, text, stall. failures: import yaml x2
+     (b1-1, b1-3), unparseable YAML (b2-3) -- all decided at write time.
+Rules, by the letter: H1 HOLDS (12 distinct paths; NEW 0/6 RuntimeWarning, bare-exit bodies; OLD 6/6 RUNPY-WARNING =
+  the swap's positive control). H2 HOLDS at the boundary (3 >= 4-1). H3 UNINFORMATIVE (OLD 0 long runs tonight; the
+  hole's length is the basin variable -- 0-4 calls here vs 3-31 in arm G). H4 HOLDS (10.5 <= 12). Letter -> ship.
+Measured cause beside the letter: the NEW runs did not END CLEANLY. Every NEW run stalled at the cap after three no-op
+  import runs. Root cause read from the cursor (replayed locally, tests/test_recipe.py::..._does_not_cross_a_clause):
+  extract_acceptance() on the 06 prompt returns 'yaml' -- "outputs YAML, registered under the name `yaml`": the
+  40-char gap after the cue "outputs" crossed the comma and took a registry NAME as an expected-stdout literal. With an
+  acceptance set, a green pytest is never credited (a suite cannot demonstrate a stdout string) and a run counts only
+  if its output CONTAINS the literal: the OLD -m run was credited by accident (the runpy warning text carries
+  "yaml_out"), the NEW import prints nothing and can never be. So on this task the harness fired after every green
+  suite all campaign, and #422 exposed the acceptance defect rather than causing it. Second fix (extractor: the gap
+  may not cross clause punctuation; a naming lead -- name/named/called/titled -- rejects the candidate; 84 recipe
+  tests pass) staged as NEW2 = recipe.py 25516ce1bd1e. Verdict: keep #422 (H1-H4 hold; the manufactured warning is
+  gone) and MEASURE NEW2 before the ADR ships -- arm I below.
+=== 02:31 UTC PRE-REGISTRATION -- ARM I: OLD vs NEW2 (both fixes), written before launch
+Same cells and protocol as arm H (06, 35B, --no-pin, survey on, dumps on, zc-01): OLD x3, NEW2 x3, OLD x3, NEW2 x3,
+source swapped only between blocks, recipe.py sha256 printed at every swap (old a2bd86df2301, new2 25516ce1bd1e).
+Rules:
+  I1 instrument: 12 distinct paths; OLD runs show 1 harness injection with RUNPY-WARNING (positive control); NEW2 runs
+     show 0 harness injections in every run whose model ran a green pytest (the suite is credited once no acceptance
+     literal is extracted) -- report the per-run count; a NEW2 injection is read for its cause before any verdict.
+  I2 outcomes: p_new2 >= p_old - 1.
+  I3 stop reason: every NEW2 run ends "completed"; any recipe_stalled in NEW2 -> read its dumps before any verdict.
+  I4 median turns: NEW2 <= OLD.
+  I5 long runs (> 20 turns) per arm: descriptive; the hole's trigger is absent in NEW2 by construction, so a NEW2 long
+     run has a different cause and is read for it.
+Prediction: NEW2 0 injections in 6/6, completed 6/6, median turns 9-11 (the OLD median minus the post-injection calls),
+  passes 3-5/6 (the write-time basin, unchanged by either fix); OLD as in arm H.
+=== 02:52 UTC ARM I RESULTS (chain 02:32:01-02:50:37 on zc-01; OLD recipe.py a2bd86df2301, NEW2 25516ce1bd1e = main@7c16e94 / #422+#423)
+OLD:  pass 6/6, turns [17, 11, 11, 10, 11, 14] median 11, >20 turns 0, stop completed 6/6, wall [156, 81, 107, 76, 92, 122] s.
+      harness verify fired 1x in 6/6 at call 9-12, RUNPY-WARNING in all six; calls after it [8, 3, 1, 1, 0, 6]; first
+      responses: read __init__.py x2, edit __init__.py x2, a "python -c import" probe, none.
+NEW2: pass 5/6, turns [9, 10, 10, 11, 10, 11] median 10, >20 turns 0, stop completed 6/6, wall [74, 76, 85, 74, 72, 102] s.
+      harness verify fired 0x in 6/6 -- the model's own green pytest credited the gate and the turn ended on its
+      summary. failure: b2-2, render() output is not a single YAML document (write-time design choice).
+Rules, by the letter: I1 HOLDS (12 distinct paths; OLD 6/6 one RUNPY-WARNING injection = positive control; NEW2 0/6
+  injections). I2 HOLDS (5 >= 6-1). I3 HOLDS (completed 6/6). I4 HOLDS (10 <= 11). I5: 0 long runs per arm.
+Prediction check: 0 injections 6/6 (predicted), completed 6/6 (predicted), median 10 (predicted 9-11), passes 5/6
+  (predicted 3-5). Verdict: SHIP -- both fixes are on main; the harness no longer runs on this task at all, and where
+  it does run on a library module elsewhere it imports instead of manufacturing a warning. Pooled over arms H+I the
+  OLD build injected the warning in 12/12 runs and the model spent [4,3,4,0,4,1,8,3,1,1,0,6] calls on it (sum 35,
+  median 3); arm G's long runs were the same trigger at 12-31 calls.

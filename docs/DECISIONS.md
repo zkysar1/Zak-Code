@@ -8760,7 +8760,8 @@ E1 & E3 & E4 without E2 → keep the setting default-off; any of E1/E3/E4 failin
 **Arm E (35B, N=3, `.busy` still listed):** E1 held on all seven tasks; E2 held (06 median 13 → 9, 02 7 → 6);
 E3 held (m01 4 → 3, m04 median 4 → 3, m02/m03/m05 unchanged); E5 held (135 chars on 06, 61 on 02; system
 prompt 10,930 → 11,067 chars). **E4 failed** on 06 (run 3 diverged after the first pytest call, whose output
-carries pytest's clock, into a 25-turn `-W error` investigation and a different, passing emitter) and on m04
+carries pytest's clock, into a 25-turn `-W error` investigation and a different, passing emitter — the
+investigation's trigger, a warning the harness itself manufactured, is ADR-0166) and on m04
 (`count.md` digest differs between run 1 and runs 2–3; content not captured — see instrument note). The system
 prompt was byte-identical across the three 06 runs (sha `8264e62555`), so the survey itself is deterministic.
 The dumps also showed the listing carried `.busy` — zakcode's own say-inbox lease marker — ahead of
@@ -8917,3 +8918,125 @@ per arm sample six basins, and a pass *rate* per arm becomes measurable. Pre-reg
 interleaved in threes. Instrument fix folded in here: the dump-based mechanism reader must score the call
 file with the most tool uses, not the last one — the last call of a turn can be a fresh-context side call
 (critic or summary) with no tools, which scored a 10-turn run as zero calls.
+
+## ADR-0166: the recipe gate verifies a library module by import, not by `-m` — the harness-manufactured warning behind the post-green holes
+
+**Date:** 2026-09-13 · **Status:** accepted · **Zak-Code #422 (import-form verify), #423 (acceptance clause), #424 (this record)** · **Review finding F10, lever L8**
+
+### Context
+
+Every long `06-plugin-conventions` run on the 35B this campaign measured — ADR-0164 arm E run 3 (25
+turns), arm E3 run 1 (56 turns, `recipe_stalled`), arm G NOSURVEY b1 run 3 and b2 runs 1–2 (25, 40, 23
+turns) — has the same shape in its wire dumps, and it is not the model's doing. Right after the first
+green `pytest` the model writes its finishing summary. The recipe gate sees a written runnable file
+with no run credited, and the harness verifies it on the model's behalf: `cd root; python -m
+plugins.yaml_out`. The task's `plugins/__init__.py` imports its renderers, so `-m` re-executes a module
+the package already imported and runpy warns `'plugins.yaml_out' found in sys.modules after import of
+package 'plugins'` — at exit code 0. The harness folds that output into a trusted user message,
+`[harness] I ran the file to verify it:` + the warning + `[exit code: 0]`. A small model reads a
+warning the harness manufactured as a defect in its own work and spends up to 31 calls (measured, 18
+runs across arms G, H and I; median 3) "fixing" it:
+`python -W error::RuntimeWarning -m …` probes, `warnings.filterwarnings`, `try/except ImportError`
+stubs, a different emitter. 4 of 4 long runs: same trigger, same first response.
+
+Two readings preceded this one and were wrong in the log before they were right (both stamped in
+`bench/results/workspace-survey-preregistration.log`): first "a `-W error` investigation" (true, but a
+symptom), then "the model manufactured the warning with its own `-W error` probe at call 22" (wrong:
+that search looked only at tool-role messages; the first warning is in the harness's user-role
+injection, before any probe). ADR-0164's arm E/E3 prose names the hole but not its trigger; this ADR
+is the trigger.
+
+The lever is deterministic and zakcode-owned. A module with no `if __name__ == "__main__":` block is a
+library: running it executes nothing on purpose, and `-m` is the wrong verification for it — the
+verification a library admits is that it imports. The prompt-side alternative (tell the model that
+runpy warnings are benign) was not tried: rb-10615 measured that a correct instruction in the system
+prompt is not a control on this model class (0/3 with, 0/3 without).
+
+### Decision
+
+`recipe._python_run_command` (both drivers share `_try_harness_verify`):
+
+- a package module **without** a main guard → `cd "<root>"; python -c "import pkg.mod"`;
+- a package module **with** a main guard → `cd "<root>"; python -m pkg.mod` (unchanged);
+- an unreadable file → `-m` (unchanged: a permission or encoding problem never silently downgrades a
+  CLI's verification to an import);
+- `_executed_targets` credits the `-c "import …"` form exactly as it credits `-m`, so the cursor is
+  verified by the harness run and the model is not nudged again.
+
+3 new tests (library → import form; the string `"__main__"` outside a guard is not a guard; a real
+guard keeps `-m`; the cursor is verified by the import run; import snippets are credited, `echo -c`
+and `print(1)` are not). 83 recipe tests pass. Zak-Code #422.
+
+`recipe.extract_acceptance` (#423, found by measuring #422 — see arm H below): the gap between the cue
+verb and the quoted literal may not cross clause punctuation, and a naming lead right before the quote
+rejects the candidate. One test pins task 06's prompt and the naming phrasings beside the unchanged
+positives. 84 recipe tests pass.
+
+### Measurement — arms H and I (pre-registered before each launch: `bench/results/recipe-import-verify-preregistration.log`)
+
+06 on the 35B, `--no-pin` basin sampling (ADR-0164 addendum's instrument), survey default-on in both
+arms, dumps on, zc-01; blocks OLD ×3, NEW ×3, OLD ×3, NEW ×3 with the bench source swapped only between
+blocks (recipe.py sha256 printed at every swap: old `a2bd86df2301`, new `571b595aa176`).
+
+**Arm H (OLD = main before #422, NEW = #422), stamped in the log at 02:3x:**
+
+| arm | pass | turns | median | > 20 | stop reason | harness verify per run | body | calls after the first |
+|---|---|---|---|---|---|---|---|---|
+| OLD | 4/6 | 13, 11, 13, 8, 13, 9 | 12 | 0 | `completed` 6/6 | 1 | runpy RuntimeWarning 6/6 | 4, 3, 4, 0, 4, 1 |
+| NEW | 3/6 | 11, 11, 10, 11, 10, 10 | 10.5 | 0 | `recipe_stalled` 6/6 | 3 (the cap) | bare `[exit code: 0]` 6/6 | 2, 2, 2, 2, 2, 2 |
+
+By the letter H1–H4 hold (the warning is gone in 6/6; 3 ≥ 4 − 1; no long runs in either arm tonight,
+so H3 is uninformative — the hole's length is the basin variable, 0–4 calls here against 3–31 in arm G;
+10.5 ≤ 12). Every failure in both arms is a write-time design choice (`import yaml` ×3, a round-trip
+mismatch, unparseable output), made before any harness verify, so neither fix can move the pass rate on
+this task. What the letter did not score is the stop reason: **every NEW run ended `recipe_stalled`**
+after three no-op import runs — text, harness, text, harness, text, stall.
+
+**The second defect, read from the cursor.** Replaying the NEW run's exact call sequence through
+`RecipeCursor` locally satisfied the gate at the model's green pytest, so production held a state the
+replay lacked: an acceptance literal. `extract_acceptance()` on the 06 prompt returns `yaml` — *"outputs
+YAML, registered under the name `yaml`"* — because the 40-character gap after the cue verb "outputs"
+crossed the comma and took a registry **name** as an expected-stdout string. With an acceptance literal
+set, a green suite is never credited (a suite run cannot demonstrate a stdout string) and a per-target run
+counts only if its output contains the literal. So on this task the harness has verified the library
+module after every green pytest all campaign: the `-m` form was credited **by accident** (the runpy
+warning text carries `yaml_out`), and the import form, which prints nothing, could never be. #422 exposed
+the defect rather than causing it. Fix (#423): the gap may not cross clause punctuation (`, . ; :`), and a
+naming lead right before the quote (`name` / `named` / `called` / `titled`) rejects the candidate; genuine
+literals are unchanged (*"It should print `ready`. Register it under the name `x`."* still yields
+`ready`). With no literal extracted, the model's own green pytest credits the gate and the harness never
+runs on this task at all.
+
+**Arm I (OLD vs NEW2 = #422 + #423), pre-registered with rules that score the stop reason and the harness runs
+per turn, stamped in the log at 02:5x:**
+
+| arm | pass | turns | median | > 20 | stop reason | harness verify per run | calls after it |
+|---|---|---|---|---|---|---|---|
+| OLD | 6/6 | 17, 11, 11, 10, 11, 14 | 11 | 0 | `completed` 6/6 | 1, runpy RuntimeWarning 6/6 | 8, 3, 1, 1, 0, 6 |
+| NEW2 | 5/6 | 9, 10, 10, 11, 10, 11 | 10 | 0 | `completed` 6/6 | **0** in 6/6 | — |
+
+I1–I5 hold and every prediction landed (0 injections, `completed` 6/6, median 10 against a predicted 9–11,
+passes 5/6 against 3–5). NEW2's one failure writes a multi-document YAML stream — a write-time design
+choice. Pooled over arms H and I the OLD build injected the manufactured warning in **12 of 12** runs and
+the model spent 4, 3, 4, 0, 4, 1, 8, 3, 1, 1, 0, 6 calls on it (median 3); arm G's long runs were the same
+trigger at 12–31 calls. With both fixes the harness does not run on this task at all: the model's own
+green pytest credits the gate and the turn ends on its summary.
+
+### Consequences
+
+- `-m` on a **CLI** module (one with a main guard) inside a package whose `__init__` imports it will
+  still produce the same runpy warning. That is a different case — the module is meant to be run — and
+  it is not measured here; if a task exhibits it, the lever is the same shape (run it as the package's
+  console entry, or import-then-call), not a prompt instruction.
+- The harness-injected message is a channel the model cannot distinguish from a real defect report.
+  Anything the harness puts there must be something the model should act on; a warning at exit 0 is
+  not. F10 records the class.
+- `resolve_run_command` now reads the target file (one `open`, ≤ file size) to decide the form; the
+  fallback on any `OSError` is today's behavior.
+- An acceptance literal and a pending **library** module cannot meet: the import prints nothing, so the
+  gate stalls at the cap by design. After #423 that pairing needs a genuine "prints `X`" phrasing in the
+  request, which is what the literal was always meant to capture; the mis-extraction that produced the
+  pairing on 06 is closed.
+- The measurement that shipped #422 would have passed it on the letter of its own rules while every run
+  ended in a stall the rules did not score. A rule set for a harness change must score the **stop
+  reason** and the **number of harness runs per turn**, not only passes and turns (arm I does).

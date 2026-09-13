@@ -140,6 +140,31 @@ fresh workspace path, six runs per arm; sampled that way the survey passed 6/6 a
 halved the median turns, so it shipped default-on. The rule stands: score prompt levers on outcomes, over
 sampled basins, on the near-tie tasks.
 
+**F10 — The harness can manufacture the defect the model then chases (ADR-0166).** The post-green holes
+that dominated every long 06 run on the 35B (25, 56, 25, 40, 23 turns across ADR-0164's arms E, E3 and G)
+were not model wandering: after the first green `pytest` the model summarized, the recipe gate found a
+written runnable with no run credited, and the harness verified it as `python -m plugins.yaml_out`.
+`plugins/__init__.py` imports its renderers, so runpy warned `'plugins.yaml_out' found in sys.modules
+after import of package 'plugins'` at exit 0, and the harness folded that into a trusted user message —
+`[harness] I ran the file to verify it:` + warning + `[exit code: 0]`. The model read a warning the
+harness produced as a defect in its own work and spent 15–45 calls on `-W error` probes, `filterwarnings`
+and ImportError stubs; the injection fired on 12 of 12 runs measured (arm H), and the calls spent after
+it — 0 to 31 — are the basin variable. Two defects sat under it, and the second was found only by
+measuring the fix for the first. (1) A module with no `__main__` block is a library; `-m` is the wrong
+verification for it and the import form (L8, #422) removes the warning — in arm H the calls after the
+injection fell to 2 in 6 of 6 runs. (2) The harness should never have run at all after a green suite:
+`extract_acceptance` read task 06's *"outputs YAML, registered under the name `yaml`"* as an
+expected-stdout literal `yaml` (the 40-character gap after the cue verb crossed the comma), and with a
+literal set a green suite is never credited while a run counts only if its output contains the literal —
+which the runpy warning text did, by accident, and an import's empty output never can, so #422 alone
+stalled every run at the attempt cap. #423 stops the literal at clause punctuation and rejects a naming
+lead. Three properties matter for the smaller-model goal: a harness-injected message is a channel the
+model cannot tell from a real defect report, so whatever the harness puts there must be actionable — a
+warning at exit 0 is not; a gate whose credit depends on the *text* of a run can be satisfied by the wrong
+text and starved by the right one; and a pre-registered rule set for a harness change must score the stop
+reason and the harness runs per turn, not only passes and turns — arm H passed on its letter while every
+run ended `recipe_stalled`. Arm I (both fixes, six unpinned basins per arm): harness runs per turn 1 → **0** in 6 of 6, `completed` 6 of 6 against `recipe_stalled` 6 of 6 on #422 alone, passes 5/6 vs 6/6 (the one failure a write-time design choice), median turns 11 → 10.
+
 ## 5. Levers, ranked
 
 | # | Lever | Property (§1) | Seam | How it is measured | Status |
@@ -151,6 +176,7 @@ sampled basins, on the near-tie tasks.
 | L5 | **More convention filenames** (`pyproject.toml [tool.*]`, `Makefile` targets, `.editorconfig`) | model-free | `CONVENTION_FILENAMES` | needs a task whose rule lives in such a file | needs tasks |
 | L6 | **Test-file hint on edit** (append `tests/test_<name>.py` to the edit result when it exists) | model-free | grounding message | same tasks as L4 | needs tasks |
 | L7 | **Repair, not bounce, a truncated `write_file`** | model-free | `loop.py:4295` `cut_off=True` | count of `cut_off` bounces on the pod first (unmeasured) | measure first |
+| L8 | **Verify a library module by import, not `-m`** — a package module without a `__main__` guard is checked with `python -c "import pkg.mod"`; `-m` stays for modules with a guard and for unreadable files | model-free | `recipe.py` `_python_run_command` / `_executed_targets` | long runs (> 20 turns) and median turns on 06/35B by basin sampling, OLD vs NEW build, outcomes must hold (ADR-0166 arm H) | **shipped (#422 + #423, ADR-0166)** — arm H: warning gone 6/6 but `recipe_stalled` 6/6 on a mis-extracted acceptance literal; arm I with the literal fixed: 0 harness runs, `completed` 6/6, 5/6 vs 6/6, median turns 11 → 10 (F10) |
 | — | Lint/format after write (extend `syntax_note`) | model-free | `grounding.py` | — | deferred: no measured failure |
 
 **What not to do, because it was measured:** temperature 0 harness-wide (ADR-0018); a routing shortlist
@@ -173,3 +199,8 @@ descriptions with the 35B (ADR-0158 fourth addendum).
 * `determinism_arm.py` captures `sources` for every small text file (`.py`, `.md`, `.txt`, `.csv`,
   `.json`, `.toml`, `.yaml`, `.cfg`, `.ini`, ≤4 KB) since ADR-0164; before that only `*.py`, so ADR-0164's
   m04 digest difference on `count.md` is a difference of unknown content.
+* `bench/harness_verify_holes.py <cell-dir>...` reads a cell's wire dumps and prints, per run, the call at
+  which the harness verify message first appears, its body kind, the calls the model made after it, and
+  its first response — the hole-length instrument behind F10 / ADR-0166. The injection itself fires on
+  every 06 run, so "calls after it" is the quantity a fix moves; `harness verify at call N` with no
+  message means the model ran its own file before finishing and the harness never had to.
