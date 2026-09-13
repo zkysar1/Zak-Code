@@ -128,6 +128,12 @@ class ObserveRequest(BaseModel):
     so this one is latest-wins and never refuses (P4: delivery is lossy; the mind must
     tolerate absence, and must equally tolerate a frame it never saw).
 
+    ``kind`` is the vessel's own discriminator: ``"heartbeat"`` for a periodic FULL picture,
+    ``"change"`` for a frame narrowed to what actually moved (``changedSlices`` names those
+    slices). The distinction is not cosmetic — it decides whether this frame may WAKE a
+    sleeping mind, so the default is the empty string rather than either real value: a
+    vessel that does not stamp a kind must never be read as announcing a change.
+
     ``observation`` is an opaque map of perception slices — the vessel's allow-rule is every
     ``privateSelf`` key whose name ends in ``Perception``, so the shape here is deliberately
     NOT enumerated: pinning today's slice names would silently reject tomorrow's. It is
@@ -140,6 +146,12 @@ class ObserveRequest(BaseModel):
     observedAt: str
     observation: dict[str, Any] = Field(default_factory=dict)
     droppedSlices: list[str] = Field(default_factory=list)
+    # DECLARED BECAUSE THE VESSEL SENDS THEM. Pydantic's default is extra="ignore", so an
+    # undeclared wire field is not an error here — it is silently DISCARDED, and the frame
+    # still returns 200. That is why nine armed perception rounds never surfaced this: the
+    # discriminator the vessel stamps on every envelope never reached the handler at all.
+    kind: str = ""
+    changedSlices: list[str] = Field(default_factory=list)
 
 
 class WatchMarkerRequest(BaseModel):

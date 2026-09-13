@@ -93,9 +93,12 @@ from zakcode.server.wire import (
     event_to_dict,
     events_schema,
 )
+from zakcode.session.framework_signal import set_framework_signal
 from zakcode.session.framework_stop import request_framework_stop
 from zakcode.session.observation_inbox import (
     CHANGES_SLICE,
+    KIND_CHANGE,
+    PERCEPTION_RECEIVED_SIGNAL,
     merge_changes,
     peek_observation,
 )
@@ -1569,6 +1572,11 @@ def create_app(
             "observedAt": request.observedAt,
             "observation": observation,
             "droppedSlices": list(request.droppedSlices),
+            # Staged alongside the payload so whatever reads this file can tell a narrowed
+            # CHANGE from a periodic full picture — the same distinction the wake below
+            # turns on, and useless to a reader that has to guess it.
+            "kind": request.kind,
+            "changedSlices": list(request.changedSlices),
             # The frame travels WITH the payload so whatever reads this file cannot
             # present untrusted world text to the model unframed (P1).
             "frame": OBSERVATION_FRAME.format(observed_at=request.observedAt),
@@ -1576,6 +1584,28 @@ def create_app(
         tmp = target.with_name(f".observation.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(staged, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(tmp, target)
+        # THE FRAME IS ON DISK BEFORE THE MIND IS TOLD TO LOOK. A wake that overtakes its
+        # own payload wakes a loop to an empty inbox, which is worse than not waking it.
+        #
+        # ONLY A CHANGE WAKES. A heartbeat is timer-driven and says nothing new, so waking
+        # on one would convert every quiescent sleep into a busy-poll — and an unstamped
+        # envelope (kind == "") is deliberately NOT a change, so an older vessel cannot
+        # wake this loop by accident. The inequality is the fail-safe direction: a missed
+        # wake costs latency (the mind perceives this frame on its next round anyway), a
+        # spurious one costs the sleep itself.
+        #
+        # `run_stop_agent` is the ADDRESS of this workspace's resident agent — the same
+        # role it plays for the run-end stop, and the repo's no-knobs ruling is against a
+        # second setting that answers an identical question. None = not a seed workspace,
+        # which is left entirely untouched.
+        agent = resolved_settings.run_stop_agent
+        woke = False
+        if request.kind == KIND_CHANGE and agent:
+            # Fail-open by contract: staging has already succeeded. Losing the EARLY wake
+            # is a latency cost; raising here would lose the frame itself.
+            woke = set_framework_signal(
+                resolved_settings.workspace_root, agent, PERCEPTION_RECEIVED_SIGNAL
+            )
         age = _frame_age_seconds(request.observedAt)
         _observation_stats["accepted"] += 1
         if superseded:
@@ -1587,13 +1617,17 @@ def create_app(
         # age=None rather than a fabricated number, so a broken clock or a changed
         # envelope shape is visible here instead of silently reading as fresh.
         logger.info(
-            "perception-intake ref=%s age_s=%s superseded=%s merged=%s slices=%d dropped=%d",
+            "perception-intake ref=%s kind=%s age_s=%s superseded=%s merged=%s "
+            "slices=%d dropped=%d changed=%d woke=%s",
             ref,
+            request.kind or "-",
             age,
             superseded,
             merged_changes,
             len(observation),
             len(request.droppedSlices),
+            len(request.changedSlices),
+            woke,
         )
         return {
             "accepted": True,
