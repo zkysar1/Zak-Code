@@ -119,3 +119,15 @@ Prediction: none between EL1/EL2; EL3 is the hoped-for reading, not a prediction
   benign-warning annotation on tool results would shorten the tail at most; the lever that fits the entry is a
   deterministic post-green cap (tests passed, N read-only probes since, no edit improved anything -> finish
   nudge). Recorded here as the measured shape; not pre-registered tonight.
+
+=== 02:04 UTC 2026-09-13 MECHANISM CORRECTION 2 (supersedes the correction above) -- the hole is the harness's own
+  The entry above searched only tool-role messages. The first RuntimeWarning in E run 3 -- and in every long
+  ARM G run checked (NOSURVEY-b2 runs 1-2, NOSURVEY-b1 run 3) -- is in a USER-role message injected by zakcode:
+  after the first green pytest the model wrote its finishing summary ("All 6 tests pass. Here's what I did"),
+  and the recipe gate (_try_harness_verify) then ran the written library module itself as
+  "python -m plugins.yaml_out"; because plugins/__init__.py imports its renderers, runpy warned "'plugins.yaml_out'
+  found in sys.modules after import of package 'plugins'" at exit code 0, and the harness injected
+  "[harness] I ran the file to verify it: <that warning> [exit code: 0]". The model read a warning the harness
+  manufactured as a defect and spent 15-45 calls "fixing" it. 4/4 long runs, same trigger, same first response.
+  Lever (deterministic, zakcode-owned): a module with no __main__ block is a library -- verify it by import
+  ("python -c 'import pkg.mod'"), never by -m. Pre-registered next as arm H (basin sampling, old vs new build).
