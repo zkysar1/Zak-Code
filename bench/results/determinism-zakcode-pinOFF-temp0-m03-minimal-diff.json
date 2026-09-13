@@ -1,0 +1,182 @@
+{
+  "task": "m03-minimal-diff",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 6,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-ob7cy59s",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 13.9,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "harness_verify": 1,
+        "text_only_stall": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      },
+      "py_digests": {
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    if len(values) == 0:\n        return 0.0\n    total = 0\n    for v in values:\n        total = total + v\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-reljl3an",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 13.4,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "harness_verify": 1,
+        "text_only_stall": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "py_digests": {
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if len(values) == 0:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-y7_oe2q4",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 13.1,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "harness_verify": 1,
+        "text_only_stall": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "py_digests": {
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if len(values) == 0:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-xhe6yvmu",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 13.4,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "harness_verify": 1,
+        "text_only_stall": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "py_digests": {
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if len(values) == 0:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-btizz0dy",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 13.7,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "harness_verify": 1,
+        "text_only_stall": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "py_digests": {
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if len(values) == 0:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-mq6b7a2d",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 13.1,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "harness_verify": 1,
+        "text_only_stall": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "py_digests": {
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if len(values) == 0:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    }
+  ]
+}
