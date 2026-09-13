@@ -40,7 +40,9 @@ class _FakeAgent:
         self.session = session
 
 
-def _factory(session: Session, model: str | None, prompter: object = None) -> _FakeAgent:  # noqa: ARG001
+def _factory(
+    session: Session, model: str | None, prompter: object = None
+) -> _FakeAgent:  # noqa: ARG001
     return _FakeAgent(session)
 
 
@@ -81,7 +83,8 @@ def test_an_accepted_frame_writes_an_info_line(
         resp = client.post("/observe", json=_envelope())
     assert resp.status_code == 200
     assert any("perception-intake" in r.message for r in caplog.records), (
-        f"an accepted frame must leave a perception-intake line: {[r.message for r in caplog.records]}"
+        "an accepted frame must leave a perception-intake line: "
+        f"{[r.message for r in caplog.records]}"
     )
 
 
@@ -98,7 +101,11 @@ def test_an_accepted_frame_writes_an_info_line(
         (_envelope(envelopeVersion=99), 400, "reason=bad_version"),
         (_envelope(externalClientRef="   "), 400, "reason=missing_ref"),
         (
-            _envelope(observation={"nearbyPerception": {"blob": "x" * (OBSERVATION_MAX_CHARS + 64)}}),
+            _envelope(
+                observation={
+                    "nearbyPerception": {"blob": "x" * (OBSERVATION_MAX_CHARS + 64)}
+                }
+            ),
             413,
             "reason=too_large",
         ),
@@ -172,7 +179,9 @@ def test_log_level_is_env_controlled(
 ) -> None:
     monkeypatch.setenv(LOG_LEVEL_ENV, "debug")
     _configure_logging()
-    assert logging.getLogger().level == logging.DEBUG, "level must come from the env var (case-insensitive)"
+    assert (
+        logging.getLogger().level == logging.DEBUG
+    ), "level must come from the env var (case-insensitive)"
 
 
 def test_an_unrecognised_level_falls_back_to_info_rather_than_raising(
