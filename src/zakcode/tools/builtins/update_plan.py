@@ -74,6 +74,14 @@ _OUTCOME_WITHOUT_STATUS = (
     "Step {id} already carries an outcome but its status is still '{status}'. "
 )
 
+#: Advance rail (ADR-0168 lever N): the harness just marked a worked-on step done because the model
+#: resent the plan unchanged and would not close it. Point at the step now current — do it, do not
+#: resend the plan unchanged again.
+_ADVANCED_HINT = (
+    "Do step {id} now with a tool call. When a step is genuinely done, resend the plan with its "
+    "status 'done' and its result in 'outcome'; do not resend the plan unchanged."
+)
+
 
 def _task_schema(depth: int) -> dict[str, Any]:
     """JSON schema for one task node, nesting ``subtasks`` to ``depth`` levels."""
@@ -247,6 +255,20 @@ class UpdatePlanTool(Tool):
             # idempotent and a state compare only converges on the second apply (arm M). The
             # event-count half is still load-bearing: a null close the harness hands back (ADR-0116)
             # resends the same tree but records the challenge / applies the delayed close: updated.
+            current = network.current()
+            if (
+                ctx.plan_autoadvance
+                and current is not None
+                and current.status in ("pending", "in_progress")
+                and (
+                    current.evidence
+                    or current.outcome
+                    or any(leaf.evidence for leaf in network.leaves())
+                )
+            ):
+                # Lever N (opt-in): the plan has been worked on and the model will not close the
+                # step — mark it done and move the frontier, instead of the rail it ignores (arm M).
+                return self._autoadvance(network, current)
             return self._unchanged(network, finished, total)
         quality, deficiencies = network.quality()
         # The result is a RECEIPT, not the plan (ADR-0124). The model just sent the whole plan
@@ -283,6 +305,35 @@ class UpdatePlanTool(Tool):
             },
             hint=self._hint(network),
         )
+
+    @staticmethod
+    def _autoadvance(network: TaskNetwork, step: Task) -> ToolResult:
+        """Lever N (ADR-0168): mark a worked step done for the model and name the next (opt-in)."""
+        advanced_id, advanced_title = step.id, step.title
+        new_current = network.harness_advance(step)
+        finished, total = network.progress()
+        data = {
+            "task_count": total,
+            "finished": finished,
+            "unchanged": True,
+            "autoadvanced": True,
+            "advanced_step": advanced_id,
+            "complete": network.is_complete(),
+        }
+        lead = (
+            f"Advanced step {advanced_id} ({clip(advanced_title, 60)!r}) to done for you — it was "
+            "already worked on and you resent the plan unchanged."
+        )
+        if new_current is None:
+            tail = " — complete." if network.is_complete() else "."
+            output = f"{lead} Plan now {finished}/{total} steps done{tail}"
+            hint = _COMPLETE_HINT if network.is_complete() else None
+            return ToolResult.ok(output, data=data, hint=hint)
+        output = (
+            f"{lead} Plan now {finished}/{total} steps done · current: {new_current.id} "
+            f"{clip(new_current.title, 80)}."
+        )
+        return ToolResult.ok(output, data=data, hint=_ADVANCED_HINT.format(id=new_current.id))
 
     @staticmethod
     def _unchanged(network: TaskNetwork, finished: int, total: int) -> ToolResult:

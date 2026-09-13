@@ -270,6 +270,10 @@ class ToolContext(BaseModel):
     #: re-injects. ``None`` for a bare/ungated loop that does not wire planning, so the
     #: tool degrades to a recoverable error rather than raising.
     task_network: TaskNetwork | None = None
+    #: ADR-0168 lever N (opt-in ``plan_autoadvance``): when the model resends the plan unchanged and
+    #: the current step is non-terminal but already worked on, ``update_plan`` marks it done and
+    #: advances. The loop wires this from ``settings.plan_autoadvance``; ``False`` for a bare loop.
+    plan_autoadvance: bool = False
     #: A :class:`Sampler` for tools that make their own model calls (``deep_think``). The
     #: ``Agent`` wires it to its strongest model and accounts the spend; ``None`` for a
     #: bare/test loop, so a model-using tool returns a clean error rather than crashing.

@@ -249,6 +249,12 @@ class Task(BaseModel):
     #: seeded when deep work began to change the workspace with no plan. The one step the plan
     #: gate may close on the model's behalf at a conclusion; the model's own steps never are.
     anchor: bool = False
+    #: ADR-0168 lever N — this step was marked done by the HARNESS (``harness_advance``), not by the
+    #: model, when the model resent the plan unchanged and left a worked-on step non-terminal. It is
+    #: STICKY across the full-replace: :meth:`replace_from_author` keeps a harness-advanced leaf
+    #: ``done`` when the model blindly resends it non-terminal, so a model that will not emit
+    #: ``status: done`` cannot undo the advance by resending its all-``pending`` plan.
+    harness_done: bool = False
     #: ADR-0110 — what the step PRODUCED, one line, recorded when it closes ("the flake is a
     #: stale cache", "route added in app/users.py"). Set by the model (``update_plan``
     #: ``outcome``) or filled by the harness from the last evidence line when the model leaves
@@ -452,8 +458,17 @@ class TaskNetwork(BaseModel):
             task.origin = prior.origin
             task.anchor = prior.anchor
             task.challenged = prior.challenged
+            task.harness_done = prior.harness_done
             if not task.outcome:
                 task.outcome = prior.outcome
+            if task.harness_done and not task.children and task.status not in _TERMINAL:
+                # ADR-0168 lever N: a harness-advanced leaf is STICKY. The model that drives the
+                # doom loop will not emit ``status: done`` and resends its plan with the step still
+                # ``pending``; without this, the full-replace would undo the advance every call and
+                # the frontier could never move. Only ever fires when ``harness_advance`` set the
+                # flag (opt-in ``plan_autoadvance``), so it is dormant otherwise. A genuine reopen
+                # would carry NEW work (evidence), which the next advance decision sees.
+                task.status = "done"
             if task.children or task.status == prior.status:
                 continue
             if challenged is None and self._null_close_to_challenge(task, prior):
@@ -514,6 +529,30 @@ class TaskNetwork(BaseModel):
             "to exist in that scope — or a query of a different shape; then close the step with "
             "a done-condition in 'note' and what you actually found in 'outcome'."
         )
+
+    def harness_advance(self, step: Task) -> Task | None:
+        """Mark a worked-on step ``done`` on the model's behalf and return the new current step.
+
+        ADR-0168 lever N. The model resent the plan unchanged and left ``step`` non-terminal though
+        the plan has been worked on — the update_plan doom loop, where a weak model does the work
+        but will not emit ``status: done`` (measured on the bench, arm M: a 35B wrote a module,
+        exported it, wrote passing tests, then resent an all-``pending`` plan until it doom-looped).
+        The harness closes the step the model reached and moves the frontier, rather than asking
+        again in words. ``harness_done`` makes it stick across the next full-replace. The
+        outcome is filled from the last evidence line when the model left it blank, so the closed
+        step reads with a record, and the transition is logged like any other.
+        """
+        if not step.outcome and step.evidence:
+            step.outcome = "last action: " + step.evidence[-1]
+        step.status = "done"
+        step.harness_done = True
+        self.record(
+            "advanced",
+            step=step,
+            detail=f"harness advanced (worked on, resent unchanged): {step.title}",
+        )
+        self.normalize()
+        return self.current()
 
     def recent_closed(self, limit: int = 3) -> list[Task]:
         """The most recently CLOSED leaves (done/cancelled), newest first (ADR-0110).

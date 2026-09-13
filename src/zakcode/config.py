@@ -564,6 +564,15 @@ class Settings(BaseSettings):
             "Makefile's lint/check/test targets, else a pyproject ruff config (review lever L4)."
         ),
     )
+    plan_autoadvance: bool = Field(
+        default=False,
+        description=(
+            "When the model resends the plan UNCHANGED and the current step has already been "
+            "worked on (evidence attached or an outcome recorded) but left non-terminal, mark that "
+            "step done and advance — the harness does what a weak model demonstrably will not, "
+            "instead of asking again in words (review lever N, the update_plan doom loop)."
+        ),
+    )
     # Plan-first gate (R5, opt-in, OFF by default). When true, the harness will not run a MUTATING
     # tool (write/edit/shell) until the model has laid out a plan with update_plan — "plan before
     # you act", the harness-enforced-planning pole. Read-only investigation is never gated, and the

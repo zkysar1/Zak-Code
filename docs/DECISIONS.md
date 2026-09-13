@@ -9253,3 +9253,26 @@ correctness completion and the reliable first-resend detection the next lever ne
 harness advance (lever N, pre-registered separately):** when the current step has evidence of completion and
 the model resends the plan unchanged, the harness marks the step done and advances — doing what the 35B
 demonstrably will not — instead of asking again in words.
+
+**Addendum (2026-09-13, lever N — a deterministic harness advance; #433).** Arm M's M3 failure was
+diagnostic: the doom loop's root is that the 35B does the work but will not emit `status: done`, and a
+text rail cannot move it. Per M3's pre-registered response (revise as a new lever), lever N does for the
+model what it will not do. When the model resends the plan **unchanged** (the ADR-0168 detection, now on
+the first resend) and the current step is non-terminal but the plan has been worked on — evidence
+attached to a leaf, or an `outcome` the model recorded — `update_plan` marks the current step `done`,
+fills its outcome from the last evidence line, and names the next step (`TaskNetwork.harness_advance`).
+The advance is **sticky**: `Task.harness_done` is set, and `replace_from_author` keeps a harness-advanced
+leaf `done` when the model blindly resends it non-terminal — the full-replace contract would otherwise
+undo the advance every call, so the frontier could never move. Each unchanged resend walks the frontier
+one step; a model that did all the work then churned an all-`pending` plan reaches completion instead of
+`doom_loop`, and the completion gate's verdict rail (ADR-0108) then asks it to answer the request. False
+advances are bounded by the verifier: a step marked done whose work is absent still fails `verify`, so
+the pass rate — not the plan's self-report — is the ground truth. The loop notes each advance
+`kind="plan_autoadvance"` for the census.
+
+Lever N is **opt-in** (`Settings.plan_autoadvance`, env `ZAKCODE_PLAN_AUTOADVANCE`, default off) until
+**arm N** measures it (`bench/results/plan-autoadvance-10-preregistration.log`): the shipped build with
+the flag OFF vs ON on `10-rule-in-pyproject` / 35B, `--no-pin`, N=9 per arm interleaved in threes — one
+build, the env flag the only difference, so it isolates the advance on top of the first-resend rail. N3
+(the doom-loop rate among triggered runs) is the primary; the aggregate pass gap stays confounded by
+entry-rate basin variance (arm M's lesson), and `verify_rc` guards against a false-completion win.
