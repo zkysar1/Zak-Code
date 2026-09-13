@@ -1205,7 +1205,7 @@ def test_resolve_run_command_uses_module_form_inside_a_package(tmp_path: Path) -
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
     target = pkg / "cli.py"
-    target.write_text("from wordstats import core\n")
+    target.write_text('from wordstats import core\n\nif __name__ == "__main__":\n    core.main()\n')
     cmd = resolve_run_command(str(target))
     assert cmd is not None
     assert f'cd "{tmp_path}"' in cmd and cmd.rstrip().endswith("-m wordstats.cli")
@@ -1214,7 +1214,7 @@ def test_resolve_run_command_uses_module_form_inside_a_package(tmp_path: Path) -
     sub = pkg / "inner"
     sub.mkdir()
     (sub / "__init__.py").write_text("")
-    (sub / "job.py").write_text("")
+    (sub / "job.py").write_text('if __name__ == "__main__":\n    pass\n')
     nested = resolve_run_command(str(sub / "job.py"))
     assert nested is not None and nested.endswith("-m wordstats.inner.job")
     # A plain script outside any package keeps the direct form.
@@ -1222,6 +1222,57 @@ def test_resolve_run_command_uses_module_form_inside_a_package(tmp_path: Path) -
     script.write_text("print('ok')\n")
     plain = resolve_run_command(str(script))
     assert plain is not None and str(script) in plain and "-m" not in plain
+
+
+def test_resolve_run_command_imports_a_library_module_instead_of_running_it(tmp_path: Path) -> None:
+    """A module inside a package with no __main__ block executes nothing on purpose. Running it
+    with -m after the package __init__ imported it makes runpy warn at exit 0 -- a warning the
+    harness manufactured and a small model then "fixes" for 15-45 calls (ADR-0166). Import it.
+    """
+    pkg = tmp_path / "plugins"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from plugins import yaml_out  # registration import\n")
+    lib = pkg / "yaml_out.py"
+    lib.write_text("def render(rows):\n    return str(rows)\n")
+    cmd = resolve_run_command(str(lib))
+    assert cmd is not None
+    assert cmd.rstrip().endswith('-c "import plugins.yaml_out"'), cmd
+    assert "-m" not in cmd and str(lib) not in cmd
+    # A quoted or commented mention of __main__ is not a guard; the real block is.
+    lib.write_text('NAME = "__main__"  # just a string\n')
+    assert '-c "import plugins.yaml_out"' in (resolve_run_command(str(lib)) or "")
+    lib.write_text(
+        "def render(rows):\n    return rows\n\n\n"
+        'if __name__ == "__main__":\n    print(render([]))\n'
+    )
+    assert (resolve_run_command(str(lib)) or "").rstrip().endswith("-m plugins.yaml_out")
+
+
+def test_executed_targets_credit_import_snippets() -> None:
+    from zakcode.agent.recipe import _executed_targets
+
+    targets = {"yaml_out.py", "core.py"}
+    ran = _executed_targets('cd "/w"; /usr/bin/python3 -c "import plugins.yaml_out"', targets)
+    assert ran == {"yaml_out.py"}
+    assert _executed_targets('python -c "from pkg.core import main; main()"', targets) == {
+        "core.py"
+    }
+    assert (
+        _executed_targets('echo -c "import plugins.yaml_out"', targets) == set()
+    )  # not an interpreter
+    assert _executed_targets('python -c "print(1)"', targets) == set()
+
+
+def test_cursor_verified_by_the_harness_import_run() -> None:
+    c = RecipeCursor(enabled=True)
+    path = "/w/plugins/yaml_out.py"
+    c.observe([_c("w", "write_file", path=path)], [_r("w", path=path)])
+    assert c.needs_verification() is True
+    c.observe(
+        [_c("r", "bash", command='cd "/w"; /usr/bin/python3 -c "import plugins.yaml_out"')],
+        [_r("r", output="[exit code: 0]")],
+    )
+    assert c.needs_verification() is False
 
 
 def test_resolve_run_command_routes_test_modules_to_the_runner(tmp_path: Path) -> None:

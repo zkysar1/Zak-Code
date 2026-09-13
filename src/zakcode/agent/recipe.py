@@ -216,6 +216,10 @@ def _segments(command: str) -> list[list[str]]:
     return segments
 
 
+#: ``import a.b`` / ``from a.b import c`` inside a ``-c`` snippet: the dotted module names.
+_IMPORTED_MODULES = re.compile(r"\b(?:import|from)\s+([\w.]+)")
+
+
 def _executed_targets(command: str, targets: set[str]) -> set[str]:
     """The subset of ``targets`` (basenames) that ``command`` actually *executes*.
 
@@ -249,6 +253,14 @@ def _executed_targets(command: str, targets: set[str]) -> set[str]:
                 module = body[i + 1].strip().strip("'\"")
                 if (b := module.rsplit(".", 1)[-1] + ".py") in targets:
                     executed.add(b)
+        # `python -c "import pkg.mod"` is the harness's verify for a LIBRARY module (no
+        # __main__ block -- see _python_run_command): every module the snippet imports is
+        # executed at import time, so its last component is an executed basename too.
+        for i, tok in enumerate(body[:-1]):
+            if tok.strip().strip("'\"") == "-c":
+                for module in _IMPORTED_MODULES.findall(body[i + 1]):
+                    if (b := module.rsplit(".", 1)[-1] + ".py") in targets:
+                        executed.add(b)
         # Direct execution: a ./x.py or .\x.py token anywhere in the segment.
         for tok in seg:
             stripped = tok.strip().strip("'\"")
@@ -578,8 +590,34 @@ def _python_run_command(path: str) -> str | None:
         if exe is None:
             return None
         module = ".".join([*parts, os.path.splitext(basename)[0]])
+        if not _has_main_guard(path):
+            # A module with no ``__main__`` block is a LIBRARY: running it executes nothing on
+            # purpose, and running it with ``-m`` after the package's ``__init__`` imported it
+            # makes runpy warn "'pkg.mod' found in sys.modules after import of package 'pkg'" at
+            # exit 0 -- a warning the harness manufactures, injects as "[harness] I ran the file
+            # to verify it", and a small model then spends 15-45 calls "fixing" (measured
+            # 2026-09-13, ADR-0166: 4 of 4 long 06 runs on the 35B, same trigger, same first
+            # response). Importing it is the verification a library admits, and it is credited
+            # like ``-m`` (:func:`_executed_targets`).
+            return f'cd "{root}"; {exe} -c "import {module}"'
         return f'cd "{root}"; {exe} -m {module}'
     return None
+
+
+_MAIN_GUARD = re.compile(r"__name__\s*==\s*['\"]__main__['\"]")
+
+
+def _has_main_guard(path: str) -> bool:
+    """Whether a ``.py`` file carries an ``if __name__ == "__main__":`` block.
+
+    Unreadable files count as scripts (the ``-m`` form, today's behavior) so a permission or
+    encoding problem never silently downgrades a CLI's verification to an import.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return _MAIN_GUARD.search(fh.read()) is not None
+    except OSError:
+        return True
 
 
 def resolve_run_command(path: str) -> str | None:
