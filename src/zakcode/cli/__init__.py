@@ -13,6 +13,7 @@ import contextlib
 import functools
 import ipaddress
 import json
+import logging
 import os
 import queue
 import random
@@ -3292,8 +3293,49 @@ register_cockpit_commands(app)
 register_throughput_command(app)
 
 
+#: Env var controlling the root log level configured by :func:`_configure_logging`.
+LOG_LEVEL_ENV = "ZAKCODE_LOG_LEVEL"
+
+
+def _configure_logging() -> None:
+    """Configure stdlib logging so zakcode's own records reach the process stdout.
+
+    Until this existed, zakcode configured NO stdlib logging ANYWHERE — zero
+    ``basicConfig``/``dictConfig`` across ``src/zakcode``. Every ``logger.info`` in
+    the tree therefore fell through to the root logger's last-resort handler, which
+    emits at WARNING and to stderr, so INFO records were discarded outright. That
+    silently hid the one record of the vessel-to-mind channel working
+    (``perception-intake`` in the server, ``observation inbox: delivered a
+    perception`` in the agent loop): an operator tailing serve.log saw NEITHER a
+    delivered perception NOR a dropped one. That is the worst possible shape for
+    this channel specifically, because P4 makes every failure on it a SILENT DROP
+    by design — so success and failure were indistinguishable from outside.
+
+    stdout, not stderr: the deployment redirects stdout into serve.log, which is the
+    file an operator actually tails.
+
+    ``force=True`` because an import-time configurator in a dependency would
+    otherwise leave this call a no-op with no error — the failure mode would be
+    exactly the invisible one this function exists to remove.
+
+    An unrecognised level falls back to INFO rather than raising: a typo in an env
+    var must not stop the server from starting.
+    """
+    level_name = os.environ.get(LOG_LEVEL_ENV, "INFO").strip().upper()
+    level = logging.getLevelName(level_name)
+    if not isinstance(level, int):
+        level = logging.INFO
+    logging.basicConfig(
+        level=level,
+        stream=sys.stdout,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        force=True,
+    )
+
+
 def main() -> None:
     """Console-script entry point (see ``[project.scripts]`` in pyproject.toml)."""
+    _configure_logging()
     app()
 
 

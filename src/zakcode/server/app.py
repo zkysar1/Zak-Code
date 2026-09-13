@@ -1326,6 +1326,8 @@ def create_app(
         "refused_bad_version": 0,
         "refused_missing_ref": 0,
         "refused_too_large": 0,
+        "wake_delivered": 0,
+        "wake_dropped": 0,
         "last_frame_age_seconds": None,
         "last_observed_at": None,
     }
@@ -1604,6 +1606,17 @@ def create_app(
         """
         if request.envelopeVersion != OBSERVATION_ENVELOPE_VERSION:
             _observation_stats["refused_bad_version"] += 1
+            # LOG EVERY REFUSAL, not just the accepts. P4 makes failure on this channel a
+            # SILENT DROP by design, so a receiver that logs only successes leaves an
+            # operator unable to tell "no vessel is sending" from "every frame is being
+            # rejected" — the two states look identical in serve.log. WARNING, not INFO:
+            # a refusal is the actionable half.
+            logger.warning(
+                "perception-intake REFUSED ref=%s reason=bad_version got=%s want=%s",
+                request.externalClientRef,
+                request.envelopeVersion,
+                OBSERVATION_ENVELOPE_VERSION,
+            )
             # Refuse rather than best-effort parse: acting on a mis-read frame is worse
             # than acting on no frame, and P4 already makes the absent case safe.
             raise HTTPException(
@@ -1616,11 +1629,20 @@ def create_app(
         ref = (request.externalClientRef or "").strip()
         if not ref:
             _observation_stats["refused_missing_ref"] += 1
+            logger.warning("perception-intake REFUSED ref=<missing> reason=missing_ref")
             raise HTTPException(status_code=400, detail="externalClientRef required")
 
         payload = json.dumps(request.observation, ensure_ascii=False, sort_keys=True)
         if len(payload) > OBSERVATION_MAX_CHARS:
             _observation_stats["refused_too_large"] += 1
+            # Sized, not just named: an operator who can see the overshoot can decide
+            # whether the vessel's budget is wrong or the cap is.
+            logger.warning(
+                "perception-intake REFUSED ref=%s reason=too_large chars=%d cap=%d",
+                ref,
+                len(payload),
+                OBSERVATION_MAX_CHARS,
+            )
             # The vessel budgets and names what it shed in droppedSlices; this is the
             # receiver's independent floor, because P4 makes producer cooperation optional.
             raise HTTPException(
@@ -1694,6 +1716,7 @@ def create_app(
         # which is left entirely untouched.
         agent = resolved_settings.run_stop_agent
         woke = False
+        wake_attempted = False
         mode: str | None = None
         if request.kind == KIND_CHANGE and agent:
             # AUTONOMOUS-ONLY, and this is a contract rather than an optimisation: `reader`
@@ -1710,9 +1733,36 @@ def create_app(
             if mode == AUTONOMOUS_MODE:
                 # Fail-open by contract: staging has already succeeded. Losing the EARLY
                 # wake is a latency cost; raising here would lose the frame itself.
+                wake_attempted = True
                 woke = set_framework_signal(
                     resolved_settings.workspace_root, agent, PERCEPTION_RECEIVED_SIGNAL
                 )
+        # WAKE DISPOSITION (g-373-56). Fail-open keeps the frame and keeps the 200, which is
+        # right -- but it left the dropped wake with NO EGRESS: `woke` reached one log line
+        # and nothing else, and a caller reading the 200 body saw accepted:true either way.
+        # That is the always-reports-clear class. An armed bridge whose workspace seed
+        # REFUSES the signal NAME posts every round, is accepted every round, and wakes
+        # nothing; measured on a live vessel (g-373-10, alpha/cc-09) where the seed's
+        # 8-entry VALID_SIGNALS rejected `perception-received` and the POST still returned
+        # accepted:true.
+        #
+        # THREE STATES, NOT A BOOLEAN, because a FAILED wake must not read as an
+        # UN-ATTEMPTED one (guard-1091: a failed measurement is not a measurement of zero).
+        # A heartbeat, a non-seed workspace and a reader-mode agent all legitimately attempt
+        # nothing and are healthy; only `dropped` is a defect, and only now is it nameable.
+        #
+        # `accepted` STAYS TRUE and is deliberately NOT flipped, though the goal's wording
+        # suggested it: `accepted` reports the FRAME, which was staged, and the intake
+        # counter of the same name is pinned to exactly that meaning ("a refusal is never an
+        # acceptance", test_observation_intake_observability). Flipping it would tell the
+        # vessel its frame was rejected while the frame is on disk, and would contradict the
+        # fail-open contract two tests pin. What the goal actually asks for is that a caller
+        # can TELL the two apart -- which a dedicated field does without overloading a field
+        # that already means something else (guard-2634: check whether the body already
+        # carries the answer before deriving it from the status).
+        wake = "delivered" if woke else ("dropped" if wake_attempted else "not-attempted")
+        if wake_attempted:
+            _observation_stats["wake_delivered" if woke else "wake_dropped"] += 1
         age = _frame_age_seconds(request.observedAt)
         _observation_stats["accepted"] += 1
         if superseded:
@@ -1725,7 +1775,7 @@ def create_app(
         # envelope shape is visible here instead of silently reading as fresh.
         logger.info(
             "perception-intake ref=%s kind=%s age_s=%s superseded=%s merged=%s "
-            "slices=%d dropped=%d changed=%d woke=%s mode=%s",
+            "slices=%d dropped=%d changed=%d wake=%s mode=%s",
             ref,
             request.kind or "-",
             age,
@@ -1734,7 +1784,7 @@ def create_app(
             len(observation),
             len(request.droppedSlices),
             len(request.changedSlices),
-            woke,
+            wake,
             mode or "-",
         )
         return {
@@ -1742,6 +1792,7 @@ def create_app(
             "superseded": superseded,
             "slices": len(observation),
             "droppedSlices": list(request.droppedSlices),
+            "wake": wake,
         }
 
     # ── PEARL knowledge base (§10.4) — read-only browse over the pre-projected bundle ──

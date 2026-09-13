@@ -77,6 +77,8 @@ def test_every_counter_reads_zero_while_idle(tmp_path: Path) -> None:
         "refused_bad_version",
         "refused_missing_ref",
         "refused_too_large",
+        "wake_delivered",
+        "wake_dropped",
     ):
         assert key in intake, f"{key} must be present before the first frame"
         assert intake[key] == 0, f"{key} reads zero, not absent"

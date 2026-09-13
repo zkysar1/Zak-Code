@@ -44,13 +44,54 @@ A lever can improve one without the others. The ranking in §5 says which proper
   prompt (mimicking zakcode's fold) and CC goes 2/6 → **5/6**, matching zakcode with a matching 1/6
   residual (CC's a hand-rolled-YAML bug, zakcode's an `import yaml` slip — the shared model/task floor).
   In ARM B, runs that NEVER read the file still passed, so it is SURFACING, not file-reading, that
-  matters. Precise loop divergence: zakcode folds CONTRIBUTING.md (`prompt.py CONVENTION_FILENAMES`);
-  CC's native context-loading auto-reads AGENTS.md/CLAUDE.md but NOT CONTRIBUTING.md. The lever is
-  DETERMINISTIC CONTEXT ASSEMBLY (fold conventions) over AGENTIC DISCOVERY — the one choice that makes
-  zakcode both MORE DETERMINISTIC and BETTER ON SMALL MODELS. Writeup
+  matters. Precise loop divergence: zakcode's deterministic WORKSPACE SURVEY reliably surfaces the
+  convention file into context; CC has no survey and leaves both discovery and the decision to read to
+  the model. (The `CONVENTION_FILENAMES` fold of CONTRIBUTING.md is a SECONDARY, redundant channel —
+  the 06v probe below shows the survey, NOT the fold, is load-bearing.) The lever is DETERMINISTIC
+  CONTEXT ASSEMBLY over AGENTIC DISCOVERY — the one choice that makes zakcode both MORE DETERMINISTIC
+  and BETTER ON SMALL MODELS. Writeup
   `bench/results/06-model-fixed-head-to-head.log`; data `cc-qwen-06-{census,surf}.json`; runner
   `bench/cc_on_pod_census.py`. n=6 (the cross-arm outcome gap is directional, Fisher ~0.24; the
   within-CC A→B intervention carries the causal weight, temperature and loop held fixed).
+* FULL-SUITE model-fixed scorecard (2026-09-13, all 6 H2H tasks, N=6 each, both on qwen-35B,
+  `bench/results/model-fixed-suite-scorecard.log`). CORRECTNESS: CC-on-qwen **31/36** vs
+  zakcode-on-qwen **35/36** — PARITY on m01/m03/m04/m05, zakcode +1 on m02 (CC read a silenced 0 as a
+  measurement once), zakcode +3 on 06. So zakcode's loop is AT PARITY OR BETTER on every task with the
+  model held fixed — "as good as Claude Code at being an agent" on qwen-35B, YES, with a
+  convention-inference edge. DETERMINISM (distinct output states / 6): zakcode ≤ CC on every task
+  (m01 1v6, m02 4v6, m03 2v2, m04 2v5, m05 1v2, 06 6v6) — more/equally deterministic, now MODEL-FIXED
+  (removing the model confound the as-ships verdict carries), though still a CONFIG claim (zakcode runs
+  temp0+stable-id; CC exposes no temperature knob).
+* 06v PROBE — the mechanism is the SURVEY, not the fold (2026-09-13,
+  `bench/results/06v-conv-in-docs-preregistration.log`). Move 06's four rules CONTRIBUTING.md →
+  docs/CONVENTIONS.md (a file NEITHER loop folds) and zakcode STILL scores **5/6** — so the CONTRIBUTING
+  fold is NOT load-bearing; the deterministic workspace survey is. The survey LISTS the convention file
+  in the first agent turn (run-1 dump call-0002: path present, rule content absent, 3 Read/Glob/Grep
+  calls issued), which reliably PROMPTS the small model to READ it (rule text in context by call-0003).
+  The advantage GENERALIZES across convention locations. Consequences: broadening `CONVENTION_FILENAMES`
+  is UNNECESSARY (measured — folding CONTENT in 06 vs only LISTING in 06v gave the same 5/6); the 1/6
+  residual is model ADHERENCE (`import yaml` with the rule surfaced), not surfacing, so no
+  context-assembly lever closes it.
+* 06w PROBE — deterministic assembly is CLUTTER-IMMUNE; the beyond-parity win is failure-mode COLLAPSE
+  (2026-09-13, `bench/results/06w-largerepo-survey-scaling-{preregistration,results}.log`). Take 06v and
+  add ~40 non-doc decoy files (a "larger repo", 46 files total; plugins/tests/verify byte-identical to
+  base-06, so the R1-R4 bar is unchanged). ASSEMBLY POSITIVE-CONTROL (deterministic, zero model calls):
+  `workspace_survey()` lists docs/CONVENTIONS.md at 13/39, no truncation (46 << `SURVEY_MAX_ENTRIES`=150)
+  — surfacing is clutter-immune, byte-identical across boxes. OUTCOME (all N=6, model-fixed on qwen-35B):
+  zakcode-06w **5/6** = zakcode-06v 5/6, CC-06v **3/6**, CC-06w **2/6**. The discriminator is the
+  FAILURE-MODE DISTRIBUTION and it is clutter-INVARIANT: zakcode fails in EXACTLY ONE way at both levels
+  (the shared `import yaml` adherence residual — the survey guarantees surfacing, so discovery is never a
+  failure mode), while CC fails in FOUR ways across its arms (surfacing, R4-completeness, emitter
+  task-difficulty, adherence) because its convention discovery is probabilistic (read-conv 3/6 then 4/6,
+  never 6/6). So deterministic assembly COLLAPSES CC's multi-modal failure distribution down to the
+  single shared adherence residual, invariant to clutter — a sharper, proven beyond-parity claim than
+  "the gap widens". HONEST NEGATIVES (preregistered): the gap +2→+3 rides on CC 3/6→2/6, a one-run N=6
+  difference (not significant); and the PREDICTED mechanism (clutter suppresses CC discovery) is
+  FALSIFIED — CC read-conv ROSE 3/6→4/6, most likely because 06w's README says "see docs/" (a flagged
+  design confound), so clutter did NOT compound via discovery-suppression at this scale. Data
+  `zakcode-06w-largerepo.json`, `cc-qwen-06{v,w}.json`. Next: 06x (the >150-entry regime — the survey's
+  OWN truncation ceiling, and the case for a convention-aware survey that lists convention-named files
+  past the cap); 06w' without the README hint.
 
 ## 3. Inventory — decision points
 

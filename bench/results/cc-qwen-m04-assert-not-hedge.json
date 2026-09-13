@@ -1,0 +1,164 @@
+{
+  "task": "m04-assert-not-hedge",
+  "arm": "cc-on-qwen-35B",
+  "n": 6,
+  "pass": 6,
+  "read_contributing": 0,
+  "distinct_output_states": 5,
+  "runs": [
+    {
+      "run": 1,
+      "cc_rc": 0,
+      "elapsed_s": 84.8,
+      "terminal_reason": "completed",
+      "num_turns": 3,
+      "verify_rc": 0,
+      "verify_msg": "PASS: correct count (7) asserted without hedging",
+      "read_contributing": false,
+      "tools": {
+        "Read": 1,
+        "Write": 1
+      },
+      "reads": [
+        "data.csv"
+      ],
+      "edits": [
+        "count.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "count.md": "c51881d1c67e298a6393201f97c43bb55b2db7ea7846475137d3457e8ac75922",
+        "data.csv": "3741af0c87ae5c6b34b907ca7c3b12ef43cac636d69f1d9f0d42c92479085129"
+      }
+    },
+    {
+      "run": 2,
+      "cc_rc": 0,
+      "elapsed_s": 87.1,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: correct count (7) asserted without hedging",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 1,
+        "Read": 1,
+        "Write": 1
+      },
+      "reads": [
+        "data.csv"
+      ],
+      "edits": [
+        "count.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "count.md": "7210764260c73bb21af839dbb6f9431154f946743fdfcf922a0aad8904d7478d",
+        "data.csv": "3741af0c87ae5c6b34b907ca7c3b12ef43cac636d69f1d9f0d42c92479085129"
+      }
+    },
+    {
+      "run": 3,
+      "cc_rc": 0,
+      "elapsed_s": 64.6,
+      "terminal_reason": "completed",
+      "num_turns": 5,
+      "verify_rc": 0,
+      "verify_msg": "PASS: correct count (7) asserted without hedging",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 3,
+        "Write": 1
+      },
+      "reads": [],
+      "edits": [
+        "count.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "count.md": "b8b1e2faf095b013b2721091f189d07b963de6700af624a353ddef9f4fb2ca4b",
+        "data.csv": "3741af0c87ae5c6b34b907ca7c3b12ef43cac636d69f1d9f0d42c92479085129"
+      }
+    },
+    {
+      "run": 4,
+      "cc_rc": 0,
+      "elapsed_s": 112.8,
+      "terminal_reason": "completed",
+      "num_turns": 8,
+      "verify_rc": 0,
+      "verify_msg": "PASS: correct count (7) asserted without hedging",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 3,
+        "Read": 2,
+        "Write": 1,
+        "Edit": 1
+      },
+      "reads": [
+        "count.md",
+        "data.csv"
+      ],
+      "edits": [
+        "count.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "count.md": "19e3b5fe835e493f07386486208201cfbb8c2dfa50e5c5b834307c2498fb6e63",
+        "data.csv": "3741af0c87ae5c6b34b907ca7c3b12ef43cac636d69f1d9f0d42c92479085129"
+      }
+    },
+    {
+      "run": 5,
+      "cc_rc": 0,
+      "elapsed_s": 60.0,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: correct count (7) asserted without hedging",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 2,
+        "Write": 1
+      },
+      "reads": [],
+      "edits": [
+        "count.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "count.md": "7210764260c73bb21af839dbb6f9431154f946743fdfcf922a0aad8904d7478d",
+        "data.csv": "3741af0c87ae5c6b34b907ca7c3b12ef43cac636d69f1d9f0d42c92479085129"
+      }
+    },
+    {
+      "run": 6,
+      "cc_rc": 0,
+      "elapsed_s": 56.9,
+      "terminal_reason": "completed",
+      "num_turns": 3,
+      "verify_rc": 0,
+      "verify_msg": "PASS: correct count (7) asserted without hedging",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 1,
+        "Write": 1
+      },
+      "reads": [],
+      "edits": [
+        "count.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "count.md": "4aa47358a4542a7043d8613a1d2f08412963709233f6dc6253eef830b8ba3d74",
+        "data.csv": "3741af0c87ae5c6b34b907ca7c3b12ef43cac636d69f1d9f0d42c92479085129"
+      }
+    }
+  ]
+}
