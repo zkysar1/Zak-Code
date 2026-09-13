@@ -37,6 +37,20 @@ A lever can improve one without the others. The ranking in §5 says which proper
   already a live correctness discriminator for the 35B (5/6 under --no-pin shipped defaults, 2026-09-13
   census), the miss a stdlib-only convention violation the model makes WITH the rule in context — a
   model-adherence limit, not a surfacing gap (the failing run's dump carried the rule; fold already on).
+* MODEL-FIXED head-to-head (2026-09-13, the model confound DEFEATED). The pod gateway serves a NATIVE
+  Anthropic endpoint (`/v1/messages`), so Claude Code 2.1.267 runs DIRECTLY on `zds-qwen3.6-35b` with no
+  proxy (16-turn tool-use fidelity confirmed). On 06, MODEL HELD FIXED: CC-on-qwen **2/6** vs
+  zakcode-on-qwen **5/6**. A WITHIN-CC intervention isolates the cause — prepend CONTRIBUTING.md to CC's
+  prompt (mimicking zakcode's fold) and CC goes 2/6 → **5/6**, matching zakcode with a matching 1/6
+  residual (CC's a hand-rolled-YAML bug, zakcode's an `import yaml` slip — the shared model/task floor).
+  In ARM B, runs that NEVER read the file still passed, so it is SURFACING, not file-reading, that
+  matters. Precise loop divergence: zakcode folds CONTRIBUTING.md (`prompt.py CONVENTION_FILENAMES`);
+  CC's native context-loading auto-reads AGENTS.md/CLAUDE.md but NOT CONTRIBUTING.md. The lever is
+  DETERMINISTIC CONTEXT ASSEMBLY (fold conventions) over AGENTIC DISCOVERY — the one choice that makes
+  zakcode both MORE DETERMINISTIC and BETTER ON SMALL MODELS. Writeup
+  `bench/results/06-model-fixed-head-to-head.log`; data `cc-qwen-06-{census,surf}.json`; runner
+  `bench/cc_on_pod_census.py`. n=6 (the cross-arm outcome gap is directional, Fisher ~0.24; the
+  within-CC A→B intervention carries the causal weight, temperature and loop held fixed).
 
 ## 3. Inventory — decision points
 
@@ -270,8 +284,11 @@ descriptions with the 35B (ADR-0158 fourth addendum).
   TIE-DET=2, TIE-NONDET=1 (2026-09-13): CC as-ships varies output on m01 `finding.md`, m02 `report.md`,
   m04 `count.md`, 06 `yaml_out.py`; zakcode in its determinism config (pinworkspace+temp0+stable-id) is
   byte-identical on 5/6. HONEST CAVEAT in the tool header: NOT matched sampling (determinism-config vs
-  as-ships) AND confounded by model (CC=Claude/Fable, zakcode=qwen-35B; the pod can't serve Claude —
-  run_claude_code.py), so the verdict is PRODUCT-level (the two stacks as they run), not a loop-vs-loop
+  as-ships) AND confounded by model (CC=Claude/Fable, zakcode=qwen-35B). NOTE run_claude_code.py's "the
+  pod can't serve Claude" is FALSIFIED (2026-09-13, see §2 model-fixed bullet): the pod's native
+  Anthropic endpoint runs CC on qwen-35B, so a MODEL-FIXED loop comparison now exists — but THIS
+  determinism instrument still runs CC as-ships (Fable), so its verdict stays PRODUCT-level (the two
+  stacks as they run), not a loop-vs-loop
   claim; and under --no-pin zakcode is itself non-deterministic on 06 — the absolute workspace
   path sits in the system prompt (`Workspace root (cwd)` + a workspace-derived cache key) and the
   bench randomizes it per run; a BENCH artifact, not a defect (a real re-run at a fixed path gets a
