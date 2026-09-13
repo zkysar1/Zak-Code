@@ -8921,7 +8921,7 @@ file with the most tool uses, not the last one — the last call of a turn can b
 
 ## ADR-0166: the recipe gate verifies a library module by import, not by `-m` — the harness-manufactured warning behind the post-green holes
 
-**Date:** 2026-09-13 · **Status:** accepted · **Zak-Code #422 (import-form verify), #423 (acceptance clause)** · **Review finding F10, lever L8**
+**Date:** 2026-09-13 · **Status:** accepted · **Zak-Code #422 (import-form verify), #423 (acceptance clause), #424 (this record)** · **Review finding F10, lever L8**
 
 ### Context
 
