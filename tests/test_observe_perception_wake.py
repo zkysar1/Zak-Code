@@ -40,6 +40,7 @@ from zakcode.session.framework_signal import (
     MODE_GET_SCRIPT,
     SIGNAL_SET_SCRIPT,
     framework_session_dir,
+    set_framework_signal,
 )
 from zakcode.session.observation_inbox import (
     KIND_CHANGE,
@@ -369,3 +370,154 @@ def test_framework_agent_mode_separates_unreadable_from_reader(tmp_path: Path) -
     assert framework_agent_mode(tmp_path, AGENT) == "reader"  # getter's absent-file default
     _set_mode(tmp_path, AUTONOMOUS_MODE)
     assert framework_agent_mode(tmp_path, AGENT) == AUTONOMOUS_MODE
+
+
+# ── wake DISPOSITION reaches the caller (g-373-56) ────────────────────────────────────
+#
+# Everything above pins WHETHER the marker lands. None of it pinned whether the CALLER can
+# find out. Fail-open keeps the frame and keeps the 200 — correctly — so a dropped wake had
+# exactly one egress, a log line, and the response said accepted:true either way. Measured
+# on a live vessel (g-373-10, alpha/cc-09): the workspace seed's 8-entry VALID_SIGNALS
+# refused `perception-received`, every POST returned 200 accepted:true, and every wake was
+# lost in silence. Anyone measuring the bridge by watching for 200s reported GREEN.
+
+
+ACCEPTED_NAME = "blocker-cleared"
+
+
+def _name_gating_setter_body(accepted: str) -> str:
+    """A setter that ACCEPTS one signal name and REFUSES every other — the live seed's shape.
+
+    The defect is NOT a dead writer, and that distinction is the whole point of the control
+    below: the seed rejects the NAME while working perfectly for the names it knows.
+    """
+    return (
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        f'if [ "$1" != "{accepted}" ]; then\n'
+        f"  echo \"Invalid signal name '$1'. Must be one of: {accepted}\" >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        'dir="agents/${AYOAI_AGENT}/session"\n'
+        'mkdir -p "$dir"\n'
+        'touch "$dir/$1"\n'
+    )
+
+
+def _intake(client: TestClient) -> dict[str, object]:
+    resp = client.get("/sidecar/health")
+    assert resp.status_code == 200, resp.text
+    return resp.json()["observation_intake"]
+
+
+def test_a_refused_signal_name_reports_a_dropped_wake(tmp_path: Path) -> None:
+    """The caller can tell a DROPPED wake from a delivered one (goal outcome 2)."""
+    _plant_seed(tmp_path, setter_body=_name_gating_setter_body(ACCEPTED_NAME))
+    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
+    body = resp.json()
+
+    assert resp.status_code == 200
+    assert not _marker(tmp_path).exists(), "precondition: a marker here means nothing dropped"
+    assert body["wake"] == "dropped", (
+        f"the writer refused the signal NAME, so the wake was lost — say so: {body}"
+    )
+    # `accepted` STAYS TRUE, deliberately: it reports the FRAME, which was staged. Flipping
+    # it would tell the vessel its frame was rejected while the frame is on disk.
+    assert body["accepted"] is True, (
+        "the frame was accepted and staged; only the wake was lost. These are two facts and "
+        "the response carries both separately"
+    )
+    assert _staged(tmp_path)["kind"] == KIND_CHANGE, (
+        "fail-open is preserved — losing the wake must never lose the frame"
+    )
+
+
+def test_the_positive_control_runs_against_the_same_writer(tmp_path: Path) -> None:
+    """An absent marker is attributable to the NAME, not to a dead writer (goal outcome 3).
+
+    Without this, the assertion above passes just as well against a writer that refuses
+    everything — which is a different defect with a different fix.
+    """
+    _plant_seed(tmp_path, setter_body=_name_gating_setter_body(ACCEPTED_NAME))
+    dropped = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
+
+    assert dropped["wake"] == "dropped"
+    assert not _marker(tmp_path).exists()
+
+    # SAME writer, SAME workspace, SAME agent — only the NAME differs. Invoked through the
+    # app's OWN helper rather than a hand-rolled subprocess, so the control exercises the
+    # production path instead of a synthetic one.
+    assert set_framework_signal(tmp_path, AGENT, ACCEPTED_NAME) is True, (
+        "POSITIVE CONTROL — if this fails the writer is simply dead, and the dropped-wake "
+        "assertion above proves nothing about the signal name"
+    )
+    assert (framework_session_dir(tmp_path, AGENT) / ACCEPTED_NAME).exists()
+
+
+def test_a_delivered_wake_says_delivered(tmp_path: Path) -> None:
+    _plant_seed(tmp_path)
+    body = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
+    assert body["wake"] == "delivered"
+    assert _marker(tmp_path).exists(), "precondition: delivered must mean the marker landed"
+
+
+def test_a_heartbeat_reports_not_attempted_never_dropped(tmp_path: Path) -> None:
+    """A failed wake must not read as an UN-ATTEMPTED one (guard-1091).
+
+    This is why the field is three states and not a boolean. A heartbeat wakes nothing and
+    is perfectly healthy; if that collapsed into `dropped`, every quiescent round would
+    report a defect and the field would be ignored inside a day.
+    """
+    _plant_seed(tmp_path)
+    body = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_HEARTBEAT)).json()
+    assert body["wake"] == "not-attempted"
+
+
+def test_a_non_seed_workspace_reports_not_attempted(tmp_path: Path) -> None:
+    body = _client(tmp_path, agent=None).post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
+    assert body["wake"] == "not-attempted", "no resident agent is not a dropped wake"
+
+
+def test_reader_mode_reports_not_attempted_not_dropped(tmp_path: Path) -> None:
+    _plant_seed(tmp_path, mode="reader")
+    body = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
+    assert body["wake"] == "not-attempted", (
+        "a reader runs no perpetual loop, so no wake was attempted — not one that failed"
+    )
+
+
+def test_the_health_surface_counts_a_dropped_wake(tmp_path: Path) -> None:
+    """The always-reports-clear class closes only if a MONITOR can see it, not just a caller.
+
+    Both counters read explicit zeros before the first frame (guard-3169), so a bridge that
+    has never been called stays distinguishable from one delivering cleanly.
+    """
+    _plant_seed(tmp_path, setter_body=_name_gating_setter_body(ACCEPTED_NAME))
+    client = _client(tmp_path)
+
+    idle = _intake(client)
+    assert idle["wake_dropped"] == 0, "present and zero before the first frame, not absent"
+    assert idle["wake_delivered"] == 0
+
+    client.post("/observe", json=_envelope(kind=KIND_CHANGE))
+    after = _intake(client)
+    assert after["wake_dropped"] == 1
+    assert after["wake_delivered"] == 0
+
+    client.post("/observe", json=_envelope(kind=KIND_HEARTBEAT))
+    assert _intake(client)["wake_dropped"] == 1, (
+        "a heartbeat attempts no wake, so it must not increment the drop counter"
+    )
+
+
+def test_the_health_surface_counts_a_delivered_wake(tmp_path: Path) -> None:
+    _plant_seed(tmp_path)
+    client = _client(tmp_path)
+    client.post("/observe", json=_envelope(kind=KIND_CHANGE))
+
+    intake = _intake(client)
+    assert intake["wake_delivered"] == 1
+    assert intake["wake_dropped"] == 0, (
+        "CONTROL — a clean delivery must leave the drop counter at zero, or the drop "
+        "assertions in the sibling test would pass against a counter that always climbs"
+    )
