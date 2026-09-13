@@ -8832,6 +8832,26 @@ that basin moves are scored as **rates over sampled basins**, never as N pinned 
 now defaults to true (`ZAKCODE_CONTEXT_WORKSPACE_SURVEY=0` opts out); on a large workspace the block is
 capped at 150 entries and depth 3, and it is snapshotted once per session so the cached prefix does not move.
 
+**Addendum (2026-09-13, arm J — the survey on tasks 09/10).** ADR-0165's baselines on 09 and 10 predate the
+survey shipping default-on, and every one of their runs opened with 2–3 listing calls. Arm J (pre-registered
+in `bench/results/survey-newtasks-preregistration.log`: eight cells, survey OFF vs ON per (model, task),
+interleaved, N=3 pinned) measured what went with the survey. **J2 held exactly**: 0 opening listing calls in
+every survey run against 3 in every no-survey run, both models, both tasks. Turns fell on three of four pairs
+(35B/09 9 → 7, 27B/09 9 → 7, 27B/10 15 → 11/11/8) with wall medians down 8–13 s on 09. **J3 missed on one
+cell**: the 35B on 10 went from 3/3 in 9 turns to **1/3 in 16–17 turns** (three distinct outputs), the two
+failures being ruff's docstring-section rule from `[tool.ruff]`. The mechanism from the dumps: without the
+survey the 35B lists the tree three times and reads `pyproject.toml` first; with it, it skips the listing,
+reads `slug.py` first and the config fourth; and no run in any arm — 24 here, 12 in ADR-0165 — ever ran the
+project's lint, so nothing but the verifier could catch the docstring. J1's build control missed by the letter
+(every no-survey cell's program text differs from its ADR-0165 twin) with the main conversation's first
+request byte-identical across the two builds, so the difference is the pod's basin between 01:00 and 03:25
+UTC (rb-10827); J2–J5 are scored within the chain, as the rule says. By the pre-registered letter a J3 miss
+**reopens the survey default**. Two arms follow: **K**, basin sampling of the survey on 10/35B
+(`bench/results/survey-basin-10-preregistration.log`; `--no-pin`, N=6 per arm, interleaved in threes) —
+pinned N=3 is one sample of one basin and cannot score an outcome rate (rb-10849); and **L**, review lever L4
+(#429): the project's own `Makefile` targets derived into the R1 verify gate, the check the model cannot skip
+that F9 names as the durable fix.
+
 ## ADR-0165: two task shapes the review could not measure — contract-in-tests and rule-in-pyproject — with their baselines
 
 **Date:** 2026-09-13 · **Status:** Accepted · **Pre-registration:** `bench/results/new-tasks-baseline-preregistration.log`
