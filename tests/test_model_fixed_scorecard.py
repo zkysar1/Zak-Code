@@ -34,11 +34,13 @@ def _cc_run(files: dict) -> dict:
 def test_score_computes_pass_and_distinct_from_runs() -> None:
     # zakcode-shape arm (only `runs`): 2 pass, 2 distinct output states across 3 runs.
     mod = _load()
-    arm = {"runs": [
-        {"digests": {"a.py": "h1"}, "verify_rc": 0},
-        {"digests": {"a.py": "h1"}, "verify_rc": 0},
-        {"digests": {"a.py": "h2"}, "verify_rc": 1},
-    ]}
+    arm = {
+        "runs": [
+            {"digests": {"a.py": "h1"}, "verify_rc": 0},
+            {"digests": {"a.py": "h1"}, "verify_rc": 0},
+            {"digests": {"a.py": "h2"}, "verify_rc": 1},
+        ]
+    }
     s = mod._score(arm)
     assert s == {"n": 3, "pass": 2, "distinct": 2, "empty_any": False}
 
@@ -46,8 +48,11 @@ def test_score_computes_pass_and_distinct_from_runs() -> None:
 def test_score_recomputes_cc_shape_from_runs_not_stored_field() -> None:
     # CC-shape arm carries a stored pass/distinct, but _score derives from runs (robust to either).
     mod = _load()
-    arm = {"pass": 99, "distinct_output_states": 99,
-           "runs": [_cc_run({"x.py": "h"}), _cc_run({"x.py": "h"})]}
+    arm = {
+        "pass": 99,
+        "distinct_output_states": 99,
+        "runs": [_cc_run({"x.py": "h"}), _cc_run({"x.py": "h"})],
+    }
     s = mod._score(arm)
     assert s["pass"] == 2 and s["distinct"] == 1 and s["n"] == 2
 
@@ -86,11 +91,11 @@ def test_determinism_verdicts_asymmetric_and_empty_inconclusive() -> None:
     det = {"n": 6, "pass": 6, "distinct": 1, "empty_any": False}
     nondet = {"n": 6, "pass": 6, "distinct": 4, "empty_any": False}
     empty = {"n": 6, "pass": 0, "distinct": 1, "empty_any": True}
-    assert mod._det_verdict(nondet, det) == "ZAKCODE-WINS"   # cc nondet, zak det
+    assert mod._det_verdict(nondet, det) == "ZAKCODE-WINS"  # cc nondet, zak det
     assert mod._det_verdict(det, nondet) == "CC-WINS"
     assert mod._det_verdict(det, det) == "TIE-DET"
     assert mod._det_verdict(nondet, nondet) == "TIE-NONDET"
-    assert mod._det_verdict(empty, det) == "INCONCLUSIVE"    # an empty arm is never DET/NONDET
+    assert mod._det_verdict(empty, det) == "INCONCLUSIVE"  # an empty arm is never DET/NONDET
     assert mod._det_verdict(det, empty) == "INCONCLUSIVE"
 
 
@@ -103,9 +108,11 @@ def test_det_label_weak_flag_and_nondet() -> None:
 
 def test_cache_files_excluded_from_signature() -> None:
     mod = _load()
-    arm = {"runs": [
-        {"digests": {"a.py": "h", ".pytest_cache/x": "c1"}, "verify_rc": 0},
-        {"digests": {"a.py": "h", "__pycache__/y": "c2"}, "verify_rc": 0},
-    ]}
+    arm = {
+        "runs": [
+            {"digests": {"a.py": "h", ".pytest_cache/x": "c1"}, "verify_rc": 0},
+            {"digests": {"a.py": "h", "__pycache__/y": "c2"}, "verify_rc": 0},
+        ]
+    }
     s = mod._score(arm)
     assert s["distinct"] == 1  # only a.py counts; cache noise excluded
