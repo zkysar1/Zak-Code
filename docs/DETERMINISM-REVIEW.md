@@ -218,3 +218,5 @@ descriptions with the 35B (ADR-0158 fourth addendum).
   (a prior `read_file` / `write_file` / `edit_file` of the path) and by the result the model saw;
   `--reads-dont-count` is its positive control for the unread branch. Zero unread edits in 127 runs
   (ADR-0167).
+* `intervention_coverage.py` reads arm-cell rows (`runs`) since 2026-09-13; before, only suite files
+  (`tasks`) counted, so no `determinism_arm.py` cell — 112 of 161 result files — was in the census.

@@ -94,7 +94,15 @@ def _rows(files: list[Path]) -> list[dict]:
             d = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             continue
-        rows = d.get("tasks") if isinstance(d, dict) and "tasks" in d else [d]
+        if isinstance(d, dict) and "tasks" in d:
+            rows = d.get("tasks")  # a suite: one row per task
+        elif isinstance(d, dict) and "runs" in d:
+            # An arm cell (determinism_arm.py): one row per run. Skipped until 2026-09-13, which
+            # left 112 of 161 result files -- every arm since ADR-0147 -- outside the census; the
+            # rows carry no `knobs`, so the ratchet's signature filter still excludes them.
+            rows = d.get("runs")
+        else:
+            rows = [d]
         out.extend(r for r in (rows or []) if isinstance(r, dict))
     return out
 
