@@ -1,0 +1,270 @@
+{
+  "task": "08-mutation-leak",
+  "arm": "cc-on-qwen-35B",
+  "n": 6,
+  "pass": 6,
+  "read_contributing": 0,
+  "distinct_output_states": 6,
+  "runs": [
+    {
+      "run": 1,
+      "cc_rc": 0,
+      "elapsed_s": 139.3,
+      "terminal_reason": "completed",
+      "num_turns": 16,
+      "verify_rc": 0,
+      "verify_msg": "PASS: audit clean and still has teeth, summary correct, source records untouched, and normalize() no longer mutates its input",
+      "read_contributing": false,
+      "tools": {
+        "Glob": 3,
+        "Read": 8,
+        "Edit": 1,
+        "Bash": 3
+      },
+      "reads": [
+        "__init__.py",
+        "audit.py",
+        "enrich.py",
+        "load.py",
+        "normalize.py",
+        "records.json",
+        "report.py",
+        "test_pipeline.py"
+      ],
+      "edits": [
+        "normalize.py"
+      ],
+      "greps": [],
+      "globs": [
+        "**/*.json",
+        "**/*.py",
+        "**/*.yaml"
+      ],
+      "digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "843de03147eae1f3142ccc8cd24e4c2b648c94ca65cff774bb00a28e4eb233a7",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      }
+    },
+    {
+      "run": 2,
+      "cc_rc": 0,
+      "elapsed_s": 263.5,
+      "terminal_reason": "completed",
+      "num_turns": 13,
+      "verify_rc": 0,
+      "verify_msg": "PASS: audit clean and still has teeth, summary correct, source records untouched, and normalize() no longer mutates its input",
+      "read_contributing": false,
+      "tools": {
+        "Agent": 1,
+        "Bash": 4,
+        "Read": 15,
+        "Edit": 1
+      },
+      "reads": [
+        "__init__.py",
+        "audit.py",
+        "enrich.py",
+        "load.py",
+        "normalize.py",
+        "records.json",
+        "report.py",
+        "test_pipeline.py"
+      ],
+      "edits": [
+        "normalize.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "b8e3b8cb62124f65a5053aa394aabdb5e30d5231bbacb3de0718a0551da40529",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      }
+    },
+    {
+      "run": 3,
+      "cc_rc": 0,
+      "elapsed_s": 290.2,
+      "terminal_reason": "completed",
+      "num_turns": 10,
+      "verify_rc": 0,
+      "verify_msg": "PASS: audit clean and still has teeth, summary correct, source records untouched, and normalize() no longer mutates its input",
+      "read_contributing": false,
+      "tools": {
+        "Agent": 1,
+        "Bash": 6,
+        "Read": 12,
+        "Edit": 1
+      },
+      "reads": [
+        "__init__.py",
+        "audit.py",
+        "enrich.py",
+        "load.py",
+        "normalize.py",
+        "records.json",
+        "report.py",
+        "test_pipeline.py"
+      ],
+      "edits": [
+        "normalize.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "2c4f3868457619d3fcc1b8e654f7b1ae3a00cbb51f44477a3b61634910ed0cda",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      }
+    },
+    {
+      "run": 4,
+      "cc_rc": 0,
+      "elapsed_s": 163.3,
+      "terminal_reason": "completed",
+      "num_turns": 16,
+      "verify_rc": 0,
+      "verify_msg": "PASS: audit clean and still has teeth, summary correct, source records untouched, and normalize() no longer mutates its input",
+      "read_contributing": false,
+      "tools": {
+        "Glob": 3,
+        "Read": 8,
+        "Edit": 1,
+        "Bash": 3
+      },
+      "reads": [
+        "__init__.py",
+        "audit.py",
+        "enrich.py",
+        "load.py",
+        "normalize.py",
+        "records.json",
+        "report.py",
+        "test_pipeline.py"
+      ],
+      "edits": [
+        "normalize.py"
+      ],
+      "greps": [],
+      "globs": [
+        "**/*.json",
+        "**/*.py",
+        "**/*.toml"
+      ],
+      "digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "309c0b4b9a26135829eef2d2567f290ebb9be17ab32c02845a474e5e962e9c95",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      }
+    },
+    {
+      "run": 5,
+      "cc_rc": 0,
+      "elapsed_s": 140.3,
+      "terminal_reason": "completed",
+      "num_turns": 17,
+      "verify_rc": 0,
+      "verify_msg": "PASS: audit clean and still has teeth, summary correct, source records untouched, and normalize() no longer mutates its input",
+      "read_contributing": false,
+      "tools": {
+        "Glob": 3,
+        "Read": 8,
+        "Bash": 4,
+        "Edit": 1
+      },
+      "reads": [
+        "__init__.py",
+        "audit.py",
+        "enrich.py",
+        "load.py",
+        "normalize.py",
+        "records.json",
+        "report.py",
+        "test_pipeline.py"
+      ],
+      "edits": [
+        "normalize.py"
+      ],
+      "greps": [],
+      "globs": [
+        "**/*.json",
+        "**/*.md",
+        "**/*.py"
+      ],
+      "digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "98a1bc30fe4e4717878663ad14bff54b84f0e49bd1f9271ad7d146c3a141c682",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      }
+    },
+    {
+      "run": 6,
+      "cc_rc": 0,
+      "elapsed_s": 114.7,
+      "terminal_reason": "completed",
+      "num_turns": 17,
+      "verify_rc": 0,
+      "verify_msg": "PASS: audit clean and still has teeth, summary correct, source records untouched, and normalize() no longer mutates its input",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 6,
+        "Glob": 1,
+        "Read": 8,
+        "Edit": 1
+      },
+      "reads": [
+        "__init__.py",
+        "audit.py",
+        "enrich.py",
+        "load.py",
+        "normalize.py",
+        "records.json",
+        "report.py",
+        "test_pipeline.py"
+      ],
+      "edits": [
+        "normalize.py"
+      ],
+      "greps": [],
+      "globs": [
+        "**/*.py"
+      ],
+      "digests": {
+        "pipeline/__init__.py": "3d3e2550602e5ae9ea61550feb9be4a5db708bbaa9caca79dae67e6cb4e11335",
+        "pipeline/audit.py": "58a8335d3eba3a02e96d2817d3a13bc6e7b8fe27c3822dbcf2f96be7ce547593",
+        "pipeline/enrich.py": "aa798faad9fed8da7dd1f1243594289d0cf04461684ab0c28ea8cc52e2811a7e",
+        "pipeline/load.py": "7639dd0f4d89520df771881b437c9fa2f923eef8211187e92d17af2988955fef",
+        "pipeline/normalize.py": "2088372f8d0943b06227c4bfa7b847afd575bdb8d57694ff37ce1cc3239e3944",
+        "pipeline/report.py": "03f763e88d320d476af0c923959393ed54a1d19ea67c5aa0a889a6f64e132b0e",
+        "records.json": "c1edf685ef7ac0254c54310e517e5c6a1a99b268812b6e041b1de2a1ac049067",
+        "tests/test_pipeline.py": "f27593722d32b7cd5502c5aff237e796a50f326563cf30e63fa158f513954e92"
+      }
+    }
+  ]
+}

@@ -1,0 +1,173 @@
+{
+  "task": "01-wordfreq",
+  "arm": "cc-on-qwen-35B",
+  "n": 6,
+  "pass": 6,
+  "read_contributing": 0,
+  "distinct_output_states": 6,
+  "runs": [
+    {
+      "run": 1,
+      "cc_rc": 0,
+      "elapsed_s": 142.6,
+      "terminal_reason": "completed",
+      "num_turns": 6,
+      "verify_rc": 0,
+      "verify_msg": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 3
+      },
+      "reads": [],
+      "edits": [
+        "test_wordfreq.py",
+        "wordfreq.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "_tmp_input.txt": "6e30d0518c2b12845197af59700248b4baf7e11dc975d8b82f0e4592d30acd66",
+        "test_wordfreq.py": "5e77afe169551b3230353c8fcfad994c62c51149b88e01f3eb4ef2a53acba8b7",
+        "wordfreq.py": "9495547b6f49ee841dd0a7f1b3d76c18130498b55d3b72c4a0e970192d6a5e62"
+      }
+    },
+    {
+      "run": 2,
+      "cc_rc": 0,
+      "elapsed_s": 150.6,
+      "terminal_reason": "completed",
+      "num_turns": 9,
+      "verify_rc": 0,
+      "verify_msg": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 4,
+        "Edit": 2
+      },
+      "reads": [],
+      "edits": [
+        "test_wordfreq.py",
+        "wordfreq.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "test_wordfreq.py": "351e89c74865972288101fddfe75be3009709e7aa8d15d0d88bc44597ab45ed8",
+        "wordfreq.py": "f59b4e76d24fb639d3403bc077c69f239552fff1f5ab84994a791f83afb09ba4"
+      }
+    },
+    {
+      "run": 3,
+      "cc_rc": 0,
+      "elapsed_s": 290.2,
+      "terminal_reason": "completed",
+      "num_turns": 17,
+      "verify_rc": 0,
+      "verify_msg": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "read_contributing": false,
+      "tools": {
+        "Write": 3,
+        "Bash": 8,
+        "Read": 2,
+        "Edit": 3
+      },
+      "reads": [
+        "test_wordfreq.py"
+      ],
+      "edits": [
+        "test_wordfreq.py",
+        "wordfreq.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "test_wordfreq.py": "a96a8229ae0460726c1807b93b5d292168531f3b2b65549a9b2f41d88e170abf",
+        "tmp_wordfreq_test.txt": "5269ca5ec66cc61839a89bf3cb055351f34ecaee247252ede7639b7e821666b1",
+        "wordfreq.py": "9193e0da5946e60216fd5497630efda0f651b546bd28e643e033bf9eb0692adf"
+      }
+    },
+    {
+      "run": 4,
+      "cc_rc": 0,
+      "elapsed_s": 211.1,
+      "terminal_reason": "completed",
+      "num_turns": 19,
+      "verify_rc": 0,
+      "verify_msg": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Edit": 11,
+        "Bash": 5
+      },
+      "reads": [],
+      "edits": [
+        "test_wordfreq.py",
+        "wordfreq.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "test_wordfreq.py": "57b663ff29e0a53fa865197a432c84b5dc5cab21ffb465d132bef2b9bfc9ba24",
+        "wordfreq.py": "e2edcf021f902388bac4b73a0a3ae0cd1673105d66bc8b26279776bb88091eee"
+      }
+    },
+    {
+      "run": 5,
+      "cc_rc": 0,
+      "elapsed_s": 186.7,
+      "terminal_reason": "completed",
+      "num_turns": 14,
+      "verify_rc": 0,
+      "verify_msg": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 4,
+        "Edit": 6,
+        "Read": 1
+      },
+      "reads": [
+        "test_wordfreq.py"
+      ],
+      "edits": [
+        "test_wordfreq.py",
+        "wordfreq.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "test_wordfreq.py": "0f4df551b87fd1e3a9349ad0ec308ca12860d695ad1d56102d21b2de3885902c",
+        "wordfreq.py": "c6d46cdb9809bd256a831750591ddf587d601d4ffe955abc1dff170f1063de79"
+      }
+    },
+    {
+      "run": 6,
+      "cc_rc": 0,
+      "elapsed_s": 188.7,
+      "terminal_reason": "completed",
+      "num_turns": 8,
+      "verify_rc": 0,
+      "verify_msg": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 3,
+        "Edit": 2
+      },
+      "reads": [],
+      "edits": [
+        "test_wordfreq.py",
+        "wordfreq.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "test_wordfreq.py": "31fff57b050bd0b3d69fcd426b14219acfd1c5704ab27f7a4576a2626b9bc2fb",
+        "wordfreq.py": "2bf87a3091de2e6af45e96f4d79e90441ca987907b4c154270308a3849e6bec6"
+      }
+    }
+  ]
+}

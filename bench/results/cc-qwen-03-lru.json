@@ -1,0 +1,162 @@
+{
+  "task": "03-lru",
+  "arm": "cc-on-qwen-35B",
+  "n": 6,
+  "pass": 6,
+  "read_contributing": 0,
+  "distinct_output_states": 6,
+  "runs": [
+    {
+      "run": 1,
+      "cc_rc": 0,
+      "elapsed_s": 190.1,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: LRU eviction + update-as-use correct on the held-out sequence",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 1
+      },
+      "reads": [],
+      "edits": [
+        "lru.py",
+        "test_lru.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "lru.py": "cd955140915053a77e543dd9d8fe25f84cebcfb40ab392d64845c329966fcce5",
+        "test_lru.py": "1aee462ce7310659f043df925487f84cb336f2edaba2a7af6aa6f26aebcb2b33"
+      }
+    },
+    {
+      "run": 2,
+      "cc_rc": 0,
+      "elapsed_s": 153.3,
+      "terminal_reason": "completed",
+      "num_turns": 5,
+      "verify_rc": 0,
+      "verify_msg": "PASS: LRU eviction + update-as-use correct on the held-out sequence",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 2
+      },
+      "reads": [],
+      "edits": [
+        "lru.py",
+        "test_lru.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "lru.py": "f6e5638d7a73865a27e609ea400f47a65726b6d9bdaaf15dc2b739f73f3e3d8b",
+        "test_lru.py": "f847d034afe2972861fa566c13f77a9b01bdd8bcfc012d5a5c28cd2d12f90347"
+      }
+    },
+    {
+      "run": 3,
+      "cc_rc": 0,
+      "elapsed_s": 212.1,
+      "terminal_reason": "completed",
+      "num_turns": 11,
+      "verify_rc": 0,
+      "verify_msg": "PASS: LRU eviction + update-as-use correct on the held-out sequence",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 2,
+        "Edit": 6
+      },
+      "reads": [],
+      "edits": [
+        "lru.py",
+        "test_lru.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "lru.py": "a92bb04187c7359f6f6b7ce30b65d54415d3623c9f4315c2d4ffce222d6a632f",
+        "test_lru.py": "008fdd7f65d813d816b0b71d93980ce2f97c0ac5e59a79da58145d68fae28a76"
+      }
+    },
+    {
+      "run": 4,
+      "cc_rc": 0,
+      "elapsed_s": 199.9,
+      "terminal_reason": "completed",
+      "num_turns": 6,
+      "verify_rc": 0,
+      "verify_msg": "PASS: LRU eviction + update-as-use correct on the held-out sequence",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 2,
+        "Edit": 1
+      },
+      "reads": [],
+      "edits": [
+        "lru.py",
+        "test_lru.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "lru.py": "195c59091f4099643d2cefeb2d49107782b6662f1cf4bbfecc6f608c5978fc03",
+        "test_lru.py": "8aa9f039119e3ac4b3d70beac75317f656f6611bcac7328b8e8ae1cba38aa07d"
+      }
+    },
+    {
+      "run": 5,
+      "cc_rc": 0,
+      "elapsed_s": 135.7,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: LRU eviction + update-as-use correct on the held-out sequence",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 1
+      },
+      "reads": [],
+      "edits": [
+        "lru.py",
+        "test_lru.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "lru.py": "c1a2708c89756dcc6e98a38b1757765d79fdb2bc6eecbdae91039c1a7139956c",
+        "test_lru.py": "a464282d65d505a3b0178193482eca8ae536a1b953db4b9399beb683d28dacf7"
+      }
+    },
+    {
+      "run": 6,
+      "cc_rc": 0,
+      "elapsed_s": 157.3,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: LRU eviction + update-as-use correct on the held-out sequence",
+      "read_contributing": false,
+      "tools": {
+        "Write": 2,
+        "Bash": 1
+      },
+      "reads": [],
+      "edits": [
+        "lru.py",
+        "test_lru.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "lru.py": "8dc0b34a2fcb8d2eddc6ef6159598a3b73def67ee72aaa1a68385c1872f55d31",
+        "test_lru.py": "34d967581c0e4f12b63935de5aebc16207418e6d572ab49ac42bb2fcad56dd29"
+      }
+    }
+  ]
+}

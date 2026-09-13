@@ -1,0 +1,237 @@
+{
+  "task": "01-wordfreq",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 6,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-ldybz7s6",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 243.5,
+      "num_turns": 14,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "plan_first": 1,
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "b5e980ed557510fd430a54df3f07ca4ad2ef3446daf973666dff0bd4e5a720d2",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "test_wordfreq.py": "c9b74ad3f94742975578e0d3085e700f5c82eaba0adf1f3c6bdd961142bd4020",
+        "tmp_test_input.txt": "0925e3ae61d98f5baa5c4739607782692cd74503ed99406efad7af62fa4bd122",
+        "wordfreq.py": "92f40a64290a358d288b1a03bbb1b41f6679301553d648a59fae157fd6c7b336"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "c9b74ad3f94742975578e0d3085e700f5c82eaba0adf1f3c6bdd961142bd4020",
+        "wordfreq.py": "92f40a64290a358d288b1a03bbb1b41f6679301553d648a59fae157fd6c7b336"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py\"\"\"\n\nimport subprocess\nimport sys\nfrom pathlib import Path\n\nimport pytest\n\nWORKSPACE = Path(__file__).resolve().parent\nWORDFREQ = WORKSPACE / \"wordfreq.py\"\n\n\ndef _write_tmp(text: str) -> Path:\n    \"\"\"Write *text* to a temporary file and return its path.\"\"\"\n    p = WORKSPACE / \"tmp_test_input.txt\"\n    p.write_text(text, encoding=\"utf-8\")\n    return p\n\n\ndef _run(args: list[str]) -> subprocess.CompletedProcess[str]:\n    return subprocess.run(\n        [sys.executable, str(WORDFREQ)] + args,\n        capture_output=True,\n        text=True,\n    )\n\n\n# \u2500\u2500 Basic counting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_basic_counting(tmp_path):\n    \"\"\"Words are counted correctly.\"\"\"\n    inp = _write_tmp(\"apple banana apple cherry banana apple\")\n    result = _run([str(inp)])\n    lines = result.stdout.strip().splitlines()\n    assert lines == [\"apple: 3\", \"banana: 2\", \"cherry: 1\"]\n\n\ndef test_empty_file(tmp_path):\n    \"\"\"An empty file produces no output.\"\"\"\n    inp = _write_tmp(\"\")\n    result = _run([str(inp)])\n    assert result.stdout.strip() == \"\"\n\n\ndef test_single_word(tmp_path):\n    \"\"\"A file with one word shows it once.\"\"\"\n    inp = _write_tmp(\"hello\")\n    result = _run([str(inp)])\n    assert result.stdout.strip() == \"hello: 1\"\n\n\n# \u2500\u2500 --top flag \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_top_flag_default():\n    \"\"\"Default --top is 10.\"\"\"\n    words = \" \".join(f\"word{i}\" for i in range(15))\n    inp = _write_tmp(words)\n    result = _run([str(inp)])\n    lines = result.stdout.strip().splitlines()\n    assert len(lines) == 10\n\n\ndef test_top_flag_custom():\n    \"\"\"--top N limits output to N lines.\"\"\"\n    inp = _write_tmp(\"a b c d e\")\n    result = _run([str(inp), \"--top\", \"2\"])\n    lines = result.stdout.strip().splitlines()\n    assert lines == [\"a: 1\", \"b: 1\"]\n\n\n# \u2500\u2500 Case insensitivity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_case_insensitive():\n    \"\"\"Words differing only in case are merged.\"\"\"\n    inp = _write_tmp(\"Apple APPLE apple aPpLe\")\n    result = _run([str(inp)])\n    lines = result.stdout.strip().splitlines()\n    assert lines == [\"apple: 4\"]\n\n\n# \u2500\u2500 Tie-breaking \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_tie_breaking():\n    \"\"\"Ties are broken alphabetically (ascending).\"\"\"\n    inp = _write_tmp(\"zebra apple mango banana apple zebra mango banana\")\n    result = _run([str(inp)])\n    lines = result.stdout.strip().splitlines()\n    assert lines == [\"apple: 2\", \"banana: 2\", \"mango: 2\", \"zebra: 2\"]\n\n\ndef test_tie_breaking_with_top():\n    \"\"\"--top respects tie-breaking order.\"\"\"\n    inp = _write_tmp(\"zebra apple mango banana\")\n    result = _run([str(inp), \"--top\", \"2\"])\n    lines = result.stdout.strip().splitlines()\n    assert lines == [\"apple: 1\", \"banana: 1\"]\n\n\n# \u2500\u2500 Non-alphanumeric splitting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_non_alphanumeric_splitting():\n    \"\"\"Non-alphanumeric characters split words.\"\"\"\n    inp = _write_tmp(\"hello-world, foo!bar; baz?\")\n    result = _run([str(inp)])\n    lines = result.stdout.strip().splitlines()\n    assert lines == [\"bar: 1\", \"baz: 1\", \"foo: 1\", \"hello: 1\", \"world: 1\"]\n",
+        "tmp_test_input.txt": "hello-world, foo!bar; baz?",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Print the most common words in a text file.\"\"\"\n\nimport argparse\nimport re\nimport sys\n\n\ndef count_words(text: str) -> dict[str, int]:\n    \"\"\"Return a dict mapping each word to its count.\"\"\"\n    words = re.findall(r\"[a-zA-Z0-9]+\", text.lower())\n    freq: dict[str, int] = {}\n    for w in words:\n        freq[w] = freq.get(w, 0) + 1\n    return freq\n\n\ndef main() -> None:\n    parser = argparse.ArgumentParser(description=\"Print the most common words in a file.\")\n    parser.add_argument(\"file\", help=\"Path to the text file\")\n    parser.add_argument(\"--top\", type=int, default=10, help=\"Number of top words to show (default: 10)\")\n    args = parser.parse_args()\n\n    try:\n        with open(args.file, encoding=\"utf-8\") as f:\n            text = f.read()\n    except FileNotFoundError:\n        print(f\"Error: file not found: {args.file}\", file=sys.stderr)\n        sys.exit(1)\n\n    freq = count_words(text)\n    # Sort by count descending, then alphabetically ascending for ties\n    sorted_words = sorted(freq.items(), key=lambda item: (-item[1], item[0]))\n\n    for word, count in sorted_words[: args.top]:\n        print(f\"{word}: {count}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-tnn69frr",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 260.1,
+      "num_turns": 13,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "plan_first": 1,
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        ".pytest_cache/v/cache/nodeids": "d701efdadef501a406800f3462d36fbbe20a545a13d27d916ff6c0f006db0790",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "test_wordfreq.py": "b851a3a243d39cc0756b86f8a9bd2e6c744299bc9c9d7c7642e5d1761e77d509",
+        "wordfreq.py": "411a64537c77a9ca92d3cf21dac7d868b4c283d86dc5239457499590100d72cc"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "b851a3a243d39cc0756b86f8a9bd2e6c744299bc9c9d7c7642e5d1761e77d509",
+        "wordfreq.py": "411a64537c77a9ca92d3cf21dac7d868b4c283d86dc5239457499590100d72cc"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py\"\"\"\n\nimport subprocess\nimport sys\nimport tempfile\nimport os\n\n\ndef _run(text: str, *extra_args: str) -> str:\n    \"\"\"Write *text* to a temp file, run wordfreq.py, return stdout.\"\"\"\n    with tempfile.NamedTemporaryFile(mode=\"w\", suffix=\".txt\", delete=False) as f:\n        f.write(text)\n        f.flush()\n        path = f.name\n    try:\n        result = subprocess.run(\n            [sys.executable, \"wordfreq.py\", path, *extra_args],\n            capture_output=True,\n            text=True,\n            check=True,\n        )\n        return result.stdout\n    finally:\n        os.unlink(path)\n\n\n# \u2500\u2500 Basic counting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_basic_counting():\n    out = _run(\"hello world hello\")\n    assert out == \"hello: 2\\nworld: 1\\n\"\n\n\ndef test_basic_counting_top10_default():\n    out = _run(\"a b c d e f g h i j k\")\n    # default top 10, ties broken alphabetically\n    lines = out.strip().split(\"\\n\")\n    assert len(lines) == 10\n    assert lines[0] == \"a: 1\"\n    assert lines[9] == \"j: 1\"\n\n\n# \u2500\u2500 --top flag \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_top_flag():\n    out = _run(\"alpha beta gamma alpha beta alpha\", \"--top\", \"2\")\n    assert out == \"alpha: 3\\nbeta: 2\\n\"\n\n\ndef test_top_flag_larger_than_unique():\n    out = _run(\"one two\", \"--top\", \"100\")\n    assert out == \"one: 1\\ntwo: 1\\n\"\n\n\n# \u2500\u2500 Case insensitivity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_case_insensitivity():\n    out = _run(\"Hello HELLO hello HeLLo\")\n    assert out == \"hello: 4\\n\"\n\n\ndef test_case_insensitivity_mixed():\n    out = _run(\"Apple apple APPLE banana Banana\")\n    assert out == \"apple: 3\\nbanana: 2\\n\"\n\n\n# \u2500\u2500 Tie-breaking (alphabetical ascending) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_tie_breaking():\n    out = _run(\"zebra apple mango banana\", \"--top\", \"4\")\n    assert out == \"apple: 1\\nbanana: 1\\nmango: 1\\nzebra: 1\\n\"\n\n\ndef test_tie_breaking_with_different_counts():\n    out = _run(\"b b a a a c c\", \"--top\", \"3\")\n    assert out == \"a: 3\\nb: 2\\nc: 2\\n\"\n\n\n# \u2500\u2500 Edge cases \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_non_alphanumeric_splitting():\n    out = _run(\"hello-world, foo;bar! baz@qux\")\n    assert out == \"bar: 1\\nbaz: 1\\nfoo: 1\\nhello: 1\\nqux: 1\\nworld: 1\\n\"\n\n\ndef test_empty_file():\n    out = _run(\"\")\n    assert out == \"\"\n\n\ndef test_numbers_are_words():\n    out = _run(\"abc 123 abc 123 123\")\n    assert out == \"123: 3\\nabc: 2\\n\"\n",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Command-line tool to print the most common words in a text file.\"\"\"\n\nimport argparse\nimport re\nfrom collections import Counter\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=\"Print the most common words in a text file.\")\n    parser.add_argument(\"file\", help=\"Path to the text file to analyse.\")\n    parser.add_argument(\"--top\", type=int, default=10, help=\"Number of top words to display (default: 10).\")\n    args = parser.parse_args()\n\n    with open(args.file, encoding=\"utf-8\") as f:\n        text = f.read()\n\n    words = [w.lower() for w in re.findall(r\"[a-zA-Z0-9]+\", text)]\n    words = [w for w in words if w]  # ignore empty tokens\n\n    counter = Counter(words)\n    # Sort by count descending, then alphabetically ascending for ties.\n    sorted_words = sorted(counter.items(), key=lambda item: (-item[1], item[0]))\n\n    for word, count in sorted_words[: args.top]:\n        print(f\"{word}: {count}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-502g83mx",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 284.0,
+      "num_turns": 18,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "plan_first": 1,
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        ".pytest_cache/v/cache/nodeids": "3ea249cdd31a5d6a8f4bfcad580059a71e68616b4597603d990d3dd46ed8ceb0",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "test_wordfreq.py": "7faede284a747a469e2e968ce17c7649cd4c61f176766ec541604421b8256cbd",
+        "wordfreq.py": "61ed9e99b5a786cc7cec1139e7e27bfdf01a457a478c69403fc8687ca6306e74"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "7faede284a747a469e2e968ce17c7649cd4c61f176766ec541604421b8256cbd",
+        "wordfreq.py": "61ed9e99b5a786cc7cec1139e7e27bfdf01a457a478c69403fc8687ca6306e74"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py\"\"\"\n\nimport subprocess\nimport sys\nimport tempfile\nimport os\n\nPYTHON = sys.executable\nSCRIPT = os.path.join(os.path.dirname(__file__), \"wordfreq.py\")\n\n\ndef _run(text: str, *extra_args: str) -> str:\n    \"\"\"Write *text* to a temp file, run wordfreq.py, return stdout.\"\"\"\n    with tempfile.NamedTemporaryFile(mode=\"w\", suffix=\".txt\", delete=False) as f:\n        f.write(text)\n        f.flush()\n        path = f.name\n    try:\n        result = subprocess.run(\n            [PYTHON, SCRIPT, path, *extra_args],\n            capture_output=True,\n            text=True,\n            check=True,\n        )\n        return result.stdout\n    finally:\n        os.unlink(path)\n\n\n# \u2500\u2500 Basic counting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_basic_counting():\n    out = _run(\"hello world hello\")\n    assert out == \"hello: 2\\nworld: 1\\n\"\n\n\ndef test_basic_counting_top10_default():\n    out = _run(\"a b c d e f g h i j k\")\n    # default top 10, ties broken alphabetically\n    lines = out.strip().splitlines()\n    assert len(lines) == 10\n    assert lines[0] == \"a: 1\"\n    assert lines[9] == \"j: 1\"\n\n\n# \u2500\u2500 --top flag \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_top_flag():\n    out = _run(\"alpha beta gamma alpha beta alpha\", \"--top\", \"2\")\n    assert out == \"alpha: 3\\nbeta: 2\\n\"\n\n\ndef test_top_flag_larger_than_unique():\n    out = _run(\"one two\", \"--top\", \"100\")\n    assert out == \"one: 1\\ntwo: 1\\n\"\n\n\n# \u2500\u2500 Case insensitivity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_case_insensitivity():\n    out = _run(\"Hello HELLO hello HeLLo\")\n    assert out == \"hello: 4\\n\"\n\n\ndef test_case_insensitivity_mixed():\n    out = _run(\"Apple apple APPLE banana Banana\")\n    assert out == \"apple: 3\\nbanana: 2\\n\"\n\n\n# \u2500\u2500 Tie-breaking \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_tie_breaking_alphabetical():\n    out = _run(\"zebra apple mango cherry\", \"--top\", \"4\")\n    lines = out.strip().splitlines()\n    assert lines == [\"apple: 1\", \"cherry: 1\", \"mango: 1\", \"zebra: 1\"]\n\n\ndef test_tie_breaking_with_different_counts():\n    out = _run(\"b b a a a c c\", \"--top\", \"3\")\n    lines = out.strip().splitlines()\n    assert lines == [\"a: 3\", \"b: 2\", \"c: 2\"]\n\n\n# \u2500\u2500 Edge cases \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_non_alphanumeric_splitting():\n    out = _run(\"hello-world, foo;bar! baz@qux\")\n    lines = out.strip().splitlines()\n    assert lines == [\"bar: 1\", \"baz: 1\", \"foo: 1\", \"hello: 1\", \"qux: 1\", \"world: 1\"]\n\n\ndef test_empty_file():\n    out = _run(\"\")\n    assert out == \"\"\n\n\ndef test_numbers_only():\n    out = _run(\"42 42 100\")\n    assert out == \"42: 2\\n100: 1\\n\"\n",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Print the most common words in a text file.\"\"\"\n\nimport argparse\nimport re\nfrom collections import Counter\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=\"Print the most common words in a text file.\")\n    parser.add_argument(\"file\", help=\"Path to the text file to analyse.\")\n    parser.add_argument(\"--top\", type=int, default=10, help=\"Number of top words to show (default: 10).\")\n    args = parser.parse_args()\n\n    with open(args.file, encoding=\"utf-8\") as fh:\n        text = fh.read()\n\n    words = [w.lower() for w in re.findall(r\"[a-zA-Z0-9]+\", text)]\n    words = [w for w in words if w]  # drop empty tokens\n\n    counts = Counter(words)\n    # Sort by count descending, then alphabetically ascending for ties.\n    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))\n\n    for word, count in ranked[: args.top]:\n        print(f\"{word}: {count}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-zre27q2_",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 274.4,
+      "num_turns": 14,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "plan_first": 1,
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        ".pytest_cache/v/cache/nodeids": "f886165a92f86d0c1b734378abe4b0e3e893ecde5cf5de004b6a7bdbf05ac937",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "test_wordfreq.py": "096455105cef2ae52f3d269fe55495c66d604c301fb15d4edd3c0d124a877ed9",
+        "wordfreq.py": "fc0b8c762178246be73d5749471127458355c9ab2e110a86af3a918db21ed2af"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "096455105cef2ae52f3d269fe55495c66d604c301fb15d4edd3c0d124a877ed9",
+        "wordfreq.py": "fc0b8c762178246be73d5749471127458355c9ab2e110a86af3a918db21ed2af"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py\"\"\"\n\nimport subprocess\nimport sys\nimport tempfile\nimport os\n\n\ndef _run(args, text=None):\n    \"\"\"Write *text* to a temp file, run wordfreq.py with *args*, return stdout.\"\"\"\n    with tempfile.NamedTemporaryFile(mode=\"w\", suffix=\".txt\", delete=False, encoding=\"utf-8\") as f:\n        if text is not None:\n            f.write(text)\n        tmp = f.name\n    try:\n        result = subprocess.run(\n            [sys.executable, \"wordfreq.py\", tmp] + args,\n            capture_output=True, text=True, check=True,\n        )\n        return result.stdout\n    finally:\n        os.unlink(tmp)\n\n\n# \u2500\u2500 Basic counting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_basic_counting():\n    out = _run([], text=\"apple banana apple cherry apple banana\")\n    lines = out.strip().splitlines()\n    assert lines[0] == \"apple: 3\"\n    assert lines[1] == \"banana: 2\"\n    assert lines[2] == \"cherry: 1\"\n\n\ndef test_basic_counting_top10_default():\n    \"\"\"Default --top is 10.\"\"\"\n    out = _run([], text=\" \".join([\"word\" + str(i) for i in range(15)]))\n    lines = out.strip().splitlines()\n    assert len(lines) == 10\n\n\n# \u2500\u2500 --top flag \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_top_flag():\n    out = _run([\"--top\", \"2\"], text=\"alpha beta gamma alpha beta\")\n    lines = out.strip().splitlines()\n    assert len(lines) == 2\n    assert lines[0] == \"alpha: 2\"\n    assert lines[1] == \"beta: 2\"\n\n\ndef test_top_flag_larger_than_unique():\n    out = _run([\"--top\", \"100\"], text=\"only one word\")\n    lines = out.strip().splitlines()\n    # \"only one word\" \u2192 3 unique words, all count 1, sorted alphabetically\n    assert len(lines) == 3\n    assert lines[0] == \"one: 1\"\n    assert lines[1] == \"only: 1\"\n    assert lines[2] == \"word: 1\"\n\n\n# \u2500\u2500 Case insensitivity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_case_insensitivity():\n    out = _run([], text=\"Apple APPLE apple aPpLe Banana banana\")\n    lines = out.strip().splitlines()\n    assert lines[0] == \"apple: 4\"\n    assert lines[1] == \"banana: 2\"\n\n\n# \u2500\u2500 Tie-breaking (alphabetical ascending) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_tie_breaking():\n    out = _run([\"--top\", \"5\"], text=\"zebra apple mango banana cherry\")\n    lines = out.strip().splitlines()\n    # All have count 1, so alphabetical order.\n    assert lines[0] == \"apple: 1\"\n    assert lines[1] == \"banana: 1\"\n    assert lines[2] == \"cherry: 1\"\n    assert lines[3] == \"mango: 1\"\n    assert lines[4] == \"zebra: 1\"\n\n\ndef test_tie_breaking_with_different_counts():\n    out = _run([\"--top\", \"4\"], text=\"a a b b c c d e\")\n    lines = out.strip().splitlines()\n    assert lines[0] == \"a: 2\"\n    assert lines[1] == \"b: 2\"\n    assert lines[2] == \"c: 2\"\n    assert lines[3] == \"d: 1\"\n\n\n# \u2500\u2500 Non-alphanumeric splitting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_non_alphanumeric_splitting():\n    out = _run([], text=\"hello-world, foo!bar; baz@qux\")\n    lines = out.strip().splitlines()\n    # All count 1, sorted alphabetically: bar, baz, foo, hello, qux, world\n    assert lines[0] == \"bar: 1\"\n    assert lines[1] == \"baz: 1\"\n    assert lines[2] == \"foo: 1\"\n    assert lines[3] == \"hello: 1\"\n    assert lines[4] == \"qux: 1\"\n    assert lines[5] == \"world: 1\"\n",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Command-line tool to print the most common words in a text file.\"\"\"\n\nimport argparse\nimport re\nimport sys\nfrom collections import Counter\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=\"Print the most common words in a text file.\")\n    parser.add_argument(\"file\", help=\"Path to the text file to analyse.\")\n    parser.add_argument(\"--top\", type=int, default=10, help=\"Number of top words to display (default: 10).\")\n    args = parser.parse_args()\n\n    try:\n        with open(args.file, \"r\", encoding=\"utf-8\") as f:\n            text = f.read()\n    except FileNotFoundError:\n        print(f\"Error: file not found: {args.file}\", file=sys.stderr)\n        sys.exit(1)\n    except OSError as e:\n        print(f\"Error reading file: {e}\", file=sys.stderr)\n        sys.exit(1)\n\n    # Split on non-alphanumeric characters, lowercase, ignore empty tokens.\n    words = [w.lower() for w in re.split(r'[^a-z0-9]+', text.lower()) if w]\n\n    counts = Counter(words)\n    # Sort by count descending, then alphabetically ascending for ties.\n    sorted_words = sorted(counts.items(), key=lambda item: (-item[1], item[0]))\n\n    for word, count in sorted_words[:args.top]:\n        print(f\"{word}: {count}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-og4vxfx0",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 314.1,
+      "num_turns": 19,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "plan_first": 1,
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        ".pytest_cache/v/cache/nodeids": "a2b9158a10d43e5a0bcbac1b9df8b088331f3cdf0e5d75d1a88f287c2895d1a1",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "test_wordfreq.py": "10f8f42c3312a87ad8a911f0a2e97b6db041215eb2ebdd984481e44d1cf2774e",
+        "wordfreq.py": "d2380d985ad20d684d502308f80ef36e00d57486a28fe7acfbd4e4e2c34b18de"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "10f8f42c3312a87ad8a911f0a2e97b6db041215eb2ebdd984481e44d1cf2774e",
+        "wordfreq.py": "d2380d985ad20d684d502308f80ef36e00d57486a28fe7acfbd4e4e2c34b18de"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py\"\"\"\n\nimport subprocess\nimport sys\nfrom pathlib import Path\n\nimport pytest\n\nSCRIPT = Path(__file__).parent / \"wordfreq.py\"\nPYTHON = sys.executable\n\n\ndef _run(args: list[str]) -> subprocess.CompletedProcess[str]:\n    return subprocess.run(\n        [PYTHON, str(SCRIPT), *args],\n        capture_output=True,\n        text=True,\n    )\n\n\n# \u2500\u2500 basic counting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_basic_counting(tmp_path):\n    inp = tmp_path / \"in.txt\"\n    inp.write_text(\"apple banana apple cherry banana apple\", encoding=\"utf-8\")\n    out = _run([str(inp)])\n    assert out.returncode == 0\n    lines = out.stdout.strip().splitlines()\n    assert lines[0] == \"apple: 3\"\n    assert lines[1] == \"banana: 2\"\n    assert lines[2] == \"cherry: 1\"\n\n\ndef test_empty_file(tmp_path):\n    inp = tmp_path / \"in.txt\"\n    inp.write_text(\"\", encoding=\"utf-8\")\n    out = _run([str(inp)])\n    assert out.returncode == 0\n    assert out.stdout.strip() == \"\"\n\n\n# \u2500\u2500 --top flag \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_top_flag(tmp_path):\n    inp = tmp_path / \"in.txt\"\n    inp.write_text(\"a b c d e\", encoding=\"utf-8\")\n    out = _run([str(inp), \"--top\", \"2\"])\n    assert out.returncode == 0\n    lines = out.stdout.strip().splitlines()\n    assert len(lines) == 2\n    assert lines[0] == \"a: 1\"\n    assert lines[1] == \"b: 1\"\n\n\ndef test_top_larger_than_vocabulary(tmp_path):\n    inp = tmp_path / \"in.txt\"\n    inp.write_text(\"hello world\", encoding=\"utf-8\")\n    out = _run([str(inp), \"--top\", \"100\"])\n    assert out.returncode == 0\n    lines = out.stdout.strip().splitlines()\n    assert len(lines) == 2\n\n\n# \u2500\u2500 case-insensitivity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_case_insensitive(tmp_path):\n    inp = tmp_path / \"in.txt\"\n    inp.write_text(\"Apple APPLE apple aPpLe\", encoding=\"utf-8\")\n    out = _run([str(inp)])\n    assert out.returncode == 0\n    lines = out.stdout.strip().splitlines()\n    assert lines[0] == \"apple: 4\"\n\n\n# \u2500\u2500 tie-breaking (alphabetical ascending) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_tie_breaking(tmp_path):\n    inp = tmp_path / \"in.txt\"\n    inp.write_text(\"zebra apple mango banana\", encoding=\"utf-8\")\n    out = _run([str(inp)])\n    assert out.returncode == 0\n    lines = out.stdout.strip().splitlines()\n    # all have count 1, so alphabetical order\n    assert lines[0] == \"apple: 1\"\n    assert lines[1] == \"banana: 1\"\n    assert lines[2] == \"mango: 1\"\n    assert lines[3] == \"zebra: 1\"\n\n\n# \u2500\u2500 non-alphanumeric splitting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_non_alnum_split(tmp_path):\n    inp = tmp_path / \"in.txt\"\n    inp.write_text(\"hello-world, foo!bar;baz\", encoding=\"utf-8\")\n    out = _run([str(inp)])\n    assert out.returncode == 0\n    lines = out.stdout.strip().splitlines()\n    assert lines[0] == \"bar: 1\"\n    assert lines[1] == \"baz: 1\"\n    assert lines[2] == \"foo: 1\"\n    assert lines[3] == \"hello: 1\"\n    assert lines[4] == \"world: 1\"\n\n\n# \u2500\u2500 missing file \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_missing_file(tmp_path):\n    out = _run([str(tmp_path / \"no_such_file.txt\")])\n    assert out.returncode == 1\n    assert \"Error\" in out.stderr\n",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Print the most common words in a text file.\"\"\"\n\nimport argparse\nimport re\nimport sys\n\n\ndef count_words(text: str) -> dict[str, int]:\n    \"\"\"Return a dict mapping each word (lowercase, alphanumeric) to its count.\"\"\"\n    words = re.findall(r\"[a-zA-Z0-9]+\", text)\n    counts: dict[str, int] = {}\n    for w in words:\n        low = w.lower()\n        counts[low] = counts.get(low, 0) + 1\n    return counts\n\n\ndef top_words(counts: dict[str, int], n: int) -> list[tuple[str, int]]:\n    \"\"\"Return the top *n* words sorted by count desc, then alphabetically.\"\"\"\n    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]\n\n\ndef main() -> None:\n    parser = argparse.ArgumentParser(description=\"Print the most common words in a file.\")\n    parser.add_argument(\"file\", help=\"Path to the text file to analyse.\")\n    parser.add_argument(\"--top\", type=int, default=10, help=\"Number of top words to show (default 10).\")\n    args = parser.parse_args()\n\n    try:\n        with open(args.file, encoding=\"utf-8\") as fh:\n            text = fh.read()\n    except FileNotFoundError:\n        print(f\"Error: file not found: {args.file}\", file=sys.stderr)\n        sys.exit(1)\n\n    counts = count_words(text)\n    for word, count in top_words(counts, args.top):\n        print(f\"{word}: {count}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-ivzu1_6s",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 221.8,
+      "num_turns": 13,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "plan_first": 1,
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "-runtime response stream shape \u2014 Bedrock event-stream decoding will be unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        ".pytest_cache/v/cache/nodeids": "143f8ead0178f1c105f3bce7070f0f6baea436fcac162006dd17e8f65df70884",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "test_wordfreq.py": "26354612e4bb6c5cd6d819166f72fc258413da624c4042d096dbb23ae4e10112",
+        "wordfreq.py": "fe2ea0580e30467cf2b1b937fb05cdd2747b512bf9deae9528d1199aa682ead2"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "26354612e4bb6c5cd6d819166f72fc258413da624c4042d096dbb23ae4e10112",
+        "wordfreq.py": "fe2ea0580e30467cf2b1b937fb05cdd2747b512bf9deae9528d1199aa682ead2"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py\"\"\"\n\nimport subprocess\nimport sys\nimport tempfile\nimport os\n\nWORDFREQ = os.path.join(os.path.dirname(__file__), \"wordfreq.py\")\n\n\ndef _run(text, top=None):\n    \"\"\"Write *text* to a temp file, run wordfreq, return stdout.\"\"\"\n    with tempfile.NamedTemporaryFile(mode=\"w\", suffix=\".txt\", delete=False) as f:\n        f.write(text)\n        path = f.name\n    try:\n        cmd = [sys.executable, WORDFREQ, path]\n        if top is not None:\n            cmd.extend([\"--top\", str(top)])\n        result = subprocess.run(cmd, capture_output=True, text=True, check=True)\n        return result.stdout\n    finally:\n        os.unlink(path)\n\n\n# \u2500\u2500 Basic counting \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_basic_counting():\n    out = _run(\"hello world hello\")\n    lines = out.strip().splitlines()\n    assert lines == [\"hello: 2\", \"world: 1\"]\n\n\ndef test_basic_counting_top10_default():\n    \"\"\"Default --top is 10.\"\"\"\n    out = _run(\"a b c d e f g h i j k\")\n    lines = out.strip().splitlines()\n    assert len(lines) == 10  # only 10 shown, 'k' dropped\n\n\n# \u2500\u2500 --top flag \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_top_flag():\n    out = _run(\"apple banana apple banana cherry\", top=2)\n    lines = out.strip().splitlines()\n    assert lines == [\"apple: 2\", \"banana: 2\"]\n\n\ndef test_top_flag_larger_than_file():\n    out = _run(\"only one word\", top=100)\n    lines = out.strip().splitlines()\n    assert lines == [\"one: 1\", \"only: 1\", \"word: 1\"]\n\n\n# \u2500\u2500 Case insensitivity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_case_insensitivity():\n    out = _run(\"Hello HELLO hello HeLLo\")\n    lines = out.strip().splitlines()\n    assert lines == [\"hello: 4\"]\n\n\ndef test_case_insensitivity_mixed():\n    out = _run(\"Python python PYTHON\")\n    lines = out.strip().splitlines()\n    assert lines == [\"python: 3\"]\n\n\n# \u2500\u2500 Tie-breaking (alphabetical ascending) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_tie_breaking():\n    out = _run(\"zebra apple mango banana\")\n    lines = out.strip().splitlines()\n    assert lines == [\"apple: 1\", \"banana: 1\", \"mango: 1\", \"zebra: 1\"]\n\n\ndef test_tie_breaking_with_different_counts():\n    out = _run(\"b a b a c c c\")\n    lines = out.strip().splitlines()\n    assert lines == [\"c: 3\", \"a: 2\", \"b: 2\"]\n\n\n# \u2500\u2500 Edge cases \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\ndef test_non_alphanumeric_splitting():\n    out = _run(\"hello-world, foo;bar! baz@qux\")\n    lines = out.strip().splitlines()\n    assert \"hello: 1\" in lines\n    assert \"world: 1\" in lines\n    assert \"foo: 1\" in lines\n    assert \"bar: 1\" in lines\n    assert \"baz: 1\" in lines\n    assert \"qux: 1\" in lines\n\n\ndef test_empty_file():\n    out = _run(\"\")\n    assert out.strip() == \"\"\n",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Print the most common words in a text file.\"\"\"\n\nimport argparse\nimport re\nimport sys\n\n\ndef count_words(filepath):\n    \"\"\"Return a dict mapping lowercase words to their counts.\"\"\"\n    with open(filepath, \"r\", encoding=\"utf-8\") as f:\n        text = f.read()\n    tokens = re.findall(r\"[a-zA-Z0-9]+\", text)\n    counts = {}\n    for token in tokens:\n        word = token.lower()\n        counts[word] = counts.get(word, 0) + 1\n    return counts\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=\"Print the most common words in a file.\")\n    parser.add_argument(\"file\", help=\"Path to the text file to analyse.\")\n    parser.add_argument(\"--top\", type=int, default=10, help=\"Number of top words to show (default: 10).\")\n    args = parser.parse_args()\n\n    counts = count_words(args.file)\n    # Sort by count descending, then alphabetically ascending for ties.\n    sorted_words = sorted(counts.items(), key=lambda item: (-item[1], item[0]))\n\n    for word, count in sorted_words[: args.top]:\n        print(f\"{word}: {count}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    }
+  ]
+}

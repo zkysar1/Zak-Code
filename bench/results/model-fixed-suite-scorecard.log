@@ -45,3 +45,50 @@ HONESTY / LIMITS:
     largely config-insensitive (a correct solution is correct at any temperature), so the correctness
     verdict holds; the determinism column is config/temperature-confounded as noted above.
   - Provenance verified this run (NOT the stale H2H-35B cell, which reads 06=0/3 pre-lever-N).
+
+================================================================================
+EXTENSION — BROADENED to an 11-task MATCHED cell  (2026-09-13 19:58 UTC, alpha)
+================================================================================
+Extends the 6-task suite above ({m01–m05, 06}) to 11 tasks, SAME matched cell (both loops on
+zds-qwen3.6-35b via the pod, --no-pin fresh mkdtemp/run, N=6). Adds GREENFIELD CODING (01-wordfreq,
+03-lru, 08-mutation-leak) and the LARGE-REPO convention variants (06v conv-in-docs, 06w +40 decoys).
+Rendered by bench/model_fixed_scorecard.py (Zak-Code #454) — reproduces the table below from the raw
+arm jsons, ending the hand-built-prose drift risk. Raw: cc-qwen-{01-wordfreq,03-lru,08-mutation-leak}.json
++ determinism-zakcode-pinOFF-temp0-{01-wordfreq,03-lru,08-mutation-leak}.json (committed this change);
+06v/06w from #446/#449; m0x pinOFF arms regenerated on zc-01 19:37–19:46 (numbers below).
+
+CORRECTNESS (verify.py pass / N) — the 5 ADDED tasks:
+  task                        CC-on-qwen   zakcode-on-qwen   verdict
+  01-wordfreq                 6/6          6/6               PARITY   (greenfield; both loops max out)
+  03-lru                      6/6          6/6               PARITY   (greenfield)
+  08-mutation-leak            6/6          6/6               PARITY   (greenfield)
+  06v-conv-in-docs            3/6          5/6               ZAK>CC   (CONTRIBUTING relocated to docs/)
+  06w-largerepo               2/6          5/6               ZAK>CC   (06v + 40 decoy files; clutter-immune)
+
+FULL 11-TASK TALLY (with the 6 above): PARITY=7, ZAK>CC=4, CC>ZAK=0.
+  => Zakcode's loop is AT PARITY OR BETTER on EVERY matched task, model held fixed, and STRICTLY better
+     ONLY where context-SURFACING matters (06 family ×3 + the m02 silenced-zero), worse NOWHERE. The loop
+     edge is convention-surfacing-SPECIFIC — absent on plain greenfield coding, where both saturate.
+     "As good as Claude Code at being an agent on qwen-35B: YES + a convention-surfacing edge", now across
+     THREE task classes (agentic discipline, greenfield coding, convention adherence).
+
+DETERMINISM (distinct output states / N) for the 5 added tasks: all TIE-NONDET — 01/03/06v NONDET(6/6)=
+NONDET(6/6), 06w CC NONDET(5/6) vs ZAK NONDET(6/6), 08 CC NONDET(6/6) vs ZAK NONDET(5/6). Expected: under
+--no-pin the random mkdtemp path sits in BOTH prompts, so both vary — a bench artifact, NOT determinism
+parity (the robust determinism claim is the pinworkspace cell; head_to_head_determinism.py).
+
+SIGNAL INTEGRITY (tracking directive — react to drastic signal shifts):
+  The m0x arms were RE-RUN (mox batch) vs the 15:13 table above. CORRECTNESS reproduced EXACTLY (all 6/6).
+  --no-pin DETERMINISM DRIFTED: m01 1/6->4/6, m02 4/6->6/6 (m03/m04/m05 stable). DIAGNOSED not-corrupt:
+  the zc-01 build was PROVABLY UNCHANGED across both runs (prompt.py mtime 2026-09-13 00:46:06,
+  determinism_arm.py 03:24:19 — both PREDATE both the 15:13 and 19:46 runs) and correctness reproduced,
+  so the drift is the no-pin determinism metric's OWN variance (it counts residual non-determinism: random
+  workspace path + provider temp0 residual; N=6 swings ±2–3 states/session). VERDICT: the --no-pin
+  determinism column is NOISE-dominated at N=6, NOT a reliable per-task signal; CORRECTNESS is the tracked
+  signal here. Robust determinism = pinworkspace cell.
+
+HONESTY / LIMITS (in addition to the block above):
+  - Greenfield PARITY (01/03/08 all 6/6=6/6) may be a CEILING effect — both loops saturate on
+    straightforward coding; a harder greenfield task could still discriminate. N=6 throughout.
+  - The 4 ZAK>CC tasks are the robust correctness finding; the 06-family gap is causally grounded by the
+    within-CC surfacing intervention (#444) and the clutter-immunity control (#449).
