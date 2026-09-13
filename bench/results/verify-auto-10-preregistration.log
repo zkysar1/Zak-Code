@@ -59,3 +59,38 @@ project_verify runs/run and +1-3 turns; AUTO stops mostly `completed`. Cost ~12 
 VERDICT RULE: L1 (and the gate fired) -> ship verify_auto default-on; L2 or L3 -> keep opt-in with the
 measured reason. If NOT EXERCISED (gate never fired), the arm is inconclusive -> re-run on a basin census that
 shows a failure, do not score a verdict.
+
+================================================================================
+ARM L RESULTS — 2026-09-13 12:03 UTC (build 0c0bbc4, lever N default-on; zc-01; N=12, 4 cells x3, 35B)
+================================================================================
+MEASURE FIRST.
+  BASE (lever N on, verify_auto OFF): pass 6/6; project_verify=[0,0,0,0,0,0]; verification_failed=0;
+    turns [10,16,19,15,16,8].
+  AUTO (lever N on, verify_auto ON):  pass 6/6; project_verify=[1,1,1,1,1,1]; verification_failed=0;
+    turns [13,14,12,18,15,17].
+  delta(AUTO - BASE) = 0.
+
+GATE FIRED, NEVER CAUGHT. verify_auto is NOT inert: every AUTO run ran the derived check exactly once
+(project_verify=1), confirmed independently by the .ruff_cache directories PRESENT in the AUTO outputs and
+ABSENT from BASE (the harness ran `python -m ruff check . && python -m pytest`). But project_verify never
+reached 2 and no run ended verification_failed — the check PASSED on the first run every time, because the
+35B + lever N already produced CORRECT output (BASE 6/6). So the CATCH path (fail -> nudge -> fix -> re-run)
+was never exercised; there was nothing to catch. NOTE the scorer's gate-fires proxy (>=2 OR
+verification_failed) reads this as "not exercised", conflating "the gate did not FIRE" with "the gate did not
+CATCH": the gate fired 6/6; it caught 0/6.
+
+VERDICT: NOT L1. Per the pre-reg (L1 requires AUTO >= BASE+2 AND the gate CAUGHT a failure), this is L2 /
+inconclusive-for-value: delta 0, catch path unexercised. verify_auto STAYS OPT-IN. The reason is not that
+verify_auto is broken (it fires and runs the real check) but that TASK 10 IS SATURATED for the 35B once lever
+N is on: lever N alone took the 35B from doom-looping (arm N) to 6/6 correct completions across 6 diverse
+--no-pin basins, leaving verify_auto nothing to catch. Shipping an unproven-value lever default-on would
+violate rb-10866 (measure the value on real output before shipping) and the pre-reg verdict rule.
+
+THE SYSTEMIC FINDING (campaign pivot). This is the SECOND saturation signal: the 6-task head-to-head reads
+12/12 PARITY (ADR-0161, can no longer discriminate), and now lever N saturates task 10 for the 35B.
+verify_auto's VALUE — and any further small-model lever's measurable gain — requires HARDER, DISCRIMINATING
+tasks where the small model + lever N still fails (complete-but-wrong), so a catch has something to catch.
+Arm R showed the 27B still complete-but-wrongs on task 10 (E501 + contract), but the delta over lever-N-on
+would be thin (~5/6 -> 6/6). The higher-value next thrust is NEW discriminating tasks (the review already
+flags this as "part of the work"), not more levers on saturated tasks. verify_auto remains a VALIDATED,
+opt-in safety net for tasks/models that DO produce catchable failures.
