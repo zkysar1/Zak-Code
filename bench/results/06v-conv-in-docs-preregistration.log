@@ -1,0 +1,49 @@
+06v-conv-in-docs PROBE — pre-registration  (2026-09-13 15:18 UTC, alpha)
+================================================================================
+QUESTION. Is zakcode's 06 model-fixed advantage (5/6 vs CC 2/6, #444/#445) NARROW
+(fold-file-specific: zakcode folds only CONTRIBUTING.md) or BROAD (it surfaces
+conventions wherever they live)? 06v = task 06 with the four hard rules moved
+CONTRIBUTING.md -> docs/CONVENTIONS.md — a file NEITHER loop folds (zakcode
+CONVENTION_FILENAMES = ("CONTRIBUTING.md",) only; CC auto-reads AGENTS/CLAUDE only).
+verify.py is UNCHANGED (it checks the plugin output + tests/test_plugins.py, never
+reads the rules file; its 5 "CONTRIBUTING.md" mentions are cosmetic fail-message text).
+The sibling renderers (plugins/{csv,json}_out.py) still demonstrate the rules in code.
+
+BASELINES (06, model-fixed, N=6): zakcode 5/6, CC 2/6.
+
+H_narrow: zakcode-on-06v DROPS toward ~2/6 — the fold no longer surfaces the rules,
+  so only the workspace survey + sibling code remain. => the advantage is
+  CONTRIBUTING-specific, and BROADENING CONVENTION_FILENAMES (or surfacing more
+  convention files) is a concrete, measured lever to make zakcode better on a
+  BROADER class of small-model convention-inference tasks.
+H_broad: zakcode-on-06v STAYS ~5/6 — the survey and/or the sibling renderers surface
+  the conventions. => the advantage generalizes; no fold-broadening needed.
+CONTROL: CC-on-06v should stay ~2/6 (agentic discovery of docs/CONVENTIONS.md is the
+  same difficulty as CONTRIBUTING.md; if CC changes a lot, the task difficulty moved).
+
+CONFIG: both on qwen-35B, N=6, --no-pin; zakcode shipped config (temp0 + stable-id +
+  lever-N + survey), matching the 06 census + suite scorecard.
+RESULT — 2026-09-13 15:29 UTC (zc-01, --no-pin, N=6, 35B, shipped config; data zakcode-06v-conv-in-docs.json)
+zakcode-on-06v = 5/6 PASS (distinct 6/6), IDENTICAL to the 06 baseline (5/6); the one miss is the same
+`import yaml` R1 violation. => H_broad SUPPORTED, H_narrow FALSIFIED: zakcode's convention-inference
+advantage SURVIVES the rules moving out of the folded file, so the CONTRIBUTING.md fold is NOT the
+load-bearing channel.
+
+MECHANISM (run-1 dump, presence counts only, never printed content). The workspace SURVEY lists
+docs/CONVENTIONS.md in the first main agent turn (call-0002: path present, rule CONTENT absent, 3
+Read/Glob/Grep tool calls issued); by call-0003 the rule text is in context (the model READ the file).
+Chain: SURVEY-lists-the-file -> small model reliably READS it. CC (no survey) must both discover AND
+decide to read, which it did only 4/6 in the 06 baseline. So the deterministic workspace SURVEY (file
+surfacing), NOT the CONTRIBUTING fold, is the load-bearing mechanism, and it GENERALIZES across
+convention locations (CONTRIBUTING.md or docs/CONVENTIONS.md).
+
+CONSEQUENCES.
+  - Refines the #444 emphasis on the CONTRIBUTING fold: the fold is a redundant secondary channel for
+    CONTRIBUTING.md; the survey is what generalizes (correction committed to DETERMINISM-REVIEW.md).
+  - CLOSES "broaden CONVENTION_FILENAMES" as an UNNECESSARY lever (measured): the survey already
+    surfaces convention files wherever they live; folding CONTENT (06) vs only LISTING (06v) gave the
+    SAME 5/6.
+  - The 1/6 residual is ADHERENCE (import yaml with the rule surfaced), not surfacing — folding more
+    content will not fix it (06 folds the content and still missed once).
+CONTROL not run: CC-on-06v (expected ~2/6). Deferred — the decisive zakcode arm already answered
+narrow-vs-broad; a CC control only reconfirms task difficulty.
