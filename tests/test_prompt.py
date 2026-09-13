@@ -551,13 +551,16 @@ def test_workspace_survey_caps_entries_and_depth(tmp_path: Path) -> None:
     assert workspace_survey(tmp_path / "missing") == ""
 
 
-def test_workspace_survey_is_folded_only_when_enabled_and_snapshotted_once(tmp_path: Path) -> None:
+def test_workspace_survey_is_folded_by_default_opt_out_and_snapshotted_once(tmp_path: Path) -> None:
     (tmp_path / "first.py").write_text("x", encoding="utf-8")
-    off = SystemPromptBuilder().build(load_settings(workspace_root=tmp_path))
-    assert "Workspace files" not in off
+    off = SystemPromptBuilder().build(
+        load_settings(workspace_root=tmp_path, context_workspace_survey=False)
+    )
+    assert "Workspace files" not in off  # the opt-out removes the block entirely
 
     builder = SystemPromptBuilder()
-    settings = load_settings(workspace_root=tmp_path, context_workspace_survey=True)
+    settings = load_settings(workspace_root=tmp_path)  # default on (ADR-0164 addendum)
+    assert settings.context_workspace_survey is True
     on = builder.build(settings)
     assert "Workspace files (1, depth <= 3):\nfirst.py" in on[on.index(DYNAMIC_BOUNDARY) :]
 
