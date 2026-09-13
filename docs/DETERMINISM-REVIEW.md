@@ -185,7 +185,11 @@ flip a step's status to `done` even after doing the work and being told to (b3/r
 exported it, wrote tests, 31 passing, then resent an all-`pending` plan six times). The true receipt stands
 as a correctness/census fix; the real fix is a deterministic harness ADVANCE (lever N) — mark the step done
 when it has evidence of completion and the model resends unchanged. A follow-up (#432) fires the rail on the
-FIRST resend (compare the model's submission, not the non-idempotent network state).
+FIRST resend (compare the model's submission, not the non-idempotent network state). **Arm N update (#434):
+the advance alone was not enough — measured, it fired in situ but still doom-looped (N3 fail), because a
+same-title parent/child carryover collision undid its stickiness AND the doom-guard counts identical
+submissions rather than harness progress. Both are fixed (carryover keyed on `(title, is-parent)`; the guard
+resets on a harness advance); the fix's effect on the loop is measured by a paired arm.**
 
 ## 5. Levers, ranked
 
@@ -199,7 +203,7 @@ FIRST resend (compare the model's submission, not the non-idempotent network sta
 | L6 | **Test-file hint on edit** (append `tests/test_<name>.py` to the edit result when it exists) | model-free | grounding message | same tasks as L4 | needs tasks |
 | L7 | **Repair, not bounce, a truncated `write_file`** | model-free | `loop.py:4295` `cut_off=True` | count of `cut_off` bounces on the pod first (unmeasured) | measured (`bench/undecodable_bounces.py`, #426): **0** bounces in 127 pod runs / 1,817 tool calls across 43 cells (27B + 35B, 2026-09-12 → 13; positive control 397 shell results) — the trigger is a long single-call module (ADR-0081's coach case) and no bench task is that size; nothing to repair until a task of that shape exists (joins L4–L6's "needs tasks") |
 | L8 | **Verify a library module by import, not `-m`** — a package module without a `__main__` guard is checked with `python -c "import pkg.mod"`; `-m` stays for modules with a guard and for unreadable files | model-free | `recipe.py` `_python_run_command` / `_executed_targets` | long runs (> 20 turns) and median turns on 06/35B by basin sampling, OLD vs NEW build, outcomes must hold (ADR-0166 arm H) | **shipped (#422 + #423, ADR-0166)** — arm H: warning gone 6/6 but `recipe_stalled` 6/6 on a mis-extracted acceptance literal; arm I with the literal fixed: 0 harness runs, `completed` 6/6, 5/6 vs 6/6, median turns 11 → 10 (F10) |
-| N | **Deterministic plan advance** — when the model resends the plan unchanged and a worked-on step is left non-terminal, the harness marks it done and walks the frontier | model-free, opt-in | `update_plan` `harness_advance` / `plan_autoadvance` | doom-loop rate among triggered runs (N3), pass rate (verify is ground truth), turns | **built opt-in (#433)** — arm M's M3 failure showed a text rail cannot move a 35B that will not emit `status: done`; lever N does it deterministically and makes the advance stick against the full-replace; arm N (flag OFF vs ON, basin-sampled) decides the default |
+| N | **Deterministic plan advance** — when the model resends the plan unchanged and a worked-on step is left non-terminal, the harness marks it done and walks the frontier | model-free, opt-in | `update_plan` `harness_advance` / `plan_autoadvance` | doom-loop rate among triggered runs (N3), pass rate (verify is ground truth), turns | **built opt-in (#433)** — arm M's M3 failure showed a text rail cannot move a 35B that will not emit `status: done`; lever N does it deterministically and makes the advance stick against the full-replace; **arm N measured (#434): the advance FIRED end to end in situ (N2 wiring confirmed, `adv=5` on the one triggered run) but did NOT break the loop (N3 FAIL — 1/1 doom-loop among triggered, vs OFF 3/4), defeated by two now-fixed bugs — a same-title parent/child carryover collision, and a doom-guard that counts identical submissions not harness progress; ON drew only 1/9 triggers (basin starvation), so the FIX's effect on N3 is measured by a paired arm (pinned basin, flag-only toggle, pre-registered). Stays opt-in until then** |
 | — | Lint/format after write (extend `syntax_note`) | model-free | `grounding.py` | — | deferred: no measured failure |
 
 **What not to do, because it was measured:** temperature 0 harness-wide (ADR-0018); a routing shortlist

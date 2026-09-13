@@ -12,3 +12,49 @@ Rules (applied by the letter; measured cause stated beside each):
   N5 (instrument control): OFF emits 0 "Advanced step" receipts and 0 plan_autoadvance notes (the flag gates the branch); ON emits 0 advances in any run with no unchanged resend.
   N6 (no harm to healthy runs, descriptive): ON runs that completed WITHOUT any advance have pass rate and turns comparable to OFF's completed runs — the flag must not perturb a run that never triggered.
 Threats: the doom loop is a basin property (arm M OFF 7/9, NEW 2/9 — unpaired), so N=9 per arm may draw few triggers in either arm; N1 governs and three more blocks follow a 0-trigger OFF arm. A false advance (marking undone work done) is caught by verify (N4) and is not worse than the doom_loop it replaces (both fail). The sticky rule could keep a step done that a capable model wanted reopened; on this 35B/task that did not arise, and the flag is opt-in — a broader-model arm would test it before any default-on.
+
+=== ARM N RESULTS (measured 2026-09-13, 06:41–07:40 UTC on zc-01 vs zakpod1; 18 runs, --no-pin) ===
+Per-arm tally (verify_rc==0 = pass; triggered = the run entered the resend pattern; doom-among-trig
+= doom_loop stop_reason among triggered runs):
+  OFF (flag unset): n=9 pass=6 doom=3 triggered=4 doom-among-triggered=3/4 runs-with-advance=0
+  ON  (flag=1):     n=9 pass=8 doom=1 triggered=1 doom-among-triggered=1/1 runs-with-advance=1
+The ONE triggered ON run (N-ON-35B-10-b3 run3): the 35B resent the SAME all-pending plan 9x in a row
+(identical-submission streak=9 in the largest wire dump), the harness advance fired 5x (adv=5), the
+deliverable PASSED verify (verify_rc=0), yet the run still ended stop_reason=doom_loop.
+
+Scored by the letter:
+  N1 (trigger present): PASS — OFF triggered 4/9; the doom-loop trigger exists on this task.
+  N2 (wiring): PASS — the one triggered ON run fired adv=5 AND its arm row carries
+     trace_interventions.plan_autoadvance>=1 (guard-6374 satisfied in situ, not just in unit tests).
+  N3 (PRIMARY — the advance breaks the loop): FAIL by the letter. ON doom-among-triggered = 1/1
+     (100%), NOT lower than OFF's 3/4 (75%). The advance fired but did not break the loop. ROOT
+     CAUSE (executed-verified, not inferred): (a) the 35B nested a PARENT "Create utils/duration.py"
+     over a same-titled child leaf; replace_from_author keyed carryover by title alone, setdefault
+     kept the parent, and the child leaf then inherited the parent's empty evidence + harness_done
+     =False on every full-replace, so the advance never STUCK (a clean repro froze at 0/3; a
+     distinct-title control walked to completion in 3 resends — the title is the only difference).
+     (b) the doom-loop guard keys on batch_signature(tool_calls) — the model's identical submission,
+     NOT whether the harness made progress — so even a sticking advance races the exact-repeat guard
+     and loses (a loop repro: OFF froze at 2/5 incomplete, ON reached 3/3 complete only after the
+     guard was taught to reset on a harness advance).
+  N4 (no outcome regression): PASS — ON pass 8/9 >= OFF 6/9 - 1. Read as "no regression", NOT the
+     size of a win: ON drew only 1/9 triggers vs OFF 4/9, so the +2 is entry-rate basin variance
+     (unpaired --no-pin), exactly arm M's confound. verify_rc is ground truth; the one ON triggered
+     run PASSED verify even while doom-looping (the advance got the work verified), where all 3 OFF
+     doom-loops FAILED verify.
+  N5 (instrument control): PASS — OFF emitted 0 advances; ON emitted 0 advances in the 8
+     non-triggering runs (the flag gates the branch).
+  N6 (no harm to healthy runs): PASS — ON's 8 non-triggering runs pass 7/8 at turns 8–15,
+     comparable to OFF's completed runs (the 1 ON completed-but-failed run had adv=0: the flag never
+     fired, a basin miss, not the lever's doing).
+
+VERDICT: N3 FAILS — lever N as shipped does NOT break the doom loop on the one triggered run, for two
+compounding, now-fixed reasons. Per N3's pre-registered response (keep the code, revise as the next
+lever) THIS PR ships both fixes: (a) carryover now keys on (title, is-parent) so a same-title
+parent/child no longer collides; (b) the doom-loop guard resets its exact-repeat counter when a
+harness advance made progress, so the frontier walk to completion is not killed mid-walk. Both are
+executed-verified (repro + positive control + a loop-level regression test) and INERT unless the
+opt-in plan_autoadvance is on (full suite 3833 passed, mypy clean). The N3 read rests on n=1 ON
+trigger (starvation: ON 1/9 vs OFF 4/9), too thin to conclude the FIX breaks the loop — that is the
+PAIRED arm's job (pin one workspace, toggle only the flag, OFF then ON back-to-back), pre-registered
+separately.

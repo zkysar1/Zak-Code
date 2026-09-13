@@ -5691,6 +5691,10 @@ class AgentLoop:
         # batch and how many times in a row we have now seen it.
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
+        # ADR-0168 lever N: did the previous iteration's batch draw a harness plan advance? Such an
+        # identical resend is deterministic PROGRESS, not a stall, so the guard below does not count
+        # it. Only ever True with the opt-in ``plan_autoadvance`` on — byte-identical by default.
+        last_autoadvanced = False
         doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
 
         ctx = ToolContext(
@@ -6714,7 +6718,16 @@ class AgentLoop:
             text_only_completions = 0  # a tool batch breaks a text-only stall (ADR-0033)
             signature = batch_signature(result.tool_calls)
             if signature == last_signature:
-                repeat_count += 1
+                if last_autoadvanced:
+                    # The previous identical batch was answered with a harness plan advance —
+                    # deterministic progress, not a stall. Reset the counter (consume the signal;
+                    # the next execution re-sets it) so the frontier walk to completion is not
+                    # killed by the exact-repeat guard. (ADR-0168 lever N; inert unless the opt-in
+                    # plan_autoadvance is on, which is the only path that sets last_autoadvanced.)
+                    repeat_count = 1
+                    last_autoadvanced = False
+                else:
+                    repeat_count += 1
             else:
                 repeat_count = 1
                 last_signature = signature
@@ -6858,6 +6871,9 @@ class AgentLoop:
                 result.tool_calls, ctx, restrict_to=restrict_now
             )
             turn_tool_results.extend(result_blocks)
+            # ADR-0168 lever N: remember if the harness advanced the plan on this batch, so an
+            # identical resend next iteration reads as progress (not a stall) at the guard.
+            last_autoadvanced = any((b.data or {}).get("autoadvanced") for b in result_blocks)
             self._harvest_skill_invocations(result.tool_calls, result_blocks, skills_invoked)
             # If the whole batch was denied/vetoed, no work happened — refund the unit.
             if self._batch_did_no_work(result_blocks):
@@ -7113,6 +7129,7 @@ class AgentLoop:
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
+        last_autoadvanced = False  # ADR-0168 lever N: see the buffered path
         doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
         last_plan_render: str | None = None  # last plan emitted, so a task_update fires on change
 
@@ -8422,7 +8439,13 @@ class AgentLoop:
                 text_only_completions = 0  # a tool batch breaks a text-only stall (ADR-0033)
                 signature = batch_signature(tool_calls)
                 if signature == last_signature:
-                    repeat_count += 1
+                    if last_autoadvanced:
+                        # Previous identical batch drew a harness plan advance — progress, not a
+                        # stall; don't count it (ADR-0168 lever N; inert unless plan_autoadvance).
+                        repeat_count = 1
+                        last_autoadvanced = False
+                    else:
+                        repeat_count += 1
                 else:
                     repeat_count = 1
                     last_signature = signature
@@ -8591,6 +8614,8 @@ class AgentLoop:
                 self._harvest_skill_invocations(tool_calls, result_blocks, skills_invoked)
                 if self._batch_did_no_work(result_blocks):
                     self._refund_iteration()
+                # ADR-0168 lever N: remember a harness plan advance for the next guard check.
+                last_autoadvanced = any((b.data or {}).get("autoadvanced") for b in result_blocks)
 
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()

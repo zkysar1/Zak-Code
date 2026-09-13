@@ -121,3 +121,74 @@ async def test_an_edit_is_still_an_edit_not_an_advance() -> None:
     result = await UpdatePlanTool().execute({"tasks": ticked}, ctx)
     assert result.output.startswith("Plan updated: 1/3 steps done")
     assert result.data is not None and not result.data.get("autoadvanced")
+
+
+async def test_a_same_title_child_does_not_break_the_advance_or_its_stickiness() -> None:
+    # The measured arm-N shape (ON b3 r3): the 35B nested a parent "Create utils/duration.py" over
+    # a same-named child leaf, then resent the all-pending plan 9x and doom-looped. The carryover
+    # was keyed by title alone, so the parent and child collided; the child leaf inherited the
+    # parent's empty evidence and harness_done=False on every full-replace, and the advance never
+    # stuck (progress frozen at 0/3). The carryover now keys on (title, is-parent), so the child
+    # keeps its own memory. Regression for that collision.
+    ctx, net = _ctx(autoadvance=True)
+    plan = [
+        {
+            "title": "Create utils/duration.py",
+            "subtasks": [{"title": "Create utils/duration.py", "note": "file exists"}],
+        },
+        {"title": "Export parse_duration"},
+        {"title": "Add tests"},
+    ]
+    await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    net.attach_evidence(net.current(), "wrote /tmp/utils/duration.py")
+    r1 = await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    assert r1.data is not None and r1.data.get("autoadvanced")  # fires despite the title collision
+    child = net.tasks[0].children[0]
+    assert child.status == "done" and child.harness_done is True
+    # STICKS and walks the frontier: the next identical resend advances step 2, not 1.1 again.
+    r2 = await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    assert net.tasks[0].children[0].status == "done"  # the collision no longer undoes it
+    assert r2.output.startswith("Advanced step 2")
+
+
+async def test_the_doom_guard_lets_the_harness_walk_a_resent_plan_to_completion() -> None:
+    # Fix (b), ADR-0168 lever N: the doom-loop guard keys on the model's identical tool-call batch,
+    # so a model that resends the same plan trips it. But with the flag ON the harness ADVANCES the
+    # plan on each resend — progress, not a stall — so the guard now resets its counter on a harness
+    # advance and the frontier walks to completion instead of dying mid-walk. Measured (arm N ON b3
+    # r3): the advance fired but the run still doom-looped. Loop-level regression, OFF as control.
+    from tests.test_loop_planning import _judge_ok, _plan_call, _Scripted
+    from zakcode.agent.loop import AgentLoop
+    from zakcode.config import Settings
+    from zakcode.session import Session
+    from zakcode.tools import default_registry
+
+    # Every step carries an outcome but stays pending: each identical resend advances the current
+    # step (the doom-loop shape where the model does the work but won't emit ``status: done``).
+    plan = [
+        {"title": "A", "outcome": "did A"},
+        {"title": "B", "outcome": "did B"},
+        {"title": "C", "outcome": "did C"},
+    ]
+
+    async def walk(flag: bool) -> TaskNetwork:
+        # author, decomposition judge, then resend the identical plan (Scripted repeats the last).
+        provider = _Scripted([_plan_call(plan), _judge_ok(), _plan_call(plan)])
+        session = Session(cwd="/tmp", model="test/model")
+        loop = AgentLoop(
+            provider,
+            default_registry(),
+            session,
+            max_iterations=20,
+            settings=Settings(plan_autoadvance=flag),
+        )
+        await loop.arun_turn("do a three-step thing")
+        return session.task_network
+
+    on = await walk(True)
+    assert on.is_complete()  # the harness walked all three steps done across identical resends
+    assert [t.status for t in on.tasks] == ["done", "done", "done"]
+
+    off = await walk(False)
+    assert not off.is_complete()  # without the reset the walk never happens
+    assert not any(t.title in {"A", "B", "C"} and t.status == "done" for t in off.tasks)

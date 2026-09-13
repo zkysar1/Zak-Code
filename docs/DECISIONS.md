@@ -9276,3 +9276,38 @@ the flag OFF vs ON on `10-rule-in-pyproject` / 35B, `--no-pin`, N=9 per arm inte
 build, the env flag the only difference, so it isolates the advance on top of the first-resend rail. N3
 (the doom-loop rate among triggered runs) is the primary; the aggregate pass gap stays confounded by
 entry-rate basin variance (arm M's lesson), and `verify_rc` guards against a false-completion win.
+
+**Addendum (2026-09-13, arm N measured — the advance FIRES but does not break the loop; N3 fail; the
+two carryover/guard bugs behind it, both fixed; #434).** Arm N ran 18 interleaved runs (`--no-pin`,
+N=9/arm). **OFF: 9 runs, 4 triggered the resend pattern, 3 of those 4 doom-looped (all 3 failing
+verify).** **ON: 9 runs, only 1 triggered, and that one still doom-looped — though it PASSED verify.**
+By the letter **N3 fails** (ON doom-among-triggered 1/1 = 100%, not below OFF's 3/4), while N1/N2/N4/N5/N6
+all pass: N2 is the real positive — the advance fired end to end in situ (`adv=5`, arm row carries
+`plan_autoadvance>=1`), not just in unit tests. The one triggered ON run resent the SAME all-`pending`
+plan nine times in a row and the harness advanced five times, yet the plan never left 0/3 and the run
+doom-looped. Two compounding causes, both **executed-verified** (repro + a distinct-title positive
+control + a loop-level repro), both fixed here:
+
+1. **Same-title parent/child carryover collision.** The 35B nested a parent `Create utils/duration.py`
+   over a *same-titled* child leaf. `replace_from_author` keyed carryover by title alone via
+   `setdefault`, so the parent (visited first) won the key, and the child leaf inherited the parent's
+   empty `evidence` and `harness_done=False` on every full-replace — the advance's stickiness AND the
+   trigger's evidence were both clobbered, so the frontier froze at 0/3. Fix: key carryover on
+   `(title, is-parent)`. The distinct-title control walked to completion in three resends; the title
+   was the only difference.
+2. **The doom-loop guard counts submissions, not progress.** The guard keys on
+   `batch_signature(tool_calls)` — the model's identical resend — with no knowledge that the harness
+   advanced the plan on that call. So even a sticking advance races the exact-repeat guard at
+   `DOOM_LOOP_THRESHOLD=3` and loses. Fix: reset the repeat counter when the previous identical batch
+   drew a harness advance (`last_autoadvanced`), in both the buffered and streaming loops. It is inert
+   unless `plan_autoadvance` is on, so default behavior is byte-identical. A loop repro confirms it:
+   OFF froze at 2/5 incomplete, ON walked to 3/3 complete.
+
+Full suite 3833 passed, mypy clean. The N3 read rests on a single ON trigger — the unpaired-basin
+starvation the pre-registration warned of (ON drew 1/9 triggers vs OFF 4/9), too thin to conclude the
+FIX breaks the loop. That is the **paired arm's** job: pin one workspace, toggle only the flag, run OFF
+then ON back to back so both members of a pair share a basin — the clean N3 test, pre-registered
+separately (`bench/results/plan-paired-10-preregistration.log`). Lesson (rb-10863 extended): a
+deterministic harness action is only as good as the harness state it reads — a title-keyed memory and
+a submission-keyed guard each silently defeated a correct lever on the exact plan shape the weak model
+emits; measure the lever on the model's REAL output, not a clean fixture.
