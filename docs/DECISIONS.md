@@ -9220,3 +9220,36 @@ and inert on every run that never resends (160 of 163).
 * A tool that reports success on a no-op feeds the small-model doom loop: the model has no other way to learn
   that nothing happened. The general rule — compare state across the operation and say "unchanged" — applies to
   any full-replace tool, and the census note is what lets the bench see how often it is needed.
+
+**Addendum (2026-09-13, arm M — measured; and the first-resend fix).** Arm M ran OLD (the #431 build's
+predecessor, no rail) vs NEW (#431) on `10-rule-in-pyproject` / 35B, `--no-pin`, N=9 per arm interleaved in
+threes (`bench/results/plan-unchanged-10-preregistration.log`). **M1 pass** (trigger in 2/9 NEW, 7/9 OLD).
+**M2 pass** — wiring end to end: both triggered NEW runs fired the rail and the dump receipts ([2, 6]) match
+the arm row's `trace_interventions.plan_unchanged` (the census reads the field). **M5 pass** (OLD 0 receipts,
+NEW 0 spurious). **M3 FAILS by the letter:** 2 of 2 fired NEW runs still ended `doom_loop`, exactly OLD's
+7 of 7 among its triggered runs — the rail did not lower the doom-loop rate among runs that entered the
+pattern. **M4/M6 are confounded, not a rail win:** NEW − OLD = +6 passes and doom_loops 7 → 2, but the two
+builds differ only in the receipt on an *already-resent* plan, so the rail cannot cause the entry-rate gap
+(NEW entered the resend pattern in 2/9, OLD in 7/9), and with `--no-pin` the runs are unpaired basins — the
++6 is basin variance in entry rate. The only clean causal comparison is M3, which the rail did not move.
+
+The dumps say why (M-NEW b2/run3, b3/run1): **the 35B does the work but will not flip a step's status to
+`done`.** b3/run1 wrote `utils/duration.py`, edited `utils/__init__.py`, wrote `tests/test_duration.py`, ran
+pytest (31 passing), and fixed a test bug — then resent an all-`pending` plan six times, stating at one point
+"The work is already done … I just need to mark the plan steps complete" before submitting yet another
+all-`pending` plan. The `Plan unchanged` rail fired, was read, was acknowledged, and did not change the
+submission. **A text rail cannot fix a model that will not emit the required action** — which is the
+pre-registered response to an M3 failure: keep the true receipt (a no-op must not report "updated"; that
+correctness stands and is now a census signal), and treat the mechanism as the next lever.
+
+Two follow-ups. **(a) Fire on the FIRST resend (#432).** `replace_from_author` is not idempotent — it
+propagates the model's `outcome` only on the second identical apply — so the #431 state compare saw a change
+on the first resend and the rail fired on the second, letting the loop's generic exact-repeat guard (threshold
+3) race it. The fix compares the model's SUBMISSION across calls (`author_signature`, over the author-set
+fields of the tree it sent) rather than the network state, so it is immune to that carry-over and fires on the
+first resend as pre-registered; the event-count half stays (a delayed ADR-0116 challenge-close resends the same
+tree but advances the plan, and must read "updated"). `state_signature` is removed (its only caller). This is a
+correctness completion and the reliable first-resend detection the next lever needs. **(b) A deterministic
+harness advance (lever N, pre-registered separately):** when the current step has evidence of completion and
+the model resends the plan unchanged, the harness marks the step done and advances — doing what the 35B
+demonstrably will not — instead of asking again in words.

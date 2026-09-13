@@ -179,7 +179,13 @@ nudge is generic ("READ it now… take a DIFFERENT approach"), and the model wri
 `doom_loop` — two of the three before the export the task needs. The trigger is rare (3 of 163 dumped runs,
 `bench/plan_resends.py`) and entirely a receipt defect: the fix is the tool saying "Plan unchanged … nothing was
 updated" with the step-specific way forward, on the first resend, one iteration before the guard. Lever M
-(#431), default-on; arm M measures whether the fired runs still end `doom_loop`.
+(#431), default-on; arm M measured it — and it FAILS to break the loop (M3): both fired NEW runs still
+ended `doom_loop` (2/2, = OLD's 7/7), because the loop's root is not the receipt but that the 35B will not
+flip a step's status to `done` even after doing the work and being told to (b3/run1: wrote the module,
+exported it, wrote tests, 31 passing, then resent an all-`pending` plan six times). The true receipt stands
+as a correctness/census fix; the real fix is a deterministic harness ADVANCE (lever N) — mark the step done
+when it has evidence of completion and the model resends unchanged. A follow-up (#432) fires the rail on the
+FIRST resend (compare the model's submission, not the non-idempotent network state).
 
 ## 5. Levers, ranked
 
