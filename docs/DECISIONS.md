@@ -9120,7 +9120,7 @@ with L4–L6.
   226–320 s for the 27B on 10; re-running those four cells under the survey says whether the listing
   calls and the turns went with it.
 
-**Addendum (2026-09-13).** The wiring gap had a second half. `intervention_coverage.py`'s row reader
+**Addendum (2026-09-13; Zak-Code #428).** The wiring gap had a second half. `intervention_coverage.py`'s row reader
 took a suite file's `tasks` or the file itself as one row, so an arm cell's `runs` — 112 of the 161
 result files, every arm since ADR-0147 — never entered the census at all; #427's per-row field would
 have been read by nothing. The reader now takes `runs` rows too (a synthetic arm-shaped file carrying
