@@ -1,0 +1,71 @@
+06w LARGE-REPO SURVEY-SCALING — PREREGISTRATION
+stamped: 2026-09-13 15:56 UTC  (predictions committed BEFORE any model run)
+task: bench/tasks/06w-largerepo-conventions/ (id 06w-largerepo-conventions)
+model: zds-qwen3.6-35b for BOTH agents via pod 10.0.0.250:9090 (model-fixed; loop is the only variable)
+
+═══ THRUST-5 QUESTION ═══
+Does zakcode's deterministic-context-assembly advantage over Claude Code COMPOUND as a repo grows?
+The parity work (#444/#445) established zakcode 35/36 vs CC 31/36 on qwen-35B, with the one live
+discriminator (06) traced to a single mechanism: zakcode's WORKSPACE SURVEY reliably surfaces the
+convention file in turn 1, where CC must DISCOVER it agentically (#446: the survey, not the fold,
+is load-bearing). Thrust 5 asks whether that surfacing edge WIDENS where CC's agentic discovery is
+weakest: a larger repo, where the convention file is one of many and discovery cost/unreliability
+compounds.
+
+═══ TASK: 06w = 06v + realistic non-doc clutter ═══
+06w differs from base-06 in EXACTLY TWO controlled ways (build_workspace.py):
+  (1) rules relocated CONTRIBUTING.md(root) -> docs/CONVENTIONS.md  [the 06v move; byte-identical text]
+  (2) ~40 NON-DOC decoy files added (src/app/*, src/app/services/*, lib/*, data/*, scripts/*,
+      extra non-plugin tests, root config: pyproject/tox/setup.cfg/Makefile/README/.gitignore)
+No competing docs, no extra plugins -> the sibling-renderer signal (R1-R4 exemplars) and the
+read-selection stay clean; ONLY discovery COST changes. plugins/ + tests/test_plugins.py are copied
+VERBATIM from base-06, so verify.py's R1-R4 correctness bar is byte-identical across 06/06v/06w.
+The prompt is IDENTICAL to base-06 ("add a YAML renderer") — the workspace is the only variable.
+
+═══ TWO POSITIVE CONTROLS (already established, deterministic, no model) ═══
+A. ASSEMBLY-LEVEL (the thrust-5 claim, proven outright for the assembly step):
+   workspace_survey() on the 46-file 06w tree lists docs/CONVENTIONS.md at position 13 of 39,
+   NO truncation (46 << SURVEY_MAX_ENTRIES=150; depth<=3 drops only the deepest services/ tier).
+   => zakcode's context assembly is CLUTTER-IMMUNE: it surfaces the convention file at a fixed
+      position with ZERO model calls, regardless of the 37 surrounding decoys.
+   => CC has NO deterministic equivalent — it must spend model turns discovering docs/CONVENTIONS.md
+      among 46 real files; base-06 showed that discovery lands only 2/6 even at the conventional root.
+B. SOLVABILITY: a correct stdlib-only yaml renderer (+__init__ wiring +parametrize case) makes
+   verify.py PASS on the 06w tree. => a later low score is MODEL failure (adherence/discovery),
+   not a broken task or instrument.
+
+═══ ARMS (N=6 each) & PREDICTIONS ═══
+  zakcode-06w : predict ~5/6  (= zakcode-06v 5/6; survey surfacing is clutter-immune per control A;
+                               the 1/6 residual is model adherence, unchanged by clutter)
+  CC-06v      : predict ~2/6  (docs-move, NO clutter — the deferred 06v control; docs/CONVENTIONS.md
+                               is a less-obvious location than root CONTRIBUTING.md)
+  CC-06w      : predict < CC-06v  (clutter amplifies base-06's discovery-SKIP failure: more files to
+                               wade through -> more likely to just code without discovering the doc)
+
+═══ DECISIVE COMPARISONS ═══
+  PRIMARY (within-CC, carries causal weight, same shape as #444's surfacing intervention):
+    CC-06v  vs  CC-06w  — does added clutter degrade CC's convention discovery?
+  CLUTTER-IMMUNITY (within-zakcode):
+    zakcode-06v(5/6) vs zakcode-06w — does the survey hold under clutter? (control A predicts yes)
+  GAP-WIDENING (the thrust-5 headline, cross-agent):
+    (zakcode-06w - CC-06w)  vs  (zakcode-06v - CC-06v) — does the correctness gap WIDEN with clutter?
+
+═══ FALSIFICATION ═══
+  * zakcode-06w materially < 5/6 despite control A => surfacing is not the whole story (model
+    distracted by the longer listing / reads a decoy); refine, do NOT claim clutter-immunity at
+    the OUTCOME level. Equally valuable — would motivate a convention-aware survey lever.
+  * CC-06w ~= CC-06v => clutter does NOT compound CC's disadvantage; H_compound false at this scale
+    (the >150 regime, where the survey itself truncates, would then be the next probe: 06x).
+
+═══ HONESTY / LIMITS ═══
+  * MODEL-FIXED (both arms on qwen-35B via the pod) — the loop is the only variable, per the #444
+    method that defeated the model confound.
+  * N=6 per arm: a 2/6->0/6 or 5/6->2/6 shift is directional (Fisher ~ marginal); the WITHIN-CC
+    06v->06w contrast carries the causal weight, cross-agent deltas are supporting.
+  * Determinism (distinct output states) is recorded alongside correctness but is config-confounded
+    (zakcode temp0+stableid vs CC as-ships); the correctness gap is the model-fixed loop claim.
+
+═══ SEQUENCING (gate to avoid waste) ═══
+  1. zakcode-06w FIRST (cheapest; tests control-A translation). If it drops << 5/6 -> reassess before
+     spending on CC arms.
+  2. If it holds -> CC-06v then CC-06w to complete the within-CC causal contrast + gap-widening.
