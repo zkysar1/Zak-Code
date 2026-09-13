@@ -643,3 +643,59 @@ async def test_turn_end_allow_never_calls_the_turn_reset(tmp_path: Path) -> None
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "completed"
     assert resets == []
+
+
+# ── harness-issued verification runs are traced (ADR-0166) ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_harness_verify_run_is_noted_as_an_intervention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recipe gate's harness run lands in the trace as ``kind="harness_verify"``.
+
+    Until ADR-0166 it did not: the run fired on 12 of 12 measured runs of one bench task
+    (a library module re-run with ``-m`` after its package imported it, runpy's warning then
+    injected as if it were a defect) and no report counted it, because the bench's census
+    reads ``trace_interventions`` and only a stall was ever noted. The run's shape and exit
+    status ride the note so a census can tell an import-form verify from a script run.
+    """
+    from zakcode.agent.recipe import RecipeCursor
+    from zakcode.messages import ToolResultBlock
+
+    loop = _make_loop(ScriptedProvider([]), tmp_path)
+    target = tmp_path / "hello.py"
+    target.write_text("print('hi')\n", encoding="utf-8")
+    cursor = RecipeCursor(enabled=True)
+    cursor.observe(
+        [ToolCall(id="w", name="write_file", arguments={"path": str(target)})],
+        [ToolResultBlock(tool_use_id="w", output="wrote", data={"path": str(target)})],
+    )
+    assert cursor.needs_verification()
+    monkeypatch.setattr(
+        loop,
+        "_harness_shell_call",
+        lambda command, call_id: ToolCall(id=call_id, name="bash", arguments={"command": command}),
+    )
+
+    async def fake_exec(call: ToolCall, ctx: Any) -> ToolResultBlock:
+        return ToolResultBlock(
+            tool_use_id=call.id,
+            output="hi\n[exit code: 0]",
+            data={"command": call.arguments["command"], "exit_code": 0},
+        )
+
+    monkeypatch.setattr(loop, "_execute_tool_call", fake_exec)
+    ran = await loop._try_harness_verify(cursor, None)  # type: ignore[arg-type]
+    assert ran is not None
+    assert not cursor.needs_verification()
+    notes = [
+        e
+        for e in loop._trace.events
+        if e.kind == "intervention" and e.data.get("kind") == "harness_verify"
+    ]
+    assert len(notes) == 1
+    assert notes[0].data["target"] == "hello.py"
+    assert notes[0].data["form"] == "script"
+    assert notes[0].data["exit_code"] == 0
+    assert notes[0].data["error"] is False
