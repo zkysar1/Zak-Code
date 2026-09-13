@@ -44,10 +44,12 @@ A lever can improve one without the others. The ranking in §5 says which proper
   prompt (mimicking zakcode's fold) and CC goes 2/6 → **5/6**, matching zakcode with a matching 1/6
   residual (CC's a hand-rolled-YAML bug, zakcode's an `import yaml` slip — the shared model/task floor).
   In ARM B, runs that NEVER read the file still passed, so it is SURFACING, not file-reading, that
-  matters. Precise loop divergence: zakcode folds CONTRIBUTING.md (`prompt.py CONVENTION_FILENAMES`);
-  CC's native context-loading auto-reads AGENTS.md/CLAUDE.md but NOT CONTRIBUTING.md. The lever is
-  DETERMINISTIC CONTEXT ASSEMBLY (fold conventions) over AGENTIC DISCOVERY — the one choice that makes
-  zakcode both MORE DETERMINISTIC and BETTER ON SMALL MODELS. Writeup
+  matters. Precise loop divergence: zakcode's deterministic WORKSPACE SURVEY reliably surfaces the
+  convention file into context; CC has no survey and leaves both discovery and the decision to read to
+  the model. (The `CONVENTION_FILENAMES` fold of CONTRIBUTING.md is a SECONDARY, redundant channel —
+  the 06v probe below shows the survey, NOT the fold, is load-bearing.) The lever is DETERMINISTIC
+  CONTEXT ASSEMBLY over AGENTIC DISCOVERY — the one choice that makes zakcode both MORE DETERMINISTIC
+  and BETTER ON SMALL MODELS. Writeup
   `bench/results/06-model-fixed-head-to-head.log`; data `cc-qwen-06-{census,surf}.json`; runner
   `bench/cc_on_pod_census.py`. n=6 (the cross-arm outcome gap is directional, Fisher ~0.24; the
   within-CC A→B intervention carries the causal weight, temperature and loop held fixed).
@@ -60,6 +62,16 @@ A lever can improve one without the others. The ranking in §5 says which proper
   (m01 1v6, m02 4v6, m03 2v2, m04 2v5, m05 1v2, 06 6v6) — more/equally deterministic, now MODEL-FIXED
   (removing the model confound the as-ships verdict carries), though still a CONFIG claim (zakcode runs
   temp0+stable-id; CC exposes no temperature knob).
+* 06v PROBE — the mechanism is the SURVEY, not the fold (2026-09-13,
+  `bench/results/06v-conv-in-docs-preregistration.log`). Move 06's four rules CONTRIBUTING.md →
+  docs/CONVENTIONS.md (a file NEITHER loop folds) and zakcode STILL scores **5/6** — so the CONTRIBUTING
+  fold is NOT load-bearing; the deterministic workspace survey is. The survey LISTS the convention file
+  in the first agent turn (run-1 dump call-0002: path present, rule content absent, 3 Read/Glob/Grep
+  calls issued), which reliably PROMPTS the small model to READ it (rule text in context by call-0003).
+  The advantage GENERALIZES across convention locations. Consequences: broadening `CONVENTION_FILENAMES`
+  is UNNECESSARY (measured — folding CONTENT in 06 vs only LISTING in 06v gave the same 5/6); the 1/6
+  residual is model ADHERENCE (`import yaml` with the rule surfaced), not surfacing, so no
+  context-assembly lever closes it.
 
 ## 3. Inventory — decision points
 
