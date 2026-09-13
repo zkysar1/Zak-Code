@@ -1,0 +1,25 @@
+=== 01:27 UTC 2026-09-13 PRE-REGISTRATION -- ARM G: basin sampling on 06 (35B), survey OFF vs ON, written before launch
+Why: ADR-0164 refused the workspace survey default-on on the strength of ONE pinned basin (E2: 06 0/3 byte-identical
+on the fixed build) against ONE other (ADR-0162: 3/3), and E3 showed the no-survey basin itself moved between
+22:5x (13 turns, emitter 0c2bf7b9) and 00:24 (9 turns, 091a99d3; one 56-turn run). Three identical runs of a
+deterministic pod are one sample of one basin (ADR-0160: repeats are not samples), so N=3 pinned cells cannot
+measure a near-tie task's pass RATE, with or without the survey. Under --no-pin, run_task.py gives every run a
+fresh mkdtemp workspace path, which changes the absolute paths in the system prompt and every tool result -- a
+semantically neutral perturbation. Six such runs per arm sample six basins.
+Cells: 06-plugin-conventions on zds-qwen3.6-35b, --no-pin, ZAKCODE_TEMPERATURE=0, ZAKCODE_STABLE_PROMPT_IDENTITY=1,
+buffered driver, build main@58281bd (prompt.py sha256 bb341dba8feb), zc-01, dumps on. Arms: NOSURVEY (default)
+and SURVEY (ZAKCODE_CONTEXT_WORKSPACE_SURVEY=1), interleaved in threes: NOSURVEY x3, SURVEY x3, NOSURVEY x3,
+SURVEY x3 (12 runs), so pod drift falls on both arms alike.
+Rules:
+  G1 instrument: every run reports a distinct workspace path (the perturbation happened); each arm's 6 runs are
+     judged on verify_rc only. If an arm's 6 outputs are byte-identical despite 6 paths, the path is not a
+     perturbation for that prompt -- record, and the arm's rate is one basin again (no verdict from it).
+  G2 outcome: p0 = NOSURVEY passes /6, p1 = SURVEY passes /6.
+     p1 <= p0 - 3  -> the survey moves 06 toward failing basins; ADR-0164's refusal stands on a sampled basis.
+     |p1 - p0| <= 1 -> 06 is a coin either way and the survey is not the cause; E1 holds in the sampled sense,
+                       E2/E3/E5 held in arm E, E4 is a pinned-mode property the survey does not touch (its block
+                       is deterministic) -> ship the survey default-on (ADR-0164 addendum), stating the coin.
+     p0 - p1 == 2  -> ambiguous at N=6; record; no ship; a later night doubles N.
+  G3 turns: median turns per arm recorded (arm E: 13 -> 9 on 06); explanatory, not a verdict.
+  G4 the 56-turn / 25-turn hole: count runs per arm that exceed 20 turns; explanatory.
+Prediction: p0 = 4-5 of 6 (06 is near-tie on this model tonight); no prediction for p1 -- that is the question.

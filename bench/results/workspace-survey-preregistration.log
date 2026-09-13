@@ -107,3 +107,15 @@ Prediction: none between EL1/EL2; EL3 is the hoped-for reading, not a prediction
   put m04 on a near-tie or it was a pod minute; recorded, not decided.
   FINAL VERDICT (E + E2 + E3): REFUSE default-on, by outcomes (E2-1: 06 0/3 on the fixed build vs 3/3 without,
   back to back) and by E4 (not evaluable). The setting ships opt-in, default off, with the .busy fix. ADR-0164.
+
+=== 01:10 UTC 2026-09-13 MECHANISM CORRECTION, E run 3 (the 25-turn 06 run) -- from its wire dumps
+  Earlier entries call runs E-3 and E3-1 a "RuntimeWarning investigation". The order is the reverse: in E run 3
+  the first warning text of any kind appears at wire message 50 of 56 (call 22 of 25), and it is produced by the
+  model's OWN probe "python -W error::RuntimeWarning -m plugins.yaml_out" (running a package submodule with -m
+  after importing the package manufactures that RuntimeWarning). Calls 14-21 were "-W error" import probes that
+  passed silently. The hole is entered at call 11, right after the first green pytest run (the pytest-clock
+  residual, ADR-0152 class): the model switches into extra verification, probes until a probe misfires, then
+  "fixes" the misfire (warnings.filterwarnings + ImportError stubs, as also seen in E3 run 1's emitter). So a
+  benign-warning annotation on tool results would shorten the tail at most; the lever that fits the entry is a
+  deterministic post-green cap (tests passed, N read-only probes since, no edit improved anything -> finish
+  nudge). Recorded here as the measured shape; not pre-registered tonight.

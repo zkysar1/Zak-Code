@@ -83,8 +83,12 @@ the same log.
 models listed and never opened; ADR-0162 closed it for `CONTRIBUTING.md` by folding the file (model-free,
 13 turns instead of a wrong 17–22). The shape generalises: nothing hands a small model the workspace's
 file survey, its test layout, or conventions living under other names. Claude Code covers this by
-exploring (its first tool call on 06 was `find`); a small model does not explore enough. *Unmeasured
-beyond 06.*
+exploring (its first tool call on 06 was `find`); a small model does not explore enough. **Measured
+beyond 06 (ADR-0165):** the split is by filename, not by "convention". On `10-rule-in-pyproject` the 35B
+opened `pyproject.toml` as its first file in 3/3 runs and wrote the house style unprompted; on
+`09-contract-in-tests` it read the failing test file before its first write in 3/3 runs. A canonically
+named config or test file is read; a prose convention file (`CONTRIBUTING.md` on 06) was not. Folding
+(ADR-0162) is the lever for the prose class; the config and test classes need no fold on this model.
 
 **F3 — Read-before-edit is asked, not enforced.** `edit_file` will edit a file the session never read.
 On this instrument the prompt line suffices (m05 3/3 on both models), so this is a hardening lever:
@@ -153,7 +157,9 @@ descriptions with the 35B (ADR-0158 fourth addendum).
 * The head-to-head instrument is saturated at 12/12. Task shapes worth building next, each chosen
   because a lever above needs it: a rule that lives in `pyproject.toml` or a `Makefile` (L5), a
   contract that only the existing tests state (L4/L6), a workspace large enough that the survey's cap
-  matters (L2).
+  matters (L2). **Built (ADR-0165):** `09-contract-in-tests` (L4/L6) and `10-rule-in-pyproject` (L5),
+  each self-tested to fail on its seed and on every plausible wrong solution; Claude Code passes both
+  in one attempt. Their baselines say which levers still have an outcome to buy — see the ADR.
 * `bench/intervention_coverage.py --census` already lists which deterministic paths the bench never
   exercises; ADR-0154 measured that production leans on exactly those. Any new lever should land with
   a `kind=` intervention so the census can see it fire.

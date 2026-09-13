@@ -1,0 +1,8 @@
+{
+  "id": "09-contract-in-tests",
+  "title": "Add a discount code whose exact rules live only in the existing tests",
+  "max_iterations": 40,
+  "max_cost_usd": 1.0,
+  "verify_timeout_s": 120,
+  "prompt": "This workspace holds a small pricing package. Add a `BULK10` discount code: 10% off for bulk orders. Wire it in so it works like the existing code does."
+}
