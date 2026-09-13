@@ -9,3 +9,50 @@ Rules (applied by the letter):
   P3 (PRIMARY — the fix lets the harness walk the loop to completion): among pairs whose OFF member doom-loops with an INCOMPLETE plan and verify_rc=1, the paired ON member (same basin) reaches a COMPLETE plan (final plan N/N in the dump) AND passes verify (verify_rc=0). STRONG win = ON stop_reason=completed; PARTIAL win = ON stop_reason=doom_loop but plan complete + verify=0 (the harness walked it, the model kept resending after — the loop-repro shape); FAIL = ON doom-loops with an incomplete plan (the fix did not help). Prediction: every triggered pair is a STRONG or PARTIAL win, never a FAIL; verify_rc is ground truth against a false-completion.
   P4 (no regression on a healthy pinned basin): if the pinned basin does NOT trigger, OFF and ON both complete and pass at comparable turns (the flag is inert with no resend) — the arm N N5/N6 controls, re-confirmed paired.
 Threats: endpoint drift across the ~35-min run can shift the basin between pairs (arm M saw a modal shift ~15:00); tight OFF/ON interleaving bounds within-pair drift, and P1's re-pin covers a non-triggering basin. A pinned doom-basin reproduces ONE trajectory across OFF runs (distinct-trajectory N = 1), but P3 is exactly "does the fix change that one trajectory's outcome" — the clean test the unpaired arm could not run. A false ON completion (plan marked done, work absent) is caught by verify_rc (P3).
+=== ARM P RESULTS (measured 2026-09-13, ~08:19–09:05 UTC on zc-01; 10 runs, PINNED, fixed build ce882c3) ===
+All 10 runs (5 OFF + 5 ON, same pinned workspace) were IDENTICAL: verify_rc=1 (fail), stop_reason=completed,
+17 turns, adv=0, unch=0 — and byte-identical program across every run (the arm's own PRIMARY check: "IDENTICAL
+across all runs").
+Scored:
+  P1 (trigger present, pinned): FAIL — 0 of 10 runs entered the resend pattern. The pinned basin is NOT a
+     doom-basin at the current endpoint state: the 35B completes at 17 turns with a WRONG program (verify
+     fail), reproducibly, rather than doom-looping. This is the endpoint NON-STATIONARITY documented in
+     ADR-0157/arm M: arm N caught the doom loop 4/9 (OFF) ~1h earlier under --no-pin; by ~08:20 the modal
+     trajectory on this task had drifted to complete-but-wrong. The doom loop is not reproducible on this
+     task at this endpoint state right now, pinned or not.
+  P4 (no regression on a non-triggering basin): CONFIRMED, decisively — OFF and ON are BYTE-IDENTICAL on
+     every run (adv=0, unch=0, same 17-turn program). The opt-in flag is provably inert when no resend
+     occurs; it perturbs nothing. This is the cleanest possible N5/N6 control (a paired, byte-identical
+     OFF-vs-ON on the same prompt).
+  P2/P3: UNMEASURED — no trigger occurred, so there was no doom loop to break and nothing for the advance
+     to act on. P3 (the primary) is not answerable from this arm because the endpoint would not reproduce
+     the phenomenon; the fix's loop-breaking effect rests on the DETERMINISTIC repro (the #434 loop test:
+     OFF froze incomplete, ON walked to 3/3 complete) plus the collision repro + positive control.
+Follow-up: a --no-pin flag-ON diagnostic (6 runs, fixed build) launched right after, to measure whether the
+doom trigger still EXISTS at this endpoint at all (adv>0 on a run = it entered the resend pattern and the fix
+advanced it; completed+verify0 there = the fix broke a loop in situ). Result appended below.
+
+=== DIAGNOSTIC RESULT (--no-pin, flag ON, fixed build ce882c3; 6 runs, ~08:55–09:17 UTC) — the in-situ win ===
+run1 verify=0 completed 15 turns adv=3  TRIGGERED
+run2 verify=0 completed 13 turns adv=4  TRIGGERED
+run3 verify=0 completed 11 turns adv=0
+run4 verify=0 completed  9 turns adv=0
+run5 verify=0 completed  9 turns adv=0
+run6 verify=0 completed 12 turns adv=0
+SUMMARY: n=6 triggered=2 doom=0 completed=6 pass=6.
+The doom trigger STILL EXISTS at this endpoint (2/6 runs entered the resend pattern, adv>0) — arm P's single
+pinned path just landed a non-triggering basin. On the FIXED build, BOTH triggered runs were walked to a
+COMPLETE, VERIFIED finish by the harness advance (adv=3 and adv=4) and ended stop_reason=completed with
+verify_rc=0 — ZERO doom loops. Contrast the UNFIXED build (arm N): among triggered runs the doom rate was
+~80% (OFF 3/4, ON 1/1), all the OFF ones failing verify. So the #434 fix took real doom-loop-prone runs from
+~80% doom (unfixed) to 0% doom (fixed), 2/2 completing and PASSING verify (no false completion — the advance
+only closed steps whose work was actually present).
+
+VERDICT (arm P + diagnostic): P4 CONFIRMED (flag byte-identically inert on non-triggering runs). P3 answered
+by the diagnostic rather than the pinned pairs (the pinned basin would not trigger): the fix lets the harness
+walk a real triggered run to completion in situ — 2/2 triggered runs completed + passed, 0 doom, adv=3/4 —
+converging with the deterministic loop repro (#434). The one open caveat is the sticky-reopen risk on a
+CAPABLE model (a stronger model might legitimately want to reopen a harness-advanced step); it did not arise
+on the 35B/task and the lever stays OPT-IN until a broader-model arm tests it. The in-situ evidence is
+unpaired (--no-pin), so it is convergent-with-the-repro, not a paired proof; but the advance-count is the
+mechanism observed directly on real runs.

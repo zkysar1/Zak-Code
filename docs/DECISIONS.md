@@ -9311,3 +9311,19 @@ separately (`bench/results/plan-paired-10-preregistration.log`). Lesson (rb-1086
 deterministic harness action is only as good as the harness state it reads — a title-keyed memory and
 a submission-keyed guard each silently defeated a correct lever on the exact plan shape the weak model
 emits; measure the lever on the model's REAL output, not a clean fixture.
+
+**Addendum (2026-09-13, arm P + diagnostic — the fix breaks the loop in situ; #435).** The paired arm P
+(pin one workspace, toggle only the flag) could not run its primary test: the pinned basin would not doom-loop
+(all 10 runs, OFF and ON, completed at 17 turns with a wrong program, byte-identical — the endpoint had drifted
+out of the doom regime arm N caught an hour earlier, the ADR-0157/arm-M non-stationarity). That still bought
+the cleanest possible P4 control: flag-off and flag-on byte-identical on the same prompt, so the opt-in flag is
+provably inert when no resend occurs. To answer P3 without a cooperating pinned basin, a `--no-pin` flag-ON
+diagnostic (6 runs, fixed build) checked whether the trigger exists at all: **2 of 6 runs entered the resend
+pattern (`adv=3`, `adv=4`) and BOTH walked to a COMPLETE, verified finish (`stop_reason=completed`,
+`verify_rc=0`) — zero doom loops**, against ~80% doom among triggered runs on the unfixed build (arm N). The
+#434 fix breaks the doom loop in situ, and the completions passed verify (no false completion — the advance
+only closed steps whose work was present). The evidence is unpaired (`--no-pin`), so it is convergent with the
+deterministic loop repro rather than a paired proof, but the advance count is the mechanism observed directly
+on real runs. Lever N stays **opt-in** pending a broader-model arm: the sticky-reopen risk (a capable model
+legitimately wanting to reopen a harness-advanced step) did not arise on the 35B/task and is the one untested
+downside before a default-on flip.
