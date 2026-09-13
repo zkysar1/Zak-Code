@@ -1,0 +1,86 @@
+================================================================================
+06-plugin-conventions DISCRIMINATION CENSUS — pre-registration
+Stamped: 2026-09-13 12:18 UTC
+================================================================================
+CONTEXT (the campaign pivot). Two saturation signals now stand:
+  (1) the 6-task head-to-head reads 12/12 PARITY (ADR-0161 — cannot discriminate);
+  (2) lever N (default-on) saturates task 10 for the 35B (arm L: BASE 6/6, AUTO 6/6).
+Per the signals directive, a saturated instrument must be reacted to with a
+deterministic testing method: establish whether ANY existing task still
+discriminates for the RESIDENT 35B under SHIPPED defaults, before authoring new
+tasks or shipping further levers whose value cannot otherwise be measured.
+
+Mining all prior zakcode results (per-task, per-model pass rates) shows the 35B is
+3/3 on every task EXCEPT two: 10-rule-in-pyproject (the doom-loop task, now
+saturated by lever N) and 06-plugin-conventions (0/3 in one historical H2H cell,
+3/3 in a clean determinism_arm cell — cross-harness, ambiguous provenance). So 06
+is the one live discriminator candidate not already explained by the doom loop.
+
+WHY 06 IS THE RIGHT PROBE. 06 was purpose-built (ADR-0154) to test the real-work
+slice every other task misses: inferring a codebase's conventions from the
+codebase, not the prompt. The prompt asks only for "a renderer that outputs YAML".
+CONTRIBUTING.md + two sibling renderers state FOUR hard, interpreter-unenforced
+conventions:
+  R1 stdlib-only (import yaml WORKS — pyyaml installed — but is FORBIDDEN);
+  R2 raise PluginError, never a builtin;
+  R3 @register("name") + class in __all__;
+  R4 add a case to the existing parametrized test, don't write a new test fn.
+A complete-but-wrong on 06 = working code that violates a convention — the exact
+failure a "better on small models" lever (or verify_auto) must prove it catches.
+
+QUESTION. Under shipped defaults (lever N default-on, verify_auto OFF), does the
+35B (zds-qwen3.6-35b) discriminate on 06 — i.e., is it < N/N, with the failures
+being complete-but-wrong (stop=completed, verify_rc=1)?
+
+CONFIG. Model zds-qwen3.6-35b; ZAKCODE_TEMPERATURE=0 ZAKCODE_STABLE_PROMPT_IDENTITY=1;
+lever N default-on (shipped); verify_auto OFF (shipped); determinism_arm.py --no-pin
+(6 independent mkdtemp basins); N=6; clean harness (verify_out = verify.py FAIL text
++ stop_reason). Dumps captured to /root/zb-dumps/06CENSUS-35B-shipped (NEVER committed).
+
+DECISION RULE (pre-committed):
+  D1  6/6 pass -> 06 is SATURATED for the 35B under defaults too. The suite has NO
+      live discriminator for the resident model; author a harder task (or raise 06's
+      convention density) before any further small-model lever work.
+  D2  <6/6 with the failing runs stop=completed & verify_rc=1 (COMPLETE-BUT-WRONG)
+      -> DISCRIMINATOR FOUND. 06 becomes the measurement bed. Record which of R1-R4
+      each failure violated (from verify_out). Next: measure whether verify_auto (or
+      a convention-surfacing lever) converts those failures to passes.
+  D3  <6/6 with doom_loop / crash / recipe_stalled -> a NON-complete-but-wrong
+      failure. Diagnose separately (lever N should prevent doom; recipe_stalled is a
+      verify-command/env issue, not a model error) before scoring discrimination.
+RESULT: (pending)
+================================================================================
+
+================================================================================
+RESULT — 2026-09-13 12:27 UTC (src 47376b9e7162; zc-01; --no-pin, N=6, 35B, shipped defaults)
+================================================================================
+CORRECTNESS: 5/6 pass. All 6 stop=completed (no doom loop — lever N holding; no crash).
+  turns [10,9,11,7,9,10] (spread 4); cost $0.0000 (pod).
+  The one failure (run0) is COMPLETE-BUT-WRONG: FAIL "plugins/yaml_out.py imports 'yaml';
+  CONTRIBUTING.md rule 1 is stdlib-only (pyyaml is installed, so this would have RUN)". The R1
+  convention violation — working code that violates an interpreter-unenforced project rule.
+  Passing runs' oracle line: "stdlib-only, registered, exported, round-trips, raises PluginError,
+  covered by the existing parametrized test" — all four conventions (R1-R4) satisfied.
+
+VERDICT: D2 — DISCRIMINATOR CONFIRMED. Under honest --no-pin basin sampling and shipped defaults
+  (lever N on, context_workspace_survey on), 06 discriminates for the resident 35B (5/6), the miss
+  being a clean complete-but-wrong R1 (stdlib-only) violation. 06 is NOT saturated the way task 10
+  is (arm L: 6/6). The suite DOES retain a live correctness discriminator for the resident model.
+  The survey (default-on, ADR-0164) does most of the work (opens CONTRIBUTING.md ~5/6) but does not
+  fully close R1 — 1/6 the 35B still writes 'import yaml'.
+  verify_auto is INERT here: 06 has no Makefile/pyproject.toml, so derive_verify_command returns
+  None. The lever to test is therefore NOT verify_auto but stronger CONVENTION SURFACING
+  (candidate: fold the convention file's CONTENT — not just the survey's file listing — into
+  context, the way README.md is already folded).
+
+DETERMINISM (secondary axis — the campaign's beyond-parity thrust):
+  06 --no-pin 35B produced 6 DISTINCT yaml_out.py states across 6 runs (fully non-identical).
+  CONTRAST: the pinworkspace ARMC-35B run was 3/3 byte-IDENTICAL. So byte-determinism on 06 is
+  PIN-DEPENDENT. Whether the --no-pin spread is GENUINE provider/agent non-determinism or merely
+  INPUT-DRIVEN (fresh mkdtemp workspace path leaking into the survey text -> different context ->
+  different output) is UNRESOLVED. Requires a pin1 (byte-identical-prompt) control — NOT yet run.
+  Cross-agent map (H2H suite, det-spread analyzer): CC (as-ships) is non-deterministic on 3/6 tasks
+  (06 yaml_out.py, m02 report.md, m04 count.md); zakcode (pinworkspace, temp0) is byte-identical on
+  all 6. This SUGGESTS a zakcode determinism advantage but is PIN-CONFOUNDED (zakcode pinned vs CC
+  as-ships) and needs matched-condition measurement before any claim. Recorded as a next thrust.
+================================================================================

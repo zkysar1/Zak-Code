@@ -31,7 +31,12 @@ A lever can improve one without the others. The ranking in §5 says which proper
   before launch). A finding without a measurement is marked *unmeasured*.
 * The head-to-head instrument (ADR-0161): six tasks, Claude Code 2.1.267 on Fable 5.1 vs zakcode on
   `zds-qwen3.6-35b` and `zds-qwen3.8-27b`; with ADR-0162 it reads 12/12 PARITY, so it can no longer
-  discriminate. New tasks are part of the work, not a precondition for it.
+  discriminate on CORRECTNESS. The DETERMINISM axis still discriminates on the SAME six tasks
+  (`head_to_head_determinism.py`, 2026-09-13: 35B-vs-CC ZAKCODE-WINS=3, TIE 3, loses 0) — a saturated
+  parity verdict is not the end of the comparison. New harder tasks remain part of the work, but 06 is
+  already a live correctness discriminator for the 35B (5/6 under --no-pin shipped defaults, 2026-09-13
+  census), the miss a stdlib-only convention violation the model makes WITH the rule in context — a
+  model-adherence limit, not a surfacing gap (the failing run's dump carried the rule; fold already on).
 
 ## 3. Inventory — decision points
 
@@ -258,3 +263,14 @@ descriptions with the 35B (ADR-0158 fourth addendum).
   (ADR-0167).
 * `intervention_coverage.py` reads arm-cell rows (`runs`) since #428; before, only suite files
   (`tasks`) counted, so no `determinism_arm.py` cell — 112 of 161 result files — was in the census.
+* `bench/head_to_head_determinism.py <results-dir>` is the DETERMINISM-axis sibling of
+  `head_to_head.py`: per H2H task it reports each arm's byte-determinism (distinct output-tree states
+  across runs over every agent-visible file, cache excluded) and a cross-agent verdict. Where the
+  parity instrument reads 12/12 (saturated), this discriminates — 35B-vs-CC tally ZAKCODE-WINS=3,
+  TIE-DET=2, TIE-NONDET=1 (2026-09-13): CC as-ships varies output on m01 `finding.md`, m02 `report.md`,
+  m04 `count.md`, 06 `yaml_out.py`; zakcode in its determinism config (pinworkspace+temp0+stable-id) is
+  byte-identical on 5/6. HONEST CAVEAT in the tool header: NOT matched sampling (determinism-config vs
+  as-ships), and under --no-pin zakcode is itself non-deterministic on 06 (workspace path enters the
+  survey — input-driven, not a defect). Tests `tests/test_head_to_head_determinism.py` pin the
+  all-files metric — an earlier *.py-only analyzer scored the m0x `.md` deliverables deterministic
+  while they varied, the false-negative this instrument exists to prevent.
