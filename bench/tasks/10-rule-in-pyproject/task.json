@@ -1,0 +1,8 @@
+{
+  "id": "10-rule-in-pyproject",
+  "title": "Add a helper to a package whose style rules live only in pyproject.toml",
+  "max_iterations": 40,
+  "max_cost_usd": 1.0,
+  "verify_timeout_s": 120,
+  "prompt": "This workspace holds a small text-utilities package. Add `parse_duration(text)` in `utils/duration.py`: it takes a string made of integer counts of hours, minutes and seconds written as `h`, `m`, `s` in that order, each part optional but at least one present (for example `1h30m`, `45s`, `2h`, `90m`, `1h1m1s`), returns the total number of seconds as an int, and raises `ValueError` for anything else (empty text, `30`, `1.5h`, `30m1h`, negative or spaced input). Export it from the package like the existing helper, and add tests for it."
+}
