@@ -21,10 +21,17 @@ discover unaided). Raw: cc-qwen-06w2-largerepo-nohint.json, determinism-zakcode-
   ZAK-06w     5/6    n/a†         adherence x1
   * read-conv computed POST-HOC from each CC run's reads/greps/globs (the cc_on_pod_census
     read_contributing flag keys on "contributing" and is BLIND to the renamed docs/CONVENTIONS.md).
-  † zakcode surfaces the convention by ASSEMBLY (survey+fold into the system prompt), not by a Read
-    tool call, so it emits no reads event — the arm run schema has no reads key at all. Direct
-    evidence instead: the run's `sources` dict CONTAINS docs/CONVENTIONS.md with the full stdlib-only
-    rule text, all 6 runs, hint-invariant. Deterministic surfacing confirmed at the source.
+  † CORRECTION (this footnote's first draft over-claimed — fixed post-merge). The zakcode arm has no
+    `reads` key, so the read-conv 0/6 was a schema artifact, not behavior. But the mechanism is NOT a
+    content-fold and is NOT proven by `sources`: (1) CONVENTION_FILENAMES=("CONTRIBUTING.md",) only, so
+    the RELOCATED docs/CONVENTIONS.md is SURVEYED (listed by name) but NOT folded — base-06's ROOT
+    CONTRIBUTING.md is folded, a DISTINCT mechanism; (2) `sources` is determinism_arm's OUTPUT snapshot
+    (post-run workspace files), so its containing docs/CONVENTIONS.md proves only the file EXISTS.
+    VERIFIED mechanism (06v request dumps /root/zb-dumps/06v-zak run-1+run-2): the 9972-char SYSTEM
+    prompt NAMES docs/CONVENTIONS.md every call/run (survey listing) but does NOT contain its content;
+    "Standard library" first enters the MESSAGES at call-3 — i.e. the deterministic listing points the
+    agent at the file and it READS the content agentically. So zakcode's edge = DETERMINISTIC survey
+    LISTING of the filename (zero model-call, every run) driving a reliable read; CC has no listing.
 
 ═══ VERDICT: hypothesis FALSIFIED ═══
   Removing the README pointer did NOT suppress CC's convention discovery: CC read docs/CONVENTIONS.md
@@ -35,9 +42,11 @@ discover unaided). Raw: cc-qwen-06w2-largerepo-nohint.json, determinism-zakcode-
 ═══ THE SHARPER (partially corrective) FINDING ═══
   The 06-family correctness gap is NOT primarily a discovery-RATE gap — CC's discovery rate is a
   healthy ~4-5/6. It is:
-   (a) a discovery-DETERMINISM gap: zakcode surfaces the convention 6/6 at ZERO model-call cost (proven
-       from `sources`); CC surfaces it ~4-5/6 STOCHASTICALLY via agentic search. This is the real,
-       durable beyond-parity property — determinism & zero-cost of surfacing, NOT that CC "can't find" it.
+   (a) a discovery-DETERMINISM gap: zakcode's system prompt deterministically LISTS the convention
+       FILENAME via the survey (zero model-call, every run — verified in the 06v dumps; see the †
+       footnote), reliably pointing the agent to READ it; CC has no such listing and discovers the
+       filename ~4-5/6 STOCHASTICALLY by exploration. The durable beyond-parity property is the
+       DETERMINISTIC survey listing, NOT a content-fold and NOT that CC "can't find" it.
    (b) swamped at N=6 by the SHARED model residual: once the rule is in context, BOTH agents still fail
        stochastically on stdlib-only ADHERENCE (model imports yaml despite the rule being in-context)
        and on the YAML EMITTER (hand-rolled serializer emits multi-document output). This residual is
