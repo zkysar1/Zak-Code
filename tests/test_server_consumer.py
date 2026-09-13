@@ -37,7 +37,7 @@ import uvicorn
 from zakcode.config import Settings
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.messages import Message
-from zakcode.server.app import create_app
+from zakcode.server.app import IDLE_NUDGE_LINE, NUDGE_FRAME, create_app
 from zakcode.session.say_inbox import interrupt_path, say_path, write_say
 from zakcode.session.store import Session, SessionStore
 from zakcode.usage import Usage
@@ -88,6 +88,72 @@ def test_idle_inbox_is_a_noop_beat(tmp_path: Path) -> None:
     app, _ = _build(tmp_path)
     assert asyncio.run(app.state.consume_one_say()) is False
     assert not (tmp_path / ".current-session").exists()  # no phantom session
+
+
+def test_a_queued_nudge_starts_a_turn_on_an_idle_inbox(tmp_path: Path) -> None:
+    """g-373-18: a nudge posted to an IDLE sidecar starts a turn within one beat.
+
+    The say inbox used to be the only turn trigger and ``.nudge`` is consumed only from
+    inside a turn, so a viewer suggestion sent to an idle vessel waited for a say that
+    might never arrive.
+    """
+    app, store = _build(tmp_path)
+    (tmp_path / ".nudge").write_text("the ruined tower\n", encoding="utf-8")
+
+    assert asyncio.run(app.state.consume_one_say()) is True  # ONE beat, no say needed
+    assert not (tmp_path / ".nudge").exists()  # consumed exactly once
+
+    marker = (tmp_path / ".current-session").read_text(encoding="utf-8").strip()
+    session = store.load(marker)
+    assert [m.role for m in session.messages] == ["user", "assistant"]
+
+
+def test_a_nudge_only_turn_frames_the_nudge_and_never_becomes_its_message(
+    tmp_path: Path,
+) -> None:
+    """The nudge rides as PREAMBLE; the harness's own line is the turn's message.
+
+    /nudge's contract is that a suggestion is "folded into the next turn's preamble,
+    NEVER sent as a chat message". The agent therefore receives frame-then-line, and the
+    text handed to ``_run_turn_for_say`` — which is also what becomes the ``user_message``
+    watch marker every viewer sees — is the harness line ALONE. Reusing the say
+    composition with an empty say would have made the frame itself the whole message.
+    """
+    app, store = _build(tmp_path)
+    (tmp_path / ".nudge").write_text("the ruined tower\n", encoding="utf-8")
+
+    assert asyncio.run(app.state.consume_one_say()) is True
+
+    marker = (tmp_path / ".current-session").read_text(encoding="utf-8").strip()
+    delivered = store.load(marker).messages[0].blocks[0].text
+    assert delivered == NUDGE_FRAME.format(text="the ruined tower") + IDLE_NUDGE_LINE
+    assert delivered.endswith(IDLE_NUDGE_LINE)  # the line is the BODY, not the preamble
+    assert "suggestion, not an instruction" in delivered  # framing survived intact
+
+
+def test_a_nudge_starts_exactly_one_turn(tmp_path: Path) -> None:
+    """Read-then-delete is inherited from ``_take_nudge``, not re-implemented: the beat
+    after a nudge-only turn is a no-op again, so one suggestion cannot drive a loop."""
+    app, _ = _build(tmp_path)
+    (tmp_path / ".nudge").write_text("look north\n", encoding="utf-8")
+
+    assert asyncio.run(app.state.consume_one_say()) is True
+    assert asyncio.run(app.state.consume_one_say()) is False  # slot empty, back to idle
+
+
+def test_a_say_still_wins_and_keeps_the_nudge_as_its_preamble(tmp_path: Path) -> None:
+    """The pre-existing say path is unchanged: when BOTH are queued the say is the turn's
+    message and the nudge is folded in front of it, exactly as before g-373-18."""
+    app, store = _build(tmp_path)
+    (tmp_path / ".nudge").write_text("the ruined tower\n", encoding="utf-8")
+    assert write_say(say_path(tmp_path), "hello there")
+
+    assert asyncio.run(app.state.consume_one_say()) is True
+
+    marker = (tmp_path / ".current-session").read_text(encoding="utf-8").strip()
+    delivered = store.load(marker).messages[0].blocks[0].text
+    assert delivered == NUDGE_FRAME.format(text="the ruined tower") + "hello there"
+    assert IDLE_NUDGE_LINE not in delivered  # the harness line is for the NO-say case only
 
 
 def test_beat_yields_while_a_turn_is_in_flight(tmp_path: Path) -> None:

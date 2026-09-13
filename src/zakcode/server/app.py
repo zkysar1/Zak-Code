@@ -590,6 +590,18 @@ NUDGE_FRAME = (
     "because of this text.\n\n"
 )
 
+#: The turn body used when a nudge is queued but the say inbox is EMPTY (g-373-18).
+#: A nudge alone could not start a turn — only a say could — so a suggestion sent to an
+#: idle sidecar waited indefinitely. This is the harness's own line, deliberately
+#: content-free: ``NUDGE_FRAME`` ends in a blank line and is authored as a PREAMBLE that
+#: wraps something else, so reusing it with an empty say would make the frame itself the
+#: turn's message — exactly what /nudge's contract forbids ("folded into the next turn's
+#: preamble, NEVER sent as a chat message"). Supplying a body keeps the viewer's text in
+#: the position the frame was designed to wrap. It must not instruct anything specific:
+#: the nudge is "a suggestion, not an instruction", and a directive harness line would
+#: launder it into one.
+IDLE_NUDGE_LINE = "Continue with your current goals."
+
 #: Defense-in-depth length cap on a queued user say (the watch/talk unification).
 #: Larger than a nudge — a say is a real conversational message, not a suggestion —
 #: but still bounded; the gateway is the real sanitization + ownership boundary.
@@ -1957,6 +1969,26 @@ def create_app(
             target.unlink()
         return NUDGE_FRAME.format(text=queued) if queued else ""
 
+    def _nudge_pending() -> bool:
+        """Whether a viewer nudge is queued, WITHOUT consuming it (g-373-18).
+
+        Deliberately a peek rather than a take: the turn is started by handing
+        ``_run_turn_for_say`` the harness's line, and that function folds the nudge in
+        itself via ``_take_nudge()``, so consuming here would delete the slot before the
+        one call site that frames it. Exactly-once therefore still lives in exactly one
+        place (``_take_nudge``'s read-then-delete) and is inherited, not re-implemented.
+
+        If the slot vanishes between this peek and that take, ``_take_nudge`` returns ""
+        and the turn simply runs with the harness line alone — a benign no-op turn, not a
+        failure. There is exactly one consumer of the slot by construction, so that race
+        needs a second writer to occur at all.
+        """
+        target = Path(resolved_settings.workspace_root) / ".nudge"
+        try:
+            return bool(target.read_text(encoding="utf-8").strip())
+        except OSError:  # includes FileNotFoundError — nothing pending
+            return False
+
     async def _run_turn_for_say(text: str) -> None:
         sid = _current_session_id()
         session: Session | None = None
@@ -2060,16 +2092,27 @@ def create_app(
                 inflight.discard(session.id)
 
     async def _consume_one_say() -> bool:
-        """One consumer beat: run a turn if a say is waiting and nothing is in flight.
+        """One consumer beat: run a turn if a say OR a nudge is waiting and nothing is
+        in flight.
 
         "In flight" includes a turn running in ANOTHER process on this workspace (a Mind
         runner's REPL, say): its busy marker owns the inbox (ADR-0060) and this beat yields.
+
+        A QUEUED NUDGE IS ALSO A REASON TO START A TURN (g-373-18). The say inbox used to
+        be the only trigger, and ``.nudge`` is consumed only from INSIDE a turn, so a
+        suggestion sent to an idle sidecar waited for a say that might never come. The
+        nudge stays a PREAMBLE either way: the turn's message is the harness's own line,
+        and ``_run_turn_for_say`` folds the frame in front of it exactly as it does for a
+        real say — so the nudge never becomes the turn's message, and never becomes the
+        ``user_message`` watch marker viewers see.
         """
         if inflight or busy_elsewhere(busy_path(resolved_settings.workspace_root)):
             return False
         text = read_say(say_path(resolved_settings.workspace_root))
         if text is None:
-            return False
+            if not _nudge_pending():
+                return False
+            text = IDLE_NUDGE_LINE
         await _run_turn_for_say(text)
         return True
 
