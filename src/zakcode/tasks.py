@@ -404,9 +404,15 @@ class TaskNetwork(BaseModel):
         start (``-> in_progress``) and close, and the (re)authoring itself when the set of
         titles changed, are logged. Returns :meth:`normalize`'s advisories.
         """
-        prior_by_title: dict[str, Task] = {}
+        # Keyed by (title, is-parent), not title alone: a weak model resends a plan that nests a
+        # parent over a same-titled child (measured, arm N ON b3 r3: a 35B nested "Create
+        # utils/duration.py" over a same-named leaf, resent it 9x, doom-looped). Title-alone
+        # collided the two, ``setdefault`` kept the parent, and the child leaf then inherited the
+        # PARENT's (empty) evidence and ``harness_done=False`` on every full-replace — so lever N's
+        # advance never stuck and the frontier never moved. The leaf/parent bit separates them.
+        prior_by_title: dict[tuple[str, bool], Task] = {}
         for task in self._iter():
-            prior_by_title.setdefault(self._title_key(task.title), task)
+            prior_by_title.setdefault((self._title_key(task.title), bool(task.children)), task)
         prior_titles = [self._title_key(t.title) for t in self._iter()]
         prior_leaves = self.leaves()
         prior_anchors = [t for t in prior_leaves if t.anchor]
@@ -448,7 +454,7 @@ class TaskNetwork(BaseModel):
                 )
         challenged: Task | None = None
         for task in self._iter():
-            prior = prior_by_title.get(self._title_key(task.title))
+            prior = prior_by_title.get((self._title_key(task.title), bool(task.children)))
             if prior is None:
                 if not task.children and task.status in _TERMINAL:
                     tail = f" — {task.outcome}" if task.outcome else ""
