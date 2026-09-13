@@ -557,6 +557,13 @@ class Settings(BaseSettings):
             "Shell command that verifies the workspace (tests/lint); gates completion after edits."
         ),
     )
+    verify_auto: bool = Field(
+        default=False,
+        description=(
+            "When verify_command is unset, derive it from what the workspace declares: a "
+            "Makefile's lint/check/test targets, else a pyproject ruff config (review lever L4)."
+        ),
+    )
     # Plan-first gate (R5, opt-in, OFF by default). When true, the harness will not run a MUTATING
     # tool (write/edit/shell) until the model has laid out a plan with update_plan — "plan before
     # you act", the harness-enforced-planning pole. Read-only investigation is never gated, and the

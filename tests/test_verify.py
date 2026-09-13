@@ -11,6 +11,7 @@ from zakcode.agent.verify import (
     VerificationGate,
     _commands_match,
     _exit_status_is_the_commands,
+    derive_verify_command,
 )
 from zakcode.config import PermissionTier, Settings
 from zakcode.messages import ToolResultBlock
@@ -226,3 +227,53 @@ def test_a_piped_verify_run_does_not_pass_the_gate_on_the_pipes_exit_code() -> N
     assert gate("uv run poe check", False).passed is True
     assert gate("uv run poe check", False).last_output == ""
     assert gate("uv run poe check", True).passed is False
+
+
+# ── review lever L4: the derived command ─────────────────────────────────────
+
+
+def test_derive_reads_makefile_lint_and_test_recipes(tmp_path):
+    (tmp_path / "Makefile").write_text(
+        ".PHONY: lint test\n\nlint:\n\tpython -m ruff check .\n\ntest:\n\tpython -m pytest\n"
+    )
+    assert derive_verify_command(tmp_path) == "python -m ruff check . && python -m pytest"
+
+
+def test_derive_falls_back_to_make_for_a_multiline_or_make_syntax_recipe(tmp_path):
+    (tmp_path / "Makefile").write_text(
+        "lint:\n\t$(PYTHON) -m ruff check .\n\ntest:\n\tpython -m pytest\n\tpython -m mypy src\n"
+    )
+    assert derive_verify_command(tmp_path) == "make lint && make test"
+
+
+def test_derive_reads_pyproject_ruff_without_a_makefile(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 79\n")
+    assert derive_verify_command(tmp_path) == "python -m ruff check ."
+
+
+def test_derive_is_none_when_the_project_declares_nothing(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    assert derive_verify_command(tmp_path) is None
+    assert derive_verify_command(tmp_path / "missing") is None
+
+
+def test_verify_auto_wires_the_declared_command_into_the_loop(tmp_path) -> None:
+    (tmp_path / "Makefile").write_text("lint:\n\tpython -m ruff check .\n")
+    bash = _FakeBash(ok=True)
+
+    def loop_with(**settings: Any) -> AgentLoop:
+        return AgentLoop(
+            _Scripted([]),
+            _registry(bash),
+            Session(cwd=str(tmp_path), model="t/m"),
+            settings=Settings(**settings),
+            max_iterations=20,
+            workspace_root=tmp_path,
+        )
+
+    assert loop_with(verify_command=None, verify_auto=False)._verify_command() is None
+    assert loop_with(verify_command=None, verify_auto=True)._verify_command() == (
+        "python -m ruff check ."
+    )
+    # A configured command always wins over the derived one.
+    assert loop_with(verify_command="check", verify_auto=True)._verify_command() == "check"

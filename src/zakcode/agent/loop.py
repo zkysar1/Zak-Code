@@ -123,7 +123,7 @@ from zakcode.agent.recipe import (
 )
 from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
-from zakcode.agent.verify import VerificationGate
+from zakcode.agent.verify import VerificationGate, derive_verify_command
 from zakcode.build_info import install_changed, running_build
 from zakcode.config import PermissionTier, Settings, load_settings, zakcode_home
 from zakcode.events import (
@@ -4757,6 +4757,14 @@ class AgentLoop:
         )
         return call, block
 
+    def _verify_command(self) -> str | None:
+        """The project-verifier gate's command: configured, else derived under ``verify_auto``."""
+        if self.settings.verify_command:
+            return self.settings.verify_command
+        if self.settings.verify_auto:
+            return derive_verify_command(self.workspace_root)
+        return None
+
     def _readonly_tool_names(self) -> list[str]:
         """Active tool names at the ``READ_ONLY`` tier — the set allowed during a stuck
         NARROW step so the model is forced to investigate before mutating again.
@@ -5748,10 +5756,9 @@ class AgentLoop:
         )
         # Project-verifier gate (R1): inert unless a verify command is configured; arms only when
         # this turn actually changes code, then requires the project's checks to pass before
-        # finishing. Domain-agnostic — the engine never guesses the command.
-        verify = VerificationGate(
-            command=self.settings.verify_command, attempt_cap=self.attempt_cap
-        )
+        # finishing. Domain-agnostic — the engine never guesses the command; with ``verify_auto``
+        # it reads the one the workspace declares (review lever L4).
+        verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
         stuck = StuckTracker()
@@ -7171,10 +7178,9 @@ class AgentLoop:
         )
         # Project-verifier gate (R1): inert unless a verify command is configured; arms only when
         # this turn actually changes code, then requires the project's checks to pass before
-        # finishing. Domain-agnostic — the engine never guesses the command.
-        verify = VerificationGate(
-            command=self.settings.verify_command, attempt_cap=self.attempt_cap
-        )
+        # finishing. Domain-agnostic — the engine never guesses the command; with ``verify_auto``
+        # it reads the one the workspace declares (review lever L4).
+        verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
         stuck = StuckTracker()
         restrict_readonly_next = False
