@@ -4687,6 +4687,29 @@ class AgentLoop:
         block = await self._execute_tool_call(call, ctx)
         cursor.harness_runs += 1
         cursor.observe([call], [block])
+        # A harness-issued run is a decision the loop made on the model's behalf, and the one
+        # the bench's intervention census could not see until ADR-0166: it fired on 12 of 12
+        # measured runs of one task (a library module re-run with ``-m`` after its package had
+        # imported it, runpy's warning injected below as if it were a defect) and no report
+        # counted it. The kind lands in ``trace_interventions`` like every other gate.
+        data = block.data if isinstance(block.data, dict) else {}
+        self._note(
+            "intervention",
+            f"harness ran {os.path.basename(target)} to verify it",
+            kind="harness_verify",
+            target=os.path.basename(target),
+            form=(
+                "tests"
+                if _runs_test_suite(command)
+                else "import"
+                if '-c "import ' in command
+                else "module"
+                if " -m " in command
+                else "script"
+            ),
+            exit_code=data.get("exit_code"),
+            error=block.is_error,
+        )
         # block.output is real shell stdout (attacker-influenceable) folded into a TRUSTED
         # user message — defang protocol/template sentinels so it can't forge a frame in the
         # next text-protocol turn. (audit2 #2)
@@ -4718,6 +4741,14 @@ class AgentLoop:
         block = await self._execute_tool_call(call, ctx)
         verify.harness_runs += 1
         verify.observe([call], [block])
+        data = block.data if isinstance(block.data, dict) else {}
+        self._note(
+            "intervention",
+            "harness ran the project checks to verify the turn",
+            kind="project_verify",
+            exit_code=data.get("exit_code"),
+            error=block.is_error,
+        )
         # Real shell stdout folded into a TRUSTED user message — defang protocol/template
         # sentinels so it cannot forge a frame in the next text-protocol turn. (audit2 #2)
         safe_output = defang_untrusted(block.output)
