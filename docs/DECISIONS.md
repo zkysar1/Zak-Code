@@ -8806,6 +8806,31 @@ model cannot skip (L4/L6: a round-trip or project test the loop runs), not a bet
 passed the model's own pytest run and failed only the verifier. Instrument: `determinism_arm.py` now
 captures every small text file in `sources`, so the next m04-style digest difference is inspectable.
 
+**Addendum (2026-09-13, arm G — basin sampling): the survey ships default-on.** The refusal
+above rested on one pinned basin against one other, and E3 showed the no-survey basin itself moving with the
+pod's state. Three identical runs of a deterministic pod are one sample of one basin (ADR-0160), so the
+question "does the survey hurt 06's outcome?" was not measurable by pinned repeats at all. Arm G
+(`bench/results/basin-sampling-preregistration.log`, rules G1–G4 stamped before launch) changed the
+instrument: under `--no-pin` every run gets a fresh `mkdtemp` workspace path, a semantically neutral
+perturbation of every prompt and tool result, and six runs per arm sample six basins — twelve runs, twelve
+distinct paths, twelve distinct outputs, survey off and on interleaved in threes.
+
+| arm | verify | turns | median | runs > 20 turns | opened `CONTRIBUTING.md` |
+|---|---|---|---|---|---|
+| no survey | **5/6** | 13, 12, 25, 40, 23, 13 | 18 | 3 | 1 of 6 |
+| survey | **6/6** | 21, 10, 10, 10, 13, 10 | 10 | 1 | 5 of 6 |
+
+G2 by the letter (a difference of at most one basin → the survey is not the cause of 06's fragility; E1 holds
+in the sampled sense, E2/E3/E5 held in arm E, E4 is a pinned-mode property the survey does not touch): **ship
+default-on, stating the coin.** Measured beside the letter: the survey passed one more basin, halved the
+median turns and cut the long runs from three to one, because the listing names `CONTRIBUTING.md` and the
+model then opens it. The one no-survey failure is the ADR-0161 `import yaml` class with the rule text folded
+in the prompt since ADR-0162 — the fold is not a guarantee either; it is basin-dependent. What survives of the
+refusal: a prompt lever is a basin move (one line moved one basin from pass to fail), and F9's correction is
+that basin moves are scored as **rates over sampled basins**, never as N pinned repeats. `context_workspace_survey`
+now defaults to true (`ZAKCODE_CONTEXT_WORKSPACE_SURVEY=0` opts out); on a large workspace the block is
+capped at 150 entries and depth 3, and it is snapshotted once per session so the cached prefix does not move.
+
 ## ADR-0165: two task shapes the review could not measure — contract-in-tests and rule-in-pyproject — with their baselines
 
 **Date:** 2026-09-13 · **Status:** Accepted · **Pre-registration:** `bench/results/new-tasks-baseline-preregistration.log`

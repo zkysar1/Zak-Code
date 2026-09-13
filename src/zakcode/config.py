@@ -334,10 +334,12 @@ class Settings(BaseSettings):
     )
     # Turn-1 workspace survey: a capped, ignore-aware listing of the workspace folded into the
     # project context once per session (review lever L2, ADR-0164). A small model otherwise
-    # spends its first tool calls on list_dir (ADR-0161). Default off until the pre-registered
-    # arm reports; the bench turns it on per cell.
+    # spends its first tool calls on list_dir (ADR-0161). Default ON since the ADR-0164 addendum:
+    # sampled over six workspace basins on the 35B the survey passed 6/6 vs 5/6 without it, halved
+    # the median turns (18 -> 10) and made the model open the convention file it otherwise skips
+    # (5/6 vs 1/6); the one pinned basin that refused it (0/3) was one basin. Set false to opt out.
     context_workspace_survey: bool = Field(
-        default=False,
+        default=True,
         description="Fold a capped, ignore-aware workspace file survey into the project context.",
     )
     # Render the mind's behavioral RULES as a COMPACT INDEX (one line per rule: name + summary +

@@ -23,3 +23,22 @@ Rules:
   G3 turns: median turns per arm recorded (arm E: 13 -> 9 on 06); explanatory, not a verdict.
   G4 the 56-turn / 25-turn hole: count runs per arm that exceed 20 turns; explanatory.
 Prediction: p0 = 4-5 of 6 (06 is near-tie on this model tonight); no prediction for p1 -- that is the question.
+
+=== 01:57 UTC 2026-09-13 ARM G RESULTS (ran 01:27:18-01:55:28; 12 runs, 12 distinct workspace paths, dumps on)
+  NOSURVEY: verify 5/6, turns [13, 12, 25, 40, 23, 13] median 18, >20 turns 3/6, wall [115.1, 103.7, 163.6, 335.8, 186.1,
+     90.2] s, 6 distinct output states. The failure (b2 run 3, 13 turns) is "plugins/yaml_out.py imports 'yaml'" --
+     the ADR-0161 GAP class, with the CONTRIBUTING.md rule text folded in the prompt since ADR-0162: the fold is
+     not a guarantee either; it is basin-dependent. Dumps: CONTRIBUTING.md opened in 1/6 runs.
+  SURVEY: verify 6/6, turns [21, 10, 10, 10, 13, 10] median 10, >20 turns 1/6, wall [219.8, 88.0, 97.8, 76.0, 123.5,
+     90.1] s, 6 distinct output states. Dumps: CONTRIBUTING.md opened in 5/6 runs (the listing names it; the model
+     opens it; the emitter it then writes round-trips).
+  G1 holds (6 paths, 6 states per arm: the path is a perturbation for this prompt; both arms sampled six basins).
+  G2: p0 = 5, p1 = 6, |p1 - p0| = 1 -> by the letter: 06 is a coin either way and the survey is not the cause;
+     E1 holds in the sampled sense; E2/E3/E5 held in arm E; E4 is a pinned-mode property the survey does not touch
+     -> SHIP DEFAULT-ON (ADR-0164 addendum), stating the coin. Measured beside the letter: the survey did not merely
+     fail to hurt -- it passed one more basin, halved the median turns (18 -> 10), and cut the >20-turn runs from
+     3 to 1, because it makes the model open the convention file it otherwise skips (5/6 vs 1/6).
+  G3: median turns 18 -> 10 (arm E, pinned: 13 -> 9).   G4: >20-turn runs 3/6 -> 1/6.
+  Prediction p0 = 4-5 held (5). E2's 0/3 (ADR-0164) was ONE pinned basin; sampled, the survey helps on 06.
+  Reading of ADR-0164 that survives: a prompt lever IS a basin move (one line moved one basin from pass to fail);
+  the correction is that basin moves must be scored as RATES over sampled basins, never as N pinned repeats.

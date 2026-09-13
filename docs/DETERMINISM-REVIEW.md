@@ -134,13 +134,18 @@ better prompt. The pod adds its own residual on byte-identical prompts (02 7 vs 
 which the no-survey control in the same log measured directly: without the survey, 06 flipped within its own
 cell too (56 / 9 / 9 turns, a third emitter where ADR-0162 had 13 / 13 / 13) while m04 reproduced ADR-0162's
 bytes exactly — the pod's instability is confined to the near-tie task, and E4 was not evaluable that night.
+The measurement that settled it (ADR-0164 addendum): three identical runs of a deterministic pod are one
+sample of one basin, so a basin move is scored as a **rate over sampled basins** — `--no-pin` gives every run a
+fresh workspace path, six runs per arm; sampled that way the survey passed 6/6 against 5/6 without it and
+halved the median turns, so it shipped default-on. The rule stands: score prompt levers on outcomes, over
+sampled basins, on the near-tie tasks.
 
 ## 5. Levers, ranked
 
 | # | Lever | Property (§1) | Seam | How it is measured | Status |
 |---|---|---|---|---|---|
 | L1 | **One turn driver** (or a standing driver-parity cell in the bench) | reproducible, enforced | `loop.py` `_run_turn` / `astream_turn` | ARM D byte identity; then the full suite + bench byte identity as the refactor's control | ARM D running |
-| L2 | **Turn-1 workspace survey** — capped, ignore-aware file tree folded into the dynamic tier | model-free | `prompt.py` `_build_context` | turns and wall time on 06/02 (same-trajectory latency arm, ADR-0160's design); outcomes must hold; bytes will change | **measured (ADR-0164): refused default-on** — turns fell (06 13→9, 02 7→6, m01 4→3) but 06's outcome flipped 3/3→0/3 on a one-line change to the listing; shipped as the opt-in `context_workspace_survey` (F9) |
+| L2 | **Turn-1 workspace survey** — capped, ignore-aware file tree folded into the dynamic tier | model-free | `prompt.py` `_build_context` | turns and wall time on 06/02 (same-trajectory latency arm, ADR-0160's design); outcomes must hold; bytes will change | **shipped default-on (ADR-0164 addendum)** — refused first on one pinned basin (06 3/3→0/3 on a one-line listing change), then measured by basin sampling over six unpinned paths: 6/6 vs 5/6, median turns 18→10, long runs 3→1, `CONTRIBUTING.md` opened 5/6 vs 1/6 (F9) |
 | L3 | **`edit_file` refuses a path not read this session** (a write of the same path counts) | enforced | pre-execution veto seam (`loop.py:4292` class) — in both drivers | no regression on m01–m05/06/02; refusal counter in the results JSON | after L1 |
 | L4 | **Auto-derived `verify_command`** (detect `pytest`/`pyproject`/`Makefile test`) | model-free | `VerificationGate` construction | tasks whose tests encode the contract; needs at least one new task of that shape | needs tasks |
 | L5 | **More convention filenames** (`pyproject.toml [tool.*]`, `Makefile` targets, `.editorconfig`) | model-free | `CONVENTION_FILENAMES` | needs a task whose rule lives in such a file | needs tasks |
