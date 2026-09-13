@@ -65,6 +65,10 @@ STOP_TARGET_MODE_FILENAME = "stop-target-mode"
 #: The signal name the framework's ``session-signal-set.sh`` accepts.
 STOP_REQUESTED_SIGNAL = "stop-requested"
 
+#: The framework's own EXIT PERMIT, written under the agent's session dir only after
+#: the graceful stop's obligations complete (consolidate, hand off, set target mode).
+STOP_LOOP_SIGNAL = "stop-loop"
+
 #: Where a stopped run lands: user-directed, reconciliation-ready, loop off.
 DEFAULT_STOP_TARGET_MODE = "assistant"
 
@@ -75,9 +79,11 @@ __all__ = [
     "DEFAULT_STOP_TARGET_MODE",
     "SIGNAL_SET_SCRIPT",
     "SIGNAL_SET_TIMEOUT_S",
+    "STOP_LOOP_SIGNAL",
     "STOP_REQUESTED_SIGNAL",
     "STOP_TARGET_MODE_FILENAME",
     "framework_session_dir",
+    "framework_stop_complete",
     "request_framework_stop",
 ]
 
@@ -137,6 +143,28 @@ def request_framework_stop(
 
     logger.info("framework stop requested for agent %s (target mode %s)", agent, target_mode)
     return True
+
+
+def framework_stop_complete(workspace_root: str | os.PathLike[str], agent: str) -> bool:
+    """True once the Mind has signed its OWN stop off.
+
+    ``stop-loop`` is the framework's exit permit: a SINGLE writer sets it, and only
+    after the graceful stop's obligations have run. So it cannot fire early, which is
+    exactly the property a completion waiter must key on (guard-5809) -- unlike
+    ``stop-requested``, which this process wrote itself and which is therefore true
+    the instant the ask is made rather than when the work is done.
+
+    Absent means "not yet", NEVER "failed": absence is indistinguishable from a mind
+    that is still consolidating, so the caller bounds the wait with its own grace
+    instead of reading anything into a False here. Fail-open on OSError for the same
+    reason -- an unreadable session dir must not hold a paid vessel open.
+    """
+    if not agent:
+        return False
+    try:
+        return (framework_session_dir(workspace_root, agent) / STOP_LOOP_SIGNAL).exists()
+    except OSError:
+        return False
 
 
 def _revert_target_mode(mode_file: Path) -> None:
