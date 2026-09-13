@@ -9119,3 +9119,10 @@ with L4–L6.
   survey shipping default-on (#421) and recorded 2–3 opening listing calls per run and 15 turns /
   226–320 s for the 27B on 10; re-running those four cells under the survey says whether the listing
   calls and the turns went with it.
+
+**Addendum (2026-09-13; Zak-Code #428).** The wiring gap had a second half. `intervention_coverage.py`'s row reader
+took a suite file's `tasks` or the file itself as one row, so an arm cell's `runs` — 112 of the 161
+result files, every arm since ADR-0147 — never entered the census at all; #427's per-row field would
+have been read by nothing. The reader now takes `runs` rows too (a synthetic arm-shaped file carrying
+`harness_verify` is counted; the real census is unchanged until an arm row records a kind). Arm rows
+carry no `knobs`, so the ratchet's signature filter still excludes them by design.
