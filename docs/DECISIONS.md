@@ -9040,3 +9040,17 @@ green pytest credits the gate and the turn ends on its summary.
 - The measurement that shipped #422 would have passed it on the letter of its own rules while every run
   ended in a stall the rules did not score. A rule set for a harness change must score the **stop
   reason** and the **number of harness runs per turn**, not only passes and turns (arm I does).
+
+**Addendum (2026-09-13; Zak-Code #425, #426).** Two follow-ups. (1) The harness run is now an intervention the
+bench census can count: `_try_harness_verify` notes `kind="harness_verify"` (target, command form, exit
+code, error flag) and `_try_project_verify` notes `kind="project_verify"` — before #425 the loop's one
+decision on the model's behalf emitted no trace note, which is why no run report in arms G–I counted the
+injection this ADR found in 12 of 12 runs. The form classifier uses the recipe's per-segment runner-head
+detection, not a substring test (pytest's own `tmp_path` contains "pytest"). (2) Review lever L7 (repair
+rather than bounce a truncated `write_file`) measured at its "measure first" step:
+`bench/undecodable_bounces.py` over every wire dump on zc-01 — 127 runs, 1,817 tool calls, 43 cells on
+both models — finds **zero** bounces (positive control: 397 shell results carry `[exit code:`). ADR-0081's
+trigger was a 27B writing a long module in one call on coach; no bench task is that size, so the lever has
+no trigger to measure here and joins L4–L6 as "needs a task of that shape". The instrument reads the
+largest dump per run, not the last — the wrong-file zero ADR-0165 recorded, made again and caught by the
+positive control.

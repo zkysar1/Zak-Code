@@ -169,13 +169,13 @@ run ended `recipe_stalled`. Arm I (both fixes, six unpinned basins per arm): har
 
 | # | Lever | Property (§1) | Seam | How it is measured | Status |
 |---|---|---|---|---|---|
-| L1 | **One turn driver** (or a standing driver-parity cell in the bench) | reproducible, enforced | `loop.py` `_run_turn` / `astream_turn` | ARM D byte identity; then the full suite + bench byte identity as the refactor's control | ARM D running |
+| L1 | **One turn driver** (or a standing driver-parity cell in the bench) | reproducible, enforced | `loop.py` `_run_turn` / `astream_turn` | ARM D byte identity; then the full suite + bench byte identity as the refactor's control | ARM D held D1 on all 7 tasks (ADR-0163): the bench measures production's driver, so a one-driver refactor has its control; the refactor itself is unmeasured and unscheduled |
 | L2 | **Turn-1 workspace survey** — capped, ignore-aware file tree folded into the dynamic tier | model-free | `prompt.py` `_build_context` | turns and wall time on 06/02 (same-trajectory latency arm, ADR-0160's design); outcomes must hold; bytes will change | **shipped default-on (ADR-0164 addendum)** — refused first on one pinned basin (06 3/3→0/3 on a one-line listing change), then measured by basin sampling over six unpinned paths: 6/6 vs 5/6, median turns 18→10, long runs 3→1, `CONTRIBUTING.md` opened 5/6 vs 1/6 (F9) |
 | L3 | **`edit_file` refuses a path not read this session** (a write of the same path counts) | enforced | pre-execution veto seam (`loop.py:4292` class) — in both drivers | no regression on m01–m05/06/02; refusal counter in the results JSON | after L1 |
 | L4 | **Auto-derived `verify_command`** (detect `pytest`/`pyproject`/`Makefile test`) | model-free | `VerificationGate` construction | tasks whose tests encode the contract; needs at least one new task of that shape | needs tasks |
 | L5 | **More convention filenames** (`pyproject.toml [tool.*]`, `Makefile` targets, `.editorconfig`) | model-free | `CONVENTION_FILENAMES` | needs a task whose rule lives in such a file | needs tasks |
 | L6 | **Test-file hint on edit** (append `tests/test_<name>.py` to the edit result when it exists) | model-free | grounding message | same tasks as L4 | needs tasks |
-| L7 | **Repair, not bounce, a truncated `write_file`** | model-free | `loop.py:4295` `cut_off=True` | count of `cut_off` bounces on the pod first (unmeasured) | measure first |
+| L7 | **Repair, not bounce, a truncated `write_file`** | model-free | `loop.py:4295` `cut_off=True` | count of `cut_off` bounces on the pod first (unmeasured) | measured (`bench/undecodable_bounces.py`, #426): **0** bounces in 127 pod runs / 1,817 tool calls across 43 cells (27B + 35B, 2026-09-12 → 13; positive control 397 shell results) — the trigger is a long single-call module (ADR-0081's coach case) and no bench task is that size; nothing to repair until a task of that shape exists (joins L4–L6's "needs tasks") |
 | L8 | **Verify a library module by import, not `-m`** — a package module without a `__main__` guard is checked with `python -c "import pkg.mod"`; `-m` stays for modules with a guard and for unreadable files | model-free | `recipe.py` `_python_run_command` / `_executed_targets` | long runs (> 20 turns) and median turns on 06/35B by basin sampling, OLD vs NEW build, outcomes must hold (ADR-0166 arm H) | **shipped (#422 + #423, ADR-0166)** — arm H: warning gone 6/6 but `recipe_stalled` 6/6 on a mis-extracted acceptance literal; arm I with the literal fixed: 0 harness runs, `completed` 6/6, 5/6 vs 6/6, median turns 11 → 10 (F10) |
 | — | Lint/format after write (extend `syntax_note`) | model-free | `grounding.py` | — | deferred: no measured failure |
 
@@ -204,3 +204,13 @@ descriptions with the 35B (ADR-0158 fourth addendum).
   its first response — the hole-length instrument behind F10 / ADR-0166. The injection itself fires on
   every 06 run, so "calls after it" is the quantity a fix moves; `harness verify at call N` with no
   message means the model ran its own file before finishing and the harness never had to.
+* Since #425 the loop notes every harness-issued run as an intervention (`kind="harness_verify"` with
+  the target basename, the command form — tests / import / module / script — the exit code and the
+  error flag; `kind="project_verify"` for the project checks), so `intervention_coverage.py` counts
+  the one intervention the loop makes on the model's behalf without reading dumps. The census lists
+  both as reachable; they show as recorded once a bench run fires them.
+* `bench/undecodable_bounces.py <dump-root>` counts ADR-0081's undecodable-argument bounces over the
+  wire dumps and prints its own positive control. Per run it reads the LARGEST dump, not the last:
+  the turn-end side requests (structured output, system + user only) are a few KB and often sort
+  last, and taking them scored 18 of 127 runs as "no tool calls" — the same wrong-file zero
+  ADR-0165's mechanism reader made, caught here by the control.
