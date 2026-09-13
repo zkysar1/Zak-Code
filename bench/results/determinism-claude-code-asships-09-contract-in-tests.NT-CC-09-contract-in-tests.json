@@ -1,0 +1,37 @@
+{
+  "task": "09-contract-in-tests",
+  "arm": "claude-code",
+  "cell": "asships",
+  "n": 1,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "elapsed_s": 32.0,
+      "num_turns": 10,
+      "total_cost_usd": 0.3962565,
+      "verify_rc": 0,
+      "verify_out": "PASS: BULK10 is listed, applies from a dozen units, is full price below it, rounds half up, leaves the existing codes alone, and the untouched tests pass",
+      "stderr_tail": "",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "2f0601e1bdead5e149b9a820d7b2d4dabfe1f5c731713b2f01e7ca2f6becb938",
+        ".pytest_cache/v/cache/stepwise": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "pricing/__init__.py": "6d8de466cb07116869f5c82fb1a715bbae9bca4e25b895394bda7c5217f78b94",
+        "pricing/discounts.py": "5bcacff919d31c1a89bde290a872b6ce8cbd4052b0fb11abdd024ab51a796eca",
+        "tests/test_discounts.py": "344636de4c3c7dde437b7699a7e6a2a060cc8f9d67634861b4015b1039928290"
+      },
+      "py_digests": {
+        "pricing/__init__.py": "6d8de466cb07116869f5c82fb1a715bbae9bca4e25b895394bda7c5217f78b94",
+        "pricing/discounts.py": "5bcacff919d31c1a89bde290a872b6ce8cbd4052b0fb11abdd024ab51a796eca",
+        "tests/test_discounts.py": "344636de4c3c7dde437b7699a7e6a2a060cc8f9d67634861b4015b1039928290"
+      },
+      "sources": {
+        "pricing/__init__.py": "\"\"\"Order pricing.\"\"\"\n\nfrom pricing.discounts import Discount, UnknownCode, apply_discount, list_codes\n\n__all__ = [\"Discount\", \"UnknownCode\", \"apply_discount\", \"list_codes\"]\n",
+        "pricing/discounts.py": "\"\"\"Order-total discounts. Every public function returns a Decimal quantized to cents.\"\"\"\n\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass\nfrom decimal import ROUND_HALF_UP, Decimal\n\n__all__ = [\"Discount\", \"UnknownCode\", \"apply_discount\", \"list_codes\"]\n\n\nclass UnknownCode(LookupError):\n    \"\"\"Raised when a discount code is not on the list.\"\"\"\n\n\n@dataclass(frozen=True)\nclass Discount:\n    \"\"\"Percentage off, applied only when the order has at least `min_quantity` units.\n\n    Below the minimum the code is still accepted (it is a real code, so the cart can\n    show \"add N more to save\") but the total is left at full price.\n    \"\"\"\n\n    pct: Decimal\n    min_quantity: int = 1\n\n\n_CENT = Decimal(\"0.01\")\n\n# code -> discount. Codes are matched case-insensitively.\nCODES: dict[str, Discount] = {\n    \"WELCOME5\": Discount(Decimal(\"5\")),\n    \"BULK10\": Discount(Decimal(\"10\"), min_quantity=12),\n}\n\n\ndef _cents(value: Decimal) -> Decimal:\n    \"\"\"Quantize to cents, rounding half up (the accounting rule, not Python's default).\"\"\"\n    return value.quantize(_CENT, rounding=ROUND_HALF_UP)\n\n\ndef list_codes() -> list[str]:\n    \"\"\"Every code the cart accepts, sorted.\"\"\"\n    return sorted(CODES)\n\n\ndef apply_discount(unit_price: str | Decimal, quantity: int, code: str | None = None) -> Decimal:\n    \"\"\"Total for `quantity` units at `unit_price`, after the discount `code` (if any).\"\"\"\n    total = Decimal(str(unit_price)) * quantity\n    if code is None:\n        return _cents(total)\n    key = code.strip().upper()\n    if key not in CODES:\n        raise UnknownCode(code)\n    discount = CODES[key]\n    if quantity < discount.min_quantity:\n        return _cents(total)\n    return _cents(total * (Decimal(100) - discount.pct) / Decimal(100))\n",
+        "tests/test_discounts.py": "from decimal import Decimal\n\nimport pytest\n\nfrom pricing.discounts import UnknownCode, apply_discount, list_codes\n\n\ndef test_no_code_is_the_plain_total():\n    assert apply_discount(\"2.50\", 4, None) == Decimal(\"10.00\")\n\n\ndef test_welcome5_takes_five_percent_case_insensitively():\n    assert apply_discount(\"10.00\", 1, \"welcome5\") == Decimal(\"9.50\")\n\n\ndef test_unknown_code_raises():\n    with pytest.raises(UnknownCode):\n        apply_discount(\"1.00\", 1, \"NOPE\")\n\n\ndef test_cents_round_half_up():\n    # 3 x 0.35 = 1.05; 5% off = 0.9975 -> 1.00 (half-up), not 0.99\n    assert apply_discount(\"0.35\", 3, \"WELCOME5\") == Decimal(\"1.00\")\n\n\n# BULK10: 10% off, but only for a dozen or more units. Below twelve the code is\n# accepted and simply does not apply (the cart shows \"add N more to save\"), so it\n# must NOT raise and must NOT discount.\ndef test_bulk10_is_listed():\n    assert \"BULK10\" in list_codes()\n\n\ndef test_bulk10_applies_from_a_dozen():\n    assert apply_discount(\"4.00\", 12, \"BULK10\") == Decimal(\"43.20\")\n\n\ndef test_bulk10_below_a_dozen_is_full_price_not_an_error():\n    assert apply_discount(\"4.00\", 11, \"BULK10\") == Decimal(\"44.00\")\n\n\ndef test_bulk10_rounds_half_up():\n    # 13 x 0.35 = 4.55; 10% off = 4.095 -> 4.10\n    assert apply_discount(\"0.35\", 13, \"BULK10\") == Decimal(\"4.10\")\n"
+      }
+    }
+  ]
+}

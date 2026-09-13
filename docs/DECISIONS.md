@@ -8805,3 +8805,90 @@ the 35B is the sentinel), never on turns or bytes alone; (2) the durable fix for
 model cannot skip (L4/L6: a round-trip or project test the loop runs), not a better prompt — the E2 emitter
 passed the model's own pytest run and failed only the verifier. Instrument: `determinism_arm.py` now
 captures every small text file in `sources`, so the next m04-style digest difference is inspectable.
+
+## ADR-0165: two task shapes the review could not measure — contract-in-tests and rule-in-pyproject — with their baselines
+
+**Date:** 2026-09-13 · **Status:** Accepted · **Pre-registration:** `bench/results/new-tasks-baseline-preregistration.log`
+(stamped before launch) · **Change:** `bench/tasks/09-contract-in-tests/`, `bench/tasks/10-rule-in-pyproject/` ·
+**Results:** `bench/results/*.NT-35B-*.json`, `*.NT-27B-*.json`, `*.NT-CC-*.json`.
+
+### Why
+
+The determinism review (ADR-0163) ranked three model-free levers it could not measure: L4 (an auto-derived
+`verify_command`), L5 (fold `pyproject.toml [tool.*]` and `Makefile` targets into the discovered context) and
+L6 (a test-file hint on edit). None had a task that could fail without it: every task in the suite stated its
+full contract in the prompt, or in a convention file ADR-0162 already folds. ADR-0164's F9 then set the bar for
+any prompt-side lever — outcomes at N≥3 on a task that can fail — so the instrument needed the tasks first.
+The head-to-head instrument was also saturated at 12/12 (ADR-0163 §6), so it carried no information about
+which agent is better; these two shapes are where real repositories differ from the suite.
+
+### The tasks
+
+**09-contract-in-tests.** A pricing package with `WELCOME5` and a test file. The prompt: *"Add a `BULK10`
+discount code: 10% off for bulk orders."* The threshold (a dozen units), the below-threshold behaviour
+(full price, no error) and half-up rounding live only in `tests/test_discounts.py`, four of whose eight tests
+fail on the seed. The oracle pins the test file's sha256 (the tests are the contract; editing them is failing
+the task), runs hidden cases beyond the tests' own, and runs the project's pytest. An agent that reads or runs
+the tests learns the contract; one that implements "10% off" from the prompt passes three of the four
+BULK10 tests and fails the fourth.
+
+**10-rule-in-pyproject.** A text-utilities package with one helper in the house style. The prompt states the
+full contract of `parse_duration` (easy); the style — 79 columns, annotations on every function, docstrings on
+every public symbol, sorted imports — lives only in `pyproject.toml` `[tool.ruff]` and the `Makefile`'s
+`lint` target. The oracle runs ruff with that config, checks the export, the tests and the contract.
+
+Both oracles were self-tested before any model saw them: the seed fails, a correct solution passes, and each
+plausible wrong solution fails for its intended reason (09: plain 10% with no threshold, tests edited to fit,
+float rounding; 10: own style, not exported, no tests). Claude Code 2.1.267 passes both in one attempt
+(10 turns each, $0.40 / $0.45, 32 s / 45 s).
+
+### Pre-registered rules
+
+N1 every cell yields three reports and the oracle never reports itself broken. N2 (09, per model): 3/3 → the
+loop's own test-running tendency suffices and L4/L6 can only add a guarantee; ≤1/3 → the gap is real and
+L4/L6 are the next arm; 2/3 → near-tie, record. N3 (10, per model): the same scale for L5. N4 the dumps
+explain the outcomes (did the model read or run the tests before its first write; did it read the config or
+run the lint) without changing verdicts. N5 within-cell identity is recorded, not judged (ADR-0164's EL2
+stands). Predictions: both models pass 09 at ≥2/3; both fail 10 at ≤1/3.
+
+### Results
+
+| cell | verify | turns | within-cell bytes | wall (s) | N4 mechanism (dumps) |
+|---|---|---|---|---|---|
+| 35B · 09 | 3/3 | 10, 10, 10 | identical | 124, 50, 50 | read the failing tests before the first write, 3/3 |
+| 35B · 10 | 3/3 | 10, 10, 10 | identical | 196, 238, 221 | opened `pyproject.toml` first, 3/3; never ran the lint |
+| 27B · 09 | 3/3 | 9, 10, 9 | 2 states (one word in a comment) | 156, 112, 89 | read the failing tests before the first write, 3/3 |
+| 27B · 10 | 3/3 | 15, 15, 15 | identical | 320, 230, 226 | opened `pyproject.toml` before the first write, 3/3; never ran the lint |
+| Claude Code · 09 | 1/1 | 10 | — | 32 ($0.40) | — |
+| Claude Code · 10 | 1/1 | 10 | — | 45 ($0.45) | — |
+
+N1 holds on every cell. **N2: 3/3 on both models** — the prediction held; the loop's own tendency to read and run
+the tests suffices, so L4 and L6 can only add a *guarantee* on these models (all 12 runs read the failing tests
+before their first write and ran pytest after editing). **N3: 3/3 on both models — the prediction failed twice.**
+Its premise, "neither model opens a convention file unprompted", came from `CONTRIBUTING.md` on 06 and does
+not transfer: `pyproject.toml` was opened before the first write in 6/6 runs, and neither model ever ran the
+lint — they wrote the house style from the config and the sibling module. The split F2 called "conventions
+living under other names" runs along the filename, not the convention: a canonically named config or test file
+is read, a prose convention file was not. N5: three of four cells byte-identical; the 27B-09 flip is one token
+in a comment with one extra turn — ADR-0164's pod residual, not a different solution.
+
+### Decision
+
+The two tasks join the suite. With the shapes the review lacked, the suite is **14/14 on both local models at
+N=3** and 1/1 for Claude Code on the new pair; **no remaining review lever (L4, L5, L6) has an outcome to buy on
+the 35B or the 27B**, and by F9 none is built on the strength of a plausible mechanism alone. They stay in the
+review as guarantee levers (a check the model cannot skip) for models that do not read tests or configs on
+their own, to be measured when such a model is on the pod.
+
+What the baselines measured instead is where zakcode still pays: **turns and wall time** (every one of the 12
+runs opened with the same two or three listing calls before reading anything, and the 27B spent 15 turns and
+226–320 s on 10 where Claude Code spent 10 turns and 45 s), and **the near-tie fragility of 06** on the 35B,
+which pinned N=3 repeats cannot measure at all — three identical runs of a deterministic pod are one sample of
+one basin (ADR-0160), and ADR-0164 refused the survey on exactly one such sample. The next arm therefore
+changes the instrument, not the engine: **basin sampling**. Under `--no-pin` every run gets a fresh
+`mkdtemp` workspace path, a semantically neutral perturbation of every prompt and tool result; six such runs
+per arm sample six basins, and a pass *rate* per arm becomes measurable. Pre-registered as arm G in
+`bench/results/basin-sampling-preregistration.log`: 06 on the 35B, survey off vs on, six runs each,
+interleaved in threes. Instrument fix folded in here: the dump-based mechanism reader must score the call
+file with the most tool uses, not the last one — the last call of a turn can be a fresh-context side call
+(critic or summary) with no tools, which scored a 10-turn run as zero calls.
