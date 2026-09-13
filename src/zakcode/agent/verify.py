@@ -21,7 +21,10 @@ unchanged.
 
 from __future__ import annotations
 
+import os
+import re
 import shlex
+from pathlib import Path
 
 from zakcode.agent.recipe import _PIPE_SPLIT  # ADR-0139: one definition of "a pipe ate the status"
 from zakcode.messages import ToolResultBlock
@@ -31,6 +34,69 @@ from zakcode.providers.base import ToolCall
 _WRITE_TOOLS = {"write_file", "edit_file"}
 #: Tools that can execute the verify command.
 _RUN_TOOLS = {"bash", "powershell"}
+#: Makefile targets a project uses to declare its own checks, in the order they should run.
+_CHECK_TARGETS = ("lint", "check", "test")
+_MAKE_RULE_RE = re.compile(r"^([A-Za-z_][\w.-]*)\s*:(?!=)")
+_MAKE_SYNTAX = ("$(", "${", "$$")
+
+
+def _makefile_recipes(text: str) -> dict[str, list[str]]:
+    """Target name -> its recipe lines (the tab-indented lines after ``name:``); first rule wins."""
+    recipes: dict[str, list[str]] = {}
+    current: str | None = None
+    for raw in text.splitlines():
+        if raw.startswith("\t"):
+            if current is not None:
+                line = raw.strip().lstrip("@-").strip()
+                if line:
+                    recipes[current].append(line)
+            continue
+        current = None
+        match = _MAKE_RULE_RE.match(raw)
+        if match and not match.group(1).startswith(".") and match.group(1) not in recipes:
+            current = match.group(1)
+            recipes[current] = []
+    return recipes
+
+
+def derive_verify_command(root: str | os.PathLike[str]) -> str | None:
+    """The project's own check command, read from what it declares (review lever L4).
+
+    A ``Makefile`` with ``lint`` / ``check`` / ``test`` targets yields those targets' recipes, in
+    that order, joined with ``&&``; a target whose recipe is several lines or uses make syntax
+    (``$(``, ``$$``) runs as ``make <target>`` instead, so the derivation never re-implements
+    make. Without a Makefile, a ``pyproject.toml`` that configures ruff yields
+    ``python -m ruff check .``. ``None`` when the project declares nothing, and the gate stays
+    inert exactly as before. R1's "the engine never guesses the command" holds: this reads a
+    declaration, it does not invent one. Measured need: on the bench's 10-rule-in-pyproject the
+    35B never ran the project's lint in any of 24 runs and, under the workspace survey, shipped a
+    docstring the lint rejects in 2 of 3 (arm J, 2026-09-13).
+    """
+    base = Path(root)
+    try:
+        makefile = (base / "Makefile").read_text(encoding="utf-8")
+    except OSError:
+        makefile = None
+    if makefile is not None:
+        recipes = _makefile_recipes(makefile)
+        parts: list[str] = []
+        for target in _CHECK_TARGETS:
+            lines = recipes.get(target)
+            if not lines:
+                continue
+            if len(lines) == 1 and not any(tok in lines[0] for tok in _MAKE_SYNTAX):
+                parts.append(lines[0])
+            else:
+                parts.append(f"make {target}")
+        if parts:
+            return " && ".join(parts)
+    try:
+        pyproject = (base / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if re.search(r"^\[tool\.ruff(\.|\])", pyproject, re.MULTILINE):
+        return "python -m ruff check ."
+    return None
 
 
 def _commands_match(ran: str, verify: str) -> bool:
@@ -137,4 +203,4 @@ class VerificationGate:
         return message
 
 
-__all__ = ["VerificationGate"]
+__all__ = ["VerificationGate", "derive_verify_command"]
