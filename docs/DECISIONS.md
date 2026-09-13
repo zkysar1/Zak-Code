@@ -9327,3 +9327,24 @@ deterministic loop repro rather than a paired proof, but the advance count is th
 on real runs. Lever N stays **opt-in** pending a broader-model arm: the sticky-reopen risk (a capable model
 legitimately wanting to reopen a harness-advanced step) did not arise on the 35B/task and is the one untested
 downside before a default-on flip.
+
+**Addendum (2026-09-13, arm R — the sticky-reopen risk measured ABSENT on a better-behaved model; lever N
+flipped DEFAULT-ON; PR_ARMR).** The broader-model arm found the pod serves no model larger than 35B (three
+served: `zds-qwen3.5-35b`, `zds-qwen3.6-35b`, `zds-qwen3.8-27b`), so it ran the newest/best-behaved available
+proxy, `zds-qwen3.8-27b`, N=18 (a strict-pinned pair + a `--no-pin` sample; pre-reg + results in
+`bench/results/plan-capability-27b-preregistration.log`). All three safety rules held. **R1** — the six pinned
+runs collapse to ONE output digest, ON byte-identical to OFF when the lever does not fire (inertness confirmed
+on a second model). **R2** — under `--no-pin`, ON was strictly BETTER, not merely non-worse: pass 3/6 → 5/6,
+doom 2/6 → 0/6 (the 27B hits the unchanged-resend pattern too, 3/9 ON runs, and lever N broke those doom runs).
+**R3** (load-bearing) — a GENUINE model-driven reopen was observed: the 27B ticked `Create utils/duration.py`
+done, then resent it pending, in ALL THREE OFF-pinned runs AND two ON-pinned runs. It is model behaviour
+present in both arms, ON output byte-identical to OFF, every run passing. The sticky force-close never collided
+with it, because a reopen is an EDIT, not a byte-unchanged resend, so the lever stayed dormant during it (0
+triggers on the reopen basin). Across all 9 ON runs, unchanged-resends and reopens were DISJOINT — being stuck
+(the lever's trigger) and actively reopening are mutually exclusive model states. Verdict (pre-registered): R1
+& R2 & R3 all pass → **flipped `plan_autoadvance` default-on** (`config.py`; the bare-`ToolContext` fallback
+stays `False`, and the loop wires the `True` from `Settings`, so a real run gets it while a bare test context
+does not). Residual, stated honestly: no model >35B is testable on this pod, so that regime is UNMEASURED; the
+risk direction is favourable but INFERRED (a more capable model ticks `status` more reliably → fewer unchanged
+resends → the lever fires even less), NOT measured. The opt-out (`plan_autoadvance=False` /
+`ZAKCODE_PLAN_AUTOADVANCE=0`) ships for any harmed caller — the first candidate being a >35B model.

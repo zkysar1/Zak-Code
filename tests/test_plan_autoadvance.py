@@ -1,5 +1,6 @@
-"""Lever N (ADR-0168, opt-in ``plan_autoadvance``): when the model resends the plan unchanged and
-the current step has been worked on but left non-terminal, the harness marks it done and advances.
+"""Lever N (ADR-0168, ``plan_autoadvance``, DEFAULT-ON since arm R): when the model resends the
+plan unchanged and the current step has been worked on but left non-terminal, the harness marks it
+done and advances.
 
 Measured on the bench (arm M, 2026-09-13, a 35B on task 10): the model wrote the module, exported
 it, wrote passing tests, fixed a test bug — then resent an all-``pending`` plan six times, saying
@@ -37,13 +38,27 @@ async def _lay_out_and_work(ctx: ToolContext, net: TaskNetwork) -> None:
     net.attach_evidence(net.current(), "wrote /tmp/utils/duration.py")
 
 
-async def test_off_by_default_a_worked_step_resent_unchanged_stays_unchanged() -> None:
+async def test_opt_out_a_worked_step_resent_unchanged_stays_unchanged() -> None:
+    # Lever N is DEFAULT-ON since arm R, but the opt-out (autoadvance=False) still fully disables
+    # it: a worked step resent unchanged stays unchanged, byte-for-byte the pre-lever behaviour.
     ctx, net = _ctx(autoadvance=False)
     await _lay_out_and_work(ctx, net)
     result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
     assert result.output.startswith("Plan unchanged")
     assert result.data is not None and not result.data.get("autoadvanced")
     assert net.current().title == "write the module"  # nothing advanced
+
+
+def test_the_shipped_default_is_on_and_a_bare_context_is_the_conservative_opt_out() -> None:
+    # Flipped default-on at arm R (ADR-0168): a real run is Settings-wired, so it autoadvances by
+    # default; a bare ToolContext built without Settings stays conservative (False) so direct/test
+    # construction never advances unless asked. The loop ALWAYS wires ctx from Settings
+    # (loop.py plan_autoadvance=self.settings.plan_autoadvance), so production gets the True.
+    from zakcode.config import Settings
+
+    assert Settings().plan_autoadvance is True
+    bare = ToolContext(workspace_root=Path("/tmp"), task_network=TaskNetwork())
+    assert bare.plan_autoadvance is False
 
 
 async def test_on_a_worked_step_resent_unchanged_is_advanced_for_the_model() -> None:
