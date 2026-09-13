@@ -9041,7 +9041,7 @@ green pytest credits the gate and the turn ends on its summary.
   ended in a stall the rules did not score. A rule set for a harness change must score the **stop
   reason** and the **number of harness runs per turn**, not only passes and turns (arm I does).
 
-**Addendum (2026-09-13; Zak-Code #425).** Two follow-ups. (1) The harness run is now an intervention the
+**Addendum (2026-09-13; Zak-Code #425, #426).** Two follow-ups. (1) The harness run is now an intervention the
 bench census can count: `_try_harness_verify` notes `kind="harness_verify"` (target, command form, exit
 code, error flag) and `_try_project_verify` notes `kind="project_verify"` — before #425 the loop's one
 decision on the model's behalf emitted no trace note, which is why no run report in arms G–I counted the
