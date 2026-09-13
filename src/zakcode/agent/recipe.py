@@ -89,9 +89,15 @@ _EXE_SUFFIXES = (".exe", ".cmd", ".bat", ".com")
 
 # Conservative acceptance extraction (Slice 2b-C): a stated expected-output literal in
 # the request, captured only when unambiguous so a wrong guess can never over-gate.
+# The gap between the cue verb and the opening quote may not cross clause punctuation: in
+# "outputs YAML, registered under the name `yaml`" the verb's object is YAML and the quoted
+# word belongs to the next clause -- a NAME, not stdout. Measured 2026-09-13 (ADR-0166): that
+# extraction discredited every green suite run on the task, so the harness verified the
+# library module itself on every run, and the import-form verify (which prints nothing) could
+# never contain the literal and stalled the turn at the attempt cap.
 _ACCEPT_RE = re.compile(
     r"(?:prints?|outputs?|displays?|says?|should\s+(?:print|output|say|return))"
-    r"[^`\"'\n]{0,40}"
+    r"[^`\"'\n,.;:]{0,40}"
     r"(?:`([^`\n]{1,200})`"
     r"|\"([^\"\n]{1,200})\""
     r"|'([^'\n]{1,200})'"
@@ -122,6 +128,9 @@ _TEMPLATE_LEAD_RE = re.compile(
     r"|following\s+the\s+pattern|shaped\s+like)|e\.g\.)\s*$",
     re.IGNORECASE,
 )
+# A NAMING lead right before the quote ("the plugin named `yaml`", "under the name `x`",
+# "called `foo`") introduces an identifier, never the program's stdout.
+_NAMING_LEAD_RE = re.compile(r"\b(?:names?|named|called|titled)\s*$", re.IGNORECASE)
 _TEMPLATE_TAIL_RE = re.compile(
     r"^\s*(?:lines?|rows?|pairs?|entries|entry|records?|columns?|fields?|tuples?|blocks?"
     r"|format|style|template|pattern)\b",
@@ -148,7 +157,11 @@ def extract_acceptance(user_text: str) -> str | None:
         # quote: a template lead-in or a format noun means the literal is a shape, not an output.
         lead = user_text[m.start() : m.start(group) - 1]
         tail = user_text[m.end(group) + 1 : m.end(group) + 25]
-        if _TEMPLATE_LEAD_RE.search(lead) or _TEMPLATE_TAIL_RE.match(tail):
+        if (
+            _TEMPLATE_LEAD_RE.search(lead)
+            or _NAMING_LEAD_RE.search(lead)
+            or _TEMPLATE_TAIL_RE.match(tail)
+        ):
             continue
         candidates.append(m.group(group))
     distinct = list(dict.fromkeys(candidates))

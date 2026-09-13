@@ -752,6 +752,31 @@ def test_extract_acceptance_keeps_numeric_literals() -> None:
     assert extract_acceptance("it prints `v1.2`") == "v1.2"
 
 
+def test_extract_acceptance_does_not_cross_a_clause_or_take_a_name() -> None:
+    """A cue verb's reach stops at clause punctuation, and a naming lead is not an output.
+
+    Bench task 06's prompt reads "outputs YAML, registered under the name `yaml`": the
+    40-char gap after "outputs" crossed the comma and extracted `yaml`, a registry NAME.
+    With that literal set, the model's green pytest was never credited (a suite run cannot
+    demonstrate a stdout string), the harness verified the library module itself on every
+    run, and the import-form verify -- whose output is empty -- stalled the turn at the cap
+    (measured 2026-09-13, ADR-0166, 3 of 3 runs).
+    """
+    assert (
+        extract_acceptance(
+            "Add a renderer that outputs YAML, registered under the name `yaml`, "
+            "in `plugins/yaml_out.py`."
+        )
+        is None
+    )
+    assert extract_acceptance("outputs the renderer named `yaml`") is None
+    assert extract_acceptance("prints the plugin called `yaml`") is None
+    assert extract_acceptance("It should print `ready`. Register it under the name `x`.") == (
+        "ready"
+    )
+    assert extract_acceptance("prints `ok` when done") == "ok"  # no clause break, still taken
+
+
 def test_extract_acceptance_rejects_cli_flags() -> None:
     # A CLI option flag reads like an expected literal in "Print the top 10 ... `--top N` flag",
     # but it is a usage token, not stdout — reject it (else the recipe gate would demand the
