@@ -1,0 +1,77 @@
+ARM R — broader-capability / sticky-reopen SAFETY arm for lever N (plan_autoadvance, ADR-0168)
+Pre-registered 2026-09-13 09:36 UTC, BEFORE launch. Branch arm-r-capability-27b.
+Build: origin/main 5dfbf14 (post-#434 fix). Bench src on zc-01 verified byte-identical to origin/main
+(tasks.py 657b87bb, loop.py f76b12ff) and both #434 fixes present: fix(a) prior_by_title keyed on
+(title, is-parent); fix(b) doom-guard last_autoadvanced reset. (Letters O and Q skipped in THIS lever-N
+series M->N->P->R: O unused; "ARM Q" already names the temp-unset arm in determinism-partition.log,
+unrelated to lever N.)
+
+WHY THIS ARM. Lever N is already proven to (a) BREAK the 35B doom loop in situ (arm-P diagnostic: 2/6
+--no-pin runs entered the resend pattern, adv=3 and adv=4, and BOTH walked to a complete+verified finish,
+0 doom, vs ~80% doom among triggered runs on the unfixed build) and (b) be BYTE-IDENTICALLY INERT when the
+model does not trigger it (arm-P P4: OFF==ON output digests on all 10 non-triggering pinned runs). The ONE
+untested downside gating a default-on flip is the STICKY-REOPEN RISK: lever N marks a worked step done and
+makes it sticky (Task.harness_done survives replace_from_author's full-replace), so a model that resends
+the plan with that step back to pending CANNOT reopen it. On the 35B that is the whole point (it will not
+emit status:done, so the harness must do it). On a MORE CAPABLE / better-behaved model that DOES tick
+status and might LEGITIMATELY reopen a step, the same stickiness could be a BUG — a deterministic harness
+advance overriding a correct model decision. This arm measures whether that harm is real.
+
+HONEST CAVEAT (measured 2026-09-13, models_probe.py against the pod /v1/models). zakpod1 serves EXACTLY
+THREE models, NONE larger than 35B: zds-qwen3.5-35b, zds-qwen3.6-35b (the doom-loop subject),
+zds-qwen3.8-27b. There is NO >35B / frontier model testable here. The best-available proxy for "a more
+capable, better-behaved model" is zds-qwen3.8-27b: the NEWEST minor version, and the model arm J/K measured
+completing task 10 in fewer turns (27B 15->8-11 turns; the 35B went 3/3->1/3 under the survey). It is
+SMALLER by parameter count but NEWER and better-behaved on this task. So this arm tests "does lever N harm
+a BETTER-BEHAVED model", NOT "a BIGGER model"; the >35B regime stays UNMEASURED and is a documented residual
+on any default-on decision. Mitigant already shipped: lever N has an OPT-OUT (leave the flag unset), so a
+big-model user harmed by a future default-on can disable it.
+
+MODEL: zds-qwen3.8-27b (ZBENCH_POD_MODEL). TASK: 10-rule-in-pyproject (the doom-loop task). temperature 0,
+ZAKCODE_STABLE_PROMPT_IDENTITY=1, survey ON (default), verify_auto OFF. Both arms share the ONE verified
+build; only ZAKCODE_PLAN_AUTOADVANCE differs (OFF = unset, the shipped default; ON = 1). Runner
+/root/zb-armr.sh; scorer /root/armr-summary.py; dumps /root/zb-dumps/R-* (NEVER committed; instruments
+print counts/hashes only); result JSONs
+bench/results/determinism-zakcode-pin{1,OFF}-temp0-10-rule-in-pyproject.R-*.json.
+
+CELLS.
+  Cell 1 — PINNED pair (byte-identical control + same-basin Q4 test). default pin (ZBENCH_PIN_MODE=1:
+    constant workspace AND constant session id 000...0 -- the STRICT byte-identical basin arm-P P4 used,
+    evidenced by its pin1 result files), N=3 each {OFF, ON}, interleaved OFF b1 / ON b1 / OFF b2 / ON b2 /
+    OFF b3 / ON b3. Same basin every run at temp 0 -> near-deterministic. If the 27B does NOT trigger ->
+    R1 (byte-identical inertness for the 27B). If it DOES -> R3 direct (same basin, ON advance vs OFF
+    no-advance, verify parity).
+  Cell 2 — --no-pin sample (basin diversity, rb-10849). N=6 each {OFF, ON} as two interleaved blocks of three: OFF b1, ON b1, OFF b2, ON b2, so any
+    time-drift in the basin distribution (rb-10849 non-stationarity) hits both arms roughly equally.
+    Fresh mkdtemp workspace per run. Gives the 27B trigger RATE (R4) and the DISTRIBUTIONAL outcome parity
+    ON vs OFF (R2, doom rate).
+
+MEASURE THE TRIGGER FIRST. Before scoring any rule, report per cell: n; triggered =
+count(trace_interventions.plan_autoadvance > 0); the adv values; doom = count(stop_reason==doom_loop);
+completed count; pass = count(verify_rc==0); turn list. A rule scored without its trigger count is VOID
+(guard: a trigger of zero routes the verdict to the diagnostic, never to a silent pass).
+
+RULES + PREDICTIONS (measured cause to be stated beside each at results time).
+  R1 (Q2 -- inertness holds for the 27B). PREDICT: on every Cell-1 run where the 27B does NOT trigger
+     (plan_autoadvance==0), ON and OFF produce byte-identical output digests (digests/py_digests/sources).
+     PASS = all non-triggering pinned runs byte-identical ON vs OFF. [Inertness is a property of the CODE,
+     not of the model, so it should hold for any model; confirming on the 27B makes the arm self-contained.]
+  R2 (Q3 -- no distributional outcome regression). PREDICT: in Cell 2, ON pass rate >= OFF pass rate AND
+     ON doom rate <= OFF doom rate. A better-behaved model that triggers less should show ON ~= OFF (both
+     good), or ON slightly better (lever N rescuing the rare stuck run). PASS = ON not worse than OFF on
+     pass rate AND on doom rate.
+  R3 (Q4 -- no same-basin reopen HARM, the load-bearing safety rule). PREDICT: zero runs where ON triggers
+     and yields verify_rc==1 on a basin where OFF yields verify_rc==0. Cleanest evidence: any Cell-1 pinned
+     run where the 27B triggers and ON's verify_rc > OFF's verify_rc. Secondary: a post-hoc dump scan of
+     ON-triggered runs for a model reopen-ATTEMPT (a plan step sent done->pending AFTER a harness advance)
+     that ON blocked AND that cost the outcome. PASS = no ON-worse-than-OFF verify on a shared basin AND no
+     outcome-costing reopen-attempt.
+  R4 (Q1 -- trigger rate, DESCRIPTIVE not a gate). PREDICT: the 27B triggers lever N at a LOWER rate than
+     the 35B's rate on this task/basin family (a better-behaved model ticks status:done more reliably ->
+     the plan changes -> fewer byte-unchanged resends -> lever N rarely arms). Per "detection outranks
+     attribution", the SAFETY rules R2/R3 gate the flip; R4 only informs understanding.
+
+VERDICT RULE (default-on flip). IF R1 (inert-when-idle) AND R2 (no distributional regression) AND R3 (no
+same-basin reopen harm) ALL hold -> FLIP lever N default-on, documenting the >35B residual and the opt-out.
+IF R2 OR R3 FAILS -> keep lever N OPT-IN and record the measured downside (the sticky-reopen harm made
+concrete). R4 informs understanding either way.
