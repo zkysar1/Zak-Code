@@ -4494,6 +4494,14 @@ class AgentLoop:
                 )
                 self._turn_fatal = ("skill_too_large", too_large)
         output = tool_res.output if tool_res.verbatim else self._clamp_tool_output(tool_res.output)
+        # An ALLOWED PreToolUse hook's additionalContext reaches the model with this call's result,
+        # as in Claude Code. HookManager.run aggregates it for every event, but only the PostToolUse
+        # fold below read it, so PreToolUse context was silently dropped (measured 2026-09-13: a Mind
+        # vessel's run-ending advisory fired 7 times and reached the model 0 times). additionalContext
+        # only: on an allowed call Claude Code shows permissionDecisionReason and systemMessage to
+        # the user, not the model.
+        if pre.additional_context:
+            output = f"{output}\n{pre.additional_context}" if output else pre.additional_context
         if post.message:
             output = f"{output}\n[hook] {post.message}" if output else f"[hook] {post.message}"
         if post.additional_context:
