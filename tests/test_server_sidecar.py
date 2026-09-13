@@ -66,7 +66,10 @@ def test_workspace_summary_returns_journal_findings_and_session(tmp_path: Path) 
 def test_workspace_summary_degrades_when_nothing_written(tmp_path: Path) -> None:
     # No research/ dir, no .current-session — safe to poll before the loop's first turn.
     body = _client(tmp_path).get("/workspace/summary").json()
-    assert body == {"journal": "", "finding_count": 0, "session_id": None}
+    # "findings" joined this payload in g-373-28 (the client renders the findings
+    # themselves, not just the count). Degrades to [] exactly where finding_count
+    # degrades to 0, so polling before the loop's first turn is still safe.
+    assert body == {"journal": "", "finding_count": 0, "findings": [], "session_id": None}
 
 
 def test_workspace_summary_caps_journal_at_5000_chars(tmp_path: Path) -> None:
@@ -85,6 +88,83 @@ def test_finding_count_counts_directory_files_excluding_dotfiles(tmp_path: Path)
     (findings / ".gitkeep").write_text("", encoding="utf-8")  # dotfile — not a finding
     body = _client(tmp_path).get("/workspace/summary").json()
     assert body["finding_count"] == 2
+
+
+# ── g-373-28: the findings THEMSELVES, newest first ──────────────────────────
+# The count alone left the client showing "2 findings logged" and nothing to read.
+# These pin the two accepted shapes, and pin that the ORDER's provenance is reported
+# rather than smoothed over: a directory has real mtimes, a flat list has none.
+
+
+def test_findings_directory_returns_bodies_newest_first_with_real_dates(
+    tmp_path: Path,
+) -> None:
+    import os
+
+    findings = tmp_path / "research" / "findings"
+    findings.mkdir(parents=True)
+    (findings / "old.md").write_text("the older finding", encoding="utf-8")
+    (findings / "new.md").write_text("the newer finding", encoding="utf-8")
+    (findings / ".gitkeep").write_text("", encoding="utf-8")  # dotfile — not a finding
+    os.utime(findings / "old.md", (1_000_000, 1_000_000))
+    os.utime(findings / "new.md", (2_000_000, 2_000_000))
+
+    body = _client(tmp_path).get("/workspace/summary").json()
+
+    assert [f["name"] for f in body["findings"]] == ["new.md", "old.md"], (
+        "newest first by mtime, and the dotfile is not a finding"
+    )
+    assert body["findings"][0]["text"] == "the newer finding"
+    newer, older = body["findings"]
+    assert newer["modified_at"] > older["modified_at"], (
+        "a directory carries a real per-file mtime, so the date is MEASURED and orders"
+    )
+    assert newer["modified_at"].startswith("1970-01-24"), (
+        "mtime 2_000_000 is a real epoch instant, not a placeholder — pin it so a future "
+        "change from mtime to 'now' cannot pass this test"
+    )
+    assert all(f["truncated"] is False for f in body["findings"])
+    assert body["finding_count"] == 2, "the count field is unchanged (additive)"
+
+
+def test_flat_findings_file_reverses_and_reports_no_date(tmp_path: Path) -> None:
+    # A flat list records no per-entry time. Newest-first is the append-order ASSUMPTION,
+    # so modified_at must be null rather than a fabricated date a reader would trust.
+    _seed_research(tmp_path, "j", ["first written", "second written"])
+
+    body = _client(tmp_path).get("/workspace/summary").json()
+
+    assert [f["text"] for f in body["findings"]] == ["- second written", "- first written"]
+    assert all(f["modified_at"] is None for f in body["findings"])
+    assert all(f["name"] is None for f in body["findings"])
+
+
+def test_finding_body_is_truncated_and_says_so(tmp_path: Path) -> None:
+    findings = tmp_path / "research" / "findings"
+    findings.mkdir(parents=True)
+    (findings / "big.md").write_text("y" * 9000, encoding="utf-8")
+
+    entry = _client(tmp_path).get("/workspace/summary").json()["findings"][0]
+
+    assert len(entry["text"]) == 4000
+    assert entry["truncated"] is True, (
+        "a clipped finding must SAY it was clipped — this rides a polled endpoint"
+    )
+
+
+def test_findings_list_is_capped_while_the_count_is_not(tmp_path: Path) -> None:
+    findings = tmp_path / "research" / "findings"
+    findings.mkdir(parents=True)
+    for i in range(60):
+        (findings / f"f{i:02d}.md").write_text(str(i), encoding="utf-8")
+
+    body = _client(tmp_path).get("/workspace/summary").json()
+
+    assert len(body["findings"]) == 50, "the payload is bounded"
+    assert body["finding_count"] == 60, (
+        "the COUNT still reports the true total, so a capped list never understates how "
+        "many findings exist"
+    )
 
 
 def test_sidecar_health_reports_active_session(tmp_path: Path) -> None:
