@@ -94,7 +94,9 @@ print(f"=== CC-on-qwen CENSUS: {tid} arm={arm} N={A.n} ===", time.strftime("%H:%
 runs = []
 for k in range(1, A.n + 1):
     ws = Path(tempfile.mkdtemp(prefix=f"cc-{tid}-r{k}-"))
-    shutil.copytree(task / "workspace", ws, dirs_exist_ok=True)
+    seed = task / "workspace"
+    if seed.is_dir():  # seeded task; greenfield tasks (01-05, 07-09) have no workspace/ — start empty
+        shutil.copytree(seed, ws, dirs_exist_ok=True)
     t0 = time.time()
     p = subprocess.run(
         ["claude", "-p", prompt, "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep",
