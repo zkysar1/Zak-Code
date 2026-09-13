@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from zakcode.config import PermissionTier
-from zakcode.tasks import Task, TaskNetwork, TaskStatus, clip
+from zakcode.tasks import Task, TaskNetwork, TaskStatus, author_signature, clip
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 
 #: Maximum decomposition depth the schema exposes. The near-term layer rarely needs more than
@@ -218,6 +218,7 @@ class UpdatePlanTool(Tool):
                     + "; ".join(clip(t.title, 40) for t in dropped[:6]),
                 )
             network.tasks = []
+            network.last_author_signature = ""
             network.normalize()
             return ToolResult.ok("Plan cleared.", data={"task_count": 0})
 
@@ -231,16 +232,21 @@ class UpdatePlanTool(Tool):
             )
         # Full-replace, but the steps' MEMORY (evidence, outcome, origin) carries over by title
         # and every transition is logged (ADR-0110) — the model resends the plan, not its record.
-        before = network.state_signature()
+        submitted = author_signature(built)
+        prior_author = network.last_author_signature
         events = network.log_folded + len(network.log)
         advisories = network.replace_from_author(built)
+        network.last_author_signature = submitted
 
         finished, total = network.progress()
-        if network.state_signature() == before and network.log_folded + len(network.log) == events:
-            # Unchanged rail (ADR-0168): the model resent the plan in force, so nothing was
-            # updated — and "Plan updated" was the receipt that fed a measured doom loop. Both
-            # halves are needed: a close the harness handed back (ADR-0116) leaves the state
-            # as it was but records the challenge, and that advisory must reach the model.
+        if submitted == prior_author and network.log_folded + len(network.log) == events:
+            # Unchanged rail (ADR-0168): the model resent the plan already in force — the same tree
+            # it last sent — so nothing was updated, and "Plan updated" was the receipt that fed a
+            # measured doom loop. Comparing the SUBMISSION (author_signature), not the network
+            # state, fires on the FIRST resend: replace_from_author's outcome carry-over is non-
+            # idempotent and a state compare only converges on the second apply (arm M). The
+            # event-count half is still load-bearing: a null close the harness hands back (ADR-0116)
+            # resends the same tree but records the challenge / applies the delayed close: updated.
             return self._unchanged(network, finished, total)
         quality, deficiencies = network.quality()
         # The result is a RECEIPT, not the plan (ADR-0124). The model just sent the whole plan

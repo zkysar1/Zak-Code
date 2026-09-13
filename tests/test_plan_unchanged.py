@@ -99,19 +99,66 @@ async def test_a_finished_plan_resent_gets_the_verdict_rail() -> None:
     assert again.data is not None and again.data["complete"] is True
 
 
-def test_state_signature_sees_what_progress_signature_ignores() -> None:
-    net = TaskNetwork()
-    net.replace_from_author([Task(title="a", note="n"), Task(title="b")])
-    progress, state = net.progress_signature(), net.state_signature()
-    net.tasks[0].note = "tests pass"
-    assert net.progress_signature() == progress
-    assert net.state_signature() != state
-    state = net.state_signature()
-    net.tasks[1].outcome = "found it"
-    assert net.state_signature() != state
-    state = net.state_signature()
-    net.tasks[1].blocked_by = ["1"]
-    assert net.state_signature() != state
+def test_author_signature_tracks_model_fields_not_harness_derived_outcome() -> None:
+    from zakcode.tasks import author_signature
+
+    def a(**over: object) -> list[Task]:
+        first = {"title": "a", "status": "in_progress", "note": "n"}
+        first.update(over)
+        return [Task(**first), Task(title="b")]  # type: ignore[arg-type]
+
+    base = author_signature(a())
+    assert author_signature(a()) == base  # same submission
+    assert author_signature(a(status="done")) != base  # a status tick
+    assert author_signature(a(note="m")) != base  # a note edit
+    assert author_signature(a(outcome="x")) != base  # an outcome edit
+    assert (
+        author_signature(
+            [Task(title="a", status="in_progress", note="n"), Task(title="b", blocked_by=["1"])]
+        )
+        != base
+    )  # noqa: E501
+
+
+async def test_the_rail_fires_on_the_FIRST_resend_despite_non_idempotent_carryover() -> None:
+    # The measured arm-M shape: a compound parent whose child carries an outcome the harness
+    # propagates on the SECOND apply. A state compare only converges then; the submission compare
+    # fires now. (Regression for the fires-one-call-late defect.)
+    plan = [
+        {
+            "title": "Create utils/duration.py",
+            "outcome": "utils/duration.py created with parse_duration",
+            "subtasks": [{"title": "write parse_duration", "note": "file has parse_duration"}],
+        },
+        {"title": "Export it"},
+    ]
+    ctx, net = _ctx()
+    first = await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    assert first.output.startswith("Plan updated")
+    # The harness has NOT propagated the outcome to the child yet (non-idempotent) — prove it so the
+    # test fails loudly if that ever changes and the point is moot.
+    child = net.tasks[0].children[0]
+    assert child.outcome == ""
+    second = await UpdatePlanTool().execute({"tasks": plan}, ctx)  # the FIRST resend
+    assert second.output.startswith("Plan unchanged"), second.output
+    assert second.data is not None and second.data["unchanged"] is True
+
+
+async def test_a_delayed_challenge_close_reads_updated_not_unchanged() -> None:
+    # A null-result close is reopened once (ADR-0116); resending the same done-close APPLIES it the
+    # second time. The submission is identical but the plan advances, so the event-count half of the
+    # predicate must keep it "updated".
+    ctx, net = _ctx()
+    start = {"tasks": [{"title": "find the config", "status": "in_progress"}]}
+    await UpdatePlanTool().execute(start, ctx)
+    net.attach_evidence(net.tasks[0], "search ∅ No files found matching the query.")
+    close = {"tasks": [{"title": "find the config", "status": "done"}]}
+    reopened = await UpdatePlanTool().execute(close, ctx)
+    assert "REOPENED" in reopened.output  # the challenge fired
+    assert net.tasks[0].status == "in_progress"
+    applied = await UpdatePlanTool().execute(close, ctx)  # same submission, but the close now takes
+    assert applied.output.startswith("Plan updated"), applied.output
+    assert net.tasks[0].status == "done"
 
 
 @pytest.mark.asyncio

@@ -151,6 +151,32 @@ def clip_ends(text: str, limit: int) -> str:
     return flat[:head] + " … " + flat[-tail:] if tail else flat[:head] + " …"
 
 
+def author_signature(tasks: list[Task]) -> str:
+    """A stable snapshot of a model-SUBMITTED plan tree over the fields the author controls.
+
+    The author sets title, status, note, outcome, dependencies and (by nesting) structure; ids are
+    the harness's, and the network's stored ``outcome`` is partly harness-derived (carried from a
+    prior step, filled from the last evidence line), so neither belongs in a "did the MODEL resend
+    the same plan?" test. Comparing it across two ``update_plan`` calls answers that, and it is
+    immune to :meth:`TaskNetwork.replace_from_author`'s non-idempotent outcome carry-over — so the
+    unchanged rail (ADR-0168) fires on the FIRST resend, not the second. Position-based (the model's
+    submission has no ids yet); ``repr`` of nested tuples is only ever compared for equality.
+    """
+
+    def node(t: Task) -> tuple:
+        return (
+            t.kind,
+            t.status,
+            t.title,
+            t.note,
+            t.outcome,
+            tuple(t.blocked_by),
+            tuple(node(c) for c in t.children),
+        )
+
+    return repr([node(t) for t in tasks])
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -262,6 +288,11 @@ class TaskNetwork(BaseModel):
     #: steps: a turn-start reset clears ``tasks`` and keeps the log.
     log: list[PlanEvent] = Field(default_factory=list)
     log_folded: int = 0
+    #: ADR-0168 — the :func:`author_signature` of the model's LAST full-replace submission, so the
+    #: tool tells a genuine RESEND of the plan in force from an edit WITHOUT relying on
+    #: ``replace_from_author`` being idempotent (its outcome carry-over converges only on the second
+    #: identical apply — arm M). Set after each replace; empty till the first plan lands.
+    last_author_signature: str = ""
 
     # ── authoring / normalization ───────────────────────────────────────────────
 
@@ -772,25 +803,6 @@ class TaskNetwork(BaseModel):
         across an ``update_plan`` call so status ticks never re-trigger judgment.
         """
         return repr([(t.id, t.kind, t.title) for t in self._iter()])
-
-    def state_signature(self) -> str:
-        """A stable snapshot of EVERYTHING the author can set — id, kind, status, title, note,
-        outcome, and dependencies of every task — in document order.
-
-        Two networks with equal state signatures are the same plan as far as ``update_plan``
-        can express it: nothing the model could have sent differs. The tool compares this
-        across its own full-replace (ADR-0168) to tell an EDIT from a RESEND — a plan sent
-        back byte-for-byte after a step was completed is the small-model doom loop measured
-        on the bench, and its receipt must say "unchanged", not "updated". It includes the
-        fields :meth:`progress_signature` leaves out on purpose (a note or outcome edit is a
-        real edit here, not progress), so the two are not interchangeable.
-        """
-        return repr(
-            [
-                (t.id, t.kind, t.status, t.title, t.note, t.outcome, tuple(t.blocked_by))
-                for t in self._iter()
-            ]
-        )
 
     # ── structural quality (ADR-0050 — the ayoai-processor evaluate_candidate port) ─────
 
