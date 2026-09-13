@@ -270,7 +270,12 @@ descriptions with the 35B (ADR-0158 fourth addendum).
   TIE-DET=2, TIE-NONDET=1 (2026-09-13): CC as-ships varies output on m01 `finding.md`, m02 `report.md`,
   m04 `count.md`, 06 `yaml_out.py`; zakcode in its determinism config (pinworkspace+temp0+stable-id) is
   byte-identical on 5/6. HONEST CAVEAT in the tool header: NOT matched sampling (determinism-config vs
-  as-ships), and under --no-pin zakcode is itself non-deterministic on 06 (workspace path enters the
-  survey — input-driven, not a defect). Tests `tests/test_head_to_head_determinism.py` pin the
+  as-ships) AND confounded by model (CC=Claude/Fable, zakcode=qwen-35B; the pod can't serve Claude —
+  run_claude_code.py), so the verdict is PRODUCT-level (the two stacks as they run), not a loop-vs-loop
+  claim; and under --no-pin zakcode is itself non-deterministic on 06 — the absolute workspace
+  path sits in the system prompt (`Workspace root (cwd)` + a workspace-derived cache key) and the
+  bench randomizes it per run; a BENCH artifact, not a defect (a real re-run at a fixed path gets a
+  byte-identical prompt, deterministic per pin1/ARM-B/ARMC modulo a small provider residual). Tests
+  `tests/test_head_to_head_determinism.py` pin the
   all-files metric — an earlier *.py-only analyzer scored the m0x `.md` deliverables deterministic
   while they varied, the false-negative this instrument exists to prevent.

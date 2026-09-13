@@ -25,9 +25,16 @@ gets with ``ZAKCODE_TEMPERATURE=0 ZAKCODE_STABLE_PROMPT_IDENTITY=1`` in a repo p
 Code was sampled AS-SHIPS (``pin=None``; it offers no determinism mode). So ``ZAKCODE-WINS`` is the
 honest product claim -- "zakcode reproduces where Claude Code as-ships does
 not" -- NOT "same sampling, zakcode more deterministic". The comparison is not matched sampling and
-does not pretend to be. Under ``--no-pin`` (fresh workspace path per run) zakcode is itself
-non-deterministic (06 census 2026-09-13: 6/6 distinct) because the workspace path enters the survey;
-that is input-driven, not a defect, and is why the determinism claim is scoped to the config above.
+does not pretend to be, and it is CONFOUNDED BY MODEL too: Claude Code runs a Claude model
+(Fable 5.1 in the H2H), zakcode runs zds-qwen3.6-35b, and the pod cannot serve Claude (no API
+here; see run_claude_code.py). The verdict is a PRODUCT-level claim about the two stacks as they
+run -- NEVER that the zakcode LOOP is inherently more deterministic. Under ``--no-pin`` (fresh
+mkdtemp workspace per run) zakcode is itself
+non-deterministic (06 census 2026-09-13: 6/6 distinct) because the absolute workspace path sits in
+the system prompt (the ``Workspace root (cwd)`` line, plus a workspace-derived cache key), and the
+bench randomizes it each run. That is a BENCH artifact, not a defect: a real re-run at a FIXED
+workspace path gets a byte-identical prompt, and zakcode is then byte-deterministic (pin1 / ARM-B /
+ARMC-06 all 3/3 identical, modulo a small provider residual) -- why the claim is scoped as above.
 
 Usage:
     ./.venv/bin/python bench/head_to_head_determinism.py bench/results
