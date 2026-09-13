@@ -31,12 +31,11 @@ different meaning — a turn-end permit that does NOT stop the loop — so writi
 would end one turn and leave the run perpetual, which is exactly the severed ending
 this module exists to remove.
 
-We shell out to the framework's own ``session-signal-set.sh`` rather than touching
-the marker ourselves: it is the single writer of that file, it validates the signal
-name, and a future change to what "set a signal" means reaches us for free. The
-seed's scripts read ``MIND_AGENT`` and never ``AYOAI_*``, while its daemon-backed
-steps read ``AYOAI_AGENT`` — an agent bound under only one of the two names is
-UNBOUND for the other half — so both are exported.
+HOW a signal is raised at all — shelling out to the framework's own
+``session-signal-set.sh``, resolving bash, exporting the agent under both names,
+verifying by READING the marker — is :mod:`zakcode.session.framework_signal`, shared
+with the observe lane. It is deliberately NOT restated here: the two lanes differ only
+in their POLICY, and a second copy of the mechanism is a second thing to drift.
 
 Fail-open throughout: a vessel whose framework stop cannot be raised still ends by
 the interrupt backstop the conductor already owns. Losing the graceful ending is
@@ -48,10 +47,15 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import subprocess
 from pathlib import Path
 
-from zakcode._subprocess import find_bash
+from zakcode.session.framework_signal import (
+    SIGNAL_SET_SCRIPT,
+    SIGNAL_SET_TIMEOUT_S,
+    framework_session_dir,
+    invoke_signal_setter,
+    signal_setter_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,20 +68,18 @@ STOP_REQUESTED_SIGNAL = "stop-requested"
 #: Where a stopped run lands: user-directed, reconciliation-ready, loop off.
 DEFAULT_STOP_TARGET_MODE = "assistant"
 
-#: The framework's single writer of session signal markers, relative to the seed root.
-SIGNAL_SET_SCRIPT = Path("core") / "scripts" / "session-signal-set.sh"
-
-#: A local marker write that cannot finish in this long is a wedged filesystem, and the
-#: conductor's grace is ticking — fall back to the interrupt rather than block on it.
-SIGNAL_SET_TIMEOUT_S = 30.0
-
-
-def framework_session_dir(workspace_root: str | os.PathLike[str], agent: str) -> Path:
-    """The AGENT-LEVEL session dir whose signals stop the perpetual loop.
-
-    Deliberately not ``sessions/<SID>/`` — see the module docstring.
-    """
-    return Path(workspace_root) / "agents" / str(agent) / "session"
+#: Re-exported: the signal-raising mechanism is shared with the observe lane
+#: (:mod:`zakcode.session.framework_signal`), and callers already import these names from
+#: here. Kept as re-exports rather than moved so this module's public surface is unchanged.
+__all__ = [
+    "DEFAULT_STOP_TARGET_MODE",
+    "SIGNAL_SET_SCRIPT",
+    "SIGNAL_SET_TIMEOUT_S",
+    "STOP_REQUESTED_SIGNAL",
+    "STOP_TARGET_MODE_FILENAME",
+    "framework_session_dir",
+    "request_framework_stop",
+]
 
 
 def request_framework_stop(
@@ -103,23 +105,17 @@ def request_framework_stop(
     if signal_file.exists():
         return True
 
-    script = root / SIGNAL_SET_SCRIPT
-    if not script.is_file():
+    # PREFLIGHT BEFORE THE MODE WRITE, and that order is load-bearing in its own right:
+    # a non-seed workspace (or a box with no bash) must leave NOTHING behind, and the
+    # revert below only covers failures that happen after the file exists.
+    command = signal_setter_command(root)
+    if command is None:
         # Not a framework seed, or a seed without the scripts. Not an error here — the
         # conductor simply keeps the ending it already had.
         logger.info(
-            "framework stop: no %s under %s; leaving the ending to the interrupt",
+            "framework stop: cannot reach %s under %s; leaving the ending to the interrupt",
             SIGNAL_SET_SCRIPT,
             root,
-        )
-        return False
-
-    bash_bin = find_bash()
-    if not bash_bin:
-        # Resolved, never bare: a bare "bash" argv0 on Windows is hijacked by the WSL
-        # app-execution-alias stub and can block forever on a dead LxssManager.
-        logger.warning(
-            "framework stop: no bash interpreter found; leaving the ending to the interrupt"
         )
         return False
 
@@ -132,41 +128,11 @@ def request_framework_stop(
         logger.warning("framework stop: could not write %s (%s)", mode_file, exc)
         return False
 
-    env = dict(os.environ)
-    env["AYOAI_AGENT"] = agent
-    env["MIND_AGENT"] = agent
-    try:
-        completed = subprocess.run(
-            [bash_bin, str(script), STOP_REQUESTED_SIGNAL],
-            cwd=str(root),
-            env=env,
-            capture_output=True,
-            timeout=SIGNAL_SET_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+    # Every failure from here on REVERTS: the shared helper verifies by reading the
+    # marker and logs which way it failed, and a dangling target mode would tell the next
+    # reader a stop is in progress when none is.
+    if not invoke_signal_setter(command, root, agent, STOP_REQUESTED_SIGNAL, signal_file):
         _revert_target_mode(mode_file)
-        logger.warning("framework stop: %s did not run (%s)", SIGNAL_SET_SCRIPT, exc)
-        return False
-
-    if completed.returncode != 0:
-        _revert_target_mode(mode_file)
-        logger.warning(
-            "framework stop: %s exited %s (%s)",
-            SIGNAL_SET_SCRIPT,
-            completed.returncode,
-            completed.stderr.decode("utf-8", "replace").strip()[:200],
-        )
-        return False
-
-    # Verify by READING, never by the exit code: the marker is what the framework's stop
-    # handler actually reads, and a zero exit over an absent file would hand the
-    # conductor a grace period to wait out for a stop that was never armed.
-    if not signal_file.exists():
-        _revert_target_mode(mode_file)
-        logger.warning(
-            "framework stop: %s exited 0 but %s is absent", SIGNAL_SET_SCRIPT, signal_file
-        )
         return False
 
     logger.info("framework stop requested for agent %s (target mode %s)", agent, target_mode)

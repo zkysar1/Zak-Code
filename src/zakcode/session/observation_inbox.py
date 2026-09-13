@@ -51,6 +51,20 @@ OBSERVATION_FILENAME = ".observation"
 #: because misreading a perception is worse than missing one (the next round brings another).
 OBSERVATION_ENVELOPE_VERSION = 1
 
+#: The vessel's envelope discriminator, as the environment server's PerceptionBridgeVerticle
+#: stamps it. A HEARTBEAT is the periodic full picture; a CHANGE is narrowed to what moved.
+#: Only a change may wake a sleeping mind: a heartbeat arrives on a timer and says nothing
+#: new, so waking on one would convert every quiescent sleep into a busy-poll.
+KIND_HEARTBEAT = "heartbeat"
+KIND_CHANGE = "change"
+
+#: The framework session signal a CHANGE envelope raises. ``interruptible-sleep.sh`` polls it
+#: as a BLOCKER-class wake — a change to the resident's OWN world is the opposite of partner
+#: activity, so it is never demoted during quiescence. The MIND side already accepts this
+#: name (``session.py`` VALID_SIGNALS, ``core/config/session-manifest.yaml``, and the sleep
+#: loop's poll); this module is the WRITER that was missing.
+PERCEPTION_RECEIVED_SIGNAL = "perception-received"
+
 
 def observation_path(workspace_root: str | os.PathLike[str]) -> Path:
     """The observation-inbox file for a workspace."""
