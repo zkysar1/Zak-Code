@@ -51,6 +51,15 @@ A lever can improve one without the others. The ranking in §5 says which proper
   `bench/results/06-model-fixed-head-to-head.log`; data `cc-qwen-06-{census,surf}.json`; runner
   `bench/cc_on_pod_census.py`. n=6 (the cross-arm outcome gap is directional, Fisher ~0.24; the
   within-CC A→B intervention carries the causal weight, temperature and loop held fixed).
+* FULL-SUITE model-fixed scorecard (2026-09-13, all 6 H2H tasks, N=6 each, both on qwen-35B,
+  `bench/results/model-fixed-suite-scorecard.log`). CORRECTNESS: CC-on-qwen **31/36** vs
+  zakcode-on-qwen **35/36** — PARITY on m01/m03/m04/m05, zakcode +1 on m02 (CC read a silenced 0 as a
+  measurement once), zakcode +3 on 06. So zakcode's loop is AT PARITY OR BETTER on every task with the
+  model held fixed — "as good as Claude Code at being an agent" on qwen-35B, YES, with a
+  convention-inference edge. DETERMINISM (distinct output states / 6): zakcode ≤ CC on every task
+  (m01 1v6, m02 4v6, m03 2v2, m04 2v5, m05 1v2, 06 6v6) — more/equally deterministic, now MODEL-FIXED
+  (removing the model confound the as-ships verdict carries), though still a CONFIG claim (zakcode runs
+  temp0+stable-id; CC exposes no temperature knob).
 
 ## 3. Inventory — decision points
 
