@@ -1,0 +1,14 @@
+=== ARM J — does the workspace survey (default-on since #421) remove the opening listing calls on 09/10, and the 27B's turn cost on 10? (pre-registered 2026-09-13 03:22 UTC, before launch)
+Build: main@1f72804 (#426) src 3d1d2ee35804 on zc-01 (/opt/zak-code-bench); bench/determinism_arm.py carrying trace_interventions per row (#427).
+Baseline (ADR-0165 NT cells, survey OFF, build before #421/#422/#423): opening listing calls per run 27B/09 3,3,3; 27B/10 2,2,2; 35B/09 3,3,3; 35B/10 3,3,3 (listing-calls.py over the NT dumps, 2026-09-13); turns 27B/09 9,10,9; 27B/10 15,15,15; 35B/09 10,10,10; 35B/10 10,10,10; passes 3/3 in all four; wall s 27B/09 156,112,89; 27B/10 320,230,226; 35B/09 124,50,50; 35B/10 196,238,221.
+Cells: J-{NOSURVEY,SURVEY}-{35B,27B}-{09,10}; N=3, pinned workspace (ZBENCH_PIN_MODE=workspace), temperature 0, stable identity, dumps on. Order: for each (model, task): NOSURVEY then SURVEY (interleaved pairs). NOSURVEY = ZAKCODE_CONTEXT_WORKSPACE_SURVEY=0; SURVEY = the default.
+Measures per cell: passes; turns; wall (median); digest identity within the cell and vs the NT cell; opening listing calls (list_dir/glob before the first read_file/write_file/edit_file, largest wire dump per run); total listing calls; stop reasons; harness_verify/project_verify counts from the rows' trace_interventions.
+Rules:
+ J1 (build control): NOSURVEY cells reproduce the NT cells' passes and digests. If a NOSURVEY cell differs from NT, name the difference and score J2-J5 within this chain only (NOSURVEY vs SURVEY on the same build).
+ J2: opening listing calls SURVEY < NOSURVEY on every (model, task). Prediction: SURVEY 0-1 per run, NOSURVEY 2-3.
+ J3: passes 3/3 in all 8 cells. A SURVEY cell below 3/3 with its NOSURVEY cell at 3/3 is a survey cost on a wide-basin task and heads the review (F9 class).
+ J4: turns SURVEY <= NOSURVEY on every cell; prediction: 27B/10 drops from 15 to 12-13.
+ J5 (descriptive): wall median SURVEY <= NOSURVEY per cell; pod-minute caveat, medians only.
+ J6: stop_reason completed on all 24 runs; harness runs per run reported (expected 0 on 09/10: the model runs pytest itself).
+ A J2/J4 miss is reported as measured, not explained away; a J3 miss reopens the survey default.
+Cost: NT's 12 runs took ~34 min; 24 runs ~ 60-70 min of pod time.

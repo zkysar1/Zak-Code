@@ -171,7 +171,7 @@ run ended `recipe_stalled`. Arm I (both fixes, six unpinned basins per arm): har
 |---|---|---|---|---|---|
 | L1 | **One turn driver** (or a standing driver-parity cell in the bench) | reproducible, enforced | `loop.py` `_run_turn` / `astream_turn` | ARM D byte identity; then the full suite + bench byte identity as the refactor's control | ARM D held D1 on all 7 tasks (ADR-0163): the bench measures production's driver, so a one-driver refactor has its control; the refactor itself is unmeasured and unscheduled |
 | L2 | **Turn-1 workspace survey** — capped, ignore-aware file tree folded into the dynamic tier | model-free | `prompt.py` `_build_context` | turns and wall time on 06/02 (same-trajectory latency arm, ADR-0160's design); outcomes must hold; bytes will change | **shipped default-on (ADR-0164 addendum)** — refused first on one pinned basin (06 3/3→0/3 on a one-line listing change), then measured by basin sampling over six unpinned paths: 6/6 vs 5/6, median turns 18→10, long runs 3→1, `CONTRIBUTING.md` opened 5/6 vs 1/6 (F9) |
-| L3 | **`edit_file` refuses a path not read this session** (a write of the same path counts) | enforced | pre-execution veto seam (`loop.py:4292` class) — in both drivers | no regression on m01–m05/06/02; refusal counter in the results JSON | after L1 |
+| L3 | **`edit_file` refuses a path not read this session** (a write of the same path counts) | enforced | pre-execution veto seam (`loop.py:4292` class) — in both drivers | no regression on m01–m05/06/02; refusal counter in the results JSON | measured (`bench/unread_edits.py`, #427): **0 of 361** `edit_file` calls in 127 pod runs touched a path the run had not read or written (control: with reads discounted, 157 of 361); the 361 known edits failed once — these models read before they edit, so the refusal has no trigger here |
 | L4 | **Auto-derived `verify_command`** (detect `pytest`/`pyproject`/`Makefile test`) | model-free | `VerificationGate` construction | tasks whose tests encode the contract; needs at least one new task of that shape | needs tasks |
 | L5 | **More convention filenames** (`pyproject.toml [tool.*]`, `Makefile` targets, `.editorconfig`) | model-free | `CONVENTION_FILENAMES` | needs a task whose rule lives in such a file | needs tasks |
 | L6 | **Test-file hint on edit** (append `tests/test_<name>.py` to the edit result when it exists) | model-free | grounding message | same tasks as L4 | needs tasks |
@@ -214,3 +214,7 @@ descriptions with the 35B (ADR-0158 fourth addendum).
   the turn-end side requests (structured output, system + user only) are a few KB and often sort
   last, and taking them scored 18 of 127 runs as "no tool calls" — the same wrong-file zero
   ADR-0165's mechanism reader made, caught here by the control.
+* `bench/unread_edits.py <dump-root>` scores every `edit_file` call in the dumps as known or unread
+  (a prior `read_file` / `write_file` / `edit_file` of the path) and by the result the model saw;
+  `--reads-dont-count` is its positive control for the unread branch. Zero unread edits in 127 runs
+  (ADR-0167).

@@ -146,6 +146,9 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool
         # verify reason (the CC arm below always stored the real tail). stop_reason keeps its own key.
         "verify_out": str(rep.get("verify_out") or "")[:300],
         "stop_reason": str(rep.get("stop_reason")),
+        # The census (intervention_coverage.py) tallies this per row; until 2026-09-13 only
+        # run_task's single-run report carried it, so no arm cell could show a kind as recorded.
+        "trace_interventions": rep.get("trace_interventions") or {},
         # A report has a `success` key even when the task failed; its absence means the child
         # never got as far as running the agent (crash, config refusal, import error).
         "no_report": "success" not in rep,
