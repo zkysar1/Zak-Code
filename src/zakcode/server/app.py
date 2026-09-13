@@ -93,7 +93,11 @@ from zakcode.server.wire import (
     event_to_dict,
     events_schema,
 )
-from zakcode.session.framework_signal import set_framework_signal
+from zakcode.session.framework_signal import (
+    AUTONOMOUS_MODE,
+    framework_agent_mode,
+    set_framework_signal,
+)
 from zakcode.session.framework_stop import request_framework_stop
 from zakcode.session.observation_inbox import (
     CHANGES_SLICE,
@@ -1600,12 +1604,25 @@ def create_app(
         # which is left entirely untouched.
         agent = resolved_settings.run_stop_agent
         woke = False
+        mode: str | None = None
         if request.kind == KIND_CHANGE and agent:
-            # Fail-open by contract: staging has already succeeded. Losing the EARLY wake
-            # is a latency cost; raising here would lose the frame itself.
-            woke = set_framework_signal(
-                resolved_settings.workspace_root, agent, PERCEPTION_RECEIVED_SIGNAL
-            )
+            # AUTONOMOUS-ONLY, and this is a contract rather than an optimisation: `reader`
+            # and `assistant` run no perpetual loop, so there is no sleeping reader for the
+            # marker to reach and it would simply sit there until a later /start cleared it.
+            # Asked BEFORE the write, so the quiet case pays for one subprocess instead of
+            # two; the reader is marked IRREDUCIBLY LOCAL in the framework and takes no
+            # daemon hop, which is what makes it safe on a vessel running no daemon.
+            #
+            # None means UNREADABLE, which is NOT autonomous — an unreadable mode does not
+            # wake. Same fail-safe direction as the kind gate: a missed wake costs latency
+            # the next perception round repays, a spurious one costs the sleep itself.
+            mode = framework_agent_mode(resolved_settings.workspace_root, agent)
+            if mode == AUTONOMOUS_MODE:
+                # Fail-open by contract: staging has already succeeded. Losing the EARLY
+                # wake is a latency cost; raising here would lose the frame itself.
+                woke = set_framework_signal(
+                    resolved_settings.workspace_root, agent, PERCEPTION_RECEIVED_SIGNAL
+                )
         age = _frame_age_seconds(request.observedAt)
         _observation_stats["accepted"] += 1
         if superseded:
@@ -1618,7 +1635,7 @@ def create_app(
         # envelope shape is visible here instead of silently reading as fresh.
         logger.info(
             "perception-intake ref=%s kind=%s age_s=%s superseded=%s merged=%s "
-            "slices=%d dropped=%d changed=%d woke=%s",
+            "slices=%d dropped=%d changed=%d woke=%s mode=%s",
             ref,
             request.kind or "-",
             age,
@@ -1628,6 +1645,7 @@ def create_app(
             len(request.droppedSlices),
             len(request.changedSlices),
             woke,
+            mode or "-",
         )
         return {
             "accepted": True,

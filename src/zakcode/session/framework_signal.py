@@ -45,6 +45,17 @@ SIGNAL_SET_SCRIPT = Path("core") / "scripts" / "session-signal-set.sh"
 #: caller's grace may be ticking — fall back rather than block on it.
 SIGNAL_SET_TIMEOUT_S = 30.0
 
+#: The framework's single READER of the agent's mode, relative to the seed root. Shelled
+#: out to for the same reason as the writer above: it owns what "mode" means, including the
+#: absent-file default, so a future change reaches us for free. It is marked IRREDUCIBLY
+#: LOCAL in the framework and takes no daemon hop, which is what makes it safe to call from
+#: a vessel that runs no mind_api daemon.
+MODE_GET_SCRIPT = Path("core") / "scripts" / "session-mode-get.sh"
+
+#: The one mode that runs a perpetual loop, and therefore the only one with a sleeping
+#: reader a wake signal could reach. `reader` and `assistant` run no loop.
+AUTONOMOUS_MODE = "autonomous"
+
 
 def framework_session_dir(workspace_root: str | os.PathLike[str], agent: str) -> Path:
     """The AGENT-LEVEL session dir whose markers the Mind's loop reads.
@@ -56,6 +67,20 @@ def framework_session_dir(workspace_root: str | os.PathLike[str], agent: str) ->
     return Path(workspace_root) / "agents" / str(agent) / "session"
 
 
+def _script_command(workspace_root: str | os.PathLike[str], script_rel: Path) -> list[str] | None:
+    """``[bash, <script>]``, or None when this is not a seed workspace / bash is absent."""
+    root = Path(workspace_root)
+    script = root / script_rel
+    if not script.is_file():
+        logger.debug("framework signal: no %s under %s", script_rel, root)
+        return None
+    bash_bin = find_bash()
+    if not bash_bin:
+        logger.warning("framework signal: no bash interpreter found")
+        return None
+    return [bash_bin, str(script)]
+
+
 def signal_setter_command(workspace_root: str | os.PathLike[str]) -> list[str] | None:
     """``[bash, script]`` for the framework's signal writer, or None when unavailable.
 
@@ -63,16 +88,48 @@ def signal_setter_command(workspace_root: str | os.PathLike[str]) -> list[str] |
     framework here to signal. A caller with an ordering obligation checks this BEFORE
     writing anything of its own, so a missing seed leaves no partial state behind.
     """
-    root = Path(workspace_root)
-    script = root / SIGNAL_SET_SCRIPT
-    if not script.is_file():
-        logger.debug("framework signal: no %s under %s", SIGNAL_SET_SCRIPT, root)
+    return _script_command(workspace_root, SIGNAL_SET_SCRIPT)
+
+
+def framework_agent_mode(workspace_root: str | os.PathLike[str], agent: str) -> str | None:
+    """The agent's framework mode (``reader`` / ``assistant`` / ``autonomous``), or None.
+
+    None means UNREADABLE — not a seed workspace, no bash, the reader failed — and is
+    deliberately distinct from the string ``"reader"``, which is a real answer the script
+    returns when the mode file is absent. A caller must not collapse the two: one is "I
+    could not ask", the other is "the framework says no loop is running here".
+
+    WHO WRITES THE FILE, AND WHEN (guard-5821, whose lesson is to ask exactly that before
+    reading any session file as evidence): ``agent-mode`` is written ONLY by ``/start`` and
+    ``/stop``, and it is PER-AGENT rather than per-session — an observer session started
+    with ``--mode assistant`` against a RUNNING agent does not touch it. So this is
+    evidence of the last mode TRANSITION, which is precisely the question "was this agent
+    put into autonomous mode"; it is NOT evidence that a loop is alive right now, and must
+    never be read as liveness. The wake gate needs the former and not the latter.
+    """
+    command = _script_command(workspace_root, MODE_GET_SCRIPT)
+    if command is None:
         return None
-    bash_bin = find_bash()
-    if not bash_bin:
-        logger.warning("framework signal: no bash interpreter found")
+    env = dict(os.environ)
+    env["AYOAI_AGENT"] = str(agent)
+    env["MIND_AGENT"] = str(agent)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(Path(workspace_root)),
+            env=env,
+            capture_output=True,
+            timeout=SIGNAL_SET_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("framework signal: %s did not run (%s)", MODE_GET_SCRIPT, exc)
         return None
-    return [bash_bin, str(script)]
+    if completed.returncode != 0:
+        logger.warning("framework signal: %s exited %s", MODE_GET_SCRIPT, completed.returncode)
+        return None
+    mode = completed.stdout.decode("utf-8", "replace").strip()
+    return mode or None
 
 
 def invoke_signal_setter(
