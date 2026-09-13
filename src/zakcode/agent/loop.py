@@ -4209,9 +4209,14 @@ class AgentLoop:
         if call.name in _LOOKUP_TOOLS:
             self._turn_lookup_calls += 1  # the model looked at something (ADR-0044)
         if plan_shape is not None and isinstance(block.data, dict) and block.data.get("unchanged"):
-            # ADR-0168: the model resent the plan in force and got the unchanged receipt —
-            # noted so the bench's intervention census counts how often that rail fires.
-            self._note("intervention", "plan resent unchanged", kind="plan_unchanged")
+            # ADR-0168: the model resent the plan in force. Note it so the census counts the rail —
+            # and distinguish the deterministic advance (lever N) from the plain unchanged receipt.
+            if block.data.get("autoadvanced"):
+                self._note(
+                    "intervention", "harness advanced a worked step", kind="plan_autoadvance"
+                )
+            else:
+                self._note("intervention", "plan resent unchanged", kind="plan_unchanged")
         if (
             plan_shape is not None
             and not block.is_error
@@ -5697,6 +5702,7 @@ class AgentLoop:
             # The live plan board the update_plan tool rewrites; the loop persists and
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
+            plan_autoadvance=self.settings.plan_autoadvance,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
@@ -7119,6 +7125,7 @@ class AgentLoop:
             # The live plan board the update_plan tool rewrites; the loop persists and
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
+            plan_autoadvance=self.settings.plan_autoadvance,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
