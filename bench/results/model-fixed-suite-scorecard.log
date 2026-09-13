@@ -1,0 +1,47 @@
+MODEL-FIXED SUITE SCORECARD — CC-on-qwen-35B vs zakcode-on-qwen-35B  (2026-09-13 15:13 UTC, alpha)
+================================================================================
+The full 6-task head-to-head suite with the MODEL HELD FIXED (both loops on zds-qwen3.6-35b via the
+pod), N=6 each, --no-pin (fresh mkdtemp per run). Extends the 06 head-to-head (#444) to the whole suite.
+  CC-on-qwen      : bench/cc_on_pod_census.py (Claude Code 2.1.267 as-ships, its default sampling; no
+                    temperature knob is exposed). Data: bench/results/cc-qwen-*.json.
+  zakcode-on-qwen : determinism_arm.py --no-pin --arm zakcode, shipped config (temp0 + stable-prompt-
+                    identity + lever-N + survey) — the SAME config as the 06 discrimination census.
+                    Data: zc-01:/opt/zak-code-bench/bench/results/determinism-zakcode-pinOFF-temp0-m0X.json
+                    and the 06CENSUS-35B-shipped cell for 06.
+
+CORRECTNESS (verify.py pass / N):
+  task                        CC-on-qwen   zakcode-on-qwen   verdict
+  m01-stale-doc-negative      6/6          6/6               PARITY
+  m02-ambiguous-zero          5/6          6/6               zakcode +1 (CC read a silenced 0 as a real measurement once)
+  m03-minimal-diff            6/6          6/6               PARITY
+  m04-assert-not-hedge        6/6          6/6               PARITY
+  m05-read-before-edit        6/6          6/6               PARITY
+  06-plugin-conventions       2/6          5/6               zakcode +3 (convention surfacing; causally shown in #444)
+  TOTAL                       31/36        35/36
+  => zakcode's loop is AT PARITY OR BETTER on every task, model held fixed. The gap is 06
+     (convention-inference — the deterministic-surfacing lever) plus a minor m02 edge. "As good as
+     Claude Code at being an agent" on qwen-35B: YES, with a convention-inference edge.
+
+DETERMINISM (distinct output-tree states across the 6 runs; fewer = more deterministic):
+  task                        CC-on-qwen   zakcode-on-qwen
+  m01-stale-doc-negative      6/6          1/6
+  m02-ambiguous-zero          6/6          4/6
+  m03-minimal-diff            2/6          2/6
+  m04-assert-not-hedge        5/6          2/6
+  m05-read-before-edit        2/6          1/6
+  06-plugin-conventions       6/6          6/6
+  => zakcode (its determinism config) is MORE or EQUALLY deterministic on every task.
+     CAVEAT: CC exposes no temperature knob, so this is zakcode-at-temp0 vs CC-as-ships — a
+     PRODUCT/CONFIG claim (zakcode OFFERS the determinism knob; CC does not), NOT a pure loop claim.
+     It IS now model-fixed (both on qwen-35B), removing the MODEL confound the as-ships
+     head_to_head_determinism.py verdict carries. 06 is 6/6 for BOTH under --no-pin: zakcode's is the
+     absolute workspace path in the system prompt (a bench artifact — a fixed-path re-run is
+     byte-deterministic); m03 converges for both (a tightly-constrained one-line fix).
+
+HONESTY / LIMITS:
+  - N=6 per cell: the m02 (+1) edge is NOT significant; the 06 (+3) gap is the robust correctness
+    finding and is causally grounded by the within-CC surfacing intervention (#444).
+  - The zakcode column is temp0+stableid (its determinism config); CC is as-ships. Correctness is
+    largely config-insensitive (a correct solution is correct at any temperature), so the correctness
+    verdict holds; the determinism column is config/temperature-confounded as noted above.
+  - Provenance verified this run (NOT the stale H2H-35B cell, which reads 06=0/3 pre-lever-N).

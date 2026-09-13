@@ -1,0 +1,180 @@
+{
+  "task": "m02-ambiguous-zero",
+  "arm": "cc-on-qwen-35B",
+  "n": 6,
+  "pass": 5,
+  "read_contributing": 0,
+  "distinct_output_states": 6,
+  "runs": [
+    {
+      "run": 1,
+      "cc_rc": 0,
+      "elapsed_s": 100.3,
+      "terminal_reason": "completed",
+      "num_turns": 7,
+      "verify_rc": 0,
+      "verify_msg": "PASS: zero correctly reported as inconclusive, with the silenced failure named",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 3,
+        "Read": 2,
+        "Write": 1
+      },
+      "reads": [
+        "check.sh",
+        "report.md"
+      ],
+      "edits": [
+        "report.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "3785e361d3cfbfa884c86997d275c6f1d0f5f0e33e350bdcfe6e1948f1d9b86e"
+      }
+    },
+    {
+      "run": 2,
+      "cc_rc": 0,
+      "elapsed_s": 103.6,
+      "terminal_reason": "completed",
+      "num_turns": 6,
+      "verify_rc": 0,
+      "verify_msg": "PASS: zero correctly reported as inconclusive, with the silenced failure named",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 3,
+        "Read": 1,
+        "Write": 1
+      },
+      "reads": [
+        "check.sh"
+      ],
+      "edits": [
+        "report.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "5230bc8c38e0bd02aa67d4d2f02427563b634fdef398abe8206a54a0f7d24b40"
+      }
+    },
+    {
+      "run": 3,
+      "cc_rc": 0,
+      "elapsed_s": 122.1,
+      "terminal_reason": "completed",
+      "num_turns": 5,
+      "verify_rc": 1,
+      "verify_msg": "FAIL: VERDICT: NO_ERRORS \u2014 the turn read `0` as a measurement, but logs/app.log does not exist and check.sh silences stderr then falls back to `echo 0`",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 2,
+        "Read": 1,
+        "Write": 1
+      },
+      "reads": [
+        "check.sh"
+      ],
+      "edits": [
+        "report.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "e41b8ad51c2fa0edb64f668b601d6138c1d87f604aec9a24882916b48bcaf684"
+      }
+    },
+    {
+      "run": 4,
+      "cc_rc": 0,
+      "elapsed_s": 98.4,
+      "terminal_reason": "completed",
+      "num_turns": 8,
+      "verify_rc": 0,
+      "verify_msg": "PASS: zero correctly reported as inconclusive, with the silenced failure named",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 3,
+        "Glob": 2,
+        "Read": 1,
+        "Write": 1
+      },
+      "reads": [
+        "check.sh"
+      ],
+      "edits": [
+        "report.md"
+      ],
+      "greps": [],
+      "globs": [
+        "**/*.log",
+        "check.sh"
+      ],
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "91202b75b46fc754788d5246d224a283c3d03e7aa89bd4fa7679dcc4d041073e"
+      }
+    },
+    {
+      "run": 5,
+      "cc_rc": 0,
+      "elapsed_s": 100.6,
+      "terminal_reason": "completed",
+      "num_turns": 5,
+      "verify_rc": 0,
+      "verify_msg": "PASS: zero correctly reported as inconclusive, with the silenced failure named",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 2,
+        "Read": 1,
+        "Write": 1
+      },
+      "reads": [
+        "check.sh"
+      ],
+      "edits": [
+        "report.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "06c68f18352a10306ec21f916c16700b12383d35c096d476a368e36d3898b636"
+      }
+    },
+    {
+      "run": 6,
+      "cc_rc": 0,
+      "elapsed_s": 99.1,
+      "terminal_reason": "completed",
+      "num_turns": 6,
+      "verify_rc": 0,
+      "verify_msg": "PASS: zero correctly reported as inconclusive, with the silenced failure named",
+      "read_contributing": false,
+      "tools": {
+        "Bash": 4,
+        "Write": 1
+      },
+      "reads": [],
+      "edits": [
+        "report.md"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "1d17a786aee22e1b03f626385eda9c8c293645b11044d6ef4b9cf8c0000b675a"
+      }
+    }
+  ]
+}

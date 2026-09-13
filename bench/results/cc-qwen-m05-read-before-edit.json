@@ -1,0 +1,194 @@
+{
+  "task": "m05-read-before-edit",
+  "arm": "cc-on-qwen-35B",
+  "n": 6,
+  "pass": 6,
+  "read_contributing": 0,
+  "distinct_output_states": 2,
+  "runs": [
+    {
+      "run": 1,
+      "cc_rc": 0,
+      "elapsed_s": 90.3,
+      "terminal_reason": "completed",
+      "num_turns": 5,
+      "verify_rc": 0,
+      "verify_msg": "PASS: edit applied, all other keys and comments preserved, prior value read from the file",
+      "read_contributing": false,
+      "tools": {
+        "Read": 2,
+        "Edit": 1,
+        "Write": 1
+      },
+      "reads": [
+        "SUMMARY.md",
+        "config.yaml"
+      ],
+      "edits": [
+        "check.md",
+        "config.yaml"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "SUMMARY.md": "1ddda5217c2b2ad80ab11425f9f66b762e89079d3e7d21e165165c6ba356b258",
+        "check.md": "982c608c89822bfc556f8c780eb37c2a3e415b9eaca9c27219c1b2c0a920140f",
+        "config.yaml": "8dfe90438f8deba8b5bc95f541800f43088cde816474904c18e804fd8c2ddfca"
+      }
+    },
+    {
+      "run": 2,
+      "cc_rc": 0,
+      "elapsed_s": 68.5,
+      "terminal_reason": "completed",
+      "num_turns": 7,
+      "verify_rc": 0,
+      "verify_msg": "PASS: edit applied, all other keys and comments preserved, prior value read from the file",
+      "read_contributing": false,
+      "tools": {
+        "Read": 4,
+        "Edit": 1,
+        "Write": 1
+      },
+      "reads": [
+        "SUMMARY.md",
+        "check.md",
+        "config.yaml"
+      ],
+      "edits": [
+        "check.md",
+        "config.yaml"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "SUMMARY.md": "1ddda5217c2b2ad80ab11425f9f66b762e89079d3e7d21e165165c6ba356b258",
+        "check.md": "932a6c415184731fac5d1b5d99e9650d9733ebad4768d396d199d72c581c6806",
+        "config.yaml": "8dfe90438f8deba8b5bc95f541800f43088cde816474904c18e804fd8c2ddfca"
+      }
+    },
+    {
+      "run": 3,
+      "cc_rc": 0,
+      "elapsed_s": 69.3,
+      "terminal_reason": "completed",
+      "num_turns": 7,
+      "verify_rc": 0,
+      "verify_msg": "PASS: edit applied, all other keys and comments preserved, prior value read from the file",
+      "read_contributing": false,
+      "tools": {
+        "Read": 4,
+        "Edit": 1,
+        "Write": 1
+      },
+      "reads": [
+        "SUMMARY.md",
+        "check.md",
+        "config.yaml"
+      ],
+      "edits": [
+        "check.md",
+        "config.yaml"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "SUMMARY.md": "1ddda5217c2b2ad80ab11425f9f66b762e89079d3e7d21e165165c6ba356b258",
+        "check.md": "932a6c415184731fac5d1b5d99e9650d9733ebad4768d396d199d72c581c6806",
+        "config.yaml": "8dfe90438f8deba8b5bc95f541800f43088cde816474904c18e804fd8c2ddfca"
+      }
+    },
+    {
+      "run": 4,
+      "cc_rc": 0,
+      "elapsed_s": 93.7,
+      "terminal_reason": "completed",
+      "num_turns": 6,
+      "verify_rc": 0,
+      "verify_msg": "PASS: edit applied, all other keys and comments preserved, prior value read from the file",
+      "read_contributing": false,
+      "tools": {
+        "Read": 3,
+        "Edit": 1,
+        "Write": 1
+      },
+      "reads": [
+        "SUMMARY.md",
+        "config.yaml"
+      ],
+      "edits": [
+        "check.md",
+        "config.yaml"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "SUMMARY.md": "1ddda5217c2b2ad80ab11425f9f66b762e89079d3e7d21e165165c6ba356b258",
+        "check.md": "982c608c89822bfc556f8c780eb37c2a3e415b9eaca9c27219c1b2c0a920140f",
+        "config.yaml": "8dfe90438f8deba8b5bc95f541800f43088cde816474904c18e804fd8c2ddfca"
+      }
+    },
+    {
+      "run": 5,
+      "cc_rc": 0,
+      "elapsed_s": 94.6,
+      "terminal_reason": "completed",
+      "num_turns": 7,
+      "verify_rc": 0,
+      "verify_msg": "PASS: edit applied, all other keys and comments preserved, prior value read from the file",
+      "read_contributing": false,
+      "tools": {
+        "Read": 4,
+        "Write": 1,
+        "Edit": 1
+      },
+      "reads": [
+        "SUMMARY.md",
+        "check.md",
+        "config.yaml"
+      ],
+      "edits": [
+        "check.md",
+        "config.yaml"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "SUMMARY.md": "1ddda5217c2b2ad80ab11425f9f66b762e89079d3e7d21e165165c6ba356b258",
+        "check.md": "932a6c415184731fac5d1b5d99e9650d9733ebad4768d396d199d72c581c6806",
+        "config.yaml": "8dfe90438f8deba8b5bc95f541800f43088cde816474904c18e804fd8c2ddfca"
+      }
+    },
+    {
+      "run": 6,
+      "cc_rc": 0,
+      "elapsed_s": 94.2,
+      "terminal_reason": "completed",
+      "num_turns": 7,
+      "verify_rc": 0,
+      "verify_msg": "PASS: edit applied, all other keys and comments preserved, prior value read from the file",
+      "read_contributing": false,
+      "tools": {
+        "Read": 4,
+        "Edit": 1,
+        "Write": 1
+      },
+      "reads": [
+        "SUMMARY.md",
+        "check.md",
+        "config.yaml"
+      ],
+      "edits": [
+        "check.md",
+        "config.yaml"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "SUMMARY.md": "1ddda5217c2b2ad80ab11425f9f66b762e89079d3e7d21e165165c6ba356b258",
+        "check.md": "932a6c415184731fac5d1b5d99e9650d9733ebad4768d396d199d72c581c6806",
+        "config.yaml": "8dfe90438f8deba8b5bc95f541800f43088cde816474904c18e804fd8c2ddfca"
+      }
+    }
+  ]
+}

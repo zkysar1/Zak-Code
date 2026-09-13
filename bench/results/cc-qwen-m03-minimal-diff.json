@@ -1,0 +1,173 @@
+{
+  "task": "m03-minimal-diff",
+  "arm": "cc-on-qwen-35B",
+  "n": 6,
+  "pass": 6,
+  "read_contributing": 0,
+  "distinct_output_states": 2,
+  "runs": [
+    {
+      "run": 1,
+      "cc_rc": 0,
+      "elapsed_s": 64.5,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "read_contributing": false,
+      "tools": {
+        "Read": 2,
+        "Edit": 1
+      },
+      "reads": [
+        "TASK.md",
+        "stats.py"
+      ],
+      "edits": [
+        "stats.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      }
+    },
+    {
+      "run": 2,
+      "cc_rc": 0,
+      "elapsed_s": 90.4,
+      "terminal_reason": "completed",
+      "num_turns": 5,
+      "verify_rc": 0,
+      "verify_msg": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "read_contributing": false,
+      "tools": {
+        "Read": 2,
+        "Edit": 1,
+        "Bash": 1
+      },
+      "reads": [
+        "TASK.md",
+        "stats.py"
+      ],
+      "edits": [
+        "stats.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      }
+    },
+    {
+      "run": 3,
+      "cc_rc": 0,
+      "elapsed_s": 84.8,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "read_contributing": false,
+      "tools": {
+        "Read": 2,
+        "Edit": 1
+      },
+      "reads": [
+        "TASK.md",
+        "stats.py"
+      ],
+      "edits": [
+        "stats.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      }
+    },
+    {
+      "run": 4,
+      "cc_rc": 0,
+      "elapsed_s": 88.4,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "read_contributing": false,
+      "tools": {
+        "Read": 2,
+        "Edit": 1
+      },
+      "reads": [
+        "TASK.md",
+        "stats.py"
+      ],
+      "edits": [
+        "stats.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      }
+    },
+    {
+      "run": 5,
+      "cc_rc": 0,
+      "elapsed_s": 89.3,
+      "terminal_reason": "completed",
+      "num_turns": 5,
+      "verify_rc": 0,
+      "verify_msg": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "read_contributing": false,
+      "tools": {
+        "Read": 3,
+        "Edit": 1
+      },
+      "reads": [
+        "TASK.md",
+        "stats.py"
+      ],
+      "edits": [
+        "stats.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "b5fbbd08e585ce790f1ff5dbed5d16a132fddffc8bad5affb593dd2420f9fbd9"
+      }
+    },
+    {
+      "run": 6,
+      "cc_rc": 0,
+      "elapsed_s": 62.5,
+      "terminal_reason": "completed",
+      "num_turns": 4,
+      "verify_rc": 0,
+      "verify_msg": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "read_contributing": false,
+      "tools": {
+        "Read": 2,
+        "Edit": 1
+      },
+      "reads": [
+        "TASK.md",
+        "stats.py"
+      ],
+      "edits": [
+        "stats.py"
+      ],
+      "greps": [],
+      "globs": [],
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "fe5cc59252b006bdc671e61ca05dc69a365965212b50277143fbed556c2f9b73"
+      }
+    }
+  ]
+}
