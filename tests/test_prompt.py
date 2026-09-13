@@ -10,6 +10,7 @@ from zakcode.agent.prompt import (
     MAX_CONTEXT_FILE_CHARS,
     MAX_CONTEXT_TOTAL_CHARS,
     discover_context,
+    workspace_survey,
 )
 from zakcode.config import PermissionTier, load_settings
 from zakcode.tools import default_registry
@@ -509,3 +510,57 @@ def test_discover_context_folds_project_root_contributing_from_a_subdir(tmp_path
     child.mkdir()
 
     assert discover_context(child) == [(tmp_path / "CONTRIBUTING.md", "ROOT_RULES")]
+
+
+# ── workspace survey (review lever L2) ─────────────────────────────────────────
+
+
+def test_workspace_survey_lists_files_sorted_relative_and_ignore_aware(tmp_path: Path) -> None:
+    (tmp_path / "b.py").write_text("x", encoding="utf-8")
+    (tmp_path / "a.py").write_text("x", encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("x", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref", encoding="utf-8")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "a.pyc").write_bytes(b"\x00")
+    (tmp_path / ".busy").write_text("lease", encoding="utf-8")  # zakcode's own marker, never listed
+
+    survey = workspace_survey(tmp_path)
+    assert survey.splitlines() == [
+        "Workspace files (3, depth <= 3):",
+        "a.py",
+        "b.py",
+        "pkg/mod.py",
+    ]
+
+
+def test_workspace_survey_caps_entries_and_depth(tmp_path: Path) -> None:
+    deep = tmp_path / "d1" / "d2" / "d3" / "d4"
+    deep.mkdir(parents=True)
+    (deep / "too_deep.py").write_text("x", encoding="utf-8")
+    (tmp_path / "d1" / "d2" / "ok.py").write_text("x", encoding="utf-8")
+    for i in range(5):
+        (tmp_path / f"f{i}.py").write_text("x", encoding="utf-8")
+
+    survey = workspace_survey(tmp_path, max_entries=3)
+    lines = survey.splitlines()
+    assert lines[0] == "Workspace files (3 of 6, depth <= 3):"  # too_deep.py is beyond the cap
+    assert lines[1:] == ["f0.py", "f1.py", "f2.py"]
+    assert "too_deep.py" not in survey
+    assert workspace_survey(tmp_path / "missing") == ""
+
+
+def test_workspace_survey_is_folded_only_when_enabled_and_snapshotted_once(tmp_path: Path) -> None:
+    (tmp_path / "first.py").write_text("x", encoding="utf-8")
+    off = SystemPromptBuilder().build(load_settings(workspace_root=tmp_path))
+    assert "Workspace files" not in off
+
+    builder = SystemPromptBuilder()
+    settings = load_settings(workspace_root=tmp_path, context_workspace_survey=True)
+    on = builder.build(settings)
+    assert "Workspace files (1, depth <= 3):\nfirst.py" in on[on.index(DYNAMIC_BOUNDARY) :]
+
+    (tmp_path / "later.py").write_text("x", encoding="utf-8")  # created mid-session
+    assert builder.build(settings) == on  # the snapshot holds: the prefix does not move
+    assert "later.py" in SystemPromptBuilder().build(settings)  # a fresh builder sees it
