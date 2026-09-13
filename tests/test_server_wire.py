@@ -164,6 +164,55 @@ def test_session_info_from_session() -> None:
     assert info.cwd == "/work"
     assert info.message_count == 2
     assert info.usage.total_tokens == 7
+    # An untagged session has no attributable split -- and the total still stands alone.
+    assert info.usage_by_model == {}
+
+
+def test_session_info_splits_usage_per_model() -> None:
+    """A multi-model session carries the per-model split beside the cross-model total."""
+    session = Session(cwd="/work", model="openai/gpt-4o")
+    session.add_usage(Usage(total_tokens=10), model="openai/gpt-4o")
+    session.add_usage(Usage(total_tokens=3), model="groq/openai/gpt-oss-20b")
+    session.add_usage(Usage(total_tokens=5), model="openai/gpt-4o")
+    info = SessionInfo.from_session(session)
+    assert info.usage.total_tokens == 18  # the sum is unchanged by the split
+    assert set(info.usage_by_model) == {"openai/gpt-4o", "groq/openai/gpt-oss-20b"}
+    assert info.usage_by_model["openai/gpt-4o"].total_tokens == 15
+    assert info.usage_by_model["groq/openai/gpt-oss-20b"].total_tokens == 3
+
+
+def test_session_info_drops_untagged_usage_from_the_split() -> None:
+    """Untagged entries never become a key, so every key prices; the remainder is derivable.
+
+    This is the g-373-45 case: a meter reading only ``usage`` sees a sum whose model id is
+    empty by construction and buckets the lot as unpriced. The split must contain only real
+    model ids, and must NOT silently absorb untagged tokens under one of them.
+    """
+    session = Session(cwd="/work", model="openai/gpt-4o")
+    session.add_usage(Usage(total_tokens=8), model="openai/gpt-4o")
+    session.add_usage(Usage(total_tokens=2))  # untagged: legacy record
+    info = SessionInfo.from_session(session)
+    assert "" not in info.usage_by_model
+    assert info.usage_by_model["openai/gpt-4o"].total_tokens == 8
+    assert info.usage.total_tokens == 10
+    attributed = sum(u.total_tokens for u in info.usage_by_model.values())
+    assert info.usage.total_tokens - attributed == 2  # the unattributed remainder
+
+
+def test_session_info_split_survives_the_json_round_trip() -> None:
+    """The split has to reach a non-Python consumer -- it is read off the wire by the meter."""
+    session = Session(cwd="/work", model="openai/gpt-4o")
+    session.add_usage(Usage(total_tokens=4, cost_usd=0.5), model="openai/gpt-4o")
+    restored = SessionInfo.model_validate_json(SessionInfo.from_session(session).model_dump_json())
+    assert restored.usage_by_model["openai/gpt-4o"].total_tokens == 4
+    assert restored.usage_by_model["openai/gpt-4o"].cost_usd == 0.5
+
+
+def test_session_info_split_defaults_empty_for_an_older_payload() -> None:
+    """A payload from before this field existed still loads -- the consumer upgrade can lag."""
+    info = SessionInfo.model_validate({"id": "s1", "usage": {"total_tokens": 9}})
+    assert info.usage_by_model == {}
+    assert info.usage.total_tokens == 9
 
 
 def test_tool_info_from_spec() -> None:
