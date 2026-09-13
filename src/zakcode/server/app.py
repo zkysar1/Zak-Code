@@ -1393,6 +1393,89 @@ def create_app(
             return 0
         return 0
 
+    def _list_findings() -> list[dict[str, Any]]:
+        """The findings THEMSELVES, newest first, for the client's Environment tab (g-373-28).
+
+        Companion to ``_count_findings`` and deliberately mirroring its two accepted
+        shapes, so a writer that satisfies the count can never be invisible here. Purely
+        ADDITIVE: ``finding_count`` is unchanged and a consumer that ignores this field is
+        unaffected.
+
+        ORDERING IS ONLY AS GOOD AS THE SHAPE, and the difference is reported rather than
+        smoothed over. A ``research/findings/`` directory carries a real per-file mtime, so
+        newest-first there is a MEASURED order and every entry reports its ``modified_at``.
+        A flat ``research/findings.md`` has NO per-entry timestamp: its entries come back in
+        reverse file order (the append-order assumption) with ``modified_at`` null, so a
+        reader can tell an assumed position from a real date instead of being handed a
+        fabricated one.
+
+        Bounded on purpose — this rides an endpoint the gateway POLLS every 30s: at most
+        ``max_entries`` findings, each body truncated to ``max_chars`` with ``truncated``
+        set so the client can say so rather than silently showing a clipped finding.
+        Degrades to [] exactly where ``_count_findings`` degrades to 0. Never raises.
+        """
+        max_entries = 50
+        max_chars = 4000
+
+        def _clip(text: str) -> tuple[str, bool]:
+            return (text[:max_chars], True) if len(text) > max_chars else (text, False)
+
+        research = _workspace_root / "research"
+        out: list[dict[str, Any]] = []
+        try:
+            findings_dir = research / "findings"
+            if findings_dir.is_dir():
+                files = [
+                    p for p in findings_dir.iterdir() if p.is_file() and not p.name.startswith(".")
+                ]
+
+                # Newest first by mtime. Tie-break on name so equal mtimes — common when a
+                # batch is written in one turn — do not come back in arbitrary iterdir order.
+                def _mtime(path: Path) -> float:
+                    try:
+                        return path.stat().st_mtime
+                    except OSError:
+                        return 0.0
+
+                files.sort(key=lambda p: (-_mtime(p), p.name))
+                for path in files[:max_entries]:
+                    try:
+                        body = path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    text, truncated = _clip(body)
+                    out.append(
+                        {
+                            "name": path.name,
+                            "modified_at": datetime.fromtimestamp(_mtime(path), UTC).isoformat(),
+                            "text": text,
+                            "truncated": truncated,
+                        }
+                    )
+                return out
+
+            findings_file = research / "findings.md"
+            if findings_file.is_file():
+                lines = findings_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                bullets = [ln for ln in lines if ln.lstrip()[:2] in ("- ", "* ", "+ ")]
+                entries = bullets if bullets else [ln for ln in lines if ln.strip()]
+                # Reverse = newest first under the append-order assumption. modified_at is
+                # null because this shape records no per-entry time; see the docstring.
+                for ln in list(reversed(entries))[:max_entries]:
+                    text, truncated = _clip(ln.strip())
+                    out.append(
+                        {
+                            "name": None,
+                            "modified_at": None,
+                            "text": text,
+                            "truncated": truncated,
+                        }
+                    )
+                return out
+        except OSError:
+            return []
+        return out
+
     @app.get("/workspace/summary")
     def workspace_summary() -> dict[str, Any]:
         """World-view summary for the gateway: research journal head + finding count (P0-4).
@@ -1419,6 +1502,10 @@ def create_app(
         return {
             "journal": journal,
             "finding_count": _count_findings(),
+            # The findings themselves, newest first (g-373-28). ADDITIVE — finding_count
+            # stays the count it always was, so an older gateway reading only that field
+            # is unaffected by this key appearing beside it.
+            "findings": _list_findings(),
             "session_id": _current_session_id(),
         }
 
