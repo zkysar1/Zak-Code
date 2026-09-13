@@ -72,6 +72,26 @@ A lever can improve one without the others. The ranking in §5 says which proper
   is UNNECESSARY (measured — folding CONTENT in 06 vs only LISTING in 06v gave the same 5/6); the 1/6
   residual is model ADHERENCE (`import yaml` with the rule surfaced), not surfacing, so no
   context-assembly lever closes it.
+* 06w PROBE — deterministic assembly is CLUTTER-IMMUNE; the beyond-parity win is failure-mode COLLAPSE
+  (2026-09-13, `bench/results/06w-largerepo-survey-scaling-{preregistration,results}.log`). Take 06v and
+  add ~40 non-doc decoy files (a "larger repo", 46 files total; plugins/tests/verify byte-identical to
+  base-06, so the R1-R4 bar is unchanged). ASSEMBLY POSITIVE-CONTROL (deterministic, zero model calls):
+  `workspace_survey()` lists docs/CONVENTIONS.md at 13/39, no truncation (46 << `SURVEY_MAX_ENTRIES`=150)
+  — surfacing is clutter-immune, byte-identical across boxes. OUTCOME (all N=6, model-fixed on qwen-35B):
+  zakcode-06w **5/6** = zakcode-06v 5/6, CC-06v **3/6**, CC-06w **2/6**. The discriminator is the
+  FAILURE-MODE DISTRIBUTION and it is clutter-INVARIANT: zakcode fails in EXACTLY ONE way at both levels
+  (the shared `import yaml` adherence residual — the survey guarantees surfacing, so discovery is never a
+  failure mode), while CC fails in FOUR ways across its arms (surfacing, R4-completeness, emitter
+  task-difficulty, adherence) because its convention discovery is probabilistic (read-conv 3/6 then 4/6,
+  never 6/6). So deterministic assembly COLLAPSES CC's multi-modal failure distribution down to the
+  single shared adherence residual, invariant to clutter — a sharper, proven beyond-parity claim than
+  "the gap widens". HONEST NEGATIVES (preregistered): the gap +2→+3 rides on CC 3/6→2/6, a one-run N=6
+  difference (not significant); and the PREDICTED mechanism (clutter suppresses CC discovery) is
+  FALSIFIED — CC read-conv ROSE 3/6→4/6, most likely because 06w's README says "see docs/" (a flagged
+  design confound), so clutter did NOT compound via discovery-suppression at this scale. Data
+  `zakcode-06w-largerepo.json`, `cc-qwen-06{v,w}.json`. Next: 06x (the >150-entry regime — the survey's
+  OWN truncation ceiling, and the case for a convention-aware survey that lists convention-named files
+  past the cap); 06w' without the README hint.
 
 ## 3. Inventory — decision points
 
