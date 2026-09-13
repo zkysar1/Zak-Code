@@ -1,0 +1,61 @@
+06w2 NO-README-HINT DISCOVERY ISOLATION — RESULTS  (thrust 7)
+stamped: 2026-09-13 22:27 UTC   (alpha; task 06w2-largerepo-nohint added Zak-Code #457)
+================================================================================
+HYPOTHESIS (pre-registered in the campaign tree node, thrust 7): 06w's README carried
+"A small demo application. See `docs/` for details." — a pointer that could let Claude Code reach
+docs/CONVENTIONS.md via the hint rather than by clutter-robust discovery (06w's CC read-conv actually
+ROSE vs 06v, the confound). 06w2 = 06w with EXACTLY that sentence removed (workspace tree-diff: ONLY
+README.md differs; verify.py/plugins/tests byte-identical). PREDICTION: if the hint was CC's discovery
+channel, removing it drops CC's read-conventions rate and widens zakcode's correctness lead.
+
+Both arms model-fixed on zds-qwen3.6-35b via the pod, N=6, --no-pin. CC as-ships (NO --surf: CC must
+discover unaided). Raw: cc-qwen-06w2-largerepo-nohint.json, determinism-zakcode-pinOFF-temp0-06w2-largerepo-nohint.json.
+
+═══ SCORECARD ═══
+  arm         pass   read-conv*   failure modes
+  CC-06w2     3/6    4/6          adherence(yaml-import) x3
+  ZAK-06w2    3/6    n/a†         adherence(yaml-import) x2, emitter(yaml-parse) x1
+  --- for comparison (prior cells) ---
+  CC-06w      2/6    5/6          adherence x1, emitter x2, surfacing x1   (README hint PRESENT)
+  CC-06v      3/6    4/6          adherence x1, emitter x1, surfacing x1   (no decoys, hint present)
+  ZAK-06w     5/6    n/a†         adherence x1
+  * read-conv computed POST-HOC from each CC run's reads/greps/globs (the cc_on_pod_census
+    read_contributing flag keys on "contributing" and is BLIND to the renamed docs/CONVENTIONS.md).
+  † zakcode surfaces the convention by ASSEMBLY (survey+fold into the system prompt), not by a Read
+    tool call, so it emits no reads event — the arm run schema has no reads key at all. Direct
+    evidence instead: the run's `sources` dict CONTAINS docs/CONVENTIONS.md with the full stdlib-only
+    rule text, all 6 runs, hint-invariant. Deterministic surfacing confirmed at the source.
+
+═══ VERDICT: hypothesis FALSIFIED ═══
+  Removing the README pointer did NOT suppress CC's convention discovery: CC read docs/CONVENTIONS.md
+  4/6 with NO hint vs 5/6 with it — a 1-run drop, within N=6 noise, and equal to 06v's 4/6 (no clutter,
+  hint present). CC finds the convention agentically (~4-5/6) regardless of the pointer OR the clutter.
+  The README hint was not the discovery channel.
+
+═══ THE SHARPER (partially corrective) FINDING ═══
+  The 06-family correctness gap is NOT primarily a discovery-RATE gap — CC's discovery rate is a
+  healthy ~4-5/6. It is:
+   (a) a discovery-DETERMINISM gap: zakcode surfaces the convention 6/6 at ZERO model-call cost (proven
+       from `sources`); CC surfaces it ~4-5/6 STOCHASTICALLY via agentic search. This is the real,
+       durable beyond-parity property — determinism & zero-cost of surfacing, NOT that CC "can't find" it.
+   (b) swamped at N=6 by the SHARED model residual: once the rule is in context, BOTH agents still fail
+       stochastically on stdlib-only ADHERENCE (model imports yaml despite the rule being in-context)
+       and on the YAML EMITTER (hand-rolled serializer emits multi-document output). This residual is
+       ±2/6 at N=6, so a single 06-cell can read anywhere from ZAK>CC (06w: 5/6 vs 2/6) to PARITY
+       (06w2: 3/6 vs 3/6). 06w2's PARITY is that residual, NOT a change in surfacing: zakcode's drop
+       (5/6->3/6) is on the README axis that CANNOT affect its deterministic survey — so it is noise
+       (2 adherence + 1 emitter this draw vs 1 adherence last draw), a mechanistic confirmation of the
+       campaign's standing N=6-noise caveat.
+
+═══ SIGNAL INTEGRITY ═══
+  zc-01 build UNCHANGED across all these runs (prompt.py mtime 2026-09-13 00:46, determinism_arm.py
+  03:24 — predate every run). CC correctness reproduced its 06-family range. So the zakcode 5/6->3/6
+  is metric variance, not corruption or regression.
+
+═══ IMPLICATION FOR THRUST 8 ═══
+  A PURE-DISCOVERY task is now MORE motivated: on 06 the discovery signal is confounded by the
+  adherence+emitter residuals that dominate at N=6. A task where finding the convention is the ONLY
+  hard part (trivial compliance, no serializer to get wrong, no import temptation) would isolate the
+  discovery-determinism advantage. It needs (i) N>=12 to see past the residual noise, and (ii)
+  genuinely HARD discovery (deeper/less-obvious convention location) so CC's rate drops below ~4-5/6 —
+  otherwise the clean gap (CC ~4-5/6 vs ZAK 6/6) stays marginal at small N.
