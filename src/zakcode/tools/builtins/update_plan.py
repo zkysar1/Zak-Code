@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from zakcode.config import PermissionTier
-from zakcode.tasks import Task, TaskStatus, clip
+from zakcode.tasks import Task, TaskNetwork, TaskStatus, clip
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 
 #: Maximum decomposition depth the schema exposes. The near-term layer rarely needs more than
@@ -53,6 +53,25 @@ _CHALLENGED_HINT = (
     "A step was reopened (see the note above): do it first — run a positive control (show the "
     "same tool sees something known to exist in that scope) or a query of a different shape — "
     "then close it with a done-condition in 'note' and what you found in 'outcome'."
+)
+
+#: Unchanged rail (ADR-0168): the model sent back the plan already in force — the same steps,
+#: statuses, notes, outcomes, dependencies — so nothing was updated, and the receipt says so
+#: instead of "Plan updated". Measured on the bench (arm K, a 35B on task 10, basin-sampled):
+#: after finishing a step the model resent the plan four times without marking the step done,
+#: read "Plan updated: 0/4 steps done" each time, and the turn ended as a doom loop. The rail
+#: names the two ways forward in the step's own terms; it fires on the FIRST resend, an
+#: iteration before the loop's generic exact-repeat guard.
+_UNCHANGED_HINT = (
+    "Do not resend the same plan. If step {id} is finished, resend the plan with its status "
+    "'done' (and its result in 'outcome') and the next step 'in_progress'; if it is not, do it "
+    "now with a tool call."
+)
+
+#: Prefix for the unchanged rail when the step in hand already carries an outcome: the model
+#: recorded the result and forgot the status (two of the three measured doom loops).
+_OUTCOME_WITHOUT_STATUS = (
+    "Step {id} already carries an outcome but its status is still '{status}'. "
 )
 
 
@@ -212,9 +231,17 @@ class UpdatePlanTool(Tool):
             )
         # Full-replace, but the steps' MEMORY (evidence, outcome, origin) carries over by title
         # and every transition is logged (ADR-0110) — the model resends the plan, not its record.
+        before = network.state_signature()
+        events = network.log_folded + len(network.log)
         advisories = network.replace_from_author(built)
 
         finished, total = network.progress()
+        if network.state_signature() == before and network.log_folded + len(network.log) == events:
+            # Unchanged rail (ADR-0168): the model resent the plan in force, so nothing was
+            # updated — and "Plan updated" was the receipt that fed a measured doom loop. Both
+            # halves are needed: a close the harness handed back (ADR-0116) leaves the state
+            # as it was but records the challenge, and that advisory must reach the model.
+            return self._unchanged(network, finished, total)
         quality, deficiencies = network.quality()
         # The result is a RECEIPT, not the plan (ADR-0124). The model just sent the whole plan
         # (full-replace), and the loop re-injects the live checklist as an ephemeral tail
@@ -250,6 +277,30 @@ class UpdatePlanTool(Tool):
             },
             hint=self._hint(network),
         )
+
+    @staticmethod
+    def _unchanged(network: TaskNetwork, finished: int, total: int) -> ToolResult:
+        """The receipt for a resend of the plan already in force (ADR-0168)."""
+        data = {
+            "task_count": total,
+            "finished": finished,
+            "unchanged": True,
+            "complete": network.is_complete(),
+        }
+        current = network.current()
+        if current is None:
+            tail = " — complete." if network.is_complete() else "."
+            output = f"Plan unchanged: {finished}/{total} steps done{tail} Nothing was updated."
+            hint = _COMPLETE_HINT if network.is_complete() else None
+            return ToolResult.ok(output, data=data, hint=hint)
+        output = (
+            f"Plan unchanged: {finished}/{total} steps done · current: {current.id} "
+            f"{clip(current.title, 80)}. Nothing was updated — this is the plan already in force."
+        )
+        hint = _UNCHANGED_HINT.format(id=current.id)
+        if current.outcome:
+            hint = _OUTCOME_WITHOUT_STATUS.format(id=current.id, status=current.status) + hint
+        return ToolResult.ok(output, data=data, hint=hint)
 
     @staticmethod
     def _hint(network: Any) -> str:
