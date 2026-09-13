@@ -1,0 +1,96 @@
+ARM L — does verify_auto (a DERIVED project check, run in-loop) convert the small model's complete-but-wrong
+task-10 outputs into PASSES, on top of lever N (now default-on)? (review lever L4; Zak-Code #429;
+ZAKCODE_VERIFY_AUTO=1)
+Pre-registered 2026-09-13 11:16 UTC, BEFORE launch. Branch arm-l-verify-auto. Build: origin/main 0c0bbc4
+(lever N default-ON since #439; verify_auto opt-in since #429). Bench src on zc-01 re-synced to 0c0bbc4 and
+verified: config default=True (lever N on), derive_verify_command present, tasks.py 657b87bb.
+
+MECHANISM. verify_auto ON => the R1 project-verifier gate derives its command from what the workspace
+DECLARES. Task 10's Makefile declares `lint: python -m ruff check .` and `test: python -m pytest`, so
+derive_verify_command yields `python -m ruff check . && python -m pytest` (single-line recipes, no make
+syntax). The gate requires that command to pass after a code change; the model's own `python -m pytest` does
+not match the full derived command, so the harness runs it at the turn's completion point (_try_project_verify,
+kind="project_verify", at most attempt_cap=2 harness runs/turn) and injects the real output. A gate that keeps
+failing ends the turn stop_reason=verification_failed.
+
+WHY NOW (trigger, previously deferred). Arm K's 12 basins produced 0 lint-class failures, so verify_auto would
+not have fired and arm L was DEFERRED. Two 2026-09-13 arms unlocked it: arm J (35B shipped a docstring ruff
+violation on task 10, passed 1/3, never ran the project lint in-loop) and arm R (27B shipped a genuine
+`make lint` E501 failure, 1/12 --no-pin, PLUS 2 contract failures — parse_duration not-exported and a
+ValueError on '0s' — that `pytest` would catch). So the derived `ruff check && pytest` targets THREE observed
+failure modes.
+
+INTERACTION WITH LEVER N (the honest framing). Lever N is now DEFAULT-ON, so BOTH cells carry it; arm L
+isolates verify_auto's MARGINAL effect on top of lever N. Complementarity hypothesis: lever N gets the small
+model to FINISH (doom -> complete), and verify_auto ensures it finishes CORRECTLY (catches the
+complete-but-wrong that those completions produce).
+
+MODEL zds-qwen3.6-35b (the primary small-model subject; arm J's trigger; worse-behaved than the 27B, so more
+complete-but-wrong for the gate to catch). TASK 10-rule-in-pyproject. temperature 0, stable identity, survey
+ON, --no-pin (basin diversity, rb-10849). Runner /root/zb-arml.sh; scorer /root/arml-summary.py; dumps
+/root/zb-dumps/L-* (NEVER committed; instruments print counts/hashes only); result JSONs
+bench/results/determinism-zakcode-pinOFF-temp0-10-rule-in-pyproject.L-*.json.
+
+CELLS. L-{BASE,AUTO}-35B-10, N=6 per arm, two interleaved blocks of three: BASE b1, AUTO b1, BASE b2, AUTO b2
+(basin drift, rb-10849 non-stationarity, hits both arms).
+  BASE = shipped default (survey on, lever N on, verify_auto OFF).
+  AUTO = shipped default + ZAKCODE_VERIFY_AUTO=1.
+
+MEASURE FIRST (before scoring): per cell — n; pass = count(verify_rc==0); the FAILED runs' verify_out (lint vs
+contract, to confirm they are verify_auto-catchable); trace_interventions.project_verify per run; stop reasons
+(verification_failed = the gate gave up); turns.
+
+GATE-FIRES CHECK (guard-5501, prove the diagnostic CAN fire): at least one AUTO run must show the gate FIRING —
+project_verify >= 2 (a first failing run forced a re-run) OR stop_reason==verification_failed OR a failing
+verify exit in the dumps. If the gate never fired under AUTO, L1/L2 are scored "NOT EXERCISED", not a verdict.
+
+RULES.
+  L1: AUTO pass rate >= BASE + 2 (of 6) AND the gate fired -> verify_auto buys outcomes on top of lever N ->
+      ship verify_auto default-ON (a workspace declaring no check is unaffected — derive returns None, gate inert).
+  L2: |AUTO - BASE| <= 1 -> no marginal outcome effect at N=6 -> keep opt-in; report the gate-fire count and
+      whether the derived check ever actually failed.
+  L3: AUTO <= BASE - 2 -> verify_auto COSTS outcomes (the injected output derails the model) -> keep opt-in,
+      name the mechanism from the dumps.
+  L4 (descriptive): project_verify runs/run; turns and wall medians; stop reasons.
+
+PREDICTIONS: BASE 3-5/6 (lever N on lifts it above the old doom-dominated rate); AUTO 5-6/6 with 1-2
+project_verify runs/run and +1-3 turns; AUTO stops mostly `completed`. Cost ~12 runs x 190-470s = 45-90 min.
+
+VERDICT RULE: L1 (and the gate fired) -> ship verify_auto default-on; L2 or L3 -> keep opt-in with the
+measured reason. If NOT EXERCISED (gate never fired), the arm is inconclusive -> re-run on a basin census that
+shows a failure, do not score a verdict.
+
+================================================================================
+ARM L RESULTS — 2026-09-13 12:03 UTC (build 0c0bbc4, lever N default-on; zc-01; N=12, 4 cells x3, 35B)
+================================================================================
+MEASURE FIRST.
+  BASE (lever N on, verify_auto OFF): pass 6/6; project_verify=[0,0,0,0,0,0]; verification_failed=0;
+    turns [10,16,19,15,16,8].
+  AUTO (lever N on, verify_auto ON):  pass 6/6; project_verify=[1,1,1,1,1,1]; verification_failed=0;
+    turns [13,14,12,18,15,17].
+  delta(AUTO - BASE) = 0.
+
+GATE FIRED, NEVER CAUGHT. verify_auto is NOT inert: every AUTO run ran the derived check exactly once
+(project_verify=1), confirmed independently by the .ruff_cache directories PRESENT in the AUTO outputs and
+ABSENT from BASE (the harness ran `python -m ruff check . && python -m pytest`). But project_verify never
+reached 2 and no run ended verification_failed — the check PASSED on the first run every time, because the
+35B + lever N already produced CORRECT output (BASE 6/6). So the CATCH path (fail -> nudge -> fix -> re-run)
+was never exercised; there was nothing to catch. NOTE the scorer's gate-fires proxy (>=2 OR
+verification_failed) reads this as "not exercised", conflating "the gate did not FIRE" with "the gate did not
+CATCH": the gate fired 6/6; it caught 0/6.
+
+VERDICT: NOT L1. Per the pre-reg (L1 requires AUTO >= BASE+2 AND the gate CAUGHT a failure), this is L2 /
+inconclusive-for-value: delta 0, catch path unexercised. verify_auto STAYS OPT-IN. The reason is not that
+verify_auto is broken (it fires and runs the real check) but that TASK 10 IS SATURATED for the 35B once lever
+N is on: lever N alone took the 35B from doom-looping (arm N) to 6/6 correct completions across 6 diverse
+--no-pin basins, leaving verify_auto nothing to catch. Shipping an unproven-value lever default-on would
+violate rb-10866 (measure the value on real output before shipping) and the pre-reg verdict rule.
+
+THE SYSTEMIC FINDING (campaign pivot). This is the SECOND saturation signal: the 6-task head-to-head reads
+12/12 PARITY (ADR-0161, can no longer discriminate), and now lever N saturates task 10 for the 35B.
+verify_auto's VALUE — and any further small-model lever's measurable gain — requires HARDER, DISCRIMINATING
+tasks where the small model + lever N still fails (complete-but-wrong), so a catch has something to catch.
+Arm R showed the 27B still complete-but-wrongs on task 10 (E501 + contract), but the delta over lever-N-on
+would be thin (~5/6 -> 6/6). The higher-value next thrust is NEW discriminating tasks (the review already
+flags this as "part of the work"), not more levers on saturated tasks. verify_auto remains a VALIDATED,
+opt-in safety net for tasks/models that DO produce catchable failures.
