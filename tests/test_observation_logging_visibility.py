@@ -40,9 +40,7 @@ class _FakeAgent:
         self.session = session
 
 
-def _factory(
-    session: Session, model: str | None, prompter: object = None
-) -> _FakeAgent:  # noqa: ARG001
+def _factory(session: Session, model: str | None, prompter: object = None) -> _FakeAgent:  # noqa: ARG001
     return _FakeAgent(session)
 
 
@@ -102,9 +100,7 @@ def test_an_accepted_frame_writes_an_info_line(
         (_envelope(externalClientRef="   "), 400, "reason=missing_ref"),
         (
             _envelope(
-                observation={
-                    "nearbyPerception": {"blob": "x" * (OBSERVATION_MAX_CHARS + 64)}
-                }
+                observation={"nearbyPerception": {"blob": "x" * (OBSERVATION_MAX_CHARS + 64)}}
             ),
             413,
             "reason=too_large",
@@ -179,9 +175,9 @@ def test_log_level_is_env_controlled(
 ) -> None:
     monkeypatch.setenv(LOG_LEVEL_ENV, "debug")
     _configure_logging()
-    assert (
-        logging.getLogger().level == logging.DEBUG
-    ), "level must come from the env var (case-insensitive)"
+    assert logging.getLogger().level == logging.DEBUG, (
+        "level must come from the env var (case-insensitive)"
+    )
 
 
 def test_an_unrecognised_level_falls_back_to_info_rather_than_raising(
