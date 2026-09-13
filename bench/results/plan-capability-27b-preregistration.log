@@ -75,3 +75,51 @@ VERDICT RULE (default-on flip). IF R1 (inert-when-idle) AND R2 (no distributiona
 same-basin reopen harm) ALL hold -> FLIP lever N default-on, documenting the >35B residual and the opt-out.
 IF R2 OR R3 FAILS -> keep lever N OPT-IN and record the measured downside (the sticky-reopen harm made
 concrete). R4 informs understanding either way.
+
+================================================================================
+ARM R RESULTS — 2026-09-13 10:50 UTC (build 5dfbf14 + #434 fix; zc-01; N=18, 6 cells x3)
+================================================================================
+TRIGGER FIRST (measured before scoring; guard-2421 positive-control every zero).
+  Cell1 OFF (pin1): trig=0 adv=[0,0,0]        doom=0  pass=3/3  verify=[0,0,0] turns=[11,11,11]
+  Cell1 ON  (pin1): trig=0 adv=[0,0,0]        doom=0  pass=3/3  verify=[0,0,0] turns=[8,11,11]
+  Cell2 OFF (nopin,n=6): trig=0 adv=all-0      doom=2  pass=3/6  verify=[1,0,0 | 0,1,1]
+  Cell2 ON  (nopin,n=6): trig=3 adv=[0,0,4,0,5,4] doom=0 pass=5/6 verify=[1,0,0 | 0,0,0]
+  NB the pinned cell did NOT trigger for the 27B (adv all 0); ON's turns=[8,11,11] vs OFF
+  [11,11,11] is provider turn-nondeterminism, NOT a lever-N advance (the earlier eyeball was
+  corrected by the trigger count — verify-before-assuming). The trigger appeared ONLY under
+  --no-pin basin diversity (Cell2 ON, 3/6).
+
+R1 (inertness holds for the 27B) — PASS. All 6 pinned runs (OFF+ON) collapse to ONE unique
+  output digest (digests/py_digests/sources): ON is byte-identical to OFF when lever N does not
+  fire. MEASURED CAUSE: with trig=0 the ADR-0168 advance branch never runs, so update_plan's
+  output is unchanged — inertness is a property of the code, confirmed on a second model.
+
+R2 (no distributional regression, Cell2 --no-pin) — PASS, and ON is strictly BETTER: pass rate
+  OFF 3/6 -> ON 5/6; doom rate OFF 2/6 -> ON 0/6. MEASURED CAUSE: lever N broke the two runs that
+  doom-looped under OFF (the 27B DOES hit the unchanged-resend pattern on this task, 3/9 ON runs),
+  converting stalls into completions. Even a better-behaved model is helped, not harmed.
+
+R3 (no same-basin reopen HARM — load-bearing) — PASS, with a REAL reopen observed and proven
+  harmless. Cell1 same basin: OFF verify=[0,0,0], ON verify=[0,0,0] (no harm). The reopen scan
+  (plan_stream.py) found a GENUINE model-driven reopen — the 27B ticked "Create utils/duration.py"
+  done, then resent it pending — in ALL 3 OFF-p runs AND ON-p run-2/run-3. So the reopen is MODEL
+  BEHAVIOUR on this basin, present in both arms, and ON-p's output is byte-identical to OFF-p's
+  (R1) with every run passing. MEASURED CAUSE / the dialectic resolved: lever N fires ONLY on a
+  byte-UNCHANGED resend; a reopen is a CHANGE, so lever N stays dormant during it (trig=0 on the
+  reopen basin). Across all 9 ON runs, unchanged-resends and model reopens were DISJOINT — never
+  co-occurred (the runs with unchanged-resends: n1-r3=8, n2-r2=9, n2-r3=8, reopens=0; the runs
+  with reopens: p-r2, p-r3, reopens=1, unchanged-resends=0). Being-stuck (lever N's trigger) and
+  actively-reopening are mutually exclusive model states, so the sticky force-close at
+  replace_from_author:470 never collided with a genuine reopen. (Small-N=9 empirical, not a proof.)
+
+R4 (trigger rate — DESCRIPTIVE) — the 27B triggered 3/9 ON runs (adv=[4,5,4]), ~the SAME rate as
+  the 35B arm-P diagnostic (2/6). PREDICTION (lower for the better-behaved model) NOT supported:
+  this task induces the resend pattern regardless of model version. This STRENGTHENS the flip —
+  the benefit is not 35B-specific.
+
+VERDICT (per pre-reg rule): R1 & R2 & R3 ALL PASS -> FLIP lever N default-ON.
+  Residual (honest): no model >35B is served by this pod, so the >35B regime is UNMEASURED. The
+  risk direction is FAVOURABLE but INFERRED, not measured: a more capable model ticks status more
+  reliably -> fewer byte-unchanged resends -> lever N fires even less -> even safer (extrapolation
+  from the mechanism + the disjointness above, NOT a measurement). Mitigant shipped: the opt-out
+  (set ZAKCODE_PLAN_AUTOADVANCE=0 / plan_autoadvance=False) disables it for any harmed caller.
