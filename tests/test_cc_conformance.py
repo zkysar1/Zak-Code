@@ -231,6 +231,44 @@ async def test_posttooluse_additional_context_reaches_aggregated_result(tmp_path
     assert result.additional_context == "INJECTED"
 
 
+async def test_pretooluse_allow_additional_context_reaches_the_model(tmp_path: Path) -> None:
+    # Claude Code delivers an ALLOWED PreToolUse hook's hookSpecificOutput.additionalContext to the
+    # model with that tool call's result. HookManager.run already aggregated it, but the loop read
+    # only the veto and updatedInput off a PreToolUse result, so the text never reached the model.
+    # Measured live 2026-09-13 on a Mind vessel: a PreToolUse[Bash] stop advisory fired 7 times and
+    # appeared in 0 of 97 session messages, so the mind never learned its run was ending.
+    import sys
+
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, call_tool, reply
+    from zakcode.hooks import HookManager, HookSpec
+    from zakcode.permissions import PermissionPolicy
+
+    script = tmp_path / "pre_ctx_hook.py"
+    script.write_text(
+        "import json; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', "
+        "'permissionDecision': 'allow', 'additionalContext': 'PRE-INJECTED'}}))"
+    )
+    agent = Agent(
+        provider=ScriptedProvider(
+            script=[call_tool("bash", {"command": "echo hi"}), reply("done")]
+        ),
+        permission_policy=PermissionPolicy("allow"),
+        hook_manager=HookManager(
+            [HookSpec(event=HookEvent.PRE_TOOL_USE, command=[sys.executable, str(script)])]
+        ),
+        default_model="scripted/test",
+        workspace_root=str(tmp_path),
+        max_iterations=5,
+    )
+    result = await agent.arun_turn("run it")
+    await agent.aclose()
+    outputs = [block.output or "" for block in result.tool_results]
+    assert outputs, "the scripted bash call never ran"
+    assert any("hi" in out for out in outputs), outputs  # the tool itself still ran
+    assert any("PRE-INJECTED" in out for out in outputs), outputs
+
+
 # ===========================================================================
 # Commands — Claude Code slash arguments (`/skill args`, use_skill args=…)
 # ===========================================================================
