@@ -9054,3 +9054,68 @@ trigger was a 27B writing a long module in one call on coach; no bench task is t
 no trigger to measure here and joins L4–L6 as "needs a task of that shape". The instrument reads the
 largest dump per run, not the last — the wrong-file zero ADR-0165 recorded, made again and caught by the
 positive control.
+
+## ADR-0167: the review's two enforcement levers have no trigger on the bench — L3 and L7 measured over every pod dump, and the lever table closes
+
+**Date:** 2026-09-13 · **Status:** accepted · **Review:** `docs/DETERMINISM-REVIEW.md` §5 (L3, L7) ·
+**Instruments:** `bench/unread_edits.py` (#427), `bench/undecodable_bounces.py` (#426) · **Corpus:** every
+provider request dump on zc-01 — 43 cells, 127 runs, 1,817 tool calls, the 27B and the 35B, 2026-09-12 → 13.
+
+### Context
+
+Two of the review's levers were written as enforcement the loop could add without asking the model:
+**L3**, `edit_file` refuses a path the session has not read (Claude Code's rule; a `write_file` of the
+same path counts as knowing it), and **L7**, repair rather than bounce a `write_file` whose JSON the
+output limit cut off (ADR-0081's step 0b bounce, measured on coach when a 27B wrote a long module in one
+call). Both were ranked "measure first": a refusal costs a turn, so L3 pays only if unread edits happen
+and fail; a repair pays only if bounces happen. Neither frequency had been measured. The dumps every arm
+since #402 leaves on zc-01 carry every tool call the model made and every result it saw, so both counts
+cost no pod time.
+
+### Decision
+
+Neither lever is built. Both counts are zero, each with a positive control that proves the counter
+could have found what it did not:
+
+| lever | trigger counted | result | control |
+|---|---|---|---|
+| L3 | `edit_file` on a path with no prior `read_file` / `write_file` / `edit_file` in the run | **0 of 361** edits (127 runs); the 361 known edits failed once (a duplicate `old_string`) | `--reads-dont-count` scores an edit as unread unless the path was WRITTEN first: **157 of 361** in 94 runs, all 157 succeeded |
+| L7 | ADR-0081 undecodable-argument bounce in a tool result | **0 of 1,817** tool calls | 397 shell results carry `[exit code:` — the parser sees tool text |
+
+The reading behind L3's zero: on this bench the 27B and the 35B never edit a file they have not opened
+or written, and an edit after only a read succeeds 157/157 — the read grounds the `old_string`. Claude
+Code's refusal exists for a behaviour these models do not exhibit here. Behind L7's zero: the pod
+requests carry `max_tokens` 8192, and the largest `write_file` argument in the corpus is 10.6k characters
+(27B; 9.5k on the 35B) — a third of the limit. The trigger is a single write past ~25k characters, which
+coach produced and no bench task asks for. Both levers stay in the table as "needs a task of that shape",
+with L4–L6.
+
+### What the dumps also settled
+
+- The review's L1 row still read "ARM D running" a day after ARM D held D1 on all seven tasks; the row
+  now says so, and the one-driver refactor has its control and no schedule.
+- The census after #425: 54 intervention kinds the loop can emit, 12 the bench has ever recorded, 27
+  reachable and never fired — including the two #425 added, until a run fires the harness (06 no
+  longer does after ADR-0166). The bench's task distribution reaches a quarter of the loop's
+  deterministic paths; ADR-0154 measured that production leans on the rest.
+- A dump reader must take the LARGEST wire dump per run: the turn-end side requests (structured output,
+  system + user only) are 2–3 KB and often sort last. `undecodable_bounces.py`'s first draft took the
+  last file and scored 18 of 127 runs as zero tool calls — the wrong-file zero ADR-0165's mechanism
+  reader had already made; the built-in control caught it (rb-10853).
+
+- `determinism_arm.py`'s per-run rows now carry `trace_interventions`; until this change only `run_task.py`'s
+  single-run report did, so an arm cell could never show a kind as recorded — the #425 kinds included
+  (guard-6374's shape: a field is not wired until the consumer reads it).
+
+### Consequences
+
+- The lever table is measured end to end: L2 and L8 shipped (ADR-0164 addendum, ADR-0166), L1 has its
+  control, L3–L7 have no trigger on the bench's task sizes. The next lever is a task shape, not a
+  code change: a module the model cannot write in one call, or a contract only a large workspace
+  states — the shapes coach meets and the bench does not.
+- Every "measure first" lever is answerable from the dumps before it costs pod time, and every such
+  count ships with its own positive control printed beside the zero.
+- The cheapest open measurement with an outcome to buy: ADR-0165's baselines on 09/10 predate the
+  survey shipping default-on (#421) and recorded 2–3 opening listing calls per run and 15 turns /
+  226–320 s for the 27B on 10; re-running those four cells under the survey says whether the listing
+  calls and the turns went with it.
