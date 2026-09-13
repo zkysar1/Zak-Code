@@ -8832,7 +8832,7 @@ that basin moves are scored as **rates over sampled basins**, never as N pinned 
 now defaults to true (`ZAKCODE_CONTEXT_WORKSPACE_SURVEY=0` opts out); on a large workspace the block is
 capped at 150 entries and depth 3, and it is snapshotted once per session so the cached prefix does not move.
 
-**Addendum (2026-09-13, arm J — the survey on tasks 09/10).** ADR-0165's baselines on 09 and 10 predate the
+**Addendum (2026-09-13, arm J — the survey on tasks 09/10; Zak-Code #430).** ADR-0165's baselines on 09 and 10 predate the
 survey shipping default-on, and every one of their runs opened with 2–3 listing calls. Arm J (pre-registered
 in `bench/results/survey-newtasks-preregistration.log`: eight cells, survey OFF vs ON per (model, task),
 interleaved, N=3 pinned) measured what went with the survey. **J2 held exactly**: 0 opening listing calls in
