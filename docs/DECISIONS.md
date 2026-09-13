@@ -8806,7 +8806,7 @@ model cannot skip (L4/L6: a round-trip or project test the loop runs), not a bet
 passed the model's own pytest run and failed only the verifier. Instrument: `determinism_arm.py` now
 captures every small text file in `sources`, so the next m04-style digest difference is inspectable.
 
-**Addendum (2026-09-13, arm G — basin sampling): the survey ships default-on.** The refusal
+**Addendum (2026-09-13, arm G — basin sampling; Zak-Code #421): the survey ships default-on.** The refusal
 above rested on one pinned basin against one other, and E3 showed the no-survey basin itself moving with the
 pod's state. Three identical runs of a deterministic pod are one sample of one basin (ADR-0160), so the
 question "does the survey hurt 06's outcome?" was not measurable by pinned repeats at all. Arm G
