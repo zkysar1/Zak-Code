@@ -12,3 +12,22 @@ Rules:
  J6: stop_reason completed on all 24 runs; harness runs per run reported (expected 0 on 09/10: the model runs pytest itself).
  A J2/J4 miss is reported as measured, not explained away; a J3 miss reopens the survey default.
 Cost: NT's 12 runs took ~34 min; 24 runs ~ 60-70 min of pod time.
+
+=== ARM J results (stamped 2026-09-13 04:20 UTC; chain 03:24:58 → 04:2x UTC on zc-01, build 3d1d2ee35804, main@5efecde #425; JSONs bench/results/determinism-zakcode-pinworkspace-temp0-{09,10}*.J-*.json; scorer /root/armj-summary.py)
+cell                        pass  turns        wall s (median)        opening listing  harness  stop
+J-NOSURVEY-35B-09           3/3   9,9,9        46.9,46.4,46.5 (46.5)  3,3,3            0        completed x3
+J-SURVEY-35B-09             3/3   7,7,7        37.9,38.0,38.0 (38.0)  0,0,0            0        completed x3
+J-NOSURVEY-35B-10           3/3   9,9,9        188.1,185.3,185.5 (185.5) 3,3,3         0        completed x3
+J-SURVEY-35B-10             1/3   16,17,17     469.5,240.0,226.9 (240.0) 0,0,0         0        completed x3  <-- J3/J4 miss
+J-NOSURVEY-27B-09           3/3   9,9,9        51.8,51.1,51.1 (51.1)  3,3,3            0        completed x3
+J-SURVEY-27B-09             3/3   7,7,7        38.5,38.4,38.4 (38.4)  0,0,0            0        completed x3
+J-NOSURVEY-27B-10           3/3   15,15,15     221.8,214.8,211.3 (214.8) 3,3,3         0        completed x3
+J-SURVEY-27B-10             3/3   11,11,8      210.3,209.3,158.7 (209.3) 0,0,0         0        completed x3
+Every cell byte-identical within itself except J-SURVEY-35B-10 (3 states); survey block present in the prompt iff SURVEY (24/24 as intended).
+J1 MISS on all four pairs by the letter (NOSURVEY digests != NT): the model-written .py files differ from the NT baselines' (09: pricing/discounts.py; 10: utils/duration.py + tests/test_duration.py), passes equal (3/3 = 3/3), and NT's 10 runs failed their first pytest where J-NOSURVEY's passed first time. The main conversation's first request is byte-identical between NT and J-NOSURVEY (35B/09: system 9834 chars, same sha256; same user, same 25 tools, max_tokens 8192), so the build did not change the prompt: the difference is the pod's basin between ~01:00 and 03:25 UTC on identical input (rb-10827 class). J2-J5 are therefore scored within this chain only, as the rule requires.
+J2 HOLDS: opening listing calls 0,0,0 under the survey vs 3,3,3 without, on every (model, task) — the prediction landed exactly.
+J3 MISS on J-SURVEY-35B-10: 1/3 against NOSURVEY 3/3 — a survey cost on a task that was wide-basin without it; by the letter this heads the review (F9 class) and REOPENS the survey default. Mechanism (dumps, names only): without the survey the 35B lists the tree three times and reads pyproject.toml FIRST; with it, it reads slug.py first and pyproject.toml fourth; the two failing runs' verifier tail is ruff's docstring-section rule from [tool.ruff] ("Add blank line after Raises"). No run in any arm (J or NT, 24 + 12 runs) ran the project's lint (make lint / ruff); every shell call was pytest.
+J4 MISS on (35B, 10): 16,17,17 vs 9,9,9. Holds on the other three; 27B/10 dropped from 15,15,15 to 11,11,8 — beyond the predicted 12-13.
+J5: wall medians SURVEY <= NOSURVEY on 3 of 4 (38.0 vs 46.5; 38.4 vs 51.1; 209.3 vs 214.8); slower on 35B/10 (240.0 vs 185.5).
+J6 HOLDS: 24/24 completed; harness_verify/project_verify 0 in every run (the model runs pytest itself; the rows carried trace_interventions as #427 intended).
+Consequence by the letter: the survey default is reopened. The decisive instrument for an outcome question on a task the survey makes near-tie is basin sampling (ADR-0160, rb-10849) — arm K, pre-registered separately (survey-basin-10-preregistration.log); the durable fix the mechanism points at is a check the model cannot skip (review lever L4, Zak-Code #429, arm L).
