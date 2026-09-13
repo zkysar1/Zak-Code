@@ -9329,7 +9329,7 @@ legitimately wanting to reopen a harness-advanced step) did not arise on the 35B
 downside before a default-on flip.
 
 **Addendum (2026-09-13, arm R — the sticky-reopen risk measured ABSENT on a better-behaved model; lever N
-flipped DEFAULT-ON; PR_ARMR).** The broader-model arm found the pod serves no model larger than 35B (three
+flipped DEFAULT-ON; #439).** The broader-model arm found the pod serves no model larger than 35B (three
 served: `zds-qwen3.5-35b`, `zds-qwen3.6-35b`, `zds-qwen3.8-27b`), so it ran the newest/best-behaved available
 proxy, `zds-qwen3.8-27b`, N=18 (a strict-pinned pair + a `--no-pin` sample; pre-reg + results in
 `bench/results/plan-capability-27b-preregistration.log`). All three safety rules held. **R1** — the six pinned
