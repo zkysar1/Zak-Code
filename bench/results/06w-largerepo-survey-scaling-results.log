@@ -1,0 +1,54 @@
+06w LARGE-REPO SURVEY-SCALING — RESULTS
+stamped: 2026-09-13 16:58 UTC   (preregistration: 06w-largerepo-survey-scaling-preregistration.log, #447)
+all four arms N=6, model-fixed on zds-qwen3.6-35b via pod 10.0.0.250:9090; zakcode temp0+--no-pin
+(matches 06v exactly), CC as-ships (no temp knob). Raw: zakcode-06w-largerepo.json, cc-qwen-06v.json,
+cc-qwen-06w.json (06v zakcode baseline: zakcode-06v-conv-in-docs.json, #446).
+
+═══ SCORECARD ═══
+  arm           pass   read_conv   failure classes (the discriminator)
+  zakcode-06v   5/6    n/a*        adherence(R1) ×1
+  zakcode-06w   5/6    n/a*        adherence(R1) ×1          <- CLUTTER-IMMUNE (5/6 = 5/6)
+  CC-06v        3/6    3/6         surfacing(R1), completeness(R4), emitter(taskdiff)
+  CC-06w        2/6    4/6         emitter ×2, adherence(R1), surfacing(R1)
+  * zakcode: the workspace survey LISTS docs/CONVENTIONS.md in the turn-1 prompt (deterministic,
+    positive-control proven below), so surfacing is not a per-run agentic read the CC runner captures.
+
+═══ THE ROBUST FINDING (mechanism-level, clutter-INVARIANT) ═══
+Deterministic context assembly COLLAPSES CC's multi-modal failure distribution down to zakcode's
+single shared adherence residual — and does so invariant to clutter:
+  * zakcode fails in EXACTLY ONE way at both clutter levels: the import-yaml adherence residual
+    (R1 violated with the rule surfaced). It NEVER fails on surfacing/discovery, because the survey
+    guarantees the convention file is in the prompt. 2 misses in 12 runs, both the same class.
+  * CC fails in FOUR distinct ways across its two arms: surfacing (non-reader import-yaml),
+    completeness (R4 parametrize miss), emitter (task-difficulty round-trip bug), AND adherence.
+    Its convention discovery is probabilistic — read_conv 3/6 then 4/6, never 6/6 — so it stays
+    exposed to the surfacing class zakcode structurally removes. 7 misses in 12 runs, four classes.
+This is the beyond-parity property, and it is PROVEN, not inferred:
+  * ASSEMBLY POSITIVE-CONTROL (deterministic, zero model calls): workspace_survey() on the 46-file
+    06w tree lists docs/CONVENTIONS.md at position 13/39, no truncation (46 << SURVEY_MAX_ENTRIES=150).
+    Clutter-immune surfacing, byte-identical across boxes (tree digest matched zc-01).
+  * OUTCOME: zakcode 5/6 = 5/6 across a +40-file clutter jump, same single failure class.
+
+═══ HONEST NEGATIVES (the preregistration held me to these) ═══
+1. GAP-WIDENING is DIRECTIONAL, NOT significant. zakcode > CC at BOTH clutter levels (5 vs 3, 5 vs 2),
+   and the apparent widening rides on CC 3/6 -> 2/6, which is a ONE-RUN difference at N=6 (Fisher ~1.0
+   within-CC). Do not claim clutter significantly widened the gap.
+2. THE PREDICTED MECHANISM IS FALSIFIED. The prereg predicted clutter would AMPLIFY CC's discovery-skip
+   (fewer convention reads -> more misses). The opposite moved: CC read_conv ROSE 3/6 -> 4/6. The most
+   likely contributor is a DESIGN CONFOUND flagged in the prereg — 06w's README.md says "See docs/ for
+   details", a discovery AID 06v lacks — but at N=6 the rise is also within noise. Either way, clutter
+   did NOT compound via discovery-suppression on this task at this scale. The prereg's CC-06w < CC-06v
+   prediction held DIRECTIONALLY (2/6 < 3/6); its stated MECHANISM did not.
+
+═══ WHAT THIS DOES AND DOES NOT ADVANCE (thrust 5) ═══
+CONFIRMED (robust): on convention-inference, deterministic assembly eliminates the surfacing failure
+class and is clutter-invariant — a real, proven beyond-parity property, sharper than "gap widens".
+NOT shown: that the correctness gap grows with repo SIZE via discovery-suppression (noise + README
+confound). Two clean follow-ups, in priority order:
+  1. 06x — the >150-entry regime, the survey's OWN ceiling. Past SURVEY_MAX_ENTRIES=150 the survey
+     TRUNCATES; if docs/CONVENTIONS.md falls past the cap in sorted-walk order, zakcode ALSO loses
+     surfacing (for docs/-located conventions; root CONTRIBUTING.md still folds). That is the decisive
+     scaling test AND motivates a concrete IMPROVEMENT lever: a convention-AWARE survey that always
+     lists convention-named files even past the cap (would make clutter-immunity scale unbounded).
+  2. 06w' — re-run WITHOUT the README "see docs/" hint (remove the confound), higher N, to cleanly
+     isolate whether clutter suppresses CC's discovery when nothing points at docs/.
