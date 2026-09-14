@@ -1,0 +1,87 @@
+THRUST 8 PILOT — 11-discovery-token PURE-DISCOVERY (both arms) — RESULTS
+stamped: 2026-09-14 09:39 UTC   (alpha; task 11-discovery-token added Zak-Code #461)
+================================================================================
+HYPOTHESIS (campaign thrust 8): a PURE-DISCOVERY task isolates the discovery signal from the
+06-family's adherence+emitter residuals (which swamp the correctness gap at N=6). pass <=> the agent
+FINDS an un-guessable token; compliance (return the string) is trivial once found — no serializer to
+get wrong, no stdlib-only import temptation. PREDICTION: if zakcode's deterministic survey LISTING
+out-discovers Claude Code's agentic search, CC's pass rate drops below zakcode's on a token that is
+hard to locate.
+
+SETUP: token ZK-9F3A-2231-RELEASE in ops/release-registry.md (depth 2) among 76 clutter files, with
+decoy "release" mentions (CHANGELOG, deploy.py, process.md) as grep-noise. Model-fixed on
+zds-qwen3.6-35b via the pod, N=6 each. CC as-ships/unaided (NO --surf: must discover). zakcode
+--no-pin temp0. Raw: cc-qwen-11-discovery-token.json (zc-01:/root),
+determinism-zakcode-pinOFF-temp0-11-discovery-token.json (zc-01:/opt/zak-code-bench/bench/results).
+
+═══ SCORECARD ═══
+  arm         pass    determinism            turns          notes
+  CC-11       6/6     distinct_outputs 1/6   6,7,8,8,10,8   fully deterministic output
+  ZAK-11      6/6     PRIMARY identical 6/6  8,8,8,8,8,9    every-file byte-identical; temp0
+  Both arms saturate on BOTH axes (correctness 6/6 AND byte-determinism). No gap.
+
+═══ VERDICT: task TOO EASY — the discovery-determinism gap does NOT appear here ═══
+  The token was discoverable by TWO trivial channels, both measured in the CC run JSON:
+   (A) glob('*') surfaced the OBVIOUS filename `ops/release-registry.md` -> read directly. 5/6 runs.
+   (B) grep 'release.tag' — the regex '.' matched the SPACE in the registry prose
+       "...official release tag ... is `ZK-9F3A-2231-RELEASE`", so grep RETURNED THE VALUE on the
+       matching line. run 5 passed with ONE read (meta.py) and this single grep, 0 registry reads.
+  A keyword-named carrier with the value sitting next to the keyword is a double signpost; a 35B
+  model finds it every time, deterministically, unaided.
+
+═══ THE SHARPER FINDING (bounds the beyond-parity claim) ═══
+  For a GREPPABLE, OBVIOUS-LOCATION target, Claude Code's discovery MATCHES zakcode (6/6 vs 6/6,
+  both deterministic). zakcode's survey-listing edge is the deterministic, zero-model-cost SURFACING
+  of a KNOWN-LOCATION convention into the system prompt — it is NOT "out-discovering CC" on
+  hard-to-find targets. This refines the corrected thrust-7 finding: the 06-family lead was the
+  shared adherence residual (stdlib-only) plus deterministic surfacing, never a discovery-RATE gap.
+  Pure discovery of a signposted token is easy for both loops.
+
+═══ FOLLOW-UP: 11b-discovery-hard (N=12), removes BOTH channels on ONE clean axis ═══
+  Channel A killed: carrier moved to ops/internal/appendix-c.md — depth 3 (still <= SURVEY_MAX_DEPTH,
+    so zakcode's survey LISTS it), NON-OBVIOUS name (no release/registry/tag) so glob gives no signpost.
+  Channel B killed: the keyword "release tag" appears in the file but NOT on the value's line — the
+    value sits in a table under the oblique label `stamp`; a separate sentence states the stamp IS the
+    release tag. Token carries no release/tag substring. So grep for the prompt's keywords finds the
+    FILE (prose line) but never the VALUE — the agent must READ the file and map stamp->tag.
+  Everything else held constant (trivial compliance, no serializer, no import temptation; 107 files
+  <= 150). Solvability controls pass (stub->FAIL, correct->PASS, wrong->FAIL); build _selfcheck
+  asserts both channel-defeats. TESTS: does removing the shortcuts drop CC below saturation while
+  zakcode's deterministic survey coverage holds (-> first clean pure-discovery gap), or do both hold
+  (-> the edge is bounded to surfacing, not discovery)? Either outcome is a sharp, honest result.
+
+═══ SIGNAL INTEGRITY ═══
+  Both arms fully deterministic at temp0: --no-pin randomizes the mkdtemp workspace path in the
+  prompt, but the OUTPUT (app/meta.py returning the fixed token) is workspace-path-independent, so no
+  nondeterminism is induced — distinct from tasks whose output embeds the path. zc-01 build unchanged
+  across the pilot. CC reproduced its expected discovery behavior; the 6/6 is a saturation, not a
+  fluke.
+
+================================================================================
+11b-discovery-hard RESULT (N=12, 2026-09-14 10:14 UTC) — both discovery shortcuts defeated
+================================================================================
+  arm          pass     determinism              turns
+  CC-11b       12/12    distinct_outputs 1/12    6-12 (mean ~9)
+  ZAK-11b      12/12    PRIMARY identical 12/12   [9,8,9,9,8,9,9,9,8,9,10,8] spread 2
+  PARITY, both fully deterministic. Removing the two shortcuts did NOT drop CC below saturation.
+
+═══ WHY (from the CC run JSON) — the discovery-determinism hypothesis is FALSIFIED, cleanly ═══
+  CC read ops/internal/appendix-c.md in ALL 12 runs. Every run ran glob('*'), which returns the
+  COMPLETE file inventory (all 107 files) — FUNCTIONALLY IDENTICAL to zakcode's survey LISTING. So
+  there is NO discovery-inventory gap: CC enumerates every file, sees the unfamiliar appendix-c.md
+  under ops/internal/, and reads it. The non-obvious FILENAME (channel-A defeat) is irrelevant — CC
+  does not need a signpost, it globs everything. (grep 'release.?tag' also matched the file's prose
+  sentence as a second pointer; the VALUE was still read from the table, so channel-B's value-return
+  shortcut stayed defeated — but it did not matter, glob sufficed.)
+
+═══ THRUST 8 CONCLUSION: discovery is NOT zakcode's edge (bound, not a gap) ═══
+  CC's glob('*') ≈ zakcode's deterministic survey listing: in the <=150-file / depth<=3 regime both
+  loops obtain the SAME complete file inventory, then read the target reliably. On a REQUIRED-value
+  ("find and return") task CC discovers 12/12, fully deterministic — PARITY with zakcode on BOTH
+  correctness and determinism, across EASY (11) and HARD-to-signpost (11b) discovery alike.
+  The beyond-parity property is therefore bounded AWAY from discovery. zakcode's genuine edge (the
+  06 family) is the deterministic, zero-model-cost CONTENT-FOLD of UNPROMPTED/optional conventions
+  into the system prompt, which raises ADHERENCE on tasks where CC would not otherwise consult the
+  rule — NOT discovery of a required value. An ever-harder 11c to force a discovery gap would be
+  p-hacking a falsified hypothesis; the honest result is this bound. Campaign refocuses on the
+  convention-surfacing / adherence lever, where the edge actually lives.
