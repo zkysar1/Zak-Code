@@ -361,3 +361,51 @@ ZAK < CC here is the first CC-over-ZAK cell on a real guide and the falsifiable 
   it fits (discriminating test: a synthetic guide folds to 8,800 chars on ADR-0171, 8,089 after). Full suite 3930.
   Build md5 aae1a13a0864. Thrust 19 (staged): deploy it alone after t18; re-run ZAK 15i (→ 12/12), 15 (holds), 14p
   (identical fold, holds).
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 18 RESULT (2026-09-14 18:14 UTC) — THE RESIDUAL IS REAL ON THE REAL GUIDE: ZAK-15i 1/12 (rule omitted by the fold; the named omission did not prompt a read) vs CC-15i 12/12 (whole file); no-guide 0/12
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Batch t18_realguide_idformat_batch.sh on zc-01, 17:02:28 → 18:11:31 UTC, ADR-0171 build (md5 272999c1ff34), cells
+15i / 15in (#480). JSONs committed here: determinism-zakcode-pinOFF-temp0-15i-realguide-mind-beliefid.json,
+…-15in-…-noguide.json, cc-qwen-15i-realguide-mind-beliefid.json.
+
+═══ SCORECARD — pre-registration: 15in LOW; ZAK-15i LOW unless the note prompts a read; CC-15i ~ the t17 CC rate (11/12) ═══
+  arm       guide in context                    pass          turns                                 elapsed/run             next_belief_id([]) outputs
+  ZAK-15in  none (control)                      0/12          [9,6,8,8,7,6,6,7,8,7,6,7] spread 3    25.2-84.4s mean 46.2    '1' ×6, 'belief-1' ×4, 'BLF-1', 'belief-0'
+  ZAK-15i   8,186-char fold, ID Formats OMITTED  1/12          [8,6,7,6,6,10,7,6,6,6,6,9] spread 4   40.3-168.6s mean 65.6   'belief-1' ×8, '1' ×3, 'bel-…' ×1 (10 turns)
+  CC-15i    whole 47,511-char file (native)     12/12 [13,8,18,11,17,9,10,16,22,13,16,10] spread 14                           182.0-282.9s mean 233.3           'bel-…' ×12 (12 distinct output states)
+  The one ZAK-15i pass: the JSON records no reads, so whether that run fetched CLAUDE.md on the note's cue or
+  guessed the prefix is not recorded; eleven of twelve never obtained a rule named by heading in the note in front
+  of them. Both ZAK arms searched (6-10 turns, 46-66 s mean, against 4 turns / 22 s when the rule is in the fold).
+  CC read app/ids.py in every run and tests/test_ids.py in 7, ran 53 greps across the 12 runs, and never read
+  CLAUDE.md (folded natively): the rule reached it as prefill, at 233 s per run and 8-22 turns.
+
+═══ READING ═══
+  (i) The named omission is not a working cue for the 35B even when the omitted heading is the task's subject
+  ("ID Formats" for an id task): ADR-0170's premise ("a small model cannot be asked to fetch") measured a second
+  way, on a real guide. (ii) The fold's residual on a real document is a rule under a plain heading whose PARENT
+  names the mandate — the author's outline says "Universal Conventions", the fold never looked up. (iii) CC 12/12 vs ZAK 1/12 — Fisher exact p = 9.6e-06 — the first CC-over-ZAK cell on a real guide, as
+  pre-registered. CC has the rule by construction (the whole file) and pays 233 s/run and 8-22 turns for it; the
+  fold's job is to make that unnecessary, and ADR-0172 does it for this shape (a plain-headed section whose
+  ancestor names the mandate).
+
+═══ ADR-0172 (Zak-Code #482) — the heading tier reads the OUTLINE PATH; the fold is checked against the note it emits ═══
+  Justified by this cell: `_fit_sections` gives each section the labels of its open ancestor headings plus its
+  own, and a section is tier 0 when ANY label on that path names a rule or mandate; body/plain tiers, rendering
+  and note text unchanged. Real guide: 7,988-char fold, 20 sections, "### Naming Rules" AND "### ID Formats" in,
+  every child of "## Universal Conventions" promoted (out: Project Purpose, Architecture, the two Design
+  Principles, Cognitive Primitives, Knowledge Retrieval). Regression folds 13 / 14o / 14p / 14u / 14x BYTE-IDENTICAL.
+  Plus the ADR-0170 reserve defect found on this guide (fold overran the cap by 35 chars because the reserve
+  named the first twelve sections, not the omitted ones; now an exact post-check that sheds the lowest-priority
+  section — rb-10931). Tests +3 (nested plain subsection kept; no inheritance from a plain parent; the cap never
+  overrun — 8,800 → 8,089 on the discriminating guide). Full suite 3930. Build md5 aae1a13a0864.
+
+═══ THRUST 19 — RE-MEASURE UNDER ADR-0172, PRE-REGISTERED ═══
+  Deploy ONLY the ADR-0172 prompt.py (md5 aae1a13a0864) to zc-01 after t18; canonical probe there: 15i fold
+  contains "bel-" AND the timestamp format; 14p fold identical to ADR-0171's (md5 3a4f6d831807). Archive the
+  current JSONs as *-PRE-ADR0172.json; run ZAK 15i → 15 → 14p at N=12 (t19_adr0172_remeasure_batch.sh).
+  PREDICTION: 15i 1/12 → 12/12; 15 holds ≥ 10/12 (its fold shrank to 7,988 chars, Naming Rules still in); 14p holds
+  12/12 on a byte-identical fold. Launch time and result follow in the thrust-19 section.
+  LAUNCHED 18:12:31 UTC (t19 script md5 efa103a9f775; prompt.py on zc-01 md5 aae1a13a0864, ADR-0171 file backed up as
+  /root/prompt.py.ADR0171.bak). zc-01 probes: 15i and 15 fold 7,988 chars with both marks in (md5 9b02c28eb12c);
+  14p fold 8,071 chars md5 3a4f6d831807 = the ADR-0171 probe, byte-identical. Pre-fix JSONs archived as *-PRE-ADR0172.json.
