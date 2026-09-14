@@ -9466,3 +9466,58 @@ fits. Residual, stated honestly: a hard rule stated in unemphasized lowercase pr
 lexically indistinguishable from ordinary guidance and still folds in document order — the note names it. The
 size policy (a window-proportional budget, with the total cap scaled or the workspace-root guides reserved
 first) is the next lever, decided on thrust 14's smarter-vs-bigger measurement.
+
+## ADR-0172: the heading tier reads the outline path — a section under a heading that names a mandate is kept first; the fold is checked against the note it emits
+
+**Context.** ADR-0170/0171 fold a guide past the per-file cap by whole sections, keeping first the sections whose
+own heading names a rule or mandate, then those whose body emphasizes one, then the rest in document order. Thrust
+17 took the policy to a real document — the Ayoai-Mind repository's CLAUDE.md, 47,511 chars, 39 sections, verbatim —
+and it held: the 8,186-char fold kept `### Naming Rules` and the 35B applied a real convention 12/12 (4 turns, 22 s
+per run) where Claude Code's native fold of the whole file scored 11/12 with one dilution miss at 164 s per run. The
+same probe showed what the fold drops: `### ID Formats` and `### File Formats` — plain topical headings with
+unemphasized bodies — even though both sit under `## Universal Conventions`. The author's outline says they are
+conventions; the fold scored each section on its own heading and body alone and never looked up. Thrust 18 built the
+residual cell on that real guide (`15i-realguide-mind-beliefid`: belief ids are `bel-NNN`, stated only in ID
+Formats, no default route to the prefix): the canonical probe shows the rule absent from the fold and "ID Formats"
+named in the note's omitted list; measured on the ADR-0171 build, ZAK-15i scored 1/12 (turns 6 to 10 — the model
+searched the repo and answered `belief-1` eight times and a bare `1` three times; one run produced `bel-`, and the
+bench JSON records no reads, so whether it fetched the file is not recorded) (no-guide control 0/12; Claude Code
+with the whole file 12/12 — 8 to 22 turns, 233 s per run against 66 s for the searching zakcode runs and 22 s when the rule is in the fold). Eleven of twelve runs never obtained a rule that was named, by heading, in the note
+in front of them: the omission note is not a working cue for a 35B even when the omitted heading is the task's
+subject, which is ADR-0170's premise measured a second way. What it must obey has to be in the fold, and the outline
+already says what this section is.
+
+**Decision.** The heading tier reads a section's OUTLINE PATH. `_fit_sections` walks the headings with a depth
+stack and gives each section the labels of its open ancestors plus its own; a section is priority 0 when ANY
+label on that path names a rule or mandate. The body tier, the plain tier, the document-order rendering and the
+note text are unchanged. On the real guide every child of `## Universal Conventions` is promoted and the fold
+becomes 7,988 chars with both `### Naming Rules` and `### ID Formats` in; the synthetic bench guides have no
+nested mandate headings, so the 13 / 14o / 14p / 14u / 14x folds are byte-identical to ADR-0171's (verified
+against the ADR-0171 module on the same workspaces).
+
+Found on the same real guide, a defect in ADR-0170's budget: the note lists the OMITTED headings by name
+(twelve, then "+N more"), and the budget reserved for it was computed from a note naming the first twelve
+sections in DOCUMENT order. On a guide whose late headings are the long ones the real note is longer than the
+reserve, and the fold overran the cap — 8,227 chars against 8,192 — silently, because nothing on the fold path
+asserted the cap. Every synthetic guide has uniform short headings, so fifteen cells passed without exposing
+it. The fold is now rendered with the note it actually emits and sheds its lowest-priority section until it
+fits. An upper-bound reserve (the twelve longest labels) was tried first and rejected: it shrank two regression
+folds by a tail section for no benefit; the exact check leaves every prior fold byte-identical.
+
+**Alternatives rejected.** Widening the heading vocabulary to "formats" / "identifiers" (a fit to one file;
+the outline already says these are conventions). Keeping a parent with all of its children as one block
+(all-or-nothing; the greedy first-fit over promoted children keeps what fits and names the rest). Relying on
+the note's cue — the omitted heading is named, and an id task could send the model to the file — measured in
+thrust 18 (above) rather than assumed. A window-proportional budget: thrust 14 settled the size policy (the
+whole 24,617-char guide bought nothing over the 8,192 fold at +78% wall time).
+
+**Consequences.** Pre-registered re-measure (thrust 19, ADR-0172 build only): `15i` → 12/12; `15` holds
+(Naming Rules stays in the smaller fold); `14p` holds on a byte-identical fold. Tests pin the nested plain
+subsection kept under a mandate-naming parent, no inheritance from a parent that names none, and the cap
+never overrun when the omitted headings are the long ones (8,800 chars under the old reserve, 8,089 after). The
+budget the promotion spends on the real guide is visible: Project Purpose, Architecture, both Core Design
+Principles, Cognitive Primitives and Knowledge Retrieval (a tier-1 section) leave the fold to make room for the
+conventions block; for an adherence task that is the right trade and for a "what is this repo" question it is
+not — a task-conditional fold is a different decision and is not taken here. Residual, unchanged from ADR-0171:
+an unemphasized lowercase rule under a plain heading with no mandate-naming ancestor still folds in document
+order.
