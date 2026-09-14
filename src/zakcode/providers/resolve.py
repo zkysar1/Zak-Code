@@ -365,9 +365,7 @@ def resolver_for(settings: object, *, use_cache: bool = True) -> AvailabilityRes
     """Build the v1 resolver from Settings (typed loosely to avoid an import cycle)."""
     return AvailabilityResolver(
         ollama_base_url=getattr(settings, "ollama_base_url", "http://localhost:11434"),
-        preference=list(
-            getattr(settings, "auto_model_preference", ["openai", "anthropic"])
-        ),
+        preference=list(getattr(settings, "auto_model_preference", ["openai", "anthropic"])),
         use_cache=use_cache,
     )
 
