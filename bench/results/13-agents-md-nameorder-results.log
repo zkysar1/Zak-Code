@@ -185,3 +185,58 @@ byte-identical, no note). The t12 JSONs were archived as *-PRE-ADR0170.json on z
   the workspace's own — under a 47K ancestor CLAUDE.md the workspace AGENTS.md was cut to 175 chars — because files
   fold outermost-first and the budget is first-come. A window-proportional budget must scale the total cap with the
   per-file cap or reserve budget for the workspace-root guides. (The bench's mkdtemp workspaces have no ancestors.)
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 14 RESULT (2026-09-14 16:05 UTC) — SMARTER FOLD = BIGGER FOLD on a 3x guide: A 12/12, B 12/12; the bigger fold costs +78% wall time
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Batch t14_foldsize_batch.sh on zc-01, 15:47:46 → 15:58:06 UTC, cell 14x-agents-md-longguide-xl (#473): 24,617-char
+guide, the MANDATORY rule at 92%. Arm A on the ADR-0170 build (md5 85e7d75c4c03); arm B on the same file with ONLY
+MAX_CONTEXT_FILE_CHARS = 32_768 (md5 3ac14ce9da03); the ADR-0170 file restored and md5-verified before the batch
+ended, canonical probe re-run (fold md5 b91f2f25e03a). JSONs committed here as *-ARM-A-cap8192.json / *-ARM-B-cap32768.json.
+
+═══ SCORECARD — pre-registration: A → 12/12; B → 12/12 predicted — BOTH AS PREDICTED ═══
+  arm                fold                                        pass    turns                               elapsed/run            people.py
+  A smarter (8,192)  7,988 chars, 9 of 28 sections, rule at 90%  12/12   [4 x12] spread 0                    17.1-19.2s mean 18.4   8893785d04
+  B bigger (32,768)  24,617 chars (whole guide), rule at 92%     12/12   [4,4,4,4,7,4,4,4,4,4,4,6] spread 3   27.4-49.7s mean 32.8   8893785d04
+  Same implementation in both arms (the 13/14o/14u digest). Interventions: A uniform (harness_verify 1,
+  text_only_stall 1 in all 12); B mixed (suite_scope_gate in some runs, none in others).
+
+═══ READING — no dilution at 3x; size buys nothing here, and costs ═══
+  (i) The 35B follows a rule 92% deep in a 24,617-char (~6K-token) guide 12/12: attention dilution is not a
+  constraint at this size on a 131K window. (ii) The rule-first 8K fold is as good on outcome and 44% cheaper per
+  run (18.4 vs 32.8 s — the extra ~4.5K tokens are prefill on every turn). (iii) On this stimulus the two policies
+  are indistinguishable on pass rate and the smaller one is strictly cheaper. The caps' ADR ("the 35B's window is
+  the constraint the budgets protect") keeps its decision, now with data: a larger fold is not the lever. What a
+  larger fold could still buy is content that PRIORITY cannot select — the residual, answered by thrust 15/16.
+  SIZE-POLICY DECISION: MAX_CONTEXT_FILE_CHARS stays 8,192; no window-proportional ADR. Revisit only if a cell shows
+  priority failing where size would succeed. The dilution knee (4x / 8x) is left unmeasured on purpose.
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 15 RESULT — THE RESIDUAL IS REAL: 14p (rule under a plain heading) 0/12 on the ADR-0170 build, as pre-registered
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Batch t15_14p_plainheading_batch.sh on zc-01, 15:59:24 → 16:02:55 UTC; cell 14p-agents-md-longguide-plainheading
+(#475): 14o with ONE change — the rule heading is "## Working with people data" (no mandate keyword); body, rule,
+filler, length (9,746 chars, rule at char 8,760) and verify byte-identical. ADR-0170 build (md5 85e7d75c4c03);
+canonical probe on zc-01: fold 7,829 chars, 19 of 25 sections, rule ABSENT (md5 ce6ef7c8ca2a).
+  ZAK-14p   ADR-0170   0/12   turns [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4] spread 0   elapsed 16.5-20.3s   people.py c7d3895372 ("Ada Lovelace" 12/12)
+  The 14o pre-fix mechanism exactly: the rule is not in context, the model writes "First Last" in 4 turns. The
+  heading tier alone leaves every guide that states its hard rules under topical headings where it was.
+
+═══ THE FIX — ADR-0171 (Zak-Code PR #476): the fold keeps what the author EMPHASIZED ═══
+  Lowercase "must" cannot be the signal — counted per section, the rule section scores 8.4 mandate words per KB
+  against 7.8 ("Continuous integration") and 7.0 ("Concurrency"): a density threshold would be a fit to one file.
+  What separates the rule is that its author emphasized it: MUST / NEVER in capitals (3 in the rule section, 0 in
+  every filler section), the RFC-2119 convention; zak-code/CLAUDE.md bolds its non-negotiables the same way. So
+  _fit_sections gets a middle tier: heading names a mandate (0) → body carries an EMPHASIZED mandate — capitals
+  MUST / MUST NOT / NEVER / ALWAYS / MANDATORY / REQUIRED / FORBIDDEN / PROHIBITED / DO NOT / SHALL, or the same
+  words in **bold** / __underscores__ (1) → the rest in document order (2). The 14o / 14u / 13 / 14x folds keep the
+  same sections (only the note's wording changes); the Mind's 47K CLAUDE.md gains the four sections that say MUST
+  NOT / NEVER. Tests: emphasized body kept whole past the cap; bold as emphasis; lowercase not promoted (omitted
+  by name); tier order heading > body > plain. Full suite 3927 passed. Residual, stated: an unemphasized lowercase
+  rule under a plain heading is lexically indistinguishable from guidance and still folds in document order.
+
+═══ THRUST 16 — RE-MEASURE UNDER ADR-0171, PRE-REGISTERED ═══
+  Deploy ONLY the ADR-0171 prompt.py (md5 272999c1ff34) to zc-01 after t15; canonical probe there: 14p's fold must
+  CONTAIN the rule, 14o keeps its sections, 14u/13 unchanged. Archive the current JSONs as *-PRE-ADR0171.json; run
+  ZAK 14p → 14o → 14u → 13 at N=12 (t16_adr0171_remeasure_batch.sh). PREDICTION: 14p → 12/12; 14o, 14u, 13 hold
+  12/12. Launch time and result follow in the thrust-16 section.
