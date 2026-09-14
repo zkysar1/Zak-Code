@@ -31,7 +31,6 @@ from zakcode.providers.base import (
     StreamDone,
     StreamTextDelta,
 )
-from zakcode.providers.registry import get_capabilities
 from zakcode.providers.resolve import (
     AvailabilityResolver,
     ModelResolutionError,
