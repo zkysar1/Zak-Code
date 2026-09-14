@@ -1,0 +1,57 @@
+THRUST 9 — 12-agents-md-convention UNPROMPTED-CONVENTION ADHERENCE — RESULTS
+stamped: 2026-09-14 13:37 UTC   (alpha; task added Zak-Code #465)
+================================================================================
+HYPOTHESIS (thrust 9): thrust 8 falsified the discovery edge (CC glob('*') returns the complete file
+inventory ≈ zakcode's survey listing → both discover a REQUIRED value 12/12). The remaining candidate
+edge is zakcode's deterministic zero-cost CONTENT-FOLD of guide files (AGENTS.md/CLAUDE.md/ZAK.md) into
+the system prompt, which should raise ADHERENCE to an UNPROMPTED convention — one the task never
+mentions and that the agent has no functional reason to hunt for. PREDICTION FORK: CC adheres
+(proactively reads guide files) -> PARITY; CC does not -> ZAK>CC (the fold is the real lever).
+
+SETUP: task "implement version_string(major,minor,patch)". An arbitrary convention lives ONLY in
+AGENTS.md: version strings are `v<MAJOR>.<MINOR>` with the patch OMITTED — overriding the model's
+strong full-semver default on two axes (v-prefix + drop patch). Prompt never mentions it; task is
+solvable-but-wrong without consulting AGENTS.md; trivial to apply once known (a one-line format), so a
+fail is an ADHERENCE miss, not a coding miss. 26 files, AGENTS.md at root (plainly visible — this is NOT
+a discovery test). Model-fixed zds-qwen3.6-35b via pod, N=12 each. CC unaided (no --surf). zakcode
+--no-pin temp0 (folds AGENTS.md). Raw: cc-qwen-12-agents-md-convention.json (zc-01:/root),
+determinism-zakcode-pinOFF-temp0-12-agents-md-convention.json (zc-01:/opt/zak-code-bench/bench/results).
+
+═══ SCORECARD — the first CLEAN beyond-parity result ═══
+  arm         pass     determinism             turns     elapsed
+  CC-12       0/12     distinct_outputs 1/12   4-8       85-125s   (deterministically WRONG: "1.0.0")
+  ZAK-12      12/12    *.py IDENTICAL 12/12     4-7       19-28s    (adheres "v1.0"; 2 distinct PRIMARY
+                                                                     states = non-.py workspace noise)
+  ZAK>CC by 12 runs. And zakcode is ~4x FASTER (~25s vs ~90s): the fold gives it the convention up
+  front, so it does not burn turns exploring — and CC's exploration still returns the wrong answer.
+
+═══ MECHANISM (from the CC run JSON) — the gap is CONSULTATION, not discovery ═══
+  CC globbed the workspace in 11/12 runs (so it SAW AGENTS.md in the file listing — thrust 8's
+  glob('*') ≈ survey-listing holds), but READ AGENTS.md in 0/12 runs. Every CC run read ONLY
+  versioning.py (the target), implemented version_string trivially as full semver, and returned. CC
+  treats a self-contained-looking task as complete without consulting the guide file it can see.
+  zakcode FOLDS AGENTS.md CONTENT into the system prompt every run → the convention is unconditionally
+  in context → 12/12 adherence, no exploration needed. So discovery-INVENTORY is EQUAL (both see the
+  file); the gap is whether the loop CONSULTS + APPLIES an unprompted convention.
+
+═══ CONCLUSION: the durable beyond-parity property, isolated ═══
+  zakcode's deterministic guide-file content-fold makes a small model ADHERE (12/12) to an unprompted
+  convention that Claude Code ignores entirely (0/12). This is exactly the "more deterministic + works
+  on smaller models" lever: the fold puts the rule in context so the model does not have to REMEMBER to
+  look. It is NOT discovery (thrust 8 bounded that away) and NOT coding skill (trivial application,
+  solvability-controlled). It is unconditional, zero-cost SURFACING of guidance.
+
+═══ NEXT: CLAUDE.md control cell (pins the mechanism) ═══
+  Same task/convention, convention moved to CLAUDE.md instead of AGENTS.md. Claude Code AUTO-LOADS
+  CLAUDE.md, so PREDICTION: CC adheres -> PARITY (12/12 vs 12/12). That control proves the AGENTS.md
+  gap is specifically "CC does not auto-load AGENTS.md" (a standard cross-tool guide file zakcode folds
+  but CC as-ships does not), NOT a task artifact and NOT zakcode advantage on content CC also has. If
+  the control shows parity, the practical claim is precise and defensible: on repos that ship AGENTS.md
+  guidance, zakcode adheres where CC (this version) does not.
+
+═══ SIGNAL INTEGRITY ═══
+  Solvability controls (built pre-run): stub->FAIL, adherent v2.5->PASS, default semver 2.5.3->FAIL,
+  v-without-drop->FAIL, drop-without-v->FAIL — only full adherence passes, near-zero false-pass. CC's
+  "1.0.0" is exactly control #3 (the non-adherent default), so CC 0/12 is genuine non-adherence, not a
+  task bug. zc-01 build unchanged. CC distinct 1/12 = CC deterministically produces the SAME wrong
+  answer (not flaky) — it reliably does not consult AGENTS.md.
