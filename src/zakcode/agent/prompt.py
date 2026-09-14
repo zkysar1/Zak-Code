@@ -452,22 +452,35 @@ _MANDATE_RE = re.compile(
     r"|prohibited|do not)\b",
     re.IGNORECASE,
 )
+#: A mandate the AUTHOR emphasized inside a section body — capitals (RFC-2119 style: MUST, MUST
+#: NOT, NEVER, ALWAYS, …) or bold/underscore emphasis around the same words. Lowercase "must" is
+#: the guidance every section of a guide carries and promotes nothing (ADR-0171).
+_EMPHASIZED_MANDATE_RE = re.compile(
+    r"\b(?:MUST(?: NOT)?|NEVER|ALWAYS|MANDATORY|REQUIRED|FORBIDDEN|PROHIBITED|DO NOT"
+    r"|SHALL(?: NOT)?)\b"
+    r"|(?:\*\*|__)\s*(?i:must(?: not)?|never|always|mandatory|required|forbidden|prohibited|do not"
+    r"|shall(?: not)?)\s*(?:\*\*|__)"
+)
 #: A level-2..6 markdown heading line; level 1 is the document title and stays with the preamble.
 _HEADING_RE = re.compile(r"^#{2,6}\s+\S")
 
 
 def _fit_sections(name: str, content: str, limit: int) -> str | None:
     """Fold a sectioned markdown file into ``limit`` characters by keeping WHOLE sections — those
-    whose heading names a rule or mandate first, then the rest in document order — ending with a
-    note that lists the omitted headings (ADR-0170). Returns ``None`` when the file has no ``##``
-    sections or not one section fits, so the caller falls back to the head cut.
+    whose heading names a rule or mandate first (ADR-0170), then those whose body EMPHASIZES one
+    (MUST / NEVER in capitals or bold, ADR-0171), then the rest in document order — ending with a
+    note that lists the omitted headings. Returns ``None`` when the file has no ``##`` sections or
+    not one section fits, so the caller falls back to the head cut.
 
     Built from the note that did nothing: under ADR-0169 a 35B still scored 0/12 on
     ``14o-agents-md-longguide-over`` — 4 turns every run, identical outputs, the "read the file
     for the rest" cue never acted on — while the same rule INSIDE the fold (14u) scored 12/12. A
     small model cannot be asked to fetch; what it must obey has to be in the fold. Sections are
     kept whole because a cut section is exactly the false-completeness hazard the cliff exposed.
-    Kept sections keep their document order; priority decides only WHAT is kept.
+    Kept sections keep their document order; priority decides only WHAT is kept. The body tier
+    exists because real guides state hard rules under plain topical headings: the same rule under
+    "## Working with people data" (14p) is invisible to the heading tier, and lowercase "must"
+    cannot be the signal — every section of a guide says it somewhere.
     """
     total_len = len(content)
     parts: list[tuple[str | None, list[str]]] = [(None, [])]  # (heading line, its lines)
@@ -489,15 +502,19 @@ def _fit_sections(name: str, content: str, limit: int) -> str | None:
         return "(preamble)" if heading is None else heading.lstrip("#").strip()
 
     def priority(i: int) -> int:
-        heading = blocks[i][0]
-        return 0 if heading is not None and _MANDATE_RE.search(label(heading)) else 1
+        heading, block = blocks[i]
+        if heading is not None and _MANDATE_RE.search(label(heading)):
+            return 0  # the heading names a rule or mandate
+        head_and_body = block.split("\n", 1)
+        body = head_and_body[1] if heading is not None and len(head_and_body) > 1 else block
+        return 1 if _EMPHASIZED_MANDATE_RE.search(body) else 2  # the author emphasized one / plain
 
     def note(kept_n: int, omitted: list[int]) -> str:
         names = [label(blocks[i][0]) for i in omitted]
         listed = "; ".join(names[:12]) + (f"; +{len(names) - 12} more" if len(names) > 12 else "")
         return (
             f"\n[... {name}: {total_len} characters, {kept_n} of {n} sections kept within the "
-            f"{limit}-character fold (sections whose heading names a rule or mandate are kept "
+            f"{limit}-character fold (sections that name or emphasize a rule or mandate are kept "
             f"first); omitted: {listed}; read the file for the omitted sections]"
         )
 
@@ -569,9 +586,11 @@ def discover_context(
       ``CLAUDE.md``) is kept only once, at its first occurrence.
     * **Per-file cap** — a file over :data:`MAX_CONTEXT_FILE_CHARS` is folded by WHOLE SECTIONS:
       sections whose heading names a rule or mandate (MANDATORY, MUST, NEVER, RULES, …) are kept
-      first, then the rest in document order, and the fold ends with a note listing the omitted
-      headings (ADR-0170). A file without ``##`` sections falls back to a head cut that ends with
-      an omission note naming the file and the counts (ADR-0169). Both live inside the cap. Why
+      first (ADR-0170), then sections whose body emphasizes one (MUST / NEVER in capitals or
+      bold — the author's own signal, ADR-0171), then the rest in document order, and the fold
+      ends with a note listing the omitted headings. A file without ``##`` sections falls back
+      to a head cut that ends with an omission note naming the file and the counts
+      (ADR-0169). Both live inside the cap. Why
       sections and not a cue: the silent cut scored 0/12 on a 35B (a MANDATORY rule past the
       cap), and the ADR-0169 note alone ALSO scored 0/12 — 4 turns, never a read. A small model
       cannot be asked to fetch, so what it must obey has to be in the fold.
