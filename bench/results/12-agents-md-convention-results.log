@@ -55,3 +55,41 @@ determinism-zakcode-pinOFF-temp0-12-agents-md-convention.json (zc-01:/opt/zak-co
   "1.0.0" is exactly control #3 (the non-adherent default), so CC 0/12 is genuine non-adherence, not a
   task bug. zc-01 build unchanged. CC distinct 1/12 = CC deterministically produces the SAME wrong
   answer (not flaky) — it reliably does not consult AGENTS.md.
+
+================================================================================
+12c-claude-md-convention CONTROL RESULT (N=12; batch complete 2026-09-14 14:07:56 UTC; written 2026-09-14 14:19 UTC)
+================================================================================
+  arm          pass     reads CLAUDE.md   reads AGENTS.md   determinism                        turns
+  CC-12c       12/12    0/12              0/12              distinct_outputs 10/12 (ws noise)  7-9
+  ZAK-12c      12/12    (folded)          (folded)          *.py IDENTICAL 12/12               [4,7,6,6,6,5,6,6,6,6,6,4] spread 3
+  PARITY, exactly as pre-registered. (ZAK PRIMARY = 2 distinct states, all .pytest_cache/* present-vs-absent;
+  every *.py identical.) Raw: cc-qwen-12c-claude-md-convention.json (zc-01:/root),
+  determinism-zakcode-pinOFF-temp0-12c-claude-md-convention.json (zc-01:/opt/zak-code-bench/bench/results).
+
+═══ THE PINNING OBSERVATION — both loops adhere by CONTENT-FOLDING; they differ only in the FOLD-SET ═══
+  CC PASSED 12/12 on the CLAUDE.md variant WITHOUT a single Read of CLAUDE.md (0/12; AGENTS.md 0/12). Zero
+  reads + 12/12 adherence leaves exactly one channel: `claude -p` auto-loads CLAUDE.md into the system prompt
+  — the SAME mechanism as zakcode's guide-file fold. So:
+     Claude Code 2.1.267 (headless -p) fold-set:   {CLAUDE.md}
+     zakcode (AGENT_GUIDE_FILENAMES) fold-set:      {AGENTS.md, CLAUDE.md, ZAK.md}
+  Thrust 9's CC 0/12 on AGENTS.md is therefore NOT a task artifact (the byte-identical verify passes 12/12
+  here), NOT a coding gap (CC solves it trivially once the rule is in context), NOT a harness artifact (12c
+  proves this harness delivers CC's auto-load: same `claude -p`, cwd=ws, no config-suppressing flag), and NOT
+  a zakcode advantage on content CC also has. It is precisely: CC does not fold AGENTS.md.
+
+═══ THE DEFENSIBLE CLAIM (thrust 9 + this control, together) ═══
+  On repos that ship AGENTS.md guidance (the cross-tool guide-file standard), zakcode makes a 35B model ADHERE
+  (12/12) to an unprompted convention that Claude Code as-ships ignores entirely (0/12), because the fold puts
+  the rule in context so the model never has to REMEMBER to look. On CLAUDE.md-only repos it is parity (this
+  control) — consistent with the 11-task matched cell (as-good-or-better everywhere, worse nowhere). 0/12 vs
+  12/12 at N=12: Fisher exact p<1e-6 (unlike the N=6 06-family cells). LIMITS: one convention KIND so far
+  (string formatting) — thrust 10 tests another; CC's fold-set is a version property (a later CC that folds
+  AGENTS.md closes this cell — the principle survives, the instance would not); the interactive (non -p) CC
+  fold-set is unmeasured.
+
+═══ NEXT: thrust 10 — 13-agents-md-nameorder (robustness), LAUNCHED 2026-09-14 14:11:26 UTC on zc-01 ═══
+  Same discriminator, a DIFFERENT convention KIND: name ORDERING — AGENTS.md mandates full_name renders
+  "LAST, FIRST" (overriding the "First Last" default); the guide's example (Hopper, Grace) differs from every
+  verify name, so a copy cannot pass. 26 files; _selfcheck asserts rule-in-AGENTS.md-only + no pre-written
+  answers; solvability controls pass (stub->FAIL, adherent->PASS, "Ada Lovelace"->FAIL). PRE-REGISTERED:
+  CC ~0/12, ZAK ~12/12. Task committed in this PR; results follow in the next.
