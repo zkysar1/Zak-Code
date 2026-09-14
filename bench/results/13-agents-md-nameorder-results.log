@@ -91,3 +91,48 @@ written 2026-09-14 15:13 UTC)
   LAUNCHED: t12 on zc-01 at 15:14:10 UTC (pid 67908, prompt.py md5 e2dd7c9d47e7 verified via discover_context on the real
   workspaces: 14o folds to 8,192 chars with the note '8107 of 9740 characters shown', 14u/13 byte-identical, no note).
   Results appended below when complete.
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 12 RESULT (2026-09-14 15:34 UTC) — the ADR-0169 omission note DID NOTHING: ZAK-14o 0/12 again; 14u and 13 hold 12/12
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Batch t12_adr0169_remeasure_batch.sh on zc-01, 15:14:10 → 15:25:42 UTC. ONE variable moved on the bench tree: prompt.py
+(ADR-0169 build, md5 e2dd7c9d47e7; helper importable; canonical probe before launch — 14o folds to 8,192 chars ending
+"[... AGENTS.md truncated: 8107 of 9740 characters shown; read the file for the rest]", 14u and 13 byte-identical, no
+note). Pre-fix JSONs archived as *-PRE-ADR0169.json; both generations committed here under bench/results/.
+
+═══ SCORECARD — pre-registration: 14o must rise above 0/12 (target 12/12); 14u and 13 must hold 12/12 ═══
+  arm       build      pass    turns                                *.py      every-file states   source
+  ZAK-14o   pre-fix    0/12    [4 x12] spread 0                     IDENT     1                   t11
+  ZAK-14o   ADR-0169   0/12    [4 x12] spread 0                     IDENT     1                   t12  ← NOT ONE RUN MOVED
+  ZAK-14u   pre-fix    12/12   [4 x12] spread 0                     IDENT     1                   t11
+  ZAK-14u   ADR-0169   12/12   [4,4,6,4,4,4,4,4,4,4,4,4] spread 2   IDENT     2 (.pytest_cache)   t12  holds
+  ZAK-13    pre-fix    12/12   [7,7,4,6,6,4,4,4,4,4,7,4] spread 3   IDENT     2 (.pytest_cache)   t10
+  ZAK-13    ADR-0169   12/12   [4,4,6,7,6,4,4,6,7,4,4,4] spread 3   IDENT     2 (.pytest_cache)   t12  holds
+  14o pre-fix vs ADR-0169, measured over all 24 runs: app/people.py digest 1 distinct pre, 1 distinct post, pre==post True; trace_interventions pre ['{"harness_verify": 1, "text_only_stall": 1}'] post ['{"harness_verify": 1, "text_only_stall": 1}']; post verify_out 'Ada Lovelace' 12/12; elapsed pre 17.7-18.9s post 16.8-21.3s
+  Regression check PASSES (14u, 13: byte-identical inputs, same pass rate). The fix cell did not move by one run.
+
+═══ READING — a note is not a control on a 35B (rb-10615 predicted exactly this; 06v does not transfer) ═══
+  Under the note ZAK-14o ran 4 turns on every run, ~19 s, and failed verify the same way as before the note existed.
+  The sentence telling the model the guide is incomplete sat inside 8K of guide the model believes it has consumed,
+  and changed nothing it DID. 06v's listing cue worked because a listing is a step in the model's plan (list → read);
+  a trailing note changes only what the model KNOWS, and at this scale knowledge without a plan step is inert. The
+  campaign's thesis — deterministic assembly beats asking the model to fetch — predicts both the failure and the fix:
+  put the rule INSIDE the fold.
+
+═══ THE FIX — ADR-0170 (Zak-Code PR #471): section-priority truncation ═══
+  A sectioned guide past the cap is folded by WHOLE `##` sections: sections whose heading names a rule or mandate
+  (MANDATORY / MUST / REQUIRED / RULES / NEVER / ALWAYS / CONVENTIONS / POLICY / FORBIDDEN / PROHIBITED / DO NOT) are
+  kept first, then the rest in document order while they fit; the fold ends with a note that LISTS the omitted
+  headings. Fenced code never splits. Prose without `##` sections (or nothing fitting) falls back to the ADR-0169 head
+  cut. Caps unchanged; under-cap files byte-identical. Canonical probe on the REAL 14o workspace, local AND on zc-01
+  (fold md5 30d95dcfdd72 on both): 8,062-char fold, 20 of 25 sections kept INCLUDING "## Naming (MANDATORY)"; omitted:
+  Feature flags; Observability; Internationalization; Concurrency; Performance. 14u and 13 unchanged (under cap, no
+  note). Gates: ruff/mypy clean; full suite 3923 passed (5 new tests: mandate section past the cap kept whole and in
+  order; prose fallback with the counted note; fence safety; determinism; no-section-fits fallback).
+
+═══ THRUST 13 — RE-MEASURE UNDER ADR-0170, PRE-REGISTERED ═══
+  Deployed ONLY the ADR-0170 prompt.py to zc-01 (md5 85e7d75c4c03 on both ends; one variable). The batch archives the
+  t12 JSONs as *-PRE-ADR0170.json, then runs ZAK 14o → 14u → 13 at N=12 (t13_adr0170_remeasure_batch.sh). PREDICTION:
+  ZAK-14o → 12/12 (the rule is in context exactly as in 14u); 14u and 13 hold 12/12. A 14o result ≤ 10/12 would be a
+  PLACEMENT finding (the Naming section now precedes the trailing Deprecation section, and a note follows it), not a
+  cap finding — it would say the fold's ORDER matters to the model, a new question. Results follow.
