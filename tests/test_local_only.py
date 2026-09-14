@@ -185,41 +185,52 @@ def test_startup_gate_catches_a_metered_fallback_model() -> None:
 def test_startup_gate_catches_unset_zakpick_categories() -> None:
     """The case that makes this gate worth writing.
 
-    An operator sets local_only, switches to zakpick, and points deep_code at the pod —
-    a config that LOOKS local. The five categories they did not override still route, and
-    they fall through to the built-in Groq/OpenAI defaults. Checking only the configured
-    overrides would report this clean, which is the most expensive possible false negative.
+    An operator sets local_only, switches to zakpick, and overrides deep_code — a config
+    that LOOKS local. The categories they did not override still route, and they fall
+    through to the built-in metered defaults. Checking only the configured overrides would
+    report this clean, which is the most expensive possible false negative.
+
+    NOTE (g-369-295): this case deliberately configures NO ``api_base``. The built-in
+    defaults moved from ``groq/`` to ``openai/`` when Groq was retired, and ``openai`` is in
+    ``GENERIC_OPENAI_PROVIDERS`` — so WITH a generic ``api_base`` set, the defaults are
+    redirected to that self-hosted base and correctly classify as local, and this gate does
+    not fire. That is a real behaviour change for unset categories (``deep_code``/``delegate``
+    already had the property before this goal); without an ``api_base`` the defaults go to
+    api.openai.com and are metered, which is what this test pins.
     """
     settings = Settings(
-        default_model="openai/zds-qwen3.8-27b",  # already resolved from the zakpick sentinel
-        api_base=POD,
+        default_model="openai/gpt-4o-mini",  # already resolved from the zakpick sentinel
         local_only=True,
-        zakpick_models={"deep_code": ZakpickModel(model="zds-qwen3.8-27b", source="openai")},
+        # Ollama is local by runtime, so this override stays local with no api_base set —
+        # unlike an openai/ override, which would itself be metered here and get named too.
+        zakpick_models={"deep_code": ZakpickModel(model="qwen3:32b", source="local")},
         _env_file=None,
     )
     with pytest.raises(LocalOnlyViolation) as exc:
         _assert(settings, zakpick=True)
     message = str(exc.value)
-    # Every groq-defaulted category is named, so the operator fixes them in one pass.
-    for category in ("quick_code", "summarize", "plan", "classify"):
+    # Every defaulted category is named, so the operator fixes them in one pass.
+    # 'delegate' JOINED this list in g-369-295: its default is openai/gpt-4o-mini, and with
+    # no api_base that goes to api.openai.com and IS metered. It was absent here before only
+    # because this case used to set an api_base (see the docstring note).
+    for category in ("quick_code", "summarize", "plan", "classify", "delegate"):
         assert f"zakpick category '{category}'" in message
-    # ...and the one they DID point at the pod is not falsely accused.
+    # ...and the one they DID point at a local runtime is not falsely accused.
     assert "zakpick category 'deep_code'" not in message
-    # 'delegate' is ALSO absent, and the reason is worth stating because it looks like a
-    # hole and is not one: its default is openai/gpt-4o-mini, which with api_base set is a
-    # generic-OpenAI name, so litellm sends it to the POD rather than to OpenAI. No money
-    # is spent, so local_only is right to permit it. What the operator gets instead is a
-    # request for a model the pod does not host, which the proxy answers from its default
-    # engine with x-zds-fallback: true — wrong model, right invoice. That is a ROUTING
-    # hazard, not a cost one, and it belongs to the separate "fail loudly on an unknown
-    # alias" fix. Pinned so a future reader does not read this omission as a cost leak.
-    assert "zakpick category 'delegate'" not in message
+    # THE api_base-SET VARIANT IS NOT A COST HOLE, and it is worth stating because it looks
+    # like one. With api_base configured, every openai/ default is a generic-OpenAI name, so
+    # litellm sends it to the POD rather than to OpenAI and no money is spent — local_only is
+    # right to permit it. What the operator gets instead is a request for a model the pod does
+    # not host, which the proxy answers from its default engine with x-zds-fallback: true —
+    # wrong model, right invoice. That is a ROUTING hazard, not a cost one, and it belongs to
+    # the separate "fail loudly on an unknown alias" fix. Retiring Groq widened that variant
+    # from one category to all six, so it matters more than it did.
 
 
 def test_startup_gate_is_inert_when_local_only_is_off() -> None:
     _assert(
         Settings(
-            default_model="groq/qwen/qwen3-32b",
+            default_model="openai/gpt-4o-mini",
             fallback_model="anthropic/claude-sonnet-4-6",
             local_only=False,
             _env_file=None,

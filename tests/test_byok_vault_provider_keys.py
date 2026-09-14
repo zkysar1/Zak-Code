@@ -99,11 +99,11 @@ def test_member_key_overrides_the_deployment_key(monkeypatch, tmp_path):
 
 def test_the_return_is_names_only(monkeypatch, tmp_path):
     # It is logged. A value in the return would become a value in a log line.
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    v = _vault(tmp_path, {"GROQ_API_KEY": "gsk_member_value_here"})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    v = _vault(tmp_path, {"OPENAI_API_KEY": "sk_member_value_here"})
     got = R.apply_vault_provider_keys(_Settings(v))
-    assert got == ["GROQ_API_KEY"]
-    assert not any("gsk_member_value_here" in n for n in got)
+    assert got == ["OPENAI_API_KEY"]
+    assert not any("sk_member_value_here" in n for n in got)
 
 
 # ── the properties a naive implementation gets wrong ─────────────────────────

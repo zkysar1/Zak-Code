@@ -61,7 +61,6 @@ from zakcode.providers.endpoints import (
     is_sentinel,
     model_uses_generic_endpoint,
 )
-from zakcode.providers.pricing import estimate_cost_usd
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
@@ -196,7 +195,7 @@ def _model_uses_generic_endpoint(model: str) -> bool:
 
     True for the OpenAI-compatible generic path — a bare model name, or an
     ``openai`` / ``openai_like`` / ``hosted_vllm`` prefix (the local llama-server case the
-    base is configured for). False for any NAMED provider (``groq/``, ``anthropic/``,
+    base is configured for). False for any NAMED provider (``anthropic/``, ``ollama_chat/``,
     ``ollama_chat/``, …) that litellm routes via its own base URL; forwarding the local base
     to one of those reroutes the call to the local server — the 2026-06-17 bug where
     ``groq/openai/gpt-oss-20b`` got the llama-server base, failed, and failed over to
@@ -742,18 +741,14 @@ class LiteLLMProvider(Provider):
         if isinstance(hidden, dict):
             cost = cls._coerce_cost(hidden.get("response_cost"))
         model = str(_get(response, "model") or "")
-        if cost == 0.0:
-            # litellm has no price entry for Groq's open lineup (served via an
-            # OpenAI-compatible endpoint), so response_cost comes back 0 — /cost
-            # and the budget ceiling would silently under-report. Fall back to our
-            # published Groq rates (pricing.GROQ_RATES_PER_M). A genuine non-zero
-            # response_cost (Anthropic, OpenAI proper, …) always wins.
-            cost = estimate_cost_usd(model, prompt, completion, cache_read)
         if cost == 0.0 and (prompt or completion):
             # Streaming chunks carry NO response_cost: litellm nulls it on the chunk and computes
-            # the cost later in an async callback the consumer never sees. For a non-Groq cloud
-            # model the Groq fallback is also 0, so /cost and the budget ceiling would under-report
-            # to $0 on the streaming path. Recompute from litellm's own price map by model + tokens.
+            # the cost later in an async callback the consumer never sees, so /cost and the
+            # budget ceiling would under-report to $0 on the streaming path. Recompute from
+            # litellm's own price map by model + tokens. This is now the ONLY cost fallback:
+            # the hand-maintained Groq rate table it used to sit behind was removed with that
+            # provider (g-369-295), and it had become a mispricing hazard — it matched by STEM,
+            # so it priced `openai/gpt-oss-*` at Groq rates.
             cost = cls._litellm_token_cost(model, prompt, completion)
 
         return Usage(
@@ -1081,7 +1076,7 @@ class LiteLLMProvider(Provider):
         if self.extra_headers:
             call_kwargs["extra_headers"] = dict(self.extra_headers)
         # Forward the configured generic api_base ONLY for OpenAI-compatible models — never to
-        # a named cloud provider (groq/anthropic/…), which carries its own base URL. (2026-06-17:
+        # a named cloud provider (anthropic/…), which carries its own base URL. (2026-06-17:
         # an unscoped api_base rerouted every groq/ call to the local llama-server, breaking it
         # and forcing a failover to the openai/gpt-4o-mini fallback.)
         if self.api_base is not None and _model_uses_generic_endpoint(self.model):

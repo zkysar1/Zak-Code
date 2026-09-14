@@ -235,6 +235,14 @@ __all__ = [
 
 #: Exact provider/service key variable names scrubbed from subprocess environments,
 #: in addition to the ``*_API_KEY`` suffix rule in :func:`provider_key_env_names`.
+#:
+#: GROQ_API_KEY IS RETAINED DELIBERATELY even though Groq was retired as a provider
+#: (g-369-295). This list is protective, not advertising: an operator whose environment
+#: still holds a stale ``gsk_`` key should still have it scrubbed from subprocess envs, and
+#: the ``gsk_`` redaction pattern above is kept for the same reason. Removing it would make
+#: a retired key LESS safe than a live one. The CLI's advertised key list
+#: (``cli.__init__._PROVIDER_KEY_ENV``) is the one that dropped Groq, because that one is a
+#: statement about which providers are supported.
 _PROVIDER_KEY_ENV_EXACT = frozenset(
     {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "TAVILY_API_KEY"}
 )

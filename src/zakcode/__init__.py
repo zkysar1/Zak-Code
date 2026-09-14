@@ -1131,7 +1131,7 @@ class Agent:
         It enumerates EFFECTIVE models, not configured ones — the distinction matters and is
         the whole reason this is not a two-line check. Under zakpick, a category the user
         never overrode still routes: it falls through to ``DEFAULT_CATEGORY_MODELS``, which
-        is Groq/OpenAI. So an operator who sets ``local_only`` and points only ``deep_code``
+        is OpenAI. So an operator who sets ``local_only`` and points only ``deep_code``
         at their pod has FIVE categories still aimed at metered APIs, and checking only
         ``zakpick_models`` would report a clean config for exactly the setup most likely to
         spend money by surprise.
@@ -1416,7 +1416,7 @@ class Agent:
 
         Returns the current provider/active model when zakpick is off or a provider was injected
         (an injected provider can't be rebuilt per model). Otherwise looks up the user's
-        assignment (or the built-in Groq default) for the category and reuses ``_provider_for``
+        assignment (or the built-in OpenAI default) for the category and reuses ``_provider_for``
         so the provider cache and cross-backend endpoint guard apply unchanged. No availability
         probing — the user's model is used directly; if it fails at call time, ``fallback_model``
         handles it like any other provider error.

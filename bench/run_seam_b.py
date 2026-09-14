@@ -9,7 +9,7 @@ then fans out N isolated attempts and adopts the first that verifies — applyin
 The task's held-out ``verify.py`` is used as the verifier (it runs in the workspace; the agent never
 reads it). Usage:
     ./.venv/Scripts/python.exe bench/run_seam_b.py bench/tasks/04-todo-cli
-Config: ZBENCH_SMALL_MODEL (default groq/qwen/qwen3-32b), ZBENCH_ATTEMPTS (default 3).
+Config: ZBENCH_SMALL_MODEL (default openai/gpt-4o-mini), ZBENCH_ATTEMPTS (default 3).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_task  # noqa: E402 — sibling bench script
 
-SMALL_MODEL = os.environ.get("ZBENCH_SMALL_MODEL", "groq/qwen/qwen3-32b")
+SMALL_MODEL = os.environ.get("ZBENCH_SMALL_MODEL", "openai/gpt-4o-mini")
 ATTEMPTS = int(os.environ.get("ZBENCH_ATTEMPTS", "3"))
 
 

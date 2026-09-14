@@ -5,7 +5,7 @@ everything and instead **picks a model per task category**. The categories ARE t
 the user parks a concrete model on each one — a small/cheap model on the easy/bounded
 categories (classification, summaries, quick coding), a capable model on the hard ones
 (deep coding, planning). Each entry is a ``(model, source)`` pair, so the same model name can
-live at different providers (``qwen3-32b`` at Groq vs locally is the user's explicit choice).
+live at different providers (``qwen3:32b`` hosted vs locally is the user's explicit choice).
 
 Crucially, zakpick does **not** own any local-vs-cloud tradeoff. It never curates tiers, masks
 sources, or degrades between providers at runtime. It routes each prompt to exactly the model
@@ -15,10 +15,11 @@ the existing ``fallback_model`` seam). The one automatic decision is the cheap, 
 quick-vs-deep coder split (:func:`classify_main_turn`), which only ever chooses between the two
 *coder models the user already configured*.
 
-Out of the box (no config) every category has a sensible default drawn from Groq's published
-lineup (Groq serves only open-source models, so the defaults also tell a user which open-source
-model to download to run that category locally). Defaults all use ``source="groq"``; override
-any category — model and/or source — via ``Settings.zakpick_models``.
+Out of the box (no config) every category has a sensible default. Defaults all use
+``source="openai"``; override any category — model and/or source — via
+``Settings.zakpick_models``. Groq was retired as a provider on 2026-09-11 (g-369-295), which
+removed the cheap open-model tier these defaults used to draw on — see
+:data:`DEFAULT_CATEGORY_MODELS` for what replaced it and why.
 
 This module imports **no** vendor SDK / litellm, so the clean-room contract test stays green.
 Model strings here are data (like the candidate lists in ``resolve._EXTERNAL_SOURCES``), not a
@@ -59,16 +60,16 @@ def thinking_extra_body(enabled: bool) -> dict[str, object]:
 class ZakpickModel(BaseModel):
     """A ``(model, source)`` assignment for one category.
 
-    ``model`` is the provider's own model id (e.g. ``"openai/gpt-oss-120b"`` as Groq names it,
-    or ``"qwen3:32b"`` as Ollama tags it). ``source`` is the provider/runtime: ``"groq"`` (the
-    default), ``"local"`` (Ollama), or any litellm provider prefix (``"openai"`` / ``"anthropic"``
-    / …). The two are deliberately separate because a model name alone is ambiguous — the same
-    weights run at Groq and locally — so the user states both. ``litellm_string`` joins them
+    ``model`` is the provider's own model id (e.g. ``"gpt-4o"`` as OpenAI names it, or
+    ``"qwen3:32b"`` as Ollama tags it). ``source`` is the provider/runtime: ``"openai"`` (the
+    default), ``"local"`` (Ollama), or any litellm provider prefix (``"anthropic"`` / …). The
+    two are deliberately separate because a model name alone is ambiguous — the same weights
+    run hosted and locally — so the user states both. ``litellm_string`` joins them
     into the ``provider/model`` form the provider layer consumes.
     """
 
     model: str
-    source: str = "groq"
+    source: str = "openai"
     #: Per-category thinking control for reasoning models; ``None`` leaves the server's own
     #: default alone (what every non-reasoning model wants).
     #:
@@ -117,24 +118,28 @@ class ZakpickModel(BaseModel):
         return thinking_extra_body(self.thinking)
 
 
-def _g(model: str) -> ZakpickModel:
-    """A Groq-hosted default (source defaults to groq)."""
-    return ZakpickModel(model=model)
-
-
 def _o(model: str) -> ZakpickModel:
     """A first-party OpenAI default (litellm reads ``OPENAI_API_KEY`` directly)."""
     return ZakpickModel(model=model, source="openai")
 
 
-#: Out-of-the-box defaults, graduated by cost/capability. The cheap, read-only, and
-#: easy-turn categories stay on Groq's fast open models; the TOOL-HEAVY capable tier
-#: (deep_code, delegate) runs on a first-party model whose NATIVE function-calling is
-#: reliable. The live Groq $/1M in·out rates are the single source of truth in
-#: ``providers/pricing.py`` (``GROQ_RATES_PER_M``); openai-source models are priced by
+#: Out-of-the-box defaults. EVERY category now runs on first-party OpenAI, priced by
 #: litellm directly.
 #:
-#: Why deep_code/delegate moved OFF Groq's open models (live-verified 2026-06-18):
+#: THE COST/CAPABILITY TIER SPLIT COLLAPSED ON PURPOSE, and that is the one consequence of
+#: this table worth understanding. The cheap/read-only/easy-turn tier used to run on Groq's
+#: fast open models; Groq was retired as a provider on 2026-09-11 (g-369-295) under the
+#: owner's 100%-OpenAI directive (g-369-283), so that tier had no backing provider left.
+#: The four categories it served (classify, summarize, quick_code, plan) were re-pointed to
+#: ``gpt-4o-mini`` — NOT an invented pin, but this module's own twice-measured conclusion
+#: below, which already governed deep_code/delegate. No OpenAI model was benchmarked here
+#: for the cheap categories specifically, so re-tiering (e.g. a cheaper model for classify
+#: and summarize) is an OPEN, measurable question, not a settled one. Anyone re-tiering
+#: should run the bench arms the way the 2026-07-29 entry below did rather than reasoning
+#: from price lists.
+#:
+#: Why deep_code/delegate moved OFF Groq's open models in the first place — retained because
+#: it is the measurement that chose gpt-4o-mini (live-verified 2026-06-18):
 #:   * ``openai/gpt-oss-120b`` emits malformed NATIVE tool calls that Groq's strict parser
 #:     rejects with ``tool_use_failed`` — near-deterministically on a multi-tool schema, so
 #:     every hard turn died with provider_error (it is a REASONING model, so the text-tool
@@ -160,20 +165,20 @@ def _o(model: str) -> ZakpickModel:
 #:     — the same tool-unreliability signature as the other Groq open models above.
 #: CONCLUSION: the binding constraint was never per-turn token cost, so shrinking the prompt
 #: cannot fix it. Cost came out within 0.6% of each other; reliability did not move. Keep
-#: gpt-4o-mini. CAVEAT — this tested qwen3.6-27b NATIVE only; the ``llama-3.3-70b-versatile``
+#: gpt-4o-mini — which is why it is now the default for every category. The hand-maintained
+#: Groq rate table these comments cite (``providers/pricing.py``, ``GROQ_RATES_PER_M``) was
+#: DELETED with the provider; litellm prices every surviving model itself.
+#: CAVEAT — this tested qwen3.6-27b NATIVE only; the ``llama-3.3-70b-versatile``
 #: + ``ZAKCODE_TOOL_CALLING_MODE=text`` fork path above remains UNTESTED under lean rules, and
 #: n=3 is small (gpt-4o-mini's own 1/3 did not reproduce the "completed the full benchmark"
 #: claim above, so treat both numbers as directional).
 DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
-    "classify": _g("llama-3.1-8b-instant"),  # cheapest/fastest — JSON gates
-    "summarize": _g("openai/gpt-oss-20b"),  # cheap, fast prose; NO tools, so the flag is moot
-    # Repointed 2026-07-29 (g-016-83) off qwen3-32b, which Groq decommissioned
-    # ~2026-07-19 and which is confirmed ABSENT from the live /v1/models catalog.
-    # qwen3.6-27b is its catalog successor and the same tool-capable tier
-    # (supports_tools, no tools_unreliable), so the auto-resolver keeps it for
-    # tool sessions. test_routed_models_are_not_decommissioned pins this.
-    "quick_code": _g("qwen/qwen3.6-27b"),  # tools-RELIABLE Groq model (gpt-oss-20b's tools flake)
-    "plan": _g("qwen/qwen3.6-27b"),  # strong reasoning for decomposition (read-only)
+    # Re-pointed off Groq 2026-09-11 (g-369-295) when that provider was retired. These four
+    # previously ran llama-3.1-8b-instant / openai-gpt-oss-20b / qwen3.6-27b on Groq.
+    "classify": _o("gpt-4o-mini"),  # cheap bounded JSON gates
+    "summarize": _o("gpt-4o-mini"),  # cheap, fast prose; NO tools, so the flag is moot
+    "quick_code": _o("gpt-4o-mini"),  # tools-RELIABLE native — easy turns
+    "plan": _o("gpt-4o-mini"),  # strong-enough reasoning for decomposition (read-only)
     "deep_code": _o("gpt-4o-mini"),  # tools-RELIABLE native + cached — hard turns
     "delegate": _o("gpt-4o-mini"),  # tools-reliable native — general execution
 }

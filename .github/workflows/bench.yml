@@ -18,7 +18,7 @@ name: agent-bench
 #
 # NOTE: a real-model run costs money. The schedule is nightly per the project owner's request — to
 # spend less, change the cron to weekly ("0 7 * * 1") or simply remove the OPENAI_API_KEY /
-# GROQ_API_KEY repo secrets (the gate step then skips every run). Trigger ad-hoc any time via the
+# OPENAI_API_KEY repo secret (the gate step then skips every run). Trigger ad-hoc any time via the
 # "Run workflow" button (workflow_dispatch), optionally narrowing the task set or overriding the
 # model — run it twice with different models to compare (e.g. N-small fan-out vs one big model).
 
@@ -32,7 +32,7 @@ on:
         required: false
         default: ""
       jobs:
-        description: "Concurrency (Groq rate limits keep this low)"
+        description: "Concurrency (provider rate limits keep this low)"
         required: false
         default: "3"
       model:
@@ -64,15 +64,14 @@ jobs:
         id: keys
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: |
-          if [ -z "$OPENAI_API_KEY" ] && [ -z "$GROQ_API_KEY" ]; then
-            echo "::notice::No provider API keys (OPENAI_API_KEY / GROQ_API_KEY) configured — the agent bench will be SKIPPED, not passed."
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::No provider API key (OPENAI_API_KEY) configured — the agent bench will be SKIPPED, not passed."
             echo "run=false" >> "$GITHUB_OUTPUT"
             {
               echo '## Agent quality bench — NOT MEASURED'
               echo
-              echo 'No `OPENAI_API_KEY` / `GROQ_API_KEY` on this repository, so the suite did not run'
+              echo 'No `OPENAI_API_KEY` on this repository, so the suite did not run'
               echo 'and **this run says nothing about agent quality**. The bench job is reported as'
               echo '`skipped` rather than `success` precisely so that stays visible.'
               echo
@@ -106,7 +105,6 @@ jobs:
         # unquoted so a space-separated prefix list word-splits into separate positional args.
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ZAKCODE_DEFAULT_MODEL: ${{ github.event.inputs.model }}
           BENCH_FILTERS: ${{ github.event.inputs.filters }}
           BENCH_JOBS: ${{ github.event.inputs.jobs || '3' }}
