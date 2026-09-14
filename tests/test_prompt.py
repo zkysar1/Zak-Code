@@ -780,11 +780,7 @@ def test_fold_heading_tier_outranks_body_tier_which_outranks_plain(tmp_path: Pat
         ]
     )
     (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
-    [(_, content)] = (
-        discover_context(tmp_path, include_readset := False)
-        if False
-        else discover_context(tmp_path, include_readme=False)
-    )
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
     fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
     assert _headings(fold) == ["## Alpha", "## Rules", "## Delta"]
     assert _omitted(note) == ["Beta"]
