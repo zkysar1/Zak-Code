@@ -569,7 +569,7 @@ def test_workspace_survey_is_folded_by_default_opt_out_and_snapshotted_once(tmp_
     assert "later.py" in SystemPromptBuilder().build(settings)  # a fresh builder sees it
 
 
-# ── ADR-0169: a cut guide says so (the fold's per-file cap ends with an omission note) ──────────
+# ── ADR-0169 / ADR-0170: a cut guide says so, and the fold keeps the rules ───────────────────────
 
 
 def test_context_caps_are_pinned() -> None:
@@ -581,15 +581,32 @@ def test_context_caps_are_pinned() -> None:
     assert MAX_CONTEXT_TOTAL_CHARS == 32_768
 
 
-def test_discover_context_cut_file_ends_with_an_omission_note(tmp_path: Path) -> None:
+def test_discover_context_sectioned_file_keeps_the_mandatory_section(tmp_path: Path) -> None:
+    # ADR-0170: a 9,000-char preamble pushes the rule past the cap; the fold keeps the WHOLE
+    # mandate section, drops the preamble whole, and says so by name.
     body = "x" * 9_000 + "\n## Naming (MANDATORY)\nLAST, FIRST"
     (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
     [(path, content)] = discover_context(tmp_path, include_readme=False)
     assert path == tmp_path / "AGENTS.md"
+    assert len(content) <= MAX_CONTEXT_FILE_CHARS
+    assert content.startswith(
+        "## Naming (MANDATORY)\nLAST, FIRST"
+    )  # the rule is IN the fold, whole
+    assert "xxx" not in content  # the preamble did not fit: omitted whole, never cut
     assert (
-        len(content) == MAX_CONTEXT_FILE_CHARS
-    )  # the note lives INSIDE the cap: budgets stay exact
-    assert "MANDATORY" not in content  # the rule past the cap is still cut — that is the cliff …
+        f"\n[... AGENTS.md: {len(body)} characters, 1 of 2 sections kept within the "
+        f"{MAX_CONTEXT_FILE_CHARS}-character fold"
+    ) in content
+    assert "omitted: (preamble); read the file for the omitted sections]" in content
+
+
+def test_discover_context_prose_file_falls_back_to_the_head_cut_with_a_note(tmp_path: Path) -> None:
+    # ADR-0169: no ``##`` sections → the head cut, exactly at the cap, ending with the counted note.
+    body = "x" * 9_000 + "\nLAST, FIRST"
+    (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    assert len(content) == MAX_CONTEXT_FILE_CHARS  # note INSIDE the cap: the budget stays exact
+    assert "LAST, FIRST" not in content  # past the cap in unlabelled prose: still cut …
     shown = content.rindex("\n[... ")
     assert content[shown:] == (
         f"\n[... AGENTS.md truncated: {shown} of {len(body)} characters shown; "
@@ -626,3 +643,73 @@ def test_discover_context_straddling_note_counts_the_original_length(tmp_path: P
     assert last.endswith(" of 9000 characters shown; read the file for the rest]")
     assert "\n[... ZAK.md truncated: " in last
     assert set(last[: last.index("\n[... ")]) == {"e"}
+
+
+# ── ADR-0170: the fold keeps the rules (section-priority truncation) ──────────────────────────
+
+
+def _long_guide() -> str:
+    """A realistic 20-section guide whose MANDATORY section sits past the per-file cap."""
+    plain = [f"## Section {i}\n\n" + f"Plain guidance paragraph {i}. " * 14 for i in range(20)]
+    rule = "## Naming (MANDATORY)\n\nRender every full name as LAST, FIRST — never First Last."
+    tail = "## Deprecation\n\nWarn for one release before removing anything."
+    return "\n\n".join(["# Project Guide\n\nRead this before changing code.", *plain, rule, tail])
+
+
+def _headings(text: str) -> list[str]:
+    return [line for line in text.split("\n") if line.startswith("## ")]
+
+
+def _omitted(note: str) -> list[str]:
+    return note.split("omitted: ", 1)[1].split("; read the file", 1)[0].split("; ")
+
+
+def test_fold_keeps_the_mandate_section_past_the_cap_whole_and_in_order(tmp_path: Path) -> None:
+    body = _long_guide()
+    assert (
+        body.index("## Naming (MANDATORY)") > MAX_CONTEXT_FILE_CHARS
+    )  # precondition: past the cap
+    (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    assert len(content) <= MAX_CONTEXT_FILE_CHARS
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert (
+        "## Naming (MANDATORY)\n\nRender every full name as LAST, FIRST — never First Last." in fold
+    )
+    kept = _headings(fold)
+    for heading in kept:  # every kept section is whole …
+        assert body[body.index(heading) :].split("\n\n## ")[0] in fold
+    assert kept == [h for h in _headings(body) if h in kept]  # … and in document order
+    assert fold.startswith(
+        "# Project Guide\n\nRead this before changing code."
+    )  # the preamble fits
+    assert "Section " in note  # at least one plain section was dropped to make room …
+    omitted = _omitted(note)
+    assert all(h.lstrip("# ") not in omitted for h in kept)  # … and no kept heading is listed
+
+
+def test_fold_is_deterministic(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text(_long_guide() + "\n", encoding="utf-8")
+    first = discover_context(tmp_path, include_readme=False)
+    assert first == discover_context(tmp_path, include_readme=False)
+
+
+def test_fold_does_not_split_on_a_heading_inside_a_code_fence(tmp_path: Path) -> None:
+    fenced = "```\n## not a heading\n```"
+    body = _long_guide().replace(
+        "# Project Guide\n\nRead this before changing code.",
+        f"# Project Guide\n\n{fenced}\n\nRead this before changing code.",
+    )
+    (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    assert "not a heading" not in _omitted(content.rsplit("\n[... AGENTS.md: ", 1)[1])
+    assert content.startswith(f"# Project Guide\n\n{fenced}")  # it stays inside the preamble
+
+
+def test_fold_falls_back_to_the_head_cut_when_no_section_fits(tmp_path: Path) -> None:
+    body = "# Guide\n\nShort intro.\n\n## Rules (MANDATORY)\n\n" + "Rule text. " * 1_000
+    (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    assert len(content) == MAX_CONTEXT_FILE_CHARS  # a preamble alone is no fold: head cut …
+    assert "\n[... AGENTS.md truncated: " in content  # … with the ADR-0169 counted note
+    assert content.startswith("# Guide\n\nShort intro.\n\n## Rules (MANDATORY)")
