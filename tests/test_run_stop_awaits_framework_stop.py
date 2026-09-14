@@ -14,6 +14,12 @@ The window must also BOUND every turn in it — the second g-373-16 fix, measure
 live dev vessel: a turn that started inside the window ran on after it closed, and
 nothing ended the run. Those tests fail against the loop before THAT fix, except the
 one pinning a zero-reserve stop, which keeps that loop's behaviour on purpose.
+
+The wait must end when the mind's stop has FINISHED — the third g-373-16 fix, found by
+reading the framework, not on a vessel: the key read ``stop-loop``, which the graceful
+stop sets at D2, before it consolidates, and removes again at D6. Against that key every
+test that replays a finished stop fails, the older ones too: their sign-off used to TOUCH
+``stop-loop``, a stop the framework never performs.
 """
 
 from __future__ import annotations
@@ -33,8 +39,11 @@ from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.messages import Message
 from zakcode.server.app import create_app
 from zakcode.session.framework_stop import (
+    AGENT_MODE_FILENAME,
     SIGNAL_SET_SCRIPT,
-    STOP_LOOP_SIGNAL,
+    STOP_CHECKPOINT_FILENAME,
+    STOP_REQUESTED_SIGNAL,
+    STOP_TARGET_MODE_FILENAME,
     framework_session_dir,
     framework_stop_complete,
 )
@@ -60,12 +69,53 @@ def _plant_setter(root: Path) -> None:
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
 
 
-def _sign_off(root: Path, agent: str = AGENT) -> Path:
-    """What the framework's Phase -1.4 does when its obligations are complete."""
-    marker = framework_session_dir(root, agent) / STOP_LOOP_SIGNAL
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
-    return marker
+#: The framework graceful stop's file effects, in its own order (``aspirations-graceful-stop``
+#: GS-0, then D2-D7.1): (step, file, content, or None to remove). Only files whose TIMING
+#: matters are replayed: the ones the key reads, ``stop-loop`` (the key it used to read),
+#: and the handoff (proof that consolidation ran).
+_GRACEFUL_STOP: tuple[tuple[str, str, str | None], ...] = (
+    ("GS-0 checkpoint", STOP_CHECKPOINT_FILENAME, "{}"),
+    ("D2 stop-loop", "stop-loop", ""),
+    ("D3 consume the ask", STOP_REQUESTED_SIGNAL, None),
+    ("D4 handoff", "handoff.yaml", "handoff: written\n"),
+    ("D6 cleanup", "stop-loop", None),
+    ("D7 target mode", AGENT_MODE_FILENAME, "assistant\n"),
+    ("D7 target mode consumed", STOP_TARGET_MODE_FILENAME, None),
+    ("D7.1 checkpoint clear", STOP_CHECKPOINT_FILENAME, None),
+)
+
+
+def _boot(root: Path, agent: str = AGENT) -> Path:
+    """A mind whose loop is running, as ``/start`` leaves it. Returns its session dir."""
+    session_dir = framework_session_dir(root, agent)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / AGENT_MODE_FILENAME).write_text("autonomous\n", encoding="utf-8")
+    return session_dir
+
+
+def _sign_off(
+    root: Path,
+    agent: str = AGENT,
+    *,
+    checkpoint: bool = True,
+    after_each: Callable[[str], None] | None = None,
+) -> None:
+    """Replay the framework's graceful stop to its end, step by step, in its order.
+
+    ``checkpoint=False`` is a GS-0 whose checkpoint write failed, which the framework
+    tolerates. ``after_each`` is called with each step's name once that step has landed.
+    """
+    session_dir = framework_session_dir(root, agent)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    for step, name, content in _GRACEFUL_STOP:
+        if name == STOP_CHECKPOINT_FILENAME and not checkpoint:
+            continue
+        if content is None:
+            (session_dir / name).unlink(missing_ok=True)
+        else:
+            (session_dir / name).write_text(content, encoding="utf-8")
+        if after_each is not None:
+            after_each(step)
 
 
 class _QuietAgent:
@@ -103,6 +153,27 @@ class _TimedAgent:
         await asyncio.sleep(duration)
         self.session.add_message(Message.assistant_text("ok"))
         self._finished.append(user_text)
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+
+class _StoppingMind:
+    """A running loop that, once asked, runs its OWN graceful stop inside the turn in flight.
+
+    That is where Phase -1.4 runs it, so by the time the say loop next looks the stop is
+    already FINISHED — past D6, where ``stop-loop`` is gone again.
+    """
+
+    def __init__(self, session: Session, root: Path) -> None:
+        self.session = session
+        self._root = root
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self.session.add_message(Message.user(user_text))
+        session_dir = _boot(self._root)
+        while not (session_dir / STOP_REQUESTED_SIGNAL).exists():
+            await asyncio.sleep(0.02)
+        _sign_off(self._root)
+        self.session.add_message(Message.assistant_text("stopped"))
         yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
 
 
@@ -197,6 +268,33 @@ def test_the_sign_off_ends_the_run_promptly_not_at_grace_expiry(tmp_path: Path) 
 
     elapsed = asyncio.run(scenario())
     assert elapsed < 5.0, f"waited {elapsed:.1f}s on a 30s grace — the permit was not read"
+    assert endings == ["stopped"]
+
+
+def test_a_stop_finished_inside_the_turn_ends_the_run_when_that_turn_ends(tmp_path: Path) -> None:
+    """R4 end to end (g-373-16): the run ends when the mind's own stop does.
+
+    The mind runs its whole stop inside the turn in flight, so the loop only ever looks at
+    a FINISHED stop. Keyed on ``stop-loop``, which D6 had already removed, the loop read
+    "not yet" and beat on until the grace ran out.
+    """
+    app, endings = _build(
+        tmp_path, reserve=30.0, agent_for=lambda session: _StoppingMind(session, tmp_path)
+    )
+    assert write_say(say_path(tmp_path), "/start probe")
+    mode_file = framework_session_dir(tmp_path, AGENT) / AGENT_MODE_FILENAME
+
+    async def scenario() -> float:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(mode_file.exists)  # the loop is running
+        stopped = time.monotonic()
+        await _post_stop(app)
+        await asyncio.wait_for(loop_task, timeout=10)
+        return time.monotonic() - stopped
+
+    elapsed = asyncio.run(scenario())
+    assert elapsed < 5.0, f"the stop had finished, yet the run waited {elapsed:.1f}s"
+    assert (framework_session_dir(tmp_path, AGENT) / "handoff.yaml").exists()
     assert endings == ["stopped"]
 
 
@@ -398,13 +496,73 @@ def test_a_cap_landing_inside_a_run_stop_window_does_not_restart_the_grace(
     assert endings == ["stopped"]
 
 
-# ── the permit reader ────────────────────────────────────────────────────────────
+# ── the completion key ───────────────────────────────────────────────────────────
 
 
-def test_framework_stop_complete_reads_the_permit(tmp_path: Path) -> None:
+def test_framework_stop_complete_reads_the_finished_stop(tmp_path: Path) -> None:
     assert framework_stop_complete(tmp_path, AGENT) is False  # absent = "not yet"
     _sign_off(tmp_path)
     assert framework_stop_complete(tmp_path, AGENT) is True
+
+
+@pytest.mark.parametrize("checkpoint", [True, False], ids=["checkpoint", "gs0-write-failed"])
+def test_the_key_reads_done_only_after_the_stop_s_last_step(
+    tmp_path: Path, checkpoint: bool
+) -> None:
+    """R4 (g-373-16), read at EVERY step of a real stop's order.
+
+    Keyed on ``stop-loop``, the key said "done" from D2, before the handoff existed, until
+    D6, and "not yet" from D6 on, which is where every finished stop leaves it.
+    """
+    session_dir = _boot(tmp_path)
+    (session_dir / STOP_TARGET_MODE_FILENAME).write_text("assistant", encoding="utf-8")
+    (session_dir / STOP_REQUESTED_SIGNAL).touch()  # the ask, as the sidecar raises it
+    readings = [("asked", framework_stop_complete(tmp_path, AGENT))]
+
+    def read(step: str) -> None:
+        readings.append((step, framework_stop_complete(tmp_path, AGENT)))
+
+    _sign_off(tmp_path, checkpoint=checkpoint, after_each=read)
+
+    last_step = readings[-1][0]
+    assert last_step == ("D7.1 checkpoint clear" if checkpoint else "D7 target mode consumed")
+    assert [step for step, done in readings if done] == [last_step], readings
+
+
+@pytest.mark.parametrize(
+    "marker", [STOP_REQUESTED_SIGNAL, STOP_TARGET_MODE_FILENAME, STOP_CHECKPOINT_FILENAME]
+)
+def test_any_file_a_stop_removes_on_its_way_out_holds_the_key_open(
+    tmp_path: Path, marker: str
+) -> None:
+    _sign_off(tmp_path)
+    assert framework_stop_complete(tmp_path, AGENT) is True
+    (framework_session_dir(tmp_path, AGENT) / marker).write_text("", encoding="utf-8")
+    assert framework_stop_complete(tmp_path, AGENT) is False
+
+
+@pytest.mark.parametrize(
+    ("mode", "done"),
+    [
+        ("assistant\n", True),
+        ("reader\n", True),
+        ("autonomous\n", False),  # the loop is running again
+        ("\xff\xfe", False),  # unreadable as a mode
+        (None, False),  # never written: the framework's disk default is not a stop's write
+    ],
+    ids=["assistant", "reader", "autonomous", "garbage", "absent"],
+)
+def test_only_a_mode_a_stop_lands_in_reads_done(
+    tmp_path: Path, mode: str | None, done: bool
+) -> None:
+    """The positive half: with no stop ever raised, every in-flight file is absent too."""
+    _sign_off(tmp_path)
+    mode_file = framework_session_dir(tmp_path, AGENT) / AGENT_MODE_FILENAME
+    if mode is None:
+        mode_file.unlink()
+    else:
+        mode_file.write_bytes(mode.encode("latin-1"))
+    assert framework_stop_complete(tmp_path, AGENT) is done
 
 
 def test_framework_stop_complete_without_an_agent_is_false(tmp_path: Path) -> None:
