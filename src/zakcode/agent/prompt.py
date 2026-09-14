@@ -82,7 +82,10 @@ _SURVEY_HIDDEN = frozenset({".busy", ".current-session", ".run-stop-reason"})
 #: sandbox the file tools enforce). No project root found ⇒ only the workspace root is scanned.
 _VCS_MARKERS = (".git", ".hg", ".svn")
 
-#: Largest slice of any single context file folded into the prompt (~8 KB).
+#: Largest slice of any single context file folded into the prompt (~8 KB), INCLUDING the omission
+#: note a cut file ends with (ADR-0169). Pinned by test: the cut is a measured cliff on a 35B (bench
+#: ``14o-agents-md-longguide-over``, a MANDATORY rule past it scored 0/12), and the window the caps
+#: protect is why raising it was rejected — change it by decision, with a re-measure.
 MAX_CONTEXT_FILE_CHARS = 8_192
 
 #: Largest combined size of all discovered context files after de-duplication (~32 KB).
@@ -440,6 +443,35 @@ def _project_chain(root: Path) -> list[Path]:
     return chain
 
 
+def _truncate_with_note(name: str, content: str, limit: int) -> str:
+    """Cut ``content`` to exactly ``limit`` characters, ending with an omission note that names the
+    file and the counts (ADR-0169). The cut used to be silent, and a 35B then took the visible part
+    for the whole guide: a MANDATORY rule past the cap scored 0/12 on
+    ``14o-agents-md-longguide-over`` — the same as Claude Code, which never folds the file at all.
+    The note is the deterministic cue the workspace survey already gives un-folded files: it names
+    the file so the model can read the rest. It lives INSIDE the limit so every budget stays exact;
+    a file that fits is returned untouched.
+    """
+    total_len = len(content)
+    if total_len <= limit:
+        return content
+
+    def note(shown: int) -> str:
+        return (
+            f"\n[... {name} truncated: {shown} of {total_len} characters shown; "
+            "read the file for the rest]"
+        )
+
+    shown = limit - len(note(limit))  # the widest the digit field can be
+    shown = limit - len(note(shown))  # settle the digit width (moves only across a power of ten)
+    text = note(shown)
+    if shown <= 0:  # a budget too small for even the note: keep what fits of the note itself
+        return text[:limit]
+    # A shown-count that lands exactly on a power of ten can leave the result one char over; the
+    # clip keeps the length contract (the last bracket goes, the file name and counts stay).
+    return (content[:shown] + text)[:limit]
+
+
 def discover_context(
     workspace_root: Path, *, include_readme: bool = True
 ) -> list[tuple[Path, str]]:
@@ -460,10 +492,16 @@ def discover_context(
 
     * **Content-hash de-duplication** — identical content (e.g. an ``AGENTS.md`` that merely copies
       ``CLAUDE.md``) is kept only once, at its first occurrence.
-    * **Per-file cap** — each file is truncated to :data:`MAX_CONTEXT_FILE_CHARS`.
+    * **Per-file cap** — each file is cut to :data:`MAX_CONTEXT_FILE_CHARS`, and a cut file ENDS
+      with an omission note naming the file and the counts (``[... AGENTS.md truncated: N of M
+      characters shown; read the file for the rest]``), inside the cap (ADR-0169). The cut used to
+      be silent, and a 35B then took the visible part for the whole guide: a MANDATORY rule past
+      the cap scored 0/12 — the same as a tool that never folds the file. The note is the cue the
+      workspace survey already gives un-folded files.
     * **Total cap** — once the combined size reaches :data:`MAX_CONTEXT_TOTAL_CHARS`, no further
-      files are added; because the guides are scanned before the README, a large README can never
-      crowd them out.
+      files are added (a file straddling the budget is cut to what remains, with the same note,
+      counted against its ORIGINAL length); because the guides are scanned before the README, a
+      large README can never crowd them out.
 
     Unreadable (incl. non-UTF-8) files are skipped silently. Returns ``(path, content)`` pairs.
     """
@@ -496,13 +534,17 @@ def discover_context(
         if digest in seen_hashes:
             return True
         seen_hashes.add(digest)
-        if len(content) > MAX_CONTEXT_FILE_CHARS:
-            content = content[:MAX_CONTEXT_FILE_CHARS]
-        if total + len(content) > MAX_CONTEXT_TOTAL_CHARS:
+        # One cut, at the tighter of the per-file cap and what the total budget has left, so the
+        # omission note counts the file's ORIGINAL length whichever cap bit (ADR-0169).
+        original_len = len(content)
+        limit = MAX_CONTEXT_FILE_CHARS
+        if total + min(original_len, limit) > MAX_CONTEXT_TOTAL_CHARS:
             remaining = MAX_CONTEXT_TOTAL_CHARS - total
             if remaining <= 0:
                 return False
-            content = content[:remaining]
+            limit = min(limit, remaining)
+        if original_len > limit:
+            content = _truncate_with_note(path.name, content, limit)
         discovered.append((path, content))
         total += len(content)
         return total < MAX_CONTEXT_TOTAL_CHARS

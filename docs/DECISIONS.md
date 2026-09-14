@@ -9348,3 +9348,42 @@ does not). Residual, stated honestly: no model >35B is testable on this pod, so 
 risk direction is favourable but INFERRED (a more capable model ticks `status` more reliably → fewer unchanged
 resends → the lever fires even less), NOT measured. The opt-out (`plan_autoadvance=False` /
 `ZAKCODE_PLAN_AUTOADVANCE=0`) ships for any harmed caller — the first candidate being a >35B model.
+
+## ADR-0169: a cut guide says so — the fold's per-file cap ends with an omission note, built from the 14o cliff
+
+**Date:** 2026-09-14 · **Status:** accepted (ships default-on; re-measure pre-registered) · **Instrument:**
+`bench/tasks/14o-agents-md-longguide-over`, `14u-agents-md-longguide-under` (builders assert the cliff with the
+same `.strip()[:8192]` the fold applies) · **Results:** `bench/results/13-agents-md-nameorder-results.log`
+(thrust-11 section) · **Trigger:** thrust 11 of the model-fixed head-to-head on zc-01, 2026-09-14.
+
+### Context
+
+The head-to-head isolated zakcode's one measured edge over Claude Code on a 35B: `discover_context` FOLDS
+`AGENTS.md` into the system prompt unconditionally, and Claude Code 2.1.267 (headless) does not — 0/12 vs 12/12
+on two unrelated unprompted conventions (thrusts 9 and 10), and parity 12/12 vs 12/12 when the identical rule sits
+in `CLAUDE.md`, which both fold. The fold is capped at `MAX_CONTEXT_FILE_CHARS = 8_192` per file, and the cut was
+SILENT: `content[:8192]`, nothing appended. Thrust 11 held the rule and the verifier byte-constant and only
+lengthened the guide with realistic sections. Rule deep but under the cap (14u: 7,637 chars, rule at 6,657):
+**12/12**. Rule past the cap (14o: 9,740 chars, rule at 8,760): **0/12** — identical to Claude Code, which never
+folds the file at all. The model saw a guide that ended mid-sentence, took it for the whole guide, and never read
+the file. The cap is inherited from the rules-file design, whose ADR rejected raising budgets (the 35B's window is
+what they protect) and gave THAT path an omission note; the guide fold never got one, and no test pinned either cap.
+
+### Decision
+
+A cut file ends with an omission note, INSIDE the cap: `[... AGENTS.md truncated: N of M characters shown; read
+the file for the rest]`. It names the file and both counts so the model knows what it has and where the rest is —
+the same deterministic cue the workspace survey gives un-folded files, which the 35B follows (06v: listed → read
+5/6). The per-file and total-cap cuts share one helper, and a file straddling the total budget is noted against its
+ORIGINAL length. Lengths are unchanged — a cut file is still exactly `limit` characters, so the budget arithmetic
+and every existing cap test hold — and an under-cap file is byte-identical to before (no note). Raising the cap
+stays rejected. Both caps are now pinned by a test that names this ADR.
+
+### Consequences
+
+Pre-registered re-measure (zakcode on 14o under this build, N=12, same pod, same 35B): the note must lift 14o
+above 0/12; the target is parity with 14u and 13 (12/12). If it stays near 0/12 the cue is insufficient on a 35B
+(the rb-10615 prediction: an instruction in the prompt is not a control) and the next lever is
+MANDATORY-section-preserving truncation — keep sections whose headings carry MANDATORY / MUST / REQUIRED inside
+the cap ahead of the rest. 14u and 13 must remain 12/12: their inputs are byte-identical under this change, so
+any movement there is a regression, not noise.
