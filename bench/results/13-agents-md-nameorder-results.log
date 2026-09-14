@@ -1,0 +1,51 @@
+THRUST 10 — 13-agents-md-nameorder ROBUSTNESS (a DIFFERENT-KIND unprompted AGENTS.md convention) — RESULTS
+stamped: 2026-09-14 14:34 UTC   (alpha; task added Zak-Code #467; batch on zc-01 14:11:26 → 14:31:21 UTC)
+================================================================================
+HYPOTHESIS (thrust 10, pre-registered in #467 + campaign-2 cont'd 7): thrust 9's beyond-parity result (CC 0/12
+vs ZAK 12/12 on a version-FORMAT convention in AGENTS.md; mechanism pinned by the 12c CLAUDE.md control to the
+guide-file FOLD-SET) generalizes to a different KIND of convention — name ORDERING. PREDICTION: CC ~0/12,
+ZAK ~12/12. If CC adheres here, the effect is convention-kind-specific and the claim narrows.
+
+SETUP: task "implement full_name(first, last)" (the prompt says nothing about format). AGENTS.md "## Naming
+(MANDATORY)": a full name renders as `LAST, FIRST` (never `First Last`); guide example Hopper, Grace; verify uses
+Lovelace/Turing/Curie so a copy cannot pass. 26 files, 587-char AGENTS.md at root (far under the 8,192-char fold
+cap — see NEXT). Solvability controls: stub->FAIL, adherent->PASS, "Ada Lovelace"->FAIL. Model-fixed
+zds-qwen3.6-35b via the pod, N=12 each; CC unaided; zakcode --no-pin temp0. Raw: cc-qwen-13-agents-md-nameorder.json
+(zc-01:/root), determinism-zakcode-pinOFF-temp0-13-agents-md-nameorder.json (zc-01:/opt/zak-code-bench/bench/results).
+
+═══ SCORECARD — prediction CONFIRMED exactly ═══
+  arm         pass     determinism               reads AGENTS.md   globbed   turns
+  CC-13       0/12     distinct_outputs 1/12     0/12              0/12      3-6      (every run: 'Ada Lovelace')
+  ZAK-13      12/12    *.py IDENTICAL 12/12      (folded)          n/a       [7,7,4,6,6,4,4,4,4,4,7,4] spread 3
+  ZAK>CC by 12 runs on a second convention KIND. (ZAK PRIMARY = 2 distinct states, all .pytest_cache/* noise.)
+
+═══ MECHANISM (CC run JSON) — the thrust-9 shape, one step starker ═══
+  CC read AGENTS.md 0/12 AND globbed 0/12: on this task it went straight to people.py (3-6 turns), wrote the
+  "First Last" default and returned — it never even listed the workspace. Deterministically wrong (distinct 1/12).
+  zakcode folds AGENTS.md every run → the rule is unconditionally in context → 12/12, mostly 4 turns.
+
+═══ CONCLUSION — the lever generalizes across convention KINDS ═══
+  Two unrelated conventions (string FORMAT v<MAJOR>.<MINOR>; name ORDERING LAST, FIRST), same AGENTS.md placement,
+  same result: CC 0/12, ZAK 12/12, both at N=12 (Fisher exact p<1e-6 each). With the 12c control (CC 12/12 when the
+  identical rule sits in CLAUDE.md, 0 reads → auto-fold), the claim is: on repos that carry their conventions in
+  AGENTS.md, zakcode adheres and Claude Code 2.1.267 (headless) does not — because of what each loop FOLDS, not what
+  the convention is about, and not discovery (thrust 8).
+
+═══ NEXT: thrust 11 — the FOLD-CAP CLIFF (a first-principles check of the lever's own boundary) ═══
+  The fold is capped and SILENT: prompt.py MAX_CONTEXT_FILE_CHARS = 8_192 per file, applied as
+  content = raw.strip()[:8192] with NO omission note (prompt.py:499-500; identical in the zc-01 build; no test pins
+  it). The sibling rules-file path DOES emit an omission note (ADR at docs/DECISIONS.md:4213-4217), and the ADR that
+  set the guide caps rejected raising them ("the 35B's window is the constraint the budgets protect"). So a rule that
+  starts past char 8,192 of a long, realistic AGENTS.md is CUT from the fold with nothing telling the model the
+  guide is incomplete. Tasks (committed in this PR) hold 13's rule + verify byte-constant and vary only guide length:
+    14o-agents-md-longguide-over  — 24-section realistic guide, 9,740 chars, rule header at char 8,760 → CUT
+    14u-agents-md-longguide-under — same style, 7,637 chars, rule header at char 6,657 → KEPT (attention control)
+  Both builders assert the cliff with the SAME .strip()[:8192] the fold applies (deterministic pre-check; a remote
+  dry-build on zc-01 reproduced the local numbers exactly). PRE-REGISTERED: ZAK-14u ~12/12 (fold intact; measures
+  dilution alone) | ZAK-14o DROPS toward CC's ~0/12 unless the survey listing prompts an agentic read — and a silent
+  cut may be WORSE than CC, since the model believes it has the whole guide | CC-14o ≈ CC-14u ≈ 0/12 (no AGENTS.md
+  fold either way). zakcode arms run first. If the cliff bites, fix candidates: (a) an omission note that NAMES the
+  file and the cut ("AGENTS.md truncated at 8192 of N chars — read the file for the rest"), consistent with the
+  rules-file precedent and with the campaign's own finding that a LISTING reliably prompts a read (06v); (b)
+  MANDATORY-section-preserving truncation. Raising the cap is the ADR's rejected alternative. Batch staged on zc-01
+  (t11_14longguide_batch.sh); results follow.
