@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import os
 import platform
+import re
 from pathlib import Path
 
 from zakcode.config import PermissionTier, Settings
@@ -443,10 +444,84 @@ def _project_chain(root: Path) -> list[Path]:
     return chain
 
 
+#: Heading words that mark a section as something the model must obey (ADR-0170). Matched as whole
+#: words, case-insensitive, against the heading text only — a heading is where a guide's author
+#: labels a rule, and the label is what a fold under budget must never drop.
+_MANDATE_RE = re.compile(
+    r"\b(?:mandatory|must|required?|rules?|never|always|conventions?|polic(?:y|ies)|forbidden"
+    r"|prohibited|do not)\b",
+    re.IGNORECASE,
+)
+#: A level-2..6 markdown heading line; level 1 is the document title and stays with the preamble.
+_HEADING_RE = re.compile(r"^#{2,6}\s+\S")
+
+
+def _fit_sections(name: str, content: str, limit: int) -> str | None:
+    """Fold a sectioned markdown file into ``limit`` characters by keeping WHOLE sections — those
+    whose heading names a rule or mandate first, then the rest in document order — ending with a
+    note that lists the omitted headings (ADR-0170). Returns ``None`` when the file has no ``##``
+    sections or not one section fits, so the caller falls back to the head cut.
+
+    Built from the note that did nothing: under ADR-0169 a 35B still scored 0/12 on
+    ``14o-agents-md-longguide-over`` — 4 turns every run, identical outputs, the "read the file
+    for the rest" cue never acted on — while the same rule INSIDE the fold (14u) scored 12/12. A
+    small model cannot be asked to fetch; what it must obey has to be in the fold. Sections are
+    kept whole because a cut section is exactly the false-completeness hazard the cliff exposed.
+    Kept sections keep their document order; priority decides only WHAT is kept.
+    """
+    total_len = len(content)
+    parts: list[tuple[str | None, list[str]]] = [(None, [])]  # (heading line, its lines)
+    in_fence = False
+    for line in content.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        if not in_fence and _HEADING_RE.match(line):
+            parts.append((line, [line]))
+        else:
+            parts[-1][1].append(line)
+    blocks = [(heading, "\n".join(lines).strip("\n")) for heading, lines in parts]
+    blocks = [(h, b) for h, b in blocks if b.strip()]  # drop an empty preamble
+    if len(blocks) < 2 or all(h is None for h, _ in blocks):
+        return None
+    n = len(blocks)
+
+    def label(heading: str | None) -> str:
+        return "(preamble)" if heading is None else heading.lstrip("#").strip()
+
+    def priority(i: int) -> int:
+        heading = blocks[i][0]
+        return 0 if heading is not None and _MANDATE_RE.search(label(heading)) else 1
+
+    def note(kept_n: int, omitted: list[int]) -> str:
+        names = [label(blocks[i][0]) for i in omitted]
+        listed = "; ".join(names[:12]) + (f"; +{len(names) - 12} more" if len(names) > 12 else "")
+        return (
+            f"\n[... {name}: {total_len} characters, {kept_n} of {n} sections kept within the "
+            f"{limit}-character fold (sections whose heading names a rule or mandate are kept "
+            f"first); omitted: {listed}; read the file for the omitted sections]"
+        )
+
+    budget = limit - len(note(0, list(range(n))))  # the longest note the plan can produce
+    kept: list[int] = []
+    for i in sorted(range(n), key=lambda i: (priority(i), i)):
+        cost = len(blocks[i][1]) + 2  # its own text plus the blank line that joins it
+        if cost <= budget:
+            kept.append(i)
+            budget -= cost
+    if not kept or all(blocks[i][0] is None for i in kept):
+        return None  # nothing sectioned fits — a preamble alone is no fold; head-cut instead
+    kept.sort()
+    omitted = [i for i in range(n) if i not in kept]
+    body = "\n\n".join(blocks[i][1] for i in kept)
+    return body + note(len(kept), omitted)
+
+
 def _truncate_with_note(name: str, content: str, limit: int) -> str:
     """Cut ``content`` to exactly ``limit`` characters, ending with an omission note that names the
-    file and the counts (ADR-0169). The cut used to be silent, and a 35B then took the visible part
-    for the whole guide: a MANDATORY rule past the cap scored 0/12 on
+    file and the counts (ADR-0169). The fallback for a file without ``##`` sections; a sectioned
+    file is folded by whole sections first (:func:`_fit_sections`, ADR-0170). The cut used to be
+    silent, and a 35B then took the visible part for the whole guide: a MANDATORY rule past the
+    cap scored 0/12 on
     ``14o-agents-md-longguide-over`` — the same as Claude Code, which never folds the file at all.
     The note is the deterministic cue the workspace survey already gives un-folded files: it names
     the file so the model can read the rest. It lives INSIDE the limit so every budget stays exact;
@@ -492,12 +567,14 @@ def discover_context(
 
     * **Content-hash de-duplication** — identical content (e.g. an ``AGENTS.md`` that merely copies
       ``CLAUDE.md``) is kept only once, at its first occurrence.
-    * **Per-file cap** — each file is cut to :data:`MAX_CONTEXT_FILE_CHARS`, and a cut file ENDS
-      with an omission note naming the file and the counts (``[... AGENTS.md truncated: N of M
-      characters shown; read the file for the rest]``), inside the cap (ADR-0169). The cut used to
-      be silent, and a 35B then took the visible part for the whole guide: a MANDATORY rule past
-      the cap scored 0/12 — the same as a tool that never folds the file. The note is the cue the
-      workspace survey already gives un-folded files.
+    * **Per-file cap** — a file over :data:`MAX_CONTEXT_FILE_CHARS` is folded by WHOLE SECTIONS:
+      sections whose heading names a rule or mandate (MANDATORY, MUST, NEVER, RULES, …) are kept
+      first, then the rest in document order, and the fold ends with a note listing the omitted
+      headings (ADR-0170). A file without ``##`` sections falls back to a head cut that ends with
+      an omission note naming the file and the counts (ADR-0169). Both live inside the cap. Why
+      sections and not a cue: the silent cut scored 0/12 on a 35B (a MANDATORY rule past the
+      cap), and the ADR-0169 note alone ALSO scored 0/12 — 4 turns, never a read. A small model
+      cannot be asked to fetch, so what it must obey has to be in the fold.
     * **Total cap** — once the combined size reaches :data:`MAX_CONTEXT_TOTAL_CHARS`, no further
       files are added (a file straddling the budget is cut to what remains, with the same note,
       counted against its ORIGINAL length); because the guides are scanned before the README, a
@@ -544,7 +621,9 @@ def discover_context(
                 return False
             limit = min(limit, remaining)
         if original_len > limit:
-            content = _truncate_with_note(path.name, content, limit)
+            content = _fit_sections(path.name, content, limit) or _truncate_with_note(
+                path.name, content, limit
+            )
         discovered.append((path, content))
         total += len(content)
         return total < MAX_CONTEXT_TOTAL_CHARS

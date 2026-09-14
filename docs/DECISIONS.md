@@ -9387,3 +9387,43 @@ above 0/12; the target is parity with 14u and 13 (12/12). If it stays near 0/12 
 MANDATORY-section-preserving truncation — keep sections whose headings carry MANDATORY / MUST / REQUIRED inside
 the cap ahead of the rest. 14u and 13 must remain 12/12: their inputs are byte-identical under this change, so
 any movement there is a regression, not noise.
+
+## ADR-0170: the fold keeps the rules — section-priority truncation, built from the note that did nothing
+
+**Date:** 2026-09-14 · **Status:** accepted (ships default-on; re-measure pre-registered) · **Instrument:**
+`bench/tasks/14o-agents-md-longguide-over` under the ADR-0169 build · **Results:**
+`bench/results/13-agents-md-nameorder-results.log` (thrust-12 section) · **Trigger:** thrust 12 of the model-fixed
+head-to-head on zc-01, 2026-09-14 15:14–15:18 UTC.
+
+### Context
+
+ADR-0169 ended a cut guide with a note — file name, counts, "read the file for the rest" — on the reasoning that a
+named cue is what the workspace survey already gives un-folded files, which the 35B follows (06v: listed → read
+5/6). Re-measured on `14o` (the MANDATORY rule past the 8,192-char cap), N=12, same pod and model, only `prompt.py`
+changed on the bench box: **0/12**, 4 turns every run, ~18 s, `*.py` identical to the pre-fix runs. The model did
+not read the file; it did not do anything differently at all. The cue at the end of a folded guide is inert on a
+35B — the rb-10615 shape (an instruction in a small model's prompt is not a control), now measured at N=12. The
+same rule INSIDE the fold (14u, char 6,657 of 7,637) scores 12/12. So the lever is not where the rule is
+described; it is whether the rule is in the fold.
+
+### Decision
+
+A file over the per-file cap is folded by WHOLE sections. Split on level-2+ markdown headings (level 1 stays with
+the preamble; fenced code is not a heading). Sections whose heading names a rule or mandate — whole-word,
+case-insensitive: mandatory, must, required, rule(s), never, always, convention(s), policy/policies, forbidden,
+prohibited, do not — are kept first, then the rest in document order; a section is kept only if it fits entirely,
+because a cut section is precisely the false-completeness hazard the cliff exposed. Kept sections keep their
+document order (priority decides what, not where). The fold ends with a note that lists the omitted headings by
+name (`[... AGENTS.md: 9740 characters, 13 of 24 sections kept within the 8192-character fold (…); omitted: Setup;
+Repository layout; …; read the file for the omitted sections]`), inside the cap. A file with no `##` sections, or
+one whose smallest section does not fit, falls back to the ADR-0169 head cut with its note. Under-cap files are
+untouched. The caps and their rejection of budget increases stand.
+
+### Consequences
+
+Pre-registered re-measure (zakcode on 14o under this build, N=12): the `## Naming (MANDATORY)` section is now IN
+the fold, so 14o must score as 14u does — target 12/12 (14u proved depth inside the fold costs nothing). 14u and
+13 remain byte-identical inputs and must hold 12/12. Residual, stated honestly: a mandate stated in prose under an
+unlabelled heading, past the cap, is still dropped — the heading label is the signal, and a guide that never
+labels its rules is one no truncation policy can rescue; the note names what was dropped so a larger model can
+fetch it. That residual, and a window-proportional budget for large-window models, are the next questions.
