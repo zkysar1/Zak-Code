@@ -136,3 +136,52 @@ note). Pre-fix JSONs archived as *-PRE-ADR0169.json; both generations committed 
   ZAK-14o → 12/12 (the rule is in context exactly as in 14u); 14u and 13 hold 12/12. A 14o result ≤ 10/12 would be a
   PLACEMENT finding (the Naming section now precedes the trailing Deprecation section, and a note follows it), not a
   cap finding — it would say the fold's ORDER matters to the model, a new question. Results follow.
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 13 RESULT (2026-09-14 15:49 UTC) — ADR-0170 MOVED THE BOUNDARY: ZAK-14o 0/12 → 12/12; 14u and 13 hold 12/12
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Batch t13_adr0170_remeasure_batch.sh on zc-01, 15:34:13 → 15:47:02 UTC. ONE variable moved on the bench tree: prompt.py
+(ADR-0170 build, md5 85e7d75c4c03; _fit_sections importable; canonical probe before launch — 14o folds to 8,062 chars,
+20 of 25 sections kept INCLUDING "## Naming (MANDATORY)", the note lists the 5 omitted headings; 14u and 13
+byte-identical, no note). The t12 JSONs were archived as *-PRE-ADR0170.json on zc-01 (the same pairs committed in
+#472); the three post-fix JSONs are committed here.
+
+═══ SCORECARD — pre-registration: ZAK-14o → 12/12; 14u and 13 hold 12/12 — ALL THREE EXACTLY AS PREDICTED ═══
+  arm       build      pass    turns                                *.py     app/people.py   elapsed
+  ZAK-14o   pre-fix    0/12    [4 x12] spread 0                     IDENT    c7d3895372      17.7-18.9s  (t11/t12: "Ada Lovelace")
+  ZAK-14o   ADR-0170   12/12   [4 x12] spread 0                     IDENT    8893785d04      18.3-21.6s  ← THE CLIFF IS GONE
+  ZAK-14u   ADR-0170   12/12   [4,7,4,7,4,4,4,4,7,4,4,7] spread 3   IDENT    8893785d04      18.6-33.2s  holds
+  ZAK-13    ADR-0170   12/12   [4,4,4,7,6,6,4,4,4,7,7,4] spread 3   IDENT    8893785d04      13.4-27.7s  holds
+  The passing app/people.py is ONE implementation (digest 8893785d04) across all three cells and both builds: the
+  model converges on the same code whenever the rule is in its context, and on the same wrong code ("First Last",
+  c7d3895372) whenever it is not. Fisher exact, 14o 0/12 (pre-fix) vs 12/12 (ADR-0170): p = 7.4e-07 (two-sided).
+
+═══ READING — the edge is the FOLD, and the fold is now the RIGHT PART of the file ═══
+  Three builds, one cell, one stimulus (a 9,740-char guide with the MANDATORY rule at char 8,760):
+    silent head cut (pre-fix)          0/12   the model treated 8,192 chars as the whole guide
+    head cut + omission note (0169)    0/12   the note told it the guide was incomplete; it changed nothing it did
+    section-priority fold (0170)      12/12   the rule is in the 8,062-char fold, whole, in document order
+  Turn count 4 and identical outputs in every 14o run under all three builds: the model's PLAN never changed — read
+  what it was given, edit people.py, stop. What changed was what it was given. The campaign's thesis in one table:
+  on a small model, determinism belongs in the harness's assembly, not in the model's diligence.
+  Real-guide demonstration (local canonical probe, ADR-0170): the Mind repo's 47,511-char CLAUDE.md folds to 8,166
+  chars keeping 18 of 39 sections — mandate-headed subsections first (Universal Conventions; Naming Rules; Pipeline Rules; Skill Invocation Rules; Code Change Verification (MANDATORY); Enforcement Rules; Autonomous Loop Rules); the head cut reached 2 sections.
+
+═══ THRUST 14 — SMARTER FOLD vs BIGGER FOLD (14x-agents-md-longguide-xl, #473), PRE-REGISTERED, LAUNCHED 15:47:46 ═══
+  The ADR that set the caps rejected raising them; the SIZE policy is now the open lever. 14x: the same convention +
+  verify, a 24,617-char guide (3x the cap; every section carries a second realistic paragraph), Naming at 92% depth,
+  and a head cut at the cap would drop it (selfcheck). Two zakcode arms, N=12, sequential, one bench tree:
+    Arm A (smarter) — ADR-0170 at cap 8,192: fold 7,988 chars, 9 of 28 sections (Setup…Configuration + Naming), the
+                      rule at 90% of the fold; note lists the 19 omitted headings.   canonical probe md5 b91f2f25e03a
+    Arm B (bigger)  — MAX_CONTEXT_FILE_CHARS = 32_768 (total cap unchanged): the whole guide folds (24,617 + README =
+                      24,693 < 32,768), the rule at 92% of a 3x-larger fold.         canonical probe md5 1e89c814e93c
+  The batch swaps ONLY that constant between arms and RESTORES the ADR-0170 file (md5-checked) before it ends.
+  PREDICTION: A → 12/12 (thrust 13's mechanism at 3x the guide). B → 12/12 predicted: ~6K tokens of guide is small
+  against a 131K window and 14u showed no dilution at 87% depth. B < A ⇒ the small rule-first fold beats folding
+  everything and the caps' rejection stands with data; A < B ⇒ the omitted sections mattered (none discuss names —
+  unlikely); A = B = 12/12 ⇒ a window-proportional budget is safe at this size and the next question is WHERE the
+  dilution knee is (a 4x / 8x guide). No CC arm: CC never folds AGENTS.md (0/12 at both lengths, 0 reads).
+  HAZARD found by probe while designing arm B (rb-10928): with per-file cap == total cap, an OUTER guide can starve
+  the workspace's own — under a 47K ancestor CLAUDE.md the workspace AGENTS.md was cut to 175 chars — because files
+  fold outermost-first and the budget is first-come. A window-proportional budget must scale the total cap with the
+  per-file cap or reserve budget for the workspace-root guides. (The bench's mkdtemp workspaces have no ancestors.)
