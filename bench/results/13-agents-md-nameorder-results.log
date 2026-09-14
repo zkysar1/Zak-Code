@@ -240,3 +240,64 @@ canonical probe on zc-01: fold 7,829 chars, 19 of 25 sections, rule ABSENT (md5 
   CONTAIN the rule, 14o keeps its sections, 14u/13 unchanged. Archive the current JSONs as *-PRE-ADR0171.json; run
   ZAK 14p → 14o → 14u → 13 at N=12 (t16_adr0171_remeasure_batch.sh). PREDICTION: 14p → 12/12; 14o, 14u, 13 hold
   12/12. Launch time and result follow in the thrust-16 section.
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 16 RESULT (2026-09-14 16:27 UTC) — ADR-0171 CLOSES THE RESIDUAL: 14p 0/12 → 12/12; 14o / 14u / 13 hold 12/12 — every cell as pre-registered
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Batch t16_adr0171_remeasure_batch.sh on zc-01, 16:04:30 → 16:20:49 UTC, ADR-0171 build (prompt.py md5 272999c1ff34,
+the ONLY file deployed). Pre-fix JSONs archived on zc-01 as *-PRE-ADR0171.json. Canonical probes on zc-01 before
+launch: 14p fold 8,071 of 9,746 chars, rule IN the fold (md5 3a4f6d831807 — under ADR-0170 it was 7,829 chars with
+the rule ABSENT); 14o 8,065 of 9,740, rule in (c9add2288a87); 14u 7,637 whole (de1bc8d21bbb); 13 584 whole
+(dd249cc042f1). JSONs committed here: the four un-suffixed files are now the ADR-0171 measurements; the ADR-0170
+measurements of 13 / 14o / 14u (thrust 13) move to *-ADR0170.json beside 14p's thrust-15 file.
+
+═══ SCORECARD — pre-registration: 14p → 12/12; 14o, 14u, 13 hold 12/12 — ALL FOUR AS PREDICTED ═══
+  cell   build      pass    turns                                  elapsed/run    people.py
+  14p    ADR-0170   0/12    [4 x12] spread 0                       16.5-20.3s     c7d3895372 ("Ada Lovelace")
+  14p    ADR-0171   12/12   [4,4,4,4,4,6,4,4,4,4,4,4] spread 2     18.2-30.1s     8893785d04 ("Lovelace, Ada")
+  14o    ADR-0171   12/12   [4 x12] spread 0                       19.3-22.0s     8893785d04
+  14u    ADR-0171   12/12   [4,4,4,4,4,4,4,7,4,4,4,4] spread 3     18.9-35.1s     8893785d04
+  13     ADR-0171   12/12   [4,4,4,7,7,4,4,7,4,4,4,7] spread 3     12.6-28.6s     8893785d04
+  One implementation digest across all 48 runs (8893785d04 = the thrust-13/14 digest): the fix changes WHICH
+  sections reach the model and nothing about what it writes once the rule is in front of it.
+
+═══ READING — the guide-fold arc closes ═══
+  Silent head cut 0/12 (t12 pre-fix) → counted note 0/12 (ADR-0169; the note is ignored) → whole-section priority
+  by heading 12/12 (ADR-0170, 14o) → residual plain heading 0/12 (t15, 14p) → emphasized-body tier 12/12
+  (ADR-0171, 14p). Fisher exact on 0/12 → 12/12: p = 7.4e-7, twice. Two independent lexical signals now select
+  the rule section — the heading's vocabulary and the author's emphasis — and the three regression cells show the
+  second tier displaces nothing the first tier kept. Size is not the lever (t14). Residual, still open and stated
+  in ADR-0171: a lowercase, unemphasized rule under a topical heading folds in document order — lexically
+  indistinguishable from guidance; no cell built for it, on purpose.
+
+═══ RULES-FILE PATH — measured, NO thrust (the sibling fold in src/zakcode/rules/__init__.py) ═══
+  _body_block does a SILENT content[:MAX_RULE_FILE_CHARS] head cut (8,192) with no note; the omission note there
+  covers only whole rules dropped by the 32,768 total. Same defect class as the pre-ADR-0169 guide fold — so
+  measure before building: of the Mind's 36 .claude/rules/*.md files, 8 exceed 8,192 chars and 0 of the 8 have a
+  "## Rules" heading past the cap — on the one real rules corpus at hand the head cut loses rationale and incident
+  history, not rules. Left alone; revisit only with a corpus that states rules late. (always_apply / alwaysApply
+  rules fold first — ADR-0105 — so the order is already author-controlled on that path.)
+
+═══ FOLD-SET PREVALENCE (GitHub code search, path-filename queries, 2026-09-14; rate-limited after ~10 queries) ═══
+  AGENTS.md ~500K, CLAUDE.md ~500K, CONTRIBUTING.md ~500K (the three names zakcode folds) vs GUIDELINES.md ~14K,
+  STYLE.md / STYLEGUIDE.md ~10K, CONVENTIONS.md ~4.8K (DEVELOPMENT.md / HACKING.md unmeasured — rate limit).
+  Widening the fold set reaches ≤3% as many repos as the current set; not a thrust until a measured cell shows a
+  non-folded name carrying a rule the folded names do not.
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 17 — A REAL GUIDE: the Ayoai-Mind CLAUDE.md (47,511 chars) verbatim, a real convention, a contrary default — PRE-REGISTERED, RUNNING
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Cells 15-realguide-mind-timestamp / 15n-realguide-mind-timestamp-noguide (#478): the stub journal_stamp() must
+return the project's timestamp format — naive ISO 8601 "%Y-%m-%dT%H:%M:%S", no zone suffix, no fraction — stated
+ONLY in the guide's "### Naming Rules" at char 26,940 (57%; a head cut lacks it). Prompt: "returns the current
+time as a timestamp string for a journal entry". The 35B's defaults are all wrong (isoformat() with fraction +
+zone, a spaced form, a zone suffix); only isoformat(timespec="seconds") on a naive datetime passes by luck.
+ADR-0171 fold of the real guide (canonical; identical local and zc-01): 8,186 of 47,511 chars, 17 of 39 sections,
+Naming Rules IN the fold (md5 ef3a7a2063d4). CC folds the whole 47K file natively (~12K tokens of prefill).
+Batch t17_realguide_batch.sh (md5 9034b3261e8e) launched 16:21:51 UTC on the ADR-0171 build: ZAK 15n → ZAK 15 →
+CC 15, N=12 each, one arm at a time. PRE-REGISTRATION: 15n (no guide) LOW — the default rate; ZAK 15 ≥ 10/12;
+CC 15 unknown — ≥ 10/12 means no dilution at 12K tokens, CC < ZAK means the small rule-first fold beats the whole
+file on a real guide. Result follows in the thrust-17 section.
+  IN PLACE (16:24:51): ZAK-15n 0/12, turns [4,4,4,4,4,4,4,4,5,4,4,4] spread 1, elapsed 12.0-25.3s, EIGHT distinct
+  journal.py digests across 12 runs (5 × isoformat() with zone+fraction; a spaced "YYYY-MM-DD HH:MM:SS UTC"; …) —
+  no guide, no format, no consistency. The default rate is zero: every 15 pass is the guide.
