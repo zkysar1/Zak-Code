@@ -784,3 +784,56 @@ def test_fold_heading_tier_outranks_body_tier_which_outranks_plain(tmp_path: Pat
     fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
     assert _headings(fold) == ["## Alpha", "## Rules", "## Delta"]
     assert _omitted(note) == ["Beta"]
+
+
+def _nested_guide(parent: str, rule_body: str) -> str:
+    """The long guide with the rule under a plain ``###`` heading NESTED under ``## {parent}``."""
+    body = _long_guide().replace(
+        _PLAIN_RULE,
+        f"## {parent}\n\nWhat this project has agreed on.\n\n### Working with people data\n\n"
+        + rule_body
+        + "\n\n"
+        + _PADDING.strip(),
+    )
+    assert body.index("### Working with people data") > MAX_CONTEXT_FILE_CHARS  # past the cap
+    return body
+
+
+def test_fold_keeps_a_plain_subsection_under_a_heading_that_names_a_mandate(tmp_path: Path) -> None:
+    # "### ID Formats" under "## Universal Conventions" (the real 47K guide, thrust 18): the child's
+    # own heading and lowercase body promote nothing, but its outline path does — the author filed
+    # it under conventions. Kept whole, past the cap.
+    rule = "Render every full name as LAST, FIRST. You must not render First Last."
+    (tmp_path / "AGENTS.md").write_text(_nested_guide("Conventions", rule) + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert "### Working with people data" in fold and "LAST, FIRST" in fold
+    assert "Working with people data" not in _omitted(note)
+
+
+def test_fold_inherits_only_from_a_heading_that_names_a_mandate(tmp_path: Path) -> None:
+    # The same subsection under "## Background" inherits nothing and folds in document order.
+    rule = "Render every full name as LAST, FIRST. You must not render First Last."
+    (tmp_path / "AGENTS.md").write_text(_nested_guide("Background", rule) + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert "### Working with people data" not in fold
+    assert "Working with people data" in _omitted(note)
+
+
+def test_fold_never_overruns_the_cap_when_the_omitted_headings_are_the_long_ones(
+    tmp_path: Path,
+) -> None:
+    # Twelve short-headed sections first, then eighteen with long headings; the note lists the
+    # omitted headings by name, so the reserve must cover the LONGEST twelve, not the first twelve.
+    short = [f"## S{i}\n\n" + f"Guidance paragraph {i}. " * 20 for i in range(12)]
+    long_ = [
+        f"## A long heading about the deployment pipeline and its release process, part {i}\n\n"
+        + f"Guidance paragraph {i}. " * 12
+        for i in range(12, 30)
+    ]
+    rule = "## Rules\n\nRender every full name as LAST, FIRST."
+    guide = "\n\n".join(["# Guide", *short, *long_, rule])
+    (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    assert "## Rules" in content and len(content) <= MAX_CONTEXT_FILE_CHARS

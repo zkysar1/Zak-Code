@@ -480,7 +480,9 @@ def _fit_sections(name: str, content: str, limit: int) -> str | None:
     Kept sections keep their document order; priority decides only WHAT is kept. The body tier
     exists because real guides state hard rules under plain topical headings: the same rule under
     "## Working with people data" (14p) is invisible to the heading tier, and lowercase "must"
-    cannot be the signal — every section of a guide says it somewhere.
+    cannot be the signal — every section of a guide says it somewhere. The heading tier reads a
+    section's whole OUTLINE PATH: "### ID Formats" under "## Universal Conventions" is a convention
+    by the author's own outline, whatever its own heading says (ADR-0172).
     """
     total_len = len(content)
     parts: list[tuple[str | None, list[str]]] = [(None, [])]  # (heading line, its lines)
@@ -501,16 +503,27 @@ def _fit_sections(name: str, content: str, limit: int) -> str | None:
     def label(heading: str | None) -> str:
         return "(preamble)" if heading is None else heading.lstrip("#").strip()
 
+    paths: list[list[str]] = []  # each section's outline path: the open ancestors, then itself
+    open_headings: list[tuple[int, str]] = []  # (depth, label) of the headings still open
+    for heading, _ in blocks:
+        if heading is None:
+            paths.append([])
+            continue
+        depth = len(heading) - len(heading.lstrip("#"))
+        while open_headings and open_headings[-1][0] >= depth:
+            open_headings.pop()
+        paths.append([lab for _, lab in open_headings] + [label(heading)])
+        open_headings.append((depth, label(heading)))
+
     def priority(i: int) -> int:
         heading, block = blocks[i]
-        if heading is not None and _MANDATE_RE.search(label(heading)):
-            return 0  # the heading names a rule or mandate
+        if heading is not None and any(_MANDATE_RE.search(lab) for lab in paths[i]):
+            return 0  # the heading, or a heading above it in the outline, names a rule or mandate
         head_and_body = block.split("\n", 1)
         body = head_and_body[1] if heading is not None and len(head_and_body) > 1 else block
         return 1 if _EMPHASIZED_MANDATE_RE.search(body) else 2  # the author emphasized one / plain
 
-    def note(kept_n: int, omitted: list[int]) -> str:
-        names = [label(blocks[i][0]) for i in omitted]
+    def note_for(kept_n: int, names: list[str]) -> str:
         listed = "; ".join(names[:12]) + (f"; +{len(names) - 12} more" if len(names) > 12 else "")
         return (
             f"\n[... {name}: {total_len} characters, {kept_n} of {n} sections kept within the "
@@ -518,19 +531,29 @@ def _fit_sections(name: str, content: str, limit: int) -> str | None:
             f"first); omitted: {listed}; read the file for the omitted sections]"
         )
 
-    budget = limit - len(note(0, list(range(n))))  # the longest note the plan can produce
+    def note(kept_n: int, omitted: list[int]) -> str:
+        return note_for(kept_n, [label(blocks[i][0]) for i in omitted])
+
+    def render(kept: list[int]) -> str:
+        omitted = [i for i in range(n) if i not in kept]
+        return "\n\n".join(blocks[i][1] for i in sorted(kept)) + note(len(kept), omitted)
+
+    order = sorted(range(n), key=lambda i: (priority(i), i))
+    budget = limit - len(note(0, list(range(n))))  # a note naming every section, as an estimate
     kept: list[int] = []
-    for i in sorted(range(n), key=lambda i: (priority(i), i)):
+    for i in order:
         cost = len(blocks[i][1]) + 2  # its own text plus the blank line that joins it
         if cost <= budget:
             kept.append(i)
             budget -= cost
+    # The note lists the OMITTED headings, which the estimate above only approximates (a real
+    # guide whose late headings are the long ones overran the cap by 35 chars): check the fold
+    # against the note it actually emits, shedding the lowest-priority section until it fits.
+    while kept and len(render(kept)) > limit:
+        kept.remove(max(kept, key=order.index))
     if not kept or all(blocks[i][0] is None for i in kept):
         return None  # nothing sectioned fits — a preamble alone is no fold; head-cut instead
-    kept.sort()
-    omitted = [i for i in range(n) if i not in kept]
-    body = "\n\n".join(blocks[i][1] for i in kept)
-    return body + note(len(kept), omitted)
+    return render(kept)
 
 
 def _truncate_with_note(name: str, content: str, limit: int) -> str:
