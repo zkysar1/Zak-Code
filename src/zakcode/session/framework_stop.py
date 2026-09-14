@@ -65,21 +65,29 @@ STOP_TARGET_MODE_FILENAME = "stop-target-mode"
 #: The signal name the framework's ``session-signal-set.sh`` accepts.
 STOP_REQUESTED_SIGNAL = "stop-requested"
 
-#: The framework's own EXIT PERMIT, written under the agent's session dir only after
-#: the graceful stop's obligations complete (consolidate, hand off, set target mode).
-STOP_LOOP_SIGNAL = "stop-loop"
+#: The graceful stop's own in-progress record, under the agent's session dir: written at
+#: its entry (GS-0) and cleared as its LAST act (D7.1), after the target mode is applied.
+STOP_CHECKPOINT_FILENAME = "stop-checkpoint.json"
+
+#: The agent's runtime mode, under the agent's session dir. The graceful stop applies its
+#: target mode here at D7, after consolidation and cleanup.
+AGENT_MODE_FILENAME = "agent-mode"
 
 #: Where a stopped run lands: user-directed, reconciliation-ready, loop off.
 DEFAULT_STOP_TARGET_MODE = "assistant"
+
+#: The modes a graceful stop can land in. A mind whose loop still runs reads ``autonomous``.
+_STOPPED_MODES = frozenset({"assistant", "reader"})
 
 #: Re-exported: the signal-raising mechanism is shared with the observe lane
 #: (:mod:`zakcode.session.framework_signal`), and callers already import these names from
 #: here. Kept as re-exports rather than moved so this module's public surface is unchanged.
 __all__ = [
+    "AGENT_MODE_FILENAME",
     "DEFAULT_STOP_TARGET_MODE",
     "SIGNAL_SET_SCRIPT",
     "SIGNAL_SET_TIMEOUT_S",
-    "STOP_LOOP_SIGNAL",
+    "STOP_CHECKPOINT_FILENAME",
     "STOP_REQUESTED_SIGNAL",
     "STOP_TARGET_MODE_FILENAME",
     "framework_session_dir",
@@ -148,21 +156,41 @@ def request_framework_stop(
 def framework_stop_complete(workspace_root: str | os.PathLike[str], agent: str) -> bool:
     """True once the Mind has signed its OWN stop off.
 
-    ``stop-loop`` is the framework's exit permit: a SINGLE writer sets it, and only
-    after the graceful stop's obligations have run. So it cannot fire early, which is
-    exactly the property a completion waiter must key on (guard-5809) -- unlike
-    ``stop-requested``, which this process wrote itself and which is therefore true
-    the instant the ask is made rather than when the work is done.
+    Keyed on what the framework's graceful stop leaves behind once it has FINISHED, never
+    on a marker it only passes through (guard-5809). Its last writes are D7 (apply the
+    target mode, then remove ``stop-target-mode``) and D7.1 (clear
+    ``stop-checkpoint.json``, which the framework names as the one signal that the stop ran
+    to completion). So complete means ALL of:
 
-    Absent means "not yet", NEVER "failed": absence is indistinguishable from a mind
-    that is still consolidating, so the caller bounds the wait with its own grace
-    instead of reading anything into a False here. Fail-open on OSError for the same
-    reason -- an unreadable session dir must not hold a paid vessel open.
+    - ``agent-mode`` reads a mode a stop lands in. This is the positive half: before any
+      stop is raised the three files below are absent too, and absence must never read
+      as a finished stop.
+    - ``stop-requested`` is gone: the mind consumed the ask (D3).
+    - ``stop-target-mode`` is gone: D7 ran.
+    - ``stop-checkpoint.json`` is gone: D7.1 ran.
+
+    The mode alone is not enough. This process never saw what it read before the ask, and
+    a mode an earlier stop left at ``assistant`` would pass. Each of the three files closes
+    a different early reading.
+
+    NOT ``stop-loop``: D2 sets it BEFORE consolidation and D6 removes it, so it marks a
+    stop in progress, not a finished one. Keyed on it, this waiter could fire during
+    consolidation, or never. A stop that runs inside one turn is always past D6 by the time
+    the loop looks, so the loop beat on until the grace ran out (g-373-16 R4).
+
+    False means "not yet", NEVER "failed", so the caller bounds the wait with its own grace
+    instead of reading anything into it. Fail-open on OSError for the same reason -- an
+    unreadable session dir must not hold a paid vessel open.
     """
     if not agent:
         return False
     try:
-        return (framework_session_dir(workspace_root, agent) / STOP_LOOP_SIGNAL).exists()
+        session_dir = framework_session_dir(workspace_root, agent)
+        mode = (session_dir / AGENT_MODE_FILENAME).read_text(encoding="utf-8", errors="replace")
+        if mode.strip() not in _STOPPED_MODES:
+            return False
+        in_progress = (STOP_REQUESTED_SIGNAL, STOP_TARGET_MODE_FILENAME, STOP_CHECKPOINT_FILENAME)
+        return not any((session_dir / name).exists() for name in in_progress)
     except OSError:
         return False
 
