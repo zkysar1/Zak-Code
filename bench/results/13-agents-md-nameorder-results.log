@@ -301,3 +301,63 @@ file on a real guide. Result follows in the thrust-17 section.
   IN PLACE (16:24:51): ZAK-15n 0/12, turns [4,4,4,4,4,4,4,4,5,4,4,4] spread 1, elapsed 12.0-25.3s, EIGHT distinct
   journal.py digests across 12 runs (5 × isoformat() with zone+fraction; a spaced "YYYY-MM-DD HH:MM:SS UTC"; …) —
   no guide, no format, no consistency. The default rate is zero: every 15 pass is the guide.
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 17 RESULT (2026-09-14 17:03 UTC) — THE REAL 47K GUIDE: ZAK 12/12 (8K fold) vs CC 11/12 (whole file); no-guide 0/12. Parity-plus on outcome; 7.5x cheaper and turn-stable
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Batch t17_realguide_batch.sh on zc-01, 16:21:53 → 17:02:07 UTC, ADR-0171 build (md5 272999c1ff34), cells 15 / 15n
+(#478). JSONs committed here: determinism-zakcode-pinOFF-temp0-15-realguide-mind-timestamp.json, …-15n-…-noguide.json,
+cc-qwen-15-realguide-mind-timestamp.json (CC per-run reads/globs/greps/edits, no prompts).
+
+═══ SCORECARD — pre-registration: 15n LOW; ZAK ≥ 10/12; CC unknown ═══
+  arm            guide in context                 pass    turns                                   elapsed/run              journal.py digests
+  ZAK-15n        none (control)                   0/12    [4,4,4,4,4,4,4,4,5,4,4,4] spread 1      12.0-25.3s mean 14.8     8 distinct, all wrong
+  ZAK-15         8,186-char ADR-0171 fold, 17/39   12/12   [4,5,4,4,4,4,4,4,4,4,4,4] spread 1      20.0-40.0s mean 22.0     3 distinct, all pass
+  CC-15          whole 47,511-char file (native)  11/12   [6,6,9,19,5,4,7,12,4,7,3,9] spread 16   64.6-207.7s mean 164.3   8 distinct output states
+  15n → the default rate is ZERO (isoformat() with fraction+zone ×5, a spaced "… UTC" form, six others); every pass
+  in the other arms is the guide. CC run 3 FAILED with '2026-09-14T16:38:00.448468' — isoformat() with microseconds,
+  the rule in context (whole file) and not applied: one dilution miss in 12. CC read app/journal.py in every run and
+  never read CLAUDE.md (folded natively, read_CONTRIB False ×12); ZAK never read it either (folded).
+
+═══ READING ═══
+  (i) Outcome: ZAK 12/12 vs CC 11/12 is not a difference (Fisher p = 1.0); both loops apply a real convention
+  stated 57% into a real 47K guide when it reaches the model. The tiered fold survived contact with a document
+  written for a different agent: the rule section was one of the 17 it kept, and the model obeyed it in 4 turns.
+  (ii) Cost: the same outcome cost CC 164 s per run against 22 s — 7.5x — and 7.6 turns against 4.1. Per turn CC
+  is ~4x slower (21.6 vs 5.4 s): the whole 47K guide (~12K tokens) is prefilled on every turn of every run on this
+  pod. The one CC failure is the dilution the small fold cannot suffer. (iii) Determinism: ZAK turn spread 1 on
+  both cells; CC spread 16 (3 to 19 turns) with 8 distinct output states. On a small model the rule-first 8K fold
+  is the better instrument on every axis but "is the rule in context", where the whole file wins by construction —
+  and that is exactly the residual: a rule the fold OMITS is a rule CC still has. Thrust 18 measures it.
+
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+THRUST 18 — THE RESIDUAL ON THE REAL GUIDE: a convention the fold OMITS ("### ID Formats") — PRE-REGISTERED, RUNNING
+════════════════════════════════════════════════════════════════════════════════════════════════════════════
+Cells 15i-realguide-mind-beliefid / 15in-…-noguide (#480): same verbatim guide; the convention under test — belief
+record ids are `bel-NNN` — lives in "### ID Formats" (char 27,705, 58%), a plain topical heading with an
+unemphasized body, under "## Universal Conventions". The ADR-0171 fold scores each section on its own heading and
+body, so ID Formats is OMITTED and named in the note's omitted list (canonical probe, local and zc-01: fold 8,186
+chars, "bel-" absent, "ID Formats" in the note, md5 ef3a7a2063d4 — the identical fold to thrust 17's). Task:
+implement next_belief_id(existing_ids); with no ids assigned the prefix must come from knowledge (a prefix-copying
+implementation has nothing to copy), so the empty-list case discriminates; padded and unpadded pass; sequential
+numbering checked on contiguous inputs. Controls: stub FAIL; adherent (max+1 or len+1) PASS; belief-001 / bare 1 /
+prefix-copy-with-fallback FAIL.
+Batch t18_realguide_idformat_batch.sh (md5 08ecc5794653) launched 17:02:26 UTC on the ADR-0171 build: ZAK 15in →
+ZAK 15i → CC 15i, N=12 each. PRE-REGISTRATION: 15in LOW (no default route to "bel-"); ZAK-15i LOW — unless the
+omitted heading named in the note ("ID Formats", a strong cue for an id task) prompts the 35B to read the file,
+which it has never done under the ADR-0169 note; CC-15i at the thrust-17 CC rate (the whole file carries the rule).
+ZAK < CC here is the first CC-over-ZAK cell on a real guide and the falsifiable case for the fix below.
+
+═══ ADR-0172 CANDIDATE (drafted, tests green, UNPUSHED until 15i is measured): the heading tier reads the OUTLINE PATH ═══
+  "### ID Formats" sits under "## Universal Conventions": the author's outline says it is a convention, whatever
+  its own heading says. _fit_sections scores each section on its outline path — the open ancestor headings, then
+  itself — for the heading tier; body and plain tiers and the note text unchanged. Local probe: 13 / 14o / 14p /
+  14u / 14x folds BYTE-IDENTICAL to ADR-0171's; the real guide's fold becomes 7,988 chars with both "### Naming
+  Rules" and "### ID Formats" in (Project Purpose / Architecture / the two Design Principles / Cognitive Primitives
+  / Knowledge Retrieval out — 20 sections, every child of Universal Conventions promoted). Found on the way, a real
+  ADR-0170 defect: the note's budget reserve used the first twelve section labels in document order, but the note
+  lists the OMITTED headings; on the real guide (long late headings) the ADR-0172 fold overran the cap by 35 chars
+  (8,227). Fix: the fold is checked against the note it actually emits and sheds its lowest-priority section until
+  it fits (discriminating test: a synthetic guide folds to 8,800 chars on ADR-0171, 8,089 after). Full suite 3930.
+  Build md5 aae1a13a0864. Thrust 19 (staged): deploy it alone after t18; re-run ZAK 15i (→ 12/12), 15 (holds), 14p
+  (identical fold, holds).
