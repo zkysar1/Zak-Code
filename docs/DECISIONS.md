@@ -9427,3 +9427,42 @@ the fold, so 14o must score as 14u does — target 12/12 (14u proved depth insid
 unlabelled heading, past the cap, is still dropped — the heading label is the signal, and a guide that never
 labels its rules is one no truncation policy can rescue; the note names what was dropped so a larger model can
 fetch it. That residual, and a window-proportional budget for large-window models, are the next questions.
+
+## ADR-0171: the fold keeps what the author emphasized — a body-level mandate tier for plain-headed sections
+
+**Context.** ADR-0170 folds a guide past the per-file cap by whole sections, keeping first the sections whose
+HEADING names a rule or mandate; thrust 13 measured it: `14o-agents-md-longguide-over` went from 0/12 to 12/12
+on the 35B with 14u/13 holding. Its stated residual was a mandate under an unlabelled heading. Real guides do
+that constantly — `## Working with people data` followed by "names MUST be rendered LAST, FIRST" — and the
+residual cell `14p-agents-md-longguide-plainheading` (14o with only the heading changed) shows the section
+omitted by the canonical probe (7,829-char fold, 19 of 25 sections, rule absent); its pre-registered result is
+0/12 (thrust 15), the 14o pre-fix mechanism. A measured constraint on the fix: lowercase "must" cannot be the
+signal. Counted per section over the bench guides and two real ones, every section of a guide says "must" or
+"never" somewhere — the rule section in 14o scores 8.4 mandate words per KB against 7.8 for "Continuous
+integration" and 7.0 for "Concurrency" — so density would be a threshold tuned to one file. What separates the
+rule section is that its author EMPHASIZED it: MUST and NEVER in capitals (3 in the rule section, 0 in every
+filler section), the RFC-2119 convention; `zak-code/CLAUDE.md` bolds its non-negotiables the same way.
+
+**Decision.** `_fit_sections` gets a middle tier. Priority 0: the heading names a rule or mandate (unchanged).
+Priority 1: the section BODY carries an emphasized mandate — an all-capitals MUST / MUST NOT / NEVER / ALWAYS /
+MANDATORY / REQUIRED / FORBIDDEN / PROHIBITED / DO NOT / SHALL (NOT), or the same words wrapped in `**bold**` or
+`__underscores__` (any case). Priority 2: everything else, document order. Kept sections still render in document
+order; the note now says "sections that name or emphasize a rule or mandate are kept first". A section with only a
+heading has no body and cannot be promoted by it. The 14o / 14u / 13 / 14x folds keep exactly the same sections
+(no filler section carries an emphasized mandate); on the Mind repo's 47K CLAUDE.md the tier promotes four more
+sections (Mode System, Tool Usage + Write Permissions, Knowledge Retrieval, User Control Commands — the ones that
+say MUST NOT / NEVER), which is the intended reading of that file.
+
+**Alternatives rejected.** Mandate-word density (a threshold that separates the bench's rule section from its
+own filler by 0.6 per KB is a fit to one file). Treating any lowercase mandate word as a signal (promotes
+nearly every section, which is document order again). Semantic scoring by the model (the campaign's premise
+is that a small model is not asked to decide what it must obey). Widening the heading vocabulary (guidelines,
+standards, requirements) — plausible, unmeasured, and not this residual; it can follow a cell that needs it.
+
+**Consequences.** Pre-registered re-measure (thrust 16): `14p` under this build → 12/12; 14o, 14u and 13 hold
+12/12 as byte-identical folds. Tests pin the emphasized body kept whole, bold as emphasis, lowercase "must" not
+promoted (the omitted heading is listed by name), and the heading tier outranking the body tier when only one
+fits. Residual, stated honestly: a hard rule stated in unemphasized lowercase prose under a plain heading is
+lexically indistinguishable from ordinary guidance and still folds in document order — the note names it. The
+size policy (a window-proportional budget, with the total cap scaled or the workspace-root guides reserved
+first) is the next lever, decided on thrust 14's smarter-vs-bigger measurement.

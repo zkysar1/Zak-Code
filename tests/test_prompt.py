@@ -713,3 +713,78 @@ def test_fold_falls_back_to_the_head_cut_when_no_section_fits(tmp_path: Path) ->
     assert len(content) == MAX_CONTEXT_FILE_CHARS  # a preamble alone is no fold: head cut …
     assert "\n[... AGENTS.md truncated: " in content  # … with the ADR-0169 counted note
     assert content.startswith("# Guide\n\nShort intro.\n\n## Rules (MANDATORY)")
+
+
+# ── ADR-0171: the fold keeps what the author EMPHASIZED (mandates in the body, plain heading) ─────
+
+_PLAIN_RULE = "## Naming (MANDATORY)\n\nRender every full name as LAST, FIRST — never First Last."
+# Lowercase prose that carries no mandate word: makes the plain-headed section too big to slip into
+# the fold on leftover budget, so only PROMOTION can keep it.
+_PADDING = "This section also explains how a name flows through the system and its tests. " * 8
+
+
+def _plain_heading_guide(rule_body: str) -> str:
+    """The long guide with the rule under a heading that names NO mandate; the body varies."""
+    body = _long_guide().replace(
+        _PLAIN_RULE, "## Working with people data\n\n" + rule_body + "\n\n" + _PADDING.strip()
+    )
+    assert body.index("## Working with people data") > MAX_CONTEXT_FILE_CHARS  # past the cap
+    return body
+
+
+def test_fold_keeps_a_section_whose_body_emphasizes_the_mandate(tmp_path: Path) -> None:
+    # The heading names nothing; the body says MUST NOT in capitals — the author's emphasis — so
+    # the section ranks with the heading matches and survives the fold (14p, thrust 15).
+    rule = "Render every full name as LAST, FIRST. You MUST NOT render First Last."
+    (tmp_path / "AGENTS.md").write_text(_plain_heading_guide(rule) + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    assert len(content) <= MAX_CONTEXT_FILE_CHARS
+    assert "## Working with people data\n\n" + rule + "\n\n" + _PADDING.strip() in content  # whole
+    assert "name or emphasize a rule or mandate" in content  # the note says how it chose
+
+
+def test_fold_treats_bold_mandate_words_as_emphasis(tmp_path: Path) -> None:
+    rule = "Render every full name as LAST, FIRST. You **must not** render First Last."
+    (tmp_path / "AGENTS.md").write_text(_plain_heading_guide(rule) + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    assert "## Working with people data\n\n" + rule in content
+
+
+def test_fold_does_not_promote_lowercase_must(tmp_path: Path) -> None:
+    # Lowercase "must" is ordinary guidance every section carries; without the author's emphasis
+    # the plain-headed section past the cap stays in document order and is omitted — by name.
+    rule = "Render every full name as LAST, FIRST. You must not render First Last."
+    (tmp_path / "AGENTS.md").write_text(_plain_heading_guide(rule) + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert "## Working with people data" not in fold
+    assert "Working with people data" in _omitted(note)
+
+
+def test_fold_heading_tier_outranks_body_tier_which_outranks_plain(tmp_path: Path) -> None:
+    # Four sections, room for ~7,900 chars: two emphasized bodies (3,000 each) precede a "## Rules"
+    # section (3,000) and a plain tail (480). Heading tier first keeps Rules; the FIRST emphasized
+    # section then fits and the second does not; the plain tail fits in what is left. Equal tiers
+    # would have kept both emphasized sections and dropped Rules; no body tier would be the same
+    # set here, so the emphasized-body tests above carry that half.
+    def sec(heading: str, body: str) -> str:
+        return f"## {heading}\n\n{body.strip()}"
+
+    guide = "\n\n".join(
+        [
+            "# Guide",
+            sec("Alpha", "You MUST NOT do the alpha thing. " + "alpha " * 500),
+            sec("Beta", "You MUST NOT do the beta thing. " + "beta " * 600),
+            sec("Rules", "rule " * 600),
+            sec("Delta", "delta " * 80),
+        ]
+    )
+    (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
+    [(_, content)] = (
+        discover_context(tmp_path, include_readset := False)
+        if False
+        else discover_context(tmp_path, include_readme=False)
+    )
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert _headings(fold) == ["## Alpha", "## Rules", "## Delta"]
+    assert _omitted(note) == ["Beta"]
