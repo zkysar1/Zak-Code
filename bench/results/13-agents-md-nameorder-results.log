@@ -49,3 +49,45 @@ zds-qwen3.6-35b via the pod, N=12 each; CC unaided; zakcode --no-pin temp0. Raw:
   rules-file precedent and with the campaign's own finding that a LISTING reliably prompts a read (06v); (b)
   MANDATORY-section-preserving truncation. Raising the cap is the ADR's rejected alternative. Batch staged on zc-01
   (t11_14longguide_batch.sh); results follow.
+
+================================================================================
+THRUST 11 RESULT — the FOLD-CAP CLIFF (14o / 14u), all four arms (N=12; batch zc-01 14:33:48 → 15:11:10 UTC;
+written 2026-09-14 15:13 UTC)
+================================================================================
+  arm          pass     reads AGENTS.md    globbed   determinism              turns
+  ZAK-14u      12/12    (folded, KEPT)     n/a       *.py IDENTICAL 12/12     4 (every run, spread 0)
+  ZAK-14o      0/12     (folded, CUT)      n/a       distinct 1 (the default) 4 (every run)
+  CC-14u       0/12     0/12               0/12      distinct 1               3-5
+  CC-14o       0/12     0/12               2/12      distinct 1               3-5
+  Raw: determinism-zakcode-pinOFF-temp0-14{o,u}-*.json (zc-01 bench/results; -PRE-ADR0169 copies archived before
+  the re-measure), cc-qwen-14{o,u}-*.json (zc-01:/root).
+
+═══ THE CLIFF, ISOLATED (the pre-registration held on every arm) ═══
+  Same rule, same verify, same repo style; the ONLY difference between 14u and 14o is whether the rule sits before
+  or after char 8,192 of AGENTS.md. Under the cap (rule at 6,657 of 7,637): zakcode 12/12 — a 7.6K-char guide with
+  the rule 87% of the way in costs NOTHING (no attention dilution at this size). Past the cap (rule at 8,760 of
+  9,740): zakcode 0/12 — the fold cut the rule silently, the model took the visible part for the whole guide
+  (4 turns, straight to people.py, "First Last") and never read the file. That is exactly Claude Code's number on
+  both cells (0/12, AGENTS.md read 0/12; CC is indifferent to guide length because it never folds AGENTS.md).
+  So zakcode's beyond-parity edge is real and large (12/12 vs 0/12) but ENDS at a silent 8,192-char boundary; past
+  it the two loops are indistinguishable on this task.
+
+═══ THE FIX — ADR-0169, Zak-Code #469 (merged 14:53 UTC) ═══
+  A cut file now ENDS with an omission note inside the cap: "[... AGENTS.md truncated: N of M characters shown;
+  read the file for the rest]" — names the file and both counts; lengths unchanged (every cap test holds); an
+  under-cap file byte-identical (the 13/14u inputs are unchanged by construction); the total-cap straddling cut is
+  noted against the ORIGINAL length via one helper. Both caps are now pinned by test. Raising the cap stays
+  rejected (ADR). Gates: ruff/mypy clean, full suite 3918 passed.
+
+═══ RE-MEASURE (thrust 12) — PRE-REGISTERED ═══
+  zakcode arms only (CC never runs zakcode's fold), same pod/model, N=12: ZAK-14o under the ADR-0169 build must
+  rise above 0/12 — target 12/12 (parity with 14u/13). If it stays <=2/12 the cue is insufficient on the 35B
+  (rb-10615: an instruction in the prompt is not a control) and the next lever is MANDATORY-section-preserving
+  truncation. ZAK-14u and ZAK-13 must stay 12/12 — their folded inputs are byte-identical under the change, so
+  any movement is a REGRESSION, not noise. DEPLOY DISCIPLINE: zc-01's bench tree is an older snapshot of main
+  (13 files besides prompt.py differ — providers/loop/server/session changes merged since the snapshot); every
+  thrust so far ran on that ONE fixed build. The re-measure deploys ONLY the ADR-0169 prompt.py (md5 e2dd7c9d47e7)
+  so exactly one variable moves; the rest of the tree is deliberately left as measured.
+  LAUNCHED: t12 on zc-01 at 15:14:10 UTC (pid 67908, prompt.py md5 e2dd7c9d47e7 verified via discover_context on the real
+  workspaces: 14o folds to 8,192 chars with the note '8107 of 9740 characters shown', 14u/13 byte-identical, no note).
+  Results appended below when complete.
