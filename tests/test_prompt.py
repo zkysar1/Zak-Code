@@ -567,3 +567,62 @@ def test_workspace_survey_is_folded_by_default_opt_out_and_snapshotted_once(tmp_
     (tmp_path / "later.py").write_text("x", encoding="utf-8")  # created mid-session
     assert builder.build(settings) == on  # the snapshot holds: the prefix does not move
     assert "later.py" in SystemPromptBuilder().build(settings)  # a fresh builder sees it
+
+
+# ── ADR-0169: a cut guide says so (the fold's per-file cap ends with an omission note) ──────────
+
+
+def test_context_caps_are_pinned() -> None:
+    # ADR-0169: the per-file cap is a measured cliff on a 35B — a MANDATORY rule past it scored
+    # 0/12 (bench 14o-agents-md-longguide-over) while the same rule under it scored 12/12 (14u).
+    # Raising the cap was rejected (the model window is what the caps protect); changing either
+    # value is a decision that re-measures 14o/14u and updates the ADR, never a tweak.
+    assert MAX_CONTEXT_FILE_CHARS == 8_192
+    assert MAX_CONTEXT_TOTAL_CHARS == 32_768
+
+
+def test_discover_context_cut_file_ends_with_an_omission_note(tmp_path: Path) -> None:
+    body = "x" * 9_000 + "\n## Naming (MANDATORY)\nLAST, FIRST"
+    (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
+    [(path, content)] = discover_context(tmp_path, include_readme=False)
+    assert path == tmp_path / "AGENTS.md"
+    assert (
+        len(content) == MAX_CONTEXT_FILE_CHARS
+    )  # the note lives INSIDE the cap: budgets stay exact
+    assert "MANDATORY" not in content  # the rule past the cap is still cut — that is the cliff …
+    shown = content.rindex("\n[... ")
+    assert content[shown:] == (
+        f"\n[... AGENTS.md truncated: {shown} of {len(body)} characters shown; "
+        "read the file for the rest]"
+    )  # … and the model is told, by file name and by count, that the rest exists
+    assert content[:shown] == body[:shown]
+
+
+def test_discover_context_under_cap_file_has_no_note(tmp_path: Path) -> None:
+    body = "short guide\n## Naming (MANDATORY)\nLAST, FIRST"
+    (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    # Byte-identical to before ADR-0169: the note is only ever added to a CUT file.
+    assert content == body
+
+
+def test_discover_context_straddling_note_counts_the_original_length(tmp_path: Path) -> None:
+    # The total-budget cut reports the file's real length, not the per-file-capped one.
+    (tmp_path / ".git").mkdir()
+    sizes = [MAX_CONTEXT_FILE_CHARS, MAX_CONTEXT_FILE_CHARS, MAX_CONTEXT_FILE_CHARS, 3424, 9000]
+    fills = ["a", "b", "c", "d", "e"]
+    current = tmp_path
+    dirs = []
+    for _ in sizes:
+        dirs.append(current)
+        current = current / "d"
+        current.mkdir()
+    for d, fill, size in zip(dirs, fills, sizes, strict=True):
+        (d / "ZAK.md").write_text(fill * size, encoding="utf-8")
+    discovered = discover_context(dirs[-1])
+    remaining = MAX_CONTEXT_TOTAL_CHARS - (3 * MAX_CONTEXT_FILE_CHARS + 3424)
+    last = discovered[-1][1]
+    assert len(last) == remaining
+    assert last.endswith(" of 9000 characters shown; read the file for the rest]")
+    assert "\n[... ZAK.md truncated: " in last
+    assert set(last[: last.index("\n[... ")]) == {"e"}
