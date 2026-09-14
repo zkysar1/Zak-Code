@@ -2388,7 +2388,7 @@ def create_app(
         return not run_stopping.is_set()
 
     async def _watch_turn_deadline() -> None:
-        """Raise the workspace interrupt when the cap lands MID-turn.
+        """Raise the workspace interrupt on a turn still running when the run's time is up.
 
         The loop's own check runs BETWEEN beats, so it cannot fire while a turn is
         running — and on the normal path the very first say is a long boot turn, so
@@ -2402,33 +2402,57 @@ def create_app(
         run's ending IS: the cancelled turn returns, the between-beats check below
         reads the same clock and sets `duration_cap`, and the reserve is still on the
         clock for the digest.
+
+        ONE STOP WINDOW BOUNDS EVERY TURN IN IT (g-373-16, measured on a live dev
+        vessel). Once a framework stop is raised — by the cap or by ``/run/stop`` —
+        whatever turn is still running when its window closes gets the interrupt. This used
+        to watch only the turn in flight at the cap, and returned when THAT turn ended;
+        but the loop keeps beating inside the window, so the next say started a turn
+        nothing watched. Measured: the cap raised the stop inside the mind's boot turn,
+        that turn ended inside the window, a re-issued ``/start`` began a second turn
+        42s before the window closed, and that turn was still running 123s after it
+        closed; the host tore the vessel down with no run end ever reported. A
+        ``/run/stop`` window on a capless run had no watcher at all.
+
+        The window is SHARED, never restarted: a cap landing inside a ``/run/stop``
+        window cannot buy the turn a second grace. A ZERO-length window bounds nothing
+        by itself — ``/run/stop`` with no reserve leaves the in-flight turn to finish,
+        as a non-seed run does — but the cap is a hard ceiling, so a cap with no window
+        open, or with its window spent, interrupts at once, as it always has.
         """
         while True:
             await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
-            if turn_deadline is None or not inflight:
+            if not inflight:
                 continue
-            if time.monotonic() >= turn_deadline:
-                await _begin_framework_stop()
-                if framework_stop_until is not None:
-                    # The mind is now ending itself. Keep watching, but only to BOUND it:
-                    # the interrupt stops being the ending and becomes the backstop for an
-                    # overrun. A stop that lands inside its grace never sees an interrupt,
-                    # which is the whole point — an interrupted turn cannot consolidate.
-                    grace = _framework_stop_grace()
-                    logger.info(
-                        "run cap reached mid-turn: raised the mind's own stop (grace %.0fs)", grace
-                    )
-                    overrun_at = time.monotonic() + grace
-                    while time.monotonic() < overrun_at:
-                        await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
-                        if not inflight:
-                            logger.info("run cap: the mind's own stop ended the turn")
-                            return
-                    logger.warning("run cap: framework stop overran %.0fs — interrupting", grace)
-                else:
-                    logger.info("run cap reached mid-turn: interrupting")
+            if turn_deadline is not None and time.monotonic() >= turn_deadline:
+                break
+            if (
+                framework_stop_until is not None
+                and _framework_stop_grace() > 0
+                and time.monotonic() >= framework_stop_until
+            ):
+                logger.warning(
+                    "framework stop overran its %.0fs window — interrupting the running turn",
+                    _framework_stop_grace(),
+                )
                 request_interrupt(interrupt_path(resolved_settings.workspace_root))
                 return
+        await _begin_framework_stop()
+        if framework_stop_until is not None:
+            # The mind is now ending itself. Keep watching, but only to BOUND it: the
+            # interrupt stops being the ending and becomes the backstop for an overrun.
+            # A stop that lands inside its window never sees an interrupt, which is the
+            # whole point — an interrupted turn cannot consolidate.
+            logger.info(
+                "run cap reached mid-turn: the mind's own stop has %.0fs left",
+                max(0.0, framework_stop_until - time.monotonic()),
+            )
+            while not inflight or time.monotonic() < framework_stop_until:
+                await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
+            logger.warning("run cap: framework stop overran its window — interrupting")
+        else:
+            logger.info("run cap reached mid-turn: interrupting")
+        request_interrupt(interrupt_path(resolved_settings.workspace_root))
 
     async def _consume_say_loop() -> None:
         nonlocal run_stop_reason
