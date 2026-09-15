@@ -1088,3 +1088,34 @@ apply and fix or confirm (once per run; a check, never a warning — rb-10851's 
 control the 35B's 12/12 at +1 turn. (B) a binding-framing line at the head of the fold ("when this guide and your
 default disagree, the guide wins"). (A) matches the failure (plan → code) and is built behind tests and
 pre-registered as its own thrust; (B) is the fallback if (A) costs the 35B or loops.
+
+THRUST 28 — THE GUIDE-CHECK RAIL (ADR-0177): does one structural pre-finish check carry an in-context rule from the 27B's plan into its code? — PRE-REGISTERED 2026-09-15 15:23 UTC, not yet launched
+══════════════════════════════════════════════════════════════════
+BUILD: loop.py f6ad6ea6dce7 (the rail in both loop twins, unattended sessions only, trace kind guide_check: when a
+turn is ending on a completion with no tool call after this turn ran a workspace-write tool and the system prompt
+folded a guide, one fixed user rail asks the model to check each changed file against the guide's rules, fix or
+confirm, and finish — structural, never keyed on the completion's text; once per turn), prompt.py eb8eec7f9cfa
+(records the names of the folded guides; every fold byte-identical — 14 bench cell folds, task and no task, and
+the 39-guide census 0/5 → 0/5 unchanged). Tests: six new (tests/test_guide_check.py) — asked once after an edit
+with a guide in context; once even when the model edits again; no guide → no check; no edit → no check; a README
+alone is not a guide; an attended session is not checked. Full suite 3,953 passed, 9 skipped. Deploy: both files
+into the bench tree (backups /root/loop.py.adr0176 07d461afa424 — the first time loop.py moves in this campaign —
+and /root/prompt.py.adr0176 b57bdb96285b); probes 17 = d1732a3e1ff3 and 16p = 0d431997ad50, rule IN, before any
+arm; the tree is LEFT on ADR-0177 unless FATAL.
+ARMS (N = 12, temperature 0, --no-pin, sequential on zakpod1; cell-17 verify v2):
+  (1) 17 (abridged fold) on the 27B                       → …-17-…-deltaassert-adr0177-27b.json
+  (2) 17 on the 35B (positive control)                   → …-17-…-deltaassert-adr0177-35b.json
+  (3) 16p on the 27B (regression control: 12/12 under ADR-0175/0176 — the check must not turn a correct file wrong)
+                                                         → …-16p-…-aspirationkeys-adr0177-27b.json
+The rail must FIRE in every run (trace_interventions kind guide_check, 12/12 per arm); a run where it does not is
+an instrument failure and is reported as such, never scored as a miss of the lever.
+PREDICTIONS: (1) ≥ 10/12 (from 16/24 abridged — the check turns the narrated delta into code); (2) ≥ 11/12;
+(3) ≥ 11/12; turns +1 on every run (6.4 → ~7.5); elapsed +3-8 s per run.
+READING RULE: SHIPS if (1) ≥ 10 and (2) ≥ 11 and (3) ≥ 11 — the rail stays, the ADR gains the numbers, and the
+27B's cell-17 residual is at least halved. MISS if (1) ≤ 8 with the controls holding — the check does not carry
+the rule into the code: the fallback (B, the binding-framing line at the head of the fold) is built and
+pre-registered next; the rail is kept if (1) still improves on the pooled 16/24 (reported as process), reverted
+otherwise. HARM if (2) or (3) drops two or more below 12/12 — the check makes the model rewrite correct work: the
+rail is reverted from main before anything else and its wording (or its unattended scope) is redesigned before
+any re-measure. MARGINAL ((1) = 9 with the controls holding) — kept, reported as process; pooled rates over a
+second sample carry the reading.
