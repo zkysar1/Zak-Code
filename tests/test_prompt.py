@@ -921,3 +921,88 @@ def test_fold_orders_the_task_tier_by_the_mandate_tiers(tmp_path: Path) -> None:
     [(_, content)] = discover_context(tmp_path, include_readme=False, task="Add a widget")
     fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
     assert "## Widget rules" in _headings(fold) and "Widget layout" not in fold
+
+
+# ── ADR-0174: the fold keeps the guide's opening (the head tier) ────────────────────────────────
+
+
+def _rules(n: int, reps: int = 35) -> list[str]:
+    """``n`` mandate-headed sections of ~1.9K each — four of them fill the 8K cap by themselves."""
+    return [
+        f"## Rules {i}\n\n" + f"Every full name MUST be rendered LAST, FIRST (rule {i}). " * reps
+        for i in range(n)
+    ]
+
+
+def _opening_guide(opening: list[str], *tail_sections: str, plain: int = 20) -> str:
+    """``opening`` first, then ``plain`` filler sections past the cap, then ``tail_sections``."""
+    padding = [f"## Section {i}\n\n" + f"Plain guidance paragraph {i}. " * 14 for i in range(plain)]
+    body = "\n\n".join(["# Project Guide", *opening, *padding, *tail_sections])
+    assert body.index(padding[-1]) > MAX_CONTEXT_FILE_CHARS
+    return body
+
+
+def test_fold_keeps_the_opening_before_the_mandate_tiers(tmp_path: Path) -> None:
+    # Three short orientation sections open the guide; eight mandate sections past the cap would
+    # fill it by themselves (four fit), leaving no room for a plain section. The opening is kept
+    # ahead of them, and a mandate section is displaced for it — not the reverse.
+    opening = [
+        f"## About part {i}\n\n" + f"What this project is and how it is laid out, part {i}. " * 8
+        for i in range(3)
+    ]
+    guide = _opening_guide(opening, *_rules(8))
+    (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    heads = _headings(fold)
+    assert heads[:3] == ["## About part 0", "## About part 1", "## About part 2"]
+    assert "## Rules 0" in heads and "## Rules 3" not in heads  # displaced by the opening
+    assert len(content) <= MAX_CONTEXT_FILE_CHARS
+
+
+def test_fold_head_share_bounds_the_opening(tmp_path: Path) -> None:
+    # The same guide with one opening section: within the head share it is kept ahead of the
+    # mandates; larger than the share it is not the head, folds as plain, and the mandates —
+    # which fill the cap — leave it out.
+    from zakcode.agent.prompt import FOLD_HEAD_SHARE
+
+    share = int(MAX_CONTEXT_FILE_CHARS * FOLD_HEAD_SHARE)
+    small = "## About\n\n" + "What this project is. " * (share // 40)
+    big = "## About\n\n" + "What this project is. " * (share // 20)
+    assert len(small) + 2 <= share < len(big) + 2
+    for opening, kept in ((small, True), (big, False)):
+        (tmp_path / "AGENTS.md").write_text(
+            _opening_guide([opening], *_rules(8)) + "\n", encoding="utf-8"
+        )
+        [(_, content)] = discover_context(tmp_path, include_readme=False)
+        fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+        assert ("## About" in _headings(fold)) is kept
+        assert ("About" in _omitted(note)) is not kept
+
+
+def test_fold_head_stops_at_the_first_mandate_heading(tmp_path: Path) -> None:
+    # The opening ends at the first heading that names a mandate: a plain section after it is
+    # not "opening" — it folds by its own tier, and here the mandates leave it no room — while
+    # the section before that heading is kept.
+    orient = "## About\n\n" + "What this project is. " * 10
+    early = "## Rules\n\n" + "Every full name MUST be rendered LAST, FIRST. " * 5
+    after = "## Also early\n\n" + "A plain note that follows the rules. " * 40
+    tail = "## Tail (MANDATORY)\n\n" + "Every commit MUST reference an issue. " * 160
+    guide = _opening_guide([orient, early, after], tail)
+    (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    heads = _headings(fold)
+    assert heads[:2] == ["## About", "## Rules"] and "## Tail (MANDATORY)" in heads
+    assert "## Also early" not in heads and "Also early" in _omitted(note)
+
+
+def test_fold_task_tier_outranks_the_head(tmp_path: Path) -> None:
+    # A section the task is about, past the cap, is kept ahead of the opening when only one fits.
+    orient = "## About\n\n" + "What this project is and how it is laid out. " * 40
+    layout = "## Widget layout\n\n" + "Where each widget part sits on the page. " * 150
+    guide = _opening_guide([orient], layout)
+    (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False, task="Add a widget")
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert "## Widget layout" in _headings(fold) and "About" in _omitted(note)

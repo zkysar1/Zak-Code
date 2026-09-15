@@ -9612,3 +9612,52 @@ loop's first-message keying.
 **Addendum (2026-09-15, thrust 21 — the pre-registered re-measure; Zak-Code #488).** One variable (prompt.py + the bench loop.py's `_build_system` hunk), probes and a dumped run confirming the fold reached the model. 15s task fold on the 35B 12/12 at 6.1 turns / 34.4 s (t20 on the ADR-0172 fold: 12/12 at 7.1 / 48.8 — the fetch removed, −30% wall time; the ≤ 5.0-turn bound MISSED: the dumped run shows the residual turn is a grep to confirm the layout string the fold already carries); 14p 12/12 at 4.3 / 22.2 on its changed fold; 15i 12/12 at 6.1 / 43.0 on a byte-identical fold. The smaller-model leg FALSIFIED the pass-rate half of this ADR's case: zds-qwen3.8-27b on the task fold 12/12 at 5.8 / 35.1 s AND on the ADR-0172 fold 12/12 at 7.0 / 46.5 s — the 27B fetches the omitted section exactly as the 35B does when the note names a heading sharing a distinctive word with the task (rb-10984). Verdict by the pre-registered rule: NEUTRAL — kept as a process saving (a quarter of the wall time on the cell class it targets, byte-identical folds and behaviour elsewhere), not as a correctness lever. The cell-15 cost of ADR-0172 remains open and is untouched by this tier.
 
 **Addendum (2026-09-15, thrust 22 — the smaller-model map; Zak-Code #490).** The shipped pair measured on zds-qwen3.8-27b, the smallest model the pod serves, on every guide cell whose 35B behaviour is known (N=12 each, temp 0, no swaps): 13 12/12, 14p 12/12, 15i 12/12, the no-guide control 15n 0/12, and 15 8/12 — one under its pre-registered floor and exactly the 35B's first ADR-0172 dozen, with the same failure (the microseconds isoformat default; p = 0.7 against the 35B's pooled 18/24). With thrust 21's 15s (12/12 on both folds at 27B) the 27B matches the 35B cell for cell, at equal or fewer turns and less wall time on every cell (16.5 / 20.2 / 31.2 / 37.2 / 12.7 s against the 35B's ~20 / 22 / 37 / 43 / 15 s) and with the same output-state counts: under the deterministic fold, model size is irrelevant to guide adherence from 35B to 27B on this class, and the smaller model does not search more. The one cost on the map — ADR-0172's cell-15 dilution — is model-independent: pooled over both models the ADR-0172 fold scores 26/36 on cell 15 against ADR-0171's 24/24 (p = 0.004), a fold-SHAPE effect rather than a capacity effect, which the pre-registered composition cell (thrust 23: the ADR-0171 fold, the shared core, and both halves as literal folds of the real guide, composed in the fold's own format and validated by rebuilding both live folds byte for byte) decomposes. The 15 / 15i pair on both models is the regression set for every fold change from here.
+
+## ADR-0174: the fold keeps the guide's opening — a head tier before the mandate tiers, bounded by a share of the cap
+
+**Context.** ADR-0172's outline-path promotion delivered the omitted convention on the real 47K guide (15i 1/12 → 12/12
+on both models) and cost the cell whose rule both folds carry (15: pooled 26/36 against the ADR-0171 fold's 35/36 on the
+35B, 8/12 on the 27B — the same score and the same microseconds-default failure, thrusts 19b / 22). The composition
+cell (thrust 23) measured the fold's halves as literal guide files, the composer rebuilding both live folds byte for byte
+and the ADR-0171 fold delivered as a file scoring 11/12 at exactly 4 turns per run: the ten sections both folds share
+11/12; those plus the six orientation sections 11/12; those plus the seven convention sections — this ADR's
+predecessor's fold — 8/12; all three together, 10,868 chars under a 12K cap, 12/12 at 4 turns. Neither half carries the
+cost alone. The seven conventions cost only when nothing orients before them: a fold that OPENS with thirteen
+convention subsections, which is the one shape the outline-path tier produces on this guide at 8K — the fold's only
+tier-0 candidates are that block and the loop rules, and the orientation the author wrote first is plain and folds last.
+Dilution as stated ("one rule among many") is falsified by the 12/12 fold, which carries every one of those rules; so is
+the preamble as stated ("the opening protects the rule") by the 11/12 core; the rule's position is not it either. The
+smaller model is not the lever: thrust 22 measured the 27B matching the 35B cell for cell, so the cost is prompt shape.
+
+**Decision.** `_fit_sections` gets a head tier below the task tier and above the mandate tiers. The head is the guide's
+OPENING: its leading sections in document order, up to the first heading that itself names a rule or mandate, each kept
+while the head stays within `FOLD_HEAD_SHARE` (0.25) of the limit — a section larger than what remains of the share is
+skipped, the next smaller one may still be taken. Priority becomes (about the task, then the head, then the mandate
+tiers, then document order); rendering stays document order; the note text is unchanged. On the real guide the head is
+the preamble, Project Purpose, Architecture and both Core Design Principles (~1.4K of the 2,048-char share; Mode System
+and Cognitive Primitives do not fit it; Framework vs State Split is 5.4K), the first mandate heading being
+`## Convention Index`. The cell-15 fold becomes 8,057 chars (md5 9b3055bae471): those four sections, then the whole
+Universal Conventions block, Enforcement Rules, Autonomous Loop Rules and two tiny plain sections — the measured-good
+shape (orientation, then the conventions) inside the shipped cap. Cells 15 and 15i fold identically with or without a
+task (no heading shares a word with either task); 15s keeps the two binding sections first (8,187 chars,
+b283e83dfe61). Every synthetic bench guide folds byte-identically to ADR-0173 (13 / 14o / 14p / 14u, task and no task):
+their openings are already kept or their first heading names a mandate.
+
+**Alternatives rejected.** The task tier's DROP half (a section promoted only by its outline path kept only when the
+task is about it) — probed on cell 15 before this was built: it demotes the seven conventions, but the freed budget goes
+to `Tool Usage + Write Permissions` (3.6K, an emphasized body, tier 1) and two conventions whose bodies mention
+"journal" stay, while the orientation sections — plain — still lose; the fold still opens with the conventions wall, so
+it does not produce the shape the composition measured. Raising the cap (thrust 14: the whole guide bought nothing at
++78% wall time; rb-10979: the fold is not monotone in its cap). Keeping the whole opening regardless of size (a 5.4K
+second section would take the fold). A head that ignores mandate headings (greedy over the whole guide, it sweeps small
+sections from anywhere — Priority Values, Autonomous Loop Rules — not the opening). A per-model choice (the cost is
+model-independent).
+
+**Consequences.** Pre-registered re-measure (thrust 24, both models): 15 ≥ 11/12 on the 35B and on the 27B; 15i ≥ 11/12
+and 15s hold on both; 14p byte-identical control 12/12. Tests pin the opening kept ahead of mandates that would fill the
+cap, the share bound (an opening section over it folds as plain), the stop at the first mandate heading (a plain section
+after it is not opening), and the task tier outranking the head. Residual, stated: a guide whose opening is one section
+larger than the share gets no head; the head is greedy in document order within the share, so a large early section is
+skipped for smaller later ones; and a section the task is about still displaces the head when only one fits — the
+composition says the conventions need orientation before them, and a task-tier section before the conventions has not
+been measured as the same thing.
