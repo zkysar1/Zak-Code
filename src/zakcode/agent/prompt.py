@@ -443,10 +443,12 @@ class SystemPromptBuilder:
         )
 
     @staticmethod
-    #: Binding framing (ADR-0179, fallback B of ADR-0177): the folded guides open with a line that
-    #: says the rules below BIND every file written here and that a rule beats the model's usual
-    #: approach. Thrusts 28-30 (2026-09-15) showed a post-write check — as a verdict or as quoted
-    #: evidence — confirms the default it should catch; this line acts at the moment of writing.
+    #: ADR-0180 (2026-09-15): the project-context block opens with a BINDING line that names the
+    #: conflict the thrust-32 census found — a rule in the guide against the pattern of files
+    #: already in the project: the model reads a sibling file carrying the forbidden pattern and
+    #: copies it (11 of 12 such runs missed, 5 of 36 others; 48 dumped runs, both arms alike).
+    #: ADR-0179's clause ('your usual approach') measured nothing (25/36 vs 22/36) and was retired;
+    #: this line acts at the same moment on the observed cause. The per-file folds are untouched.
     def _render_context(discovered: list[tuple[Path, str]]) -> str:
         if not discovered:
             return ""
@@ -454,9 +456,10 @@ class SystemPromptBuilder:
         return (
             "Project context (AGENTS.md / CLAUDE.md / ZAK.md guides, CONTRIBUTING.md conventions, "
             "and the workspace README, outermost first). The guides and conventions are BINDING "
-            "for every file you write in this project: where a rule below and your usual approach "
-            "disagree, the rule wins — follow it, and name the rule you followed. The README is "
-            "orientation.\n\n" + "\n\n".join(blocks)
+            "for every file you write in this project: where a rule below and the pattern of files "
+            "already in the project disagree, the rule wins — existing files may predate it, so do "
+            "not copy them against it. Follow the rule, and name the rule you followed. The README "
+            "is orientation.\n\n" + "\n\n".join(blocks)
         )
 
 

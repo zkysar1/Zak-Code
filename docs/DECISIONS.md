@@ -9927,3 +9927,42 @@ line, SHIPS (C ≥ A + 9 and C ≥ 27) confirms it, MARGINAL-2 keeps it as a no-
 the campaign to the moment-of-writing surface (fallback C: the write tools' content descriptions). main's prompt.py is
 5ebfc37b558a after a `ruff format` layout fix caught by CI (#511's last commit); the bench deployed f637fe66c78d, the
 same rendered block.
+
+**Addendum 2 (2026-09-15, thrust 32 — MISS on the pooled second sample; reverted).** Two more interleaved dozens per
+arm on the 27B, both dumped: framed 9/12 and 7/12 against unframed 9/12 and 7/12 (blocks alike); pooled with thrust 31,
+25/36 with the line against 22/36 without (C − A = 3, one-sided Fisher p = 0.31) — MISS by the rule enumerated before
+launch (C ≤ A + 3). Turns and elapsed unchanged. Reverted from main in the PR that records this (prompt.py back to the
+ADR-0176 text, then ADR-0180 applied on top; the three tests replaced by ADR-0180's four). What the 48 dumped runs
+show: the residual has a route — 12 runs read the sibling test file carrying the forbidden pattern before writing, and
+11 of them missed (5 of the other 36 did); this line named the model's "usual approach" as the rule's competitor, and
+the competitor is the project's own precedent. ADR-0180 names it.
+
+## ADR-0180: the binding line names the precedent conflict — a rule in the guide beats the pattern of files already in the project, which may predate it (successor of ADR-0179)
+
+**Context.** With the delta-assert rule in the fold (ADR-0176) the 27B still writes the absolute in ~40% of runs
+(22/36 untreated, thrusts 31-32) and the 35B in ~10%. Thrust 32's pre-write census of 48 dumped runs (2026-09-15)
+found the route: every run reads the counters module and the test stub; the runs that ALSO read the sibling test file
+— the project's existing absolute-style tests — copy its pattern (11 of 12 missed) while the rest mostly follow the
+rule (5 of 36 missed); the guide is never re-read, and the absolute is written at the first and only write.
+ADR-0179's line told the model a rule beats its "usual approach" and measured nothing (25/36 vs 22/36): the competitor
+is not the model's habit, it is the precedent it just read.
+
+**Decision.** `SystemPromptBuilder._render_context` opens the project-context block with: "Project context (AGENTS.md
+/ CLAUDE.md / ZAK.md guides, CONTRIBUTING.md conventions, and the workspace README, outermost first). The guides and
+conventions are BINDING for every file you write in this project: where a rule below and the pattern of files already
+in the project disagree, the rule wins — existing files may predate it, so do not copy them against it. Follow the
+rule, and name the rule you followed. The README is orientation." ADR-0179's clause is dropped (retired by
+measurement). The per-file folds are byte-identical, loop.py is untouched, no rail, no extra completion; fixed text.
+
+**Alternatives rejected.** Keeping ADR-0179's clause beside the new one: measured inert, and a second clause dilutes
+the one that names the observed conflict. A rail after a read of a file that contradicts a rule: the harness cannot
+tell which file contradicts which rule in general. Hiding or annotating sibling files: the precedent is real project
+state and the model needs it for other reasons (imports, fixtures). The moment-of-writing surface (a rule line in the
+write tools' descriptions, fallback C): kept as the next lever if this line is inert — it acts at the write, not at
+the read that precedes it.
+
+**Consequences.** Pre-registered as thrust 33 (24 vs 24 interleaved on the 27B, both arms dumped; MISS at C ≤ A + 2,
+SHIPS at C ≥ A + 7 with C ≥ 18, MARGINAL between; a mechanism reading on the dumps: CONVERTS / ROUTE-SHIFT / INERT);
+reverted under MISS. Residuals: a project whose guide and code agree gains nothing and pays one sentence; a rule the
+guide states wrongly binds harder against correct precedent — the regression map under this line is the check;
+attended sessions carry the same line.
