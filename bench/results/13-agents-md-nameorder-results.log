@@ -492,3 +492,37 @@ the ADR-0171 measurements of the same cells renamed *-ADR0171.json.
   the 14p / 15 / 15i folds unchanged under their own prompts, and re-measure 15s (→ ≥ 10/12) plus 15 / 15i / 14p
   (hold). If ZAK-15s ≥ 9/12 the premise is wrong (the model reached the path some other way): read the traces
   before touching the fold.
+
+══════════════════════════════════════════════════════════════════
+THRUST 19b RESULT (2026-09-15 02:10 UTC) — PAIRED RE-MEASURE OF CELL 15: ADR-0172 10/12 vs ADR-0171 12/12 back to back on one pod state — REAL BUT SMALL: the ADR-0172 fold costs cell 15 about one pass in four (pooled 18/24 vs 24/24, p = 0.022) and one turn per run; the paired day alone is underpowered (p = 0.48)
+══════════════════════════════════════════════════════════════════
+Batch t19b_fold_dilution_batch.sh (md5 128f39b00d05) on zc-01, 01:54:09 → 02:07:26 UTC; ONLY prompt.py moved (ADR-0172
+md5 aae1a13a0864 → the ADR-0171 file restored from /root/prompt.py.ADR0171.bak, md5 272999c1ff34 → ADR-0172 restored,
+md5-checked and fold-probed at every step: 7,988 chars md5 9b02c28eb12c under ADR-0172, 8,186 chars md5 ef3a7a2063d4 (= the thrust-17 probe) under ADR-0171).
+JSONs committed here: *-ADR0172-t19b.json, *-ADR0171-t19b.json (and the thrust-19 dozen as *-ADR0172-t19.json);
+the un-suffixed 15 file is the ADR-0172 t19b measurement (the shipped build).
+
+═══ SCORECARD — pre-registration: DILUTION if ADR-0172 ≤ 9/12 again AND ADR-0171 ≥ 11/12; NOISE if within 2 ═══
+  cell 15 (timestamp convention, rule IN both folds)   pass     turns                         elapsed/run
+  ADR-0172, thrust 19 (01:28 batch)                     8/12     [5,5,5,5,5,5,4,5,5,5,5,4]     26.6-43.0s mean 37.1
+  ADR-0172, thrust 19b (second dozen)                   10/12  [5,5,5,5,4,6,5,4,5,6,6,4] mean 5.0                 27.8-47.1s mean 37.0 (6 distinct digests)
+  ADR-0171, thrust 19b (restored file)                  12/12  [4,4,4,5,4,4,4,4,4,4,4,4] mean 4.1                 27.5-39.2s mean 29.0 (3 distinct digests)
+  ADR-0171, thrust 17 (2026-09-14)                      12/12    4 turns                       22.0s mean
+  Pooled per fold (N=24 each): ADR-0172 18/24 vs ADR-0171 24/24 — Fisher p = 0.022; the paired
+  same-pod-state pair alone: p = 0.48. VERDICT: neither pre-registered branch cleanly — the strict DILUTION rule (ADR-0172 ≤ 9/12 again) missed by one (10/12) and the within-2 NOISE rule technically held on the paired day — but the pooled rule named as deciding says the folds differ (p = 0.022), the direction is the same on both days (8 and 10 against 12 and 12), and the process shift is in every run (5 turns vs 4; 37 s vs 29 s; 6 distinct outputs vs 3; the two misses again the microseconds default). Reported as measured: a real, modest cost of the ADR-0172 promotion on this cell, not a day's variance.
+
+═══ WHAT DIFFERS BETWEEN THE TWO FOLDS OF THIS CELL (measured on git-inited copies, both modules) ═══
+  ADR-0171 fold 8,186 chars, 16 sections, the rule at char 3,848 (47%), 9 capitalised mandates, 16 bullets.
+  ADR-0172 fold 7,988 chars, 17 sections, the rule at char 2,828 (35%), 8 capitalised mandates, 21 bullets.
+  OUT under ADR-0172: Project Purpose, Architecture, both Core Design Principles, Cognitive Primitives, Knowledge
+  Retrieval — the six ORIENTATION sections that opened the ADR-0171 fold ("what this project is"). IN: File Formats,
+  Domain-Free Cognitive Core, ID Formats, Python Invocation (Windows), Daemon-Only Architecture, Self File Format,
+  Knowledge Reconciliation — seven CONVENTION sections. Naming Rules moves from section 8 of 16 to 5 of 17, now
+  opening after "### Mode System" (a table) and "### Domain-Free Cognitive Core" instead of after the Universal
+  Conventions intro. So "more mandates" is NOT what changed (9 → 8); what changed is the fold's SHAPE — a wall of
+  conventions with no orientation preamble — and the rule's neighbourhood.
+
+═══ READING ═══
+  (i) The mechanism is not the mandate count (9 → 8) — it is the fold's SHAPE: the six orientation sections that opened the ADR-0171 fold are gone, seven convention sections are in, and Naming Rules sits in a different neighbourhood. Which of those matters is a 2x2 composition cell away (the ADR-0172 fold minus the seven added sections; the ADR-0171 fold minus the six orientation sections) — a thrust-21 candidate, ~30 min of pod time.
+  (ii) Net on the two real-guide cells the promotion is strongly positive and STAYS: ADR-0172 scores 15 + 15i at 18/24 + 12/12 where ADR-0171 scored 24/24 + 1/12 — the cost is recorded, not reverted.
+  (iii) Direction: the task-conditional fold (thrust 20's candidate (a)) is the one lever that addresses the residual AND this cost at once — it would carry Naming Rules for a timestamp task ("timestamp" ↔ "Timestamps"), ID Formats for an id task, Session Binding for a binding task, and could carry FEWER unrelated conventions. Build it after thrust 20 reports; measure it on 15, 15i, 15s together.
