@@ -9775,3 +9775,41 @@ either form it complies about 60% of the time and the 35B about 96%, and without
 rule. The abridgement stands unchanged, and the residual is the smaller model's compliance with an in-context rule
 against a confident default, which no fold shape buys — its classification (the rule unattended vs read and
 overridden) is a dumped-request probe, not a fold change.
+
+## ADR-0177: the guide-check rail — an unattended turn that changed files with a guide in context is asked once to check them against the guide's rules before it finishes
+
+**Context.** Thrusts 26-27 (2026-09-15) put the Environment-Server guide's delta-assert rule INTO the fold in two
+forms (ADR-0176's abridged block; the rule as its own whole section) and measured the 27B at 22/36 with the rule in
+context against 6/24 without it and a 1/12 no-guide control, while the 35B read either form at 23/24. The
+pre-registered decomposition showed the FORM is not the miss (whole section 6/12, abridged 7/12 and 9/12), and
+twelve dumped 27B runs showed why: every pass and two of the three misses narrate "delta" — the plan says delta,
+the code says absolute (the third miss wrote no test at all). The rule is in context, read and narrated; what
+fails is carrying it into the code. The Mind's rb-10851 bounds the remedy: a harness-injected verification
+message reads as a defect report to a small model — never inject a warning at exit 0, never credit a gate on
+run text.
+
+**Decision.** A once-per-turn rail in the family of ADR-0044's evidence gates, in both loop twins. When an
+UNATTENDED turn (permission mode bypass or autonomous: no one at the prompt to catch a rule miss) is ending on a
+completion with no tool call, after this turn ran at least one workspace-write tool successfully, and the system
+prompt folded a guide or convention file (`SystemPromptBuilder.last_guides` — the names the last build folded; a
+README is not a guide), the harness appends one user rail: "Before you finish: the project guide in your context
+states rules and conventions. For each file you changed this turn, name the guide rules that apply to it and
+check the file against each one. If a file does not meet a rule, fix it with edit_file now. If every rule is met,
+say so in one line and finish." Structural — edits ran, a guide was folded — never keyed on the completion's
+text; a check, not a warning; the model that meets every rule says so in a line and finishes. Trace kind
+`guide_check`. Fixed text, so the shape of an editing turn is deterministic: one extra completion.
+
+**Alternatives rejected.** A binding-framing line at the head of the fold ("when this guide and your default
+disagree, the guide wins") — it targets the decision to comply, which the dumped runs show is already made; kept as
+the fallback if the check costs the 35B or loops. Firing in attended sessions too — sixteen tests encode "a write,
+then the answer, no round trip" for attended turns and the evidence is unattended; attended use gets its own
+measurement. Keying the rail on the completion's text (a claim of compliance) — text-keyed gates are the hazard
+rb-10851 names. Firing on every turn regardless of edits — a turn that changed nothing has nothing to check.
+
+**Consequences.** Pre-registered measurement (thrust 28): cell 17 (abridged fold) on the 27B and the 35B under
+the rail, with 16p on the 27B as the regression control (the check must not turn a correct file into a wrong
+one), N = 12, temperature 0; the rail is expected to fire in every run (`trace_interventions`), turns +1,
+elapsed +~5 s. Residuals: a guide with no rule that applies still costs the round trip (the model says so and
+finishes); a model that cannot read its own file against a rule gains nothing from being asked; edits made
+through the shell are invisible to the write counter (ADR-0033's blind spot, by design); attended sessions are
+unchanged until measured.
