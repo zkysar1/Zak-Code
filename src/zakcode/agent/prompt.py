@@ -259,6 +259,7 @@ class SystemPromptBuilder:
         extra_context: str | None = None,
         *,
         session_id: str | None = None,
+        task: str | None = None,
     ) -> str:
         """Render the full system prompt.
 
@@ -273,13 +274,17 @@ class SystemPromptBuilder:
                 the model can identify itself to a framework whose state is keyed by session
                 (the same id every hook receives as ``session_id``). Constant per session,
                 so it is cache-safe below the boundary. ``None`` omits the line.
+            task: What this session is for — its first user message — keying which sections of
+                a guide past the per-file cap the fold keeps (ADR-0173). Constant per session,
+                like the survey, so the context tier does not move between turns. ``None``
+                folds without a task tier.
 
         Returns:
             The complete system prompt with the stable tier first, then
             :data:`DYNAMIC_BOUNDARY`, then the dynamic context tier.
         """
         stable = self._build_stable(tools)
-        context = self._build_context(settings, extra_context, session_id=session_id)
+        context = self._build_context(settings, extra_context, session_id=session_id, task=task)
         return f"{stable}\n\n{DYNAMIC_BOUNDARY}\n\n{context}"
 
     # ── stable tier ────────────────────────────────────────────────────────────
@@ -356,13 +361,18 @@ class SystemPromptBuilder:
     # ── dynamic tier ───────────────────────────────────────────────────────────
 
     def _build_context(
-        self, settings: Settings, extra_context: str | None, *, session_id: str | None = None
+        self,
+        settings: Settings,
+        extra_context: str | None,
+        *,
+        session_id: str | None = None,
+        task: str | None = None,
     ) -> str:
         sections = [self._environment_section(settings, session_id=session_id)]
 
         context_files = self._render_context(
             discover_context(
-                settings.workspace_root, include_readme=settings.context_include_readme
+                settings.workspace_root, include_readme=settings.context_include_readme, task=task
             )
         )
         if context_files:
@@ -463,14 +473,177 @@ _EMPHASIZED_MANDATE_RE = re.compile(
 )
 #: A level-2..6 markdown heading line; level 1 is the document title and stays with the preamble.
 _HEADING_RE = re.compile(r"^#{2,6}\s+\S")
+#: A word that can name what a section is about: four or more letters/digits, read out of
+#: identifiers and paths as well as prose (``binding_path`` → binding, path; ``app/ids.py`` →
+#: app, ids, py — the short pieces drop). Case-insensitive; a plural loses its ``s``.
+_TERM_RE = re.compile(r"[A-Za-z][A-Za-z0-9]{3,}")
+#: The words that describe the SHAPE of a coding request rather than its subject — every task
+#: says "implement the function ... return a string" — plus English function words of four or
+#: more letters (the shorter ones never pass :data:`_TERM_RE`). Singular forms; matched after
+#: :func:`_singular`. A word here can never key the fold (ADR-0173).
+_REQUEST_BOILERPLATE = frozenset(
+    {
+        "about",
+        "above",
+        "after",
+        "again",
+        "against",
+        "also",
+        "always",
+        "among",
+        "another",
+        "around",
+        "because",
+        "been",
+        "before",
+        "being",
+        "below",
+        "between",
+        "both",
+        "cannot",
+        "could",
+        "does",
+        "doing",
+        "done",
+        "down",
+        "during",
+        "each",
+        "either",
+        "else",
+        "even",
+        "ever",
+        "every",
+        "from",
+        "further",
+        "have",
+        "having",
+        "here",
+        "however",
+        "into",
+        "itself",
+        "just",
+        "least",
+        "less",
+        "might",
+        "more",
+        "most",
+        "much",
+        "must",
+        "neither",
+        "never",
+        "once",
+        "only",
+        "onto",
+        "other",
+        "ought",
+        "ours",
+        "over",
+        "same",
+        "shall",
+        "should",
+        "since",
+        "some",
+        "such",
+        "than",
+        "that",
+        "their",
+        "theirs",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "through",
+        "thus",
+        "under",
+        "until",
+        "upon",
+        "very",
+        "were",
+        "what",
+        "whatever",
+        "when",
+        "whenever",
+        "where",
+        "whether",
+        "which",
+        "while",
+        "whom",
+        "whose",
+        "will",
+        "with",
+        "within",
+        "without",
+        "would",
+        "yours",
+        "implement",
+        "implementing",
+        "implementation",
+        "implemented",
+        "function",
+        "method",
+        "class",
+        "module",
+        "file",
+        "return",
+        "returning",
+        "returned",
+        "string",
+        "value",
+        "given",
+        "write",
+        "writing",
+        "written",
+        "create",
+        "creating",
+        "created",
+        "make",
+        "making",
+        "using",
+        "used",
+        "code",
+    }
+)
 
 
-def _fit_sections(name: str, content: str, limit: int) -> str | None:
+def _singular(word: str) -> str:
+    """``sessions`` → ``session``; a four-letter word and a double-``s`` word are left alone."""
+    if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _words(text: str) -> set[str]:
+    """The distinct :data:`_TERM_RE` words of ``text``, lower-cased and singular."""
+    return {_singular(w.lower()) for w in _TERM_RE.findall(text)}
+
+
+def task_terms(task: str | None) -> frozenset[str]:
+    """The words of a task that can name what a guide section is about (ADR-0173).
+
+    Distinct, lower-cased, singular, four or more letters, read out of identifiers and paths too
+    (``next_belief_id`` names belief; ``app/binding.py`` names binding), minus the request
+    boilerplate every task carries. Whether a term is a SIGNAL for one guide is decided per guide
+    in :func:`_fit_sections` — a word most of its sections use says nothing about any of them.
+    ``None`` or an empty task yields no terms, and a fold with no terms is the ADR-0172 fold,
+    byte for byte.
+    """
+    if not task:
+        return frozenset()
+    return frozenset(_words(task) - _REQUEST_BOILERPLATE)
+
+
+def _fit_sections(
+    name: str, content: str, limit: int, *, task_terms: frozenset[str] = frozenset()
+) -> str | None:
     """Fold a sectioned markdown file into ``limit`` characters by keeping WHOLE sections — those
-    whose heading names a rule or mandate first (ADR-0170), then those whose body EMPHASIZES one
-    (MUST / NEVER in capitals or bold, ADR-0171), then the rest in document order — ending with a
-    note that lists the omitted headings. Returns ``None`` when the file has no ``##`` sections or
-    not one section fits, so the caller falls back to the head cut.
+    about the task's subject first (ADR-0173), then those whose heading names a rule or mandate
+    (ADR-0170), then those whose body EMPHASIZES one (MUST / NEVER in capitals or bold, ADR-0171),
+    then the rest in document order — ending with a note that lists the omitted headings.
+    Returns ``None`` when the file has no ``##`` sections or not one section fits, so the caller
+    falls back to the head cut.
 
     Built from the note that did nothing: under ADR-0169 a 35B still scored 0/12 on
     ``14o-agents-md-longguide-over`` — 4 turns every run, identical outputs, the "read the file
@@ -482,7 +655,16 @@ def _fit_sections(name: str, content: str, limit: int) -> str | None:
     "## Working with people data" (14p) is invisible to the heading tier, and lowercase "must"
     cannot be the signal — every section of a guide says it somewhere. The heading tier reads a
     section's whole OUTLINE PATH: "### ID Formats" under "## Universal Conventions" is a convention
-    by the author's own outline, whatever its own heading says (ADR-0172).
+    by the author's own outline, whatever its own heading says (ADR-0172). The task tier reads the
+    outline path against the task: a section whose own heading, or a heading above it, carries a
+    word of the task that is RARE in this guide (in at most a quarter of its sections — "binding",
+    not "session" or "agent") is ABOUT the task and is kept before every mandate the task is not
+    about; within the task tier the mandate tiers order (a rule about the task before a layout
+    about it). Bodies do not count: every long section mentions everything, and a body-scored
+    tier ranked the orientation sections that share "path" / "directory" / "store" with a
+    request above the plain-headed section that states its rule (`## Session Binding`) — the
+    section the real guide keeps its rule in, which the mandate tiers alone never carry
+    (ADR-0173). With no task, or none of its words in a heading, the fold is the ADR-0172 fold.
     """
     total_len = len(content)
     parts: list[tuple[str | None, list[str]]] = [(None, [])]  # (heading line, its lines)
@@ -515,7 +697,7 @@ def _fit_sections(name: str, content: str, limit: int) -> str | None:
         paths.append([lab for _, lab in open_headings] + [label(heading)])
         open_headings.append((depth, label(heading)))
 
-    def priority(i: int) -> int:
+    def mandate_tier(i: int) -> int:
         heading, block = blocks[i]
         if heading is not None and any(_MANDATE_RE.search(lab) for lab in paths[i]):
             return 0  # the heading, or a heading above it in the outline, names a rule or mandate
@@ -523,12 +705,29 @@ def _fit_sections(name: str, content: str, limit: int) -> str | None:
         body = head_and_body[1] if heading is not None and len(head_and_body) > 1 else block
         return 1 if _EMPHASIZED_MANDATE_RE.search(body) else 2  # the author emphasized one / plain
 
+    # The task tier (ADR-0173): a task word carried by at most a quarter of the sections (each
+    # counted by its body and its outline path) is a signal for THIS guide; a section is about
+    # the task when its outline path — where the author names what it is about — carries one.
+    words = [_words(blocks[i][1]) | _words(" ".join(paths[i])) for i in range(n)]
+    rare = max(1, n // 4)
+    signals = {t for t in task_terms if 1 <= sum(t in w for w in words) <= rare}
+    about = [bool(signals & _words(" ".join(paths[i]))) for i in range(n)]
+    kept_first = (
+        "sections about the task, then sections that name or emphasize a rule or mandate, are "
+        "kept first"
+        if any(about)
+        else "sections that name or emphasize a rule or mandate are kept first"
+    )
+
+    def priority(i: int) -> tuple[int, int]:
+        return (0 if about[i] else 1, mandate_tier(i))  # about the task first, then the mandates
+
     def note_for(kept_n: int, names: list[str]) -> str:
         listed = "; ".join(names[:12]) + (f"; +{len(names) - 12} more" if len(names) > 12 else "")
         return (
             f"\n[... {name}: {total_len} characters, {kept_n} of {n} sections kept within the "
-            f"{limit}-character fold (sections that name or emphasize a rule or mandate are kept "
-            f"first); omitted: {listed}; read the file for the omitted sections]"
+            f"{limit}-character fold ({kept_first}); omitted: {listed}; read the file for the "
+            f"omitted sections]"
         )
 
     def note(kept_n: int, omitted: list[int]) -> str:
@@ -588,7 +787,7 @@ def _truncate_with_note(name: str, content: str, limit: int) -> str:
 
 
 def discover_context(
-    workspace_root: Path, *, include_readme: bool = True
+    workspace_root: Path, *, include_readme: bool = True, task: str | None = None
 ) -> list[tuple[Path, str]]:
     """Collect project-context files from the workspace root up to the project (VCS) root.
 
@@ -608,10 +807,12 @@ def discover_context(
     * **Content-hash de-duplication** — identical content (e.g. an ``AGENTS.md`` that merely copies
       ``CLAUDE.md``) is kept only once, at its first occurrence.
     * **Per-file cap** — a file over :data:`MAX_CONTEXT_FILE_CHARS` is folded by WHOLE SECTIONS:
-      sections whose heading names a rule or mandate (MANDATORY, MUST, NEVER, RULES, …) are kept
-      first (ADR-0170), then sections whose body emphasizes one (MUST / NEVER in capitals or
-      bold — the author's own signal, ADR-0171), then the rest in document order, and the fold
-      ends with a note listing the omitted headings. A file without ``##`` sections falls back
+      sections about the ``task`` (their outline path carries a word of it that is rare in the
+      guide, ADR-0173) are kept first, then sections whose heading names a rule or mandate
+      (MANDATORY, MUST, NEVER, RULES, …) (ADR-0170), then sections whose body emphasizes one
+      (MUST / NEVER in capitals or bold — the author's own signal, ADR-0171), then the rest in
+      document order, and the fold ends with a note listing the omitted headings. A file
+      without ``##`` sections falls back
       to a head cut that ends with an omission note naming the file and the counts
       (ADR-0169). Both live inside the cap. Why
       sections and not a cue: the silent cut scored 0/12 on a 35B (a MANDATORY rule past the
@@ -622,12 +823,15 @@ def discover_context(
       counted against its ORIGINAL length); because the guides are scanned before the README, a
       large README can never crowd them out.
 
+    ``task`` is the text the session is for (its first user message; see
+    :meth:`SystemPromptBuilder.build`); ``None`` folds without a task tier.
     Unreadable (incl. non-UTF-8) files are skipped silently. Returns ``(path, content)`` pairs.
     """
     try:
         root = Path(workspace_root).resolve()
     except OSError:
         return []
+    terms = task_terms(task)
 
     chain = _project_chain(root)  # workspace root .. project (VCS) root, outermost first
 
@@ -663,9 +867,9 @@ def discover_context(
                 return False
             limit = min(limit, remaining)
         if original_len > limit:
-            content = _fit_sections(path.name, content, limit) or _truncate_with_note(
-                path.name, content, limit
-            )
+            content = _fit_sections(
+                path.name, content, limit, task_terms=terms
+            ) or _truncate_with_note(path.name, content, limit)
         discovered.append((path, content))
         total += len(content)
         return total < MAX_CONTEXT_TOTAL_CHARS
