@@ -9913,3 +9913,17 @@ failure. A harness-side form check: not general.
 SHIPS / HARM / MISS / MARGINAL in the results log; reverted under HARM or MISS. Residuals: a guide with no rule that
 applies gains nothing and costs one sentence; a model that binds to a WRONG reading of a rule binds harder — the
 regression control watches for it; attended sessions carry the same line, it is prompt, not a rail.
+
+**Addendum (2026-09-15, thrust 31 — unnamed by the pre-registered rule; read as MARGINAL, kept; a second sample decides).**
+Measured beside CONCURRENT no-framing baselines in one batch (N = 12, temperature 0): cell 17 on the 27B 9/12 with the
+line against 6/12 without (one-sided Fisher p = 0.20); on the 35B 9/12 against 10/12 (p = 1.0; the HARM line was 7); cell
+16p on the 27B 12/12; turns 6.2-6.4 and 40-41 s on every cell-17 arm — the line costs nothing measurable. The rule named
+SHIPS at ≥ 11, MARGINAL at (a') + 1 and MISS at ≤ (a') around a predicted baseline of 10; the baseline measured 6, and 9
+sat in a gap the rule did not name — found by enumeration before the treated arm landed, and read by the disposition
+fixed then: MARGINAL's, never an upgrade (guard-6776). Pooled over both models the treated arms read 18/24 against 16/24
+untreated (p = 0.75). The decision stands on main unchanged; thrust 32 re-samples the 27B pair at N = 24 per arm,
+interleaved and dumped, and reads the pooled 36 vs 36 by a rule enumerated for coverage: MISS (C ≤ A + 3) retires the
+line, SHIPS (C ≥ A + 9 and C ≥ 27) confirms it, MARGINAL-2 keeps it as a no-cost line with an unproven benefit and moves
+the campaign to the moment-of-writing surface (fallback C: the write tools' content descriptions). main's prompt.py is
+5ebfc37b558a after a `ruff format` layout fix caught by CI (#511's last commit); the bench deployed f637fe66c78d, the
+same rendered block.
