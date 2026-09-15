@@ -1373,3 +1373,69 @@ with the controls holding — the framing line is retired (reverted), the cell-1
 model at this fold, and the next lever comes from a pre-write census of the misses (does the model read the guide's
 rule section before it writes the test?). MARGINAL if (c') = (a') + 1 but below 11, controls holding — kept on main,
 reported as process, a second sample decides.
+
+THRUST 31 RESULT (2026-09-15 18:45 UTC, g-353-117): UNNAMED BY THE PRE-REGISTERED RULE — read as MARGINAL (kept on main; a second,
+pre-registered sample decides — thrust 32 below). One batch 17:58 → 18:43 UTC on zc-01 (/root/t31-batch.log), N = 12,
+temperature 0, --no-pin; the ADR-0176 pair for the baselines, /root/prompt.py.adr0179 (f637fe66c78d; loop.py 07d461afa424
+throughout) swapped in for the treated arms — pair check, import check (the framing present), fold probes 17 = d1732a3e1ff3
+and 16p = 0d431997ad50 (rule IN, byte-identical under either prompt) — and restored at the end (pair check OK); every
+record redacted at write time (12 redacted / 0 raw per arm).
+  (a') 17 on the 27B, no framing    6/12   turns 6.3 (6-7)   41 s   six misses, every one the bare absolute `assert Metrics.hits == 1`
+  (b') 17 on the 35B, no framing   10/12   turns 6.2 (6-7)   40 s   two absolutes
+  (c') 17 on the 27B, framing       9/12   turns 6.2 (6-7)   40 s   three absolutes
+  (d') 17 on the 35B, framing       9/12   turns 6.4 (6-7)   40 s   two absolutes + one run that wrote no test function
+  (e') 16p on the 27B, framing     12/12   turns 7.8 (6-12)  63 s   regression control (thrust 25: 12/12 at 7.5 turns, 50 s)
+PREDICTIONS: (a') ~10 MISSED — 6/12 (P(≤ 6 | 12, 0.61) = 0.31 under the 27B's pooled historical 22/36, so inside chance
+of its own rate; the untreated 27B now reads 38/60 = 63% over four batches); (b') ~10 met; (c') ≥ 11 MISSED, (c') ≥ (a') + 1
+met (9 vs 6: one-sided Fisher p = 0.20, two-sided 0.40); (d') ≥ (b') missed by one (9 vs 10, p = 1.0 — inside the SHIPS
+allowance of (b') − 1, three above the HARM line of (b') − 3); (e') ≥ 11 met; turns and elapsed unchanged on cell 17
+(6.2-6.4 turns and 40-41 s on all four arms; 16p's 63 s against a historical 50 s has no concurrent baseline in this batch
+and the pod's hour-to-hour drift is larger than that — recorded, not read).
+READING: no branch of the rule as written names (c') = 9 at (a') = 6. The rule was written around a predicted baseline of
+10, where SHIPS (≥ 11), MARGINAL (= (a') + 1) and MISS (≤ (a')) tile the range; at (a') = 6 the outcomes 8, 9 and 10 — the
+ones the lever was expected to produce — have no branch (an enumeration of the rule over every arm outcome finds 68
+unnamed (a', c') pairs, plus HARM/MARGINAL and SHIPS/MISS overlaps with no stated precedence). The gap was found by
+enumeration after (a') landed and BEFORE (c') did, and the reading fixed then, in the session record: an unnamed outcome
+takes MARGINAL's disposition — kept on main, reported as process, a second sample decides — and is never upgraded to
+SHIPS (guard-6776, the sibling of guard-6769 and guard-6772: the control is concurrent, its line is calibrated, and the
+rule must cover whatever it measures). What the numbers say on their own: +3 on the 27B and −1 on the 35B beside their
+concurrent baselines; treated 18/24 vs untreated 16/24 pooled over both models (p = 0.75); the framing line costs nothing
+measurable (no turn, no second, the 16p control 12/12) and moves nothing measurable at N = 12 — one sample of twelve on a
+~60% rate spans 5-9 (thrust 27), and 6 vs 9 sits inside that span.
+DISPOSITION: ADR-0179 stays on main (Zak-Code #511, b599e99; main's prompt.py 5ebfc37b558a differs from the deployed
+f637fe66c78d by `ruff format` layout alone — the concatenation of the intro string, caught by CI's format check after the
+launch; the rendered block is byte-identical; rb-11072). The ADR gains this addendum; the cell-17 residual stays open;
+thrust 32 (g-353-119) re-samples the 27B pair at N = 24 per arm, interleaved and dumped, and reads the pooled 36 vs 36 by a
+rule enumerated for coverage before launch.
+
+THRUST 32 — THE SECOND SAMPLE OF THE 27B PAIR (ADR-0179 FRAMING vs NONE ON CELL 17), INTERLEAVED, DUMPED — PRE-REGISTERED
+2026-09-15 18:45 UTC, not yet launched (g-353-119)
+══════════════════════════════════════════════════════════════════
+WHY: thrust 31's 27B pair read 9/12 framed vs 6/12 unframed — unnamed by its rule, disposition MARGINAL. One sample of
+twelve on a ~60% rate spans 5-9, so the pair is re-sampled at N = 24 per arm and read POOLED with thrust 31's dozen each
+(36 vs 36). The arms alternate in blocks of twelve so the pod's drift over the batch lands on both alike (thrust 24's
+contended hour); both arms are dumped (ZBENCH_DUMP_REQUESTS; the dumps stay on zc-01, counts and tool names only leave
+it) so the misses' pre-write route — what the model reads before it writes the test, and whether the framing changes
+it — can be censused whichever way the reading goes: that census is the next lever's diagnostic.
+ARMS (N = 12 per block, 48 runs, temperature 0, --no-pin, sequential on zakpod1; /root/t32_batch.sh md5 5aeca9faf7a5;
+prompt.py.adr0176 b57bdb96285b ↔ prompt.py.adr0179 f637fe66c78d, loop.py 07d461afa424 throughout; pair check, import
+check and both fold probes at every swap and every restore; private_sources on the box; the 16p cell rebuilt for its
+probe only):
+  (a''1) 17 on the 27B, no framing   → …-17-…-deltaassert-t32-base-27b-1.json      dumps /root/zb-dumps/t32-base-1
+  (c''1) 17 on the 27B, framing      → …-17-…-deltaassert-t32-adr0179-27b-1.json   dumps /root/zb-dumps/t32-adr0179-1
+  (a''2) 17 on the 27B, no framing   → …-17-…-deltaassert-t32-base-27b-2.json      dumps /root/zb-dumps/t32-base-2
+  (c''2) 17 on the 27B, framing      → …-17-…-deltaassert-t32-adr0179-27b-2.json   dumps /root/zb-dumps/t32-adr0179-2
+  The ADR-0176 prompt is restored between the blocks and at the end regardless.
+PREDICTIONS: A = (a') + (a''1) + (a''2) in 18-24 of 36 (the pooled untreated rate, 63%); C = (c') + (c''1) + (c''2) ≥ A + 6;
+turns and elapsed equal across the four blocks within noise (6-7 turns, ~40 s); no run reads the guide by tool (thrust 27:
+0/12) — the framing changes what the model does with the rule in its context, not whether it fetches it.
+READING RULE (on the pooled 36 vs 36; enumerated over every (A, C) pair before launch — 1369 of 1369 covered, no overlap;
+guard-6776): MISS if C ≤ A + 3 — the framing line is retired from main (prompt.py back to b57bdb96285b, the three tests
+removed), the cell-17 residual is recorded as unreachable by framing at the head of the block, and the next lever is the
+moment-of-writing surface — a rule line in the write_file / edit_file content descriptions (fallback C) — or whatever the
+pre-write census names. SHIPS if C ≥ A + 9 and C ≥ 27 (one-sided Fisher p ≈ 0.01-0.025 at that boundary) — the ADR gains the
+numbers and the framing is measured next on the 35B's own residual. MARGINAL-2 otherwise (C − A in 4..8, or ≥ 9 with C
+below 27) — kept on main as a line with no measured cost and an unproven benefit, no third sample on this cell; the
+campaign moves to the next lever with the pooled estimate recorded. No HARM clause: the batch carries no high-rate
+control (the 35B and 16p controls held in thrust 31 — (d') 9/12 against (b') 10/12, (e') 12/12); the treated blocks' turns
+and elapsed are reported beside the untreated ones, not gated.
