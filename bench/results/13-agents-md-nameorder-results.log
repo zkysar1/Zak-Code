@@ -894,3 +894,41 @@ sha256; guard-6761; the durable harness fix is g-353-107). Elapsed times read co
 (misses 39-45 s, passes 64-91 s in the dumped batches); turns remain the primary measure. Bench tree left on
 ADR-0175 (954c394680e1 = main). Next lever: the oversized-section residual (Environment-Server's 7,987-char
 sub-section; Operator's "Testing Caveats"), and the fleet census as a standing regression for every fold change.
+
+THRUST 26 — THE OVERSIZED-SECTION RESIDUAL, MEASURED BEFORE ANY BUILD: cell 17 (the Environment-Server guide, 25K; the delta-assert rule inside the 7K "Test-authoring gotchas" sub-section the shipped fold drops first) on both models — PRE-REGISTERED 2026-09-15 13:42 UTC, not yet launched
+══════════════════════════════════════════════════════════════════
+THE RESIDUAL. ADR-0175's census left one over-cap guide whose rules still fold out: the Ayoai-Environment-Server
+CLAUDE.md (25,221 chars, 30 sections, md5 c190292441f6 pinned by the builder; private, NOT committed — gitignored,
+staged by scp like 16p's) keeps its test-authoring rules under "### Test-authoring gotchas (suite-order hazards, …)":
+7,087 chars with no sub-headings — one 5.5K bullet list of bold-opening items and four short paragraphs, seven
+mandate-word lines. The heading carries "gotchas" (ADR-0175 vocabulary), so the section is promoted, but the fold
+keeps a section whole or not at all (ADR-0170: a cut section reads as complete) and it never fits behind the
+sections before it: shipped fold 7,922 chars (no task, md5 2df9346da333) / 8,109 (task, ff9eb712edab), 10 / 12 of
+30 sections kept, the gotchas section FIRST in the omitted list, the rule OUT. rb-10979's remedies (a per-section
+share cap, folding by sub-sections, excluding index sections) do not reach a section with no sub-headings. The
+candidate lever, IF the residual costs: unit-level abridgement — an oversized mandate section folds by its own
+bullets/paragraphs, keeping the units that carry a mandate word or emphasis, under an explicit "[abridged: k of n
+items kept; read the file for the rest]" line (a marked abridgement is not the false completeness ADR-0170
+rejected). rb-10930: measure the residual on real data before building.
+THE CELL. 17-realguide-envserver-deltaassert: a small Python package (16 files); `Metrics` carries class-level
+process-wide counters (hits / misses / evictions); the existing tests assert ABSOLUTES (`assert Metrics.misses == 1`)
+— the imitation default; tests/test_metrics.py exists with the import only. Task: add `test_record_hit_increments`
+to tests/test_metrics.py covering `Metrics.record_hit()`, which increments the shared counter `Metrics.hits`. The rule,
+stated only in the dropped sub-section: "Assert on before/after DELTAS for shared static counters, never absolutes."
+Verify: the file defines a test that passes under pytest; at least one assertion on `hits`; NO assertion comparing
+`hits` with an integer literal (a reset-then-absolute counts as absolute); some assertion on `hits` references a name
+captured from `hits` beforehand. Controls: delta PASS, absolute FAIL, reset FAIL, empty FAIL. 17n: the same repo, no
+guide (default rate).
+BUILD. The bench tree on the shipped pair (ADR-0175 prompt.py 954c394680e1 / loop.py 07d461afa424), no swaps in
+stage 1; N=12, temp 0, --no-pin, sequential; fold probes at start (17 = ff9eb712edab, rule OUT; 17n = no guide).
+Batch /root/t26_stage1_batch.sh → /root/t26-stage1-batch.log; JSONs -t26-35b (control), -adr0175-35b / -27b.
+PREDICTIONS (per dozen). 17n control ≤ 3/12 (the absolute is the natural default; a careful model may capture a
+before-value unprompted). 17 rule-OUT: both fetch routes are open — the note names "Test-authoring gotchas" and the
+task says "test" (a common word; rb-10984's heading route needs a distinctive one), and the rule body carries
+"counters" while the task says "counter" (thrust 25's grep route: 12/21 on the 35B, 4/12 on the 27B) — so 35B
+4-9/12 and 27B 2-7/12, passes at ≥ 8 turns (a fetch) and misses at ≤ 6.
+READING RULE. RESIDUAL-COSTS if an OUT arm ≤ 8/12 on either model → stage 2 builds the abridgement lever behind
+tests, re-runs the fleet census, and pre-registers rule-IN ≥ 11 (35B) / ≥ 10 (27B) on this cell before measuring.
+RESIDUAL-FREE if both OUT arms ≥ 11/12 → the lever is process-only (turns), deferred and recorded. MARGINAL (9-10 on
+both) → the lever is built anyway for determinism, pre-registered, with the correctness gain expected small. A
+control above 3 weakens the cell (the rule is partly a default) and is reported as such.
