@@ -579,3 +579,71 @@ fold, "Session Binding (Phase 2.6)" NAMED in the omission note; 15sn folds only 
     E. ZAK 15s, ADR-0172 fold restored, zds-qwen3.8-27b       — PREREG: ≤ 8/12 (the 27B fetches less reliably than the 35B)
   Verdict rule: fix (a) EARNS ITS KEEP if A holds with turns ≤ 5.0 AND B ≥ 11 AND D − E ≥ 3; NEUTRAL if A/B/C hold
   but D − E < 3 (the fold saves process only — keep, record); REGRESSION if A < 11 or B < 10 (revert the tier).
+
+══════════════════════════════════════════════════════════════════
+THRUST 21 RESULT (2026-09-15 03:43 UTC) — ADR-0173 (THE TASK TIER) RE-MEASURE: NEUTRAL BY THE PRE-REGISTERED RULE — every pass rate held or over-held (A 12/12, B 12/12, C 12/12, D 12/12) but E was ALSO 12/12: the 27B fetches the omitted section exactly as the 35B does, so the pass-rate half of the tier's case is FALSIFIED on this cell for both models; the tier buys PROCESS — −1.0 turn / −14 s per run at 35B (48.8 → 34.4 s), −1.2 turns / −11 s at 27B (46.5 → 35.1 s) — and A's turn bound (≤ 5.0) missed at 6.1
+══════════════════════════════════════════════════════════════════
+Batch t21_taskfold_batch.sh (md5 427a507cca15) on zc-01, 03:04:13 → 03:41:36 UTC (a first launch at 03:02 aborted on the
+batch's own dump probe — it read call-0001, the 1K zakpick classifier call; fixed to read every main call, relaunched).
+One variable: prompt.py (ADR-0173, md5 e7ddbf626a66) + the bench tree's loop.py with ONLY the `_build_system` /
+`_session_task` hunk (md5 07d461afa424); backups verified; pair md5-checked at every swap. Probes: 15s task fold 8,137
+chars md5 c99adc4d90d0 (rule IN, legacy IN, task-tier note); 15 / 15i 9b02c28eb12c (unchanged); 14p 7,831 md5
+2322274499b5 (rule in). Dumped probe run: the classifier call carries nothing; every main call (2..6) carries the
+rule and the task-tier note. Pod zakpod1; models named per arm; N=12; sequential.
+
+═══ SCORECARD vs PRE-REGISTRATION ═══
+  arm                                              prereg           pass     turns                              elapsed/run           outputs
+  A  ZAK 15s task fold, 35B                        12/12, ≤5.0t, ≤36s  12/12   [9,7,5,6,4,6,5,6,6,7,5,7] mean 6.1 (spread 5)                          23.6-46.5s mean 34.4                3 digests, 12x PASS
+     (t20 reference: ADR-0172 fold, rule out)      —                12/12    mean 7.1 (spread 2)                35.4-93.3s mean 48.8  3 digests
+  B  ZAK 14p task fold, 35B (fold changed)         ≥ 11/12          12/12   [4,4,4,4,6,4,4,4,4,6,4,4] mean 4.3 (spread 2)                          17.6-33.7s mean 22.2                2 digests, 12x PASS
+     (t19 reference: ADR-0172 fold)                —                12/12    4x11+7                             28.3-41.1s mean 29.9  2 digests
+  C  ZAK 15i task fold, 35B (byte-identical)       ≥ 11/12          12/12   [5,7,6,7,6,6,5,5,6,8,6,6] mean 6.1 (spread 3)                          34.3-51.9s mean 43.0                11 digests, 12x PASS
+     (t19 reference: ADR-0172 fold)                —                12/12    mean 6.0                           38.7-57.3s mean 48.2  10 digests
+  D  ZAK 15s task fold, zds-qwen3.8-27b            ≥ 10/12          12/12   [5,6,9,5,5,5,7,5,8,4,4,7] mean 5.8 (spread 5)                          23.1-50.0s mean 35.1                2 digests, 12x PASS
+  E  ZAK 15s ADR-0172 fold, zds-qwen3.8-27b        ≤ 8/12           12/12   [9,9,8,6,6,9,5,7,8,6,5,6] mean 7.0 (spread 4)                          27.2-98.1s mean 46.5                3 digests, 12x PASS
+  VERDICT RULE: earns its keep if A holds with turns ≤ 5.0 AND B ≥ 11 AND D − E ≥ 3; NEUTRAL if A/B/C hold but
+  D − E < 3; REGRESSION if A < 11 or B < 10.   VERDICT: NEUTRAL — kept as a process saving, recorded. Scored against the rule: A pass 12/12 (hold) and time 34.4 s (≤ 36, hold) but turns 6.1 (> 5.0, MISS); B 12/12 (hold); C 12/12 (hold); D 12/12 (hold, over); E 12/12 (MISS: ≤ 8 predicted) so D − E = 0 < 3. Not a regression (A ≥ 11, B ≥ 10); not 'earns its keep' (turns and the 27B gap both missed).
+
+═══ READING ═══
+  (i) THE SMALLER-MODEL HYPOTHESIS IS FALSIFIED AT 27B FOR THIS CUE CLASS. The pre-registration bet that zds-qwen3.8-27b would fetch the
+      omitted section less reliably than the 35B (E ≤ 8/12); it fetched it every run (12/12, 7.0 turns, 46.5 s — the 35B's t20
+      profile was 7.1 turns, 48.8 s). The lexical-overlap law (rb-10984: the omission note works when the omitted heading shares a
+      distinctive word with the task) holds for the smallest model on the pod. One-sided Fisher on D vs E: p = 1.
+ (ii) WHAT THE TIER IS WORTH, MEASURED: on the one cell whose rule the mandate tiers miss, −1.0 turn and −14 s per run at 35B (t20
+      48.8 s → A 34.4 s, −30%; pairwise A < t20 in 96 of 144 run pairs, 27 ties), −1.2 turns and −11 s at 27B (E 46.5 s → D 35.1 s,
+      −25%), output states 3 → 3 (35B) and 3 → 2 (27B); byte-identical folds and behaviour everywhere else (C: 15i 12/12 at 6.1
+      turns / 43.0 s vs t19 6.0 / 48.2; B: 14p 12/12 at 4.3 turns / 22.2 s vs t19 4.25 / 29.9 — both a shade faster on today's
+      pod). ADR-0173 stands under its own rule's NEUTRAL branch: +~60 lines of prompt.py buy a quarter of the wall time on the
+      cell class it targets and nothing on the rest; the case for it is now cost, not correctness.
+(iii) THE RESIDUAL TURN IS A CONFIRMATION, NOT A FETCH. The dumped probe run on the task fold (5 main calls) reads binding.py and
+      the test, then greps the repo for the literal `agents/<name>/sessions/<SID>/binding\.yaml` — the string it already holds in
+      the fold — then edits, then runs the test. The 4-turn runs skip the grep; the 9-turn runs do more of it. A small model
+      verifying a rule it has been given is a habit the fold cannot remove and rb-10615 / rb-10927 say a prompt instruction
+      would not either; it is left as measured.
+ (iv) WHERE THE CAMPAIGN GOES: the open ADR-0172 residual is the cell-15 cost (fold SHAPE, 18/24 vs 24/24), which the task tier
+      does not touch (no heading of the real guide shares a word with the timestamp task — its fold is byte-identical). Two
+      thrusts follow, both pre-registered before launch: (a) the smaller-model MAP — 13 / 14p / 15 / 15i on the 27B on the shipped
+      build, because 'make it work on smaller models' has one 27B datapoint on a guide cell and needs the map before another
+      lever; (b) the 2x2 composition cell for the cell-15 cost (the ADR-0172 fold minus the seven added conventions; the ADR-0171
+      fold minus the six orientation sections).
+
+══════════════════════════════════════════════════════════════════
+THRUST 22 — THE SMALLER-MODEL MAP: 13 / 14p / 15 / 15i and the 15n no-guide control on zds-qwen3.8-27b, shipped build — PRE-REGISTERED 2026-09-15 03:45 UTC, not yet launched
+══════════════════════════════════════════════════════════════════
+WHY. The campaign's directive is "make zakcode work on smaller models"; thrust 21 gave the 27B exactly one guide-adherence
+datapoint (15s: 12/12 on both folds) and it matched the 35B. That is not a map. Before another lever is built, measure the
+27B on the four cells whose 35B behaviour is known — 13 (short guide, mandate heading), 14p (long guide, plain heading,
+emphasized body), 15 (real 47K guide, Naming Rules in the fold; the 35B's ADR-0172 rate is 18/24 pooled), 15i (real guide,
+ID Formats in the fold via the outline tier; 35B 12/12) — plus 15n (the same repo with no guide: the 27B's DEFAULT rate on
+the timestamp task, so a pass on 15 is attributable to the guide).
+BUILD. The shipped pair (ADR-0173 prompt.py md5 e7ddbf626a66 + the bench loop.py with the _build_system hunk 07d461afa424),
+md5-checked; ZBENCH_POD_MODEL=zds-qwen3.8-27b swaps every zakpick category to the 27B (zbench-run.py); temp 0, --no-pin,
+N=12, sequential; fold probes before launch (13 unfolded; 14p 2322274499b5; 15 / 15i 9b02c28eb12c; 15n folds no guide).
+Batch /root/t22_27b_map_batch.sh → /root/t22-27b-map-batch.log; result JSONs suffixed -taskfold-27b.
+PREDICTIONS (per dozen, the 27B): 13 ≥ 11/12 (35B 12/12); 14p ≥ 11/12 (35B 12/12); 15 ≥ 9/12 (35B ADR-0172 fold 8-10/12
+per dozen; the microseconds-isoformat default is the known miss); 15i ≥ 10/12 (35B 12/12 at 6 turns — the smaller model
+may search more); 15n ≤ 2/12 (35B 0/12). Process profiles recorded beside the 35B's (turns, elapsed, output states).
+READING RULE. This is a MAP, not a lever test: a cell where the 27B lands ≥ 3 passes below the 35B's dozen NAMES the next
+lever and its hypothesis (a fold-shape effect if 15 alone drops; a search/fetch effect if 15i drops with turns up; a
+plain-heading effect if 14p drops); a 27B that matches the 35B everywhere says the next lever is cost, not correctness,
+and the campaign's smaller-model bar is already met on this guide class at 27B. Miss or hit, report as measured.
