@@ -1213,3 +1213,40 @@ REWROTE), in this order: UNKNOWN ≥ 4 of 24 runs → the census is repaired and
   redesign quotes the applicable rule sentence in the check; pre-registered as its own thrust.
   FIXED is reported as the check's yield on each model; the redesign thrust pre-registers its expected yield against it.
 The pass rates are reported and decide nothing here — this is a diagnostic; thrust 28's HARM stands.
+
+THRUST 29 RESULT (2026-09-15 16:32 UTC, g-353-115): WORDING by the pre-registered rule — every miss on both models is an absolute
+the check CONFIRMED; REWROTE 0/24, OTHER-EDIT 0/24, FIXED 1/24.
+══════════════════════════════════════════════════════════════════
+MEASURED (N = 12 per arm, temperature 0, --no-pin, every request dumped; the ADR-0177 pair swapped into the bench tree for
+the probe and the ADR-0176 pair restored after — verified prompt b57bdb96285b, loop 07d461afa424; the rail fired 24/24 by
+trace_interventions and by the census finding the rail message in every dump; the runner redacted the private guide at
+write time in both records — task.json private_sources on the box, 12/12 redacted, 0 raw):
+  (1) 17 on the 35B: 9/12 (thrust 28 repeated exactly); turns 7.9, 48 s. Census: NONE-NEEDED 8 (delta before the check,
+      delta after, no edit), CONFIRMED 3 (absolute before, absolute after, no edit to the test — the model looked: runs 7
+      and 10 listed and re-read files, run 10 re-read the guide itself, then finished), FIXED 1 (run 8: absolute before,
+      one edit_file after the check, delta after — the only conversion in 24 runs). Pre-check absolutes 4/12.
+                                                         → …-17-…-deltaassert-t29-35b-dumped.json
+  (2) 17 on the 27B: 7/12 (thrust 28 gave 10/12; pooled with the rail 17/24 against the abridged fold without it 16/24);
+      turns 7.7, 46 s. Census: NONE-NEEDED 7, CONFIRMED 5 (all five misses: absolute before, absolute after, no edit; run
+      9 ran three glob calls and finished), FIXED 0, REWROTE 0, OTHER-EDIT 0. Pre-check absolutes 5/12 (the 27B's known
+      rate: 8/24 without the rail).                      → …-17-…-deltaassert-t29-27b-dumped.json
+PREDICTIONS: "35B misses REWROTE or OTHER-EDIT in ≥ 2 of 3" FALSIFIED (0 of 3 — all CONFIRMED); "27B misses OTHER-EDIT or
+CONFIRMED" met (5 CONFIRMED); "every pass NONE-NEEDED or FIXED" met (15 + 1); "pass rates repeat within ±2" met on the
+35B (9 = 9), missed on the 27B (7 against 10).
+READING: WORDING. Pooled misses 8/8 CONFIRMED (UNKNOWN 0, OTHER-EDIT 0, REWROTE 0). The check's yield: 1 fix in 9
+pre-check absolutes (11%) across the two models; 8 of 9 times a model asked to check its file against "the guide's rules"
+called an absolute compliant and finished — three of those times after re-reading the file or the guide. Cost: +1 turn
+on every pass. The census replay matched the verified file 24/24.
+THRUST 28 RE-READ: the count rule fired and the revert stands — nothing here earns a rail back. Its mechanism clause ("the
+check makes the model rewrite correct work") is FALSIFIED: REWROTE 0/24, and the thrust-28 35B misses' turn counts (7, 8,
+9) match what CONFIRMED runs cost here (7-10 turns of listing and re-reading), not rewrites. The 35B's 9/12 twice is a
+pre-check absolute rate of 4/12 against the historical 1/12 (p = 0.32) — the rail fires after the file is written and
+cannot have caused it. Thrust 28's "positive control" was the treated 35B read against a HISTORICAL baseline, not a
+concurrent untreated arm; whether the 35B's cell-17 baseline has moved is measured next, concurrently.
+NEXT (thrust 30, pre-registered separately): (a) a CONCURRENT no-rail baseline — 17 on the 35B and on the 27B, tree on
+ADR-0176, N = 12 each, in the same batch as (b); if the no-rail 35B arm reads ≤ 10/12 today, thrust 28 is re-read as "no
+harm, baseline moved" beside its count reading (both stand in the record; the revert stays until a rail earns its place).
+(b) the WORDING redesign — the check demands evidence instead of a verdict: for each changed file, quote the guide
+sentence that applies and the line of the file that satisfies it, or fix the file; a model that must produce the
+satisfying line for "assert before/after deltas" meets its `== 1` on the page. Same arms as thrust 28 (17-27B, 17-35B,
+16p-27B) beside (a); HARM at three below 12/12 on the controls (guard-6769).
