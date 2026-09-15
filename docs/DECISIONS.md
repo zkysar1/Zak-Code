@@ -9828,3 +9828,15 @@ actions rewrote correct deltas or left absolutes standing is not readable from t
 runs and classifies each post-check action (CONFIRMED / REWROTE / OTHER-EDIT / FIXED) before the wording or the scope
 is redesigned; no re-measure of any rail before that. The premise (thrust 27's JUDGMENT: rule in hand, default at the
 keyboard) stands; this shape of check is not the lever.
+
+**Addendum 2 (2026-09-15, thrust 29 — the dumped diagnostic; reading WORDING).** Twelve dumped runs per model on cell
+17 with the rail swapped into the bench tree for the probe (restored after; main stays reverted): 35B 9/12, 27B 7/12;
+the rail fired 24/24. A census that replays the test file from the tool calls found every miss on both models an
+absolute written BEFORE the check and CONFIRMED by it (8 of 8 — three after re-reading the file or the guide), one
+absolute FIXED after the check (35B), and no rewrite of a correct file (REWROTE 0/24). So this decision's premise stands
+(a model with the rule in hand writes its default), the mechanism clause of the thrust-28 HARM reading ("the check makes
+the model rewrite correct work") is falsified, and the check as worded is close to inert: asked whether the file meets
+"the guide's rules", the model says yes. The revert stands — the numbers do not earn the rail back. Next (thrust 30): a
+check that demands evidence rather than a verdict (quote the applicable guide sentence and the line that satisfies it,
+or fix the file), measured beside a CONCURRENT no-rail baseline on both models — thrust 28's control was read against
+a historical baseline.
