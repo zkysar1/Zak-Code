@@ -786,3 +786,41 @@ READING RULE. SHIPS (the ADR stands) if 15 ≥ 11/12 on BOTH models and no hold 
 reference on either model. NEUTRAL-KEEP if 15 lands 9-10 on either model with the holds holding: the shape reading was
 incomplete or the 8K head is too small — the next lever is the head share, measured, not a revert. REVERT-CANDIDATE if
 any hold cell drops ≥ 3 under its reference on either model, or 15 ≤ 8 on both. Miss or hit, reported as measured.
+
+THRUST 24 RESULT (2026-09-15 12:18 UTC) — ADR-0174 SHIPS: every arm holds or improves. Cell 15 (the cost cell) 11/12 on the 35B and 12/12 on the 27B against 8-10/12 on the ADR-0172 fold — pooled 23/24 vs 34/48 (p = 0.014), indistinguishable from the ADR-0171 fold's 35/36 (p = 1.0): the head tier recovers the whole cost inside the shipped cap; 15i / 15s / 14p hold at 12/12 on both models with turns down on every real-guide cell
+══════════════════════════════════════════════════════════════════
+Batch /root/t24_adr0174_batch.sh on zc-01, 11:01:25 → 12:16:40 UTC (g-353-105); ADR-0174 prompt.py 5ae2883118f2 beside the bench
+loop.py 07d461afa424 (pair check OK before and after; no swaps); temp 0, --no-pin, N=12, sequential; the eight fold probes against
+the deployed module matched (15 / 15i 9b3055bae471 task and no task; 15s b283e83dfe61 / 9b3055bae471; 14p 2322274499b5 /
+3a4f6d831807). JSONs committed here: determinism-zakcode-pinOFF-temp0-<cell>-adr0174-35b.json (15, 15i, 15s, 14p) and
+-adr0174-27b.json (15, 15i, 15s).
+
+═══ SCORECARD — pre-registration: 15 ≥ 11 both models (≤ 4.5 turns, ≤ 28 s on the 35B); 15i ≥ 11 both; 15s 12/12 (35B) / ≥ 11 (27B); 14p 12/12 ═══
+  arm       pass    turns (mean)                       elapsed/run (mean)      outputs  reference (ADR-0172/0173 fold)          prereg
+  15  35B   11/12   [4,4,4,4,4,4,5,4,5,4,6,4] 4.3      18.9-93.4 s   42.8      6        8/12, 10/12, 8/12 at 5.0 turns / 32-37 s  ≥ 11 HOLD; ≤ 4.5 turns HOLD; ≤ 28 s MISS (pod)
+  15i 35B   12/12   [5,7,5,6,6,5,4,5,5,5,4,5] 5.2      35.5-229.8 s  72.2      11       12/12 at 6.1 / 43.0 s                     ≥ 11 HOLD
+  15s 35B   12/12   [5,5,5,5,5,5,8,5,5,4,4,5] 5.1      31.2-107.7 s  70.6      3        12/12 at 6.1 / 34.4 s                     12/12 HOLD
+  14p 35B   12/12   [4,5,4,4,4,4,6,4,4,4,4,4] 4.2      19.0-161.6 s  49.4      2        12/12 at 4.3 / 22.2 s (byte-identical)    12/12 HOLD
+  15  27B   12/12   [4,4,5,4,9,4,4,4,4,6,4,5] 4.8      18.5-189.3 s  57.5      4        8/12 at 5.1 / 31.2 s                      ≥ 11 HOLD
+  15i 27B   12/12   [5,5,5,6,5,6,5,8,5,6,5,5] 5.5      35.1-62.7 s   48.1      9        12/12 at 5.3 / 37.2 s                     ≥ 11 HOLD
+  15s 27B   12/12   [5,5,4,5,5,7,5,5,5,5,5,4] 5.0      25.7-48.3 s   35.4      2        12/12 at 5.8 / 35.1 s                     ≥ 11 HOLD
+  The one miss (15, 35B) is the microseconds isoformat default. Fisher: cell 15 ADR-0174 both models 23/24 vs ADR-0172 both
+  models 34/48 p = 0.014; 35B alone 11/12 vs 26/36 p = 0.25; 27B alone 12/12 vs 8/12 p = 0.093; vs the ADR-0171 fold 35/36 p = 1.0.
+  ELAPSED IS NOT READABLE TODAY: the pod was contended for the whole batch — the byte-identical 14p control ran at 49 s against
+  its 22 s reference with a 162 s outlier, arm 15's runs 1-4 and 12 took 19-20 s and runs 5-11 31-93 s at unchanged turn
+  counts, 15i had 230 s and 184 s runs — so the ≤ 28 s prediction missed on the pod, not on the fold; no other arm was running
+  from zc-01 / zc-02 / zc-03 (pgrep on all three).
+
+═══ READING ═══
+  (i) SHIPS by the pre-registered rule: 15 ≥ 11 on both models, no hold cell under its reference. The composition's mechanism
+      (thrust 23: the conventions are obeyed when the fold first says what the project is) is now a LEVER, not only a
+      composition — an 8K fold with four of the six orientation sections in front of the conventions scores what the 10.9K
+      "both" fold scored (12/12) and what the ADR-0171 fold scored (35/36), with ID Formats still in (15i 12/12 both models).
+  (ii) Turns fell on every real-guide cell: 15 5.0 → 4.3 (35B) / 5.1 → 4.8 (27B); 15i 6.1 → 5.2 (35B; 27B flat 5.3 → 5.5);
+      15s 6.1 → 5.1 / 5.8 → 5.0. Output-state counts fell on 15 (6 → 4 at 27B) and 15s (3 → 2 at 27B). The wall of
+      conventions cost a turn (thrust 23 (iv)); the head returns it.
+  (iii) The 27B again matches the 35B cell for cell (thrust 22's map holds under the new fold); the two-model 15 / 15i / 15s
+      set stays the regression set.
+  (iv) NEXT: the tiers were built on one real guide. A census of the author's other 39 guides (thrust 25, pre-registered
+      below) found the house style the fold cannot see — `## Constraints` (28 of 39), bolded whole sentences, `#`-sectioned
+      guides — and the shipped fold dropping the rules heading in four of the five over-cap guides. ADR-0175 reads it.
