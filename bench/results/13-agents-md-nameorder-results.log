@@ -967,3 +967,40 @@ never moves); probes on the box: 17 = d1732a3e1ff3:yes, and 15 = 9b3055bae471 / 
 abridged residual becomes a measured gain and the fleet has no over-cap guide dropping its rules; BUILD-MISS if
 either arm ≤ 8 (the abridged form is not read as a rule: decompose — the rule as its own whole section vs the
 abridged block, on the same cell); MARGINAL (9-10) → ships as process, reported as such.
+THRUST 26 STAGE 2 RESULT (2026-09-15 14:26 UTC) — the 35B HIT (11/12 under the corrected verify; 6/12 under the pre-registered one), the 27B BUILD-MISS (7/12 corrected; 6/12 pre-registered): the abridged rule is read by the 35B and only partly by the 27B; the prereg's decomposition (the rule as its own whole section vs the abridged block, same cell, 27B) is thrust 27
+══════════════════════════════════════════════════════════════════
+THE VERIFY DEFECT FIRST, because it changes the letter of the scoring. The cell's pre-registered verify (v1) required
+the delta assertion to name the counter literally; a test that captured `before = Metrics.hits`, called the method,
+and asserted `after - before == 1` — the rule's own form — was scored "no assertion on Metrics.hits". Found while
+reading the recorded 35B misses, not by the verify. Rewritten (v2): a static check over the test source — names the
+counter captures into (fixpoint), then every assert naming the counter or a capture; PASS iff at least one assert
+relates two of those references and none compares one of them to an integer literal (pytest and unittest forms);
+pytest still runs after. Eleven controls, one per compliant and non-compliant form the rule admits (guard-6765 in
+the Mind: a verify carries a positive control for EVERY compliant form before it scores a pre-registered arm).
+Every arm re-scored from the JSON excerpts under v2 — seven false negatives in all, six of them on rule-IN arms
+(the arms whose runs wrote deltas): control 1/12 → 1/12; OUT 35B 3/12 → 3/12; OUT 27B 2/12 → 3/12; IN 35B
+6/12 → 11/12; IN 27B 6/12 → 7/12. v2 shipped to the box for cells 17 and 17n after the batch (md5 4d8a7cbeafc1
+both sides); the recorded verify_rc in the two committed -adr0176 JSONs is v1's, as measured.
+SCORE vs the prereg (corrected scoring; the pre-registered scoring in brackets). IN 35B, predicted ≥ 11 → 11/12
+[6/12], HIT: turns 6.2 mean (one 8-turn run), 30 s/run — the rule read from the fold, no fetch, as predicted; the
+one miss a bare absolute. IN 27B, predicted ≥ 10 → 7/12 [6/12], BUILD-MISS: 6.2 turns, 32 s; the five misses are
+absolutes — four reset the counter in an autouse fixture (or inline) and then asserted `== 1`, one bare. Fisher:
+IN vs OUT on the 35B 11/12 vs 3/12 p = 0.0028; on the 27B 7/12 vs 3/12 p = 0.21 (not significant) and vs the
+control 1/12 p = 0.027; pooled IN 18/24 vs OUT 6/24 p = 0.0012; IN 35B vs IN 27B 11/12 vs 7/12 p = 0.155.
+READING: the prereg named BUILD-MISS for either arm ≤ 8, so this is BUILD-MISS on the 27B by the letter, with the
+35B hit standing beside it. What the numbers say: the fold change did its job (the rule is IN the fold on both
+models; the deterministic checks were byte-identical everywhere else; the 35B follows it 11/12), and the 27B
+follows an in-context rule it has a confident default against about half the time — the four reset-then-absolute
+misses neutralised the shared-state hazard the rule is about in their own way and then wrote the assertion the
+rule forbids. Whether that is the ABRIDGED FORM (marker, position, three sibling mandates) or the MODEL against a
+default is exactly the decomposition the prereg prescribed: thrust 27 puts the same rule in its own small whole
+section of the same guide (no marker, nothing abridged) on the 27B, re-runs the abridged 27B arm for test-retest
+(7/12 is one sample of twelve), and runs the whole-section 35B arm as the positive control. ADR-0176 stays on
+main as a fold-content change with no measured cost (addendum in docs/DECISIONS.md); the "smaller models" claim
+for this lever is NOT made. The pre-registration caveat, stated plainly: the scorer changed after the measurement;
+both scorings are reported, the corrected one is the one to read, and the correction was validated against the
+compliant forms before any arm was re-scored.
+Artifacts: bench/results/determinism-zakcode-pinOFF-temp0-17-realguide-envserver-deltaassert-adr0176-35b.json
+and -27b.json (sources["CLAUDE.md"] redacted, guard-6761); bench/tasks/17*/verify.py (v2, with the controls);
+bench/guide_census.py (the fleet census as a standing check for any fold change:
+`guide_census.py <shipped prompt.py> <candidate prompt.py> <guide.md>...`).
