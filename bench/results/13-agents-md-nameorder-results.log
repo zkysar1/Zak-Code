@@ -932,3 +932,38 @@ tests, re-runs the fleet census, and pre-registers rule-IN ≥ 11 (35B) / ≥ 10
 RESIDUAL-FREE if both OUT arms ≥ 11/12 → the lever is process-only (turns), deferred and recorded. MARGINAL (9-10 on
 both) → the lever is built anyway for determinism, pre-registered, with the correctness gain expected small. A
 control above 3 weakens the cell (the rule is partly a default) and is reported as such.
+
+THRUST 26 STAGE 1 RESULT (2026-09-15 14:05 UTC) — RESIDUAL-COSTS on both models: rule OUT 3/12 (35B) and 2/12 (27B) against the no-guide control 1/12 — indistinguishable from the default (pooled 5/24 vs 1/12, p = 0.65); every run at 6-8 turns, no fetch: neither the omission note ("Test-authoring gotchas" vs the task's "test") nor the workspace grep ("counters" vs "counter") reached the dropped section
+══════════════════════════════════════════════════════════════════
+SCORE vs the prereg. Control ≤ 3 → 1/12, HOLD (all twelve runs at 6 turns, 28 s; eleven absolute assertions, one
+unprompted delta). OUT 35B, predicted 4-9 → 3/12 (below the range; the passes sit at 6-7 turns — the unprompted
+delta default, not fetches; 33 s). OUT 27B, predicted 2-7 → 2/12 (in range, at its floor; the two 8-turn runs both
+FAILED; 37 s). The fetch-route prediction MISSED on both: no run went past 8 turns, while on cell 16p the same 35B
+grepped in 12 of 21 rule-out runs. Read as measured: on 16p the model had NO default (control 0/12) and the task's
+rare word ("aspiration") was the rule body's; here the model has a confident default (the imitation absolute,
+11/12 in the control) and a grep, if any, would have needed "counter" to land on "counters" — it never happened.
+A model with a default does not search (rb-10984's route (b) needs the absence of one). READING: RESIDUAL-COSTS
+(both OUT arms ≤ 8) → stage 2 builds the lever.
+STAGE 2 BUILD (ADR-0176; prompt.py md5 b57bdb96285b, loop.py unchanged 07d461afa424). An oversized mandate section
+(larger than FOLD_ABRIDGE_SHARE = a quarter of the cap; no table; heading/outline vocabulary, emphasized body, or
+about the task) that does not fit whole is admitted ABRIDGED at its own priority position: its heading, the shortest
+of its paragraphs and top-level list items that carry a mandate word (document order), then "[abridged: k of n
+items of this section kept within the fold; read the file for the rest]", all within the share; the note gains
+"(1 abridged)". Shortest-first, because document-order admission spends the share on the first 2K bullet and leaves
+the 74-char rule out (measured on this section). Tests: four new (tests/test_prompt.py 72 pass) — abridged in with
+the marker and the note; a table-bearing section never abridged (rb-10979's index hazard); a plain section never
+abridged; a small mandate section that merely ran out of budget never abridged. Full suite: 3,946 passed, 9 skipped (70 s). DETERMINISTIC
+CHECKS before any pod time: every bench fold byte-identical to ADR-0175 (13 / 14o / 14p / 14u / 15 / 15i / 15s /
+16p, task and no task); the fleet census 1/5 → 0/5 over-cap guides dropping their rules heading, every other
+guide's fold byte-identical; cell 17's fold 8,091 chars (task) md5 d1732a3e1ff3 / 8,060 (no task) 547f2d4a90eb,
+rule IN, "4 of 11 items" (the 74-char rule and three short mandates; the 2K explanatory bullets to the file),
+8 of 30 sections kept — Quick Reference, Deployment, Verticle System, Character Lifecycle and Server Startup Chain
+displaced by the abridged block.
+STAGE 2 PREREG — 2026-09-15 14:05 UTC, not yet launched. Deploy prompt.py.adr0176 (b57bdb96285b) to the bench tree (loop.py
+never moves); probes on the box: 17 = d1732a3e1ff3:yes, and 15 = 9b3055bae471 / 16p = 0d431997ad50 byte-identical
+(regression probes, no regression arms — nothing else changes). Arms: 17 rule-IN 35B → 17 rule-IN 27B (N=12, temp 0,
+--no-pin, sequential); JSONs -adr0176-35b / -27b; the tree left on ADR-0176. PREDICTIONS: ≥ 11/12 on the 35B and
+≥ 10/12 on the 27B, at 6-7 turns (no fetch; the rule is read from the fold). READING RULE: SHIPS if both hit — the
+abridged residual becomes a measured gain and the fleet has no over-cap guide dropping its rules; BUILD-MISS if
+either arm ≤ 8 (the abridged form is not read as a rule: decompose — the rule as its own whole section vs the
+abridged block, on the same cell); MARGINAL (9-10) → ships as process, reported as such.

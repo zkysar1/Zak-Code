@@ -9705,3 +9705,47 @@ fixed; a guide whose rules live under a heading outside this list and without em
 order — the census is the instrument that finds the next one.
 
 **Addendum (2026-09-15, thrust 25 — the pre-registered re-measure on a second real guide, both models; Zak-Code #495 is the ADR, the result rides in the t25-result PR).** The IN arms hit on both models: cell 16p 12/12 on the 35B (7.2 turns) and 12/12 on the 27B (7.5) with the Constraints section in the fold, against 8/12 (35B, 9.0 turns) and 4/12 (27B, 7.5) on the ADR-0174 fold that drops it, and 0/12 with no guide; pooled 24/24 vs 12/24 (p = 8e-05). The OUT arms missed their ≤ 2 prediction, and nine dumped rule-out runs on the 35B showed why: every pass (4/4, 9-12 turns) greps the workspace for the task word after its project-file reads, hits the rule body inside the on-disk guide and reads it; every miss (5/5, 6 turns) never opens the guide. The fetch is the model's own search for the task's vocabulary — taken in 12 of 21 rule-out runs on the 35B and 4 of 12 on the 27B, a near-tie — not the fold's omission note (rb-10984 amended: a rule body carrying the task word is grep-reachable under any heading). So this ADR's value on the house style is correctness on the runs that do not search (more of them on the smaller model) and process on the ones that do (9.0 → 7.2 turns, −22% wall time, turn spread 7 → 3). SHIPS as measured; the census's four-in-five is now a measured cost — a guide whose rules sit under `## Constraints` outside the fold passes only when the model happens to grep. Residual unchanged: the oversized section with no sub-headings. Hygiene finding from the commit: the bench JSON's `sources` field embeds the first 4,096 chars of every workspace file, so the private guide's opening was redacted from the seven committed 16p JSONs (guard-6761; harness fix g-353-107).
+
+## ADR-0176: an oversized mandate section is admitted abridged — its shortest mandate-carrying items under a marker, within a share of the cap
+
+**Context.** ADR-0170 keeps a section whole or not at all, because a silently cut section reads as complete.
+ADR-0175's fleet census left one over-cap guide whose rules still fold out under that rule: the Environment-Server
+guide (25,221 chars, 30 sections) keeps its test-authoring rules under a 7,087-char `### Test-authoring gotchas`
+sub-section with no sub-headings — one 5.5K bullet list and four short paragraphs, seven mandate-word lines.
+Promoted by its heading, it never fits behind the sections before it and is the first name in the omitted list.
+Thrust 26 measured the cost before any build (rb-10930): a rule stated only there ("Assert on before/after DELTAS
+for shared static counters, never absolutes.") scored 3/12 on the 35B and 2/12 on the 27B against a no-guide
+control of 1/12 — indistinguishable from the default (pooled 5/24 vs 1/12, p = 0.65) — every run at 6-8 turns: no
+run fetched the section, so neither the omission note (which names "Test-authoring gotchas") nor the thrust-25
+workspace grep reached it. The model had a confident default (the imitation absolute, 11/12 in the control), and a
+model with a default does not search. rb-10979's remedies (a per-section share cap, folding by sub-sections,
+excluding index sections) do not reach a section with no sub-headings.
+
+**Decision.** In `_fit_sections`, a section that (a) names or emphasizes a mandate or is about the task, (b) is
+larger than `FOLD_ABRIDGE_SHARE` (a quarter) of the cap — so it could never fit whole — and (c) carries no table
+is admitted ABRIDGED at its own priority position when it does not fit whole: its heading, then the shortest of
+its paragraphs and top-level list items that carry a mandate word (the heading vocabulary or the emphasized form),
+rendered in document order, then one line `[abridged: k of n items of this section kept within the fold; read the
+file for the rest]`, all within the share; the fold's note then reads "N of M sections kept (1 abridged)". Units
+are blank-line paragraphs split at top-level bullets and numbered items, fence-aware; an indented line continues
+its item. Shortest-first admission keeps the terse rule sentences and leaves the long explanatory items to the
+file: on the measured section the 74-char rule and three other short mandates are kept (4 of 11 items) and the
+2K explanatory bullets are not. The marker makes the abridgement visible — what ADR-0170's rejection of the silent
+cut required. Measured before the re-measure: every bench fold (13 / 14o / 14p / 14u / 15 / 15i / 15s / 16p, task
+and no task) is byte-identical to ADR-0175; the fleet census goes from one over-cap guide dropping its rules
+heading to none, every other guide's fold unchanged; cell 17's fold carries the rule at 8,091 chars (task) /
+8,060 (no task), with five plain sections displaced by the abridged block.
+
+**Alternatives rejected.** Document-order admission within the share (the first 2K bullet alone fills the share
+and the rule behind it stays out — measured on the same section). Abridging any mandate section that did not fit
+(a small one that ran out of budget is a priority decision the tiers already made, and abridging it would change
+the Mind guide's fold: an 841-char emphasized section sits just past its budget there). Abridging table-bearing
+sections (rb-10979's index hazard: the Mind guide's Convention Index is a 9.6K table under a vocabulary heading
+whose rows name rules without stating any; abridged in, it would evict real rule sections). Line-level units (a
+sentence out of a wrapped item is the false-completeness hazard at a finer grain). A larger share (starves the rest
+of the fold; the head tier already takes a quarter).
+
+**Consequences.** Pre-registered re-measure (thrust 26 stage 2): cell 17 rule-IN on both models against stage 1's
+rule-OUT (3/12, 2/12) and control (1/12). Residuals, stated: an oversized mandate section whose rules are long
+paragraphs keeps its shortest mandate items, which need not be its most important; an item without a mandate word
+is never kept; a table-bearing rules section still folds whole or not at all; the share is fixed at a quarter.

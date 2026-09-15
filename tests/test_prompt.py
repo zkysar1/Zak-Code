@@ -1052,3 +1052,79 @@ def test_fold_splits_a_guide_sectioned_by_h1_headings(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text(single + "\n", encoding="utf-8")
     [(_, content)] = discover_context(tmp_path, include_readme=False)
     assert "truncated:" in content and "sections kept" not in content
+
+
+# ---- ADR-0176: an oversized mandate section is admitted abridged --------------------------------
+
+
+def _oversized_rules(
+    *, table: bool = False, heading: str = "## Rules", mandate: str = "MUST"
+) -> str:
+    """A rules section larger than the whole cap: six long plain items and three short mandates."""
+    items = []
+    for i in range(6):
+        items.append(f"- Background item {i}: " + f"how the parts fit together, part {i}. " * 40)
+        if i in (1, 3, 5):
+            items.append(f"- Every full name {mandate} be rendered LAST, FIRST (rule {i}).")
+    body = heading + "\n\n" + "\n".join(items)
+    if table:
+        body += "\n\n| rule | where |\n|---|---|\n| names | rendering |"
+    assert len(body) > MAX_CONTEXT_FILE_CHARS
+    return body
+
+
+def _guide_around(section: str) -> str:
+    opening = "# Project Guide\n\n## About\n\nWhat this project is.\n\n"
+    return opening + section + "\n\n## Later\n\nA closing note.\n"
+
+
+def test_fold_admits_an_oversized_mandate_section_abridged(tmp_path: Path) -> None:
+    # The rules section can never fit whole; its three short mandates are kept under its heading
+    # with a marker counting what was kept, the long plain items go to the file, and the note says
+    # one section is abridged. Kept sections keep document order.
+    (tmp_path / "AGENTS.md").write_text(_guide_around(_oversized_rules()), encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert _headings(fold) == ["## About", "## Rules", "## Later"]
+    assert fold.count("MUST be rendered LAST, FIRST") == 3
+    assert "Background item" not in fold
+    assert (
+        "[abridged: 3 of 9 items of this section kept within the fold; read the file for the rest]"
+        in fold
+    )
+    assert "sections kept (1 abridged)" in note
+    assert len(content) <= MAX_CONTEXT_FILE_CHARS
+
+
+def test_fold_never_abridges_a_table_bearing_section(tmp_path: Path) -> None:
+    # rb-10979's index hazard: a rules section that carries a table folds whole or not at all.
+    guide = _guide_around(_oversized_rules(table=True))
+    (tmp_path / "AGENTS.md").write_text(guide, encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert _headings(fold) == ["## About", "## Later"]
+    assert "[abridged:" not in content and "abridged)" not in note
+    assert "omitted: Rules" in note
+
+
+def test_fold_never_abridges_a_plain_section(tmp_path: Path) -> None:
+    # A plain heading over lowercase mandates is the guidance every section carries (ADR-0171):
+    # not a mandate section, so not abridged either.
+    section = _oversized_rules(heading="## Working notes", mandate="must")
+    (tmp_path / "AGENTS.md").write_text(_guide_around(section), encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert _headings(fold) == ["## About", "## Later"]
+    assert "[abridged:" not in content and "abridged)" not in note
+
+
+def test_fold_never_abridges_a_small_section_that_ran_out_of_budget(tmp_path: Path) -> None:
+    # Eight ~1.9K mandate sections, four fit: the ones left out are smaller than the abridgement
+    # share, so they stay whole or out — the ADR-0174 fold, byte for byte.
+    opening = ["## About\n\n" + "What this project is and how it is laid out. " * 8]
+    guide = _opening_guide(opening, *_rules(8))
+    (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert "[abridged:" not in content and "abridged)" not in note
+    assert "## Rules 0" in _headings(fold) and "## Rules 7" not in _headings(fold)
