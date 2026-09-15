@@ -1171,3 +1171,45 @@ NEXT (thrust 29, pre-registered separately): the dumped diagnostic — ZBENCH_DU
 each run's post-check action from the request stream — CONFIRMED (no edit, an absolute called compliant), REWROTE (a
 delta present before the check replaced by an absolute), OTHER-EDIT (edits that left the absolute), FIXED (absolute →
 delta) — and redesign the rail's wording or its scope from that classification. No re-measure of any rail before it.
+
+THRUST 29 — THE DUMPED DIAGNOSTIC OF THE GUIDE-CHECK RAIL: what does the check make the model DO? — PRE-REGISTERED
+2026-09-15 16:11 UTC, not yet launched (g-353-115)
+══════════════════════════════════════════════════════════════════
+WHY: thrust 28 read HARM (35B 23/24 → 9/12 with the rail; 27B 16/24 → 10/12; pooled across models no net change). The
+final files cannot say whether the 35B's extra post-check actions REWROTE correct deltas or repaired other things and left
+an absolute standing; one 35B miss was an absolute the check CONFIRMED with no action. The redesign of the rail's wording
+or scope — or its retirement as a lever — follows from which of those dominates, so this probe measures it before
+anything is redesigned. No rail is re-measured before it (thrust 28's reading rule).
+BUILD: none. The ADR-0177 pair (prompt.py eb8eec7f9cfa, the hunk-patched bench loop.py 3cc5d32a220e) is swapped INTO the
+bench tree for the probe only and the ADR-0176 pair restored after (main stays reverted, #506). Cell 17 (abridged fold
+d1732a3e1ff3, rule IN — probed before any arm); task.json private_sources present on the box (the runner redacts at
+write time).
+ARMS (N = 12 each, temperature 0, --no-pin, ZBENCH_DUMP_REQUESTS; sequential on zakpod1; cell-17 verify v2):
+  (1) 17 on the 35B → …-17-…-deltaassert-t29-35b-dumped.json (dumps /root/zb-dumps/t29-35b — never leave the box)
+  (2) 17 on the 27B → …-17-…-deltaassert-t29-27b-dumped.json (dumps /root/zb-dumps/t29-27b)
+The rail must fire in every run (trace_interventions guide_check 12/12 per arm; the census finds the rail message in every
+dump); a run where it does not is an instrument failure, never a reading.
+CENSUS (/root/t29_census.py — counts, tool names and classifications only; it replays tests/test_metrics.py from the
+write_file / edit_file calls, seeded from the workspace template, to read the file's assertion form at the moment the rail
+arrived (BEFORE), and takes the AFTER form from the verified file in the record; self-tested on the thrust-27 dumps, where
+the replay matched the verified file 12/12). Per run: BEFORE and AFTER ∈ {delta, absolute, none, no-delta, no-ref},
+post-check tool calls by name, post-check edits to the test file, post-check guide reads, post-check text mentioning
+"delta". CLASSES: NONE-NEEDED (delta before and after; "(touched)" if the check still edited the file), REWROTE (delta
+before → absolute after), FIXED (not-delta before → delta after), CONFIRMED (not-delta before, no post-check edit to the
+test file), OTHER-EDIT (not-delta before, edited after, still not delta), UNKNOWN (a replay the tool calls do not
+determine).
+PREDICTIONS (from thrust 28's final files): the 35B misses are REWROTE or OTHER-EDIT in at least 2 of 3 (one CONFIRMED,
+the 7-turn kind); the 27B misses are OTHER-EDIT or CONFIRMED (both were 9-turn); every pass is NONE-NEEDED or FIXED; the
+pass rates repeat thrust 28 within ±2 (35B 9/12, 27B 10/12).
+READING RULE — which lever the redesign targets, decided by the MISSES of both arms pooled (touched passes counted with
+REWROTE), in this order: UNKNOWN ≥ 4 of 24 runs → the census is repaired and re-run on the same dumps before any reading.
+  RETIRE if OTHER-EDIT is the largest class among the misses — the check makes the model act without acting on the rule:
+  the rail is retired as a lever for this residual and fallback B (the binding-framing line at the head of the fold) is
+  pre-registered instead.
+  SCOPE if REWROTE (+ touched passes) is the largest — the check makes a model re-open a file that already meets the rule:
+  the redesign fires the check only when a harness-side form check can name a rule the file misses, or drops the "fix it
+  now" imperative for a state-only form; pre-registered as its own thrust.
+  WORDING if CONFIRMED is the largest — the model calls an absolute compliant when asked about "the guide's rules": the
+  redesign quotes the applicable rule sentence in the check; pre-registered as its own thrust.
+  FIXED is reported as the check's yield on each model; the redesign thrust pre-registers its expected yield against it.
+The pass rates are reported and decide nothing here — this is a diagnostic; thrust 28's HARM stands.
