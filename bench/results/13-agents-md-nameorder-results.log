@@ -1125,3 +1125,49 @@ deploying main's whole file f6ad6ea6dce7 would have moved more than the rail. De
 hunks alone (the constant, the two guide_nudged resets, the two rail blocks — verbatim main's, diffed block by
 block) applied to the bench copy: bench loop.py 3cc5d32a220e (imports in the bench tree; backup 07d461afa424
 kept). One variable moves: the rail. Everything else in the prereg stands.
+
+THRUST 28 RESULT (2026-09-15 16:04 UTC, g-353-114): HARM by the pre-registered rule — the rail is reverted from main in the PR that
+records this result, before anything else.
+══════════════════════════════════════════════════════════════════
+MEASURED (N = 12 per arm, temperature 0, --no-pin, sequential on zakpod1; the ADR-0177 pair on the bench tree: prompt.py
+eb8eec7f9cfa, loop.py 3cc5d32a220e; the rail FIRED in 36/36 runs — trace_interventions guide_check = 1 in every run, so the
+instrument held; cell-17 verify v2):
+  (1) 17 (abridged fold) on the 27B: 10/12 — predicted ≥ 10, MET. Turns 7.3 (every pass exactly 7; from 6.2-6.9 without the
+      rail), elapsed 41 s. Misses: runs 3 and 9, both absolute assertions (`Metrics.hits == 1`; run 3 reset-then-absolute),
+      both at 9 turns — the check fired and the model took two more actions without producing a delta assertion.
+                                                         → …-17-…-deltaassert-adr0177-27b.json
+  (2) 17 on the 35B (positive control): 9/12 — predicted ≥ 11, MISSED; three below 12/12 → HARM. Turns 7.7 (passes at 7
+      and 8), elapsed 46 s. Misses: run 4 (7 turns, `== 1`), run 6 (8 turns, `== 0`), run 9 (9 turns, `== 1`) — all
+      absolutes; the 7-turn miss is an absolute the check CONFIRMED rather than caught, the 8- and 9-turn misses are
+      absolutes standing after extra actions.                → …-17-…-deltaassert-adr0177-35b.json
+  (3) 16p on the 27B (regression control): 12/12 — predicted ≥ 11, MET. Turns 9.4 (from 7.5 under ADR-0175; range 7-14),
+      elapsed 67 s (from 50 s): a correct file costs the 27B nearly two extra turns of checking; no run turned wrong.
+      Other rails: suite_scope_gate 5, text_only_stall 4, intent_gate 1, gate_cascade 1.
+                                                         → …-16p-…-aspirationkeys-adr0177-27b.json
+STATISTICS: (1) 10/12 vs the pooled abridged 27B 16/24: Fisher p = 0.44; vs every rule-IN 27B arm without the rail 22/36:
+p = 0.29; vs rule OUT 3/12: p = 0.012. (2) 9/12 vs the prior 35B 23/24: Fisher p = 0.098; under the prior rate 0.958 the
+chance of ≤ 9 of 12 is 0.012 (of ≤ 10, the pre-registered HARM line, 0.087). Both models pooled: with the rail 19/24,
+without 39/48, p = 1.0 — the rail moved nothing on net; it moved the two models in opposite directions.
+READING: HARM. (2) dropped three below 12/12 with (3) holding; SHIPS needed (2) ≥ 11. The 27B gain (16/24 → 10/12) is
+inside chance; the 35B loss (23/24 → 9/12) is not comfortably so. REVERTED from main in this PR: loop.py back to
+c2315d200565, prompt.py back to b57bdb96285b (the folded-guide bookkeeping goes with the rail — it had no other consumer),
+tests/test_guide_check.py removed; suite 3,947 passed, 9 skipped. The ADR-0177 entry stays, with an addendum. The bench
+tree is back on the ADR-0176 pair (prompt b57bdb96285b, loop 07d461afa424).
+WHAT THE FINAL FILES SAY ABOUT THE MECHANISM: on the 27B the turn count separates the outcomes cleanly — every pass cost
+the check exactly one turn (the model names the rules, says they are met, finishes) and both misses cost three; on the
+35B it does not (passes at 7 and 8, misses at 7, 8 and 9). Every miss on both models is an absolute; one of them (35B,
+7 turns) was CONFIRMED by the check with no further action. So the rail fails two ways at once: a confident model asked
+to check its default confirms it (the JUDGMENT class of thrust 27, now with the check in hand), and a model that does act
+after the check does not necessarily act on the rule. Whether the 35B's extra actions REWROTE correct deltas (the
+prereg's "rewrite correct work") or repaired other things and left an absolute standing is not readable from the final
+files; that is what thrust 29 dumps.
+INSTRUMENT NOTES: the runner's write-time redaction did not fire on any of the three arms — the box's task.json copies
+for 17 and 16p predated private_sources (#501); the standing post-arm check caught it (12 raw, 0 redacted per file),
+the records were redacted by hand with a note that says so, and both task.json copies were re-shipped after the batch
+(rb-11064). The prereg's HARM line (two or more below 12/12 at N = 12) has an 8.7% false-alarm rate under a 0.958
+control; three below has 1.2%. A future prereg on a ~96% control sets HARM at three below, or runs the control at N = 24.
+NEXT (thrust 29, pre-registered separately): the dumped diagnostic — ZBENCH_DUMP_REQUESTS, cell 17 on the 35B and the
+27B with the ADR-0177 pair swapped into the bench tree for the probe only (restored after; main stays reverted); classify
+each run's post-check action from the request stream — CONFIRMED (no edit, an absolute called compliant), REWROTE (a
+delta present before the check replaced by an absolute), OTHER-EDIT (edits that left the absolute), FIXED (absolute →
+delta) — and redesign the rail's wording or its scope from that classification. No re-measure of any rail before it.

@@ -9813,3 +9813,18 @@ elapsed +~5 s. Residuals: a guide with no rule that applies still costs the roun
 finishes); a model that cannot read its own file against a rule gains nothing from being asked; edits made
 through the shell are invisible to the write counter (ADR-0033's blind spot, by design); attended sessions are
 unchanged until measured.
+
+**Addendum (2026-09-15, thrust 28 — HARM; reverted).** Measured with the rail deployed as its hunks on the bench tree
+(loop.py 3cc5d32a220e, prompt.py eb8eec7f9cfa), N = 12, temperature 0, the rail firing in 36/36 runs: cell 17 on the
+27B 10/12 (predicted ≥ 10; from 16/24 pooled, p = 0.44); cell 17 on the 35B 9/12 (predicted ≥ 11; from 23/24,
+p = 0.098, chance of ≤ 9 under the prior rate 0.012); cell 16p on the 27B 12/12 (turns 7.5 → 9.4). The pre-registered
+rule reads HARM — the positive control dropped three below 12/12 — so the rail, its tests and the folded-guide
+bookkeeping are reverted from main in the PR that records this (loop.py c2315d200565, prompt.py b57bdb96285b), before
+anything else. What the final files show: a pass costs the check one turn (the model names the rules, says they are
+met, finishes); every miss on both models is an absolute assertion, most of them standing after extra actions the
+check provoked, one of them (35B, 7 turns) an absolute the model called compliant. A confident model asked to check
+its default confirms it; a model that acts after the check does not necessarily act on the rule. Whether the extra
+actions rewrote correct deltas or left absolutes standing is not readable from the final files — thrust 29 dumps the
+runs and classifies each post-check action (CONFIRMED / REWROTE / OTHER-EDIT / FIXED) before the wording or the scope
+is redesigned; no re-measure of any rail before that. The premise (thrust 27's JUDGMENT: rule in hand, default at the
+keyboard) stands; this shape of check is not the lever.
