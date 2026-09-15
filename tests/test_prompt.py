@@ -1006,3 +1006,49 @@ def test_fold_task_tier_outranks_the_head(tmp_path: Path) -> None:
     [(_, content)] = discover_context(tmp_path, include_readme=False, task="Add a widget")
     fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
     assert "## Widget layout" in _headings(fold) and "About" in _omitted(note)
+
+
+# ── ADR-0175: the fold reads the house style — Constraints headings, bold runs, H1 sections ──
+
+
+def test_fold_keeps_a_constraints_section_by_its_heading(tmp_path: Path) -> None:
+    # "## Constraints" is where a real fleet of guides keeps its hard rules (28 of 39 measured
+    # guides); the heading names none of the older mandate words, so it folded in document order —
+    # past the cap, out. It is now a mandate heading.
+    rule = "## Constraints\n\n- Render every full name as LAST, FIRST. Nothing else about names."
+    (tmp_path / "AGENTS.md").write_text(_guide_with(rule) + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert "## Constraints" in _headings(fold) and "LAST, FIRST" in fold
+
+
+def test_fold_treats_a_bold_run_that_opens_with_a_mandate_word_as_emphasis(tmp_path: Path) -> None:
+    # Real guides bold whole sentences: `**Never block the event loop.**` — the mandate word opens
+    # the run and the closing marker is sentences away. That is emphasis; a bold run that merely
+    # CONTAINS a lowercase mandate word mid-sentence is not.
+    yes = _plain_heading_guide("- **Never render a name as First Last.** Render it as LAST, FIRST.")
+    no = _plain_heading_guide("- **Names: the site must render them as LAST, FIRST** in lists.")
+    for guide, kept in ((yes, True), (no, False)):
+        (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
+        [(_, content)] = discover_context(tmp_path, include_readme=False)
+        assert ("LAST, FIRST" in content) is kept
+
+
+def test_fold_splits_a_guide_sectioned_by_h1_headings(tmp_path: Path) -> None:
+    # A guide whose sections are `# ` headings (two or more) is split on them — the first H1 is the
+    # title and stays in the preamble — so a mandate section past the cap is kept whole and the
+    # rest is not one 10K block that never fits. A guide with a single H1 (the title) is unchanged.
+    padding = [f"# Topic {i}\n\n" + f"Plain guidance paragraph {i}. " * 14 for i in range(20)]
+    rule = "# Constraints (MANDATORY)\n\n- Render every full name as LAST, FIRST."
+    body = "\n\n".join(["# Project Guide\n\nRead this first.", *padding, rule])
+    assert body.index(rule) > MAX_CONTEXT_FILE_CHARS
+    (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert content.startswith("# Project Guide\n\nRead this first.")  # the title stays the preamble
+    assert "\n# Constraints (MANDATORY)\n" in fold and "Topic 19" in _omitted(note)
+    # one H1 only: the ADR-0170 split (## sections) and the head cut for a section-less file
+    single = "# Project Guide\n\n" + "Only prose here, no sections at all. " * 400
+    (tmp_path / "AGENTS.md").write_text(single + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False)
+    assert "truncated:" in content and "sections kept" not in content
