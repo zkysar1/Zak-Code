@@ -1654,3 +1654,82 @@ MECHANISM READINGS (secondary, from the dumps; never overriding the count or HAR
 sibling-readers miss in ≤ 1/2 with at least 4 such runs; ROUTE-SHIFT if the candidate's sibling-read rate falls below
 half the baseline's; NON-READER EFFECT if the candidate's non-reader miss rate is below half the baseline's with ≥ 15
 non-reader runs in each arm (24-run arms); INERT otherwise.
+
+THRUST 35 RESULT (2026-09-15 21:48 UTC, g-353-122): NO-HARM, then MARGINAL by the pre-registered rule — the write-tool rule line
+is NOT merged; its pre-registered second sample is UNREACHABLE by construction (a defect in this pre-registration, named
+below) and is replaced by a test with headroom, pre-registered as thrust 36
+══════════════════════════════════════════════════════════════════
+BATCH (20:44:34-21:41:59 UTC; /root/t35_batch.sh, PROMPTBASE=adr0180 — the bench tree's standing prompt is ADR-0180 since
+the thrust-34 disposition; the set check on four md5s, the three-state expect_absent and both fold probes at every swap
+and restore; the swap → check → restore path dry-run on the box before launch; 12 redacted / 0 raw on each of the six
+records; the four cell-17 arms dumped):
+  (a1) shipped tools   11/12   turns 6.2   39 s        (c1) ADR-0181 tools   12/12   turns 6.1   39 s
+  (a2) shipped tools    8/12   turns 6.6   41 s        (c2) ADR-0181 tools   11/12   turns 6.5   42 s
+  (h0) 16p shipped     12/12   turns 8.5   69 s        (h1) 16p ADR-0181     12/12   turns 6.6   54 s
+HARM clause first: h1 = 12/12 against h0 = 12/12 → NO-HARM (the candidate arm was quicker on 16p, 6.6 turns against
+8.5 — noted, not read). Count: A = 19/24, C = 23/24, C − A = 4 → MARGINAL (MISS needed C ≤ 21; SHIPS at A = 19 needed
+C = 24); one-sided Fisher p = 0.094, two-sided 0.19. PREDICTIONS: A in 15-21 met (19); C ≥ A + 6 MISSED (+4, at a
+23/24 ceiling); costs equal met (6.1-6.6 turns, 39-42 s); the sibling-read route at 5-25% in both arms met for the
+baseline (5/24) and MISSED low for the candidate (1/24); candidate sibling-readers miss ≤ half NOT READABLE (one such
+run, missed); candidate non-readers miss ≤ 2 met (0 of 23); h0 = 12/12 and h1 ≥ 11/12 met; no guide reads met (0/48);
+0 post-edits. (c1) 12/12 is the first perfect 27B block on cell 17 in the campaign. The baseline — the ADR-0180 prompt
+with the shipped tools — ran 19/24, on the ADR-0180 arms' pooled 37/48 exactly (two-sided p = 1.0).
+MECHANISM READING: ROUTE-SHIFT — the candidate opens the sibling test in 1/24 runs against 5/24 (one-sided p = 0.094)
+and the one run that opened it copied it; non-readers 0/23 vs 1/19 (no difference at this baseline; NON-READER EFFECT
+unread). THE CAMPAIGN CONDITIONAL over all 144 dumped cell-17 runs (thrusts 33-35, both arms, three treatments): runs
+that read the sibling test before writing miss 20 of 21; runs that do not miss 17 of 123 (one-sided p = 2e-13). Both
+levers that moved the count — the prompt line (ADR-0180: reads 11/48 → 4/48) and the tool line (5/24 → 1/24) — act by
+keeping the model from opening the precedent; neither has converted a run that opened it. The residual on cell 17 is
+now one mechanism with one number: P(miss | read the contradicting precedent) ≈ 0.95, P(miss | did not) ≈ 0.14.
+THE PRE-REGISTRATION'S DEFECT: the MARGINAL branch promised a second interleaved 24 vs 24 read on the pooled 48 vs 48
+with SHIPS at C ≥ A + 5, C ≥ 36 and p ≤ 0.02. With the first sample's C = 23 the pooled C can reach at most 35, so NO
+(A2, C2) pair can ship (enumerated: 0 of 169); without the absolute floor, only pairs with A2 ≤ 1 could (19 of 169).
+The second sample as pre-registered cannot discriminate MISS from a merge — the absolute floor was written for the
+~77% baseline the ADR-0180 arms had shown and the sample landed at the ceiling. Encoded as guard-6786: a pooled
+second-sample line must be enumerated over the SECOND sample's outcomes once the first has landed, and an absolute
+floor must be reachable from the first sample's actual count (C_first + N2 ≥ floor) — otherwise the promise is empty.
+DISPOSITION: the tool line stays OFF main (the MARGINAL branch's own ruling; reproducible by
+bench/candidates/adr0181_apply_toolrule.py); the six records committed; the bench tree back on the ADR-0180 prompt with
+the shipped tools (set check OK). The unreachable second sample is NOT run. The merge question is re-asked where there
+is headroom — thrust 36 below, pre-registered before its data: the same tool line against the ADR-0176 prompt (the
+untreated 27B on cell 17 runs 50/84 = 60% there), which is the design the thrust-34 pre-registration had fixed for the
+MISS branch. Fallback D (the fold delivered at the head of the first user turn) stays the next lever after it.
+
+THRUST 36 — FALLBACK C AT A BASELINE WITH HEADROOM: THE WRITE-TOOL RULE LINE (ADR-0181 candidate) vs THE SHIPPED TOOLS ON
+THE ADR-0176 PROMPT, 27B CELL 17, INTERLEAVED, DUMPED — PRE-REGISTERED 2026-09-15 21:48 UTC; LAUNCH DEFERRED (zakpod1 down for
+maintenance from about 21:45 UTC; launches resume when the pod is back) (g-353-123)
+══════════════════════════════════════════════════════════════════
+WHY: thrust 35 read MARGINAL at a ceiling-bound baseline (23/24 vs 19/24) and its pre-registered second sample cannot
+ship under any outcome. The tool line's mechanism reading (ROUTE-SHIFT, 1/24 vs 5/24) predicts its largest effect where
+the precedent is read most — the ADR-0176 prompt, under which the untreated 27B opens the sibling test in ~23% of runs
+(11/48) and passes 60% (50/84). This is the MISS-branch design the thrust-34 pre-registration fixed for fallback C; it
+is used here because the MARGINAL-branch design is void, and it is pre-registered before its data.
+BUILD: unchanged candidate — write_file.py 79fccbe3548c and edit.py d45086293d9e (main's f858ee38e993 / e92a8bdfa39c +
+the sentence; bench/candidates/adr0181_apply_toolrule.py reproduces them); /root/t36_batch.sh = /root/t35_batch.sh
+minus the 16p pair (NO-HARM measured on these exact tool files in thrust 35; the HARM clause is not re-read), with the
+prompt deployed by the script itself at the start (cp /root/prompt.py.$PROMPTBASE, PROMPTBASE=adr0176, pycache cleared,
+set check, both fold probes) and the standing ADR-0180 prompt put back at the end (md5-logged); loop.py 07d461afa424;
+/root/t35_check.py as the swap check (three-state expect_absent on the shipped tools); both arms dumped.
+ARMS (N = 12 each, 48 runs, temperature 0, --no-pin; order a1 → swap → c1 → restore → a2 → swap → c2 → restore):
+  (a1) 17 on the 27B, ADR-0176 prompt, shipped tools → …-t36-base-27b-1.json     (c1) …, ADR-0181 tools → …-t36-adr0181-27b-1.json
+  (a2) 17 on the 27B, ADR-0176 prompt, shipped tools → …-t36-base-27b-2.json     (c2) …, ADR-0181 tools → …-t36-adr0181-27b-2.json
+PREDICTIONS: A in 11-17 of 24 (the 60% untreated rate); C ≥ A + 6; the sibling-read route in 15-35% of baseline runs
+and below half that rate in the candidate arm (ROUTE-SHIFT, from 5/24 → 1/24 under ADR-0180); readers miss ≥ 90% in
+both arms (from 20/21); non-readers miss ≤ 25% in both arms (from 17/123); turns and elapsed equal within noise; no guide
+reads by tool; 0 post-edits.
+READING RULE (guard-6776; enumerated over every (A, C) pair 0..24 — 625/625 covered, no overlap): MISS if C ≤ A + 2 —
+the tool line retired unmerged; the next lever is fallback D (the project-context block delivered at the head of the
+first user turn, byte-identical folds, removed from the system prompt's context tier), and after D the cell-17
+residual is declared model-bound at this fold for prompt-and-schema levers on the 27B and the campaign returns to the
+regression map. SHIPS if C ≥ A + 3, C ≥ 18 and the one-sided Fisher p of C against A (24 vs 24) is ≤ 0.05 — the least C
+that ships: A=8→C≥18, A=9→C≥18, A=10→C≥18, A=11→C≥18, A=12→C≥19, A=13→C≥20, A=14→C≥21, A=15→C≥21, A=16→C≥22, A=17→C≥23, A=18→C≥23, A=19→C≥24, A=20→none, A=21→none, A=22→none, A=23→none, A=24→none — ADR-0181 merged (the two tool files, tests/test_write_tools_rule_line.py, the ADR entry; the
+35B measured under it next). MARGINAL otherwise (C ≥ A + 3 short of the SHIPS line) — not merged; a second interleaved
+24 vs 24 decides on the pooled 48 vs 48 under a rule with NO absolute floor: MISS if C ≤ A + 4; SHIPS if C ≥ A + 5 and
+one-sided p ≤ 0.02 (the least pooled C that ships: A=16→C≥27, A=20→C≥32, A=24→C≥35, A=28→C≥39, A=32→C≥42, A=36→C≥45, A=40→C≥47, A=44→none); MARGINAL-2 otherwise → not merged, on to D
+(enumerated 2,401/2,401). REACHABILITY (guard-6786): before the second sample is launched its rule is enumerated
+over the second sample's own (A2, C2) outcomes given the first sample's actual counts; if no pair can ship, the second
+sample is not run and the reading is MARGINAL-2 by construction, recorded as such.
+MECHANISM READINGS (secondary, from the dumps; never overriding the count rule): CONVERTS if the candidate's
+sibling-readers miss in ≤ 1/2 with at least 4 such runs; ROUTE-SHIFT if the candidate's sibling-read rate falls below
+half the baseline's; NON-READER EFFECT if the candidate's non-reader miss rate is below half the baseline's with ≥ 15
+non-reader runs in each arm; INERT otherwise. No HARM clause (read in thrust 35 on these tool files: NO-HARM).
