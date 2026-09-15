@@ -42,6 +42,7 @@ from zakcode.providers.base import (
     Provider,
     ProviderError,
     ProviderStreamEvent,
+    QuotaExhausted,
     RateLimited,
     RequestFailed,
     StreamDone,
@@ -53,6 +54,7 @@ from zakcode.providers.base import (
     ToolCall,
     UnknownContextWindow,
     WindowResolution,
+    quota_exhaustion_marker,
 )
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
@@ -934,6 +936,29 @@ class LiteLLMProvider(Provider):
                 "extra. Install with: uv tool install 'zakcode[google]' "
                 "(or: uv add 'zakcode[google]' / pip install 'zakcode[google]'), then retry."
             )
+        if quota_exhaustion_marker(message) is not None:
+            # A PERMANENT quota/credit refusal — checked BEFORE every type branch
+            # below, and deliberately in ONE place rather than inside the 429 arm.
+            #
+            # WHY BEFORE THE TYPE DISPATCH. litellm maps HTTP 429 on the status code
+            # alone (measured: eight 429 branches, none reads the body's ``code``),
+            # so a permanent "no credits" refusal and a transient throttle arrive as
+            # the SAME RateLimitError. The type cannot carry the distinction, so no
+            # ordering of type checks can recover it — only the provider's text can.
+            #
+            # WHY ONE CHECK RATHER THAN ONE PER BRANCH. The defect is a wrong VALUE
+            # reaching the loop (a retryable object for a non-retryable condition),
+            # and TWO returns below emit a bare RateLimited: the 429 arm and the
+            # transient-5xx arm. A fix scoped to the measured route would leave the
+            # other live and silent. Checking once, where ``message`` is first known,
+            # covers every return below by construction.
+            #
+            # WHY ``message`` AND NOT ``str(exc)``. ``message`` is the post-redaction
+            # text that actually propagates to the operator. Classifying on the same
+            # string the reader will see keeps the verdict and its evidence
+            # identical — matching raw text could assert "permanent" about a message
+            # that no longer contains the proof.
+            return QuotaExhausted(message)
         if cls._is_a(exc, _LiteLLMAuthError, "AuthenticationError") or cls._is_a(
             exc, _LiteLLMPermissionError, "PermissionDeniedError"
         ):

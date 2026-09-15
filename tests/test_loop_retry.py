@@ -26,6 +26,7 @@ from zakcode.providers.base import (
     LLMResult,
     Provider,
     ProviderStreamEvent,
+    QuotaExhausted,
     RateLimited,
     StreamDone,
     StreamTextDelta,
@@ -676,3 +677,72 @@ def test_buffered_rejection_then_rate_limit_resets_temperature(
     assert result.stop_reason == "completed"
     assert provider.calls == 3
     assert provider.temps == [None, 0.5, None]
+
+
+# ── g-373-80: a PERMANENT quota refusal must not spend the backoff budget ─────
+#
+# Measured on a live dev vessel 2026-09-14: an ``insufficient_quota`` refusal was
+# classified as a transient 429, so every turn retried an un-retryable condition
+# across the full 900s horizon — fifteen minutes of billed compute for a
+# guaranteed-zero outcome, with the provider's real message surfacing only when
+# the budget expired. These three tests are the before/after pair at the real
+# call site: ``fast_sleep`` records every backoff the loop actually schedules, so
+# "ends without consuming the budget" is measured rather than asserted.
+
+QUOTA_MSG = (
+    "RateLimitError: OpenAIException - You exceeded your current quota, please "
+    'check your plan and billing details. {"code": "insufficient_quota"}'
+)
+
+
+def test_quota_exhaustion_ends_the_turn_on_the_first_refusal(fast_sleep: list[float]) -> None:
+    """Buffered path: first refusal ends the turn, and the operator sees why."""
+    provider = FlakyProvider([QuotaExhausted(QUOTA_MSG)] * 10)
+    loop = _make_loop(provider)
+    done = asyncio.run(_collect(loop, "hi"))[-1]
+
+    assert provider.calls == 1  # the FIRST refusal, not budget exhaustion
+    assert fast_sleep == []  # not one second of backoff was even scheduled
+    assert done.stop_reason == "provider_error"
+    # Outcome 3: the provider's own text reaches an operator-visible surface now,
+    # instead of 900s later.
+    assert "exceeded your current quota" in done.error
+
+
+def test_quota_exhaustion_ends_the_stream_turn_on_the_first_refusal(
+    fast_sleep: list[float],
+) -> None:
+    """Streaming path: the loop has a SECOND `except RateLimited` site, also escaped."""
+    provider = FlakyStreamProvider([QuotaExhausted(QUOTA_MSG)] * 10)
+    loop = _make_loop(provider)
+    done = asyncio.run(_collect(loop, "hi"))[-1]
+
+    assert provider.stream_calls == 1
+    assert fast_sleep == []
+    assert done.stop_reason == "provider_error"
+
+
+def test_the_same_text_as_a_rate_limit_still_burns_the_budget(
+    fast_sleep: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-fix control, and the reason the fix belongs in the CLASSIFIER.
+
+    The loop receives whatever object the provider raises, so constructing a
+    ``RateLimited`` with the identical quota text reproduces the old behaviour
+    exactly: it retries, and it sleeps. Nothing in the loop can tell the two
+    apart — only the class can, which is why ``_map_error`` is where g-373-80
+    landed rather than here.
+
+    The horizon is pinned to 0.0 ONLY so this test finishes: in production it is
+    ``_RATE_LIMIT_RETRY_HORIZON`` = 900s, and that full 900s is what the vessel
+    actually burned per turn.
+    """
+    monkeypatch.setattr("zakcode.agent.loop._RATE_LIMIT_RETRY_HORIZON", 0.0)
+    provider = FlakyProvider([RateLimited(QUOTA_MSG, retry_after=0.0)] * 10)
+    loop = _make_loop(provider)
+    done = asyncio.run(_collect(loop, "hi"))[-1]
+
+    assert provider.calls == 2  # retried an un-retryable condition
+    assert fast_sleep == [0.0]  # and scheduled backoff to do it
+    assert done.stop_reason == "provider_error"
+
