@@ -95,6 +95,17 @@ MAX_CONTEXT_FILE_CHARS = 8_192
 #: 8/12 when they open the fold and 12/12 behind the orientation the author wrote first.
 FOLD_HEAD_SHARE = 0.25
 
+#: The share of a folded guide's cap that one OVERSIZED mandate section may take when it is admitted
+#: ABRIDGED (ADR-0176): a section that names or emphasizes a rule, is larger than this share (so it
+#: could never fit whole) and carries no table folds by its own paragraphs and bullet items — the
+#: shortest items that carry a mandate word, in document order, under an explicit
+#: "[abridged: k of n items ...]" line. A smaller section that merely ran out of budget stays whole
+#: or out: the marked abridgement is not the silent cut ADR-0170 rejected, and the priority order
+#: already decided that section. Measured on a real 25K guide whose test-authoring rules live in a
+#: 7K sub-section with no sub-headings: dropped whole, a rule stated only there scored 3/12 on the
+#: 35B (no-guide control 1/12) at a flat six turns — no fetch.
+FOLD_ABRIDGE_SHARE = 0.25
+
 #: Largest combined size of all discovered context files after de-duplication (~32 KB).
 MAX_CONTEXT_TOTAL_CHARS = 32_768
 
@@ -534,6 +545,73 @@ def task_terms(task: str | None) -> frozenset[str]:
     return frozenset(_words(task) - _REQUEST_BOILERPLATE)
 
 
+#: A top-level list item: a bullet or a numbered item at column 0 (ADR-0176 abridgement units).
+_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+\S")
+
+
+def _units(body: str) -> list[str]:
+    """The paragraphs of a section body, each top-level list item its own unit; a fenced code block
+    stays inside the unit it opens in, and an indented line continues the item above it."""
+    units: list[list[str]] = []
+    cur: list[str] = []
+    in_fence = False
+    for line in body.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            cur.append(line)
+            continue
+        if in_fence:
+            cur.append(line)
+            continue
+        if not line.strip():
+            if cur:
+                units.append(cur)
+                cur = []
+            continue
+        if _ITEM_RE.match(line) and cur:
+            units.append(cur)
+            cur = [line]
+            continue
+        cur.append(line)
+    if cur:
+        units.append(cur)
+    return ["\n".join(u).strip("\n") for u in units]
+
+
+def _abridge(heading: str, block: str, room: int) -> str | None:
+    """The abridged form of an oversized mandate section (ADR-0176): its heading, the shortest of
+    its paragraphs and list items that carry a mandate word — rendered in document order — and a
+    marker line counting what was kept; ``None`` when the section carries a table (its rows name
+    rules without stating any: the index hazard) or when not one item fits in ``room``."""
+    body = block.split("\n", 1)[1] if "\n" in block else ""
+    if any(line.lstrip().startswith("|") for line in body.split("\n")):
+        return None
+    units = _units(body)
+    candidates = [
+        k for k, u in enumerate(units) if _MANDATE_RE.search(u) or _EMPHASIZED_MANDATE_RE.search(u)
+    ]
+    if not candidates:
+        return None
+
+    def marker(kept_n: int) -> str:
+        return (
+            f"[abridged: {kept_n} of {len(units)} items of this section kept within the fold; "
+            "read the file for the rest]"
+        )
+
+    chosen: set[int] = set()
+    used = len(heading) + 2 + len(marker(len(candidates))) + 1  # heading, its blank line, marker
+    for k in sorted(candidates, key=lambda k: (len(units[k]), k)):
+        cost = len(units[k]) + 2  # the item and the blank line that joins it
+        if used + cost <= room:
+            chosen.add(k)
+            used += cost
+    if not chosen:
+        return None
+    body_kept = "\n\n".join(units[k] for k in sorted(chosen))
+    return heading + "\n\n" + body_kept + "\n" + marker(len(chosen))
+
+
 def _fit_sections(
     name: str, content: str, limit: int, *, task_terms: frozenset[str] = frozenset()
 ) -> str | None:
@@ -572,6 +650,15 @@ def _fit_sections(
     author's opening scored 12/12 and the opening plus the shared rules 11/12: the conventions are
     obeyed when the fold first says what the project is. The head is what the author put first,
     bounded by a quarter of the cap; a section the task is about still outranks it.
+    The abridgement (ADR-0176): a section that names or emphasizes a mandate, is larger than
+    :data:`FOLD_ABRIDGE_SHARE` of the limit and carries no table is admitted ABRIDGED when it does
+    not fit whole — its heading, the shortest of its paragraphs and list items that carry a mandate
+    word (in document order), and a marker line counting what was kept, all within that share. A
+    real 25K guide keeps its test-authoring rules in a 7K sub-section with no sub-headings; the
+    whole-or-nothing fold dropped it first, and a rule stated only there scored 3/12 on the 35B
+    (the no-guide control 1/12) at a flat six turns — no fetch. A table-bearing section is left
+    whole or out (rb-10979: an index whose rows name rules is not a rule), and so is a section
+    smaller than the share that merely ran out of budget.
     """
     total_len = len(content)
     lines = content.split("\n")
@@ -648,29 +735,49 @@ def _fit_sections(
         # about the task first; then the opening; then the mandate tiers; document order last
         return (0 if about[i] else 1, -1 if i in head else mandate_tier(i))
 
-    def note_for(kept_n: int, names: list[str]) -> str:
+    abridged: dict[int, str] = {}  # section index -> its abridged text (ADR-0176)
+
+    def note_for(kept_n: int, names: list[str], abridged_n: int = 0) -> str:
         listed = "; ".join(names[:12]) + (f"; +{len(names) - 12} more" if len(names) > 12 else "")
+        kept_clause = f"{kept_n} of {n} sections kept" + (
+            f" ({abridged_n} abridged)" if abridged_n else ""
+        )
         return (
-            f"\n[... {name}: {total_len} characters, {kept_n} of {n} sections kept within the "
+            f"\n[... {name}: {total_len} characters, {kept_clause} within the "
             f"{limit}-character fold ({kept_first}); omitted: {listed}; read the file for the "
             f"omitted sections]"
         )
 
-    def note(kept_n: int, omitted: list[int]) -> str:
-        return note_for(kept_n, [label(blocks[i][0]) for i in omitted])
+    def note(kept_n: int, omitted: list[int], abridged_n: int = 0) -> str:
+        return note_for(kept_n, [label(blocks[i][0]) for i in omitted], abridged_n)
 
     def render(kept: list[int]) -> str:
         omitted = [i for i in range(n) if i not in kept]
-        return "\n\n".join(blocks[i][1] for i in sorted(kept)) + note(len(kept), omitted)
+        abridged_n = sum(1 for i in kept if i in abridged)
+        texts = [abridged.get(i, blocks[i][1]) for i in sorted(kept)]
+        return "\n\n".join(texts) + note(len(kept), omitted, abridged_n)
 
     order = sorted(range(n), key=lambda i: (priority(i), i))
     budget = limit - len(note(0, list(range(n))))  # a note naming every section, as an estimate
+    share = int(limit * FOLD_ABRIDGE_SHARE)
     kept: list[int] = []
     for i in order:
         cost = len(blocks[i][1]) + 2  # its own text plus the blank line that joins it
         if cost <= budget:
             kept.append(i)
             budget -= cost
+            continue
+        # An oversized mandate section — larger than its share, so it could never fit whole — is
+        # admitted abridged at its own priority (ADR-0176); a smaller one that ran out of budget
+        # stays out, and so does a plain one.
+        heading = blocks[i][0]
+        if heading is None or len(blocks[i][1]) <= share or not (about[i] or mandate_tier(i) <= 1):
+            continue
+        text = _abridge(heading, blocks[i][1], min(share, budget - 2))
+        if text is not None:
+            abridged[i] = text
+            kept.append(i)
+            budget -= len(text) + 2
     # The note lists the OMITTED headings, which the estimate above only approximates (a real
     # guide whose late headings are the long ones overran the cap by 35 chars): check the fold
     # against the note it actually emits, shedding the lowest-priority section until it fits.
@@ -867,6 +974,7 @@ __all__ = [
     "CONVENTION_FILENAMES",
     "DYNAMIC_BOUNDARY",
     "FOLD_HEAD_SHARE",
+    "FOLD_ABRIDGE_SHARE",
     "MAX_CONTEXT_FILE_CHARS",
     "MAX_CONTEXT_TOTAL_CHARS",
     "README_FILENAME",
