@@ -1250,3 +1250,41 @@ harm, baseline moved" beside its count reading (both stand in the record; the re
 sentence that applies and the line of the file that satisfies it, or fix the file; a model that must produce the
 satisfying line for "assert before/after deltas" meets its `== 1` on the page. Same arms as thrust 28 (17-27B, 17-35B,
 16p-27B) beside (a); HARM at three below 12/12 on the controls (guard-6769).
+
+THRUST 30 — THE EVIDENCE-DEMANDING GUIDE CHECK (ADR-0178) BESIDE A CONCURRENT NO-RAIL BASELINE — PRE-REGISTERED
+2026-09-15 16:40 UTC, not yet launched (g-353-116)
+══════════════════════════════════════════════════════════════════
+WHY: thrust 29 read WORDING — under ADR-0177's wording every miss was an absolute the check CONFIRMED (8/8), FIXED
+1/24, REWROTE 0/24 — and re-read thrust 28's control as HISTORICAL (the treated 35B against 23/24 from earlier arms, no
+concurrent untreated arm). Two questions, one batch: has the 35B's cell-17 baseline moved, and does a check that
+demands evidence convert the confirmed absolutes?
+BUILD: ADR-0178 — the same rail (trigger, once per turn, both loop twins, trace kind guide_check, last_guides) with
+wording that demands evidence: "… quote each guide sentence that applies to it, and under each quote, the line of the
+file that satisfies it. If a rule has no line in the file that satisfies it, fix the file with edit_file first, then
+quote the new line. When every applicable rule has its quoted line, finish." (the opening sentence is unchanged, so
+the thrust-29 census finds the rail). main loop.py bf41170ec3ab, prompt.py 821c478e7083 (ADR-0177's bookkeeping with
+a comment change — folds byte-identical by construction); the rail's hunks applied to the bench tree's own loop.py
+07d461afa424 → bench loop.py d7099daea8dc, every block diffed verbatim against main's, imported in the bench tree
+(rb-11064). Six tests; full suite 3,953 passed, 9 skipped.
+ARMS (N = 12 each, temperature 0, --no-pin, sequential on zakpod1, one batch; cell-17 verify v2; private_sources on
+the box so the runner redacts at write time):
+  (a) 17 on the 35B, NO rail (ADR-0176 pair) — the concurrent baseline     → …-17-…-deltaassert-t30-base-35b.json
+  (b) 17 on the 27B, NO rail (ADR-0176 pair)                                → …-17-…-deltaassert-t30-base-27b.json
+  then the ADR-0178 pair swapped in (pair check, an import check asserting the evidence wording, fold probes
+  17 = d1732a3e1ff3 and 16p = 0d431997ad50):
+  (c) 17 on the 27B with the evidence check, dumped                          → …-17-…-deltaassert-t30-adr0178-27b-dumped.json
+  (d) 17 on the 35B with the evidence check, dumped                          → …-17-…-deltaassert-t30-adr0178-35b-dumped.json
+  (e) 16p on the 27B with the evidence check (regression control)           → …-16p-…-aspirationkeys-t30-adr0178-27b.json
+  The ADR-0176 pair is restored at the end regardless; main keeps ADR-0178 only under SHIPS. The rail must fire 12/12
+  on (c), (d) and (e); the thrust-29 census classifies (c) and (d) (NONE-NEEDED / CONFIRMED / FIXED / REWROTE /
+  OTHER-EDIT / UNKNOWN); dumps never leave the box.
+PREDICTIONS: (a) 11/12 (the historical rate) — if (a) ≤ 10/12, thrust 28 is re-read as "no harm, baseline moved"
+beside its count reading; (b) 8/12 (the 27B's 16/24 rate); (c) ≥ 10/12 with FIXED ≥ 2 of its pre-check absolutes and
+CONFIRMED ≤ 1; (d) ≥ (a) − 1 with REWROTE 0; (e) ≥ 11/12; turns +1 on passes, +2-3 on fixes.
+READING RULE: SHIPS if (c) ≥ 10 and (d) ≥ (a) − 1 and (e) ≥ 11 — ADR-0178 stays on main (this PR) and the ADR gains
+the numbers. HARM if (d) ≤ (a) − 3 or (e) ≤ 9 (three below, guard-6769) — reverted from main before anything else.
+MISS if (c) ≤ 8 with the controls holding — the evidence form does not convert the confirmed absolutes: the rail is
+retired as a lever for this residual (reverted from main) and fallback B (the binding-framing line at the head of the
+fold) is pre-registered next. MARGINAL if (c) = 9 with the controls holding — kept on main, reported as process, a
+second sample decides. The census's FIXED / CONFIRMED counts on (c) and (d) are reported as the check's yield whatever
+the reading.

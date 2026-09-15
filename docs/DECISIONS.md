@@ -9840,3 +9840,35 @@ the model rewrite correct work") is falsified, and the check as worded is close 
 check that demands evidence rather than a verdict (quote the applicable guide sentence and the line that satisfies it,
 or fix the file), measured beside a CONCURRENT no-rail baseline on both models — thrust 28's control was read against
 a historical baseline.
+
+## ADR-0178: the guide check demands evidence — each applicable guide sentence quoted with the line that satisfies it — instead of a verdict (supersedes ADR-0177's wording)
+
+**Context.** ADR-0177's rail asked the model to "name the guide rules that apply … check the file against each
+one … if every rule is met, say so". Thrust 28 (2026-09-15) read HARM by its count rule and the rail was reverted
+(#506); thrust 29's dumped diagnostic (#508) then showed the mechanism: every miss on both models was an absolute
+assertion written before the check and CONFIRMED by it (8 of 8, three after re-reading the file or the guide), one
+absolute fixed, no correct file rewritten. Asked for a verdict on its own file, a model that already wrote its
+default returns the verdict it already holds. The premise stands (thrust 27: the rule in hand, the default at the
+keyboard); the wording is the defect.
+
+**Decision.** The same rail — the same structural trigger (an unattended turn ending on a no-tool-call completion
+after a successful workspace write with a guide folded), once per turn, both loop twins, trace kind `guide_check`,
+`SystemPromptBuilder.last_guides` — with wording that demands evidence: "Before you finish: the project guide in
+your context states rules and conventions. For each file you changed this turn, quote each guide sentence that
+applies to it, and under each quote, the line of the file that satisfies it. If a rule has no line in the file that
+satisfies it, fix the file with edit_file first, then quote the new line. When every applicable rule has its quoted
+line, finish." A model that must put "assert on before/after deltas" beside `assert Metrics.hits == 1` on the same
+page has the mismatch in front of it; a verdict lets it stay in the head. The opening sentence is unchanged, so the
+bench census that finds the rail in a request stream (thrust 29) still finds it.
+
+**Alternatives rejected.** A harness-side form check that names the missed rule: not general — the harness cannot
+know which guide sentence governs which file. Firing only when a check can name an unmet rule (thrust 29's SCOPE
+branch): rejected by the reading — REWROTE was 0/24; scope was not the failure. Retiring the rail for fallback B (a
+binding line at the head of the fold): pre-registered as thrust 30's MISS branch, not chosen ahead of the
+measurement.
+
+**Consequences.** Pre-registered as thrust 30 beside a CONCURRENT no-rail baseline on both models (thrust 28's
+control was historical): cell 17 on the 27B and on the 35B with the check (dumped, so the census counts FIXED
+against the pre-check absolutes), 16p on the 27B as the regression control, N = 12, temperature 0; HARM at three
+below the concurrent baseline (guard-6769). Ships on main only under SHIPS; the same six tests carry it. Cost: one
+extra completion per editing turn, plus an edit where a rule has no satisfying line.
