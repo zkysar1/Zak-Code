@@ -9749,3 +9749,20 @@ of the fold; the head tier already takes a quarter).
 rule-OUT (3/12, 2/12) and control (1/12). Residuals, stated: an oversized mandate section whose rules are long
 paragraphs keeps its shortest mandate items, which need not be its most important; an item without a mandate word
 is never kept; a table-bearing rules section still folds whole or not at all; the share is fixed at a quarter.
+
+**Addendum (thrust 26 stage 2, 2026-09-15).** Measured on cell 17, rule IN under this fold, N = 12, temperature 0:
+11/12 on the 35B (rule OUT 3/12, p = 0.0028) and 7/12 on the 27B (rule OUT 3/12, p = 0.21; the no-guide control
+1/12, p = 0.027), pooled 18/24 vs 6/24 (p = 0.0012). Those are the corrected scores: the cell's pre-registered
+verify required the delta assertion to name the counter literally and read the canonical `after - before == 1`
+form as "no assertion" — seven false negatives across the five arms, six on rule-IN runs; it recorded 6/12 and
+6/12. The rewritten verify (a static check: the counter's captured names, then any assert relating two references
+and none comparing one to an integer literal) carries eleven controls, one per compliant and non-compliant form,
+and every arm was re-scored under it before any reading. Under the pre-registration the 35B HIT (≥ 11) and the
+27B is a BUILD-MISS (≤ 8): the abridged rule is read from the fold by the 35B at 6 turns with no fetch, and by
+the 27B about half the time — four of its five misses reset the counter in a fixture and then asserted the
+absolute the rule forbids. The fold change stands (the rule is in the fold on both models; every other fold
+byte-identical; the census 0/5), and the claim that abridgement makes the smaller model follow an oversized
+section's rule is not made. Thrust 27 decomposes the 27B miss as the pre-registration prescribed: the same rule as
+its own small whole section of the same guide (nothing abridged, no marker) on the 27B against a re-run of the
+abridged arm, with the whole-section 35B arm as the positive control. The fleet census is now a committed tool
+(`bench/guide_census.py`) to run against every fold change before pod time.
