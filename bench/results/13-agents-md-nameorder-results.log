@@ -1119,3 +1119,9 @@ otherwise. HARM if (2) or (3) drops two or more below 12/12 — the check makes 
 rail is reverted from main before anything else and its wording (or its unattended scope) is redesigned before
 any re-measure. MARGINAL ((1) = 9 with the controls holding) — kept, reported as process; pooled rates over a
 second sample carry the reading.
+AMENDMENT (2026-09-15 15:30 UTC, before launch): the bench tree's loop.py is 07d461afa424, NOT main's pre-ADR-0177
+c2315d200565 — the tree predates later loop changes (among them the PreToolUse additionalContext fold), so
+deploying main's whole file f6ad6ea6dce7 would have moved more than the rail. Deployed instead: the rail's
+hunks alone (the constant, the two guide_nudged resets, the two rail blocks — verbatim main's, diffed block by
+block) applied to the bench copy: bench loop.py 3cc5d32a220e (imports in the bench tree; backup 07d461afa424
+kept). One variable moves: the rail. Everything else in the prereg stands.
