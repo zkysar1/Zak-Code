@@ -1337,3 +1337,39 @@ your usual approach disagree, the rule wins — follow it, and name the rule you
 guidance". prompt.py only; loop.py untouched; the per-file folds byte-identical (the line sits outside them, so the
 fold probes hold at 17 = d1732a3e1ff3 and 16p = 0d431997ad50). Measured beside concurrent no-B baselines on both
 models (guard-6772): (a') 17-27B and (b') 17-35B without; (c') 17-27B, (d') 17-35B, (e') 16p-27B with.
+
+THRUST 31 — FALLBACK B: A BINDING FRAMING LINE AT THE HEAD OF THE PROJECT-CONTEXT BLOCK (ADR-0179), BESIDE CONCURRENT
+NO-FRAMING BASELINES — PRE-REGISTERED 2026-09-15 17:58 UTC, not yet launched (g-353-117)
+══════════════════════════════════════════════════════════════════
+WHY: thrusts 28-30 retired the post-write check (two wordings, four treated arms, 48 runs, one conversion — the model
+re-reads the rule and keeps its default). Both models sat at 10/12 untreated on cell 17 in the last batch; the residual
+is two absolutes in twelve written at the moment the test is authored with the rule in the fold. Fallback B, kept from
+ADR-0177's alternatives, acts at that moment: the block that carries the folded guides no longer says "treat as project
+guidance" but that its rules BIND.
+BUILD: ADR-0179 — prompt.py only, in the renderer of the project-context block (outside the per-file folds):
+"Project context (AGENTS.md / CLAUDE.md / ZAK.md guides, CONTRIBUTING.md conventions, and the workspace README, outermost
+first). The guides and conventions are BINDING for every file you write in this project: where a rule below and your
+usual approach disagree, the rule wins — follow it, and name the rule you followed. The README is orientation." No rail,
+no extra completion; loop.py untouched. main prompt.py f637fe66c78d (identical to the candidate — the same change on the same base); the candidate built from the pre-rail prompt
+b57bdb96285b for the bench tree: /root/prompt.py.adr0179 f637fe66c78d (loop stays 07d461afa424). Verified before
+launch: per-file folds byte-identical (a synthetic guide + README: identical folds, identical bodies after the intro),
+the bench import, and the fold probes with the candidate in place — 17 = d1732a3e1ff3 and 16p = 0d431997ad50, rule IN.
+Three tests (the block opens with the binding line; no context files → no block; a README alone is framed as
+orientation).
+ARMS (N = 12 each, temperature 0, --no-pin, sequential on zakpod1, one batch; cell-17 verify v2; private_sources on the
+box; guard-6772 — the baselines run first, in this batch):
+  (a') 17 on the 27B, no framing (ADR-0176 pair)                  → …-17-…-deltaassert-t31-base-27b.json
+  (b') 17 on the 35B, no framing (ADR-0176 pair)                  → …-17-…-deltaassert-t31-base-35b.json
+  then prompt.py.adr0179 swapped in (pair check, import check asserting the framing, fold probes):
+  (c') 17 on the 27B with the framing                               → …-17-…-deltaassert-t31-adr0179-27b.json
+  (d') 17 on the 35B with the framing                               → …-17-…-deltaassert-t31-adr0179-35b.json
+  (e') 16p on the 27B with the framing (regression control)         → …-16p-…-aspirationkeys-t31-adr0179-27b.json
+  The ADR-0176 prompt is restored at the end regardless; main keeps ADR-0179 only under SHIPS (or MARGINAL, pending).
+PREDICTIONS: (a') and (b') ~10/12 (the last batch's rates); (c') ≥ 11/12 and ≥ (a') + 1; (d') ≥ (b'); (e') ≥ 11/12;
+turns and elapsed unchanged within noise (no rail, no extra completion).
+READING RULE: SHIPS if (c') ≥ 11 and (d') ≥ (b') − 1 and (e') ≥ 11 — ADR-0179 stays on main and the ADR gains the
+numbers. HARM if (d') ≤ (b') − 3 or (e') ≤ 9 (guard-6769) — reverted from main before anything else. MISS if (c') ≤ (a')
+with the controls holding — the framing line is retired (reverted), the cell-17 residual is recorded as bound to the
+model at this fold, and the next lever comes from a pre-write census of the misses (does the model read the guide's
+rule section before it writes the test?). MARGINAL if (c') = (a') + 1 but below 11, controls holding — kept on main,
+reported as process, a second sample decides.

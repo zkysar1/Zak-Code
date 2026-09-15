@@ -9883,3 +9883,33 @@ runs, one conversion: a post-write check, as a verdict or as quoted evidence, do
 the model re-reads the rule and finishes with its default in place. Thrust 28's HARM is re-read by the concurrent
 baseline as no harm (the untreated 35B reads 10/12 today; the rail arms read 9/12). Next: ADR-0179, fallback B — a
 binding framing line at the head of the project-context block, acting at the moment of writing.
+
+## ADR-0179: the project-context block opens with a binding framing line — the folded guides' rules bind every file written in the project, and a rule beats the model's usual approach (fallback B of ADR-0177)
+
+**Context.** The Environment-Server guide's delta-assert rule sits in the fold (ADR-0173..0176) and both models still
+write an absolute assertion in about two runs of twelve with the rule in their context (thrust 30's concurrent
+baselines: 35B 10/12, 27B 10/12). Post-write checks do not reach that residual: as a verdict (ADR-0177) or as quoted
+evidence (ADR-0178), 48 treated runs converted one absolute — the model re-reads the rule and keeps its default
+(thrusts 28-30, 2026-09-15). The dumps place the miss at the moment the test is authored, not after; what the model is
+told about the folded guides at that moment is the one thing not yet varied — the block introduced them as "project
+guidance".
+
+**Decision.** The renderer of the project-context block (`SystemPromptBuilder._render_context`) opens the block with:
+"Project context (AGENTS.md / CLAUDE.md / ZAK.md guides, CONTRIBUTING.md conventions, and the workspace README,
+outermost first). The guides and conventions are BINDING for every file you write in this project: where a rule below
+and your usual approach disagree, the rule wins — follow it, and name the rule you followed. The README is
+orientation." Nothing else moves: the per-file folds are byte-identical (the line sits outside them, so every fold
+probe and the guide census hold), loop.py is untouched, there is no rail and no extra completion — the cost is one
+sentence of prompt. Fixed text, so the prompt stays deterministic for a given workspace.
+
+**Alternatives rejected.** Another post-write check: retired by measurement (the ADR-0177 and ADR-0178 addenda). A
+per-file binding line inside each fold, before the guide's own text: it would change every fold's bytes and re-open the
+ADR-0170..0176 census; the block-level line binds the same files at the same moment without touching a fold. Rendering
+the mandate sections last, nearest the task: the dumped runs show the rule read and narrated — position is not the
+failure. A harness-side form check: not general.
+
+**Consequences.** Pre-registered as thrust 31 beside concurrent no-framing baselines on both models (guard-6772): cell
+17 on the 27B and the 35B with and without the line, 16p on the 27B as the regression control, N = 12, temperature 0;
+SHIPS / HARM / MISS / MARGINAL in the results log; reverted under HARM or MISS. Residuals: a guide with no rule that
+applies gains nothing and costs one sentence; a model that binds to a WRONG reading of a rule binds harder — the
+regression control watches for it; attended sessions carry the same line, it is prompt, not a rail.
