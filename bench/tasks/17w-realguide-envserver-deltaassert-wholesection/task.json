@@ -1,0 +1,8 @@
+{
+  "id": "17w-realguide-envserver-deltaassert-wholesection",
+  "title": "Add a test for Metrics.record_hit()",
+  "max_iterations": 40,
+  "max_cost_usd": 1.0,
+  "verify_timeout_s": 120,
+  "prompt": "Add a test `test_record_hit_increments` to `tests/test_metrics.py` covering `Metrics.record_hit()` in `metrics/counters.py`, which increments the shared counter `Metrics.hits`."
+}
