@@ -1439,3 +1439,70 @@ below 27) — kept on main as a line with no measured cost and an unproven benef
 campaign moves to the next lever with the pooled estimate recorded. No HARM clause: the batch carries no high-rate
 control (the 35B and 16p controls held in thrust 31 — (d') 9/12 against (b') 10/12, (e') 12/12); the treated blocks' turns
 and elapsed are reported beside the untreated ones, not gated.
+
+THRUST 32 RESULT (2026-09-15 19:25 UTC, g-353-119): MISS by the pre-registered pooled rule — the ADR-0179 framing line is RETIRED
+(reverted from main in the PR that records this); the pre-write census names the residual's ROUTE, and thrust 33 acts
+on it. One batch 18:46 → 19:18 UTC on zc-01 (/root/t32-batch.log; /root/t32_batch.sh 5aeca9faf7a5), four interleaved
+blocks of twelve on the 27B, temperature 0, --no-pin, every swap and restore pair-checked and fold-probed (17 =
+d1732a3e1ff3, 16p = 0d431997ad50 throughout), every record redacted at write time (12/12 per block), both arms dumped
+on the box:
+  (a''1) no framing   9/12   turns 6.2   39 s        (c''1) framing   9/12   turns 6.5   41 s
+  (a''2) no framing   7/12   turns 6.3   40 s        (c''2) framing   7/12   turns 6.4   40 s
+POOLED with thrust 31 (36 vs 36): A (untreated) = 22/36, C (framed) = 25/36, C − A = 3 → MISS (C ≤ A + 3); one-sided
+Fisher p = 0.31. PREDICTIONS: A in 18-24 met (22); C ≥ A + 6 MISSED (+3); turns and elapsed equal across blocks met
+(6.2-6.5 turns, 39-41 s); no run reads the guide by tool met (0/48). Every miss in every block the bare absolute
+`assert Metrics.hits == 1`.
+THE PRE-WRITE CENSUS (48 dumped runs; /root/t32_prewrite_census.py — counts, tool names and basenames only; the dumps
+stay on zc-01): every run reads app/counters.py, then the stub tests/test_metrics.py, then edits the stub; the first
+write carries the verdict — 32/32 passes write the delta form at the first write, 16/16 misses write the absolute at
+the first write, 0/48 edit the test again, 0/48 read the guide. The one branch in the route: 12 of 48 runs ALSO read
+the sibling tests/test_counters.py — the project's existing absolute-style tests — before writing, and 11 of those 12
+missed; of the 36 that did not, 5 missed (one-sided Fisher p = 2e-6). Both arms alike: untreated 4/4 vs 4/20, framed
+7/8 vs 1/16. The assistant text before the write names delta / before / after in 30/32 passes and 6/16 misses.
+READING: the JUDGMENT residual has a mechanism — not "rule in hand, default at the keyboard" in the abstract but a
+freshly read PRECEDENT: the model reads a sibling file that carries the forbidden pattern and copies it, with the rule
+in its context; a line that says a rule beats the model's "usual approach" does not name that conflict and did not
+move it (the framed arm read the sibling MORE often, 8/24 vs 4/24, and missed after it just as often). The lever the
+census names is a line that names the conflict — the rule beats the pattern of files already in the project, which
+may predate it — measured next as thrust 33 (ADR-0180). The fold is not the lever (0/48 guide reads; the rule is in
+the fold every run); a post-write check is not (retired, thrusts 28-30); the write is the first and only write.
+DISPOSITION: ADR-0179 reverted in this PR (prompt.py back to the ADR-0176 text b57bdb96285b, then ADR-0180 applied on
+top — 302a7becd55b; tests/test_context_binding.py rewritten for ADR-0180, four tests; full suite 3,951 passed); the
+ADR-0179 entry gains addendum 2; the four records committed (secret and guide-phrase scans 0 hits). rb-11066 amended:
+the class does not yield to more judgment OR to a framing that names the wrong competitor — the competitor is the last
+concrete example the model read.
+
+THRUST 33 — ADR-0180: THE BINDING LINE NAMES THE PRECEDENT CONFLICT (a rule in the guide beats the pattern of files
+already in the project; existing files may predate it) vs NO FRAMING, INTERLEAVED, DUMPED — PRE-REGISTERED 2026-09-15 19:25 UTC,
+not yet launched (g-353-120)
+══════════════════════════════════════════════════════════════════
+WHY: thrust 32's census placed 11 of 16 misses after a read of the sibling test file carrying the forbidden pattern
+(11/12 such runs missed vs 5/36). ADR-0179's line named the model's "usual approach" as the rule's competitor; the
+observed competitor is the project's own precedent. ADR-0180 names it — one sentence at the head of the
+project-context block, outside every fold (folds byte-identical; census 0/5 unchanged), no rail, loop.py untouched.
+BUILD: main prompt.py 302a7becd55b = the ADR-0176 text (b57bdb96285b, ADR-0179 reverted) + the line: "The guides and
+conventions are BINDING for every file you write in this project: where a rule below and the pattern of files already
+in the project disagree, the rule wins — existing files may predate it, so do not copy them against it. Follow the
+rule, and name the rule you followed. The README is orientation." Four tests (the binding line; the precedent clause
+with the fold unchanged; no files → no block; README alone → orientation). Deployed to zc-01 as /root/prompt.py.adr0180
+(the same bytes as main), baseline /root/prompt.py.adr0176 (b57bdb96285b), loop.py 07d461afa424 throughout.
+ARMS (N = 12 per block, 48 runs, temperature 0, --no-pin; /root/t33_batch.sh with BASE=adr0176; pair check, import
+check asserting the precedent clause, both fold probes at every swap and restore; both arms dumped on the box):
+  (a1) 17 on the 27B, no framing  → …-t33-base-27b-1.json      (c1) 17 on the 27B, ADR-0180 → …-t33-adr0180-27b-1.json
+  (a2) 17 on the 27B, no framing  → …-t33-base-27b-2.json      (c2) 17 on the 27B, ADR-0180 → …-t33-adr0180-27b-2.json
+PREDICTIONS: A = (a1) + (a2) in 12-17 of 24 (the untreated rate 22/36 = 61%); C = (c1) + (c2) ≥ A + 6; turns and
+elapsed equal within noise; the sibling-read route persists in 15-35% of runs in BOTH arms; in the candidate arm the
+runs that read the sibling miss in no more than half (from 11/12), and the runs that do not read it miss ≤ 2 of 16.
+READING RULE (24 vs 24, one batch; enumerated over every (A, C) pair — 625/625 covered, no overlap; guard-6776):
+MISS if C ≤ A + 2 — ADR-0180 retired (reverted), the precedent line joins the framing family as measured-inert; the
+next lever is the moment-of-writing surface (a rule line in the write tools' content descriptions, fallback C), with
+the route census re-read for what the candidate arm's sibling-readers did. SHIPS if C ≥ A + 7 and C ≥ 18 (one-sided
+Fisher p ≈ 0.02-0.04 at that boundary) — ADR-0180 stays, the ADR gains the numbers, and the 35B's residual is measured
+under it next. MARGINAL otherwise (C − A in 3..6, or ≥ 7 with C below 18) — kept on main, a second interleaved sample
+of 24 vs 24 decides on the pooled 48 vs 48 under the same shape of rule (MISS if C ≤ A + 4, SHIPS if C ≥ A + 12 and
+C ≥ 36, MARGINAL-2 otherwise: kept as a no-cost line with an unproven benefit, the campaign moves on).
+MECHANISM READING (secondary, from the dumps; never overrides the count rule): CONVERTS if the candidate arm's
+sibling-readers miss in ≤ 1/2 with at least 4 such runs; ROUTE-SHIFT if the candidate's sibling-read rate falls below
+half the baseline's (the line stops the read rather than the copy); INERT otherwise. No HARM clause (no high-rate
+control in the batch; the folds are byte-identical and 16p on the 27B read 12/12 under ADR-0179's near-identical head)
+— the next map re-measure carries it.
