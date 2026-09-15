@@ -857,3 +857,40 @@ guide transfer to a second, and the census's four-in-five becomes the fleet's me
 FETCH-CUE if an OUT arm ≥ 8 (the model read the file on the note alone — rb-10984 falsified for this heading class).
 BUILD-MISS if an IN arm ≤ 8 with the rule in the fold (a fold-shape effect on this guide: decompose as thrust 23
 did). Miss or hit, reported as measured.
+
+THRUST 25 RESULT (2026-09-15 13:30 UTC) — FETCH-CUE with the IN arms HIT: control 0/12; rule OUT 8/12 (35B, 9.0 turns) and 4/12 (27B, 7.5); rule IN 12/12 on BOTH models (7.2 / 7.5 turns) — pooled IN 24/24 vs OUT 12/24 (p = 8e-05); the fetch route OBSERVED in nine dumped rule-out runs: every pass greps the workspace for the task word, lands on the rule body inside the on-disk guide and reads it (4/4); every miss never opens the guide (0/5)
+══════════════════════════════════════════════════════════════════
+SCORE vs the prereg. 16pn control ≤ 1 → 0/12, HOLD (8.0 turns, 49 s; eleven of twelve invent snake_case keys, one
+plain `task`/`target`). 16p rule-OUT ≤ 2 on both models → MISSED on both: 35B 8/12 at 9.0 turns (passes at 9-13,
+misses at 6-8; 65 s), 27B 4/12 at 7.5 (passes 7-13, mean 10.0; misses 6-7, mean 6.2; 54 s); OUT-35B vs control
+p = 0.0014, OUT-27B vs control p = 0.09, 35B vs 27B p = 0.22. 16p rule-IN ≥ 11 (35B) / ≥ 10 (27B) → HIT on both:
+35B 12/12 at 7.2 turns (6-9, spread 3; 51 s), 27B 12/12 at 7.5 (6-10, spread 4; 51 s). IN vs OUT: 35B 12 vs 8
+(p = 0.09), 27B 12 vs 4 (p = 0.0014), pooled 24/24 vs 12/24 (p = 7.8e-05). READING by the pre-registered rule:
+FETCH-CUE (an OUT arm ≥ 8 — the 35B's); GENERALIZES is not claimable (OUT was not ≤ 2); BUILD-MISS did not occur.
+The 27B's OUT arm (4/12) sits between the branches with the same structure — every 6-turn run misses, only ≥ 7-turn
+runs pass — at a lower search rate.
+THE ROUTE, OBSERVED (positive control, 13:16-13:28 UTC): nine further rule-OUT runs on the 35B with
+ZBENCH_DUMP_REQUESTS set (batches of 3 and 6; ADR-0174 deployed and probed 5b813418d29b:no before, ADR-0175
+restored and probed 0d431997ad50:yes after; JSONs -adr0174-35b-dumped / -dumped2; 4/9 pass, 0/3 then 4/6). The
+tool-call census (names and paths only; the dumps stay on the bench box): every run opens with the same thirteen
+project-file reads (app/*.py, the tests, docs/architecture.md, pyproject.toml). A MISS (5/5, all at 6 turns) then
+edits app/aspirations.py and runs a check — it never opens CLAUDE.md and never greps. A PASS (4/4, at 9-12 turns)
+inserts `grep <workspace> "aspiration"` (one run `"aspiration|task_key|target_key"`) whose hits include the rule
+body inside the on-disk guide, then reads CLAUDE.md twice (paged) before editing. The cue is NOT the fold's
+omission note — it names "Constraints", a word the task never uses — it is the model's own workspace grep for the
+task's vocabulary, a near-tie step taken in 12 of 21 rule-OUT runs on the 35B (8/12 + 4/9) and 4 of 12 on the 27B;
+the same grep in a rule-IN run finds the rule already in context. rb-10984 is amended: a rule whose BODY carries
+the task's distinctive word is reachable by that grep under any heading; the heading-name condition governs the
+note-driven fetch only. Contrast 15i (1/12): the model had a guessable default there and did not search.
+WHAT ADR-0175 BUYS on this guide: correctness on the runs that do not search (+4/12 on the 35B, +8/12 on the 27B —
+the smaller model searches less, so the fold matters more to it) and process on the runs that do (35B 9.0 → 7.2
+turns, 65 → 51 s, −22%; turn spread 7 → 3 on the 35B, 7 → 4 on the 27B). The floor on this cell is 6-7 turns
+(thirteen reads, then the edit), not cell 15's 4-5. ADR-0175 STANDS as measured: on the house style, a rules
+section outside the fold passes only when the model happens to grep, and the smaller model grepped a third of the
+time.
+HYGIENE. The bench JSON's `sources` field carries the first 4,096 chars of EVERY workspace file — the private
+guide included; runs[*].sources["CLAUDE.md"] is redacted in the seven committed 16p JSONs (`digests` keeps the
+sha256; guard-6761; the durable harness fix is g-353-107). Elapsed times read consistently within this window
+(misses 39-45 s, passes 64-91 s in the dumped batches); turns remain the primary measure. Bench tree left on
+ADR-0175 (954c394680e1 = main). Next lever: the oversized-section residual (Environment-Server's 7,987-char
+sub-section; Operator's "Testing Caveats"), and the fleet census as a standing regression for every fold change.
