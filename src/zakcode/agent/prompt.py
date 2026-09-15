@@ -443,14 +443,20 @@ class SystemPromptBuilder:
         )
 
     @staticmethod
+    #: Binding framing (ADR-0179, fallback B of ADR-0177): the folded guides open with a line that
+    #: says the rules below BIND every file written here and that a rule beats the model's usual
+    #: approach. Thrusts 28-30 (2026-09-15) showed a post-write check — as a verdict or as quoted
+    #: evidence — confirms the default it should catch; this line acts at the moment of writing.
     def _render_context(discovered: list[tuple[Path, str]]) -> str:
         if not discovered:
             return ""
         blocks = [f"## {path}\n{content}" for path, content in discovered]
         return (
             "Project context (AGENTS.md / CLAUDE.md / ZAK.md guides, CONTRIBUTING.md conventions, "
-            "and the workspace README, outermost first; treat as project guidance):\n\n"
-            + "\n\n".join(blocks)
+            "and the workspace README, outermost first). The guides and conventions are BINDING "
+            "for every file you write in this project: where a rule below and your usual approach "
+            "disagree, the rule wins — follow it, and name the rule you followed. The README is "
+            "orientation.\n\n" + "\n\n".join(blocks)
         )
 
 
