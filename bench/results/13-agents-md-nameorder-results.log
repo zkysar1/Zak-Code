@@ -1506,3 +1506,69 @@ sibling-readers miss in ≤ 1/2 with at least 4 such runs; ROUTE-SHIFT if the ca
 half the baseline's (the line stops the read rather than the copy); INERT otherwise. No HARM clause (no high-rate
 control in the batch; the folds are byte-identical and 16p on the 27B read 12/12 under ADR-0179's near-identical head)
 — the next map re-measure carries it.
+
+THRUST 33 RESULT (2026-09-15 20:03 UTC, g-353-120): MARGINAL by the pre-registered rule — ADR-0180 stays on main; a second sample decides
+══════════════════════════════════════════════════════════════════
+BATCH: /root/t33_batch.sh (BASE=adr0176) ran the (a1) arm on the baseline and then aborted at the first swap with a FATAL
+of its own making — the derived import-check line carried double quotes inside the double-quoted `python -c` string,
+so the shell truncated it (SyntaxError); the script's FATAL path restored the baseline. The remaining three arms ran
+from /root/t33_cont.sh — the same script from the swap onward with the check line fixed and exercised on the box before
+launch (rb-11079) — 19:35-20:00. The (a1) record is valid: same build, same baseline pair, same cell, pair check and
+both fold probes OK before it; pair check and fold probes OK at every swap and restore; the tree closed on the
+baseline pair (b57bdb96285b / 07d461afa424).
+  (a1) baseline   7/12   turns 6.3   40 s        (c1) ADR-0180    7/12   turns 6.4   42 s
+  (a2) baseline   5/12   turns 6.3   41 s        (c2) ADR-0180   11/12   turns 6.4   42 s
+A = 12/24, C = 18/24, C − A = 6 → MARGINAL (MISS needed C ≤ 14; SHIPS needed C ≥ 19 with C ≥ 18); one-sided Fisher
+p = 0.068 (two-sided 0.135). PREDICTIONS: A in 12-17 met (12); C ≥ A + 6 met at the boundary (+6); turns and elapsed
+equal met (6.3-6.4 turns, 40-42 s); the sibling-read route in 15-35% of runs in BOTH arms MISSED — 4/24 baseline and
+2/24 candidate, a third of thrust 32's 12/48 on the same cell and build; "candidate sibling-readers miss ≤ half" NOT
+READABLE (2 such runs, both missed); "candidate non-readers miss ≤ 2 of 16" MISSED narrowly (4 of 22). Every miss in
+every block the bare absolute `assert Metrics.hits == 1`; 0/48 guide reads by tool; 0/48 post-edits; the first write
+carries the verdict in 48/48 (census: 30/30 passes write the delta form first, 18/18 misses the absolute).
+MECHANISM READING: INERT by the pre-registered thresholds — too few candidate sibling-read runs to read CONVERTS
+(2, both missed) and the read rate did not fall below half the baseline's (2/24 vs 4/24). What moved is the
+NON-reader miss rate: 8/20 baseline vs 4/22 candidate (two-sided p = 0.18) — if the line has an effect it is on runs
+that never open the precedent, which neither CONVERTS nor ROUTE-SHIFT covers. Block variance is the other fact of
+this batch: (c2) 11/12 is the best 27B block on cell 17 in the campaign (prior best 10/12) and (c1) 7/12 is the
+untreated median; the two candidate blocks differ at two-sided p = 0.16, the two baseline blocks at 0.68; the
+baseline 12/24 sits inside the untreated history (22/36, p = 0.44). Interleaving carries no order effect the design
+can separate (both candidate blocks followed a baseline block).
+DISPOSITION (the pre-registered MARGINAL branch): ADR-0180 stays on main unchanged (prompt.py 302a7becd55b); the ADR
+gains an addendum; the four records committed (secret and guide-phrase scans 0 hits; 12 redacted / 0 raw on each).
+Fallback C (the write-tool rule line, ADR-0181 candidate) is BUILT and CONTROLLED — the two tool files pass format,
+lint and a positive/negative import check on cc-14 and the negative check on zc-01's baseline tree; two tests; a batch
+script with a same-batch 16p HARM pair; its reading rule enumerated (625/625 count pairs, 169/169 HARM pairs) — and
+HELD in the session scratch until the pooled reading names it. Thrust 34 is the second sample, pre-registered below.
+Method note: a redaction check must key on the runner's own marker (`<redacted: private fixture …`) — an ad-hoc check
+for an upper-case token read every run of a redacted record as raw; it failed in the safe direction (it would have
+blocked the commit) but for a false reason; replaced by a script keyed on the marker, with the thrust-32 record it
+had already passed as the positive control.
+
+THRUST 34 — THE SECOND SAMPLE OF THE ADR-0180 PAIR (precedent line vs none on cell 17, 27B), INTERLEAVED, DUMPED —
+PRE-REGISTERED 2026-09-15 20:03 UTC, not yet launched (g-353-121)
+══════════════════════════════════════════════════════════════════
+WHY: thrust 33 read MARGINAL (18/24 vs 12/24, one short of the SHIPS line); its pre-registration fixed the MARGINAL
+branch as a second interleaved 24 vs 24 read on the pooled 48 vs 48 under a stated rule. This block restates that rule,
+enumerates it, and adds the one secondary reading thrust 33 could not pre-register (the non-reader miss rate).
+BUILD: unchanged — main prompt.py 302a7becd55b on zc-01 as /root/prompt.py.adr0180; baseline /root/prompt.py.adr0176
+(b57bdb96285b); loop.py 07d461afa424 throughout; /root/t34_batch.sh is /root/t33_batch.sh with the log, result
+suffixes and dump dirs renamed (diffed on the box: those lines only; the swap's import check exercised on the box).
+ARMS (N = 12 per block, 48 runs, temperature 0, --no-pin; pair check, import check and both fold probes at every swap
+and restore; both arms dumped on the box; BASE=adr0176):
+  (a1) 17 on the 27B, no line → …-t34-base-27b-1.json          (c1) 17 on the 27B, ADR-0180 → …-t34-adr0180-27b-1.json
+  (a2) 17 on the 27B, no line → …-t34-base-27b-2.json          (c2) 17 on the 27B, ADR-0180 → …-t34-adr0180-27b-2.json
+PREDICTIONS: A' in 10-16 of 24; C' ≥ A' + 4; pooled C ≥ A + 10; turns and elapsed equal within noise; the sibling-read
+route in 5-25% of runs in both arms; the candidate arm's non-readers miss ≤ 4 of their runs; no guide reads by tool.
+READING RULE (pooled 48 vs 48 with thrust 33, as fixed in the thrust-33 pre-registration of 19:25; enumerated over
+every (A, C) pair 0..48 — 2,401/2,401 covered, no overlap; guard-6776): MISS if C ≤ A + 4 — ADR-0180 retired
+(reverted to the ADR-0176 text), the precedent line joins the framing family as measured-inert; the next lever is
+fallback C measured against the ADR-0176 baseline. SHIPS if C ≥ A + 12 and C ≥ 36 (one-sided Fisher p ≈ 0.01 at that
+boundary) — ADR-0180 stays, the ADR gains the numbers, and the 35B's residual is measured under it next. MARGINAL-2
+otherwise — kept on main as a no-cost line with an unproven benefit, and the campaign moves to fallback C measured ON
+TOP of it (baseline = the ADR-0180 prompt with the shipped tools, candidate = the same prompt with the ADR-0181 tools;
+the write-surface lever is orthogonal to the prompt line and stacks on it).
+MECHANISM READINGS (secondary, from the dumps, pooled 48 vs 48; never overriding the count rule): CONVERTS /
+ROUTE-SHIFT / INERT on the sibling-readers exactly as in thrust 33; and NON-READER EFFECT if the candidate arm's
+non-reader miss rate is below half the baseline's with at least 30 non-reader runs in each arm (thrust 33: 4/22 vs
+8/20), else UNREAD. No HARM clause (unchanged from thrust 33: the folds are byte-identical under either prompt; the next
+map re-measure carries it).
