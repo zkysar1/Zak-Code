@@ -718,3 +718,47 @@ N=12, sequential; fold probes matched before the arms (13 unfolded dd249cc042f1,
       unrelated conventions, or a head tier) gets built and re-measured on BOTH models on cell 15 — the first lever whose
       correctness case can be tested at 27B, where the smaller-model bar now sits. The 15 / 15i pair is the standing
       two-model regression set for every fold change from here.
+
+THRUST 23 RESULT (2026-09-15 04:39 UTC) — THE COMPOSITION CELL: the cost lives in ONE combination — conventions WITHOUT orientation, the ADR-0172 fold, 8/12 again — and in neither half alone: core 11/12, orient (the ADR-0171 fold as a literal file) 11/12, both (orientation + conventions, under a 12K cap) 12/12. By the pre-registered rule the NEITHER branch fires (15c ≥ 11 and 15b ≥ 11, with the cost shown today by 15 ≤ 10); by the 2x2 it is an INTERACTION the rule did not name: the seven convention sections cost only when no orientation stands in front of them
+══════════════════════════════════════════════════════════════════
+Batch /root/t23_composition_batch.sh on zc-01, 04:15:49 → 04:36:01 UTC (g-353-99); zds-qwen3.6-35b (the model of 19b); temp 0,
+--no-pin, N=12, sequential; the shipped pair e7ddbf626a66 / 07d461afa424 for 15 / 15o / 15c; prompt.py.cap12k (md5 f6cc5a5acdb2,
+MAX_CONTEXT_FILE_CHARS 12_288, one constant) deployed for 15b only and restored — pair checks OK at every step, fold probes OK:
+15 live 9b02c28eb12c; 15o == asset ef3a7a2063d4; 15c == asset 559afae30623; 15b folded by the shipped cap (7,961) and == asset
+(10,868) under cap12k; after the restore 15 → 9b02c28eb12c again. JSONs committed here: *-15-…-t23.json, *-15o-…-t23.json,
+*-15c-…-t23.json, *-15b-…-t23-cap12k.json. METHOD VALIDATED: the ADR-0171 fold delivered as a file scored 11/12 at exactly
+4 turns per run, 21.9 s — the live fold's profile (t17 12/12 at 4 turns / 22 s; t19b 12/12 at 4.1 / 29 s).
+
+═══ SCORECARD — pre-registration: 15 ≤ 10; 15o ≥ 11 (validity); DILUTION = 15c ≥ 11 & 15b ≤ 10; PREAMBLE = 15c ≤ 10 & 15b ≥ 11 ═══
+  arm  composition                                              chars    pass    turns (mean)                       elapsed/run (mean)   outputs   verdict
+  15   live ADR-0172 fold = core + conventions                  7,988    8/12    [5,5,6,5,6,6,4,5,5,4,4,5] 5.0      19.8-42.0 s  32.4    5         ≤ 10 HOLD; four misses, all the microseconds isoformat default
+  15o  orient = core + orientation (the ADR-0171 fold, literal) 8,186    11/12   [4 ×12] 4.0 (spread 0)             19.4-29.1 s  21.9    4         ≥ 11 HOLD (validity gate); one miss, the microseconds default
+  15c  core = neither half                                      5,307    11/12   [4,4,5,4,4,4,4,4,4,5,4,4] 4.2      17.3-36.1 s  22.1    3         ≥ 11 — DILUTION's first condition; one miss, a "Z" zone suffix
+  15b  both = core + orientation + conventions (cap 12,288)     10,868   12/12   [4,4,7,4,4,4,4,4,4,4,4,4] 4.2      21.1-35.6 s  24.1    2         DILUTION needed ≤ 10: MISS; PREAMBLE needed 15c ≤ 10: NO → NEITHER
+  Fisher: per dozen core or orient 11 vs live 8, p = 0.32 each (a dozen is underpowered — the pooled record decides); 35B pooled
+  ADR-0171 fold 35/36 (t17, t19b, 15o) vs ADR-0172 fold 26/36 (t19, t19b, t23) p = 0.0065; every composition of this guide
+  except ADR-0172's 58/60 (35/36 + core 11/12 + both 12/12) vs the ADR-0172 fold over both models 34/48 (t19, t19b, t22-27B, t23)
+  p = 2.1e-04.
+
+═══ READING ═══
+  (i) VERDICT: by the rule NEITHER (15c ≥ 11 and 15b ≥ 11), with the cost shown today (15 live 8/12 — a third 35B dozen at 8-10
+      beside the 27B's 8). By the 2x2 the halves INTERACT: conventions with the core cost about one pass in four; orientation
+      alone changes nothing (core 11, orient 11); orientation IN FRONT OF the conventions restores 12/12 at 4 turns. The cost is
+      the SHAPE "a wall of thirteen convention subsections with no orientation before it" — the one shape ADR-0172 produces on
+      this guide at 8K, and the only one of the four that fails.
+  (ii) Both named hypotheses are falsified AS STATED: dilution ("one rule among many more") — the same thirteen subsections, same
+      neighbours (File Formats and Domain-Free Cognitive Core before Naming Rules, ID Formats after), score 12/12 behind 4.4K of
+      orientation prose; preamble ("the opening sections protect the rule") — the core without them scores 11/12. Four dozens
+      support the conditional, not a mechanism; the rule's position is not it (30% / 33% / 43% / 44% of the fold, and only the
+      33% fold fails). Reported as measured.
+  (iii) THE LEVER: a fold that never produces that shape under the cap. Two deterministic candidates: (a) the task tier's DROP
+      half — a section promoted ONLY by its outline path (its own heading and body name no mandate) is kept only when the task
+      is about it (its body or outline path shares a rare task word); otherwise it folds as a plain section. On cell 15 the seven
+      unrelated conventions demote and the orientation sections return — the ADR-0171 shape (35/36); on 15i ID Formats stays
+      (its body names "Beliefs") while the rest demote; on 15s the Session Binding path is untouched; with no task, or a task
+      with no rare word, the fold is byte-identical to ADR-0172's. (b) A head tier reserving the guide's opening sections
+      regardless of task — simpler, but it changes every fold (the no-task fold included) and yields a shape (partial orientation
+      + most conventions) no dozen has measured. (a) is built and pre-registered next as ADR-0174: 15 ≥ 11/12 and 15i ≥ 11/12
+      on BOTH models, 15s 12/12, 14p / 13 / no-task byte-identical.
+  (iv) Process: every fold without the wall runs at 4 turns and 22-24 s; the ADR-0172 fold at 5 turns and 32 s — the wall costs a
+      turn and a third of the wall time on every run, passing or not (t19b saw the same: 5 vs 4 turns, 37 vs 29 s).
