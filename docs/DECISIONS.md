@@ -9966,3 +9966,10 @@ SHIPS at C ≥ A + 7 with C ≥ 18, MARGINAL between; a mechanism reading on the
 reverted under MISS. Residuals: a project whose guide and code agree gains nothing and pays one sentence; a rule the
 guide states wrongly binds harder against correct precedent — the regression map under this line is the check;
 attended sessions carry the same line.
+
+**Addendum (thrust 33, 2026-09-15).** MARGINAL by the pre-registered rule: 18/24 with the line vs 12/24 without,
+interleaved on the 27B cell 17 (blocks 7 + 11 vs 7 + 5; one-sided Fisher p = 0.068; C − A = 6 against a SHIPS line of
++7). Mechanism reading INERT: the sibling-read route ran in only 6 of 48 runs (all six missed, both arms alike); the
+difference sits in the runs that never read the precedent (4 of 22 missed vs 8 of 20). Kept on main; a second
+interleaved sample (thrust 34) decides on the pooled 48 vs 48 — MISS at C ≤ A + 4 (reverted), SHIPS at C ≥ A + 12 with
+C ≥ 36, MARGINAL-2 otherwise (kept as a no-cost line; fallback C is then measured on top of it).
