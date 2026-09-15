@@ -824,3 +824,36 @@ the deployed module matched (15 / 15i 9b3055bae471 task and no task; 15s b283e83
   (iv) NEXT: the tiers were built on one real guide. A census of the author's other 39 guides (thrust 25, pre-registered
       below) found the house style the fold cannot see — `## Constraints` (28 of 39), bolded whole sentences, `#`-sectioned
       guides — and the shipped fold dropping the rules heading in four of the five over-cap guides. ADR-0175 reads it.
+
+══════════════════════════════════════════════════════════════════
+THRUST 25 — A SECOND REAL GUIDE AND THE HOUSE STYLE: the fleet census, ADR-0175, and cell 16p on both models — PRE-REGISTERED 2026-09-15 12:18 UTC, not yet launched
+══════════════════════════════════════════════════════════════════
+THE CENSUS (deterministic, no pod; 2026-09-15). The author's 39 other CLAUDE.md guides (the Ayoai repositories):
+28 keep their hard rules under "## Constraints" — a heading that names none of the fold's mandate words; the rules
+inside are bolded whole sentences; one guide (Operator, 12,085 chars) sections itself with "#" headings the splitter
+does not see (three blocks; the fold kept 1,496 of 8,192 chars). Five guides are over the cap; the SHIPPED (ADR-0174)
+fold drops the rules heading in FOUR of them (Constraints in Environment-Processor 14,010 / Environment-Server 25,221
+/ Operator 12,085 / DeployAyoaiOperator 8,600). The ADR-0175 candidate (vocabulary + constraints/caveats/gotchas/
+guidelines/standards/non-negotiable; a bold run OPENING with a mandate word is emphasis; a guide with ≥ 2 "#"
+headings splits on them, the first staying the title) drops it in ONE (Environment-Server's 7,987-char sub-section
+with no sub-headings — oversized, a separate residual); Operator folds to 6,741 chars with "# Constraints" in; every
+bench fold 13 / 14o / 14p / 14u / 15 / 15i / 15s is byte-identical, task and no task (probed on git-inited copies).
+THE CELL. 16p-realguide-envproc-aspirationkeys: the Environment-Processor guide verbatim (md5 f3003a699a7c, pinned
+by the builder; the file is private and NOT committed — gitignored, staged by scp), rule under "## Constraints" at
+char 11,011 (79%): aspiration records use `ayoTaskKey` for the task reference and `targetAyoKey` for the object
+target — names no model can guess, stated only there. Task: implement make_aspiration(task_key, target_key)
+returning the record; verify: both names carry the given values (extra keys allowed). Folds: ADR-0174 with the task
+7,924 chars md5 5b813418d29b, rule OUT (the note names "Constraints"); ADR-0175 7,954 chars md5 0d431997ad50, rule
+IN. 16pn: the same repo, no guide (default rate).
+BUILD. The bench tree on the ADR-0174 pair (5ae2883118f2 / 07d461afa424) for the OUT arms; prompt.py.adr0175
+(md5 in the batch's pair check) deployed for the IN arms and left in place; loop.py never moves; N=12, temp 0,
+--no-pin, sequential; probes against the deployed module at each step. Batch /root/t25_house_style_batch.sh →
+/root/t25-house-style-batch.log; JSONs suffixed -t25-35b (control), -adr0174-35b / -27b, -adr0175-35b / -27b.
+PREDICTIONS (per dozen). 16pn control ≤ 1/12 (unguessable names). 16p on the ADR-0174 fold (rule OUT): ≤ 2/12 on
+both models — the omitted heading "Constraints" shares no word with the task, so by rb-10984 the note is inert
+(15i under ADR-0171: 1/12). 16p on the ADR-0175 fold (rule IN): ≥ 11/12 on the 35B and ≥ 10/12 on the 27B.
+READING RULE. GENERALIZES if the IN arms hit and the OUT arms are ≤ 2 on both models — the tiers built on one real
+guide transfer to a second, and the census's four-in-five becomes the fleet's measured cost of the old fold.
+FETCH-CUE if an OUT arm ≥ 8 (the model read the file on the note alone — rb-10984 falsified for this heading class).
+BUILD-MISS if an IN arm ≤ 8 with the rule in the fold (a fold-shape effect on this guide: decompose as thrust 23
+did). Miss or hit, reported as measured.
