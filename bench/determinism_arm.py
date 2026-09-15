@@ -59,23 +59,39 @@ def _digest_tree(ws: Path) -> dict[str, str]:
 _SOURCE_SUFFIXES = (".py", ".md", ".txt", ".csv", ".json", ".toml", ".yaml", ".yml", ".cfg", ".ini")
 
 
-def _capture_sources(ws: Path) -> dict[str, str]:
+_PRIVATE_NOTE = "<redacted: private fixture (task.json private_sources); sha256 in digests>"
+
+
+def _capture_sources(ws: Path, private: tuple[str, ...] = ()) -> dict[str, str]:
     """Text of the task's own small output files. A digest says THAT two runs differ; only the
     content says HOW, and 'differs in a comment' and 'differs in the algorithm' are not the same
     finding. Bounded at 4 KB/file so this can never become the reason a run is unaffordable.
 
     Captured Python only until ADR-0164: an m-task whose output is a ``count.md`` produced a
     within-cell digest difference that could not be inspected afterwards (both sources empty).
-    Now every small text file the task can write; binaries are skipped by the decode error."""
+    Now every small text file the task can write; binaries are skipped by the decode error.
+
+    Paths listed in the task's ``private_sources`` (a private guide installed from a gitignored
+    asset — the real-guide cells) are recorded as a redaction note, never their text: the result
+    JSON is committed to a public repository, and 4 KB of a private file is the file."""
     out: dict[str, str] = {}
     for p in sorted(ws.rglob("*")):
         if not p.is_file() or p.suffix not in _SOURCE_SUFFIXES or "__pycache__" in p.parts:
             continue
         if any(part.startswith(".") for part in p.relative_to(ws).parts):
             continue  # zakcode's own markers / VCS dirs are not task output
+        rel = str(p.relative_to(ws))
+        if rel in private:
+            out[rel] = _PRIVATE_NOTE
+            continue
         with contextlib.suppress(OSError, UnicodeDecodeError):
-            out[str(p.relative_to(ws))] = p.read_text(encoding="utf-8")[:4096]
+            out[rel] = p.read_text(encoding="utf-8")[:4096]
     return out
+
+
+def _private(spec: dict) -> tuple[str, ...]:
+    """The task's private fixture paths (relative to the workspace), from task.json."""
+    return tuple(spec.get("private_sources") or ())
 
 
 _RUN_COUNTER = itertools.count(1)  # per-process run index, for per-run request dumps
@@ -129,7 +145,7 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool
     ws = (Path(reported) if reported.startswith("/")
           else Path(tempfile.gettempdir()) / f"zbench-pinned-{spec['id']}")
     digests = _digest_tree(ws) if ws.is_dir() else {}
-    sources = _capture_sources(ws) if ws.is_dir() else {}
+    sources = _capture_sources(ws, _private(spec)) if ws.is_dir() else {}
     if not pin:
         shutil.rmtree(ws, ignore_errors=True)  # unpinned runs leave a fresh dir each time
     return {
@@ -200,7 +216,7 @@ def one_run(task_dir: Path, spec: dict, timeout_s: int = 900) -> dict:
             verify_rc, verify_out = 124, "verify timed out"
 
     digests = _digest_tree(ws)
-    sources = _capture_sources(ws)
+    sources = _capture_sources(ws, _private(spec))
     shutil.rmtree(ws, ignore_errors=True)
     return {
         "cli_rc": rc,
