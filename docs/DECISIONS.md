@@ -9543,3 +9543,66 @@ same-tier sections), folding an oversized section by its own sub-sections, or ke
 of the vocabulary tier — each a measurable decision of its own.
 
 **Addendum (2026-09-15, thrust 19b — the paired re-measure of cell 15; Zak-Code #486).** Same pod state, ONLY prompt.py swapped and restored (md5 and fold probed at every step): the ADR-0172 fold scored 10/12 (5 turns, 37 s per run, 6 distinct outputs), the restored ADR-0171 fold 12/12 (4 turns, 29 s, 3 distinct outputs). Paired day alone p = 0.48; pooled over both days ADR-0172 18/24 vs ADR-0171 24/24, p = 0.022; every ADR-0172 miss the microseconds isoformat default. The strict dilution rule (≤ 9/12 again) missed by one and the within-2 noise rule technically held, but the pooled rule named as deciding, the same direction on both days and the process shift in every run say the folds differ: a real, modest cost of this ADR on the cell whose rule both folds carry — about one pass in four — not a day's variance. The mechanism is not the mandate count (9 → 8 capitalised mandates): the fold's shape changed (six orientation sections out, seven convention sections in, the rule in a different neighbourhood). The ADR stands: on the two real-guide cells it scores 18/24 + 12/12 against 24/24 + 1/12. The cost is a measurement for the next decision — a task-conditional fold that carries the rules a task is about and fewer of the rest — not a reason to revert; a 2x2 composition cell would isolate which half of the shape change carries it.
+
+## ADR-0173: the fold keeps what the task is about — a task tier keyed by the session's first message; a section whose outline path names a rare word of the task is kept before every mandate the task is not about
+
+**Context.** ADR-0170/0171/0172 fold a guide past the per-file cap by whole sections, keeping first the sections
+whose outline path names a rule or mandate, then those whose body emphasizes one, then the rest in document order.
+Thrust 20 built the next residual on the real 47,511-char guide: the layout of the agent-session binding
+(`agents/<name>/sessions/<SID>/binding.yaml`), stated only under `## Session Binding (Phase 2.6)` — a plain heading
+with a plain body (its "NOT at the legacy `.active-agent-<SID>`" is a capitalised NOT, not an RFC word) — while two
+older sections still describe the legacy file. The canonical probe shows the ADR-0172 fold (7,988 chars, 17
+sections) without it and the heading named in the omission note. Measured (`15s-realguide-mind-sessionbinding`,
+2026-09-15, zds-qwen3.6-35b): no-guide 0/12 with twelve different invented layouts; zakcode on the ADR-0172 fold
+12/12 — not the ≤ 3/12 pre-registered — at 7.1 turns and 48.8 s per run, three output states, where a rule IN the
+fold on this guide costs 4-5 turns and ~30 s (cell 15). The 35B FETCHED the omitted section every run. Thrust 18 had
+measured the opposite of the same cue on 15i (1/12): there the task said "belief id" and the note named "ID
+Formats"; here the task says "agent-session binding" and the note names "Session Binding (Phase 2.6)". The cue
+works when the task and the omitted heading share a distinctive word, and fails when they share a two-letter token —
+the lexical signal is the same one a task-keyed fold can read, and the fold can read it once instead of the model
+paying three turns for it every run. Claude Code with the whole file: 12/12 at 169 s and 10.9 turns per run (spread 5-22), binding.py read every run — parity on outcome, zakcode 3.5x cheaper with the rule out of its fold.
+
+The second reason is the ADR-0172 cost (thrust 19b addendum): on cell 15 the promotion turned the fold into a
+wall of conventions the task is not about, and cost about one pass in four. A fold keyed by the task is the one
+lever that carries the rule a task IS about and can carry fewer of the rest.
+
+**Decision.** `task_terms(task)` reads the words of a task — four or more letters, out of identifiers and paths as
+well as prose (`binding_path` names binding; `app/people.py` names people), lower-cased, singular — minus a fixed
+list of request boilerplate (implement, function, return, string, …) and English function words. In `_fit_sections`
+a term carried by at most a quarter of the guide's sections (each counted by its body and its outline path) is a
+signal for THAT guide — "binding", not "session" or "agent" — and a section is ABOUT the task when its OUTLINE PATH
+carries a signal. Priority is (about the task first, then the ADR-0170/0171/0172 mandate tiers, then document
+order): a rule about the task before a layout about it, both before every mandate the task is not about. The note
+says "sections about the task, then sections that name or emphasize a rule or mandate, are kept first" only when a
+section is about the task; otherwise the fold and its note are the ADR-0172 fold byte for byte. `discover_context`
+and `SystemPromptBuilder.build` take `task`; the loop keys it by the session's FIRST user message — the operator's
+own text, the same on every later turn and after a resume, so the context tier does not move within a session and
+the cached prefix holds (the survey has the same contract). A sub-agent keys by its own brief.
+
+Bodies do not count, by measurement: a body-scored tier on the real guide with the thrust-20 prompt ranked
+`### Framework vs State Split` (directory, path, store) and `## Agent-dir Resolution` above `## Session Binding`
+(binding), kept 4 of 39 sections in 8,137 chars, and left the rule OUT. Every long section mentions everything;
+the outline is where the author names what a section is about — the same reading ADR-0170 and ADR-0172 give it.
+Real-guide probes (git-inited copies, both modules): 15s task fold 8,137 chars, 17 sections, Session Binding
+(Phase 2.6) first, the legacy `### Agent-Session Binding` (577 chars) alongside — the conflict the whole file also
+carries — and the conventions block after; 15 and 15i byte-identical to ADR-0172 (md5 9b02c28eb12c; none of their
+words is in a heading); 14p: `## Working with people data` promoted through `app/people.py`, 7,831 chars with the
+rule in (8,071 before); 13 unfolded.
+
+**Alternatives rejected.** IDF weighting (rewards the incidental rare word — "repository" promotes Architecture).
+Identifier-only terms ("path" from `binding_path` / `pathlib.Path` is in every layout section). Keying by the current
+turn (the context tier would move every turn and the cached prefix miss once per turn). Widening the emphasized-
+mandate regex to a bare capitalised NOT (a fit to one file, and tier 1 sits behind ~15 tier-0 conventions on this
+guide, so it would not carry the section anyway). Relying on the fetch the 35B made — measured, and it is the
+smaller model the campaign is for that has to make it.
+
+**Consequences.** Pre-registered re-measure (thrust 21, ADR-0173 build only, one variable — prompt.py plus the
+`_build_system` hunk on the bench tree's loop.py): 15s (35B) 12/12 holds at ≤ 5.0 turns and ≤ 36 s mean; 14p ≥ 11/12
+on its changed fold; 15i ≥ 11/12 as pod-state control on a byte-identical fold; and the smaller-model leg,
+15s on zds-qwen3.8-27b: task fold ≥ 10/12 against the ADR-0172 fold ≤ 8/12. The tier earns its keep if the 35B
+process cost falls as predicted AND the 27B gap is ≥ 3; it stays as a process saving if only the first holds; it is
+reverted if 15s < 11 or 14p < 10. Costs: the fold now has a second input (the probe must name the task; determinism
+holds per task); the boilerplate list is English and fixed; a rule under a heading that shares no word with the
+task still relies on the mandate tiers (15i) or the note. Tests pin the promoted plain section, heading-only
+matching, the ubiquitous-word filter, mandate order within the task tier, byte-identity without a task, and the
+loop's first-message keying.

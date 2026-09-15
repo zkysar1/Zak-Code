@@ -837,3 +837,87 @@ def test_fold_never_overruns_the_cap_when_the_omitted_headings_are_the_long_ones
     (tmp_path / "AGENTS.md").write_text(guide + "\n", encoding="utf-8")
     [(_, content)] = discover_context(tmp_path, include_readme=False)
     assert "## Rules" in content and len(content) <= MAX_CONTEXT_FILE_CHARS
+
+
+# ── ADR-0173: the fold keeps what the task is about (the task tier) ──────────────────────────
+
+
+def _guide_with(*tail_sections: str, plain: int = 20) -> str:
+    """Twenty plain sections (~8K, past the cap) followed by ``tail_sections``, all past the cap."""
+    padding = [f"## Section {i}\n\n" + f"Plain guidance paragraph {i}. " * 14 for i in range(plain)]
+    body = "\n\n".join(
+        ["# Project Guide\n\nRead this before changing code.", *padding, *tail_sections]
+    )
+    assert (
+        body.index(tail_sections[0]) > MAX_CONTEXT_FILE_CHARS
+    )  # every tail section is past the cap
+    return body
+
+
+_BINDING_TASK = (
+    "Implement the function `binding_path(root, agent, sid)` in `app/binding.py`: given the "
+    "repository root directory as a `pathlib.Path`, an agent name, and a session id, return the "
+    "path of the file where this repository stores the agent-session binding. Return a "
+    "`pathlib.Path`."
+)
+
+
+def test_task_terms_read_identifiers_and_paths_and_drop_boilerplate() -> None:
+    from zakcode.agent.prompt import task_terms
+
+    terms = task_terms(_BINDING_TASK)
+    # Subject words, read out of the identifier and the path as well as the prose; plurals singular.
+    assert {"binding", "path", "root", "agent", "session", "repository", "store"} <= terms
+    # Request boilerplate, English function words and short tokens never key a fold.
+    assert not {"implement", "function", "return", "given", "file", "sid", "app", "the"} & terms
+    assert task_terms(None) == frozenset() == task_terms("")
+
+
+def test_fold_keeps_a_plain_section_whose_heading_names_the_task_first(tmp_path: Path) -> None:
+    # The real guide (thrust 20): the rule a task needs sits under "## Session Binding (Phase
+    # 2.6)" — a plain heading, a plain body — and the mandate tiers alone fill the fold with
+    # conventions the task is not about. The task names the binding; so does the heading.
+    rule = "## Session Binding\n\nThe binding lives at `agents/<name>/sessions/<SID>/binding.yaml`."
+    rule += "\n\n" + "The binding carries agent, mode, started_at and started_by. " * 30  # ~1.9K
+    (tmp_path / "AGENTS.md").write_text(_guide_with(rule) + "\n", encoding="utf-8")
+    [(_, without)] = discover_context(tmp_path, include_readme=False)
+    assert "## Session Binding" not in without and "Session Binding" in _omitted(without)
+    [(_, content)] = discover_context(tmp_path, include_readme=False, task=_BINDING_TASK)
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert _headings(fold)[0] == "## Section 0" and "## Session Binding" in _headings(fold)
+    assert "binding.yaml" in fold and "Session Binding" not in _omitted(note)
+    assert (
+        "(sections about the task, then sections that name or emphasize a rule or mandate" in note
+    )
+
+
+def test_fold_task_tier_reads_headings_not_bodies_and_ignores_ubiquitous_words(
+    tmp_path: Path,
+) -> None:
+    # (a) A task word only a BODY carries promotes nothing — every long section mentions
+    # everything. (b) A task word most sections carry ("widget" in all of them) is no signal even
+    # when it IS in the heading. Both folds are the ADR-0172 fold, byte for byte, note included.
+    padding = [
+        f"## Section {i}\n\n" + f"The widget guidance paragraph {i}. " * 14 for i in range(20)
+    ]
+    layout = "## Widget layout\n\nThe layout is decided by the frobnicator; see below. " * 40
+    body = "\n\n".join(["# Project Guide\n\nRead this first.", *padding, layout])
+    assert body.index(layout) > MAX_CONTEXT_FILE_CHARS
+    (tmp_path / "AGENTS.md").write_text(body + "\n", encoding="utf-8")
+    [(_, without)] = discover_context(tmp_path, include_readme=False)
+    assert "Widget layout" in _omitted(without)
+    assert "(sections that name or emphasize a rule or mandate are kept first)" in without
+    for task in ("Implement frobnicator_path() in app/frobnicator.py", "Implement widget_path()"):
+        [(_, content)] = discover_context(tmp_path, include_readme=False, task=task)
+        assert content == without
+
+
+def test_fold_orders_the_task_tier_by_the_mandate_tiers(tmp_path: Path) -> None:
+    # Two sections about the task past the cap, room for one: the one whose heading names a rule
+    # is kept even though the plain one comes first in the document.
+    layout = "## Widget layout\n\n" + "Where each widget part sits on the page. " * 110
+    rules = "## Widget rules\n\n" + "Every widget MUST declare its layout before use. " * 90
+    (tmp_path / "AGENTS.md").write_text(_guide_with(layout, rules) + "\n", encoding="utf-8")
+    [(_, content)] = discover_context(tmp_path, include_readme=False, task="Add a widget")
+    fold, note = content.rsplit("\n[... AGENTS.md: ", 1)
+    assert "## Widget rules" in _headings(fold) and "Widget layout" not in fold

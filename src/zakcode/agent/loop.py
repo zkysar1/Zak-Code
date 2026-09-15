@@ -2635,8 +2635,26 @@ class AgentLoop:
 
     def _build_system(self, restrict_to: set[str] | None = None) -> str:
         return self.prompt_builder.build(
-            self.settings, tools=self._tool_specs(restrict_to), session_id=self.session.id
+            self.settings,
+            tools=self._tool_specs(restrict_to),
+            session_id=self.session.id,
+            task=self._session_task(),
         )
+
+    def _session_task(self) -> str | None:
+        """What this session is for: the text of its first user message, or ``None`` before one.
+
+        Keys the guide fold (ADR-0173). The first user-role message is the operator's own — a
+        turn appends the request before any rail it injects — and it is the same message on
+        every later turn and after a resume, so the fold (like the survey) does not move within
+        a session and the cached prefix holds. A session that changes subject keeps the fold of
+        its first ask.
+        """
+        for message in self.session.messages:
+            if message.role == "user":
+                text = message.text.strip()
+                return text or None
+        return None
 
     async def _messages_for_call(self, user_text: str, iteration: int) -> list[Message]:
         """The message list for the next provider call, with any injected context.
