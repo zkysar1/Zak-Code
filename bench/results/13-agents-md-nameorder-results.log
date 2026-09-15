@@ -1068,3 +1068,23 @@ instruction strength or a harness-side check, not the fold); BLIND if no assista
 mention in any run (the census cannot see the model's reading; the next probe changes the model's output, e.g.
 asks it to state the rules it applied). The dumped arm's pass rate is reported beside (1) as a second sample
 (pooled 24 whole-section runs on the 27B).
+
+THRUST 27 DIAGNOSTIC (2026-09-15 15:10 UTC) — JUDGMENT: the 27B's misses have the rule in hand and write the default anyway; the lever is not the fold
+Twelve dumped runs of 17w on the 27B (tree on ADR-0176; the redacting runner in place — the guide excerpt left the
+JSON as a redaction note at write time, #501's first use) scored 9/12 (6.8 turns, 34 s); pooled with the first
+sample 15/24, beside the abridged block's 16/24 (p = 1). CENSUS (counts only; the dumps stay on the box): the
+system prompt carries the rule in 12/12; the pod returns no thinking blocks for this model (assistant blocks are
+text + tool_use only), so a "mention" is the model's own narration; guide reads 0/12 — the rule comes from the fold.
+Every pass (9/9) mentions "delta" in its narration, twice on average. Of the three misses, the two that wrote the
+absolute (`assert Metrics.hits == 1`) ALSO mention "delta" (2 and 1 mentions): the plan says delta, the code says
+absolute. The third wrote no test at all (a task failure, not a rule failure; it mentions a reset). READING by the
+prereg: the misses mention the rule in 2/3 → JUDGMENT (n = 3 makes the letter thin; the shape matches stage 2's
+reset-then-absolute misses — the rule is in hand and the default wins at the keyboard). SALIENCE is out (the
+misses' mention rate is not below half the passes'); BLIND is out. THE LEVER, therefore, is not the fold: the rule
+is in context, read and narrated; what fails is carrying it into the code. Thrust 28 candidates, cheapest match
+first: (A) a deterministic pre-finish check in the loop — when the model ends its turn without a tool call after
+changing files, the harness sends ONE user turn asking it to check each changed file against the guide rules that
+apply and fix or confirm (once per run; a check, never a warning — rb-10851's small-model hazard); positive
+control the 35B's 12/12 at +1 turn. (B) a binding-framing line at the head of the fold ("when this guide and your
+default disagree, the guide wins"). (A) matches the failure (plan → code) and is built behind tests and
+pre-registered as its own thrust; (B) is the fallback if (A) costs the 35B or loops.
