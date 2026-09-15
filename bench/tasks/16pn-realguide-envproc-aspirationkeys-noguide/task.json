@@ -1,0 +1,8 @@
+{
+  "id": "16pn-realguide-envproc-aspirationkeys-noguide",
+  "title": "Implement make_aspiration()",
+  "max_iterations": 40,
+  "max_cost_usd": 1.0,
+  "verify_timeout_s": 120,
+  "prompt": "Implement the function `make_aspiration(task_key, target_key)` in `app/aspirations.py`: build the aspiration record for a task reference and an object target, and return it as a dict."
+}

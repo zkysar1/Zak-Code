@@ -9663,3 +9663,43 @@ composition says the conventions need orientation before them, and a task-tier s
 been measured as the same thing.
 
 **Addendum (2026-09-15, thrust 24 — the pre-registered re-measure on both models; Zak-Code #494).** Every arm held or improved: cell 15 11/12 on the 35B (4.3 turns) and 12/12 on the 27B (4.8) against 8-10/12 on the ADR-0172 fold — pooled 23/24 vs 34/48 (p = 0.014), indistinguishable from the ADR-0171 fold's 35/36 — with 15i and 15s at 12/12 on both models at fewer turns (6.1 → 5.2 and 6.1 → 5.1 on the 35B) and the byte-identical 14p control at 12/12. The one miss is the microseconds default. Wall time was unreadable on a contended pod (the control ran at 2.2x its reference; turn counts unchanged). SHIPS by the rule: an 8K fold that opens with four of the guide's six orientation sections and then carries the whole conventions block scores what the 10.9K composition scored; the mechanism thrust 23 measured is a lever. The smaller model matches the larger cell for cell under this fold too.
+
+## ADR-0175: the fold reads the house style — Constraints-class headings, bold runs that open with a mandate word, guides sectioned by `#` headings
+
+**Context.** ADR-0170 through ADR-0174 built the fold's tiers on synthetic guides and ONE real document, the Mind
+repository's CLAUDE.md, and each ADR rejected "widening the heading vocabulary" as a fit to one file until a cell
+needed it. A census of the author's other guides (39 CLAUDE.md files across the Ayoai repositories, 2026-09-15)
+supplied the cells: the house style keeps its hard rules under `## Constraints` — 28 of the 39 — a heading that
+names none of the fold's mandate words; the rules inside are bolded whole sentences (`**Never block the Vert.x
+event loop.**`), which the emphasis pattern missed because it required the closing marker right after the word;
+and one guide sections itself with `#` headings, which the splitter (`##` to `######`) does not see, so its
+12,085 chars folded as three blocks and the fold kept 1,496 of its 8,192 budget. Five of the 39 guides are over
+the cap; the shipped fold drops the rules heading in four of them (Constraints in Environment-Processor,
+Environment-Server, Operator and DeployAyoaiOperator). The premise of the campaign is that what a small model must
+obey has to be in the fold: on the author's own fleet, four times in five it was not.
+
+**Decision.** Three deterministic readings of the house style, each pinned by a test. (1) The mandate-heading
+vocabulary gains `constraints?`, `caveats?`, `gotchas?`, `guidelines?`, `standards?`, `non-negotiables?`.
+(2) A bold or underscore run that OPENS with a mandate word (`**Never …`, `**Do not …`, `__Must …`) counts as
+emphasis wherever the run closes; a run that merely contains a lowercase mandate word mid-sentence does not.
+(3) A guide with two or more `#` headings is split on them too — the first `#` is the document title and stays
+in the preamble; a single-`#` guide is unchanged. Measured on the census: the over-cap guides dropping their rules
+heading go from four in five to one in five (the remaining one is an 8K sub-section with no sub-headings — an
+oversized-section residual, not this decision); the Operator fold goes from 1,496 to 6,741 chars and keeps its
+`# Constraints`; every bench fold — 13 / 14o / 14p / 14u / 15 / 15i / 15s, with and without a task — is
+byte-identical to ADR-0174 (the Mind guide has one `#`, and none of its headings carry the new words).
+
+**Alternatives rejected.** `requirements?` and `limitations?` (a dependency list and a product-limits section are
+not rules for the agent; unmeasured either way, left out until a cell needs them). Splitting on every `#`
+including the title (the title would become an ancestor of every section, and a title that names a mandate would
+promote the whole guide to document order). Treating any bold run as emphasis (bold labels — `**Task
+vocabulary**:` — open most bullets in these guides; only the mandate word carries the signal). Folding the
+oversized section by paragraphs (ADR-0170's false-completeness hazard; a separate decision when a cell needs it).
+
+**Consequences.** Pre-registered re-measure (thrust 25) on a second real guide, the Environment-Processor
+CLAUDE.md (14,010 chars, `## Constraints` at 79%, the aspiration key names stated only there; the guide is the
+author's private documentation and is not committed — the cell pins its md5): 16p on the ADR-0174 fold
+(Constraints out) against the ADR-0175 fold (Constraints in) on both models, with a no-guide control. Residuals,
+stated: an oversized section with no sub-headings still folds whole or not at all; the vocabulary is English and
+fixed; a guide whose rules live under a heading outside this list and without emphasis still folds in document
+order — the census is the instrument that finds the next one.

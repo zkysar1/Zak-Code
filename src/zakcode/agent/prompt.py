@@ -465,7 +465,7 @@ def _project_chain(root: Path) -> list[Path]:
 #: labels a rule, and the label is what a fold under budget must never drop.
 _MANDATE_RE = re.compile(
     r"\b(?:mandatory|must|required?|rules?|never|always|conventions?|polic(?:y|ies)|forbidden"
-    r"|prohibited|do not)\b",
+    r"|prohibited|do not|constraints?|caveats?|gotchas?|guidelines?|standards?|non-negotiables?)\b",
     re.IGNORECASE,
 )
 #: A mandate the AUTHOR emphasized inside a section body — capitals (RFC-2119 style: MUST, MUST
@@ -475,10 +475,11 @@ _EMPHASIZED_MANDATE_RE = re.compile(
     r"\b(?:MUST(?: NOT)?|NEVER|ALWAYS|MANDATORY|REQUIRED|FORBIDDEN|PROHIBITED|DO NOT"
     r"|SHALL(?: NOT)?)\b"
     r"|(?:\*\*|__)\s*(?i:must(?: not)?|never|always|mandatory|required|forbidden|prohibited|do not"
-    r"|shall(?: not)?)\s*(?:\*\*|__)"
+    r"|shall(?: not)?)\b"
 )
 #: A level-2..6 markdown heading line; level 1 is the document title and stays with the preamble.
 _HEADING_RE = re.compile(r"^#{2,6}\s+\S")
+_H1_RE = re.compile(r"^#\s+\S")
 #: A word that can name what a section is about: four or more letters/digits, read out of
 #: identifiers and paths as well as prose (``binding_path`` → binding, path; ``app/ids.py`` →
 #: app, ids, py — the short pieces drop). Case-insensitive; a plural loses its ``s``.
@@ -573,12 +574,17 @@ def _fit_sections(
     bounded by a quarter of the cap; a section the task is about still outranks it.
     """
     total_len = len(content)
+    lines = content.split("\n")
+    # A guide that sections itself with `# ` headings (two or more of them) splits on those too;
+    # the first H1 is the document title and stays in the preamble.
+    h1_lines = [k for k, line in enumerate(lines) if _H1_RE.match(line)]
+    h1_sections = set(h1_lines[1:]) if len(h1_lines) >= 2 else set()
     parts: list[tuple[str | None, list[str]]] = [(None, [])]  # (heading line, its lines)
     in_fence = False
-    for line in content.split("\n"):
+    for k, line in enumerate(lines):
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
-        if not in_fence and _HEADING_RE.match(line):
+        if not in_fence and (_HEADING_RE.match(line) or k in h1_sections):
             parts.append((line, [line]))
         else:
             parts[-1][1].append(line)
