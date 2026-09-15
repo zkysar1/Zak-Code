@@ -9521,3 +9521,23 @@ conventions block; for an adherence task that is the right trade and for a "what
 not — a task-conditional fold is a different decision and is not taken here. Residual, unchanged from ADR-0171:
 an unemphasized lowercase rule under a plain heading with no mandate-naming ancestor still folds in document
 order.
+
+**Addendum (2026-09-15, thrust 19 — the pre-registered re-measure; Zak-Code #485).** Thrust 19 (zc-01, 2026-09-15 01:28-01:51 UTC, N=12 per cell, ADR-0172 build only, Zak-Code #485): 15i 1/12 → 12/12 (turns 5-7, mean 6.0; Fisher p = 9.6e-06 against the ADR-0171 measurement) — the outline-path tier delivered the omitted convention, as pre-registered; 14p held 12/12 on a byte-identical fold (4 turns, 30 s per run — the pod control). But 15 — the thrust-17 timestamp cell, its rule in BOTH folds — fell 12/12 → 8/12 (p = 0.093), every miss the microseconds isoformat default: the ADR-0172 fold trades five orientation sections (Project Purpose, Architecture, the two Design Principles, Cognitive Primitives, Knowledge Retrieval) for eight more convention sections, and the timestamp bullet is one rule among many more. Dilution, or day-to-day variance: a paired same-pod-state re-measure of cell 15 on both folds (thrust 19b, ONLY prompt.py swapped and restored) is pre-registered to separate them — DILUTION if ADR-0172 ≤ 9/12 again and ADR-0171 ≥ 11/12, NOISE if within 2. If dilution holds it is the promotion's cost measured on adherence, and together with the Session Binding residual (thrust 20) it points to a task-conditional fold rather than a denser one.
+
+**Addendum (2026-09-15, the fold is not monotone in its cap — a probe finding, no code change; rb-10979).**
+Probing the size lever for the thrust-20 residual (the Session Binding path, a tier-2 section at document index
+10 of the real guide) with `MAX_CONTEXT_FILE_CHARS` raised in place on a git-inited copy of the 15s workspace:
+the 12K, 16K, 24K and 32K folds all omit it — every tier-0/1 section and the tier-2 sections before it come
+first, and the 32,768-char total cap binds before document order reaches it — so size cannot admit that rule.
+The same probe found that the fold is not a superset of itself as the cap grows: 8,192 → 17 headed sections
+(the Universal Conventions block, Enforcement Rules, Autonomous Loop Rules); 10,240 → 3; 12,288 → 7 with
+`### ID Formats` (the thrust-18 rule) out; 14,336 → 14; 16,384 → 17. The cause is `## Convention Index` —
+9,614 chars, a table of convention-file descriptions whose heading matches the tier-0 vocabulary through
+"convention" — which does not fit at 8K and, once it fits, is admitted first in document order and consumes the
+budget. Greedy first-fit in (tier, document order) makes admission depend on a section's size relative to the
+remaining budget, and a vocabulary tier can be matched by an index that carries no rule. Latent at the shipped
+cap (the index does not fit at 8,192; the 13 / 14p / 15 / 15i folds are unaffected) and live between 10K and
+14K. Not fixed here: the cap is not being raised (thrust 14) and the shipped fold is unchanged. When it bites,
+the candidates are a per-section share cap (a section larger than a fraction of the budget waits behind smaller
+same-tier sections), folding an oversized section by its own sub-sections, or keeping table-shaped sections out
+of the vocabulary tier — each a measurable decision of its own.

@@ -409,3 +409,86 @@ Batch t18_realguide_idformat_batch.sh on zc-01, 17:02:28 → 18:11:31 UTC, ADR-0
   LAUNCHED 18:12:31 UTC (t19 script md5 efa103a9f775; prompt.py on zc-01 md5 aae1a13a0864, ADR-0171 file backed up as
   /root/prompt.py.ADR0171.bak). zc-01 probes: 15i and 15 fold 7,988 chars with both marks in (md5 9b02c28eb12c);
   14p fold 8,071 chars md5 3a4f6d831807 = the ADR-0171 probe, byte-identical. Pre-fix JSONs archived as *-PRE-ADR0172.json.
+
+══════════════════════════════════════════════════════════════════
+THRUST 19 RESULT (2026-09-15 01:53 UTC) — ADR-0172 RE-MEASURE: 15i 1/12 → 12/12 AS PRE-REGISTERED; 14p HOLDS 12/12 on a byte-identical fold; BUT 15 FELL 12/12 → 8/12 — a pre-registration MISS (the rule IS in the fold; four microseconds-isoformat defaults)
+══════════════════════════════════════════════════════════════════
+Batch t19_adr0172_remeasure_batch.sh on zc-01, 01:28:12 → 01:51:16 UTC (relaunched after the 2026-09-14 quiet window;
+the 18:12 launch was killed at run 11 of its 15i arm and left no JSON), ADR-0172 build only (prompt.py md5
+aae1a13a0864; zc-01 probes: 15i and 15 fold 7,988 chars with both marks in, md5 9b02c28eb12c; 14p fold 8,071 chars
+md5 3a4f6d831807 = the ADR-0171 probe, byte-identical). JSONs committed here as the un-suffixed 15i / 15 / 14p files;
+the ADR-0171 measurements of the same cells renamed *-ADR0171.json.
+
+═══ SCORECARD — pre-registration: 15i → 12/12; 15 holds ≥ 10/12; 14p holds 12/12 ═══
+  cell  build     fold                                 pass    turns                                elapsed/run            verdict
+  15i   ADR-0171  8,186 chars, ID Formats OMITTED      1/12    [8,6,7,6,6,10,7,6,6,6,6,9] mean 6.9  40.3-168.6s mean 65.6  (thrust 18, 2026-09-14)
+  15i   ADR-0172  7,988 chars, ID Formats IN           12/12   [6,7,6,6,7,5,6,6,6,7,5,5] mean 6.0   38.7-57.3s mean 48.2   HIT — Fisher p = 9.6e-06 vs ADR-0171; 10 distinct digests, all pass
+  15    ADR-0171  8,186 chars, Naming Rules IN         12/12   4 turns                              22.0s mean             (thrust 17, 2026-09-14)
+  15    ADR-0172  7,988 chars, Naming Rules IN         8/12    [5,5,5,5,5,5,4,5,5,5,5,4] mean 4.8   26.6-43.0s mean 37.1   MISS — Fisher p = 0.093; runs 2/6/9/11 all '2026-09-15T01:39:11.877936'-shaped (datetime.now().isoformat(), microseconds kept)
+  14p   ADR-0172  8,071 chars, BYTE-IDENTICAL to ADR-0171  12/12   [4,4,4,4,7,4,4,4,4,4,4,4] mean 4.2   28.3-41.1s mean 29.9   HIT — the pod control: same fold as ADR-0171, same rate (thrust 16: 12/12); 2 distinct digests
+  Elapsed is compared within a batch only (zc-01 was rebooted between the thrust-17 and thrust-19 batches).
+
+═══ READING ═══
+  (i) The ADR-0172 mechanism did what it was built for: the outline-path tier put "### ID Formats" in the fold and the
+  35B applied `bel-` 12/12 where the ADR-0171 fold scored 1/12 — same model, same task, same guide, one file changed.
+  (ii) The miss: cell 15 fell to 8/12 with its rule still in the fold, and the four misses are one shape — the
+  isoformat-with-microseconds default that Claude Code hit once under the whole file (thrust 17). Two readings, not
+  separable at N=12 (p = 0.093): DILUTION — the ADR-0172 fold trades Project Purpose / Architecture / both Design
+  Principles / Cognitive Primitives / Knowledge Retrieval for eight more convention sections, so the timestamp bullet
+  is one rule among many more (the whole-file CC arm's dilution miss, arriving at 8K); or NOISE / POD DRIFT — a
+  different day, a rebooted zc-01, unpinned basins. 14p, whose fold is byte-identical to the ADR-0171 one, is the
+  in-batch control for the pod: 14p held 12/12 at 4 turns and 30 s per run on the byte-identical fold, so the pod and the model were behaving in this batch; the drop is specific to cell 15 under the ADR-0172 fold, or to cell-level day-to-day variance — which 19b separates.
+  (iii) Pre-registered next (THRUST 19b, below): a PAIRED same-pod-state comparison of cell 15 on both folds. If
+  dilution is real it is the cost side of promotion measured on adherence, and it points the same way as the Session
+  Binding residual (THRUST 20): the fold should carry the rules the task is about and fewer of the rest — a
+  task-conditional fold rather than a bigger or a more mandate-dense one.
+
+═══ THRUST 19b — PAIRED RE-MEASURE OF CELL 15 ON BOTH FOLDS (dilution vs noise) — PRE-REGISTERED ═══
+  t19b_fold_dilution_batch.sh (md5 128f39b00d05) on zc-01: ZAK-15 on the ADR-0172 build (a second dozen), then the
+  ADR-0171 prompt.py restored from /root/prompt.py.ADR0171.bak (md5 272999c1ff34) and ZAK-15 again, then ADR-0172
+  restored from /root/prompt.py.ADR0172.bak — md5-checked at every step, fold probed at every step, ONLY prompt.py
+  moves. Archives: the thrust-19 JSON as *-ADR0172-t19.json; the two new dozens as *-ADR0172-t19b.json and
+  *-ADR0171-t19b.json; the un-suffixed file ends as the ADR-0172 (shipped) t19b measurement.
+  PREDICTION, registered before launch: DILUTION if ADR-0172 ≤ 9/12 again AND ADR-0171 ≥ 11/12; NOISE if the two arms
+  land within 2 of each other at either level; anything else reported as measured. Pooled across days (ADR-0171 N=24:
+  t17 + t19b; ADR-0172 N=24: t19 + t19b) at Fisher p < 0.05.
+
+═══ THRUST 20 — THE NO-LEXICAL-SIGNAL RESIDUAL ON THE REAL GUIDE: the Session Binding path (15s / 15sn) — PRE-REGISTERED ═══
+  Cells (Zak-Code #484): 15s-realguide-mind-sessionbinding — the same 47,511-char Ayoai-Mind CLAUDE.md; the rule
+  "the agent-session binding lives at agents/<name>/sessions/<SID>/binding.yaml" is stated ONLY under
+  "## Session Binding (Phase 2.6)" (1,896 chars, offset 14,370 = 30%): a plain top-level heading with no
+  mandate-naming ancestor and no emphasized mandate in its body — nothing ADR-0170 / 0171 / 0172 can key on. The
+  same guide still describes the RETIRED `.active-agent-<SID>` root file in two other sections (Session Start
+  Protocol › Agent-Session Binding; the Auto-Session Continuation table), and the binding section is the one that
+  retires it. Task: implement binding_path(root, agent, sid) in app/binding.py — no default route to the layout.
+  Verify accepts the documented path as a Path, a str or a root-relative path and rejects the legacy form, the
+  agent-wide session/ (singular) dir and the other plausible layouts (controls run: stub FAIL, legacy FAIL,
+  singular FAIL; correct / str / relative / os.path PASS). 15sn = the same repo with no guide (default-rate
+  control). Probe (git-inited copy, ADR-0172 build): fold 7,988 chars, 17 headed sections; binding.yaml NOT in
+  the fold, .active-agent NOT in the fold, "Session Binding (Phase 2.6)" named in the note's omitted list — the
+  thrust-18 shape (rule omitted, named in the note) with no lexical handle for any tier.
+  PREDICTION: 15sn ≤ 2/12; ZAK-15s ≤ 3/12 (the note is not a working cue — thrust 18; a legacy-path answer scores
+  FAIL); CC-15s ≥ 9/12 (the whole file carries both forms; the in-guide contradiction is the dilution risk — CC-15
+  scored 11/12 with one dilution miss). ZAK < CC = the second CC-over-ZAK cell on the real guide and the
+  falsifiable case for the next fold decision.
+  FIX CANDIDATES, pre-registered BEFORE the cell runs:
+   (a) PROMPT-KEYED SECTION TIER — a section whose outline-path labels share a content token with the task prompt
+       ("agent-session binding" ↔ "Session Binding") is promoted; the fold stays a deterministic function of
+       (guide, prompt). To settle in the ADR: the prompt must be available at context assembly (discover_context
+       is prompt-blind today), and unrelated prompts must leave the 13 / 14p / 15 / 15i folds byte-identical.
+   (b) SECTION LEADS — the omission note carries the first sentence of each omitted section within a reserved
+       budget; the binding section's first sentence IS the rule. Prompt-independent; costs fold budget.
+   (c) SIZE — FALSIFIED BY PROBE before any run, on this guide: raising MAX_CONTEXT_FILE_CHARS never admits
+       Session Binding at any cap up to the 32,768-char total cap (a tier-2 section at document index 10 sits
+       behind every tier-0/1 section and the tier-2 sections before it: the 12K / 16K / 24K / 32K folds all omit
+       it), AND the fold is NOT monotone in the cap: at 10,240 it collapses to 3 sections and at 12,288 it drops
+       "### ID Formats" (bel-) — "## Convention Index" (9,614 chars, a table of file descriptions whose heading
+       matches the mandate vocabulary) fits from ~10K and, admitted first in document order, evicts fourteen
+       rule sections; the mandate set is back only at 16K. First-fit by document order within a tier is not
+       monotone in the cap — latent at the shipped 8,192 (the index does not fit), live at 10K-14K. Size is not a
+       fix here, and the non-monotonicity is recorded as an ADR-0172 addendum (rb-10979).
+  DECISION RULE: run 15sn → 15s → CC-15s. If ZAK-15s ≤ 3/12 and CC ≥ 9/12: implement (a) — with (b) held as the
+  fallback if the prompt cannot reach context assembly cleanly — probe that binding.yaml enters the 15s fold with
+  the 14p / 15 / 15i folds unchanged under their own prompts, and re-measure 15s (→ ≥ 10/12) plus 15 / 15i / 14p
+  (hold). If ZAK-15s ≥ 9/12 the premise is wrong (the model reached the path some other way): read the traces
+  before touching the fold.
