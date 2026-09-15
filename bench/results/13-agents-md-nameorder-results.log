@@ -626,3 +626,24 @@ rule and the task-tier note. Pod zakpod1; models named per arm; N=12; sequential
       build, because 'make it work on smaller models' has one 27B datapoint on a guide cell and needs the map before another
       lever; (b) the 2x2 composition cell for the cell-15 cost (the ADR-0172 fold minus the seven added conventions; the ADR-0171
       fold minus the six orientation sections).
+
+══════════════════════════════════════════════════════════════════
+THRUST 22 — THE SMALLER-MODEL MAP: 13 / 14p / 15 / 15i and the 15n no-guide control on zds-qwen3.8-27b, shipped build — PRE-REGISTERED 2026-09-15 03:45 UTC, not yet launched
+══════════════════════════════════════════════════════════════════
+WHY. The campaign's directive is "make zakcode work on smaller models"; thrust 21 gave the 27B exactly one guide-adherence
+datapoint (15s: 12/12 on both folds) and it matched the 35B. That is not a map. Before another lever is built, measure the
+27B on the four cells whose 35B behaviour is known — 13 (short guide, mandate heading), 14p (long guide, plain heading,
+emphasized body), 15 (real 47K guide, Naming Rules in the fold; the 35B's ADR-0172 rate is 18/24 pooled), 15i (real guide,
+ID Formats in the fold via the outline tier; 35B 12/12) — plus 15n (the same repo with no guide: the 27B's DEFAULT rate on
+the timestamp task, so a pass on 15 is attributable to the guide).
+BUILD. The shipped pair (ADR-0173 prompt.py md5 e7ddbf626a66 + the bench loop.py with the _build_system hunk 07d461afa424),
+md5-checked; ZBENCH_POD_MODEL=zds-qwen3.8-27b swaps every zakpick category to the 27B (zbench-run.py); temp 0, --no-pin,
+N=12, sequential; fold probes before launch (13 unfolded; 14p 2322274499b5; 15 / 15i 9b02c28eb12c; 15n folds no guide).
+Batch /root/t22_27b_map_batch.sh → /root/t22-27b-map-batch.log; result JSONs suffixed -taskfold-27b.
+PREDICTIONS (per dozen, the 27B): 13 ≥ 11/12 (35B 12/12); 14p ≥ 11/12 (35B 12/12); 15 ≥ 9/12 (35B ADR-0172 fold 8-10/12
+per dozen; the microseconds-isoformat default is the known miss); 15i ≥ 10/12 (35B 12/12 at 6 turns — the smaller model
+may search more); 15n ≤ 2/12 (35B 0/12). Process profiles recorded beside the 35B's (turns, elapsed, output states).
+READING RULE. This is a MAP, not a lever test: a cell where the 27B lands ≥ 3 passes below the 35B's dozen NAMES the next
+lever and its hypothesis (a fold-shape effect if 15 alone drops; a search/fetch effect if 15i drops with turns up; a
+plain-heading effect if 14p drops); a 27B that matches the 35B everywhere says the next lever is cost, not correctness,
+and the campaign's smaller-model bar is already met on this guide class at 27B. Miss or hit, report as measured.
