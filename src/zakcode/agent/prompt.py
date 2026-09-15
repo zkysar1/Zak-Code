@@ -456,8 +456,7 @@ class SystemPromptBuilder:
             "and the workspace README, outermost first). The guides and conventions are BINDING "
             "for every file you write in this project: where a rule below and your usual approach "
             "disagree, the rule wins — follow it, and name the rule you followed. The README is "
-            "orientation.\n\n"
-            + "\n\n".join(blocks)
+            "orientation.\n\n" + "\n\n".join(blocks)
         )
 
 
