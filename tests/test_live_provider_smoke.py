@@ -43,11 +43,17 @@ def _agent(workspace: Path):  # type: ignore[no-untyped-def]
 
 
 def _skip_on_provider_error(exc: Exception) -> None:
-    """Turn an environmental provider failure (no quota / not running) into a SKIP."""
-    from zakcode.providers.base import ProviderError
+    """Skip only on an ENVIRONMENT failure; re-raise the product's own defects.
 
-    if isinstance(exc, ProviderError):
-        pytest.skip(f"live provider unavailable ({type(exc).__name__}): {exc}")
+    This used to skip on the whole ``ProviderError`` base class, which converted a
+    quota exhaustion, an over-long request and a malformed tool call alike into a
+    green skip -- see ``tests/provider_error_policy`` for what changed and why.
+    """
+    from tests.provider_error_policy import environmental_skip_reason
+
+    reason = environmental_skip_reason(exc)
+    if reason is not None:
+        pytest.skip(f"live provider unavailable ({reason}): {exc}")
     raise exc
 
 
