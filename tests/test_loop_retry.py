@@ -745,4 +745,3 @@ def test_the_same_text_as_a_rate_limit_still_burns_the_budget(
     assert provider.calls == 2  # retried an un-retryable condition
     assert fast_sleep == [0.0]  # and scheduled backoff to do it
     assert done.stop_reason == "provider_error"
-
