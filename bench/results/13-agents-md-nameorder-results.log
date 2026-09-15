@@ -762,3 +762,27 @@ MAX_CONTEXT_FILE_CHARS 12_288, one constant) deployed for 15b only and restored 
       on BOTH models, 15s 12/12, 14p / 13 / no-task byte-identical.
   (iv) Process: every fold without the wall runs at 4 turns and 22-24 s; the ADR-0172 fold at 5 turns and 32 s — the wall costs a
       turn and a third of the wall time on every run, passing or not (t19b saw the same: 5 vs 4 turns, 37 vs 29 s).
+
+══════════════════════════════════════════════════════════════════
+THRUST 24 — ADR-0174 (the head tier) RE-MEASURE on BOTH models — PRE-REGISTERED 2026-09-15 11:00 UTC, not yet launched
+══════════════════════════════════════════════════════════════════
+WHY. Thrust 23 named the cost's shape (conventions with nothing orienting before them: 8/12; the same conventions behind
+the author's opening: 12/12). ADR-0174 keeps the opening — the leading sections up to the first mandate-naming heading,
+within a quarter of the cap — ahead of the mandate tiers. On the real guide that is Project Purpose, Architecture and
+both Core Design Principles (~1.4K), then the Universal Conventions block: the cell-15 fold 7,988 → 8,057 chars, md5
+9b02c28eb12c → 9b3055bae471 (task and no task alike; 15i identical); 15s 8,137 → 8,187 (c99adc4d90d0 → b283e83dfe61,
+the two binding sections still first); 13 / 14o / 14p / 14u byte-identical (dd249cc042f1 / c9add2288a87 / 2322274499b5
+and 3a4f6d831807 / de1bc8d21bbb) — verified against the shipped module on git-inited copies of every bench workspace.
+BUILD. ADR-0174 prompt.py (md5 printed by the batch's pair check) deployed into the zc-01 bench tree beside the bench
+loop.py 07d461afa424 (backups: /root/prompt.py.taskfold = ADR-0173 e7ddbf626a66); no swaps inside the batch; temp 0,
+--no-pin, N=12, sequential; fold probes against the DEPLOYED module before the arms (the md5s above). Batch
+/root/t24_adr0174_batch.sh → /root/t24-adr0174-batch.log; JSONs suffixed -adr0174-35b / -adr0174-27b.
+ARMS. 35B: 15, 15i, 15s, 14p (control). 27B: 15, 15i, 15s.
+PREDICTIONS (per dozen). 15: ≥ 11/12 on the 35B (reference 8-10/12 on the ADR-0172 fold; the composition's 12/12 and 11/12
+were at 4 turns / 22-24 s — predict ≤ 4.5 turns mean, ≤ 28 s) and ≥ 11/12 on the 27B (reference 8/12). 15i: ≥ 11/12 on
+both (reference 12/12 at 6.1 turns / 43 s on the 35B, 12/12 at 5.3 / 37 s on the 27B). 15s: 12/12 on the 35B (6.1 turns
+/ 34 s), ≥ 11/12 on the 27B (5.8 / 35 s). 14p: 12/12 (byte-identical fold, the pod control).
+READING RULE. SHIPS (the ADR stands) if 15 ≥ 11/12 on BOTH models and no hold cell (15i / 15s / 14p) lands ≥ 2 under its
+reference on either model. NEUTRAL-KEEP if 15 lands 9-10 on either model with the holds holding: the shape reading was
+incomplete or the 8K head is too small — the next lever is the head share, measured, not a revert. REVERT-CANDIDATE if
+any hold cell drops ≥ 3 under its reference on either model, or 15 ≤ 8 on both. Miss or hit, reported as measured.

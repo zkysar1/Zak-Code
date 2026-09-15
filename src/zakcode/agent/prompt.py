@@ -89,6 +89,12 @@ _VCS_MARKERS = (".git", ".hg", ".svn")
 #: protect is why raising it was rejected — change it by decision, with a re-measure.
 MAX_CONTEXT_FILE_CHARS = 8_192
 
+#: The share of a folded guide's cap reserved for its OPENING — the leading sections in document
+#: order, up to the first heading that names a rule or mandate — kept before the mandate tiers fill
+#: the rest (ADR-0174). Measured on a real 47K guide: the same thirteen convention subsections score
+#: 8/12 when they open the fold and 12/12 behind the orientation the author wrote first.
+FOLD_HEAD_SHARE = 0.25
+
 #: Largest combined size of all discovered context files after de-duplication (~32 KB).
 MAX_CONTEXT_TOTAL_CHARS = 32_768
 
@@ -556,7 +562,15 @@ def _fit_sections(
     tier ranked the orientation sections that share "path" / "directory" / "store" with a
     request above the plain-headed section that states its rule (`## Session Binding`) — the
     section the real guide keeps its rule in, which the mandate tiers alone never carry
-    (ADR-0173). With no task, or none of its words in a heading, the fold is the ADR-0172 fold.
+    (ADR-0173). With no task, or none of its words in a heading, the task tier is inert.
+    The head tier (ADR-0174) reserves the guide's OPENING before the mandate tiers: its leading
+    sections in document order, up to the first heading that names a rule or mandate, each kept
+    while the head stays within :data:`FOLD_HEAD_SHARE` of the limit. A composition cell on the
+    real guide measured the shape the outline-path tier produces at 8K — thirteen convention
+    subsections with nothing orienting before them — at 8/12, while the same subsections behind the
+    author's opening scored 12/12 and the opening plus the shared rules 11/12: the conventions are
+    obeyed when the fold first says what the project is. The head is what the author put first,
+    bounded by a quarter of the cap; a section the task is about still outranks it.
     """
     total_len = len(content)
     parts: list[tuple[str | None, list[str]]] = [(None, [])]  # (heading line, its lines)
@@ -611,8 +625,22 @@ def _fit_sections(
         else "sections that name or emphasize a rule or mandate are kept first"
     )
 
+    # The head tier (ADR-0174): the opening the author wrote — reserved within FOLD_HEAD_SHARE of
+    # the limit, greedy in document order, before the first heading that names a mandate.
+    first_mandate = next(
+        (i for i in range(n) if blocks[i][0] is not None and _MANDATE_RE.search(paths[i][-1])), n
+    )
+    head: set[int] = set()
+    head_left = int(limit * FOLD_HEAD_SHARE)
+    for i in range(first_mandate):
+        cost = len(blocks[i][1]) + 2
+        if cost <= head_left:
+            head.add(i)
+            head_left -= cost
+
     def priority(i: int) -> tuple[int, int]:
-        return (0 if about[i] else 1, mandate_tier(i))  # about the task first, then the mandates
+        # about the task first; then the opening; then the mandate tiers; document order last
+        return (0 if about[i] else 1, -1 if i in head else mandate_tier(i))
 
     def note_for(kept_n: int, names: list[str]) -> str:
         listed = "; ".join(names[:12]) + (f"; +{len(names) - 12} more" if len(names) > 12 else "")
@@ -832,6 +860,7 @@ __all__ = [
     "AGENT_GUIDE_FILENAMES",
     "CONVENTION_FILENAMES",
     "DYNAMIC_BOUNDARY",
+    "FOLD_HEAD_SHARE",
     "MAX_CONTEXT_FILE_CHARS",
     "MAX_CONTEXT_TOTAL_CHARS",
     "README_FILENAME",
