@@ -526,3 +526,56 @@ the un-suffixed 15 file is the ADR-0172 t19b measurement (the shipped build).
   (i) The mechanism is not the mandate count (9 → 8) — it is the fold's SHAPE: the six orientation sections that opened the ADR-0171 fold are gone, seven convention sections are in, and Naming Rules sits in a different neighbourhood. Which of those matters is a 2x2 composition cell away (the ADR-0172 fold minus the seven added sections; the ADR-0171 fold minus the six orientation sections) — a thrust-21 candidate, ~30 min of pod time.
   (ii) Net on the two real-guide cells the promotion is strongly positive and STAYS: ADR-0172 scores 15 + 15i at 18/24 + 12/12 where ADR-0171 scored 24/24 + 1/12 — the cost is recorded, not reverted.
   (iii) Direction: the task-conditional fold (thrust 20's candidate (a)) is the one lever that addresses the residual AND this cost at once — it would carry Naming Rules for a timestamp task ("timestamp" ↔ "Timestamps"), ID Formats for an id task, Session Binding for a binding task, and could carry FEWER unrelated conventions. Build it after thrust 20 reports; measure it on 15, 15i, 15s together.
+
+══════════════════════════════════════════════════════════════════
+THRUST 20 RESULT (2026-09-15 03:01 UTC) — THE RESIDUAL ON A PLAIN-HEADED RULE: ZAK-15s 12/12 WITH THE RULE OUT OF THE FOLD — the 35B FETCHED the omitted section (7 turns, 49 s) — a pre-registration MISS in the good direction; no-guide 0/12; CC-15s 12/12
+══════════════════════════════════════════════════════════════════
+Batch t20_sessionbinding_batch.sh (md5 a4e0ebfe92d1) on zc-01, 02:08:35 → 03:00:13 UTC, ADR-0172 build (prompt.py md5
+aae1a13a0864), pod zakpod1 / zds-qwen3.6-35b, ONE arm at a time: ZAK 15sn (no guide) → ZAK 15s → CC 15s. Canonical
+probe before launch: fold 7,988 chars md5 9b02c28eb12c, `binding.yaml` NOT in the fold, `.active-agent` NOT in the
+fold, "Session Binding (Phase 2.6)" NAMED in the omission note; 15sn folds only README.md.
+
+═══ SCORECARD — pre-registration: 15sn ≤ 2/12; ZAK-15s ≤ 3/12 (the omitted rule, as 15i); CC-15s ≥ 9/12 ═══
+  arm                                            pass     turns                              elapsed/run          outputs
+  ZAK 15sn (no guide; control)                    0/12     [7,9,8,7,9,7,7,11,8,7,7,8] mean 7.9  30.6-51.9s mean 40.5  12 distinct layouts
+  ZAK 15s  (ADR-0172 fold, rule OMITTED)         12/12     [7,8,6,8,6,7,7,7,8,8,6,7] mean 7.1  35.4-93.3s mean 48.8  3 digests, 12x PASS
+  CC  15s  (whole 47K file)                       12/12  [9,6,6,9,22,5,9,11,8,20,10,16] mean 10.9                     123.9-204.2s mean 168.7               4 digests, 12x PASS
+  Reference — a rule IN the fold on this guide: 15 (Naming Rules) 4-5 turns, 29-37 s; 15i (ID Formats, ADR-0172) 6 turns, 48 s.
+
+═══ READING ═══
+  (i) The control held (0/12, twelve different invented layouts under `.bindings/`): the workspace carries the layout
+      in the guide only. The zakcode arm did NOT hold: 12/12 with the rule OUT of the fold. Every run took 6-8 turns
+      (against 4-5 when the rule is in the fold for cell 15) and produced the Phase 2.6 layout — the model FETCHED the
+      omitted section. Thrust 18 concluded the opposite of the same cue on 15i (1/12: "the omission note is not a working
+      cue for a 35B even when the omitted heading is the task's subject"). The two cells differ in one thing: the
+      lexical overlap between the task and the omitted heading. 15s says "agent-session binding" and the note names
+      "Session Binding (Phase 2.6)" — a distinctive word in common; 15i says "belief id" and the note names "ID
+      Formats" — a two-letter token. REFINED: the note cue works for a 35B when the omitted heading shares a
+      distinctive word with the task, and fails when it does not. That is the same lexical signal a task-keyed fold
+      uses; the difference is WHO pays for it — the model in 3 extra turns and ~20 s per run, or the fold once.
+ (ii) The pre-registered miss changes what fix (a) can buy on this cell at 35B: not pass rate (already 12/12) but
+      process — turns, time, output states — and, for the campaign's actual target, what a SMALLER model does with a
+      cue a 35B needs three turns to act on. That is the thrust-21 design: the task-keyed fold (ADR-0173, Zak-Code
+      #487) vs the ADR-0172 fold, on the 35B for process and on zds-qwen3.8-27b for pass rate, pre-registered below.
+(iii) CC-15s: CC-15s 12/12 (as pre-registered, ≥ 9/12) at 10.9 turns and 169 s per run (spread 5-22 turns,
+      124-204 s), four output states; binding.py read on every run and the repo grepped for `binding_path` /
+      `binding.yaml` in 9 of 12 — the whole 47K file in context did not spare it the search. Parity on outcome
+      (12/12 both) with zakcode 3.5x cheaper (49 s vs 169 s) and tighter (turn spread 2 vs 17) — with the rule
+      OUT of its fold. The in-guide contradiction (two legacy `.active-agent` descriptions beside the Phase 2.6
+      section) cost neither arm a run at 35B.
+
+═══ THRUST 21 — ADR-0173 (the task tier) RE-MEASURE — PRE-REGISTERED 2026-09-15 03:01 UTC, not yet launched ═══
+  Build: prompt.py (ADR-0173, md5 e7ddbf626a66) + the bench tree's loop.py with ONLY the `_build_system` /
+  `_session_task` hunk (md5 07d461afa424; the bench loop.py, md5 a30d608b2319, is one unrelated hook hunk behind
+  main, so main's loop.py is NOT deployed — one variable). Backups /root/prompt.py.ADR0172.bak, /root/loop.py.ADR0172.bak.
+  Canonical probe after deploy (git-inited copies, the arm's own venv): 15s task fold 8,137 chars md5 c99adc4d90d0
+  with `binding.yaml` IN and `.active-agent` IN (the legacy section rides along, as in the whole file); 15 / 15i folds
+  md5 9b02c28eb12c UNCHANGED; 14p fold 7,831 chars md5 2322274499b5 (rule in; changed from 8,071).
+  Arms (sequential; 35B unless stated):
+    A. ZAK 15s, task fold           — PREREG: 12/12 holds; turns mean ≤ 5.0 (from 7.1); elapsed mean ≤ 36 s (from 48.8)
+    B. ZAK 14p, task fold (changed) — PREREG: ≥ 11/12 (12/12 on the ADR-0172 fold)
+    C. ZAK 15i, task fold (byte-identical to ADR-0172) — pod-state control — PREREG: ≥ 11/12
+    D. ZAK 15s, task fold, ZBENCH_POD_MODEL=zds-qwen3.8-27b   — PREREG: ≥ 10/12
+    E. ZAK 15s, ADR-0172 fold restored, zds-qwen3.8-27b       — PREREG: ≤ 8/12 (the 27B fetches less reliably than the 35B)
+  Verdict rule: fix (a) EARNS ITS KEEP if A holds with turns ≤ 5.0 AND B ≥ 11 AND D − E ≥ 3; NEUTRAL if A/B/C hold
+  but D − E < 3 (the fold saves process only — keep, record); REGRESSION if A < 11 or B < 10 (revert the tier).
