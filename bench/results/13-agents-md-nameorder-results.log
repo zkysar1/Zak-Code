@@ -682,3 +682,39 @@ unrelated conventions (a share cap on the mandate tier, or a drop half for the t
 (each half costs on its own). NEITHER if 15c ≥ 11 and 15b ≥ 11 — the cost is not in the section sets (order /
 neighbourhood, or the day: if 15 live also ≥ 11 the batch is underpowered and pools with 19/19b). Process profiles
 (turns, elapsed, output states) recorded for every arm. Miss or hit, reported as measured.
+
+THRUST 22 RESULT (2026-09-15 04:16 UTC) — THE SMALLER-MODEL MAP: the 27B MATCHES the 35B cell for cell — 13 12/12, 14p 12/12, 15i 12/12, 15n 0/12, and 15 8/12 (the pre-registered ≥ 9 missed by ONE — exactly the 35B's first ADR-0172 dozen, p = 0.7 against the 35B's pooled 18/24): the ADR-0172 cell-15 cost is MODEL-INDEPENDENT (both models pooled 26/36 vs ADR-0171's 24/24, p = 0.004), and the 27B is faster than the 35B on every cell at equal or fewer turns
+══════════════════════════════════════════════════════════════════
+Batch /root/t22_27b_map_batch.sh on zc-01, 03:50:04 → 04:13:41 UTC (g-353-98); the shipped ADR-0173 pair e7ddbf626a66 /
+07d461afa424 (pair check OK before and after, no swaps); ZBENCH_POD_MODEL=zds-qwen3.8-27b for every arm; temp 0, --no-pin,
+N=12, sequential; fold probes matched before the arms (13 unfolded dd249cc042f1, 14p 2322274499b5, 15 / 15i 9b02c28eb12c,
+15n no guide). JSONs committed here: determinism-zakcode-pinOFF-temp0-<cell>-taskfold-27b.json for 13 / 14p / 15 / 15i / 15n.
+
+═══ SCORECARD — pre-registration: 13 ≥ 11, 14p ≥ 11, 15 ≥ 9, 15i ≥ 10, 15n ≤ 2 (of 12) ═══
+  cell   27B pass   turns (mean)                       elapsed/run (mean)     outputs   35B reference                                          prereg
+  13     12/12      [4,4,4,4,4,4,4,4,6,4,4,7] 4.4       12.3-26.5 s   16.5     2         12/12, turns 4-7, 12.6-28.6 s (t16, ADR-0171 fold)      ≥ 11  HOLD
+  14p    12/12      [4,6,4,4,4,4,4,4,4,4,4,4] 4.2       17.4-28.9 s   20.2     2         12/12, 4.3 turns, 22.2 s, 2 outputs (t21)               ≥ 11  HOLD
+  15     8/12       [5,6,5,4,6,6,5,4,5,6,4,5] 5.1       19.1-37.6 s   31.2     6         8/12 + 10/12, 5.0 turns, 37 s, 6 outputs (t19 / t19b)   ≥ 9   MISS (by one)
+  15i    12/12      [5,5,6,5,6,6,5,5,6,5,5,5] 5.3       32.0-43.2 s   37.2     10        12/12, 6.1 turns, 43.0 s, 11 outputs (t21)              ≥ 10  HOLD
+  15n    0/12       4.0 (spread 0)                     10.9-14.3 s   12.7     5         0/12, 4 turns, 14.8 s, 8 outputs (t17)                   ≤ 2   HOLD
+  Cell 15's four misses are all the microseconds isoformat default — the 35B's failure mode, no other. 15n's twelve wrong
+  answers are the two defaults the 35B also produced without a guide (the space-separated "… UTC" form, the microseconds
+  isoformat). Fisher: 27B 8/12 vs 35B pooled 18/24 on the same fold p = 0.7; vs the 35B's t19 dozen p = 1.0; ADR-0172 over
+  both models 26/36 vs ADR-0171 24/24 (35B) p = 0.004; 27B ADR-0172 8/12 vs 35B ADR-0171 24/24 p = 0.0084.
+
+═══ READING ═══
+  (i) By the pre-registered rule no cell lands ≥ 3 passes under the 35B's dozen: the 27B matches the 35B on every guide
+      cell — 13 / 14p / 15i (and 15s, thrust 21) 12/12, the no-guide default 0/12 on both. The campaign's smaller-model bar
+      is MET on this guide class at 27B: zakcode's deterministic fold makes the model size irrelevant to guide adherence
+      from 35B down to 27B, the smallest model the pod serves. The next lever is not correctness on this class.
+  (ii) The one miss is the ADR-0172 cell-15 cost, and it is the SAME cost on the smaller model — 8/12 here, 8/12 and 10/12
+      on the 35B, the same failure. A cost that does not move with model capacity is a fold-SHAPE effect, not a capacity
+      effect: exactly what thrust 23 (pre-registered 04:03 UTC, cells committed with #489) decomposes — core / orient /
+      both — launched next on the 35B.
+  (iii) Process: the 27B is faster on every cell (16.5 / 20.2 / 31.2 / 37.2 / 12.7 s against the 35B's ~20 / 22 / 37 / 43 /
+      15 s) at equal or fewer turns (15i 5.3 vs 6.1, 15 5.1 vs 5.0) — the smaller model does not search more; its pass
+      profile AND its failure profile are the 35B's. Output-state counts match too (2 / 2 / 6 / 10 / 5 vs 2 / 2 / 6 / 11 / 8).
+  (iv) WHERE THE CAMPAIGN GOES: thrust 23 names which half of the fold shape carries the cost; the lever it names (fewer
+      unrelated conventions, or a head tier) gets built and re-measured on BOTH models on cell 15 — the first lever whose
+      correctness case can be tested at 27B, where the smaller-model bar now sits. The 15 / 15i pair is the standing
+      two-model regression set for every fold change from here.
