@@ -1004,3 +1004,33 @@ Artifacts: bench/results/determinism-zakcode-pinOFF-temp0-17-realguide-envserver
 and -27b.json (sources["CLAUDE.md"] redacted, guard-6761); bench/tasks/17*/verify.py (v2, with the controls);
 bench/guide_census.py (the fleet census as a standing check for any fold change:
 `guide_census.py <shipped prompt.py> <candidate prompt.py> <guide.md>...`).
+
+THRUST 27 — WHOLE SECTION vs ABRIDGED BLOCK on the 27B: the decomposition thrust 26's pre-registration prescribed for its BUILD-MISS — PRE-REGISTERED 2026-09-15 14:38 UTC, not yet launched
+══════════════════════════════════════════════════════════════════
+QUESTION. Thrust 26 stage 2 read the ADR-0176 abridged rule 11/12 on the 35B and 7/12 on the 27B (rule OUT 3/12,
+control 1/12). Is the abridged FORM (the marker line, the three sibling mandate items, the four plain sections it
+displaced) what the 27B does not read, or is it the rule against the model's confident default whatever the form?
+CELL 17w (bench/tasks/17w-realguide-envserver-deltaassert-wholesection, builder wrapping cell 17's): cell 17's
+repo, task and verify (v2, eleven controls), and cell 17's private guide with ONE change — the `### Test-authoring
+gotchas` sub-section (7,988 chars fence-aware, eleven items) reduced to its rule sentence alone; nothing else of
+the guide moves. Derived in memory from cell 17's guide at build time (never written beside the builder; derived
+md5 4832dea75891, 17,377 chars), so anyone holding cell 17's file reproduces it. FOLD (ADR-0176 on main,
+deterministic, reproduced locally in a temp git root): 8,065 chars md5 f99c45490f5f (task) / 9d2dd5828c31 (no
+task), the rule IN as a 144-char WHOLE section at the same priority position (heading tier), no marker, 12 of 30
+sections kept — the four plain sections the abridged block displaced (Quick Reference, Deployment, Verticle System,
+Character Lifecycle) are back; cell 17's own fold unchanged at d1732a3e1ff3 (8 of 30, 1 abridged). The bench tree
+stays on ADR-0176 (b57bdb96285b), loop.py never moves; probes on the box before any arm: 17w = f99c45490f5f,
+17 = d1732a3e1ff3 (both rule IN).
+ARMS (N = 12, temperature 0, --no-pin, sequential on zakpod1; cell-17 verify v2 scores every arm):
+  (1) 17w on the 27B (zds-qwen3.8-27b)            → …-17w-…-wholesection-t27-27b.json
+  (2) 17 abridged on the 27B again (test-retest)  → …-17-…-deltaassert-adr0176-27b-rerun.json
+  (3) 17w on the 35B (positive control)           → …-17w-…-wholesection-t27-35b.json
+PREDICTIONS: (1) 9-11/12 — a terse whole section reads as a rule to the 27B better than the abridged block;
+(2) 5-9/12 — the first sample's 7/12 was the rate, not noise; (3) ≥ 11/12, 6-7 turns, no fetch.
+READING RULE: FORM if (1) ≥ 10 and (2) ≤ 8 — the abridged form costs the 27B its reading; the abridgement is
+redesigned toward the rule alone (a new ADR, pre-registered and re-measured on this cell). MODEL if (1) ≤ 8 and
+(2) ≤ 8 — the 27B follows an in-context rule against a confident default about half the time whatever the form: a
+model residual, recorded in the ADR-0176 addendum and the tree; the fold stops iterating on this cell, and the next
+lever is chosen after (not pre-registered here). MARGINAL otherwise ((1) = 9, or (2) ≥ 9) — the pooled 24-run
+abridged rate is reported beside (1); no build. (3) < 11 voids the FORM reading (the whole-section fold costs the
+35B something — reported as such, and the 35B's 11/12 abridged stands as the better fold for it).
