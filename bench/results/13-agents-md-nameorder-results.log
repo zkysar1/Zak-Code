@@ -1572,3 +1572,85 @@ ROUTE-SHIFT / INERT on the sibling-readers exactly as in thrust 33; and NON-READ
 non-reader miss rate is below half the baseline's with at least 30 non-reader runs in each arm (thrust 33: 4/22 vs
 8/20), else UNREAD. No HARM clause (unchanged from thrust 33: the folds are byte-identical under either prompt; the next
 map re-measure carries it).
+
+THRUST 34 RESULT (2026-09-15 20:42 UTC, g-353-121): MARGINAL-2 by the pooled rule — ADR-0180 KEPT on main; the mechanism reading
+names ROUTE-SHIFT: the line stops the read of the precedent, not the copy after it
+══════════════════════════════════════════════════════════════════
+BATCH (20:05:55-20:38:10 UTC; /root/t34_batch.sh = the thrust-33 script with the log, suffixes and dump dirs renamed,
+BASE=adr0176; every swap and restore pair-checked, import-checked and fold-probed; the tree closed on the baseline pair;
+12 redacted / 0 raw on each record; both arms dumped):
+  (a1) baseline   9/12   turns 6.5   42 s        (c1) ADR-0180    9/12   turns 6.3   40 s
+  (a2) baseline   7/12   turns 6.5   40 s        (c2) ADR-0180   10/12   turns 6.0   39 s
+Thrust 34 alone: A' = 16/24, C' = 19/24 (+3, one-sided Fisher p = 0.26). POOLED with thrust 33 (48 vs 48): A = 28/48,
+C = 37/48, C − A = 9 → MARGINAL-2 (MISS needed C ≤ 32; SHIPS needed C ≥ 40); one-sided Fisher p = 0.040, two-sided
+0.080. PREDICTIONS: A' in 10-16 met at the edge (16); C' ≥ A' + 4 MISSED (+3); pooled C ≥ A + 10 MISSED (+9); turns
+and elapsed equal met (6.0-6.5 turns, 39-42 s); the sibling-read route at 5-25% in both arms met (7/24 baseline, 2/24
+candidate); candidate non-readers miss ≤ 4 met (3 of 22); no guide reads by tool met (0/48). Every miss in every
+block the bare absolute `assert Metrics.hits == 1`; the first write carries the verdict in 96/96 runs across the two
+thrusts; 0/96 post-edits. The untreated 27B on cell 17 now stands at 50/84 (60%) over six batches.
+MECHANISM READINGS (pooled 96 dumped runs): SIBLING-READERS — ROUTE-SHIFT: with the line the model opens the sibling
+test (the project's existing absolute-style tests) in 4 of 48 runs against 11 of 48 without it (one-sided p = 0.045),
+and every run that opens it still copies it — 15 of 15 across both arms and both thrusts (against 16 of 81
+non-readers, p = 2e-9). NON-READER EFFECT — UNREAD: 7/44 with the line vs 9/37 without (two-sided p = 0.41), not
+below half. The arithmetic closes: had the line done nothing but turn seven sibling-readers into non-readers at the
+baseline non-reader rate (9/37 = 24%), the candidate would miss 11.7 of 48; it missed 11. The whole +9 is the route
+shift — in this model "existing files may predate it, so do not copy them against it" acts as "do not go and look at
+them", and a rule the model has just seen contradicted by a file it has just read loses every time.
+DISPOSITION (the pre-registered MARGINAL-2 branch): ADR-0180 stays on main as a no-cost line with a benefit the rule
+does not certify (the pooled one-sided p = 0.04 is reported, not promoted — the SHIPS line was +12); the ADR gains
+addendum 2; the four records committed (secret and guide-phrase scans 0 hits); the bench tree's standing prompt is now
+ADR-0180 (302a7becd55b, matching main; backup /root/prompt.py.adr0176). rb-11078 amended with the pooled route
+numbers. Fallback C is measured next ON TOP of ADR-0180 — thrust 35, pre-registered below; the candidate is
+reproducible from main by bench/candidates/adr0181_apply_toolrule.py (committed here), its files held off main until
+the reading names them.
+
+THRUST 35 — FALLBACK C: THE RULE LINE IN THE WRITE TOOLS' CONTENT DESCRIPTIONS (ADR-0181 candidate) vs THE SHIPPED
+TOOLS, ON THE ADR-0180 PROMPT (kept on main), INTERLEAVED, DUMPED, WITH A SAME-BATCH 16p HARM PAIR — PRE-REGISTERED 2026-09-15 20:42 UTC,
+not yet launched (g-353-122)
+══════════════════════════════════════════════════════════════════
+WHY: the pooled ADR-0180 reading was MARGINAL-2 (37/48 vs 28/48); the thrust-34 pre-registration fixed fallback C as
+the next lever, measured ON TOP of it (baseline = the ADR-0180 prompt with the shipped tools, candidate = the same prompt with the ADR-0181 tools). The census over the 96 dumped runs of thrusts 33-34 places every miss at the
+first and only write: every sibling-reader missed (15 of 15), and the non-readers missed 16 of 81 (9/37 without the line, 7/44 with it) — the rule sits at the
+top of the system prompt, is never re-read, and does not reach the write. Fallback C puts one sentence where the model
+reads as it fills the content argument — `write_file.content`: "Full text content to write to the file. Where the project
+context (the guides and conventions in your system prompt) states a rule that applies to this file, the content must
+follow it — even where files already in the project do otherwise."; `edit_file.new_string` the same with "the new text".
+Fixed text in the tool schemas, sent with every request; no rail; the tool contract otherwise unchanged.
+BUILD (held in the session scratch since the thrust-33 result; not on main): write_file.py 79fccbe3548c and edit.py
+d45086293d9e = main's f858ee38e993 / e92a8bdfa39c + the sentence (the bench tree's copies are byte-identical to main's,
+so the whole files deploy; backups /root/write_file.py.base, /root/edit.py.base); prompt.py /root/prompt.py.adr0180
+throughout (302a7becd55b); loop.py 07d461afa424; tests/test_write_tools_rule_line.py (two tests, green on the
+candidate overlay and red on main); /root/t35_check.py asserts both descriptions carry the sentence — it must PASS on the
+candidate tools and FAIL by AssertionError on the shipped ones (exercised both ways on cc-14 and the negative way on
+zc-01's tree; the batch script's expect_absent is three-state: present → FATAL, AssertionError → expected, anything
+else → FATAL); /root/t35_batch.sh: a set check on four md5s (prompt, loop, both tools) at every swap and restore,
+pycache cleared under src/zakcode, both fold probes, both arms dumped.
+ARMS (N = 12 each, 72 runs, temperature 0, --no-pin; PROMPTBASE=adr0180; order a1 → swap → c1 → h1 → restore →
+h0 → a2 → swap → c2 → restore):
+  (a1) 17 on the 27B, shipped tools → …-t35-base-27b-1.json        (c1) 17 on the 27B, ADR-0181 tools → …-t35-adr0181-27b-1.json
+  (h1) 16p on the 27B, ADR-0181 tools → 16p…-t35-adr0181-27b.json   (h0) 16p on the 27B, shipped tools → 16p…-t35-base-27b.json
+  (a2) 17 on the 27B, shipped tools → …-t35-base-27b-2.json        (c2) 17 on the 27B, ADR-0181 tools → …-t35-adr0181-27b-2.json
+PREDICTIONS: A in 15-21 of 24; C ≥ A + 6; turns and elapsed equal within noise (the sentence adds ~40 tokens to each
+of two tool schemas); the sibling-read route persists at 5-25% of runs in BOTH arms (the line does not touch the read);
+the candidate's sibling-readers miss in no more than half (from 15 of 15) — the prediction that separates the write
+surface from the prompt surface; the candidate's non-readers miss ≤ 2 of theirs; h0 = 12/12 and h1 ≥ 11/12; no guide
+reads by tool; 0 post-edits.
+READING RULE (guard-6776; enumerated over every (A, C) pair 0..24 — 625/625 covered, no overlap; the HARM clause over every
+(h0, h1) pair 0..12 — 169/169; the HARM clause is read FIRST and stands whatever the count says): HARM if h1 ≤ h0 − 3 — the
+candidate tools come off the bench tree and are not merged; the line is redesigned or retired. Otherwise MISS if C ≤ A + 2 —
+the write-surface line retired unmerged; the next lever is the fold's POSITION (fallback D: the project-context block moved
+to the end of the system prompt, after the tool guidance, nearest the conversation — the misses' pre-write text names the
+rule far less often than the passes', 6/16 vs 30/32 in thrust 32), and after D the campaign declares the cell-17 residual
+model-bound at this fold for prompt-and-schema levers on the 27B and returns to the regression map. SHIPS if C ≥ A + 3,
+C ≥ 18 and the one-sided Fisher p of C against A (24 vs 24) is ≤ 0.05 — a line written as a function of the measured control
+because the ceiling binds at this baseline (the ADR-0180 arm ran 37/48): the least C that ships is A=8→C≥18, A=9→C≥18, A=10→C≥18, A=11→C≥18, A=12→C≥19, A=13→C≥20, A=14→C≥21, A=15→C≥21, A=16→C≥22, A=17→C≥23, A=18→C≥23, A=19→C≥24, A=20→none, A=21→none, A=22→none, A=23→none, A=24→none;
+at A ≥ 20 no C reaches it at N = 24 and MARGINAL's second sample carries it — ADR-0181 merged (the two tool files, the two
+tests, the ADR entry), the 35B measured under it next. MARGINAL otherwise (C ≥ A + 3 short of the SHIPS line) — NOT merged
+(unlike ADR-0180, which was already on main and costs nothing where no guide is folded, the tool line is paid on every
+request in every project); a second interleaved 24 vs 24 decides on the pooled 48 vs 48 (MISS if C ≤ A + 4; SHIPS if
+C ≥ A + 5, C ≥ 36 and one-sided p ≤ 0.02 → merged; MARGINAL-2 otherwise → not merged, the campaign moves to fallback D;
+enumerated 2,401/2,401).
+MECHANISM READINGS (secondary, from the dumps; never overriding the count or HARM rules): CONVERTS if the candidate's
+sibling-readers miss in ≤ 1/2 with at least 4 such runs; ROUTE-SHIFT if the candidate's sibling-read rate falls below
+half the baseline's; NON-READER EFFECT if the candidate's non-reader miss rate is below half the baseline's with ≥ 15
+non-reader runs in each arm (24-run arms); INERT otherwise.

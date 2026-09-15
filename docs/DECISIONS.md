@@ -9973,3 +9973,11 @@ interleaved on the 27B cell 17 (blocks 7 + 11 vs 7 + 5; one-sided Fisher p = 0.0
 difference sits in the runs that never read the precedent (4 of 22 missed vs 8 of 20). Kept on main; a second
 interleaved sample (thrust 34) decides on the pooled 48 vs 48 — MISS at C ≤ A + 4 (reverted), SHIPS at C ≥ A + 12 with
 C ≥ 36, MARGINAL-2 otherwise (kept as a no-cost line; fallback C is then measured on top of it).
+
+**Addendum 2 (thrust 34, 2026-09-15).** The second interleaved sample read 19/24 with the line vs 16/24 without; pooled
+48 vs 48: 37/48 vs 28/48 (C − A = 9, one-sided Fisher p = 0.040, two-sided 0.080) — MARGINAL-2 by the pooled rule
+(SHIPS needed +12): kept on main as a no-cost line whose benefit the rule does not certify. Mechanism: ROUTE-SHIFT —
+under the line the model opens the project's precedent test in 4 of 48 runs against 11 of 48, and every run that opens
+it still copies it (15 of 15 across both arms); runs that never open it miss at the same rate with or without the line
+(7/44 vs 9/37). The sentence works by keeping the model away from the precedent, not by making it resist one it has
+read. The write-surface lever (fallback C, thrust 35) is measured on top of it.
