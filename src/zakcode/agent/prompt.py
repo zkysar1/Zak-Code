@@ -268,6 +268,10 @@ class SystemPromptBuilder:
         # One survey per workspace per builder: the prefix must not move between the turns of
         # a session (see ``workspace_survey``).
         self._survey_cache: dict[str, str] = {}
+        #: The guide and convention files the last :meth:`build` folded into the trusted
+        #: tier (names only; a README is not a guide) — the loop's guide-check rail
+        #: (ADR-0178) keys on it.
+        self.last_guides: tuple[str, ...] = ()
 
     def build(
         self,
@@ -387,11 +391,11 @@ class SystemPromptBuilder:
     ) -> str:
         sections = [self._environment_section(settings, session_id=session_id)]
 
-        context_files = self._render_context(
-            discover_context(
-                settings.workspace_root, include_readme=settings.context_include_readme, task=task
-            )
+        files = discover_context(
+            settings.workspace_root, include_readme=settings.context_include_readme, task=task
         )
+        self.last_guides = tuple(path.name for path, _ in files if path.name != README_FILENAME)
+        context_files = self._render_context(files)
         if context_files:
             sections.append(context_files)
 
