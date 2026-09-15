@@ -647,3 +647,38 @@ READING RULE. This is a MAP, not a lever test: a cell where the 27B lands ≥ 3 
 lever and its hypothesis (a fold-shape effect if 15 alone drops; a search/fetch effect if 15i drops with turns up; a
 plain-heading effect if 14p drops); a 27B that matches the 35B everywhere says the next lever is cost, not correctness,
 and the campaign's smaller-model bar is already met on this guide class at 27B. Miss or hit, report as measured.
+
+══════════════════════════════════════════════════════════════════
+THRUST 23 — THE COMPOSITION CELL FOR THE ADR-0172 CELL-15 COST: core / orient / both as LITERAL folds on the shipped build, the 35B — PRE-REGISTERED 2026-09-15 04:03 UTC, not yet launched (queued behind thrust 22 on the one pod)
+══════════════════════════════════════════════════════════════════
+WHY. Thrust 19b: the ADR-0172 fold costs cell 15 about one pass in four with its rule IN BOTH folds (pooled 18/24 vs
+24/24, p = 0.022; 5 turns vs 4; 37 s vs 29 s per run). The two folds share a CORE of ten sections (Mode System,
+Universal Conventions, Naming Rules, Priority Values, Status Values, Pipeline Rules, Skill Invocation Rules, Code
+Change Verification, Enforcement Rules, Autonomous Loop Rules) plus the preamble; ADR-0171 adds six ORIENTATION
+sections (Project Purpose, Architecture, the two Core Design Principles, Cognitive Primitives, Knowledge Retrieval),
+ADR-0172 seven CONVENTION sections (File Formats, Domain-Free Cognitive Core, ID Formats, Python Invocation,
+Daemon-Only Architecture, Self File Format, Knowledge Reconciliation). Which half carries the cost decides the lever.
+METHOD. The guides are COMPOSED folds: whole sections in document order, preamble and omission note in the fold's
+own output format (bench/tasks/15{c,o,b}-realguide-mind-timestamp-*/guide-CLAUDE.md, built by the campaign's
+compose15.py from the same fence-aware section split _fit_sections uses; the ADR-0171 and ADR-0172 folds rebuilt
+this way are BYTE-IDENTICAL to the live folds, md5 ef3a7a2063d4 / 9b02c28eb12c, which validates the composition).
+A composed guide under the 8,192 cap passes through discover_context untouched, so the model sees exactly the
+composed bytes on the shipped pair with no module swap. Cells: 15c CORE (5,307 chars, md5 559afae30623, rule at
+char 1,575); 15o ORIENT = the ADR-0171 fold verbatim (8,186, ef3a7a2063d4 — the METHOD CONTROL: a literal fold must
+score as the live fold did); 15b BOTH = core + orientation + conventions (10,868, f1e82829f568; over the cap, so its
+arm runs under prompt.py.cap12k — MAX_CONTEXT_FILE_CHARS 8_192 → 12_288, ONE constant, md5 f6cc5a5acdb2 — deployed
+and restored with md5 + fold-probe checks; loop.py never moves; local probe: the literal passes through unfolded);
+and 15 live (the shipped ADR-0172 fold 9b02c28eb12c — the same-day baseline, a third dozen). ZAK arms on
+zds-qwen3.6-35b (the model of 19b), N=12, temp 0, --no-pin, sequential, order 15 → 15o → 15c → 15b. Batch
+/root/t23_composition_batch.sh → /root/t23-composition-batch.log; JSONs suffixed -t23 (15b: -t23-cap12k).
+PREDICTIONS (per dozen). 15 live ≤ 10/12 (the cost shows again; pooled 18/24 so far). 15o ≥ 11/12 (24/24 so far —
+if 15o ≤ 10 the METHOD or the day is off and the composition is unreadable). 15c is the decisive arm — hypothesis
+DILUTION: 15c ≥ 11/12 (the core alone carries the convention as ADR-0171 did; the seven conventions are what cost)
+and 15b ≤ 10/12 (they still dilute with the preamble back). Alternative PREAMBLE: 15c ≤ 10 and 15b ≥ 11 (the
+opening sections are what protects the rule).
+READING RULE (valid only if 15o ≥ 11). DILUTION if 15c ≥ 11 and 15b ≤ 10 → the lever is a fold that carries FEWER
+unrelated conventions (a share cap on the mandate tier, or a drop half for the task tier). PREAMBLE if 15c ≤ 10 and
+15b ≥ 11 → the lever is a head tier that keeps the guide's opening sections. BOTH-HALVES if 15c ≤ 10 and 15b ≤ 10
+(each half costs on its own). NEITHER if 15c ≥ 11 and 15b ≥ 11 — the cost is not in the section sets (order /
+neighbourhood, or the day: if 15 live also ≥ 11 the batch is underpowered and pools with 19/19b). Process profiles
+(turns, elapsed, output states) recorded for every arm. Miss or hit, reported as measured.

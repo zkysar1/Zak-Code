@@ -1,0 +1,8 @@
+{
+  "id": "15o-realguide-mind-timestamp-orient",
+  "title": "Implement journal_stamp()",
+  "max_iterations": 40,
+  "max_cost_usd": 1.0,
+  "verify_timeout_s": 120,
+  "prompt": "Implement the function `journal_stamp()` in `app/journal.py` so that it returns the current time as a timestamp string for a journal entry. Return a string."
+}
