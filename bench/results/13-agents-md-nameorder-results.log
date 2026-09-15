@@ -1034,3 +1034,37 @@ model residual, recorded in the ADR-0176 addendum and the tree; the fold stops i
 lever is chosen after (not pre-registered here). MARGINAL otherwise ((1) = 9, or (2) ≥ 9) — the pooled 24-run
 abridged rate is reported beside (1); no build. (3) < 11 voids the FORM reading (the whole-section fold costs the
 35B something — reported as such, and the 35B's 11/12 abridged stands as the better fold for it).
+
+THRUST 27 RESULT (2026-09-15 15:01 UTC) — MARGINAL by the letter, MODEL by the evidence: the rule as its own whole section reads no better to the 27B (6/12) than the abridged block (7/12, then 9/12 on re-run; pooled 16/24), while the 35B reads either at 23/24; no fold build — the residual is the model's, and a dumped probe (pre-registered below) classifies its misses
+══════════════════════════════════════════════════════════════════
+SCORE vs the prereg (verify v2 on every arm; recorded = re-scored). (1) 17w on the 27B, predicted 9-11 → 6/12
+(below the range; 6.9 turns, 35 s; the misses: three bare absolutes, two reset-then-absolute, one run that wrote no
+test in 8 turns). (2) 17 abridged on the 27B again, predicted 5-9 → 9/12 (top of the range; 6.4 turns, 31 s;
+three absolutes, one behind a reset fixture); pooled with stage 2's 7/12: 16/24. (3) 17w on the 35B, predicted
+≥ 11 → 12/12 (6.4 turns, 32 s): the control holds, the whole-section fold costs the 35B nothing (abridged 11/12,
+whole 12/12: 23/24). Fisher: (1) vs pooled (2) 6/12 vs 16/24 p = 0.47; the re-run vs the first sample 9/12 vs 7/12
+p = 0.67; every 27B rule-IN arm pooled 22/36 vs rule-OUT 6/24 p = 0.008 and vs the no-guide control 1/12
+p = 0.002; the 35B's 23/24 vs the 27B's 22/36 p = 0.00221.
+READING. The letter: (1) ≤ 8 and (2) ≥ 9 → MARGINAL (FORM needed (1) ≥ 10 with (2) ≤ 8; MODEL needed both ≤ 8 —
+the re-run crossed 9). The evidence: the FORM hypothesis fails in its own predicted direction — the terse whole
+section is read no better than the marker-bearing abridged block, if anything worse — so the marker, the three
+sibling mandates and the four displaced sections are not what the 27B misses. What is left is the model: with the
+rule in the fold in either form the 27B writes the delta about 60% of the time and the 35B about 96%; without it
+both write the imitation absolute (11/12 in the control) and neither fetches the rule (stage 1). For the smaller
+model the fold's job — the rule IN, deterministically — is done, and the remaining ~40% is compliance with an
+in-context rule against a confident default, which no fold shape buys. NO BUILD: ADR-0176 stays as is and the fleet
+keeps the abridged form (the better pooled numbers on both models; the whole-section fold exists only as a bench
+variant). The claim "abridgement makes the smaller model follow an oversized section's rule" stays unmade; the
+measured claim is "the rule is in the fold, and the 27B follows it ~60% vs ~15% without".
+NEXT — DIAGNOSTIC PROBE, pre-registered here, launching after this block is committed: twelve dumped runs
+(ZBENCH_DUMP_REQUESTS) of 17w on the 27B, tree unchanged (ADR-0176), the redacting runner (#501) in place; the
+census (counts and booleans only, never text: /root/t27_dump_census.py) records per run whether the system prompt
+carries the rule, the assistant block types (whether the pod returns thinking), whether any assistant text or
+thinking mentions delta / before-after / reset, tool calls naming the guide, and the verify verdict. READINGS:
+SALIENCE if the misses mention the rule at no more than half the passes' rate (the model did not attend to the
+rule — the lever is position or framing in the fold, e.g. mandate sections last, nearest the task); JUDGMENT if
+the misses mention the rule in at least two thirds of runs (the model saw it and overrode it — the lever is
+instruction strength or a harness-side check, not the fold); BLIND if no assistant text or thinking carries any
+mention in any run (the census cannot see the model's reading; the next probe changes the model's output, e.g.
+asks it to state the rules it applied). The dumped arm's pass rate is reported beside (1) as a second sample
+(pooled 24 whole-section runs on the 27B).
