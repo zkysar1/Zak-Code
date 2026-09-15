@@ -9766,3 +9766,12 @@ section's rule is not made. Thrust 27 decomposes the 27B miss as the pre-registr
 its own small whole section of the same guide (nothing abridged, no marker) on the 27B against a re-run of the
 abridged arm, with the whole-section 35B arm as the positive control. The fleet census is now a committed tool
 (`bench/guide_census.py`) to run against every fold change before pod time.
+
+**Addendum (thrust 27, 2026-09-15).** The decomposition the stage-2 pre-registration prescribed: the same rule as
+its own 144-char whole section of the same guide (cell 17w — no marker, no sibling mandates, the four displaced
+sections back) read 6/12 on the 27B against the abridged block's 7/12 and, re-run, 9/12 (pooled 16/24; p = 0.47),
+and 12/12 on the 35B (abridged 11/12). The abridged form is not what the 27B misses: with the rule in the fold in
+either form it complies about 60% of the time and the 35B about 96%, and without it neither model fetches the
+rule. The abridgement stands unchanged, and the residual is the smaller model's compliance with an in-context rule
+against a confident default, which no fold shape buys — its classification (the rule unattended vs read and
+overridden) is a dumped-request probe, not a fold change.
