@@ -260,6 +260,69 @@ class RequestFailed(ProviderError):
     """A request failed for a reason not covered by the more specific errors."""
 
 
+class QuotaExhausted(ProviderError):
+    """The account is out of quota/credit — a PERMANENT refusal, never retried.
+
+    Deliberately NOT a :class:`RateLimited` subclass, and that is the entire fix.
+    A quota refusal arrives as HTTP 429 exactly like a transient throttle, so it
+    classified as ``RateLimited`` and rode the loop's ~15-minute backoff horizon:
+    fifteen minutes of billed compute per turn whose outcome is guaranteed to be
+    zero tokens, because the remedy is a billing action outside the fleet's
+    control and no retry can reach it.
+
+    Measured 2026-09-14 on a live dev vessel (g-373-80): the first call refused
+    at 12:04:25, the loop logged "rate limited; retrying" throughout, and the
+    provider's real message surfaced only at 12:19:26 when the budget ran out —
+    the turn ended ``stop_reason="provider_error"``, iterations=1, tokens=0,
+    transcript 0 B. A run capped or stopped before budget exhaustion never
+    reaches the line that carries the truth at all.
+
+    Because this subclasses :class:`ProviderError` directly, neither ``except
+    RateLimited`` retry site can catch it, and it reaches the loop's graceful
+    ``provider_error`` terminal on the FIRST refusal — which records ``str(exc)``,
+    the provider's own text, as the turn error. The fast exit and the operator
+    diagnostic are therefore properties of the CLASS, not of a branch someone has
+    to remember to keep.
+    """
+
+
+#: Substrings that identify a PERMANENT quota/credit refusal. Lower-cased compare.
+#:
+#: MEASURED (g-373-80, 2026-09-15): litellm maps HTTP 429 to ``RateLimitError`` on
+#: the STATUS CODE ALONE — eight 429 branches in ``exception_mapping_utils.py``,
+#: not one of which reads the response body's ``code`` — and ``insufficient_quota``
+#: appears ZERO times across its 1,812 files. The permanent-vs-transient
+#: distinction is ERASED before the exception reaches us, so no widening of the
+#: exception TYPE can recover it. The message text is the only carrier left, which
+#: is why this list exists at all rather than a richer type lattice.
+#:
+#: THIS LIST IS A JUDGEMENT CALL, NOT A MEASUREMENT. It is the vendor phrasing
+#: known at the time of writing; no sample of a real error body is recorded in this
+#: repo. It is deliberately the ONE place to extend when a provider's wording is
+#: observed to differ.
+#:
+#: Never key a marker on a FIELD NAME such as ``api_key`` / ``token`` / ``secret``
+#: / ``password`` / ``bearer``: :func:`~zakcode.secrets.redact_secrets` replaces the
+#: value following those names, so such a marker would be destroyed before any
+#: reader saw it — silently, and with no error. Key on the literal, as below.
+QUOTA_EXHAUSTION_MARKERS: tuple[str, ...] = (
+    "insufficient_quota",
+    "exceeded your current quota",
+    "billing_hard_limit_reached",
+    "out of credits",
+    "credit balance is too low",
+)
+
+
+def quota_exhaustion_marker(text: str | BaseException) -> str | None:
+    """Return the marker proving ``text`` is a permanent quota refusal, else None."""
+    lowered = str(text).lower()
+    for marker in QUOTA_EXHAUSTION_MARKERS:
+        if marker in lowered:
+            return marker
+    return None
+
+
 # ── Provider ABC ─────────────────────────────────────────────────────────────
 
 

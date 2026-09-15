@@ -28,45 +28,30 @@ specific class for the documented failure mode, never the base).
 from __future__ import annotations
 
 from zakcode.providers.base import (
+    QUOTA_EXHAUSTION_MARKERS,
     AuthError,
     ContextWindowExceeded,
     ModelOutputRejected,
     ProviderError,
+    QuotaExhausted,
     RateLimited,
     RequestFailed,
     TimedOut,
+    quota_exhaustion_marker,
 )
 
-#: Substrings that identify a PERMANENT quota/credit refusal inside an otherwise
-#: ordinary rate-limit message. litellm maps HTTP 429 to ``RateLimitError`` on the
-#: STATUS CODE ALONE -- measured on g-373-80: eight 429 branches in
-#: ``exception_mapping_utils.py``, not one of which reads the body's ``code``, and
-#: ``insufficient_quota`` appears zero times across 1,812 litellm files. So the
-#: permanent-vs-transient distinction is ERASED from the exception TYPE before it
-#: reaches us and can only be recovered from the message text. Reading text here
-#: matches the sibling idiom in ``litellm_provider._classify`` itself, which
-#: already matches on ``"exceeds the available context size"`` and
-#: ``"tool_use_failed"`` for the same reason.
-#:
-#: Lower-cased comparison. This list is a judgement call, not a measurement: it is
-#: the vendor phrasing known at the time of writing, and it is deliberately the one
-#: place to extend when a provider's wording is observed to differ.
-QUOTA_EXHAUSTION_MARKERS: tuple[str, ...] = (
-    "insufficient_quota",
-    "exceeded your current quota",
-    "billing_hard_limit_reached",
-    "out of credits",
-    "credit balance is too low",
-)
-
-
-def quota_exhaustion_marker(exc: BaseException) -> str | None:
-    """Return the marker proving ``exc`` is a permanent quota refusal, else None."""
-    text = str(exc).lower()
-    for marker in QUOTA_EXHAUSTION_MARKERS:
-        if marker in text:
-            return marker
-    return None
+#: The marker list and its discriminator now live in the PRODUCT
+#: (:mod:`zakcode.providers.base`), because as of g-373-80 the product classifies a
+#: permanent refusal itself — ``_map_error`` raises :class:`QuotaExhausted` instead
+#: of a retryable ``RateLimited``. They are re-exported here so a test still imports
+#: one name from one module, while the vendor-phrasing list has exactly ONE home:
+#: two copies would drift the moment either is extended, and the copy that fell
+#: behind would fail open (a real outage read as an ordinary throttle).
+__all__ = [
+    "QUOTA_EXHAUSTION_MARKERS",
+    "environmental_skip_reason",
+    "quota_exhaustion_marker",
+]
 
 
 def environmental_skip_reason(exc: BaseException) -> str | None:
@@ -93,8 +78,16 @@ def environmental_skip_reason(exc: BaseException) -> str | None:
         return f"client-side timeout ({type(exc).__name__})"
 
     # A permanent quota/credit refusal is a REAL failure wearing a 429's clothes.
-    marker = quota_exhaustion_marker(exc)
-    if marker is not None:
+    # Two checks, and both earn their place. The TYPE check is the product's own
+    # verdict (g-373-80): ``_map_error`` now raises QuotaExhausted for any message
+    # carrying a marker, whatever status code it arrived under. The TEXT check
+    # behind it is the net for a refusal that reaches a test WITHOUT that verdict —
+    # a provider litellm never mapped to 429 at all (landing in RequestFailed), or
+    # an exception constructed directly by a fixture. Dropping either one would make
+    # the quieter route skip, which is the exact failure this module exists to stop.
+    if isinstance(exc, QuotaExhausted):
+        return None
+    if quota_exhaustion_marker(exc) is not None:
         return None
 
     if isinstance(exc, AuthError):
