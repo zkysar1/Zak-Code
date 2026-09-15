@@ -9872,3 +9872,14 @@ control was historical): cell 17 on the 27B and on the 35B with the check (dumpe
 against the pre-check absolutes), 16p on the 27B as the regression control, N = 12, temperature 0; HARM at three
 below the concurrent baseline (guard-6769). Ships on main only under SHIPS; the same six tests carry it. Cost: one
 extra completion per editing turn, plus an edit where a rule has no satisfying line.
+
+**Addendum (2026-09-15, thrust 30 — MISS; reverted, the post-write check retired).** Measured beside CONCURRENT
+no-rail baselines (both models 10/12 on cell 17 today): with the evidence check the 27B 8/12 (census: FIXED 0,
+CONFIRMED 4 — three after re-reading the guide), the 35B 10/12 (FIXED 0, CONFIRMED 2; the guide re-read after the
+check in every run), 16p on the 27B 12/12 at more than double the elapsed time. The pre-registered rule reads MISS:
+the evidence form converts no confirmed absolute. Reverted from main in the PR that records this (loop.py
+c2315d200565, prompt.py b57bdb96285b, the tests removed). Two wordings (ADR-0177, ADR-0178), four treated arms, 48
+runs, one conversion: a post-write check, as a verdict or as quoted evidence, does not reach the JUDGMENT residual —
+the model re-reads the rule and finishes with its default in place. Thrust 28's HARM is re-read by the concurrent
+baseline as no harm (the untreated 35B reads 10/12 today; the rail arms read 9/12). Next: ADR-0179, fallback B — a
+binding framing line at the head of the project-context block, acting at the moment of writing.

@@ -676,22 +676,6 @@ _DEFERRAL_NUDGE = (
     "3. If the user asked for only part of it, say so plainly and finish."
 )
 
-#: Guide-check rail (ADR-0178; ADR-0177's wording was measured and reverted). A model that
-#: has a guide's rule in hand still writes its default at the keyboard (thrust 27), and asked
-#: whether its file meets "the guide's rules" it says yes: under ADR-0177's wording every miss
-#: on both models was an absolute the check CONFIRMED (8 of 8, thrust 29, 2026-09-15). So the
-#: rail demands EVIDENCE, not a verdict — each applicable guide sentence quoted, and under it
-#: the line of the file that satisfies it; a rule with no satisfying line is fixed first. Once
-#: per turn, when an unattended turn is ending after this turn changed files and a guide is in
-#: context — structural (edits ran, a guide was folded), never keyed on the completion's text.
-_GUIDE_CHECK_NUDGE = (
-    "Before you finish: the project guide in your context states rules and conventions. For "
-    "each file you changed this turn, quote each guide sentence that applies to it, and under "
-    "each quote, the line of the file that satisfies it. If a rule has no line in the file "
-    "that satisfies it, fix the file with edit_file first, then quote the new line. When every "
-    "applicable rule has its quoted line, finish."
-)
-
 
 #: Claim-vs-action guard (ADR-0033): a completion that REPORTS a change to a file, skill,
 #: script or directory ("I have updated world/forged-skills.yaml … I have registered the
@@ -5777,7 +5761,6 @@ class AgentLoop:
         scope_nudged = False  # suite-scope gate (ADR-0141): one per turn
         identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
         figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
-        guide_nudged = False  # guide-check rail (ADR-0178): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         cascade_capped = False  # cross-gate cascade cap (ADR-0058): once per turn
@@ -6681,30 +6664,6 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
-                # Guide-check rail (ADR-0178): an UNATTENDED turn (no one at the prompt to
-                # catch a rule miss) is ending after this turn changed files and a project
-                # guide is in context. Structural — edits ran, a guide was folded — never
-                # keyed on the completion's text; once per turn. A model that already meets
-                # every rule says so in a line and finishes.
-                if (
-                    not guide_nudged
-                    and self.unattended()
-                    and self._turn_edit_calls > 0
-                    and self.prompt_builder.last_guides
-                ):
-                    guide_nudged = True
-                    self._note(
-                        "intervention",
-                        "turn ends after file changes with a guide in context — asking for the "
-                        "guide check",
-                        kind="guide_check",
-                    )
-                    self.session.add_message(Message.user(_control_rail(_GUIDE_CHECK_NUDGE)))
-                    self._persist()
-                    last_signature = None
-                    repeat_count = 0
-                    stuck.reset()
-                    continue
                 # Open-section guard (ADR-0087): the turn is ending while the model holds a
                 # section it has not closed. Nothing is ever pushed — the next page rides in
                 # the reply to the update_plan that closes this one — so a model that stops
@@ -7238,7 +7197,6 @@ class AgentLoop:
         scope_nudged = False  # suite-scope gate (ADR-0141): one per turn
         identity_nudged = False  # evidence gate, identity claims (ADR-0044): one per turn
         figure_nudged = False  # evidence gate, unsourced figures (ADR-0044): one per turn
-        guide_nudged = False  # guide-check rail (ADR-0178): one per turn
         apology_retries = 0  # apology-spiral discard (ADR-0040): one per turn
         text_only_completions = 0  # text-only stall (ADR-0033): consecutive, reset by a batch
         cascade_capped = False  # cross-gate cascade cap (ADR-0058): once per turn
@@ -8430,30 +8388,6 @@ class AgentLoop:
                         stuck.reset()
                         yield AgentStatus(
                             message="answer defers part of the request — asking for it"
-                        )
-                        continue
-                    # Guide-check rail (ADR-0178) — see the buffered twin.
-                    if (
-                        not guide_nudged
-                        and self.unattended()
-                        and self._turn_edit_calls > 0
-                        and self.prompt_builder.last_guides
-                    ):
-                        guide_nudged = True
-                        self._note(
-                            "intervention",
-                            "turn ends after file changes with a guide in context — asking for "
-                            "the guide check",
-                            kind="guide_check",
-                        )
-                        self.session.add_message(Message.user(_control_rail(_GUIDE_CHECK_NUDGE)))
-                        self._persist()
-                        last_signature = None
-                        repeat_count = 0
-                        stuck.reset()
-                        yield AgentStatus(
-                            message="turn ends after file changes with a guide in context — "
-                            "asking for the guide check"
                         )
                         continue
                     # Open-section guard (ADR-0087) — see the buffered twin.
