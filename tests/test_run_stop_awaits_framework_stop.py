@@ -386,7 +386,13 @@ def test_a_turn_started_inside_the_cap_s_stop_window_is_still_bounded(
         return time.monotonic() - started
 
     elapsed = asyncio.run(scenario())
-    assert (framework_session_dir(tmp_path, AGENT) / "stop-requested").exists()
+    # The stop WAS raised and its window then overran -- so the pair is now retired
+    # rather than left on disk (g-373-92). This assertion read `.exists()` until that
+    # fix: it was incidental corroboration that the raise happened, and what it actually
+    # pinned was the orphan whose survival poisons the NEXT vessel boot. The subject of
+    # this test is unchanged and is asserted below: the second turn is BOUNDED.
+    assert not (framework_session_dir(tmp_path, AGENT) / "stop-requested").exists()
+    assert not (framework_session_dir(tmp_path, AGENT) / "stop-target-mode").exists()
     assert seen == ["/start probe", "/start probe"], seen
     assert finished == ["/start probe"], "the second turn ran to completion — nothing bounded it"
     assert elapsed < 7.0, f"run took {elapsed:.2f}s against a 4s cap"
