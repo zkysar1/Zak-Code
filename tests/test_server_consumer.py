@@ -766,37 +766,80 @@ def test_the_deadline_watcher_cannot_interrupt_the_digest_turn(tmp_path: Path) -
     The consolidation turn runs PAST `turn_deadline` by design — that is what the
     reserve IS — so a watcher still alive at that point would fire against the one
     turn the whole cap exists to protect, and the run would end with no digest.
+
+    OBSERVED THROUGH THE WATCHER TASK, NOT THROUGH A SLEEP RACE. The earlier form set a
+    1.2s digest against a 1.5s reserve and inferred the ordering from whether the digest
+    finished. It was a REAL test of the invariant — mutation-tested here: move
+    `deadline_watcher.cancel()` below `_end_run()` and it fails, because a watcher that
+    ticks past `turn_deadline` falls through to `request_interrupt` unconditionally and
+    the digest turn polls `take_interrupt`. Its defect was AMBIGUITY, not blindness:
+    `finished == []` is produced equally by a live watcher and by the digest simply
+    overrunning its own `asyncio.wait_for` budget, and the two are indistinguishable at
+    that assertion. On py3.11/windows-latest the overrun won 3.8% of the time (2 of 52
+    main runs, 2026-09-14..15) when scheduling overhead ate the ~300ms margin — so the
+    assertion failed, blaming the watcher, for a reason that had nothing to do with it.
+
+    This form reads the watcher task itself, so it fails when — and only when — the
+    cancellation stops preceding `_end_run`; and the digest takes the fast path, so
+    there is no margin left to lose. `finished` is kept as a liveness assertion: without
+    it, "cancelled" could be recorded by a digest that never really ran.
     """
     command, out = _sink_command(tmp_path)
     seen: list[str] = []
     finished: list[str] = []
+    watcher_state: list[str] = []
+    holder: dict[str, object] = {}
+
+    class _WatcherObservingAgent(_InterruptibleAgent):
+        """Records the deadline watcher's state from INSIDE the digest turn."""
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            if user_text == "wrap up":
+                app_obj = holder["app"]
+                task = app_obj.state.deadline_watcher  # type: ignore[union-attr]
+                # `cancelling()` counts requested cancellations (3.11+); `done()` covers
+                # the case where the CancelledError has already been delivered. Either
+                # means the watcher can no longer reach its fire branch.
+                alive = task.cancelling() == 0 and not task.done()
+                watcher_state.append("alive" if alive else "cancelled")
+            async for event in super().astream_turn(user_text):
+                yield event
+
     settings = Settings(
         default_model="scripted/test",
         context_window=8192,
         workspace_root=tmp_path,
-        # A reserve that comfortably funds a SLOW digest, so the only thing that can
-        # cut this turn short is an interrupt — never its own budget.
-        run_max_duration=1.6,
-        run_consolidation_reserve=1.5,
+        # Small and generous: the cap must PASS so the run ends and `_end_run` runs,
+        # but the digest is answered instantly (fast path below), so no margin is
+        # being raced and these numbers carry no timing load.
+        run_max_duration=0.6,
+        run_consolidation_reserve=0.5,
         run_consolidation_message="wrap up",
         run_end_command=command,
     )
     app = create_app(
         settings=settings,
         store=SessionStore(base_dir=tmp_path / "sessions"),
-        agent_factory=lambda session, model, prompter: _InterruptibleAgent(
-            # No fast path: the digest prompt sleeps too, long enough that a watcher
-            # still alive would land a 1.0s tick inside this turn.
+        agent_factory=lambda session, model, prompter: _WatcherObservingAgent(
+            # digest_message == the consolidation message, so the digest takes the fast
+            # path and never sleeps. The ordering is asserted, not timed.
             session,
             seen,
             finished,
             1.2,
-            "unreachable-digest-marker",
+            "wrap up",
         ),
     )
+    holder["app"] = app
 
     asyncio.run(app.state.consume_say_loop())
 
     assert seen == ["wrap up"], seen  # no say was queued; the digest is the only turn
-    assert finished == ["wrap up"], "the digest turn was cut short — the watcher outlived the loop"
+    # THE INVARIANT, read directly: the watcher was already cancelled when the digest
+    # ran. Fails if `deadline_watcher.cancel()` ever moves after `_end_run()`.
+    assert watcher_state == ["cancelled"], (
+        f"watcher was {watcher_state} during the digest — cancellation no longer "
+        "precedes _end_run, so the watcher can cut the receipt"
+    )
+    assert finished == ["wrap up"], finished  # liveness: the digest really did run
     assert json.loads(out.read_text(encoding="utf-8"))["digest"] == "ok"

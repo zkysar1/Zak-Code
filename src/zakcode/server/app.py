@@ -2469,6 +2469,16 @@ def create_app(
         nonlocal run_stop_reason
         _arm_run_deadlines()
         deadline_watcher = asyncio.create_task(_watch_turn_deadline())
+        # Exposed so a test can assert the cancellation ORDERING directly — that the
+        # watcher is already cancelled by the time `_end_run` runs the digest. The
+        # previous test inferred that ordering from whether a 1.2s digest finished
+        # inside a 1.5s reserve. That DOES detect a live watcher (one that ticks past
+        # `turn_deadline` falls through to `request_interrupt` unconditionally, and the
+        # digest turn polls `take_interrupt`), but it cannot separate that from the
+        # digest merely overrunning its own budget — and on py3.11/windows-latest the
+        # overrun happened at 3.8%, so the same assertion failed for a reason that has
+        # nothing to do with this cancellation.
+        app.state.deadline_watcher = deadline_watcher
         try:
             while _keep_beating():
                 # Read the CLOCK, never a remembered timestamp, and read it on this
