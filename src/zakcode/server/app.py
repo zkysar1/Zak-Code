@@ -99,6 +99,7 @@ from zakcode.session.framework_signal import (
     set_framework_signal,
 )
 from zakcode.session.framework_stop import (
+    abandon_framework_stop,
     framework_stop_complete,
     request_framework_stop,
 )
@@ -2387,6 +2388,14 @@ def create_app(
             )
         return not run_stopping.is_set()
 
+    def _retire_unconsumed_framework_stop() -> None:
+        """Both overrun branches below mean the same thing: the grace is spent and the
+        mind never consumed the stop. Retire the pair here rather than at either call
+        site so the two endings cannot drift (g-373-92)."""
+        abandon_framework_stop(
+            resolved_settings.workspace_root, resolved_settings.run_stop_agent or ""
+        )
+
     async def _watch_turn_deadline() -> None:
         """Raise the workspace interrupt on a turn still running when the run's time is up.
 
@@ -2435,6 +2444,7 @@ def create_app(
                     "framework stop overran its %.0fs window — interrupting the running turn",
                     _framework_stop_grace(),
                 )
+                _retire_unconsumed_framework_stop()
                 request_interrupt(interrupt_path(resolved_settings.workspace_root))
                 return
         await _begin_framework_stop()
@@ -2450,6 +2460,7 @@ def create_app(
             while not inflight or time.monotonic() < framework_stop_until:
                 await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
             logger.warning("run cap: framework stop overran its window — interrupting")
+            _retire_unconsumed_framework_stop()
         else:
             logger.info("run cap reached mid-turn: interrupting")
         request_interrupt(interrupt_path(resolved_settings.workspace_root))

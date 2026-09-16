@@ -91,6 +91,7 @@ __all__ = [
     "STOP_REQUESTED_SIGNAL",
     "STOP_TARGET_MODE_FILENAME",
     "framework_session_dir",
+    "abandon_framework_stop",
     "framework_stop_complete",
     "request_framework_stop",
 ]
@@ -192,6 +193,70 @@ def framework_stop_complete(workspace_root: str | os.PathLike[str], agent: str) 
         in_progress = (STOP_REQUESTED_SIGNAL, STOP_TARGET_MODE_FILENAME, STOP_CHECKPOINT_FILENAME)
         return not any((session_dir / name).exists() for name in in_progress)
     except OSError:
+        return False
+
+
+def abandon_framework_stop(workspace_root: str | os.PathLike[str], agent: str) -> bool:
+    """Retire a stop THIS process raised that no mind ever consumed. Idempotent.
+
+    THE DEFECT THIS EXISTS FOR (g-373-92, measured twice in two days on
+    fileworld-smoke). ``request_framework_stop`` writes a pair whose only consumer is
+    the framework's Phase -1.4, which runs inside a LIVE loop. When the grace expires
+    with the pair still on disk, no loop ever read it -- the vessel is idle, or the run
+    was torn down through the API -- and nothing else clears it. The pair lives on EFS,
+    so the NEXT vessel boot reads a 15-hour-old ask as a live stop: one measured run
+    ($0.145362, instance i-04d10d2ca472cde6a) opened its whole 350s grace AT BOOT for a
+    stop nobody requested and then ended severed, the outcome the reserve exists to
+    prevent. Two hand cleanups preceded this (omni 2026-09-14, echo 2026-09-15); a third
+    occurrence was already paid for while the signal had no lifetime.
+
+    Call it ONLY where the grace is already spent -- the overrun branches in
+    :mod:`zakcode.server.app`, which have just decided to interrupt. Never call it while
+    a stop may still land: a mind mid-consumption would lose the ask it is acting on.
+
+    REMOVAL ORDER IS THE WRITE ORDER REVERSED, and that direction is load-bearing. The
+    signal goes FIRST, so an interrupt mid-abandon can only ever leave a dangling
+    ``stop-target-mode`` -- inert (every consumer keys on ``stop-requested``) and
+    overwritten by the next raise. The other order would leave a signal with no target
+    mode, which the framework's stop handler reads with no fallback and crashes on BY
+    DESIGN -- the same asymmetry ``request_framework_stop`` encodes on the way in.
+
+    ``stop-checkpoint.json`` is deliberately NOT touched. That file is the FRAMEWORK's
+    own record that a graceful stop got underway, and its interrupted-stop resume path
+    (``stop-checkpoint.sh resume-needed``) is the only thing that can finish one. Its
+    presence means a mind DID consume the ask, so this is not an orphan at all.
+
+    Returns True when the pair is gone afterwards. Fail-open on OSError like its
+    siblings: an unreadable session dir must never stall the interrupt that follows.
+    """
+    if not agent:
+        return False
+    try:
+        session_dir = framework_session_dir(workspace_root, agent)
+        if (session_dir / STOP_CHECKPOINT_FILENAME).exists():
+            logger.info(
+                "framework stop: %s present for agent %s -- a stop DID start; leaving the "
+                "pair for the framework's own resume",
+                STOP_CHECKPOINT_FILENAME,
+                agent,
+            )
+            return False
+        signal_file = session_dir / STOP_REQUESTED_SIGNAL
+        mode_file = session_dir / STOP_TARGET_MODE_FILENAME
+        had = signal_file.exists() or mode_file.exists()
+        with contextlib.suppress(FileNotFoundError):
+            signal_file.unlink()
+        _revert_target_mode(mode_file)
+        if had:
+            logger.warning(
+                "framework stop for agent %s went unconsumed within its window -- "
+                "retiring the orphaned signal pair so the next vessel boot does not "
+                "read it as a live stop (g-373-92)",
+                agent,
+            )
+        return not (signal_file.exists() or mode_file.exists())
+    except OSError as exc:
+        logger.warning("framework stop: could not retire the orphaned pair (%s)", exc)
         return False
 
 

@@ -16,6 +16,8 @@ from pathlib import Path
 from zakcode.session.framework_stop import (
     DEFAULT_STOP_TARGET_MODE,
     SIGNAL_SET_SCRIPT,
+    STOP_CHECKPOINT_FILENAME,
+    abandon_framework_stop,
     framework_session_dir,
     request_framework_stop,
 )
@@ -156,3 +158,87 @@ def test_order_assertion_actually_fires(tmp_path: Path) -> None:
         check=False,
     )
     assert completed.returncode == 9, completed.stderr.decode("utf-8", "replace")
+
+
+# ── g-373-92: the orphaned pair must not outlive its run ─────────────────────
+
+
+def _raise(tmp_path: Path):
+    _plant_signal_setter(tmp_path, _real_setter_body())
+    assert request_framework_stop(tmp_path, AGENT) is True
+    return framework_session_dir(tmp_path, AGENT)
+
+
+def test_abandon_retires_a_pair_no_mind_consumed(tmp_path: Path) -> None:
+    """The measured defect: the pair survives the run and poisons the next boot."""
+    d = _raise(tmp_path)
+    assert (d / "stop-requested").exists() and (d / "stop-target-mode").exists()
+    assert abandon_framework_stop(tmp_path, AGENT) is True
+    assert not (d / "stop-requested").exists(), "the next vessel boot reads this as live"
+    assert not (d / "stop-target-mode").exists(), "a dangling target mode lies to the next reader"
+
+
+def test_abandon_refuses_when_a_stop_actually_started(tmp_path: Path) -> None:
+    """stop-checkpoint.json means a mind DID consume the ask -- not an orphan.
+
+    Clearing it would destroy the framework's own interrupted-stop resume path, which is
+    the ONLY thing that can finish a stop that got underway.
+    """
+    d = _raise(tmp_path)
+    (d / STOP_CHECKPOINT_FILENAME).write_text("{}", encoding="utf-8")
+    assert abandon_framework_stop(tmp_path, AGENT) is False
+    assert (d / "stop-requested").exists(), "a stop in progress must keep its ask"
+    assert (d / STOP_CHECKPOINT_FILENAME).exists(), "never touch the framework's own record"
+
+
+def test_abandon_is_idempotent_and_quiet_on_a_clean_dir(tmp_path: Path) -> None:
+    d = _raise(tmp_path)
+    assert abandon_framework_stop(tmp_path, AGENT) is True
+    assert abandon_framework_stop(tmp_path, AGENT) is True
+    assert not (d / "stop-requested").exists()
+
+
+def test_abandon_clears_a_dangling_target_mode_alone(tmp_path: Path) -> None:
+    """The mid-abandon interrupt leaves exactly this, so the next call must finish it."""
+    d = framework_session_dir(tmp_path, AGENT)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "stop-target-mode").write_text(DEFAULT_STOP_TARGET_MODE, encoding="utf-8")
+    assert abandon_framework_stop(tmp_path, AGENT) is True
+    assert not (d / "stop-target-mode").exists()
+
+
+def test_abandon_refuses_without_an_agent(tmp_path: Path) -> None:
+    assert abandon_framework_stop(tmp_path, "") is False
+
+
+def test_abandon_never_touches_a_per_session_stop_requested(tmp_path: Path) -> None:
+    """The sibling under sessions/<SID>/ is a turn-end permit, not a loop stop."""
+    d = _raise(tmp_path)
+    sid = d.parent / "sessions" / "sid-1"
+    sid.mkdir(parents=True, exist_ok=True)
+    (sid / "stop-requested").write_text("", encoding="utf-8")
+    assert abandon_framework_stop(tmp_path, AGENT) is True
+    assert (sid / "stop-requested").exists(), "different file, different meaning"
+
+
+def test_both_overrun_branches_actually_call_the_retire(tmp_path: Path) -> None:
+    """The wire-in is REAL, not merely present (guard-1943 shape).
+
+    Both endings mean 'the grace is spent and nothing consumed the stop'; a fix wired
+    into only one of them leaves the measured path open.
+    """
+    src = (Path(__file__).resolve().parents[1] / "src" / "zakcode" / "server" / "app.py").read_text(
+        encoding="utf-8"
+    )
+    assert "abandon_framework_stop," in src, "imported"
+    assert src.count("_retire_unconsumed_framework_stop()") == 3, (
+        "one definition + both overrun branches"
+    )
+    mid = src.index("overran its %.0fs window")
+    cap = src.index("run cap: framework stop overran its window")
+    for start in (mid, cap):
+        window = src[start : start + 400]
+        assert "_retire_unconsumed_framework_stop()" in window, "retire missing from an overrun"
+        assert window.index("_retire_unconsumed_framework_stop()") < window.index(
+            "request_interrupt("
+        ), "retire the pair BEFORE the interrupt -- the interrupt can end this process"
