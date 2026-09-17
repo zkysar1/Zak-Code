@@ -10155,6 +10155,54 @@ stays out; litellm's own mapper turns the kwarg into `thinkingLevel` on 3.x and 
 on 2.5; the Agent wiring — a category's level reaches its provider and no other, an unset category
 inherits the fleet-wide one).
 
+## ADR-0183: one compaction summarize is bounded — a slice cap with the middle elided, fold passes that each fit one slice, then a clamp
+
+**Status.** Accepted (2026-09-17).
+
+**Context.** The chunked summarize path (ADR-0022, sized by characters since ADR-0082) cut the
+rendered transcript into `ceil(len / slice)` slices — uncapped — and folded the part-summaries in
+ONE call carrying their whole join with no size check: the one request on the recovery path that
+could itself overflow the window it was recovering FOR. Realistic sessions never reached it (the
+proactive threshold keeps a compaction at four or five slices), so it surfaced only
+cross-window-size — a session built on a 200k-window model resumed on an 8k local one, or a
+multi-megabyte paste (user messages are never clamped; tool outputs are) — where one compaction
+could cost dozens of sequential calls and then raise `ContextWindowExceeded` from inside
+`compact_now`. Fresh-eyes finding on PR #224, filed 2026-08-26 (g-357-13).
+
+**Decision.** Bounded by construction, in three steps, every one sized by characters at the
+slice budget (`_SUMMARY_CHUNK_FRACTION` × window × `_SUMMARY_CHARS_PER_TOKEN`):
+
+1. **A slice cap.** The rendered transcript is held to `_MAX_SUMMARY_SLICES` (12) slice budgets
+   BEFORE slicing — the first 2/3 and the last 1/3 kept around a note naming how much of the
+   middle is missing (the `_clamp_tool_output` shape: openings carry structure, endings carry the
+   unfinished work, the middle is the safest cut). At most 12 slice calls per compaction.
+2. **Fold passes that fit.** A part-summary join over one slice budget is no longer folded in one
+   oversized call. A pass packs whole part-summaries into greedy groups whose join fits the budget
+   (a single part over the budget is clamped first) and folds each group; at most
+   `_MAX_FOLD_PASSES` (2) passes. A join that fits is the summary, as before — the fold stays a
+   shrink step, never a mandatory extra call.
+3. **A clamp when the passes are spent.** A join still over budget afterwards is clamped to one
+   slice for a final fold. A summarizer whose "summaries" never shrink cannot loop this: the
+   worst case is 12 + 2×12 + 1 calls.
+
+**Why not `count_tokens`.** The goal suggested guarding the fold with `summarizer.count_tokens`.
+ADR-0082 already ruled that out for this path: a local model's counter is a guess, and the guess
+is what let the recovery's own summarize call overflow (coach, 2026-08-29, twice). The character
+budget the slices already use is the one measure that cannot disagree with itself, so the fold is
+guarded by it too.
+
+**Consequences.** No summarize call on the compaction path can exceed one slice budget, and the
+number of calls per compaction is bounded whatever the history's size. A compaction past the cap
+loses the middle of the transcript — by design, named in the text the summarizer sees so the
+summary says so, and logged (`compaction summarize: … held to 12 slices`). ADR-0022's "folds the
+part-summaries once if the join is itself oversized" is superseded by the passes.
+
+**Tests.** `tests/test_compact_loop.py`: a strict-window summarizer (it refuses any request over
+one slice plus prompt overhead, as a real window would) drives every case — an enormous history
+costs exactly 12 calls with the elision note in the ninth slice and both ends of the conversation
+present; a fold whose join exceeds the budget runs in packed groups, pass by pass, each call under
+the budget; a never-shrinking summarizer ends in the clamped last fold after exactly `n + 2n + 1`
+calls; unit tests pin the packer and the clamp.
 ## ADR-0184: closed plan steps fold out of the model's working memory — a row per run, carrying its ids — and the fold is round-trip-safe under the full-replace
 
 **Status.** Accepted (2026-09-17).
