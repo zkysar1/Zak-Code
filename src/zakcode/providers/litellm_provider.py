@@ -65,7 +65,12 @@ from zakcode.providers.endpoints import (
     model_uses_generic_endpoint,
 )
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
-from zakcode.providers.thinking import render_thinking_switch, rendered_thinking_wire_names
+from zakcode.providers.thinking import (
+    reasoning_effort_reaches,
+    render_reasoning_effort,
+    render_thinking_switch,
+    rendered_thinking_wire_names,
+)
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
 
@@ -229,6 +234,17 @@ _MODELS_WINDOW_PATHS: tuple[tuple[str, ...], ...] = (
 )
 #: One probe, off the request path; a slow server costs at most this once per provider.
 _WINDOW_PROBE_TIMEOUT = 3.0
+
+
+def _litellm_supports_reasoning(model: str) -> bool:
+    """Whether litellm's model map flags ``model`` reasoning-capable — the predicate every
+    per-backend ``reasoning_effort`` mapping in litellm sits behind (ADR-0182). False for a
+    model the map does not know (a self-hosted alias) and on any lookup error: an unknown
+    model gets no depth rather than a guess."""
+    try:
+        return bool(litellm.supports_reasoning(model=model))
+    except Exception:  # noqa: BLE001 — a diagnostic lookup must never break a request
+        return False
 
 
 def _fetch_models(api_base: str, api_key: str | None, timeout: float) -> Any:
@@ -474,6 +490,7 @@ class LiteLLMProvider(Provider):
         extra_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
         context_window: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         #: A bounded sample of the most recent stream's raw deltas (the first and last few,
         #: compacted) with its chunk count and finish reason. The loop reads it when a
@@ -493,6 +510,7 @@ class LiteLLMProvider(Provider):
         resolved_extra_body = extra_body
         resolved_extra_headers = extra_headers
         resolved_window = context_window
+        resolved_reasoning_effort = reasoning_effort
 
         if settings is not None:
             if resolved_model is None:
@@ -525,6 +543,8 @@ class LiteLLMProvider(Provider):
                 resolved_extra_body = settings.extra_body
             if resolved_extra_headers is None:
                 resolved_extra_headers = getattr(settings, "extra_headers", None)
+            if resolved_reasoning_effort is None:
+                resolved_reasoning_effort = getattr(settings, "reasoning_effort", None)
 
         if resolved_model is None:
             raise ValueError("a model must be provided via settings or the model kwarg")
@@ -550,10 +570,25 @@ class LiteLLMProvider(Provider):
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
         #: Request fields this provider has refused BY NAME this session (ADR-0181): body
         #: keys of ours a 4xx named, or the sentinel ``reasoning_effort`` for the rendered
-        #: thinking switch. ``_build_kwargs`` leaves them out of every later request, so a
-        #: server that rejects a knob costs ONE re-issued call, not the turn — and never
-        #: the same 400 twice. Diagnostic: the operator's config is left intact.
+        #: thinking switch (and the rendered depth, which rides the same kwarg).
+        #: ``_build_kwargs`` leaves them out of every later request, so a server that
+        #: rejects a knob costs ONE re-issued call, not the turn — and never the same 400
+        #: twice. Diagnostic: the operator's config is left intact.
         self.rejected_request_fields: list[str] = []
+        #: Reasoning DEPTH (ADR-0182): litellm's ``reasoning_effort`` level, sent only where
+        #: litellm flags the model reasoning-capable (providers/thinking.py); kept as
+        #: configured even where it will not be sent — diagnostic, like ``extra_body``.
+        self.reasoning_effort: str | None = resolved_reasoning_effort
+        if self.reasoning_effort is not None and not reasoning_effort_reaches(
+            self.model, self.api_base, supports_reasoning=_litellm_supports_reasoning
+        ):
+            logger.info(
+                "reasoning_effort=%r is configured, but %s is not a model litellm flags as "
+                "reasoning-capable (or is reached through a generic api_base, where the "
+                "server's own body form via extra_body applies): the level is not sent",
+                self.reasoning_effort,
+                self.model,
+            )
         #: Extra HTTP headers, with {hostname}/{pid} already expanded ONCE here rather
         #: than per call — the values are constant for the process, and expanding at
         #: call time would put a formatting operation on the hot path for no gain.
@@ -1140,13 +1175,25 @@ class LiteLLMProvider(Provider):
         # and a one-shot override compose instead of the override clobbering the rest.
         per_call_body = kw.pop("extra_body", None)
         merged_body: dict[str, Any] = {**self.extra_body, **(per_call_body or {})}
+        # The configured reasoning DEPTH (ADR-0182) is read against the body BEFORE the
+        # switch is rendered: "off" there (a category's thinking=false, the overflow retry's
+        # per-call switch) wins over a depth, and a destination litellm does not flag
+        # reasoning-capable — or a generic api_base — gets nothing rather than a 400.
+        effort_kwargs = render_reasoning_effort(
+            self.model,
+            self.api_base,
+            self.reasoning_effort,
+            merged_body,
+            supports_reasoning=_litellm_supports_reasoning,
+        )
         merged_body, thinking_kwargs = render_thinking_switch(
             self.model, self.api_base, merged_body
         )
         refused = set(self.rejected_request_fields)
         merged_body = {k: v for k, v in merged_body.items() if k not in refused}
-        if refused.isdisjoint(rendered_thinking_wire_names(thinking_kwargs)):
-            call_kwargs.update(thinking_kwargs)
+        native = {**effort_kwargs, **thinking_kwargs}
+        if refused.isdisjoint(rendered_thinking_wire_names(native)):
+            call_kwargs.update(native)
         if merged_body:
             call_kwargs["extra_body"] = merged_body
         # Session-affinity routing key (OpenAI-standard `prompt_cache_key`). Rides

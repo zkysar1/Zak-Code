@@ -10096,3 +10096,61 @@ phrasing; the "one we sent" gate; buffered and streaming repair; sticky for the 
 per-call overrides; a 5xx is not a refusal; the repair is spent once; the rendered switch's wire
 alias), and tests/test_turn_end_loop.py (recovery after a veto, the cap and the 15/30/60/120/240/
 300 schedule, the consecutive reset, allow-ends-at-once, the sub-agent shape, both twins).
+
+## ADR-0182: a reasoning DEPTH is one config knob, fleet-wide or per category, rendered per backend where the backend takes one
+
+**Status.** Accepted (2026-09-17).
+
+**Context.** On 2026-09-16 a served Mind on Vertex (the serene deployment, cutting over to
+`vertex_ai/gemini-3.8-flash`) asked how to make the model reason harder, and there was no answer:
+`ZakpickModel.thinking` is an on/off switch in llama.cpp's body form (rendered per backend since
+ADR-0181), and the real Gemini knob — litellm's `reasoning_effort`, mapped to a `thinkingLevel`
+(`minimal` / `low` / `medium` / `high`) on Gemini 3 and a `thinkingBudget` on Gemini 2.5 — appeared
+nowhere in Zak Code's config surface (one hit in the source tree, a comment about gpt-5 temperature).
+Read from the installed litellm, not assumed: `VertexGeminiConfig.get_supported_openai_params`
+lists `reasoning_effort` only when `supports_reasoning(model)`; `map_openai_params` turns it into
+`thinkingConfig` by model generation; the OpenAI gpt-5 family, Claude (a thinking budget) and
+Ollama (`think`) each carry their own mapping behind the same predicate; and litellm's
+generic-OpenAI config — the path every self-hosted server takes — does not list the kwarg at all,
+so `drop_params` discards it before the request. A llama.cpp server serving gpt-oss takes the
+level from `chat_template_kwargs` instead; Qwen3 on llama.cpp takes no per-request depth at all
+(measured 2026-08-17: a `reasoning_budget` in the body is ignored).
+
+**Decision.** One knob, a level, two places to set it, one rule for where it goes.
+`Settings.reasoning_effort` (`ZAKCODE_REASONING_EFFORT`) is the fleet-wide depth;
+`zakpick_models[<category>].reasoning_effort` overrides it for that category (an unset category
+inherits). The accepted values are exactly litellm's `REASONING_EFFORT` literal (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`), normalised for case and whitespace and pinned by a
+test against the installed version; a misspelling fails at load naming the levels rather than
+silently running every model at its default depth. The provider renders the level at the request
+chokepoint (`_build_kwargs`, beside the ADR-0181 switch rendering) as the top-level litellm kwarg
+**only where litellm flags the model reasoning-capable** (`litellm.supports_reasoning`, the same
+predicate every per-backend mapping in litellm sits behind) **and the model is not reached through
+a generic `api_base`**. Anywhere else it is inert — never a 400 — and the provider logs once, at
+construction, that the level is not sent. A self-hosted server's spelling is the server's own body
+form via `extra_body` (the switch rule already keeps it verbatim there), because litellm would drop
+the kwarg and the servers that take a level disagree on where.
+
+A depth is not the switch, and "off" wins: a request whose thinking switch says off — a category's
+`thinking: false`, or the ADR-0056 reasoning-overflow retry's per-call switch — gets the off
+rendering (`minimal` on Gemini, the body key on a pod) and no level for that request; a category
+that sets `thinking: false` beside a level is refused at load ("off" is not a depth). The rendered
+level rides the same kwarg as the rendered switch, so the ADR-0181 repair covers it unchanged: a
+backend that refuses it by any of the wire names drops it for the session after one re-issued call.
+The category's level participates in the provider cache key beside its `thinking` flag and window,
+for the reason those do — two categories naming the same model may want different depths.
+
+**Why not extend the boolean.** A three-state or numeric `thinking` would have turned the one
+internal spelling into a per-backend vocabulary at the config layer; the level already exists as a
+first-class litellm parameter with a mapping per backend, so the harness's job is to place it
+where it is understood and withhold it where it is not — the same shape as ADR-0181, not a new one.
+
+**Consequences.** A Gemini 3 mind can be run at any depth from config, per category; a mixed fleet
+sets the depth on the categories that take it and leaves the rest inert; the pod request is
+byte-identical to before; the overflow retry still switches thinking off regardless of the depth
+configured. Pinned by tests/test_reasoning_effort.py (the levels are litellm's literal; parsing,
+normalisation and refusal at load; the renderer's destination matrix; the chokepoint with litellm's
+real predicate — Gemini 3 and 2.5 carry it, gpt-4.1 and the pod do not; off wins; a refused level
+stays out; litellm's own mapper turns the kwarg into `thinkingLevel` on 3.x and `thinkingBudget`
+on 2.5; the Agent wiring — a category's level reaches its provider and no other, an unset category
+inherits the fleet-wide one).

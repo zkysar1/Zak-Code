@@ -1290,6 +1290,7 @@ class Agent:
         *,
         extra_body: dict[str, object] | None = None,
         context_window: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Provider:
         """Build a settings-based provider for ``model`` (litellm wrapped in the text-tool
         protocol) — the same construction used for the default model and for per-role overrides.
@@ -1298,20 +1299,29 @@ class Agent:
         ``Settings.extra_body`` rather than replacing it, so a global knob and a per-category
         one compose instead of one silently erasing the other. ``context_window`` is the
         routed model's own declared window (ADR-0066) and REPLACES the settings' value,
-        which describes the default model only.
+        which describes the default model only. ``reasoning_effort`` (a category's reasoning
+        depth, ADR-0182) REPLACES the settings' fleet-wide level for that category; a category
+        that sets none inherits it.
         """
         from zakcode.providers.endpoints import model_uses_generic_endpoint
         from zakcode.providers.litellm_provider import LiteLLMProvider
         from zakcode.providers.text_tools import TextToolCallingProvider
 
-        if model == self.settings.default_model and not extra_body and context_window is None:
+        if (
+            model == self.settings.default_model
+            and not extra_body
+            and context_window is None
+            and reasoning_effort is None
+        ):
             role_settings = self.settings
         else:
             if context_window is None and model == self.settings.default_model:
-                # A variant of the default model (a per-category thinking flag) is the same
-                # model, so the settings' window still describes it.
+                # A variant of the default model (a per-category thinking flag or depth) is
+                # the same model, so the settings' window still describes it.
                 context_window = self.settings.context_window
             update: dict[str, object] = {"default_model": model, "context_window": context_window}
+            if reasoning_effort is not None:
+                update["reasoning_effort"] = reasoning_effort
             # api_base/api_key are ENDPOINT-specific. Don't carry the configured custom
             # endpoint onto a routed model that litellm sends somewhere else — an
             # ollama_chat/* or groq/* role would otherwise be handed the OpenAI-compatible
@@ -1382,6 +1392,7 @@ class Agent:
         *,
         extra_body: dict[str, object] | None = None,
         context_window: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Provider:
         """Resolve a per-role model string to a :class:`Provider` (the model-routing seam).
 
@@ -1393,19 +1404,26 @@ class Agent:
         ``thinking`` flag). It participates in the CACHE KEY, which it must: two categories
         can name the SAME model and want different thinking, and a model-only key would hand
         the second one the first one's provider and silently apply the wrong setting.
-        ``context_window`` (the category entry's declared window, ADR-0066) is keyed the
-        same way for the same reason.
+        ``context_window`` (the category entry's declared window, ADR-0066) and
+        ``reasoning_effort`` (the category's reasoning depth, ADR-0182) are keyed the same
+        way for the same reason.
         """
         if not model or self._provider_injected:
             return self.provider
-        if model == self.settings.default_model and not extra_body:
+        if model == self.settings.default_model and not extra_body and reasoning_effort is None:
             return self.provider
         key = model
-        if extra_body or context_window is not None:
-            key = f"{model}\x00{sorted((extra_body or {}).items())!r}\x00{context_window}"
+        if extra_body or context_window is not None or reasoning_effort is not None:
+            key = (
+                f"{model}\x00{sorted((extra_body or {}).items())!r}\x00{context_window}"
+                f"\x00{reasoning_effort}"
+            )
         if key not in self._provider_cache:
             self._provider_cache[key] = self._build_provider(
-                model, extra_body=extra_body, context_window=context_window
+                model,
+                extra_body=extra_body,
+                context_window=context_window,
+                reasoning_effort=reasoning_effort,
             )
         return self._provider_cache[key]
 
@@ -1433,7 +1451,10 @@ class Agent:
         model = spec.litellm_string
         return (
             self._provider_for(
-                model, extra_body=spec.extra_body, context_window=spec.context_window
+                model,
+                extra_body=spec.extra_body,
+                context_window=spec.context_window,
+                reasoning_effort=spec.reasoning_effort,
             ),
             model,
         )

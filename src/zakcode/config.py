@@ -27,7 +27,11 @@ from dotenv import dotenv_values, load_dotenv
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from zakcode.providers.routing import ZAKPICK_CATEGORIES, ZakpickModel
+from zakcode.providers.routing import (
+    ZAKPICK_CATEGORIES,
+    ZakpickModel,
+    normalise_reasoning_effort,
+)
 
 
 class PermissionTier(IntEnum):
@@ -150,7 +154,8 @@ class Settings(BaseSettings):
         description=(
             "Per-category model assignments for default_model='zakpick' (JSON; keys "
             "quick_code | deep_code | summarize | plan | delegate | classify; each value "
-            "{model, source}, source defaults to 'openai'). Unset categories use OpenAI defaults."
+            "{model, source, thinking?, reasoning_effort?, context_window?}, source defaults "
+            "to 'openai'). Unset categories use OpenAI defaults."
         ),
     )
     # None (the default) sends NO temperature, so every backend runs at its own intended
@@ -160,6 +165,32 @@ class Settings(BaseSettings):
     # what a field deployment hit (2026-08-26, ADR-0018). Set a value only when you truly
     # need one; it is then sent verbatim to every model.
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    # Reasoning DEPTH for a reasoning model whose backend takes a level (ADR-0182): litellm's
+    # ``reasoning_effort`` — none / minimal / low / medium / high / xhigh — which litellm maps
+    # per backend (a thinkingLevel on Gemini 3+, a thinkingBudget on Gemini 2.5, OpenAI's own
+    # reasoning_effort on the gpt-5 family, a thinking budget on Claude, ``think`` on Ollama).
+    # Unset (the default) sends nothing, so every model runs at its own default depth. Sent
+    # ONLY where litellm flags the model reasoning-capable; against any other model it is
+    # inert — never a 400 — and the provider logs once that it is not sent. A per-category
+    # ``zakpick_models[...].reasoning_effort`` overrides this for that category.
+    #
+    # A DEPTH, not the on/off switch: a category's ``thinking: false`` (and the loop's
+    # reasoning-overflow retry, ADR-0056, which switches thinking off for one request) wins
+    # over it for that request. A self-hosted OpenAI-compatible server (ZAKCODE_API_BASE)
+    # does not take this knob — litellm's generic path drops it before the request — so there
+    # the server's own body form goes in ``extra_body`` (llama.cpp serving gpt-oss:
+    # {"chat_template_kwargs": {"reasoning_effort": "high"}}).
+    #
+    # Field origin: a Vertex/Gemini 3 deployment asked how to raise reasoning and no
+    # configurable path existed (2026-09-16) — the level is litellm's real Gemini knob.
+    reasoning_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning depth for reasoning models (litellm reasoning_effort): none | minimal | "
+            "low | medium | high | xhigh. Unset = the model's own default. Sent only where "
+            "litellm flags the model reasoning-capable; inert elsewhere."
+        ),
+    )
     # Omit the session id from the system prompt's Environment block. Default OFF: ADR-0072 put
     # the id there deliberately, so a model asked "which session are you?" can answer.
     # Turn it ON for REPRODUCIBLE runs. Measured 2026-09-12 (ADR-0157): with temperature pinned
@@ -755,6 +786,13 @@ class Settings(BaseSettings):
                 f"{sorted(recognized)}"
             )
         return value
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _check_reasoning_effort(cls, value: object) -> str | None:
+        """Refuse a misspelled level at load (naming the accepted ones) rather than silently
+        running every model at its default depth."""
+        return normalise_reasoning_effort(value)
 
     @field_validator("zakpick_models", mode="after")
     @classmethod
