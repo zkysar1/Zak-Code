@@ -65,22 +65,27 @@ def test_the_filter_scrubs_a_key_carried_in_a_logged_url() -> None:
 
 
 def test_the_filter_scrubs_arguments_in_place_and_keeps_their_shape() -> None:
+    # a self-evident credential in an argument: scrubbed where it sits, tuple shape kept
     record = _record(
-        "zakcode.x",
-        "token=%s for %s (%d)",
-        logging.INFO,
-        "sk-FAKEFAKE12345",
-        "u",
-        3,
+        "zakcode.x", "slack %s for %s (%d)", logging.INFO, "xoxb-FAKE-FAKE-FAKE", "u", 3
     )
     RedactingFilter().filter(record)
-    assert "sk-FAKEFAKE12345" not in record.getMessage()
+    assert "xoxb-" not in record.getMessage()
     assert record.getMessage().endswith(" for u (3)")
     # caplog-style readers still see the arguments (a test elsewhere asserts on them)
     assert len(record.args) == 3 and record.args[1:] == ("u", 3)
     mapping = _record("zakcode.x", "url=%(url)s", logging.INFO, {"url": "https://h/p?key=SECRET9"})
     RedactingFilter().filter(mapping)
     assert mapping.getMessage() == "url=https://h/p?key=***"
+    assert mapping.args == {"url": "https://h/p?key=***"}
+    plain = _record("zakcode.x", "no secrets here %s", logging.INFO, "bash")
+    RedactingFilter().filter(plain)
+    assert plain.args == ("bash",)
+    # a credential only recognisable with its context: the rendered text is scrubbed and
+    # the arguments consumed, so no handler can re-render the secret
+    ctx = _record("zakcode.x", "token=%s for %s", logging.INFO, "sk-FAKEFAKE12345", "u")
+    RedactingFilter().filter(ctx)
+    assert ctx.getMessage() == "token=[REDACTED] for u" and ctx.args == ()
 
 
 def test_compact_lines_keep_the_model_call_and_drop_the_noise() -> None:

@@ -59,11 +59,13 @@ def _scrub(text: str) -> str:
 class RedactingFilter(logging.Filter):
     """Scrub credentials out of every record before any handler formats it.
 
-    Rewrites the record in place — the format string and each string argument — so the
-    file, stdout and transcript handlers all see the same scrubbed text. The argument
-    tuple keeps its shape (non-string arguments untouched) because other readers of the
-    record — ``caplog``, a structured handler — look at ``record.args``; idempotent for a
-    record that passes through more than one handler.
+    Rewrites the record in place so the file, stdout and transcript handlers all see the
+    same scrubbed text. The format string and each string argument are scrubbed on their
+    own first, which keeps the argument tuple's shape for other readers of the record
+    (``caplog``, a structured handler). A credential that is only recognisable with its
+    context — ``token=%s`` around a bare value — shows up once the record is rendered; then
+    the rendered, scrubbed text becomes the message and the arguments are consumed.
+    Idempotent for a record that passes through more than one handler.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -74,6 +76,16 @@ class RedactingFilter(logging.Filter):
             record.args = tuple(_scrub(a) if isinstance(a, str) else a for a in args)
         elif isinstance(args, dict):
             record.args = {k: _scrub(v) if isinstance(v, str) else v for k, v in args.items()}
+        try:
+            rendered = record.getMessage()
+        except Exception:  # noqa: BLE001 — a bad format string must not lose the record
+            record.msg = _scrub(str(record.msg))
+            record.args = ()
+            return True
+        scrubbed = _scrub(rendered)
+        if scrubbed != rendered:
+            record.msg = scrubbed
+            record.args = ()
         return True
 
 
