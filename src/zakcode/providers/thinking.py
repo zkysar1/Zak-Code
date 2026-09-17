@@ -31,10 +31,25 @@ internal form into whatever the destination understands, at request-build time.
   again; a wrong native param costs a 400 and the turn.
 
 "on" is never rendered for a cloud model: thinking is the model's own default there.
+
+The reasoning DEPTH (ADR-0182) is rendered at the same chokepoint by the same rule. It is a
+level — litellm's ``reasoning_effort`` (``none`` … ``xhigh``), configured fleet-wide
+(``Settings.reasoning_effort``) or per zakpick category — and it is sent ONLY where litellm
+flags the model reasoning-capable, because every per-backend mapping litellm has for the
+kwarg (a ``thinkingLevel`` on Gemini 3+, a ``thinkingBudget`` on Gemini 2.5, OpenAI's own
+field on the gpt-5 family, a budget on Claude, ``think`` on Ollama) sits behind that same
+predicate. Against any other model it is inert — never a 400. A self-hosted
+OpenAI-compatible server is never given it: litellm's generic-OpenAI path does not list the
+kwarg, so ``drop_params`` discards it before the request, and the servers that take a level
+take it in their own body form (llama.cpp serving gpt-oss reads it from
+``chat_template_kwargs``), which is what ``extra_body`` is for and what the switch rule above
+already keeps verbatim there. "Off" wins over a depth: a request whose switch says off (a
+category's ``thinking: false``, the ADR-0056 retry) gets the off rendering and no level.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from zakcode.providers.endpoints import model_uses_generic_endpoint, provider_prefix
@@ -105,7 +120,49 @@ def render_thinking_switch(
     return rest, {}
 
 
+#: litellm's first-class kwarg for a reasoning DEPTH (a level, not the on/off switch).
+REASONING_EFFORT_KWARG = "reasoning_effort"
+
+
+def reasoning_effort_reaches(
+    model: str, api_base: str | None, *, supports_reasoning: Callable[[str], bool]
+) -> bool:
+    """Whether a configured reasoning level is SENT for ``model`` (ADR-0182).
+
+    Only where litellm has a per-backend mapping for the kwarg AND flags the model
+    reasoning-capable — ``supports_reasoning`` is litellm's own predicate, injected so this
+    module stays free of the SDK. A self-hosted OpenAI-compatible server reached through
+    ``api_base`` never gets it: litellm's generic-OpenAI path does not carry the kwarg
+    (``drop_params`` discards it before the request), and the servers that take a level
+    take it in their own body form, which is ``extra_body``'s job.
+    """
+    if api_base is not None and model_uses_generic_endpoint(model):
+        return False
+    return supports_reasoning(model)
+
+
+def render_reasoning_effort(
+    model: str,
+    api_base: str | None,
+    level: str | None,
+    body: dict[str, Any],
+    *,
+    supports_reasoning: Callable[[str], bool],
+) -> dict[str, Any]:
+    """The litellm kwargs expressing a configured reasoning ``level`` for ``model`` — or
+    ``{}``: no level configured, the destination does not take one, or ``body`` (the request
+    body BEFORE the switch is rendered) says thinking is OFF for this request — a category's
+    ``thinking: false``, the loop's reasoning-overflow retry — and "off" is not a depth.
+    """
+    if level is None or thinking_switch_enabled(body) is False:
+        return {}
+    if not reasoning_effort_reaches(model, api_base, supports_reasoning=supports_reasoning):
+        return {}
+    return {REASONING_EFFORT_KWARG: level}
+
+
 def rendered_thinking_wire_names(kwargs: dict[str, Any]) -> tuple[str, ...]:
-    """The wire-level names a provider might use to refuse the rendered switch in
-    ``kwargs``; empty when no switch was rendered."""
-    return _THINKING_WIRE_NAMES if "reasoning_effort" in kwargs else ()
+    """The wire-level names a provider might use to refuse the rendered switch — or the
+    rendered depth, which rides the same kwarg — in ``kwargs``; empty when neither was
+    rendered."""
+    return _THINKING_WIRE_NAMES if REASONING_EFFORT_KWARG in kwargs else ()
