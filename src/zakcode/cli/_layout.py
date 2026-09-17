@@ -8,11 +8,12 @@ key/value tables, headings, the input prompt, and the standard notice lines
 (info / warn / error). Pure presentation over a rich Console — no agent logic
 lives here.
 
-Column grid: cols 0–1 are the document margin; block markers sit at col 2 with
-their body at col 4; receipts (``└``) and rail rows (``│``) sit at col 4 with their
-body at col 6. Wrapped text always lands under the body column, never under the
-marker — the ragged left edge is structurally impossible. Body cells wrap at the
-reading width (:data:`READ_WIDTH`) however wide the terminal is (ADR-0185).
+Column grid: the operator's own line is the root of the turn — its ``›`` sits at col 0
+with the message at col 2 (ADR-0186); everything the agent does nests under it: block
+markers at col 2 with their body at col 4; receipts (``└``) and rail rows (``│``) at
+col 4 with their body at col 6. Wrapped text always lands under the body column, never
+under the marker — the ragged left edge is structurally impossible. Body cells wrap at
+the reading width (:data:`READ_WIDTH`) however wide the terminal is (ADR-0185).
 """
 
 from __future__ import annotations
@@ -95,13 +96,15 @@ def rail(
 def user_line(
     console: Console, text: str, *, via: str = "", stamp: str = "", blanks: int = 2
 ) -> None:
-    """The operator's message as the turn's bright anchor (ADR-0185).
+    """The operator's message as the root of the turn (ADR-0185/0186).
 
     ``blanks`` blank lines (the turn seam — two, or one when the input wait already
-    printed one), then ``› text`` with the chevron in the brand accent and the text bold,
-    the door it came through and the wall-clock stamp dim at the end of the first line
-    (``(say · 14:22)``), and any further lines of the message under the body column.
-    Built from ``Text``, never markup — the message is the operator's, verbatim.
+    printed one), then ``› text`` at column 0 — chevron and text in the orange
+    ``user.*`` styles, the one warm colour in the transcript — the door it came through
+    and the wall-clock stamp grey at the end of the first line (``(say · 14:22)``), and
+    any further lines of the message under the text column (col 2). Every agent block
+    then nests under it at col 2. Built from ``Text``, never markup — the message is the
+    operator's, verbatim.
     """
     g = resolve_glyphs(console)
     for _ in range(blanks):
@@ -111,9 +114,9 @@ def user_line(
     meta = f" {g['dot']} ".join(part for part in (via, stamp) if part)
     if meta:
         first.append(f"  ({meta})", style="user.meta")
-    console.print(block(console, first, marker=g["prompt"], marker_style="user.marker"))
+    console.print(block(console, first, marker=g["prompt"], marker_style="user.marker", indent=0))
     for line in lines[1:]:
-        console.print(block(console, Text(line, style="user.text")))
+        console.print(block(console, Text(line, style="user.text"), indent=0))
 
 
 def panel(

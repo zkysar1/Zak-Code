@@ -39,8 +39,8 @@ All content sits on this grid; nothing else exists:
 
 | Column | Occupant |
 | --- | --- |
-| 0–1 | document margin, always blank |
-| 2 | block markers: `●` `›` `·` `!` `✦` |
+| 0–1 | document margin — except the operator's line, the root of the turn: its `›` sits at col 0 and its text at col 2 (ADR-0186) |
+| 2 | block markers: `●` `·` `!` `✦`; the operator's message text |
 | 4 | block body + hanging-indent continuation; the `└` connector; the `│` rail; the `· lang` code tag |
 | 6 | result bodies (right of the rail), receipt summaries (right of the elbow), code block text |
 
@@ -86,13 +86,15 @@ All content sits on this grid; nothing else exists:
    keyboard door's frame (`read_prompt` / `open_input_frame`) draws the seam around
    the typed line. The say and harness doors — the only doors inside a cockpit — echo
    the message through `_layout.user_line` (ADR-0185): the seam's blanks (one when the
-   idle wait already printed one, else two), then `› message` with the chevron in
-   `user.marker`, the text in `user.text` (bold), and the door plus the wall-clock stamp
-   dim at the end of the first line (`(say · 14:22)`); further lines sit under the body
-   column; long messages fold (ADR-0119). The renderer's first `_gap()` prints one blank
-   after it. The seam reads: receipt / blank / blank / bright `›` line / blank / first
-   block — a macro beat visibly larger than the intra-turn single blank. No rules; the
-   only timestamps are the operator line's and the footer's. Never three blanks.
+   idle wait already printed one, else two), then `› message` at column 0 — the root of
+   the turn (ADR-0186) — with the chevron in `user.marker` and the text in `user.text`
+   (both `bold color(214)`, the one orange in the transcript), and the door plus the
+   wall-clock stamp grey at the end of the first line (`(say · 14:22)`); further lines
+   sit at col 2; long messages fold (ADR-0119). Every agent block then nests under it at
+   col 2. The renderer's first `_gap()` prints one blank after it. The seam reads:
+   receipt / blank / blank / orange `›` line / blank / first block — a macro beat visibly
+   larger than the intra-turn single blank. No rules; the only timestamps are the
+   operator line's and the footer's. Never three blanks.
 6. **No horizontal rules anywhere in the transcript.**
 7. **Durations everywhere, via the injectable clock (mandatory).**
    `StreamRenderer(console=None, clock: Callable[[], float] | None = None)`;
@@ -205,6 +207,19 @@ All content sits on this grid; nothing else exists:
     (`__str__`) — code-shaped text renders as written (fresh-eyes review, 2026-09-17); `[label](url)` → the label in `md.link`
     plus ` (url)` in `md.link.url` when they differ; `` `code` `` → `md.code`. Never
     nested; never markup-parsed.
+    The web client's `spanAt` / `inlineSpans` / `renderProse` carry the same grammar,
+    token for token (ADR-0186): a change to one is a change to both in the same PR.
+20. **Log records are transcript lines, never raw output** (ADR-0186). The interactive
+    CLI installs `cli/logsink.install_transcript_logging` before anything prints: the
+    entry point's stdout handler goes, the full record goes to
+    `~/.zakcode/logs/zakcode.log` (rotating), and `TranscriptLogHandler` prints each
+    record as a `·` row at indent 4 in `log` (INFO) / `warn` / `err`. Compact form, one
+    line each: litellm's call record is `call <model> · <provider>`; an httpx request
+    `POST <model:method> · 200 OK`; zakcode's own records `<logger>: <message>` without
+    the `zakcode.` prefix. Third-party INFO chatter that is not the per-call line stays in
+    the file; WARNING and above always print. Every record passes `RedactingFilter`
+    (`redact_url_credentials` then `redact_secrets`) before any handler — the daemon's
+    stdout handler carries the same filter, so `serve.log` never holds a `?key=` either.
 
 **Say box (the cockpit's one input, ADR-0119):** the bottom tmux pane runs ONE
 persistent `SayBoxEditor` (`cli/saybox.py`) for the life of the box — never a prompt
@@ -247,56 +262,57 @@ downgrade (bold white on green/red) keeps contrast. No style assumes a dark back
 | --- | --- | --- |
 | `brand` | `color(38)` | the `✦` spark (banner, /help header) |
 | `brand.soft` | `color(38) dim` | the `✧` tip glyph |
-| `banner.border` | `dim` | welcome box border |
+| `banner.border` | `color(245)` | welcome box border |
 | `banner.title` | `bold` | "Zak Code" in the box; section headings |
-| `banner.label` | `dim` | kv labels (model, workspace…) |
+| `banner.label` | `color(245)` | kv labels (model, workspace…) |
 | `banner.value` | `default` | kv values |
-| `banner.hint` | `dim` | `/help for commands · /exit to quit` |
-| `tip` | `dim` | tip line text |
-| `prompt.marker` | `bold color(38)` | the `›` input chevron (incl. `permit … ›`) |
-| `user.marker` | `bold color(38)` | the `›` before the operator's echoed line (ADR-0185) |
-| `user.text` | `bold` | the operator's echoed message |
-| `user.meta` | `dim` | its door + wall-clock stamp `(say · 14:22)` |
+| `banner.hint` | `color(245)` | `/help for commands · /exit to quit` |
+| `tip` | `color(245)` | tip line text |
+| `prompt.marker` | `bold color(214)` | the `›` input chevron (incl. `permit … ›`) — orange means the human (ADR-0186) |
+| `user.marker` | `bold color(214)` | the `›` at col 0 before the operator's line (ADR-0185/0186) |
+| `user.text` | `bold color(214)` | the operator's message — the one orange run of text in the transcript |
+| `user.meta` | `not bold color(245)` | its door + wall-clock stamp `(say · 14:22)` |
 | `assistant.marker` | `color(38)` | the `●` before assistant prose |
 | `md.h` | `bold` | headings (blank line forced above) |
 | `md.code` | `dark_cyan` | inline code spans — dark_cyan, not cyan, so the 16-color downgrade of `color(38)` (→ cyan) never collides with inline code |
-| `md.bullet` | `dim` | list bullet glyph |
+| `md.bullet` | `color(245)` | list bullet glyph |
 | `md.italic` | `italic` | `*italic*` / `_italic_` spans |
 | `md.strike` | `strike` | `~~strike~~` spans |
 | `md.link` | `underline` | a link's label |
-| `md.link.url` | `dim` | a link's ` (url)` |
-| `md.quote` | `dim italic` | `> quote` lines |
+| `md.link.url` | `color(245)` | a link's ` (url)` |
+| `md.quote` | `color(245) italic` | `> quote` lines |
 | `tool.marker` | `bold` | the `●` before tool calls — bright: the loudest line of its block (ADR-0185) |
 | `tool.name` | `bold` | Read / Edit / Run / Search |
-| `tool.paren` | `dim` | the `(` `)` and `$ ` |
+| `tool.paren` | `color(245)` | the `(` `)` and `$ ` |
 | `tool.args` | `default` | condensed argument |
-| `tool.bar` | `dim` | the `│` rail beside result bodies |
+| `tool.bar` | `color(245)` | the `│` rail beside result bodies |
 | `tool.bar.err` | `red` | the `│` rail beside a **failed** tool's body |
-| `result.connector` | `dim` | the `└` |
-| `result.summary` | `dim` | "134 lines", "+6 -2", "· 0.1s" |
-| `result.output` | `dim` | preview body lines |
-| `result.more` | `dim italic` | `… +10 lines …` |
+| `result.connector` | `color(245)` | the `└` |
+| `result.summary` | `color(245)` | "134 lines", "+6 -2", "· 0.1s" |
+| `result.output` | `color(245)` | preview body lines |
+| `result.more` | `color(245) italic` | `… +10 lines …` |
 | `ok` | `green` | the `✓` that opens every success receipt, footer marker on clean done, todo done |
 | `err` | `bold red` | `✗`, error labels, footer marker on provider error |
 | `err.body` | `default` | error detail lines (full brightness — errors are shown, not dimmed) |
 | `warn` | `yellow` | `!` interrupt notice, footer marker on early stop |
-| `status` | `dim italic` | mid-turn status notices |
-| `footer` | `dim` | the turn receipt body |
-| `sep` | `dim` | `·` interpunct separators |
+| `status` | `color(242) italic` | mid-turn status notices — one step quieter than the chrome |
+| `log` | `color(242)` | a log record rendered as a transcript line (ADR-0186) |
+| `footer` | `color(245)` | the turn receipt body |
+| `sep` | `color(245)` | `·` interpunct separators |
 | `spinner` | `color(38)` | wait-line glyph |
-| `diff.meta` | `dim` | `@@`, `---`, `+++` lines |
+| `diff.meta` | `color(245)` | `@@`, `---`, `+++` lines |
 | `diff.add` | `bold grey93 on dark_green` | `+` lines (painted band, text extent) |
 | `diff.del` | `bold grey93 on dark_red` | `-` lines (painted band, text extent) |
-| `diff.ctx` | `dim` | context lines |
+| `diff.ctx` | `color(245)` | context lines |
 | `perm.border` | `yellow` | permission panel border |
 | `perm.title` | `bold yellow` | panel title |
 | `perm.tool` | `bold` | tool name in panel |
 | `perm.reason` | `default` | humanized tier + reason |
 | `perm.key` | `bold` | option numbers and y/a/n keys |
 | `perm.option` | `default` | option text |
-| `code.tag` | `dim` | the `· python` language tag |
+| `code.tag` | `color(245)` | the `· python` language tag |
 | `todo.done` | `green` | `✓` in Todo results |
-| `todo.open` | `dim` | `○` in Todo results |
+| `todo.open` | `color(245)` | `○` in Todo results |
 
 Compatibility aliases (REQUIRED — consumed by `/permissions`, `/hooks`, `/plugins`,
 `/skills`, `eval`, `info`, `_run_server_chat`, and plugin output paths the restyle
@@ -304,13 +320,13 @@ does not fully rewrite; rich raises on unknown style names):
 
 | Alias | Maps to |
 | --- | --- |
-| `notice.dim` | `dim` |
-| `arg.key` | `dim` |
+| `notice.dim` | `color(245)` |
+| `arg.key` | `color(245)` |
 | `arg.value` | `default` |
-| `banner.version` | `dim` |
+| `banner.version` | `color(245)` |
 | `tool.verb` | `bold` |
 | `tool.target` | `bold` |
-| `rule.line` | `dim` |
+| `rule.line` | `color(245)` |
 | `perm.tier` | `yellow` |
 
 ## Glyphs (`cli/_glyphs.py`)
@@ -364,6 +380,7 @@ Dark is default; light via `prefers-color-scheme: light` (`color-scheme: dark li
 | `--line` / `--line-soft` | `#2a313a` / `#20262e` | `#e2dfd9` / `#eceae5` |
 | `--fg` / `--muted` / `--faint` | `#e9ecef` / `#99a3ae` / `#66707b` | `#33312d` / `#6e6b64` / `#a3a09a` |
 | `--brand` | `#38b6df` | `#117ba8` |
+| `--user` | `#f2a53c` | `#b45f0a` |
 | `--ok` / `--err` / `--warn` | `#5fc88a` / `#e5646e` / `#d9a13f` | `#2c8a55` / `#c23d49` / `#9a6b1f` |
 | `--add-bg` / `--add-fg` | `#173321` / `#a9d8b4` | `#e3f2e6` / `#1d5e35` |
 | `--del-bg` / `--del-fg` | `#391d22` / `#e3a9b0` | `#fae3e5` / `#8f303a` |
@@ -398,7 +415,7 @@ connection dot. It is **not** a button color.
   Cost lives in per-turn receipts, never the header.
 - **Empty state** — centered `✦` + name + `{model} · session {id8}` + hint, plus three
   sample-prompt pills that prefill the composer (never send); removed on first append.
-- **User line** — gutter `›` in `--brand` mono; prose weight 500; no bubble — the
+- **User line** — gutter `›` and text in `--user` (orange, weight 700 / 600, ADR-0186); no bubble — the
   bright short line *is* the turn separator.
 - **Assistant prose** — 8px `--brand` dot per prose group (re-anchors after tool
   cards, mirroring the terminal `_assistant_marked` reset); inline code = mono pill
@@ -484,9 +501,12 @@ the model is no longer one slug — it is a model *per task category*. The displ
 - **No density regressions**: the one-blank intra-turn rhythm, the two-blank turn
   seam (on every door), the 100-column reading width and the 44rem web column are the
   spaciousness fix — do not tighten, do not widen.
-- **Two bright lines per block, no more**: the operator's line and the tool call line
-  stay bright; receipts, rails and previews stay dim, with the outcome mark the only
-  colour in a receipt (ADR-0185).
+- **Two loud lines per turn shape, no more**: the operator's line (orange) and the tool
+  call line (bright); receipts, rails and previews stay grey, with the outcome mark the
+  only colour in a receipt (ADR-0185/0186).
+- **Grey by colour index, never by `dim`**: chrome is `color(245)`, status and log rows
+  `color(242)`; the `dim` attribute is dropped by tmux and some terminals, so a `dim`
+  style is a full-contrast style in the cockpit (ADR-0186).
 - **Append-only transcript** in both clients; the only live surfaces are the REPL
   wait line and the pinned web overlay, neither of which reflows history.
 

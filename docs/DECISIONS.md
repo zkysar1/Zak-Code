@@ -10368,3 +10368,96 @@ bold-italic span; a longer delimiter that fails to close no longer stops a short
 from being tried at the same position. The web client's Fetch receipt says `no output`
 for an empty fetch, as the terminal does. Regression test:
 `test_code_shaped_text_survives_the_emphasis_parser`.
+
+
+## ADR-0186: the transcript's chrome is grey by colour index, log records are transcript lines, and the operator's line is orange at the root of the turn
+
+**Status:** Accepted (2026-09-17)
+
+**Context.** Operator report after ADR-0185 landed, watching the cockpit: (1) "for each
+call it repeats the model name and the LLM stuff and three other things — I like that it
+repeats it, for now, but it needs to be much smaller and greyed out, not so much contrast";
+(2) "the say is the same colour as all the LLM calls, and the indent is a little weird — it
+should be bright orange; the user should very easily see where they said something".
+Measured:
+
+1. *The repeated lines are stdlib logging, not the renderer.* The console-script entry
+   configures ``logging.basicConfig(level=INFO, stream=stdout)`` for every command, so the
+   interactive CLI inherits the daemon's shape — and litellm's ``LiteLLM`` logger propagates
+   to the root (``LITELLM_LOG=ERROR`` levels only litellm's OWN handler). Reproduced with a
+   mocked completion: every model call writes a two-line INFO record, ``INFO LiteLLM`` then
+   ``LiteLLM completion() model= gemini-3.8-flash; provider = vertex_ai``, and a real call
+   adds ``Wrapper: Completed Call, calling success_handler`` — the model name, "the LLM
+   stuff", and the timestamp, level and logger name around them. Full contrast, unindented,
+   outside the column grid. httpx's own per-request line is NOT among them (litellm pins
+   the ``httpx`` logger to WARNING at import, on both boxes measured), but whenever httpx
+   does log it logs the FULL URL, and a provider that carries its key in the query string
+   (Google AI Studio's ``?key=``) would put the API key into the pane and into
+   ``serve.log``.
+2. *``dim`` is not a colour.* Every piece of chrome was styled with the SGR ``dim``
+   attribute. Some terminals honour it, others drop it, and tmux forwards it only when the
+   outer terminal's terminfo advertises it — so in the cockpit (tmux) the receipts, rails,
+   status lines and the operator line's meta all rendered at full contrast, which is the
+   whole "too much contrast / same colour as everything" report. ADR-0185's bold marker
+   read as brightness for the same reason; it worked, the greys did not.
+3. *The operator's line sat at the agent's indent.* ``›`` at col 2 like every ``●`` block,
+   bold like every tool line: nothing marked it as the turn's root.
+
+**Decision.**
+
+1. **Log records become transcript lines.** ``cli/logsink.py``: ``install_transcript_logging``
+   (called at the top of ``chat``, so the in-process REPL, the cockpit pane and the
+   ``--server`` client all get it) replaces the stdout handler with a rotating file
+   (``~/.zakcode/logs/zakcode.log``, 2 MB × 3, full format) and a ``TranscriptLogHandler``
+   that prints each record as a ``·`` row at the receipt column (indent 4): INFO in ``log``
+   (grey), WARNING in ``warn``, ERROR in ``err``. The compact form drops the timestamp,
+   level and ``zakcode.`` prefix and collapses the record to one line; litellm's call record
+   reads ``call gemini-3.8-flash · vertex_ai`` — the model call the operator wanted to keep
+   seeing — and an httpx request, should that logger speak, ``POST
+   gemini-3.8-flash:streamGenerateContent · 200 OK``. Third-party INFO records that are not
+   the per-call line (``Wrapper: Completed Call, …``) go to the file only; zakcode's own
+   records and every WARNING and above print. ``RedactingFilter``
+   scrubs every record (``redact_url_credentials`` — ``?key=`` / ``&access_token=`` /
+   userinfo — then ``redact_secrets``) before ANY handler formats it, and the daemon's
+   stdout handler carries the same filter, so ``serve.log`` is scrubbed too.
+2. **Grey is a 256-colour index.** ``_theme.py`` replaces every ``dim`` with
+   ``color(245)`` (#8a8a8a, the say box toolbar's own grey) and gives status and log rows
+   ``color(242)`` (#6c6c6c) — one step quieter, "greyed out" on every terminal, whether or
+   not it honours ``dim``. The doctrine line changes from "chrome recedes to dim" to "chrome
+   recedes to grey".
+3. **The operator's line is orange at the root.** ``user.marker`` and ``user.text`` are
+   ``bold color(214)`` (#ffaf00 — an index, so it is orange everywhere) and ``prompt.marker``
+   matches, so orange means "the human" on every door; ``user_line`` prints at indent 0:
+   ``›`` at col 0, text at col 2, continuation lines at col 2. The turn now reads as a
+   three-level tree — the operator's line at the root, the agent's ``●`` blocks nested at
+   col 2, receipts and rails at col 4 — which is the indentation the operator was reaching
+   for.
+4. **The web client keeps parity.** ``--user`` token (#f2a53c dark / #b45f0a light) on the
+   user row's chevron and text at weight 600; the inline grammar ported verbatim
+   (``***``/``**``/``__``/``~~``/``*``/``_``/links/code with ADR-0185's boundary rules, ``> ``
+   quotes as a muted italic block, a lone rule as a paragraph break); the footer stamped
+   ``HH:MM`` like the terminal's. Status rows were already 12 px mono italic ``--muted`` —
+   the web had the "small and grey" the operator asked the terminal for. Log records never
+   reach the web (they are process output, not events).
+5. **Vinheim renders its own view.** The Vinheim web app consumes the SAFE watch projection
+   (``/watch/{id}`` without ``full``): tool names and outcome marks only, no arguments, no
+   output, no receipts — by design, for viewers who must not see tool traffic — and draws
+   it in its own React components (``WatchStream.tsx``: ``you:`` lines, coalesced text,
+   ``read_file ✓``, ``Plan: 2/5 done``). That is why an agent run "looks summarized" there.
+   Bringing it to this grammar is a two-part follow-up: the projection may carry the
+   display name and the receipt sentence (no arguments or output — ``SafeToolSummary``
+   gains ``display_name`` and ``receipt``), and Vinheim's renderer adopts the ``●``/``└``
+   shape. Not in this ADR.
+
+Not decided: hiding the per-call line (the operator wants it, for now;
+``ZAKCODE_LOG_LEVEL=WARNING`` hides it); a smaller font (a terminal has one size);
+colouring the say box's own toolbar orange; changing the keyboard-door frame.
+
+**Consequences.** The four complaints map to four measurable changes: no raw log line can
+reach a transcript (the handler set is pinned by test), the per-call line is one grey row
+in the grid, every grey renders on every terminal, and the operator's line is the one
+orange thing at column 0 on both clients. API keys in provider URLs no longer reach the
+pane or the log file. Column-offset tests move with the user line (col 0); every other
+pinned offset holds. ``docs/UX.md`` rules 1 (grid), 5 (say door), 19 (web grammar parity),
+new rule 20 (log records), the theme table, the web token table and the discipline list
+change with this ADR; FEATURE_AUDIT CLI-39.

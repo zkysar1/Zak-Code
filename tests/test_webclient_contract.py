@@ -160,3 +160,17 @@ def test_events_schema_is_valid_json_schema_shape() -> None:
     schema = events_schema()
     json.dumps(schema)  # must be JSON-serializable
     assert schema  # non-empty
+
+
+def test_client_shares_the_terminal_inline_grammar_and_operator_accent() -> None:
+    """ADR-0186 parity: the web client carries the terminal's inline grammar token for
+    token, the operator accent token, the quote/rule handling and the stamped footer."""
+    html = _html()
+    tokens = re.search(r"SPAN_TOKENS\s*=\s*\[(.*?)\];", html)
+    assert tokens, "web client must declare SPAN_TOKENS"
+    assert re.findall(r'\["([^"]+)",', tokens.group(1)) == ["***", "**", "__", "~~", "*", "_"]
+    assert "function spanAt(" in html and "function inlineSpans(" in html
+    assert 'el("div", "quote")' in html  # > quote lines
+    assert "-{3,}" in html  # a lone rule is a paragraph break
+    assert "--user:" in html and ".row.user > .body { font-weight: 600; color: var(--user)" in html
+    assert "function hhmm(" in html and '" · " + hhmm()' in html

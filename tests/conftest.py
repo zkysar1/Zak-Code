@@ -11,7 +11,9 @@ normally whenever it is present (CI installs it; see ``.github/workflows/ci.yml`
 from __future__ import annotations
 
 import importlib.util
+import logging
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,28 @@ import pytest
 
 from zakcode.messages import Message
 from zakcode.providers.base import Capabilities, LLMResult, Provider
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logging() -> Iterator[None]:
+    """Snapshot/restore the root logger around every test (ADR-0186).
+
+    ``chat()`` installs the transcript log sink on the ROOT logger for the life of the
+    process, and ``_configure_logging`` replaces the root handlers outright; a test that
+    reaches either would otherwise leave those handlers behind for every later test.
+    """
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    try:
+        yield
+    finally:
+        for handler in root.handlers[:]:
+            if handler not in saved_handlers:
+                root.removeHandler(handler)
+                handler.close()
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
 
 
 @pytest.fixture(autouse=True)

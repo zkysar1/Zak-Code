@@ -1306,13 +1306,30 @@ def test_user_line_is_the_turn_anchor() -> None:
     console = Console(file=buffer, force_terminal=False, width=90, no_color=True, theme=ZAK_THEME)
     user_line(console, "first line\nsecond line", via="say", stamp="14:22", blanks=2)
     out = buffer.getvalue()
-    assert out.startswith("\n\n  › first line  (say · 14:22)")
-    assert "\n    second line" in out
+    # The operator's line is the root of the turn (ADR-0186): chevron at col 0, text at col 2,
+    # so every agent block (col 2) reads as nested under it.
+    assert out.startswith("\n\n› first line  (say · 14:22)")
+    assert "\n  second line" in out
     buffer = io.StringIO()
     console = Console(file=buffer, force_terminal=False, width=90, no_color=True, theme=ZAK_THEME)
     user_line(console, "typed ahead", blanks=1)
-    assert buffer.getvalue().startswith("\n  › typed ahead")
+    assert buffer.getvalue().startswith("\n› typed ahead")
     assert "(" not in buffer.getvalue()
+
+
+def test_user_line_is_the_one_orange_thing_and_chrome_is_grey_by_index() -> None:
+    """ADR-0186: orange and grey are 256-colour indexes, never `dim` — tmux drops the dim
+    attribute, which is how every 'dim' line rendered at full contrast in the cockpit."""
+    buffer = io.StringIO()
+    console = Console(
+        file=buffer, force_terminal=True, color_system="256", width=90, theme=ZAK_THEME
+    )
+    user_line(console, "hello", via="say", stamp="14:22", blanks=0)
+    out = buffer.getvalue()
+    assert "\x1b[1;38;5;214m›" in out  # bold orange chevron
+    assert "\x1b[1;38;5;214mhello" in out  # bold orange text
+    assert "\x1b[38;5;245m" in out  # the meta is grey by index
+    assert "\x1b[2m" not in out  # never the dim attribute
 
 
 @pytest.mark.asyncio

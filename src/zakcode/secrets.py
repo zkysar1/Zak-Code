@@ -223,10 +223,37 @@ def strip_url_credentials(url: str | None) -> str | None:
         return url
 
 
+#: A credential-bearing query value (``?key=…``, ``&access_token=…``) and RFC-3986 userinfo,
+#: matched inside free text so a logged URL can be scrubbed without parsing the whole line.
+_URL_QUERY_CREDENTIAL_RE = re.compile(
+    r"([?&](?:api[_-]?key|apikey|key|access[_-]?token|auth[_-]?token|token|client[_-]?secret|"
+    r"secret|password|passwd|pwd|signature|sig)=)[^&\s\"'#]+",
+    re.IGNORECASE,
+)
+_URL_USERINFO_RE = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^\s/@]+@", re.IGNORECASE)
+
+
+def redact_url_credentials(text: str) -> str:
+    """Mask credentials carried INSIDE URLs anywhere in ``text`` (ADR-0186).
+
+    A ``?key=…``-style query value (Google AI Studio puts the API key there, and httpx logs
+    the full URL of every request at INFO) and ``https://user:TOKEN@host`` userinfo become
+    ``***``; the host, path and other query keys survive so the line still says which
+    endpoint was called. Never raises.
+    """
+    if not text:
+        return text
+    try:
+        return _URL_USERINFO_RE.sub(r"\1***@", _URL_QUERY_CREDENTIAL_RE.sub(r"\1***", text))
+    except Exception:  # noqa: BLE001 — redaction must never raise
+        return text
+
+
 __all__ = [
     "provider_key_env_names",
     "redact_credential_tokens",
     "redact_secrets",
+    "redact_url_credentials",
     "strip_url_credentials",
 ]
 
