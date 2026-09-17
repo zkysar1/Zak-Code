@@ -255,8 +255,17 @@ def _translate_gestures(
         )
         return
 
-    for raw in gestures:
-        if not isinstance(raw, str) or not raw.strip():
+    for index, raw in enumerate(gestures):
+        # A non-string or blank entry has no gesture text to key on, so it is recorded under
+        # its position — the docstring's promise holds for it too (g-357-16: ``deny: [123]``
+        # used to load with ``errors == {}``).
+        if not isinstance(raw, str):
+            errors[f"{source}:{decision}[{index}]"] = (
+                f"not a string ({type(raw).__name__}); gesture skipped"
+            )
+            continue
+        if not raw.strip():
+            errors[f"{source}:{decision}[{index}]"] = "empty gesture; skipped"
             continue
         key = f"{source}:{decision}:{raw}"
         tool, pattern = _parse_gesture(raw)
@@ -325,6 +334,41 @@ def _translate_gestures(
                 f"deny {raw!r}: tool {tool!r} has no per-pattern deny seam "
                 "(only Bash commands and file paths are pattern-mappable); skipped"
             )
+
+
+#: How a skipped gesture is bucketed for the one-line summary (g-357-17). Matched against
+#: the recorded reason, first hit wins; anything unmatched counts as ``other``.
+_SKIP_KINDS: tuple[tuple[str, str], ...] = (
+    ("per-pattern allow", "per-pattern allow"),
+    ("no Zak Code tool maps", "unmapped tool"),
+    ("ask gesture", "ask no-op"),
+    ("deny wins", "allow under a deny"),
+    ("no per-pattern deny seam", "unmappable deny pattern"),
+    ("parse error", "unreadable file"),
+    ("not a string", "malformed entry"),
+    ("empty gesture", "malformed entry"),
+    ("expected a list", "malformed entry"),
+)
+
+
+def summarize_skipped(errors: dict[str, str]) -> str:
+    """One line for the log: how many gestures were not applied, bucketed by kind.
+
+    A Mind workspace declares many Claude Code gestures Zak Code has no tighten-only mapping
+    for (per-pattern allows, tools that do not exist here), and every Agent construction used
+    to emit one WARNING per gesture — measured 2026-08-26: 19 identical lines on every session
+    start, burying the warnings that matter. Correct behaviour, noisy signal: the caller logs
+    this summary once at WARNING and the per-gesture detail at DEBUG. Empty ``errors`` → ``""``.
+    """
+    if not errors:
+        return ""
+    counts: dict[str, int] = {}
+    for reason in errors.values():
+        kind = next((label for needle, label in _SKIP_KINDS if needle in reason), "other")
+        counts[kind] = counts.get(kind, 0) + 1
+    kinds = ", ".join(f"{label} ×{n}" for label, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+    noun = "gesture" if len(errors) == 1 else "gestures"
+    return f"{len(errors)} {noun} not applied ({kinds}); each one is logged at DEBUG"
 
 
 def load_settings_permissions(

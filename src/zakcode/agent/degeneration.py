@@ -154,6 +154,9 @@ def repeated_tail(text: str) -> str | None:
 #: whitespace units are never convicted — those are everyday formatting.
 _BURST_MIN_RUN_CHARS = 150
 _BURST_MIN_REPEATS = 12
+#: Public alias for the rail text: the veto names the exact ceiling a legitimately
+#: repetitive write must stay under per call (g-357-14).
+BURST_MIN_REPEATS = _BURST_MIN_REPEATS
 _BURST_MAX_UNIT_CHARS = 64
 _BURST_SCAN_CAP = 65_536
 #: Probe window / stride: a fully-periodic 128-char window every 32 chars guarantees

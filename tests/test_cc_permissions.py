@@ -12,7 +12,10 @@ Generic by construction: no plug-in is named. The gestures used here (``Bash(rm 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+
+import pytest
 
 from zakcode import Agent
 from zakcode.config import Settings
@@ -249,6 +252,75 @@ def test_ingestion_is_always_on(tmp_path: Path) -> None:
     decision, reason = agent.permission_policy.decide(_spec(agent, "bash"), {"command": "ls"})
     assert decision is PermissionDecision.DENY
     assert "denied by configuration" in reason
+
+
+def test_non_string_and_empty_entries_are_recorded_not_dropped(tmp_path: Path) -> None:
+    # g-357-16: ``deny: [123]`` used to load with errors == {} — contradicting the module's
+    # promise that an unmappable gesture is never silently dropped. Now every entry that
+    # cannot even be keyed on its text is recorded under its position.
+    _write_permissions(tmp_path, {"deny": [123, "", "   ", "Bash"]})
+    ingested, errors = load_settings_permissions(tmp_path)
+    assert "bash" in ingested.denied_tools
+    assert errors["settings.json:deny[0]"] == "not a string (int); gesture skipped"
+    assert errors["settings.json:deny[1]"] == "empty gesture; skipped"
+    assert errors["settings.json:deny[2]"] == "empty gesture; skipped"
+    assert len(errors) == 3
+
+
+def test_skipped_gestures_are_summarised_by_kind() -> None:
+    from zakcode.permissions_settings import summarize_skipped
+
+    assert summarize_skipped({}) == ""
+    line = summarize_skipped(
+        {
+            "a": "per-pattern allow 'Write(**/x)' has no tighten-only mapping; skipped",
+            "b": "per-pattern allow 'Read(**/y)' has no tighten-only mapping; skipped",
+            "c": "no Zak Code tool maps to CC tool 'AskUserQuestion'; gesture skipped",
+            "d": "not a string (int); gesture skipped",
+            "e": "something new",
+        }
+    )
+    assert line.startswith("5 gestures not applied (")
+    assert "per-pattern allow ×2" in line
+    assert "unmapped tool ×1" in line
+    assert "malformed entry ×1" in line
+    assert "other ×1" in line
+    assert "logged at DEBUG" in line
+    assert summarize_skipped({"a": "empty gesture; skipped"}).startswith("1 gesture not applied")
+
+
+def test_agent_construction_logs_one_summary_warning_not_one_per_gesture(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # g-357-17: a Mind workspace declares dozens of gestures with no mapping here; every Agent
+    # construction emitted one WARNING per gesture (19 measured on 2026-08-26), burying the
+    # warnings that matter. One summary at WARNING; the per-gesture detail at DEBUG.
+    _write_permissions(
+        tmp_path,
+        {
+            "allow": [
+                "Write(**/.claude/skills/**)",
+                "Read(**/.claude/rules/**)",
+                "AskUserQuestion",
+            ],
+            "deny": [7],
+        },
+    )
+    caplog.set_level(logging.DEBUG, logger="zakcode")
+    _agent(tmp_path)
+    warnings = [
+        r for r in caplog.records if r.levelno == logging.WARNING and "permission" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert (
+        warnings[0].getMessage().startswith("settings.json permissions: 4 gestures not applied (")
+    )
+    details = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.DEBUG and r.getMessage().startswith("settings.json permission ")
+    ]
+    assert len(details) == 4
 
 
 def test_no_settings_file_is_a_silent_noop(tmp_path: Path) -> None:
