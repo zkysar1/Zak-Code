@@ -731,7 +731,7 @@
     switch (name) {
       case "Read": return "Read " + lines_;
       case "List": return "Listed " + n + (n === 1 ? " entry" : " entries");
-      case "Fetch": return "Fetched " + lines_;
+      case "Fetch": return "Fetched " + (n ? lines_ : "no output");
       case "Run": return "Ran · " + (n ? lines_ : "no output");
       case "Search": return "Found " + n + (n === 1 ? " match" : " matches");
       case "Glob": return "Found " + n + (n === 1 ? " file" : " files");

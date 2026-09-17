@@ -810,9 +810,15 @@ class StreamRenderer:
 #: A horizontal rule on a line of its own: the section break it means is a gap.
 _RULE_RE = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})$")
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
-#: Inline span delimiters, longest first. Underscore forms are word-bounded so
-#: ``snake_case_names`` stay literal; an opener followed by a space (``2 * 3``) is literal.
+#: Inline span delimiters, longest first. A span needs a word boundary on both sides
+#: (``snake_case``, ``2*3*4`` and ``a*b*c`` stay literal), no space inside the delimiters
+#: (``2 * 3``), a letter or digit in its content (``*/*``, ``**/*.py`` stay literal), no
+#: file extension after the closer (``__init__.py``), never its own delimiter inside
+#: (``**/*.py and src/**/*.py`` cannot pair across the globs), and ``__`` never wraps a bare
+#: identifier (``__str__``) — in a coding transcript those are names, not emphasis
+#: (fresh-eyes review of ADR-0185).
 _SPAN_TOKENS: tuple[tuple[str, str], ...] = (
+    ("***", "bold italic"),
     ("**", "bold"),
     ("__", "bold"),
     ("~~", "md.strike"),
@@ -872,19 +878,27 @@ def _span_at(text: str, i: int) -> tuple[Text, int] | None:
         if not text.startswith(token, i):
             continue
         start = i + len(token)
-        if start >= len(text) or text[start].isspace():
-            return None
         end = text.find(token, start)
-        if end == -1 or text[end - 1].isspace():
-            return None
         after = end + len(token)
-        if token.startswith("_"):
-            before_ok = i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")
-            after_ok = after >= len(text) or not (text[after].isalnum() or text[after] == "_")
-            if not (before_ok and after_ok):
-                return None
-        return Text(text[start:end], style=style), after
+        content = text[start:end]
+        if (
+            end <= start  # unclosed, or nothing between the delimiters
+            or text[start].isspace()
+            or text[end - 1].isspace()
+            or not any(c.isalnum() for c in content)
+            or token[0] in content  # ``**/*.py and src/**/*.py``: never pair across a glob
+            or (i > 0 and (_word_char(text[i - 1]) or text[i - 1] == token[0]))
+            or (after < len(text) and (_word_char(text[after]) or text[after] == token[0]))
+            or (after + 1 < len(text) and text[after] == "." and text[after + 1].isalnum())
+            or (token == "__" and content.replace("_", "").isalnum())
+        ):
+            continue  # a shorter token may still open here (``**/*.py`` -> ``*``)
+        return Text(content, style=style), after
     return None
+
+
+def _word_char(c: str) -> bool:
+    return c.isalnum() or c == "_"
 
 
 def _inline_spans(text: str) -> Text:
