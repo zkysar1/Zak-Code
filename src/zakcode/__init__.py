@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version as _pkg_version
@@ -441,6 +442,13 @@ class Agent:
             cwd=str(self.settings.workspace_root),
             model=self.settings.default_model,
         )
+        # The harness marker (ADR-0187). Claude Code exports ``CLAUDECODE=1`` to every hook
+        # and shell it spawns, and a framework's scripts branch on it to name the tools of
+        # the harness they are running under. Zak Code exports the session id under this
+        # name so those detectors see a Zak Code session — from hooks and from the model's
+        # own shell commands alike, both of which inherit the process environment — instead
+        # of "unknown", which they answer with Claude Code's vocabulary.
+        os.environ["ZAKCODE_SESSION"] = self.session.id
         # A RESUMED/injected session carries its OWN persisted cwd; realign it to THIS run's
         # workspace so every cwd-sensitive surface (tools, rules, TURN_END/Stop hooks) agrees on one
         # directory instead of splitting between the session's old dir and the active workspace.
@@ -1599,6 +1607,14 @@ class Agent:
         budget (:attr:`Settings.skill_invocation_budget`); over the cap it returns a
         ``denied_reason`` (no body, no signal) to stop a runaway/cyclic chain. A human
         ``/<name>`` (``source="command"``) is operator-controlled and never throttled.
+
+        ``source="harness"`` (ADR-0187) is the loop delivering the skill a turn-end hook's
+        continuation names, or a fired autonomous-loop wake-up resolving to it: not a
+        human's keystroke, so a ``user-invocable: false`` skill (a framework's loop
+        orchestrator) is allowed; not the model's choice, so it is neither budgeted nor
+        deduped — but it counts as loaded for the dedup, so the model's own ``use_skill`` of
+        the same skill right after answers with the current section, not the body again.
+        ``disable-model-invocation`` still refuses it: operator-only stays operator-only.
         """
         registry = getattr(self, "skill_registry", None)
         # resolve() (not get()): match the skill's name OR its ``triggers:`` frontmatter, so a
@@ -1624,7 +1640,7 @@ class Agent:
         # The mirror image (ADR-0109): ``disable-model-invocation: true`` marks a skill the
         # OPERATOR alone may run — a framework's control commands (start/stop an agent). Refuse
         # the model's tool path; the human ``/<name>`` path is untouched.
-        if source == "tool" and not skill.model_invocable:
+        if source in ("tool", "harness") and not skill.model_invocable:
             return SkillLoad(
                 found=True,
                 name=skill.name,
@@ -1685,6 +1701,15 @@ class Agent:
                 logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
                 return SkillLoad(found=True, name=skill.name, body=pointer)
             self._skills_loaded_this_turn[skill.name] = digest
+        elif source == "harness":
+            # A harness-composed re-entry counts as loaded this turn (ADR-0187): the model's
+            # own use_skill of the same skill, prompted by the hook's words, then answers
+            # with the ADR-0067 section pointer instead of a second copy of the body.
+            import hashlib
+
+            self._skills_loaded_this_turn[skill.name] = hashlib.sha1(
+                body.encode("utf-8", errors="replace")
+            ).hexdigest()
         if source == "tool":  # count only model-driven loads that actually inject a body
             self._skill_invocations_this_turn += 1
             self._skill_invocations_total += 1
@@ -1711,7 +1736,7 @@ class Agent:
         return SkillLoad(found=True, name=skill.name, body=rendered, path=str(skill.path))
 
     async def compose_skill_turn(
-        self, name: str, args: str = "", *, fuzzy: bool = True
+        self, name: str, args: str = "", *, fuzzy: bool = True, source: str = "command"
     ) -> SkillInvocation:
         """Resolve a skill for the human ``/<name>`` path and return the turn text to run.
 
@@ -1725,8 +1750,13 @@ class Agent:
         :meth:`_load_skill_body` with the model-facing ``use_skill`` tool and
         :meth:`invoke_skill`, so every path reads, defangs, and fires ``ON_SKILL_SELECTED``
         identically. Never raises: a missing/unreadable skill file is a UX result, not a crash.
+
+        ``source="harness"`` (ADR-0187) composes the same turn text for the loop's own
+        delivery — a turn-end hook's named re-entry, a fired autonomous-loop wake-up — under
+        :meth:`_load_skill_body`'s harness rules (a ``user-invocable: false`` loop skill is
+        allowed; the frame still leads, so every reader keyed on it recognises the turn).
         """
-        load = await self._load_skill_body(name, source="command", args=args)
+        load = await self._load_skill_body(name, source=source, args=args)
         corrected_from: str | None = None
         if not load.found:
             # Typo tolerance (ADR-0040): ``/enocde-session`` is not "unsupported" when the
@@ -1737,7 +1767,7 @@ class Agent:
             candidates = self.closest_skill_names(name) if fuzzy else []
             if len(candidates) == 1 and candidates[0][1] >= _SKILL_AUTOCORRECT_RATIO:
                 corrected_from = name.lstrip("/").strip()
-                load = await self._load_skill_body(candidates[0][0], source="command", args=args)
+                load = await self._load_skill_body(candidates[0][0], source=source, args=args)
             if not load.found:
                 return SkillInvocation(
                     invoked=False, name=name, suggestions=tuple(c for c, _ in candidates)

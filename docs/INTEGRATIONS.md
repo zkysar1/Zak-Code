@@ -94,7 +94,13 @@ arguments) — the seam for runtime guardrails.
 loop** with `reason` as the next instruction — the mechanism a perpetual / autonomous
 framework uses to keep itself running. Always on for the main loop when a `Stop` hook is
 registered (sub-agent loops are never vetoable); vetoes are unbounded — the hook stands
-down, and the cost budget is the hard bound.
+down, and the cost budget is the hard bound. A `reason` that names a skill re-entry
+(`Skill('aspirations') with args='loop'`, `use_skill(name=…, args=…)`) is **delivered as
+that skill** (ADR-0187): the loop composes it — command frame with the reason folded in,
+page 1, plan steps — instead of relaying the instruction; after three such vetoes with no
+skill run between them the next ends the turn `veto_stall` and arms the autonomous-loop
+sentinel wake-up when none is held. Any other reason is relayed as a `[harness] Hint:`
+line, unbounded.
 
 ### 2. Per-turn context injection (`PreLLMCall`)
 
@@ -208,6 +214,8 @@ running an autonomous framework on Zak Code:
 
 - **Turn-end continuation ("never terminate").** A `Stop` hook can veto turn-end and inject a
   continuation (seam #1) — always armed on the main loop. This is the perpetual-loop engine.
+  A continuation naming a skill is delivered as that skill; a re-entry nobody runs is fenced
+  with a wake-up behind it (ADR-0187).
 - **`settings.json` hook ingestion.** A Claude-Code `settings.json` hook block is parsed verbatim
   (`zakcode.hooks.settings_loader`): event names mapped (`Stop` → `TURN_END`, `PreToolUse`, …),
   `$CLAUDE_PROJECT_DIR` substituted, every command security-scanned; always on (ADR-0025).

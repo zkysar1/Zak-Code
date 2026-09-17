@@ -161,7 +161,8 @@ All content sits on this grid; nothing else exists:
     iterations"`, `provider_error → "provider error"` (+ ` — ` + first line of
     `done.error` when present), `doom_loop → "stopped — repeating itself"`, `stuck →
     "stopped — no progress"`, `gave_up → "stopped — gave up (no output)"`,
-    `recipe_stalled → "stopped — recipe stalled"`, unknown →
+    `recipe_stalled → "stopped — recipe stalled"`, `veto_stall → "stopped — re-entry
+    stalled: the stop hook kept asking for a skill that never ran"` (ADR-0187), unknown →
     `stop_reason.replace("_", " ")`. Marker: `ok` for un-degraded `completed`, `err`
     for `provider_error`, `warn` for everything else. Tokens: `f"{n/1000:.1f}k tokens"`
     at ≥1000 else `f"{n} tokens"`. Cost: `f"{c:.4f}"` with trailing zeros stripped to

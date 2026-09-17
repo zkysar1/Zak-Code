@@ -741,3 +741,77 @@ async def test_no_veto_keeps_the_same_turn_dedup(tmp_path: Path) -> None:
     assert len(outputs) == 2
     assert "greet warmly" in (outputs[0] or "").lower()
     assert "[already loaded]" in (outputs[1] or "")
+
+
+# ── ADR-0187: the harness source ─────────────────────────────────────────────
+
+
+def _write_skill_with(workspace: Path, name: str, frontmatter: str, body: str = "Loop.") -> None:
+    d = workspace / ".zakcode" / "skills" / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name} skill.\n{frontmatter}\n---\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+async def test_harness_source_composes_a_user_invocable_false_skill(tmp_path: Path) -> None:
+    """A framework's loop orchestrator is ``user-invocable: false`` (only the model, or another
+    skill, runs it). The harness delivering it on a Stop hook's say-so is neither a human's
+    keystroke (refused) nor the model's choice: it composes."""
+    _write_skill_with(tmp_path, "aspirations", "user-invocable: false", body="# Loop\n\nRun it.")
+    agent = _agent(tmp_path, enable_skills=True)
+    denied = await agent.compose_skill_turn("aspirations", "loop")
+    assert denied.invoked and denied.denied_reason and "not user-invocable" in denied.denied_reason
+    composed = await agent.compose_skill_turn("aspirations", "loop", source="harness")
+    assert composed.invoked and composed.denied_reason is None and composed.error is None
+    assert composed.turn_text is not None
+    assert composed.turn_text.startswith(
+        "<command-message>aspirations is running</command-message>\n"
+        "<command-name>/aspirations</command-name>\n<command-args>loop</command-args>\n\n"
+    )
+    assert "Run it." in composed.turn_text
+
+
+async def test_harness_source_still_refuses_an_operator_only_skill(tmp_path: Path) -> None:
+    _write_skill_with(tmp_path, "start", "disable-model-invocation: true")
+    agent = _agent(tmp_path, enable_skills=True)
+    refused = await agent.compose_skill_turn("start", source="harness")
+    assert refused.invoked and refused.denied_reason and "user-only" in refused.denied_reason
+    human = await agent.compose_skill_turn("start")  # the operator's own keystroke still runs
+    assert human.turn_text is not None
+
+
+async def test_harness_source_is_unbudgeted_but_counts_as_loaded(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "aspirations", body="Loop body.")
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+    )
+    agent.settings.skill_invocation_budget = 1
+    for _ in range(3):
+        load = await agent._load_skill_body("aspirations", source="harness")
+        assert load.body is not None and load.denied_reason is None
+    assert agent._skill_invocations_this_turn == 0  # never drawn from the budget
+    # The model's own use_skill of the skill the harness just delivered gets the pointer,
+    # not a second copy of the body.
+    again = await agent._load_skill_body("aspirations", source="tool")
+    assert again.body is not None and again.body.startswith("[already loaded]")
+
+
+async def test_use_skill_accepts_claude_codes_skill_parameter(tmp_path: Path) -> None:
+    # The registry routes a ``Skill(...)`` call here by alias; its parameter is ``skill``.
+    resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body="x")})
+    res = await UseSkillTool().execute({"skill": "alpha", "args": "loop"}, _ctx(tmp_path, resolver))
+    assert not res.is_error
+    assert resolver.loaded == ["alpha"] and resolver.loaded_args == ["loop"]
+
+
+def test_the_agent_exports_the_harness_marker(tmp_path: Path, monkeypatch: Any) -> None:
+    """Claude Code exports CLAUDECODE=1 to hooks and shells; a framework's harness detector
+    keys on it and answers Claude Code's tool names otherwise. Zak Code exports its own."""
+    import os
+
+    monkeypatch.delenv("ZAKCODE_SESSION", raising=False)
+    agent = _agent(tmp_path)
+    assert os.environ["ZAKCODE_SESSION"] == agent.session.id

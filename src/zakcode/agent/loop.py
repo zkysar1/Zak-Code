@@ -206,7 +206,7 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.usage import Usage
-from zakcode.wakeup import WakeupSlot
+from zakcode.wakeup import DEFAULT_DELAY_SECONDS, LOOP_SENTINEL, WakeupSlot
 
 if TYPE_CHECKING:
     from zakcode.sandbox import EgressProxy
@@ -1291,6 +1291,72 @@ def _composed_skill_body(text: str) -> str:
     return "" if body.startswith("<command-body ") else body
 
 
+#: A turn-end hook's continuation that names the skill the loop must re-enter with, in
+#: either harness's vocabulary (ADR-0187): Claude Code's ``Skill('aspirations') with
+#: args='loop'`` / ``Skill(worker-loop)``, Zak Code's ``use_skill(name='aspirations',
+#: args='loop')``. The name may be bare or quoted; the args ride ``with args=`` or the keyword.
+_SKILL_REENTRY_RE = re.compile(
+    r"\b(?:Skill|use_skill)\(\s*(?:name\s*=\s*)?['\"]?(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)['\"]?"
+    r"\s*(?:,\s*args\s*=\s*['\"](?P<kw>[^'\"]*)['\"])?\s*\)"
+    r"(?:\s+with\s+args\s*=\s*['\"](?P<with>[^'\"]*)['\"])?"
+)
+#: A mention right after one of these is a skill the hook says NOT to run ("ended without a
+#: Skill(aspirations) re-entry", "NOT Skill('aspirations'), which is the reducer-only …").
+_SKILL_REENTRY_NEGATED_RE = re.compile(
+    r"(?:\bnot|\bnever|\bno|\bwithout|instead\s+of)\s+(?:an?\s+)?$", re.IGNORECASE
+)
+
+#: How many turn-end vetoes that NAME a skill re-entry the loop honours in a row while the
+#: model runs no skill at all, before the next such veto ends the turn as ``veto_stall``
+#: (ADR-0187). Three: one delivery is the fix for a model that could not map the tool name,
+#: a second covers a body that landed mid-thought, a third is the spiral — measured
+#: 2026-09-17 (serene, gemini-3.5-flash): productivity-check → ``echo`` → "Verdict: …" →
+#: BLOCK → the same, for hours, with the hook naming ``Skill('aspirations')`` every time.
+#: Vetoes whose reason names no skill are not counted and never trip it: a generic Stop
+#: hook keeps Claude Code's unbounded contract.
+_VETO_STALL_THRESHOLD = 3
+
+
+def skill_reentry_in(reason: str) -> tuple[str, str] | None:
+    """The ``(skill, args)`` a turn-end hook's continuation asks the loop to re-enter with, or
+    ``None`` when it names no skill (ADR-0187).
+
+    Among the mentions that are not negated, the first that carries arguments wins, else the
+    first: a Mind's reducer reason reads "ended without a Skill(aspirations) re-entry …
+    Your FIRST action MUST be: Skill('aspirations') with args='loop'" and its worker reason
+    "MUST be: Skill('worker-loop') — NOT Skill('aspirations')"; both resolve to the skill
+    the hook means. Pure text; never raises.
+    """
+    first: tuple[str, str] | None = None
+    for match in _SKILL_REENTRY_RE.finditer(reason):
+        lead = reason[max(0, match.start() - 16) : match.start()]
+        if _SKILL_REENTRY_NEGATED_RE.search(lead):
+            continue
+        args = (match.group("with") or match.group("kw") or "").strip()
+        if args:
+            return match.group("name"), args
+        if first is None:
+            first = (match.group("name"), "")
+    return first
+
+
+_COMMAND_MESSAGE_RE = re.compile(r"\A<command-message>(?P<message>[^\n]*)</command-message>")
+
+
+def harness_skill_turn_text(turn_text: str, note: str) -> str:
+    """``turn_text`` (a composed ``/<skill>`` turn) with ``note`` folded into its
+    ``<command-message>`` line — one line, ``[harness]``-tagged (ADR-0021 provenance), so the
+    frame stays FIRST for every reader keyed on it (:func:`_composed_skill_name`, the
+    transcript, the elision at turn end) while the hook's own words still reach the model.
+    Text that is not a composed turn, or an empty note, comes back unchanged."""
+    flat = " ".join(note.split())
+    match = _COMMAND_MESSAGE_RE.match(turn_text)
+    if match is None or not flat:
+        return turn_text
+    message = f"{match.group('message')} — [harness] {flat}"
+    return f"<command-message>{message}</command-message>{turn_text[match.end() :]}"
+
+
 #: Text-only stall (ADR-0033): a turn whose model answers a nudge or veto with ANOTHER
 #: no-tool-call completion — no plan open — is stalled in words. Two in a row latch the
 #: struggle flag so zakpick hands the turn to the deep coder; the serene spiral produced
@@ -1631,6 +1697,7 @@ _DEGRADED_STOP_REASONS = {
     "verification_failed",
     "provider_error",
     "skill_too_large",
+    "veto_stall",
 }
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
@@ -1859,7 +1926,7 @@ class AgentLoop:
         turn_end_veto_reset: Callable[[], None] | None = None,
         consume_say_inbox: bool = False,
         consume_observation_inbox: bool = False,
-        compose_skill: Callable[[str, str], Any] | None = None,
+        compose_skill: Callable[..., Any] | None = None,
     ) -> None:
         self.provider = provider
         # A loop cannot run on a model whose window nobody knows (ADR-0066): every
@@ -2050,6 +2117,12 @@ class AgentLoop:
         # through the tool context; the REPL's idle wait takes it once due. Persisted on
         # every change so the held wake-up outlives the turn — and the process.
         self.wakeup_slot = WakeupSlot(session, on_change=self._persist)
+        # Turn-end re-entry state (ADR-0187): vetoes that named a skill, honoured in a row
+        # with no skill call between them (the fence's count); whether the fence tripped;
+        # and the skill the last veto delivered (the streaming status line). Per turn.
+        self._vetoes_without_skill = 0
+        self._veto_stall = False
+        self._veto_delivered: str | None = None
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -3284,6 +3357,7 @@ class AgentLoop:
             if not name:
                 continue
             self._register_skill_load(name)  # a paged skill starts over at page 1 (ADR-0067)
+            self._vetoes_without_skill = 0  # a skill ran: the ADR-0187 fence starts over
             steps = self._seed_skill_skeleton(name, block.output, seeded)
             if steps:
                 out.append((name, steps))
@@ -5480,14 +5554,19 @@ class AgentLoop:
     ) -> str | None:
         """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
 
-        Returns the continuation prompt when a hook vetoes the stop; ``None`` (the
-        overwhelmingly common case) lets the turn end. Vetoes are UNBOUNDED on a
-        vetoable loop — a registered Stop hook is in charge of standing down (and the
-        cost budget is the hard bound), matching Claude Code — with one exception: a
-        ``provider_error`` veto is bounded and paced by its call sites (ADR-0181), since
-        it re-issues a call against a provider that just failed. Observe-only hooks
-        (``register_turn_end_observer``) fire on EVERY turn end, vetoable or not.
-        Fail-open: a crashing hook run never blocks the stop.
+        Returns the message it re-entered with when a hook vetoes the stop — ALREADY added to
+        the session: the ``[harness]`` rail around the hook's reason, or (ADR-0187) the
+        composed body of the skill that reason names, ``/aspirations loop`` delivered the
+        way the say inbox delivers a typed slash — and ``None`` (the overwhelmingly common
+        case) to let the turn end. Vetoes are UNBOUNDED on a vetoable loop — a registered
+        Stop hook is in charge of standing down (and the cost budget is the hard bound),
+        matching Claude Code — with two exceptions: a ``provider_error`` veto is bounded and
+        paced by its call sites (ADR-0181), since it re-issues a call against a provider
+        that just failed; and a veto that names a skill re-entry after
+        :data:`_VETO_STALL_THRESHOLD` such vetoes were honoured with no skill call between
+        them is refused, ending the turn as ``veto_stall`` with a wake-up left behind (the
+        fence, ADR-0187). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
+        turn end, vetoable or not. Fail-open: a crashing hook run never blocks the stop.
         """
         observe = self.hook_manager.has_turn_end_observers()
         vetoable = (
@@ -5543,6 +5622,27 @@ class AgentLoop:
             stop_reason,
             veto_count + 1,
         )
+        reason = result.continuation_prompt or "Continue."
+        reentry = skill_reentry_in(reason)
+        if reentry is not None and self._vetoes_without_skill >= _VETO_STALL_THRESHOLD:
+            # The fence (ADR-0187): the hook asks for a skill re-entry AGAIN after that many
+            # were honoured and the model ran no skill at all. Re-prompting is the spin
+            # (measured 2026-09-17: hours of it); end the turn with a NAMED reason and a net
+            # behind it, so the loop re-enters later with fresh context instead of never.
+            name, args = reentry
+            self._veto_stall = True
+            self._note(
+                "intervention",
+                f"turn-end hook vetoed {self._vetoes_without_skill} times running, asking for "
+                f"/{name} {args} each time, and no skill ran between them — ending the "
+                "turn (veto_stall) instead of re-prompting",
+                kind="veto_stall",
+                skill=name,
+                args=args,
+                vetoes=self._vetoes_without_skill,
+            )
+            self._arm_stall_net()
+            return None
         # A veto opens a NEW turn for per-turn skill state (ADR-0048): the hook that vetoed
         # is telling the model to do more work, and that work may be a skill it already
         # loaded — a perpetual-loop framework's mandated re-entry is exactly that. Reset
@@ -5550,7 +5650,111 @@ class AgentLoop:
         # an "[already loaded]" pointer (four of which killed a live loop, 2026-08-26).
         if self._turn_end_veto_reset is not None:
             self._turn_end_veto_reset()
-        return result.continuation_prompt or "Continue."
+        self._veto_delivered = None
+        if reentry is not None:
+            self._vetoes_without_skill += 1
+            delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
+            if delivered is not None:
+                return delivered
+        rail = _control_rail(reason)
+        self.session.add_message(Message.user(rail))
+        self._persist()
+        return rail
+
+    async def _deliver_veto_skill(self, name: str, args: str, reason: str) -> str | None:
+        """Compose the skill a turn-end hook's continuation names as the re-entry message
+        itself (ADR-0187) and add it to the session: the command frame with the hook's
+        reason folded in, plus page 1, then the skeleton seeded — the say inbox's delivery
+        of a typed ``/<skill>`` (ADR-0073), in that order, so the skeleton's own rail
+        follows the body it points into. Returns the message; ``None`` when it cannot be
+        composed (no composer, an unknown or refused skill, an unreadable body), and the
+        caller then sends the plain rail, as before.
+
+        A hook's "your FIRST action MUST be Skill('aspirations') with args='loop'" is the
+        framework asking for the loop skill; handing the model that instruction left the
+        re-entry to the model's ability to map another harness's tool name — measured
+        2026-09-17 (serene, gemini-3.5-flash): hours of ``echo`` + "Verdict: …" text
+        against that exact reason. Delivering the skill makes the re-entry the harness's act.
+        """
+        compose = self._compose_skill
+        if compose is None:
+            return None
+        try:
+            result = await compose(name, args, source="harness")
+        except TypeError:
+            return None  # a composer without the ``source`` seam (a stand-in): the rail
+        except Exception:  # noqa: BLE001 — a broken composer must never break the veto
+            logger.warning("turn-end skill delivery failed for /%s", name, exc_info=True)
+            return None
+        if not getattr(result, "invoked", False):
+            self._note(
+                "intervention",
+                f"turn-end hook asked for /{name}, which is not a skill here — sent its "
+                "reason as a rail",
+                kind="turn_end_skill",
+                skill=name,
+                refused=True,
+            )
+            return None
+        refused = getattr(result, "denied_reason", None) or getattr(result, "error", None)
+        turn_text = getattr(result, "turn_text", None)
+        if refused or not turn_text:
+            why = str(refused or "the skill produced no turn text")
+            self._note(
+                "intervention",
+                f"turn-end hook asked for /{name} — not delivered: {why}; sent its "
+                "reason as a rail",
+                kind="turn_end_skill",
+                skill=name,
+                refused=True,
+            )
+            logger.info("turn-end hook asked for /%s — not delivered: %s", name, why)
+            return None
+        skill = str(getattr(result, "name", name) or name)
+        text = harness_skill_turn_text(str(turn_text), f"a turn-end hook asked for it: {reason}")
+        self.session.add_message(Message.user(text))
+        self._persist()
+        # The skill's sections become plan steps (ADR-0062) and page 1 counts as delivered
+        # (ADR-0067) — exactly the turn-opening and say-inbox paths.
+        self._seed_skill_skeleton(skill, _composed_skill_body(text), set())
+        self._register_skill_load(skill)
+        self._veto_delivered = f"/{skill} {args}".strip()
+        # The sentinel wake-up resolves to this skill from now on (the REPL door, ADR-0187):
+        # the hook has said what "re-enter the loop" means here, so the harness need not
+        # ask the model to remember it.
+        self.session.loop_skill = f"{skill} {args}".strip()
+        self._note(
+            "intervention",
+            f"turn-end hook asked for {self._veto_delivered} — delivered by the harness",
+            kind="turn_end_skill",
+            skill=skill,
+            args=args,
+        )
+        logger.info("turn-end hook asked for %s — delivered", self._veto_delivered)
+        return text
+
+    def _veto_status(self) -> str:
+        """The streaming twin's status line for a honoured veto: names the skill delivered."""
+        if self._veto_delivered:
+            return f"turn_end hook vetoed stop; {self._veto_delivered} delivered"
+        return "turn_end hook vetoed stop; continuing"
+
+    def _arm_stall_net(self) -> None:
+        """Leave a wake-up behind a ``veto_stall`` when none is held (ADR-0187). The turn is
+        ending against the hook's wish, and a loop that ends at its prompt with no net is
+        the dead loop every Mind incident is about; the sentinel resolves, when it fires,
+        to the very skill the hook asked for (``Session.loop_skill``) — a deadman's switch
+        the harness arms because the model that should have did not. A held wake-up is
+        kept: the framework's own net outranks this one."""
+        if self.wakeup_slot.pending() is not None:
+            return
+        self.wakeup_slot.arm(LOOP_SENTINEL, DEFAULT_DELAY_SECONDS)
+        self._note(
+            "intervention",
+            f"no wake-up was held — armed the autonomous-loop sentinel for "
+            f"{DEFAULT_DELAY_SECONDS}s so the loop re-enters later with fresh context",
+            kind="veto_stall_net",
+        )
 
     def _apply_hook_wakeup(self, result: TurnEndResult) -> None:
         """Arm or cancel the session's wake-up on a TURN_END hook's say-so (ADR-0102).
@@ -5834,6 +6038,9 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
+        self._veto_stall = False
+        self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
@@ -6130,7 +6337,6 @@ class AgentLoop:
                             f"retrying in {delay:.0f}s ({progress})",
                             kind="provider_error_veto",
                         )
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         sink = self._status_sink
                         if sink is not None:
@@ -6491,7 +6697,6 @@ class AgentLoop:
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
@@ -6907,7 +7112,6 @@ class AgentLoop:
                 )
                 if prompt is not None:
                     turn_end_vetoes += 1
-                    self.session.add_message(Message.user(_control_rail(prompt)))
                     self._persist()
                     # Sent back to work: pre-veto repetition must not instantly re-trip
                     # the stall guards on the very next iteration.
@@ -6995,7 +7199,6 @@ class AgentLoop:
                             ]
                         )
                     )
-                    self.session.add_message(Message.user(_control_rail(prompt)))
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -7139,7 +7342,6 @@ class AgentLoop:
                 )
                 if prompt is not None:
                     turn_end_vetoes += 1
-                    self.session.add_message(Message.user(_control_rail(prompt)))
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -7182,6 +7384,8 @@ class AgentLoop:
                 self.session.add_message(Message.user(_control_rail(stuck.step_back_message())))
                 self._persist()
 
+        if self._veto_stall:
+            stop_reason = "veto_stall"  # the ADR-0187 fence ended the turn, at whichever site
         logger.info(
             "turn ended: stop_reason=%s iterations=%d tokens=%d",
             stop_reason,
@@ -7320,6 +7524,9 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
+        self._veto_stall = False
+        self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
@@ -7845,7 +8052,6 @@ class AgentLoop:
                             f"retrying in {delay:.0f}s ({progress})",
                             kind="provider_error_veto",
                         )
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         yield AgentStatus(
                             message=(
@@ -8243,12 +8449,11 @@ class AgentLoop:
                         )
                         if prompt is not None:
                             turn_end_vetoes += 1
-                            self.session.add_message(Message.user(_control_rail(prompt)))
                             self._persist()
                             last_signature = None
                             repeat_count = 0
                             stuck.reset()
-                            yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                            yield AgentStatus(message=self._veto_status())
                             continue
                         stop_reason = "gave_up"
                         self._note(
@@ -8678,12 +8883,11 @@ class AgentLoop:
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        yield AgentStatus(message=self._veto_status())
                         continue
                     stop_reason = "completed"
                     break
@@ -8757,12 +8961,11 @@ class AgentLoop:
                                 ]
                             )
                         )
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        yield AgentStatus(message=self._veto_status())
                         continue
                     stop_reason = "doom_loop"
                     self._note("intervention", "repeated identical tool calls", kind="doom_loop")
@@ -8923,12 +9126,11 @@ class AgentLoop:
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        yield AgentStatus(message=self._veto_status())
                         continue
                     stop_reason = "stuck"
                     self._note(
@@ -8991,6 +9193,8 @@ class AgentLoop:
             if lease is not None:
                 await lease.release()  # the busy marker lives exactly one turn (ADR-0060)
 
+        if self._veto_stall:
+            stop_reason = "veto_stall"  # the ADR-0187 fence ended the turn, at whichever site
         logger.info(
             "turn ended: stop_reason=%s iterations=%d tokens=%d",
             stop_reason,

@@ -264,6 +264,16 @@ class SkillRegistry:
             "call). To run a skill, call the `use_skill` tool with the skill's name; that "
             "loads its full instructions, which you then follow. A skill's steps may tell "
             "you to use another skill (they chain). Each entry shows the exact call to make:",
+            # ADR-0187: a framework written for Claude Code names that harness's tools in its
+            # hook reasons and script output; a small model cannot map them on its own
+            # (measured 2026-09-17: hours of text against "Skill('aspirations') with
+            # args='loop'"). One static line states the mapping — cache-safe, no per-turn cost.
+            "Instructions written for Claude Code name these tools differently: "
+            "`Skill(<name>)` or `Skill('<name>') with args='<args>'` means "
+            'use_skill(name="<name>", args="<args>") here, and `ScheduleWakeup(prompt=…, '
+            "delaySeconds=…)` means schedule_wakeup(prompt=…, delaySeconds=…). Make the "
+            "use_skill / schedule_wakeup call such an instruction describes; do not answer "
+            "it with text.",
         ]
         for name, desc in self.model_catalog():
             call = f'use_skill(name="{name}")'
