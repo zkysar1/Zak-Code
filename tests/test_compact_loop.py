@@ -18,10 +18,22 @@ from typing import Any
 import pytest
 
 from zakcode.agent.compact import ELISION_MARKER, CompactionConfig, Compactor
-from zakcode.agent.loop import AgentLoop
+from zakcode.agent.loop import (
+    _MAX_FOLD_PASSES,
+    _MAX_SUMMARY_SLICES,
+    AgentLoop,
+    _clamp_middle,
+    _pack_parts,
+)
 from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
-from zakcode.providers.base import Capabilities, LLMResult, Provider, RateLimited
+from zakcode.providers.base import (
+    Capabilities,
+    ContextWindowExceeded,
+    LLMResult,
+    Provider,
+    RateLimited,
+)
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
 
@@ -248,14 +260,136 @@ def test_summarize_chunks_an_oversized_history(tmp_path: Path) -> None:
     assert "part summary" in text
 
 
+#: One slice at an 8192-token window: max(4096, int(8192 * 0.5) * 2) characters.
+_SLICE = 8192
+#: Prompt overhead a slice-sized call may add ("Part i of N …", the fold instruction).
+_OVERHEAD = 128
+
+
+class _StrictWindowProvider(_SummarizerProvider):
+    """A summarizer that refuses any request over ``limit`` characters — what a window does."""
+
+    def __init__(self, texts: list[str], *, tokens: int, window: int, limit: int) -> None:
+        super().__init__(texts, tokens=tokens, window=window)
+        self.limit = limit
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        if len(messages[0].text) > self.limit:
+            raise ContextWindowExceeded(
+                f"request ({len(messages[0].text)} chars) exceeds {self.limit}"
+            )
+        return await super().acomplete(messages, system=system, tools=tools, **kw)
+
+
+class _ShrinkingProvider(_StrictWindowProvider):
+    """Every slice summarizes to 5000 chars; each fold shrinks its input: z → y (3000), y → w
+    (1000) — so the fold passes converge the way a real summarizer's do."""
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        text = messages[0].text
+        if len(text) > self.limit:
+            raise ContextWindowExceeded(f"request ({len(text)} chars) exceeds {self.limit}")
+        self.seen.append(list(messages))
+        if text.startswith("Part "):
+            return LLMResult(text="z" * 5000)
+        if "zzzz" in text:
+            return LLMResult(text="y" * 3000)
+        return LLMResult(text="w" * 1000)
+
+
 def test_summarize_folds_long_part_summaries(tmp_path: Path) -> None:
-    # Each part summary is near the slice budget, so the joined parts exceed it and a
-    # final fold call produces the single summary.
-    provider = _SummarizerProvider(["z" * 9000, "z" * 9000, "the folded summary"], tokens=100_000)
+    # Each part summary is over the slice budget, so the joined parts exceed it and the fold
+    # produces the summary — in ADR-0183's packed form: a part over the budget is clamped and
+    # every fold call fits one slice (the strict provider refuses one that does not).
+    provider = _StrictWindowProvider(
+        ["z" * 9000, "z" * 9000, "the folded summary"],
+        tokens=100_000,
+        window=8192,
+        limit=_SLICE + _OVERHEAD,
+    )
     loop = _loop(provider, tmp_path)
     text = asyncio.run(loop._summarize_for_compaction(_history(28)))
-    assert text == "the folded summary"
-    assert "Fold these part-summaries" in provider.seen[-1][0].text
+    assert text.startswith("the folded summary")
+    assert any("Fold these part-summaries" in call[0].text for call in provider.seen)
+
+
+def test_summarize_holds_an_enormous_history_to_the_slice_cap(tmp_path: Path) -> None:
+    # ADR-0183: a session built on a large-window model resumed on an 8k local one used to cost
+    # ceil(len / slice) summarize calls. The transcript is held to _MAX_SUMMARY_SLICES slices:
+    # the first 2/3 and the last 1/3 kept around a note naming the elided middle, so both ends
+    # of the conversation reach the summarizer and the note lands in the ninth slice.
+    provider = _StrictWindowProvider(
+        ["part summary"], tokens=10**6, window=8192, limit=_SLICE + _OVERHEAD
+    )
+    loop = _loop(provider, tmp_path)
+    history = _history(160)
+    assert len(loop._render_for_summary(history)) > _MAX_SUMMARY_SLICES * _SLICE  # the premise
+    text = asyncio.run(loop._summarize_for_compaction(history))
+    assert len(provider.seen) == _MAX_SUMMARY_SLICES
+    assert "question 0 " in provider.seen[0][0].text
+    assert "answer 159 " in provider.seen[-1][0].text
+    assert [i for i, call in enumerate(provider.seen) if "transcript elided" in call[0].text] == [8]
+    assert "part summary" in text
+
+
+def test_summarize_fold_calls_never_exceed_one_slice(tmp_path: Path) -> None:
+    # ADR-0183: the fold used to send every part-summary joined in ONE message with no size
+    # check — the one request on the recovery path that could itself overflow. A join over one
+    # slice budget is now folded in packed groups, each under the budget, pass by pass.
+    provider = _ShrinkingProvider([], tokens=10**6, window=8192, limit=_SLICE + _OVERHEAD)
+    loop = _loop(provider, tmp_path)
+    text = asyncio.run(loop._summarize_for_compaction(_history(28)))
+    n = sum(call[0].text.startswith("Part ") for call in provider.seen)
+    assert n >= 2
+    folds = [call[0].text for call in provider.seen[n:]]
+    assert all(t.startswith("Fold these part-summaries") for t in folds)
+    # pass 1: 5000-char parts cannot pair under 8192, one group each; pass 2: 3000-char parts
+    # pack two to a group.
+    assert [t.count("z" * 5000) for t in folds[:n]] == [1] * n
+    assert [t.count("y" * 3000) for t in folds[n:]] == [2] * (n // 2) + [1] * (n % 2)
+    assert text == "\n\n".join(["w" * 1000] * ((n + 1) // 2))
+
+
+def test_summarize_clamps_when_the_fold_passes_are_spent(tmp_path: Path) -> None:
+    # ADR-0183: a summarizer whose "summaries" never shrink (7000 chars back for every call)
+    # cannot loop the fold: after _MAX_FOLD_PASSES the join is clamped — head, tail, a note
+    # naming the loss — for one last fold that fits the slice budget.
+    provider = _StrictWindowProvider(
+        ["z" * 7000], tokens=10**6, window=8192, limit=_SLICE + _OVERHEAD
+    )
+    loop = _loop(provider, tmp_path)
+    text = asyncio.run(loop._summarize_for_compaction(_history(28)))
+    n = sum(call[0].text.startswith("Part ") for call in provider.seen)
+    assert n >= 2
+    assert len(provider.seen) == n + _MAX_FOLD_PASSES * n + 1
+    last = provider.seen[-1][0].text
+    assert last.startswith("Fold these part-summaries")
+    assert "part-summaries elided" in last
+    assert len(last) <= _SLICE + _OVERHEAD
+    assert text == "z" * 7000
+
+
+def test_pack_parts_keeps_every_group_under_the_budget() -> None:
+    parts = ["a" * 300, "b" * 300, "c" * 500, "d" * 1200, "e" * 10]
+    groups = _pack_parts(parts, 1000)
+    assert [[p[0] for p in g] for g in groups] == [["a", "b"], ["c"], ["d"], ["e"]]
+    assert all(len("\n\n".join(g)) <= 1000 for g in groups)
+    assert "part-summary elided" in groups[2][0]  # the 1200-char part was clamped to fit
+
+
+def test_clamp_middle_keeps_head_and_tail_within_budget() -> None:
+    text = "H" * 600 + "M" * 600 + "T" * 600
+    out = _clamp_middle(text, 900, "transcript")
+    assert len(out) == 900
+    assert out.startswith("H" * 600)
+    assert out.endswith("T")
+    assert "M" not in out
+    assert "transcript elided: 1,800 characters exceed the summarizer's budget of 900" in out
+    assert _clamp_middle("short", 900, "transcript") == "short"
 
 
 def _lifecycle_recorder(loop: AgentLoop) -> list[LifecyclePayload]:

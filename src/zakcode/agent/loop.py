@@ -306,6 +306,19 @@ _SUMMARY_CHUNK_FRACTION = 0.5
 #: Conservative chars-per-token floor for slicing rendered text without a tokenizer pass
 #: (id-dense code/markdown measures ~2.5 bytes/token; prose ~4 — 2 never overshoots).
 _SUMMARY_CHARS_PER_TOKEN = 2
+#: Cap on the slices one compaction summarize is cut into (ADR-0183). The rendered transcript
+#: is held to this many slice budgets BEFORE slicing — the first 2/3 and the last 1/3 kept
+#: around a note naming the elided middle (the ``_clamp_tool_output`` shape) — so a session
+#: built on a 200k-window model resumed on an 8k local one, or a multi-megabyte paste, costs a
+#: bounded number of summarize calls instead of ceil(len / slice) of them.
+_MAX_SUMMARY_SLICES = 12
+#: Bounded fold passes over the part-summaries (ADR-0183): a pass packs whole parts into
+#: groups whose join fits one slice budget and folds each group, so no fold call carries more
+#: than a slice. A join still over budget after the passes is clamped (same head/tail shape)
+#: for one last fold — a summarizer whose summaries never shrink cannot loop this.
+_MAX_FOLD_PASSES = 2
+#: The fold instruction: part-summaries in, one summary out.
+_FOLD_PROMPT = "Fold these part-summaries of one conversation into a single coherent summary:\n\n"
 #: How the transcript is handed to the summarizer (ADR-0082): one user message of labeled
 #: plain text, so the model summarizes a document instead of continuing a dialogue.
 _SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by role):\n\n"
@@ -316,6 +329,48 @@ _MODEL_MARKUP_RE = re.compile(
     re.S,
 )
 _MODEL_MARKUP_LINE_RE = re.compile(r"^\s*</?(?:tool_call|function|parameter)[^>\n]*>\s*$", re.M)
+
+
+def _clamp_middle(text: str, budget: int, what: str) -> str:
+    """Hold ``text`` to ``budget`` characters: 2/3 head, then a note naming the loss, then tail.
+
+    The ``_clamp_tool_output`` shape — openings carry structure, endings carry the unfinished
+    work, the middle is the safest cut — reused by the compaction summarizer for a transcript
+    over its slice cap and for a part-summary join over one slice budget (ADR-0183). Text
+    within the budget comes back unchanged.
+    """
+    if len(text) <= budget:
+        return text
+    head = budget * 2 // 3
+    note = (
+        f"\n\n[{what} elided: {len(text):,} characters exceed the summarizer's budget of "
+        f"{budget:,}; the first {head:,} characters and the tail are kept, the middle is "
+        "missing — say so in the summary]\n\n"
+    )
+    tail = max(budget - head - len(note), 0)
+    return text[:head] + note + (text[-tail:] if tail else "")
+
+
+def _pack_parts(parts: list[str], budget: int) -> list[list[str]]:
+    """Greedy groups of whole part-summaries whose ``"\\n\\n"`` join fits ``budget``.
+
+    A part over the budget on its own is clamped first, so every group — and so every fold
+    call built from one — fits one slice (ADR-0183).
+    """
+    groups: list[list[str]] = []
+    current: list[str] = []
+    size = 0
+    for part in parts:
+        part = _clamp_middle(part, budget, "part-summary")
+        extra = len(part) + (2 if current else 0)
+        if current and size + extra > budget:
+            groups.append(current)
+            current, size, extra = [], 0, len(part)
+        current.append(part)
+        size += extra
+    if current:
+        groups.append(current)
+    return groups
 
 
 def _strip_model_markup(text: str) -> str:
@@ -2263,7 +2318,10 @@ class AgentLoop:
         what let the recovery's own summarize call overflow the window it was summarizing
         FOR (coach, 2026-08-29, twice: "request (131297 tokens) exceeds 131072", no
         compaction line, "stopping: provider error"). Under one slice budget it goes in
-        one call; above it, in bounded slices whose part-summaries are folded.
+        one call; above it, in at most :data:`_MAX_SUMMARY_SLICES` slices (the transcript's
+        middle elided past the cap, with a note) whose part-summaries are folded under the same
+        budget — packed groups, at most :data:`_MAX_FOLD_PASSES` passes, then a clamp — so
+        every call fits one slice and the call count is bounded (ADR-0183).
         """
         instruction = (
             "You are compacting a long conversation to fit a context window. Summarize "
@@ -2296,17 +2354,42 @@ class AgentLoop:
 
         if len(rendered) <= chunk_chars:
             return self._finish_summary(await ask(_SUMMARY_PROMPT + rendered))
-        slices = [rendered[i : i + chunk_chars] for i in range(0, len(rendered), chunk_chars)]
+        # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
+        # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
+        # which every fold call fits one slice, then one clamped fold if the join is still over.
+        capped = _clamp_middle(rendered, _MAX_SUMMARY_SLICES * chunk_chars, "transcript")
+        if len(capped) < len(rendered):
+            logger.info(
+                "compaction summarize: %d chars of transcript held to %d slices of %d "
+                "(%d chars of the middle elided)",
+                len(rendered),
+                _MAX_SUMMARY_SLICES,
+                chunk_chars,
+                len(rendered) - len(capped),
+            )
+        slices = [capped[i : i + chunk_chars] for i in range(0, len(capped), chunk_chars)]
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
             text = await ask(f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}")
             parts.append(text.strip())
+        for _ in range(_MAX_FOLD_PASSES):
+            if len(parts) == 1 or len("\n\n".join(parts)) <= chunk_chars:
+                break
+            folded: list[str] = []
+            for group in _pack_parts(parts, chunk_chars):
+                text = await ask(_FOLD_PROMPT + "\n\n".join(group))
+                folded.append(text.strip())
+            parts = folded
         combined = "\n\n".join(parts)
         if len(parts) > 1 and len(combined) > chunk_chars:
-            text = await ask(
-                "Fold these part-summaries of one conversation into a single coherent "
-                "summary:\n\n" + combined
+            logger.info(
+                "compaction summarize: part-summaries still %d chars after %d fold passes; "
+                "clamped to %d for a last fold",
+                len(combined),
+                _MAX_FOLD_PASSES,
+                chunk_chars,
             )
+            text = await ask(_FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries"))
             combined = text.strip()
         return self._finish_summary(combined)
 
