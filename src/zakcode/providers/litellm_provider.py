@@ -55,6 +55,7 @@ from zakcode.providers.base import (
     UnknownContextWindow,
     WindowResolution,
     quota_exhaustion_marker,
+    rejected_request_field,
 )
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
@@ -64,6 +65,7 @@ from zakcode.providers.endpoints import (
     model_uses_generic_endpoint,
 )
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
+from zakcode.providers.thinking import render_thinking_switch, rendered_thinking_wire_names
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
 
@@ -546,6 +548,12 @@ class LiteLLMProvider(Provider):
         #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
         #: later mutation of the Settings dict cannot retroactively change live requests.
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
+        #: Request fields this provider has refused BY NAME this session (ADR-0181): body
+        #: keys of ours a 4xx named, or the sentinel ``reasoning_effort`` for the rendered
+        #: thinking switch. ``_build_kwargs`` leaves them out of every later request, so a
+        #: server that rejects a knob costs ONE re-issued call, not the turn — and never
+        #: the same 400 twice. Diagnostic: the operator's config is left intact.
+        self.rejected_request_fields: list[str] = []
         #: Extra HTTP headers, with {hostname}/{pid} already expanded ONCE here rather
         #: than per call — the values are constant for the process, and expanding at
         #: call time would put a formatting operation on the hot path for no gain.
@@ -900,6 +908,47 @@ class LiteLLMProvider(Provider):
         return isinstance(code, int) and not isinstance(code, bool) and 500 <= code < 600
 
     @classmethod
+    def _is_request_rejection(cls, exc: Exception) -> bool:
+        """True for a 4xx that rejects the request's SHAPE (litellm's BadRequestError /
+        UnprocessableEntityError, or a 400/422 status) — the only class a field refusal
+        can arrive as. A 5xx or a 429 that happens to quote a field name is not one."""
+        if cls._is_a(exc, None, "BadRequestError", "UnprocessableEntityError"):
+            return True
+        code = getattr(exc, "status_code", None)
+        return isinstance(code, int) and not isinstance(code, bool) and code in (400, 422)
+
+    def _refuse_rejected_field(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Record a request field the provider refused BY NAME (ADR-0181).
+
+        True when ``exc`` is a request rejection that names a field WE added — a key of
+        the ``extra_body`` this call sent, or the wire spelling of the rendered thinking
+        switch — in which case the field joins ``rejected_request_fields`` (so no later
+        request of this session carries it) and the caller re-issues the call once.
+        False for every other failure, which maps through the taxonomy as before. The
+        "one we sent" gate is what keeps this honest: a provider refusing ``tools`` or
+        ``messages`` is a defect to surface, never a field to strip.
+        """
+        if not self._is_request_rejection(exc):
+            return False
+        body = call_kwargs.get("extra_body") or {}
+        wire = rendered_thinking_wire_names(call_kwargs)
+        message = redact_secrets(str(exc))[0]
+        name = rejected_request_field(message, [*body, *wire])
+        if name is None:
+            return False
+        field = "reasoning_effort" if name in wire else name
+        if field not in self.rejected_request_fields:
+            self.rejected_request_fields.append(field)
+        logger.warning(
+            "%s refused the request field %r (%s) — dropping it for the rest of this "
+            "session and re-issuing the call without it",
+            self.model,
+            field,
+            " ".join(message.split())[:200],
+        )
+        return True
+
+    @classmethod
     def _map_error(cls, exc: Exception) -> ProviderError:
         # Prefer isinstance against resolved classes; fall back to class-name
         # matching (across the MRO) so the mapping still works if imports were
@@ -1075,14 +1124,29 @@ class LiteLLMProvider(Provider):
             call_kwargs["tool_choice"] = "auto"
         # Server-specific request-body knobs (llama.cpp thinking control, etc). litellm
         # forwards extra_body into the JSON body on the OpenAI-compatible path and keeps it
-        # through drop_params, so an unknown-to-litellm key still reaches the server; a
-        # server that does not understand the key ignores it. Sent only when non-empty, so
-        # the default request shape is byte-identical to before.
+        # through drop_params, so an unknown-to-litellm key still reaches the server. NOT
+        # every server ignores a key it does not understand — Vertex AI refuses the whole
+        # payload (400 INVALID_ARGUMENT, measured 2026-09-17 on a served Mind) — so two
+        # things happen here (ADR-0181). The thinking switch, which has ONE internal
+        # spelling, is RENDERED for the destination: kept verbatim for a self-hosted
+        # OpenAI-compatible server (the measured case), litellm's first-class
+        # ``reasoning_effort`` for a Gemini model, dropped everywhere else (see
+        # providers/thinking.py). And any field a provider has already refused BY NAME
+        # this session (``rejected_request_fields``, recorded by the call paths below) is
+        # left out. Sent only when non-empty, so the default request shape is
+        # byte-identical to before.
         # A per-call ``extra_body`` (the loop's reasoning-overflow retry, ADR-0056: the
         # thinking switch for ONE request) merges OVER the instance's, so a category's knob
         # and a one-shot override compose instead of the override clobbering the rest.
         per_call_body = kw.pop("extra_body", None)
         merged_body: dict[str, Any] = {**self.extra_body, **(per_call_body or {})}
+        merged_body, thinking_kwargs = render_thinking_switch(
+            self.model, self.api_base, merged_body
+        )
+        refused = set(self.rejected_request_fields)
+        merged_body = {k: v for k, v in merged_body.items() if k not in refused}
+        if refused.isdisjoint(rendered_thinking_wire_names(thinking_kwargs)):
+            call_kwargs.update(thinking_kwargs)
         if merged_body:
             call_kwargs["extra_body"] = merged_body
         # Session-affinity routing key (OpenAI-standard `prompt_cache_key`). Rides
@@ -1218,7 +1282,22 @@ class LiteLLMProvider(Provider):
         try:
             response = await litellm.acompletion(**call_kwargs)
         except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
-            raise self._map_error(exc) from exc
+            if not self._refuse_rejected_field(exc, call_kwargs):
+                raise self._map_error(exc) from exc
+            # The provider named a field of ours it will not take (ADR-0181): it is out
+            # of ``rejected_request_fields`` now, so the rebuilt request omits it — the
+            # SAME logical call, re-issued once. A second refusal is reported as is.
+            call_kwargs = self._build_kwargs(
+                wire_messages,
+                tools,
+                response_format=response_format,
+                prompt_cache_key=prompt_cache_key,
+                **kw,
+            )
+            try:
+                response = await litellm.acompletion(**call_kwargs)
+            except Exception as again:  # noqa: BLE001 - mapped to taxonomy below
+                raise self._map_error(again) from again
 
         result = self._normalize(response)
         # Operator-facing call accounting (audit P1-5). Message contents are never
@@ -1375,37 +1454,56 @@ class LiteLLMProvider(Provider):
         through the error taxonomy; a raw vendor exception never escapes.
         """
         wire_messages = self._translate_messages(messages, system)
-        call_kwargs = self._build_kwargs(
-            wire_messages,
-            tools,
-            response_format=response_format,
-            prompt_cache_key=prompt_cache_key,
-            **kw,
-        )
-        call_kwargs["stream"] = True
-        call_kwargs["stream_options"] = {"include_usage": True}
 
+        def build() -> dict[str, Any]:
+            call_kwargs = self._build_kwargs(
+                wire_messages,
+                tools,
+                response_format=response_format,
+                prompt_cache_key=prompt_cache_key,
+                **kw,
+            )
+            call_kwargs["stream"] = True
+            call_kwargs["stream_options"] = {"include_usage": True}
+            return call_kwargs
+
+        call_kwargs = build()
         finish_reason: str | None = None
         head: list[Any] = []
         tail: deque[Any] = deque(maxlen=_STREAM_SAMPLE_EDGE)
         chunks = 0
+        repaired = False  # the one ADR-0181 re-issue this call may spend
         await self._pace()
         try:
-            resp = await litellm.acompletion(**call_kwargs)
-            async for chunk in self._bounded_chunks(resp):
-                chunks += 1
-                delta = _stream_delta(chunk)
-                if delta is not None:
-                    (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)
-                events, fr = self._parse_chunk(chunk)
-                if fr is not None:
-                    finish_reason = fr
-                for event in events:
-                    yield event
-        except ProviderError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
-            raise self._map_error(exc) from exc
+            while True:
+                try:
+                    resp = await litellm.acompletion(**call_kwargs)
+                    async for chunk in self._bounded_chunks(resp):
+                        chunks += 1
+                        delta = _stream_delta(chunk)
+                        if delta is not None:
+                            (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)
+                        events, fr = self._parse_chunk(chunk)
+                        if fr is not None:
+                            finish_reason = fr
+                        for event in events:
+                            yield event
+                    break
+                except ProviderError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
+                    # A field refusal arrives at request time, before any chunk — so
+                    # nothing has been yielded and the rebuilt request can be re-issued in
+                    # place (ADR-0181). Anything after the first chunk is a real failure.
+                    if (
+                        chunks == 0
+                        and not repaired
+                        and self._refuse_rejected_field(exc, call_kwargs)
+                    ):
+                        repaired = True
+                        call_kwargs = build()
+                        continue
+                    raise self._map_error(exc) from exc
         finally:
             # Kept whatever ended the stream — an empty completion is diagnosed from this.
             self.last_stream_sample = {

@@ -55,7 +55,8 @@ Stop conditions
   turn honestly instead of streaming garbage toward the output cap. Non-vetoable, like
   ``recipe_stalled``: re-prompting a model that has twice collapsed produces more of the
   same.
-* ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4).
+* ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4) and,
+  when a TURN_END hook is registered, its bounded veto allowance too (ADR-0181).
   A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried with
   ``retry_after``-aware jittered backoff inside a fixed ~15-minute horizon — also when
   the limit lands MID-STREAM, after text already reached the client: the partial is
@@ -1577,12 +1578,44 @@ _DEGRADED_STOP_REASONS = {
 }
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
-#: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` / ``provider_error``
-#: are hard bounds (iteration / spend / infrastructure — a hook must not override them),
-#: ``recipe_stalled`` is the recipe gate's own bounded give-up (re-entering would stall the
-#: same way again), and ``degenerated`` is the same shape — re-prompting a model that has
-#: twice collapsed into repetition produces more of the same (ADR-0018).
-_VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck", "gave_up"})
+#: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` are hard bounds
+#: (iteration / spend — a hook must not override them), ``recipe_stalled`` is the recipe
+#: gate's own bounded give-up (re-entering would stall the same way again), and
+#: ``degenerated`` is the same shape — re-prompting a model that has twice collapsed into
+#: repetition produces more of the same (ADR-0018).
+#:
+#: ``provider_error`` was in that list until ADR-0181, as "infrastructure — a hard bound".
+#: It is not one: a provider failure is a fact about the MOMENT, and the framework whose
+#: Stop hook keeps a perpetual loop alive is exactly the party that should decide whether
+#: a turn the provider failed goes on. Measured 2026-09-17 on a served Mind: one 400 on the
+#: fifth iteration of a plan with seven steps open ended the turn, the Mind's stop hook —
+#: whose whole job is to re-enter — was never consulted, and the loop sat at its prompt
+#: until a human typed "continue". The veto is BOUNDED and PACED, unlike the others (see
+#: :data:`_MAX_PROVIDER_ERROR_VETOES`), because the retry it licenses is against a
+#: provider that just failed.
+_VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck", "gave_up", "provider_error"})
+
+#: How many CONSECUTIVE provider-error turn ends a TURN_END hook may veto before the next
+#: one ends the turn for real (ADR-0181). Consecutive: any completed model call resets the
+#: count, so a loop that limps through an outage keeps its full allowance for the next one.
+#: The re-entry is paced by :func:`_provider_error_veto_delay` — 15 s doubling to a 300 s
+#: ceiling, ~13 minutes across the six — because each cycle re-issues a call the provider
+#: just refused; an error the in-turn retry already spent its 15-minute rate-limit horizon
+#: on (a 429 storm, a 5xx run) waits that horizon again inside every cycle, so six cycles
+#: outlast an outage of well over an hour, while an INSTANT refusal (a dead key, a request
+#: the server will never take) is given up on in a quarter of an hour instead of forever.
+#: Past the cap the turn ends ``provider_error`` exactly as before, hooks unconsulted.
+_MAX_PROVIDER_ERROR_VETOES = 6
+_PROVIDER_ERROR_VETO_BASE_DELAY = 15.0
+_PROVIDER_ERROR_VETO_MAX_DELAY = 300.0
+
+
+def _provider_error_veto_delay(veto: int) -> float:
+    """Seconds to wait before the ``veto``-th (1-based) hook-vetoed provider-error re-entry."""
+    return min(
+        _PROVIDER_ERROR_VETO_BASE_DELAY * 2 ** max(0, veto - 1), _PROVIDER_ERROR_VETO_MAX_DELAY
+    )
+
 
 #: Tool calls that may share a batch with a ``use_skill`` call without the batch ceasing to
 #: be a skill boundary for a build restart (ADR-0101). Plan bookkeeping mutates only the
@@ -3985,7 +4018,8 @@ class AgentLoop:
         (auth, context window, generic) propagates immediately; the caller ends the
         TURN gracefully (``stop_reason="provider_error"``) instead of letting the
         exception unwind an unattended session — with the session persisted at a
-        message boundary, so the run is RESUMABLE, never lost.
+        message boundary, so the run is RESUMABLE, never lost — unless a TURN_END hook
+        vetoes that end, which it may a bounded, paced number of times (ADR-0181).
         """
 
         async def complete(call_kw: dict[str, Any]) -> LLMResult:
@@ -5350,7 +5384,9 @@ class AgentLoop:
         Returns the continuation prompt when a hook vetoes the stop; ``None`` (the
         overwhelmingly common case) lets the turn end. Vetoes are UNBOUNDED on a
         vetoable loop — a registered Stop hook is in charge of standing down (and the
-        cost budget is the hard bound), matching Claude Code. Observe-only hooks
+        cost budget is the hard bound), matching Claude Code — with one exception: a
+        ``provider_error`` veto is bounded and paced by its call sites (ADR-0181), since
+        it re-issues a call against a provider that just failed. Observe-only hooks
         (``register_turn_end_observer``) fire on EVERY turn end, vetoable or not.
         Fail-open: a crashing hook run never blocks the stop.
         """
@@ -5699,6 +5735,7 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
@@ -5968,7 +6005,54 @@ class AgentLoop:
                     self._refund_iteration()  # no model work happened this iteration
                     break
             if result is None:
+                if stop_reason == "provider_error":
+                    prompt = None
+                    if provider_error_vetoes < _MAX_PROVIDER_ERROR_VETOES:
+                        prompt = await self._fire_turn_end(
+                            "provider_error",
+                            iterations=iterations,
+                            veto_count=turn_end_vetoes,
+                            turn_assistant=turn_assistant,
+                            stuck_took_action=stuck.took_action,
+                        )
+                    if prompt is not None:
+                        # A TURN_END hook re-entered a turn the provider failed (ADR-0181):
+                        # bounded by _MAX_PROVIDER_ERROR_VETOES, paced by the backoff, and
+                        # said out loud. The failed call was refunded above; the rail is the
+                        # hook's own continuation, as at every other veto site.
+                        provider_error_vetoes += 1
+                        turn_end_vetoes += 1
+                        turn_degraded = True
+                        delay = _provider_error_veto_delay(provider_error_vetoes)
+                        progress = f"{provider_error_vetoes}/{_MAX_PROVIDER_ERROR_VETOES}"
+                        self._note(
+                            "intervention",
+                            "provider error — a turn-end hook re-entered the loop; "
+                            f"retrying in {delay:.0f}s ({progress})",
+                            kind="provider_error_veto",
+                        )
+                        self.session.add_message(Message.user(_control_rail(prompt)))
+                        self._persist()
+                        sink = self._status_sink
+                        if sink is not None:
+                            sink(
+                                "provider error; the turn-end hook asked to continue — "
+                                f"retrying in {delay:.0f}s ({progress})"
+                            )
+                        await asyncio.sleep(delay)
+                        stop_reason = "max_iterations"  # the terminal is open again
+                        turn_error = ""
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    if provider_error_vetoes:
+                        turn_error = (
+                            f"{turn_error} (persisted through {provider_error_vetoes} "
+                            "hook-vetoed re-entries)"
+                        )
                 break
+            provider_error_vetoes = 0  # a completed call resets the consecutive count
 
             logger.debug(
                 "iteration %d: model returned %d tool call(s)",
@@ -7137,6 +7221,7 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
@@ -7634,19 +7719,62 @@ class AgentLoop:
                         )
                         self._persist()
                     logger.error("turn aborted by provider error: %s", provider_failure)
-                    yield AgentStatus(
-                        message=(
-                            f"stopping: provider error — {provider_failure} — the session "
-                            "is saved; your next message (or resuming it) continues from "
-                            "here"
-                        )
-                    )
                     # Refund the iteration: the failed call produced no committed work
                     # (any partial text above is bookkeeping for the resume, not a
                     # completed model step), so nothing this iteration consumed survives.
                     # (stack review minor #7 — the buffered twin refunds identically.)
                     self._refund_iteration()
+                    prompt = None
+                    if provider_error_vetoes < _MAX_PROVIDER_ERROR_VETOES:
+                        prompt = await self._fire_turn_end(
+                            "provider_error",
+                            iterations=iterations,
+                            veto_count=turn_end_vetoes,
+                            turn_assistant=turn_assistant,
+                            stuck_took_action=stuck.took_action,
+                        )
+                    if prompt is not None:
+                        # Hook-vetoed provider-error re-entry (ADR-0181) — see _run_turn.
+                        provider_error_vetoes += 1
+                        turn_end_vetoes += 1
+                        turn_degraded = True
+                        delay = _provider_error_veto_delay(provider_error_vetoes)
+                        progress = f"{provider_error_vetoes}/{_MAX_PROVIDER_ERROR_VETOES}"
+                        self._note(
+                            "intervention",
+                            "provider error — a turn-end hook re-entered the loop; "
+                            f"retrying in {delay:.0f}s ({progress})",
+                            kind="provider_error_veto",
+                        )
+                        self.session.add_message(Message.user(_control_rail(prompt)))
+                        self._persist()
+                        yield AgentStatus(
+                            message=(
+                                "provider error; the turn-end hook asked to continue — "
+                                f"retrying in {delay:.0f}s ({progress})"
+                            )
+                        )
+                        await asyncio.sleep(delay)
+                        stop_reason = "max_iterations"  # the terminal is open again
+                        turn_error = ""
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    if provider_error_vetoes:
+                        turn_error = (
+                            f"{turn_error} (persisted through {provider_error_vetoes} "
+                            "hook-vetoed re-entries)"
+                        )
+                    yield AgentStatus(
+                        message=(
+                            f"stopping: provider error — {turn_error} — the session "
+                            "is saved; your next message (or resuming it) continues from "
+                            "here"
+                        )
+                    )
                     break
+                provider_error_vetoes = 0  # a completed call resets the consecutive count
 
                 tool_calls = accumulator.finalize()
                 assistant_text = "".join(text_parts)

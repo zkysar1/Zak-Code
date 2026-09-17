@@ -50,9 +50,14 @@ ZAKPICK_CATEGORIES: frozenset[str] = frozenset(
 def thinking_extra_body(enabled: bool) -> dict[str, object]:
     """The request-body fragment that switches a reasoning model's thinking on or off.
 
-    The llama.cpp / vLLM ``chat_template_kwargs`` form; a server that does not understand
-    the key ignores it. ONE spelling, shared by the per-category knob below and the loop's
-    reasoning-overflow retry (ADR-0056), which sends it for a single request.
+    Zak Code's ONE internal spelling — the llama.cpp / vLLM ``chat_template_kwargs``
+    form — shared by the per-category knob below and the loop's reasoning-overflow retry
+    (ADR-0056), which sends it for a single request. It is NOT what every backend
+    receives: the provider renders it for the destination at request-build time
+    (``zakcode.providers.thinking``, ADR-0181) — kept verbatim for a self-hosted
+    OpenAI-compatible server, litellm's ``reasoning_effort`` for a Gemini model, dropped
+    elsewhere — because a strict-schema cloud (Vertex AI, measured 2026-09-17) refuses
+    the whole request over a body key it does not know rather than ignoring it.
     """
     return {"chat_template_kwargs": {"enable_thinking": enabled}}
 
@@ -80,8 +85,12 @@ class ZakpickModel(BaseModel):
     #: from 36 completion tokens to 4, answer unchanged.
     #:
     #: Emitted as ``extra_body={"chat_template_kwargs": {"enable_thinking": <bool>}}`` — the
-    #: form llama.cpp honours. A server that does not understand the key ignores it, so
-    #: setting this against a cloud model is inert rather than an error.
+    #: form llama.cpp honours — and RENDERED per destination by the provider (ADR-0181):
+    #: a Gemini category gets litellm's ``reasoning_effort`` instead; any other cloud
+    #: category gets no switch at all (its thinking is the model's own default). Setting
+    #: it against a cloud model is therefore inert, never a 400 — which it was on Vertex
+    #: AI until 2026-09-17, when the "unknown keys are ignored" assumption this comment
+    #: used to state met a server that validates the whole payload.
     #:
     #: A BOOLEAN, not a level, because per-request thinking *depth* does not work. Measured
     #: on llama.cpp 2026-08-17 with a prompt that provokes long reasoning: a per-request
