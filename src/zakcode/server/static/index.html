@@ -15,6 +15,7 @@
       --line:      #2a313a;  --line-soft: #20262e;
       --fg:        #e9ecef;  --muted:   #99a3ae;  --faint: #66707b;
       --brand:     #38b6df;
+      --user:      #f2a53c;
       --ok:        #5fc88a;  --err:     #e5646e;  --warn:  #d9a13f;
       --add-bg:    #173321;  --add-fg:  #a9d8b4;
       --del-bg:    #391d22;  --del-fg:  #e3a9b0;
@@ -27,6 +28,7 @@
       --line:      #e2dfd9;  --line-soft: #eceae5;
       --fg:        #33312d;  --muted:   #6e6b64;  --faint: #a3a09a;
       --brand:     #117ba8;
+      --user:      #b45f0a;
       --ok:        #2c8a55;  --err:     #c23d49;  --warn:  #9a6b1f;
       --add-bg:    #e3f2e6;  --add-fg:  #1d5e35;
       --del-bg:    #fae3e5;  --del-fg:  #8f303a;
@@ -74,8 +76,9 @@
     .row > .body { min-width: 0; overflow-wrap: break-word; }
 
     .row.user { margin-top: 2.25rem; }
-    .row.user > .g { color: var(--brand); font-family: var(--font-mono); font-weight: 600; }
-    .row.user > .body { font-weight: 500; color: var(--fg); white-space: pre-wrap; }
+    /* the operator's line: the root of the turn and the one warm colour on the page (ADR-0186) */
+    .row.user > .g { color: var(--user); font-family: var(--font-mono); font-weight: 700; }
+    .row.user > .body { font-weight: 600; color: var(--user); white-space: pre-wrap; }
 
     /* assistant marker: an 8px brand dot anchored to the group's first line */
     .row.assistant .adot {
@@ -88,6 +91,10 @@
     .prose h1 { font-size: 1.3em; } .prose h2 { font-size: 1.15em; } .prose h3 { font-size: 1em; }
     .prose ul { margin: .55rem 0 0; padding-left: 1.25rem; }
     .prose li::marker { color: var(--muted); }
+    .prose .quote { margin: .55rem 0 0; color: var(--muted); font-style: italic; white-space: pre-wrap; }
+    .prose .link { text-decoration: underline; }
+    .prose .linkurl { color: var(--faint); }
+    .prose s { color: var(--muted); }
     .prose code {
       font-family: var(--font-mono); font-size: 86%;
       background: var(--inset); border: 1px solid var(--line-soft);
@@ -462,6 +469,11 @@
 
   // ── formatting (mirrors the terminal receipt formats) ──
   function firstLine(text) { return String(text).split("\n")[0]; }
+  // The wall clock when a turn ended, as the terminal's footer stamps it (ADR-0185).
+  function hhmm() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
 
   function squeezeMiddle(text, limit) {
     const s = firstLine(text);
@@ -583,26 +595,56 @@
   }
 
   // ── assistant prose: re-render the current group on each delta ──
-  function inlineSpans(line, target) {
-    // Non-nested **bold** / `code`, built with textContent only.
-    let i = 0;
-    while (i < line.length) {
-      if (line.startsWith("**", i)) {
-        const end = line.indexOf("**", i + 2);
-        if (end !== -1) { target.appendChild(el("strong", "", line.slice(i + 2, end))); i = end + 2; continue; }
-      }
-      if (line[i] === "`") {
-        const end = line.indexOf("`", i + 1);
-        if (end !== -1) { target.appendChild(el("code", "", line.slice(i + 1, end))); i = end + 1; continue; }
-      }
-      let next = line.length;
-      const b = line.indexOf("**", i), c = line.indexOf("`", i);
-      if (b !== -1) next = Math.min(next, b);
-      if (c !== -1) next = Math.min(next, c);
-      if (next === i) next = i + 1;
-      target.appendChild(document.createTextNode(line.slice(i, next)));
-      i = next;
+  // Inline markdown, the terminal's grammar exactly (docs/UX.md rule 19): ***x***, **x**,
+  // __x__, ~~x~~, *x*, _x_, [label](url) and `code`, built with textContent only. A span
+  // needs a word boundary on both sides, a letter or digit inside, never its own delimiter
+  // inside, no file extension after the closer, and __ never wraps a bare identifier — so
+  // __init__.py, 2*3*4, **/*.py and f(*args, **kwargs) render as written.
+  const SPAN_TOKENS = [["***", "bi"], ["**", "b"], ["__", "b"], ["~~", "s"], ["*", "i"], ["_", "i"]];
+  const LINK_RE = /^\[([^\]\n]+)\]\(([^)\s]+)\)/;
+  const WORD_RE = /[\p{L}\p{N}_]/u, ALNUM_RE = /[\p{L}\p{N}]/u, IDENT_RE = /^[\p{L}\p{N}_]+$/u;
+  function spanAt(text, i) {
+    const ch = text[i];
+    if (ch === "`") {
+      const end = text.indexOf("`", i + 1);
+      return end === -1 ? null : [el("code", "", text.slice(i + 1, end)), end + 1];
     }
+    if (ch === "[") {
+      const m = LINK_RE.exec(text.slice(i));
+      if (!m) return null;
+      const frag = document.createDocumentFragment();
+      frag.appendChild(el("span", "link", m[1]));
+      if (m[2] !== m[1]) frag.appendChild(el("span", "linkurl", " (" + m[2] + ")"));
+      return [frag, i + m[0].length];
+    }
+    for (const [token, kind] of SPAN_TOKENS) {
+      if (!text.startsWith(token, i)) continue;
+      const start = i + token.length;
+      const end = text.indexOf(token, start);
+      const after = end + token.length;
+      const content = text.slice(start, end);
+      if (end <= start || /\s/.test(text[start]) || /\s/.test(text[end - 1])
+          || !ALNUM_RE.test(content) || content.includes(token[0])
+          || (i > 0 && (WORD_RE.test(text[i - 1]) || text[i - 1] === token[0]))
+          || (after < text.length && (WORD_RE.test(text[after]) || text[after] === token[0]))
+          || (after + 1 < text.length && text[after] === "." && ALNUM_RE.test(text[after + 1]))
+          || (token === "__" && IDENT_RE.test(content))) continue;
+      let node;
+      if (kind === "bi") { node = el("strong", "", ""); node.appendChild(el("em", "", content)); }
+      else node = el(kind === "b" ? "strong" : kind === "s" ? "s" : "em", "", content);
+      return [node, after];
+    }
+    return null;
+  }
+  function inlineSpans(line, target) {
+    let i = 0, run = "";
+    const flush = () => { if (run) { target.appendChild(document.createTextNode(run)); run = ""; } };
+    while (i < line.length) {
+      const span = "`[*_~".includes(line[i]) ? spanAt(line, i) : null;
+      if (span) { flush(); target.appendChild(span[0]); i = span[1]; continue; }
+      run += line[i]; i += 1;
+    }
+    flush();
   }
 
   function codeBlock(lang, text) {
@@ -640,6 +682,16 @@
         i += 1;  // closing fence (or stream end)
         assistantBody.appendChild(codeBlock(fence[1], codeLines.join("\n")));
         continue;
+      }
+      // A lone rule is a section break, never a drawn line (docs/UX.md rule 6).
+      if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) { para = null; list = null; i += 1; continue; }
+      const q = raw.match(/^\s*>\s(.*)$/);
+      if (q) {
+        para = null; list = null;
+        const quote = el("div", "quote");
+        inlineSpans(q[1], quote);
+        assistantBody.appendChild(quote);
+        i += 1; continue;
       }
       const h = raw.match(/^\s*(#{1,6})\s+(.*)$/);
       if (h) {
@@ -830,7 +882,8 @@
     const elapsed = ((performance.now() - turnStart) / 1000).toFixed(1);
     const body = el("div", "receipt",
       label + " · " + (ev.iterations || 0) + " iterations · " +
-      fmtTokens(usage.total_tokens || 0) + " · " + fmtCost(usage.cost_usd || 0) + " · " + elapsed + "s");
+      fmtTokens(usage.total_tokens || 0) + " · " + fmtCost(usage.cost_usd || 0) + " · " + elapsed + "s" +
+      " · " + hhmm());
     add(row("turnend", el("span", "rdot " + tone), body));
     endTurn();
   }

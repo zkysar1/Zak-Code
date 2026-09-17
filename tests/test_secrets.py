@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from zakcode.secrets import redact_secrets, strip_url_credentials
+from zakcode.secrets import redact_secrets, redact_url_credentials, strip_url_credentials
 
 
 def test_strip_url_credentials_masks_userinfo() -> None:
@@ -187,3 +187,21 @@ def test_the_blanket_layer_no_longer_misses_quoted_or_env_style_keys() -> None:
     assert n >= 1 and _OAUTH not in out
     out, n = redact_secrets(f"YAHOO_CLIENT_SECRET={_HEX32}")
     assert n >= 1 and _HEX32 not in out
+
+
+def test_redact_url_credentials_masks_query_keys_and_userinfo_inside_text() -> None:
+    """ADR-0186: a logged URL keeps its endpoint but never its key."""
+    line = (
+        "POST https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent"
+        "?alt=sse&key=AIzaSyFAKEFAKEFAKEFAKE&x=1 and https://user:TOKEN@host/v1 ok"
+    )
+    out = redact_url_credentials(line)
+    assert "AIzaSy" not in out and "TOKEN" not in out
+    assert "?alt=sse&key=***&x=1" in out
+    assert "https://***@host/v1" in out
+    assert "models/gemini:generateContent" in out
+    # other parameters and key-like words that are not credentials survive
+    assert (
+        redact_url_credentials("https://h/p?monkey=1&keyword=2") == "https://h/p?monkey=1&keyword=2"
+    )
+    assert redact_url_credentials("") == ""

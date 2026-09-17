@@ -58,6 +58,12 @@ from zakcode.cli._layout import (
     user_line,
 )
 from zakcode.cli._theme import ZAK_THEME
+from zakcode.cli.logsink import (
+    LOG_LEVEL_ENV,
+    RedactingFilter,
+    install_transcript_logging,
+    log_level_from_env,
+)
 from zakcode.cli.render import StreamRenderer, display_call
 from zakcode.cli.saybox import fold_lines
 from zakcode.config import PermissionTier, Settings, env_source, load_settings
@@ -2490,6 +2496,9 @@ def chat(
     without an interactive permission prompter, so ``ask`` mode fails closed there;
     use the WebSocket channel for interactive approval.)
     """
+    # Log records become transcript lines (ADR-0186): the daemon-shaped stdout handler
+    # the entry point installed would print timestamped records into the grid.
+    install_transcript_logging(console)
     _prepare_interactive_terminal()
     if dangerously_skip_permissions:
         # One mechanism for every launch path — the inline REPL, a -p run, and the elevated
@@ -3301,7 +3310,8 @@ register_throughput_command(app)
 
 
 #: Env var controlling the root log level configured by :func:`_configure_logging`.
-LOG_LEVEL_ENV = "ZAKCODE_LOG_LEVEL"
+# ``LOG_LEVEL_ENV`` lives in ``zakcode.cli.logsink`` and is re-exported here.
+__all_logging__ = (LOG_LEVEL_ENV,)
 
 
 def _configure_logging() -> None:
@@ -3328,16 +3338,16 @@ def _configure_logging() -> None:
     An unrecognised level falls back to INFO rather than raising: a typo in an env
     var must not stop the server from starting.
     """
-    level_name = os.environ.get(LOG_LEVEL_ENV, "INFO").strip().upper()
-    level = logging.getLevelName(level_name)
-    if not isinstance(level, int):
-        level = logging.INFO
     logging.basicConfig(
-        level=level,
+        level=log_level_from_env(),
         stream=sys.stdout,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         force=True,
     )
+    # Every record that reaches stdout passes the credential scrub (ADR-0186): httpx logs
+    # the full URL of each request, and some providers carry the API key in its query.
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(RedactingFilter())
 
 
 def main() -> None:
