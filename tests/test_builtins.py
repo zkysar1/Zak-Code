@@ -828,33 +828,36 @@ async def test_bash_json_first_line_hint_rides_the_error(tmp_path) -> None:
 def test_module_not_found_fix_predicate(tmp_path) -> None:
     from zakcode.tools.builtins.bash import _module_not_found_fix as fix
 
+    cmd = 'python3 -c "import it"'
     pkg = tmp_path / ".mind-data" / "world" / "scripts" / "yahoo"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "client.py").write_text("X = 1\n", encoding="utf-8")
     err = 'Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n'
     # The measured shape: the package lives under a hidden data dir, cwd is the root.
-    hint = fix(err + "ModuleNotFoundError: No module named 'yahoo'", tmp_path, [])
+    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo'", tmp_path, [])
     assert hint is not None
     assert ".mind-data/world/scripts/yahoo" in hint
     assert "cd .mind-data/world/scripts && python3" in hint
     assert "PYTHONPATH=.mind-data/world/scripts" in hint
     # A dotted name whose top package exists but whose submodule does not: name what it holds.
-    hint = fix(err + "ModuleNotFoundError: No module named 'yahoo.oauth'", tmp_path, [])
+    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo.oauth'", tmp_path, [])
     assert hint is not None and "has no module 'oauth'" in hint and "client" in hint
     # A dotted name whose submodule DOES exist gets the run-from hint, not the listing.
-    hint = fix(err + "ModuleNotFoundError: No module named 'yahoo.client'", tmp_path, [])
+    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo.client'", tmp_path, [])
     assert hint is not None and "cd .mind-data/world/scripts" in hint
     # A single-file module counts too.
     (tmp_path / "tools" / "lib").mkdir(parents=True)
     (tmp_path / "tools" / "lib" / "helpers.py").write_text("", encoding="utf-8")
-    hint = fix(err + "ModuleNotFoundError: No module named 'helpers'", tmp_path, [])
+    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'helpers'", tmp_path, [])
     assert hint is not None and "tools/lib/helpers.py" in hint and "cd tools/lib" in hint
     # A directory with no Python in it is not a package; a genuinely absent package is silent.
     (tmp_path / "docs" / "requests").mkdir(parents=True)
-    assert fix(err + "ModuleNotFoundError: No module named 'requests'", tmp_path, []) is None
-    assert fix(err + "ModuleNotFoundError: No module named 'nothing_here'", tmp_path, []) is None
-    assert fix("ImportError: cannot import name 'x' from 'yahoo'", tmp_path, []) is None
+    assert fix(cmd, err + "ModuleNotFoundError: No module named 'requests'", tmp_path, []) is None
+    assert (
+        fix(cmd, err + "ModuleNotFoundError: No module named 'nothing_here'", tmp_path, []) is None
+    )
+    assert fix(cmd, "ImportError: cannot import name 'x' from 'yahoo'", tmp_path, []) is None
 
 
 @pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
@@ -880,6 +883,102 @@ async def test_bash_module_not_found_without_a_workspace_package_is_plain(tmp_pa
     ctx = ToolContext(workspace_root=tmp_path)
     res = await BashTool().execute({"command": 'python3 -c "import surely_not_installed_xyz"'}, ctx)
     assert res.is_error and res.fix is None
+
+
+def test_nearest_module_fix_predicate(tmp_path) -> None:
+    """The measured shape (zc-03 2026-08-30, g-353-80): `sys.path.insert(0, "core/scripts")`
+    then `from pipeline_read import …` — a module name invented the way script paths are.
+    Nothing by that name exists anywhere, so the closest real names under the root the
+    command declared are the lead; without a declared root the error stays plain."""
+    from zakcode.tools.builtins.bash import _module_not_found_fix as fix
+
+    scripts = tmp_path / "core" / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("pipeline.py", "_pipeline_fields.py", "pipeline-read.sh", "aspirations.py"):
+        (scripts / name).write_text("", encoding="utf-8")
+    (scripts / "__init__.py").write_text("", encoding="utf-8")
+    err = (
+        'Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n'
+        "ModuleNotFoundError: No module named 'pipeline_read'"
+    )
+    cmd = (
+        "python3 -c \"import sys; sys.path.insert(0, 'core/scripts'); from pipeline_read import x\""
+    )
+    hint = fix(cmd, err, tmp_path, [])
+    assert hint is not None
+    assert "never resolved" in hint and "core/scripts" in hint
+    assert "pipeline-read.sh" in hint and "pipeline" in hint and "not a module" in hint
+    assert "aspirations" not in hint and "__init__" not in hint
+    # A PYTHONPATH prefix, a cd prefix, sys.path.append, and escaped quotes inside a
+    # double-quoted program all name the same root.
+    for other in (
+        "PYTHONPATH=core/scripts python3 -c 'import pipeline_read'",
+        "PYTHONPATH=core/scripts:$PYTHONPATH python3 -c 'import pipeline_read'",
+        'cd core/scripts && python3 -c "import pipeline_read"',
+        "python3 -c \"import sys; sys.path.append('core/scripts'); import pipeline_read\"",
+        'python3 -c "import sys; sys.path.insert(0, \\"core/scripts\\"); import pipeline_read"',
+    ):
+        got = fix(other, err, tmp_path, [])
+        assert got is not None and "pipeline-read.sh" in got, other
+    # PYTHONPATH splits on the shell's `:` on every platform (and `;`), never inside a drive
+    # letter — os.pathsep is `;` on Windows, where `core/scripts:$PYTHONPATH` read as one entry.
+    from zakcode.tools.builtins.bash import _split_path_list
+
+    assert _split_path_list("core/scripts:$PYTHONPATH") == ["core/scripts", "$PYTHONPATH"]
+    assert _split_path_list("a;b:c;;") == ["a", "b", "c"]
+    if os.name == "nt":  # a drive letter's colon is not a separator — only where drives exist
+        assert _split_path_list("C:\\w\\scripts;D:/x:lib") == ["C:\\w\\scripts", "D:/x", "lib"]
+    else:
+        assert _split_path_list("b:/c") == ["b", "/c"]
+    # No declared root — a plain `python3 -c` — stays a plain error: a missing third-party
+    # package is an install question, not this hint's.
+    assert fix("python3 -c 'import pipeline_read'", err, tmp_path, []) is None
+    assert fix("python3 tools/run.py", err, tmp_path, []) is None
+    # A computed root or an unexpandable cd target cannot be read off the command: fail open.
+    computed = 'python3 -c "import sys; sys.path.insert(0, str(p)); import pipeline_read"'
+    assert fix(computed, err, tmp_path, []) is None
+    assert fix('cd "$W" && python3 -c "import pipeline_read"', err, tmp_path, []) is None
+    # A declared root that does not exist is itself the lead.
+    missing = "python3 -c \"import sys; sys.path.insert(0, 'core/script'); import pipeline_read\""
+    got = fix(missing, err, tmp_path, [])
+    assert got is not None and "`core/script`" in got and "does not exist" in got
+    # Nothing close under an existing root: the hint lists what the root holds.
+    far = err.replace("pipeline_read", "totally_other")
+    got = fix(cmd, far, tmp_path, [])
+    assert got is not None and "it holds:" in got and "aspirations" in got
+    assert "pipeline-read.sh" not in got  # the listing is importable names only
+    # A package that DOES exist elsewhere keeps the run-from hint, whatever root was declared.
+    pkg = tmp_path / "lib" / "pipeline_read"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    got = fix(cmd, err, tmp_path, [])
+    assert got is not None and "but the workspace has it" in got and "cd lib" in got
+
+
+@pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
+async def test_bash_invented_import_names_the_nearest_module(tmp_path) -> None:
+    scripts = tmp_path / "core" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "pipeline.py").write_text("X = 1\n", encoding="utf-8")
+    ctx = ToolContext(workspace_root=tmp_path)
+    res = await BashTool().execute(
+        {
+            "command": "python3 -c \"import sys; sys.path.insert(0, 'core/scripts'); "
+            'import pipeline_read"'
+        },
+        ctx,
+    )
+    assert res.is_error
+    assert res.fix is not None and "never resolved" in res.fix and "pipeline" in res.fix
+    # Followed as written, the remedy works.
+    res = await BashTool().execute(
+        {
+            "command": "python3 -c \"import sys; sys.path.insert(0, 'core/scripts'); "
+            'import pipeline; print(pipeline.X)"'
+        },
+        ctx,
+    )
+    assert not res.is_error and "1" in res.output
 
 
 def test_python_inline_fix_predicate() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 from pathlib import Path
@@ -166,7 +167,9 @@ def _importable_dir(path: Path) -> bool:
         return False
 
 
-def _module_not_found_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
+def _module_not_found_fix(
+    command: str, output: str, root: Path, extra_roots: list[Path]
+) -> str | None:
     """Name where a package of that name lives in the workspace, else None.
 
     Measured 2026-08-30 (zc-03, coach Bodies): five ``ModuleNotFoundError: No module
@@ -175,8 +178,10 @@ def _module_not_found_fix(output: str, root: Path, extra_roots: list[Path]) -> s
     — and one identical retry, because the error names the module and nothing names the
     directory Python would have had to be run from. A dotted name whose top package IS
     found but whose submodule is not gets the package's real module names instead. A
-    genuinely absent package (nothing in the workspace by that name) stays a plain
-    error: install guesses are not this hint's business.
+    name found nowhere in the workspace is an invented one when the command itself
+    declared a root — a literal ``sys.path.insert``, a ``PYTHONPATH=``, a ``cd`` — and
+    the closest real names under that root are then the lead (g-353-80); with no
+    declared root it stays a plain error: install guesses are not this hint's business.
     """
     m = _MODULE_NOT_FOUND_RE.search(output)
     if m is None:
@@ -189,7 +194,7 @@ def _module_not_found_fix(output: str, root: Path, extra_roots: list[Path]) -> s
         hits.extend((r, rel) for rel in _locate_all(r, top, dirs=True) if _importable_dir(r / rel))
         hits.extend((r, rel) for rel in _locate_all(r, f"{top}.py"))
     if not hits:
-        return None
+        return _nearest_module_fix(command, top, roots[0])
     first_root, first_rel = hits[0]
     if len(parts) > 1 and (first_root / first_rel).is_dir():
         pkg = first_root / first_rel
@@ -215,6 +220,155 @@ def _module_not_found_fix(output: str, root: Path, extra_roots: list[Path]) -> s
         f"No module named '{top}' on sys.path from this cwd, but the workspace has it: "
         f"{', '.join(shown_hits)}. Python imports it from its parent directory — run from "
         f"there ({run_from}) or prefix `{where}`; do not move or copy the package."
+    )
+
+
+#: A sys.path root the command itself declared, as a string literal — ``sys.path.insert(0,
+#: "x")``, ``sys.path.append('x')``, quotes escaped or not — or a ``PYTHONPATH=x[:y]``
+#: prefix. A computed root (``str(Path(__file__).parent)``, ``os.path.join(…)``) cannot be
+#: read off the command.
+_SYS_PATH_LITERAL_RE = re.compile(
+    r"""sys\.path\.(?:insert\s*\(\s*\d+\s*,|append\s*\()\s*\\?(['"])([^'"]+?)\\?\1\s*\)"""
+)
+_PYTHONPATH_RE = re.compile(r"(?:^|[\s;&|(])PYTHONPATH=([^\s;&|]+)")
+#: Names under one root are bounded so the closest-name pass stays cheap.
+_NEAREST_MAX_NAMES = 1500
+
+
+def _split_path_list(value: str) -> list[str]:
+    """``PYTHONPATH=a:b`` entries. The command is a shell command on every platform, so
+    ``:`` separates (``;`` too) — except, where drives exist, the colon of a drive letter
+    (``C:\\x``, ``D:/x``): one letter into its entry and followed by a slash. Not
+    ``os.pathsep``: that is ``;`` on Windows, where it read ``core/scripts:$PYTHONPATH`` as
+    one entry (CI, 2026-09-17)."""
+    parts: list[str] = []
+    cur = ""
+    for i, ch in enumerate(value):
+        drive = (
+            os.name == "nt"
+            and len(cur) == 1
+            and cur.isalpha()
+            and value[i + 1 : i + 2] in ("/", "\\")
+        )
+        if ch == ";" or (ch == ":" and not drive):
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return [part for part in parts if part]
+
+
+def _command_roots(command: str, root: Path) -> list[tuple[Path, str]]:
+    """Directories the command put on sys.path, each with why, in the order it named them.
+
+    Literal ``sys.path.insert``/``append`` roots and ``PYTHONPATH`` entries come first —
+    the model named them, so they are where it believed the module lived — then the
+    directory a ``cd`` prefix moved into (``sys.path[0]`` for a ``python3 -c`` program).
+    Relative roots resolve against the cwd the ``cd``s produce; an unexpandable one
+    (``$VAR``, ``~``) is skipped rather than guessed.
+    """
+    cwd = _cwd_before(command, root)
+    found: list[tuple[Path, str]] = []
+
+    def add(raw: str, why: str) -> None:
+        raw = raw.strip("\"'")
+        if not raw or raw.startswith(("$", "~")):
+            return
+        p = Path(raw)
+        if not p.is_absolute():
+            if cwd is None:
+                return
+            p = cwd / p
+        if all(p != q for q, _ in found):
+            found.append((p, why))
+
+    for m in _SYS_PATH_LITERAL_RE.finditer(command):
+        add(m.group(2), "the sys.path root this command added")
+    for m in _PYTHONPATH_RE.finditer(command):
+        for entry in _split_path_list(m.group(1).strip("\"'")):
+            add(entry, "the PYTHONPATH this command set")
+    if cwd is not None and _CD_RE.search(command):
+        add(str(cwd), "the directory this command cd'd into — sys.path[0] for `python3 -c`")
+    return found
+
+
+def _importable_names(root: Path) -> tuple[list[str], list[str]]:
+    """What ``import <name>`` could resolve to directly under ``root`` — module stems and
+    package directories — and, separately, every other file by its full name, so a shell
+    script mistaken for a module surfaces as ``pipeline-read.sh`` rather than as nothing."""
+    modules: list[str] = []
+    others: list[str] = []
+    try:
+        entries = sorted(os.scandir(root), key=lambda e: e.name)
+    except OSError:
+        return modules, others
+    for e in entries[:_NEAREST_MAX_NAMES]:
+        if e.name in _SKIP_DIRS or e.name == "__init__.py":
+            continue
+        if e.is_dir():
+            if _importable_dir(Path(e.path)):
+                modules.append(e.name)
+        elif e.name.endswith(".py"):
+            modules.append(e.name[:-3])
+        else:
+            others.append(e.name)
+    return modules, others
+
+
+def _shown_root(p: Path, root: Path) -> str:
+    """``p`` workspace-relative when it is inside the workspace, else as given."""
+    try:
+        rel = p.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return p.as_posix()
+    return "the workspace root" if rel == "." else rel
+
+
+def _nearest_module_fix(command: str, top: str, root: Path) -> str | None:
+    """The lead for a module that exists nowhere in the workspace, else None.
+
+    Measured 2026-08-30 (zc-03, coach-w7): ``python3 -c`` with ``sys.path.insert(0,
+    "core/scripts")`` then ``from pipeline_read import …`` — a module name invented the
+    way script paths are invented (ADR-0106 refuses those before running), but an import
+    inside ``-c`` is not a path a preflight can stat. The error carries the missing NAME
+    and the command carries the root the model believed it lived under, so the same
+    sibling-lead shape applies: the closest real names under that root. Nothing fires
+    without a declared root — a plain ``python3 -c "import x"`` missing a third-party
+    package is an install question, not this hint's.
+    """
+    roots = _command_roots(command, root)
+    if not roots:
+        return None
+    lead = f"No module named '{top}' exists anywhere in the workspace — the import never resolved. "
+    existing = [(p, why) for p, why in roots if p.is_dir()]
+    if not existing:
+        p, why = roots[0]
+        return lead + (
+            f"`{_shown_root(p, root)}` ({why}) does not exist, so nothing under it could be "
+            "imported: `ls` its parent before guessing another path."
+        )
+    for p, why in existing:
+        modules, others = _importable_names(p)
+        close = difflib.get_close_matches(top, [*modules, *others], n=4, cutoff=0.6)
+        if close:
+            note = (
+                " — a name with an extension is a file to run or read, not a module"
+                if any("." in c for c in close)
+                else ""
+            )
+            return lead + (
+                f"Under {_shown_root(p, root)} ({why}) the closest names are: "
+                f"{', '.join(close)}{note}. Import one that exists; do not invent a module name."
+            )
+    p, why = existing[0]
+    modules, _ = _importable_names(p)
+    modules.sort(key=lambda n: (n.startswith("_"), n))  # public names first
+    shown = ", ".join(modules[:8]) or "no Python modules at all"
+    more = f", … ({len(modules)} in all)" if len(modules) > 8 else ""
+    return lead + (
+        f"Nothing under {_shown_root(p, root)} ({why}) is close to '{top}'; it holds: "
+        f"{shown}{more}. `ls` it and import a name that exists; do not invent one."
     )
 
 
@@ -799,7 +953,7 @@ class BashTool(Tool):
                 or _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
                 or _enoent_fix(output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots)
                 or _module_not_found_fix(
-                    output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots
+                    command, output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots
                 )
                 or _python_inline_fix(command, output)
                 or _json_first_line_fix(command, output)
