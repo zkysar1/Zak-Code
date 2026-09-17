@@ -10273,3 +10273,87 @@ folded compound echoed as a leaf expands to its subtree, a visible done step lef
 with no event, a hidden cancelled step is not restored, the request anchor is not restored, a
 stale fold row is dropped, and the same-titled child under its parent never expands; a size
 ratchet on the 20-step plan. The paging and skeleton suites are unchanged and green.
+
+
+## ADR-0185: the transcript reads at a glance — the operator's line and the tool line stay bright, every receipt opens with its outcome and names its tool, body text wraps at a reading width, and inline markdown renders what models write
+
+**Status:** Accepted (2026-09-17)
+
+**Context.** Operator report, 2026-09-17, watching a cockpit session: "the text looks nothing
+like Claude Code — too compact, no line breaks, no bold or styling; it's hard to tell what tool
+is being called and when." Measured against the renderer as shipped (docs/UX.md):
+
+1. *The turn seam vanished in the cockpit.* The keyboard door draws a labeled frame and the
+   two-blank seam (UX rule 5); the say door — the ONLY door inside a cockpit (ADR-0119) — echoed
+   the operator's message as one dim `▸ (say) …` line behind a single blank. A day-long Mind
+   session read as one grey stream with no anchor to scan back to.
+2. *A tool block had no bright ink but its name.* `tool.marker`, the `└` receipt, its count
+   and every rail row were `dim`; only the display name was bold. tmux's default terminal
+   renders bold as brightness rather than weight, so on the very surface the cockpit runs in,
+   a tool line was one shade from the rail beneath it.
+3. *Success had no mark, and the receipt did not say what happened.* `└ 134 lines · 0.1s` is a
+   count; to learn what was read the eye climbed to the call line. A failure had its `✗`; a
+   success had nothing.
+4. *Prose wrapped at the pane's full width.* Body text at 200 columns. The readability
+   literature puts the comfort band for body text at 50–75 characters and WCAG 1.4.8 caps it
+   at 80; long lines lose the return sweep and read as intimidating (Baymard). The web client
+   already caps its column at 44rem for exactly this reason (UX "Type & metrics").
+5. *Inline markdown stopped at bold, code, bullets and headings.* Italics, links,
+   strike-through, block quotes and rules printed raw, so a model's `*emphasis*` and
+   `[docs](url)` showed their asterisks and brackets.
+
+Claude Code's transcript — the reference the operator named — is `⏺` blocks with a blank line
+between them; the tool line bright with a bold name; the `⎿` receipt a dim sentence that names
+the tool ("Read 134 lines", "Updated … with 1 addition and 1 removal"); the operator's `>`
+line bright with its own background; markdown rendered in full; Bash output shown for a few
+lines then `… +N lines`. Zak's grammar (`●` / `└` / `│`, one blank between blocks, head+tail
+previews) already mirrors that shape. What differed was ink and the seam — the two things the
+eye uses to find its place — and the line length.
+
+**Decision.**
+
+1. **The operator's line is the turn's anchor on every door.** One primitive,
+   `_layout.user_line`: the seam's blanks, then `› message` — chevron bold azure, text bold —
+   with the door and the wall clock dim at the end of the first line (`(say · 14:22)`), further
+   lines under the body column, long messages folded (ADR-0119). The say and harness doors
+   render through it (one blank when the idle wait already printed one, else two); the keyboard
+   frame already carries the seam.
+2. **The call line is the loudest line of its block.** `tool.marker` is `bold` (bright); the
+   name stays bold, the args default, only the parens recede. Prose keeps its azure `●`.
+3. **Every receipt opens with its outcome mark and reads as a sentence that names its tool.**
+   `✓ Read 134 lines`, `✓ Listed 3 entries`, `✓ Fetched 12 lines`, `✓ Ran · 5 lines` /
+   `✓ Ran · no output`, `✓ Found 3 matches`, `✓ Found 2 files`, `✓ Updated +6 -2` /
+   `✓ Edited · 2 lines`, `✓ Written`, `✓ Plan · 3 items` / `✓ Plan complete · 2 steps` /
+   `✓ Plan · 3/9 steps · current: …`, `✓ SomeTool · 1 line`. Failures keep `✗ first line`; a
+   detached failure is prefixed with its tool (`✗ Run · boom`) because its first line does not
+   name it. The `Tool · ` prefix a detached success used to carry is gone — the verb names the
+   tool. The web client's receipts carry the same words; its card dot is the outcome mark.
+4. **Body text wraps at the reading width.** `_layout.READ_WIDTH = 100`: the body cell of every
+   block and rail row is capped at 100 columns (or what the console leaves), so the hanging
+   indent and a return sweep of at most a hundred characters hold on any pane. Code blocks keep
+   the console width — they are not body text.
+5. **Inline markdown renders what models write.** `*italic*` / `_italic_` (word-bounded, so
+   `snake_case` and `2 * 3` stay literal), `__bold__`, `~~strike~~`, `[label](url)` (label
+   underlined, url dim in parens), `> quote` (dim italic), and a lone `---` / `***` / `___` is
+   a gap — the transcript draws no rules (UX rule 6).
+6. **The footer is stamped.** `… · 41.2s · 14:23`: with the operator's line stamped, every turn
+   shows its time bracket. The wall clock is injectable like the monotonic one.
+7. **Commands keep more of themselves.** A command middle-truncates at 160 characters (was 64)
+   and other arguments at 96 — the flags at a command's tail are what a reader checks.
+
+Not decided: recoloring the call line by outcome (Claude Code repaints; this renderer is
+append-only, and the mark on the receipt is the append-only equivalent); a timestamp on every
+tool line (noise — the turn bracket answers "when"); wrapping code blocks or diff bands at the
+reading width; any change to the wait line, the thinking marker or the status lines.
+
+**Consequences.** Against the operator's four complaints: the seam is back on the door the
+cockpit uses; the tool line is the brightest line of its block and its receipt says what the
+tool did behind a green mark; prose wraps at a hundred columns; emphasis, links and quotes
+render. A monochrome transcript still distinguishes prose from tools (ASCII `*` vs `o`) and
+now success from failure by the receipt's mark (`+` / `x`). The column grid is unchanged, so
+every pinned offset test holds. Hermetic tests pin the receipt vocabulary (twelve tools plus
+the detached failure), the bold marker and green mark under a forced terminal, the reading
+width on a 200-column and a 40-column console, the grammar cases, the stamped footer and the
+user line; the say-door tests assert the stamped line. docs/UX.md rules 5, 8 and 13, the
+theme table, the shared-grammar table and the discipline list change with this ADR; two new
+rules (18 reading width, 19 inline grammar); FEATURE_AUDIT CLI-38.

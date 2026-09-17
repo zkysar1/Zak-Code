@@ -596,7 +596,7 @@ def test_chat_delivers_boot_time_say(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "discarded" not in result.output
     assert _RecordingAgent.turns == ["typed while the agent was booting"]
-    assert "(say) typed while the agent was booting" in result.output
+    assert "typed while the agent was booting  (say" in result.output
 
 
 # ── one door: inside a cockpit pane the pane keyboard is not read at all ──────────
