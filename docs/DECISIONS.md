@@ -10203,3 +10203,73 @@ costs exactly 12 calls with the elision note in the ninth slice and both ends of
 present; a fold whose join exceeds the budget runs in packed groups, pass by pass, each call under
 the budget; a never-shrinking summarizer ends in the clamped last fold after exactly `n + 2n + 1`
 calls; unit tests pin the packer and the clamp.
+## ADR-0184: closed plan steps fold out of the model's working memory — a row per run, carrying its ids — and the fold is round-trip-safe under the full-replace
+
+**Status.** Accepted (2026-09-17).
+
+**Context.** User directive 2026-09-01: "the todo list is great but completed items stay around too
+long — it should remove them from working memory more often." Measured at origin/main 771b504:
+`TaskNetwork.render()` emitted EVERY task — done ones included, with title, outcome and
+dependencies — and `_plan_reminder` re-injected that render as the highest-salience ephemeral
+tail message on EVERY iteration for the life of the turn. Cleanup existed only at turn start
+(the complete-plan reset and the issue-#32 staleness guard). So within one long agentic turn
+(dozens of iterations; a Mind session seeds paged-skill skeletons up to 60 steps) a 20-step plan
+at step 18 paid 17 done rows in tokens and clutter on every call, and a plan that completed
+mid-turn kept re-injecting its checklist until the turn ended. Hard constraint from the goal
+(g-357-58): the network itself must not change mid-turn — the completion gate
+(`actionable_remaining`), paged-skill delivery (page ↔ step by TITLE, never rendered text) and
+`update_plan`'s full-replace all depend on the live object — so this is a render-layer change.
+The one real design risk was the round trip: the model authors its next `update_plan` by copying
+the render (measured: the ADR-0092 marker fold-in), so an elided render invites a resend that
+drops the elided done steps, corrupting the progress fraction and the skeleton.
+
+**Decision.** One fixed behaviour, no knobs, in two halves.
+
+1. **The fold (render).** `render(elide_done=True)` is the working-memory form and
+   `_plan_reminder` is its only caller. In it, a run of two or more consecutive closed siblings
+   (done or cancelled, leaves or compounds) folds into ONE row carrying its ids and its count in
+   the header's unit — `[x] 1–17 (17 steps done)`, `[x] 4–5 (1 done, 1 cancelled)`, `[-] 2–3 (2
+   steps cancelled)` — and a lone closed compound into one row with its subtree counted
+   (`[x] 2 build (3 steps done)`). A lone closed leaf still shows what it produced (ADR-0110);
+   what the last closed step produced also rides in the memory lines beside the checklist, so
+   nothing the model needs is lost. Open, blocked and in-progress steps, the header fraction and
+   the `<- current` marker are never touched. `render()` — the default — stays the whole record:
+   the `AgentTaskUpdate` UI event (structured tree and checklist alike), `/todo`, the plan judge
+   and the completion critic all read that, deliberately: a human wants the full checklist and
+   the critic reviews the finished plan. The reminder adds one sentence when a fold is present:
+   send the folded rows back as shown or leave them out; the harness keeps the steps they stand
+   for.
+2. **The round trip (replace).** `replace_from_author` makes the fold safe against what a model
+   does with it. An echoed fold row expands back to the prior siblings its id range names; a
+   folded compound echoed as a leaf — with the count suffix or its bare title, and only at the
+   same parent, so the measured parent-over-same-named-child shape never expands into itself —
+   becomes the prior compound, subtree and all; a fold row whose ids no longer resolve is dropped
+   as the rendering artefact it is. And done steps a fold HID that the resend left out entirely
+   are restored from the record, each after its nearest earlier sibling still present, with one
+   advisory in the tool result naming them. The predicate is exactly "what the model could not
+   see, it cannot have meant to drop": a done step shown in full and left out stays out — the
+   model's call, as ADR-0113 already ruled — and so does a cancelled one (cancelling is a
+   decision about the title, and dropping it is consistent with that decision — the paging
+   contract), and the request anchor (ADR-0111).
+
+**Why not clear or shrink the network.** Everything downstream reads the live object; a
+render-layer fold cannot break paging, the completion gate or the full-replace, and it costs no
+turn-start behaviour (the complete-plan reset and the staleness guard are untouched).
+
+**Consequences.** Measured on representative plans (`render()` vs `render(elide_done=True)`, per
+iteration): a 20-step plan at step 18 goes from 1,797 to 347 characters (21 → 5 lines); a
+60-step Mind skeleton at step 55 from 5,366 to 623 (61 → 8 lines); a 20-step plan at step 2 is
+unchanged (one lone done row) and a 60-step skeleton at step 10 shrinks 14%. A plan that
+completes mid-turn was already one line (ADR-0108) and stays so. The model can no longer read
+the titles of folded steps from the reminder — by design; it does not need them to work, and
+the harness keeps them across its resends.
+
+**Tests.** `tests/test_plan_elision.py`: the fold on flat, nested, mixed and cancelled shapes
+(exact rows); the reminder carries the fold and the contract sentence while the UI event stays
+full; the complete plan is one line with the network intact; the round trip through
+`UpdatePlanTool` with a simulated echo — the fold row expands (ids, evidence and outcomes intact,
+with the glyph and a hyphen too), left-out hidden done steps are restored with the advisory, a
+folded compound echoed as a leaf expands to its subtree, a visible done step left out stays out
+with no event, a hidden cancelled step is not restored, the request anchor is not restored, a
+stale fold row is dropped, and the same-titled child under its parent never expands; a size
+ratchet on the 20-step plan. The paging and skeleton suites are unchanged and green.
