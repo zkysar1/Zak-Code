@@ -235,6 +235,30 @@ _PYTHONPATH_RE = re.compile(r"(?:^|[\s;&|(])PYTHONPATH=([^\s;&|]+)")
 _NEAREST_MAX_NAMES = 1500
 
 
+def _split_path_list(value: str) -> list[str]:
+    """``PYTHONPATH=a:b`` entries. The command is a shell command on every platform, so
+    ``:`` separates (``;`` too) — except, where drives exist, the colon of a drive letter
+    (``C:\\x``, ``D:/x``): one letter into its entry and followed by a slash. Not
+    ``os.pathsep``: that is ``;`` on Windows, where it read ``core/scripts:$PYTHONPATH`` as
+    one entry (CI, 2026-09-17)."""
+    parts: list[str] = []
+    cur = ""
+    for i, ch in enumerate(value):
+        drive = (
+            os.name == "nt"
+            and len(cur) == 1
+            and cur.isalpha()
+            and value[i + 1 : i + 2] in ("/", "\\")
+        )
+        if ch == ";" or (ch == ":" and not drive):
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return [part for part in parts if part]
+
+
 def _command_roots(command: str, root: Path) -> list[tuple[Path, str]]:
     """Directories the command put on sys.path, each with why, in the order it named them.
 
@@ -262,7 +286,7 @@ def _command_roots(command: str, root: Path) -> list[tuple[Path, str]]:
     for m in _SYS_PATH_LITERAL_RE.finditer(command):
         add(m.group(2), "the sys.path root this command added")
     for m in _PYTHONPATH_RE.finditer(command):
-        for entry in m.group(1).strip("\"'").split(os.pathsep):
+        for entry in _split_path_list(m.group(1).strip("\"'")):
             add(entry, "the PYTHONPATH this command set")
     if cwd is not None and _CD_RE.search(command):
         add(str(cwd), "the directory this command cd'd into — sys.path[0] for `python3 -c`")

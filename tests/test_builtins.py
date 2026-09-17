@@ -920,6 +920,16 @@ def test_nearest_module_fix_predicate(tmp_path) -> None:
     ):
         got = fix(other, err, tmp_path, [])
         assert got is not None and "pipeline-read.sh" in got, other
+    # PYTHONPATH splits on the shell's `:` on every platform (and `;`), never inside a drive
+    # letter — os.pathsep is `;` on Windows, where `core/scripts:$PYTHONPATH` read as one entry.
+    from zakcode.tools.builtins.bash import _split_path_list
+
+    assert _split_path_list("core/scripts:$PYTHONPATH") == ["core/scripts", "$PYTHONPATH"]
+    assert _split_path_list("a;b:c;;") == ["a", "b", "c"]
+    if os.name == "nt":  # a drive letter's colon is not a separator — only where drives exist
+        assert _split_path_list("C:\\w\\scripts;D:/x:lib") == ["C:\\w\\scripts", "D:/x", "lib"]
+    else:
+        assert _split_path_list("b:/c") == ["b", "/c"]
     # No declared root — a plain `python3 -c` — stays a plain error: a missing third-party
     # package is an install question, not this hint's.
     assert fix("python3 -c 'import pipeline_read'", err, tmp_path, []) is None
