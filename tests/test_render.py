@@ -1262,7 +1262,7 @@ async def test_inline_markdown_grammar_covers_what_models_write() -> None:
     renderer, buffer = _make_renderer()
     text = (
         "Use *care* with _names_ like snake_case_name and 2 * 3 = 6.\n"
-        "See [the docs](https://example.test/x) and __strong__ and ~~gone~~ text.\n"
+        "See [the docs](https://example.test/x) and __so strong__ and ~~gone~~ text.\n"
         "> a quoted line\n"
         "---\n"
         "after the rule\n"
@@ -1277,7 +1277,7 @@ async def test_inline_markdown_grammar_covers_what_models_write() -> None:
     )
     out = buffer.getvalue()
     assert "Use care with names like snake_case_name and 2 * 3 = 6." in out
-    assert "See the docs (https://example.test/x) and strong and gone text." in out
+    assert "See the docs (https://example.test/x) and so strong and gone text." in out
     assert "a quoted line" in out and "> a quoted" not in out
     assert "---" not in out and "\n\n\n" not in out
     assert "after the rule" in out
@@ -1313,3 +1313,32 @@ def test_user_line_is_the_turn_anchor() -> None:
     user_line(console, "typed ahead", blanks=1)
     assert buffer.getvalue().startswith("\n  › typed ahead")
     assert "(" not in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_code_shaped_text_survives_the_emphasis_parser() -> None:
+    """Fresh-eyes findings on ADR-0185: what a coding agent writes without backticks must
+    render as written — dunder names and files, unspaced math, globs, star-args — while
+    real emphasis still renders."""
+    renderer, buffer = _make_renderer()
+    text = (
+        "Edit cli/__init__.py and __main__.py; the __str__ method and __eq__ compare.\n"
+        "Math 2*3*4 and a*b*c and 2*n*k; globs **/*.py and src/**/*.py and */*.\n"
+        "Call f(*args, **kwargs) on _config_.yaml; a__b and **bold**text and a**b**c stay.\n"
+        "But ***vital***, **bold**, *em*, _em_, __very strong__ and ~~gone~~ render.\n"
+    )
+    await renderer.render(
+        _astream(
+            [
+                AgentTextDelta(text=text),
+                AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+            ]
+        )
+    )
+    out = buffer.getvalue()
+    assert "Edit cli/__init__.py and __main__.py; the __str__ method and __eq__ compare." in out
+    assert "Math 2*3*4 and a*b*c and 2*n*k; globs **/*.py and src/**/*.py and */*." in out
+    assert (
+        "Call f(*args, **kwargs) on _config_.yaml; a__b and **bold**text and a**b**c stay." in out
+    )
+    assert "But vital, bold, em, em, very strong and gone render." in out

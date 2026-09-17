@@ -195,9 +195,14 @@ All content sits on this grid; nothing else exists:
     (`Syntax`) keep the console width — they are not body text.
 19. **Inline markdown grammar** (`_inline_md` / `_inline_spans`, ADR-0185): bullets
     `- ` / `* ` → the bullet glyph; ATX headings → `md.h`; `> quote` → `md.quote`; a lone
-    `---` / `***` / `___` → a gap (rule 6: no rules drawn); `**bold**` / `__bold__` →
-    bold; `*italic*` / `_italic_` → `md.italic`, word-bounded so `snake_case` and `2 * 3`
-    stay literal; `~~strike~~` → `md.strike`; `[label](url)` → the label in `md.link`
+    `---` / `***` / `___` → a gap (rule 6: no rules drawn); `***x***` → bold italic;
+    `**bold**` / `__bold__` → bold; `*italic*` / `_italic_` → `md.italic`; `~~strike~~` →
+    `md.strike`. An emphasis span needs a word boundary on both sides (`snake_case`,
+    `2*3*4`, `a*b*c` stay literal), no space inside the delimiters (`2 * 3`), a letter or
+    digit in its content (`*/*`, `**/*.py`, `f(*args, **kwargs)` stay literal), no file
+    extension after the closer (`__init__.py`), never its own delimiter inside (`**/*.py
+    and src/**/*.py` cannot pair across the globs), and `__` never wraps a bare identifier
+    (`__str__`) — code-shaped text renders as written (fresh-eyes review, 2026-09-17); `[label](url)` → the label in `md.link`
     plus ` (url)` in `md.link.url` when they differ; `` `code` `` → `md.code`. Never
     nested; never markup-parsed.
 

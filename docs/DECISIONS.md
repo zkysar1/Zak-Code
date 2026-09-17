@@ -10357,3 +10357,14 @@ width on a 200-column and a 40-column console, the grammar cases, the stamped fo
 user line; the say-door tests assert the stamped line. docs/UX.md rules 5, 8 and 13, the
 theme table, the shared-grammar table and the discipline list change with this ADR; two new
 rules (18 reading width, 19 inline grammar); FEATURE_AUDIT CLI-38.
+
+**Amendment (fresh-eyes review, 2026-09-17).** An independent adversarial review of the
+merged change (`/fresh-eyes-code`, shape γ) found the emphasis parser too eager for a
+coding transcript: `__init__.py` rendered as bold `init.py`, `__str__` as bold `str`,
+`2*3*4` as `234`, `**/*.py` as `*/.py`, and `***x***` left stray asterisks. The grammar now
+requires a word boundary on both sides of a span, a letter or digit in its content, no
+file extension after the closer, and never a bare identifier inside `__`; `***` is a
+bold-italic span; a longer delimiter that fails to close no longer stops a shorter one
+from being tried at the same position. The web client's Fetch receipt says `no output`
+for an empty fetch, as the terminal does. Regression test:
+`test_code_shaped_text_survives_the_emphasis_parser`.
