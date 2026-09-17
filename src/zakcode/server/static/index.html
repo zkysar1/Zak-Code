@@ -721,27 +721,32 @@
     setStatus("using tools…");
   }
 
-  // Synthesized receipts per display name (docs/UX.md), never raw first lines.
+  // Synthesized receipts per display name (docs/UX.md), never raw first lines. Each one
+  // reads as a sentence that names the tool (ADR-0185); the card's dot carries the outcome
+  // mark the terminal spells as ✓.
   function receiptText(name, ev, output) {
     if (ev.is_error) return "✗ " + squeezeMiddle(firstLine(output.trim()), 64);
     const n = output.trim() ? output.trim().split("\n").length : 0;
+    const lines_ = n + (n === 1 ? " line" : " lines");
     switch (name) {
-      case "Read": case "List": case "Fetch": return n + (n === 1 ? " line" : " lines");
-      case "Run": return n ? n + (n === 1 ? " line" : " lines") : "no output";
-      case "Search": return n + (n === 1 ? " match" : " matches");
-      case "Glob": return n + (n === 1 ? " file" : " files");
+      case "Read": return "Read " + lines_;
+      case "List": return "Listed " + n + (n === 1 ? " entry" : " entries");
+      case "Fetch": return "Fetched " + lines_;
+      case "Run": return "Ran · " + (n ? lines_ : "no output");
+      case "Search": return "Found " + n + (n === 1 ? " match" : " matches");
+      case "Glob": return "Found " + n + (n === 1 ? " file" : " files");
       case "Edit": {
         const lines = output.split("\n");
         if (lines.some((l) => l.startsWith("@@"))) {
           const a = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
           const d = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
-          return "+" + a + " -" + d;
+          return "Updated +" + a + " -" + d;
         }
-        return n + (n === 1 ? " line" : " lines");
+        return "Edited · " + lines_;
       }
-      case "Write": return "written";
-      case "Todo": return n + (n === 1 ? " item" : " items");
-      default: return n + (n === 1 ? " line" : " lines");
+      case "Write": return "Written";
+      case "Todo": return "Plan · " + n + (n === 1 ? " item" : " items");
+      default: return (name ? name + " · " : "") + lines_;
     }
   }
 

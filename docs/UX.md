@@ -18,8 +18,10 @@ either client can be re-derived from it; change it and both renderers in the sam
 ## Design thesis
 
 Calm, confident minimalism with an instrument-panel spine: terminal-default ink does
-the talking, all chrome recedes to dim, and exactly one brand mark — the azure spark
-`✦` — carries identity through the banner, the wait line, and the prompt. Structure
+the talking, chrome recedes to dim — except the two lines the eye must find first, the
+operator's own line and a tool's call line, which stay bright (ADR-0185) — and exactly
+one brand mark — the azure spark `✦` — carries identity through the banner, the wait
+line, and the prompt. Structure
 comes from a two-level marker grammar (`●` block / `└` receipt) with true hanging
 indents, a continuous `│` rail binding every result body to its block, and a
 differentiated blank-line rhythm (one blank inside a turn, two at the turn seam), so
@@ -80,11 +82,17 @@ All content sits on this grid; nothing else exists:
      blank between any two adjacent blocks.
 4. **`_assistant_marked` reset.** Resets to `False` at turn start and after **every**
    tool call, code block, and status line — each prose group re-anchors with its own `●`.
-5. **Turn boundary = two blanks + the echoed prompt.** `read_prompt` prints **two**
-   blank lines, then the `›` line; the renderer's first `_gap()` prints one blank
+5. **Turn boundary = two blanks + the operator's bright line, on every door.** The
+   keyboard door's frame (`read_prompt` / `open_input_frame`) draws the seam around
+   the typed line. The say and harness doors — the only doors inside a cockpit — echo
+   the message through `_layout.user_line` (ADR-0185): the seam's blanks (one when the
+   idle wait already printed one, else two), then `› message` with the chevron in
+   `user.marker`, the text in `user.text` (bold), and the door plus the wall-clock stamp
+   dim at the end of the first line (`(say · 14:22)`); further lines sit under the body
+   column; long messages fold (ADR-0119). The renderer's first `_gap()` prints one blank
    after it. The seam reads: receipt / blank / blank / bright `›` line / blank / first
-   block — a macro beat visibly larger than the intra-turn single blank. No rules, no
-   timestamps. Never three blanks.
+   block — a macro beat visibly larger than the intra-turn single blank. No rules; the
+   only timestamps are the operator line's and the footer's. Never three blanks.
 6. **No horizontal rules anywhere in the transcript.**
 7. **Durations everywhere, via the injectable clock (mandatory).**
    `StreamRenderer(console=None, clock: Callable[[], float] | None = None)`;
@@ -94,19 +102,25 @@ All content sits on this grid; nothing else exists:
    the receipt (omitted when the id is unknown). The footer appends per-turn elapsed.
    `_fmt_duration(s)` → `f"{s:.1f}s"` for `s < 60`, else `f"{int(s // 60)}m {int(s % 60)}s"`.
    Hermetic tests inject a `FakeClock` — wall-clock never reaches test output.
-8. **Receipts are synthesized, never raw first lines.** All receipts end `· {dur}`:
+8. **Receipts are synthesized, never raw first lines.** Every receipt opens with its
+   outcome mark and reads as a sentence that names its tool (ADR-0185) — `✓` (`ok`) on
+   success, `✗` (`err`) on failure — and ends `· {dur}`:
 
    | Display name | Receipt |
    | --- | --- |
-   | Read / List / Fetch | `N lines` (no preview) |
-   | Run | `N lines` + head/tail preview, or `no output` |
-   | Search | `N matches` + preview (≤5 lines, then `… +N more`) |
-   | Glob | `N files` + preview (≤5 lines) |
-   | Edit | `+a -d` (counts of `+`/`-` diff lines excluding `+++`/`---` headers; `N lines` when output isn't a diff). The diff receipt + painted preview activate only for diff-emitting tool output — the current builtin `edit_file` emits prose, so its receipts read `N lines` until the tool emits a unified diff (flagged as a core follow-up) |
-   | Write | `written` |
-   | Todo | `N items` |
-   | unknown tool | `N lines` |
-   | any error | `✗ {first line of error}` |
+   | Read | `✓ Read N lines` (no preview) |
+   | List | `✓ Listed N entries` (no preview) |
+   | Fetch | `✓ Fetched N lines` + head/tail preview |
+   | Run | `✓ Ran · N lines` + head/tail preview, or `✓ Ran · no output` |
+   | Search | `✓ Found N matches` + preview (≤5 lines, then `… +N more`) |
+   | Glob | `✓ Found N files` + preview (≤5 lines) |
+   | Edit | `✓ Updated +a -d` (counts of `+`/`-` diff lines excluding `+++`/`---` headers; `✓ Edited · N lines` when output isn't a diff). The diff receipt + painted preview activate only for diff-emitting tool output |
+   | Write | `✓ Written` |
+   | Todo | `✓ Plan · N items`; a finished plan `✓ Plan complete · N steps` (ADR-0108); a partial plan `✓ Plan · F/T steps · current: …` (ADR-0124) |
+   | unknown tool | `✓ {Name} · N lines` |
+   | any error | `✗ {first line of error}`; detached (not directly under its own call line) `✗ {Name} · {first line}` — a success needs no such prefix, its verb names the tool |
+
+   The web client's `receiptText` carries the same words; its card dot is the outcome mark.
 
 9. **Truncation is head+tail and direction-aware.** Run output > 12 lines shows the
    first `_RUN_HEAD = 6` + `… +N lines …` (`result.more`, as a rail row) + the last
@@ -132,9 +146,11 @@ All content sits on this grid; nothing else exists:
     `max(24, min(terminal_width − 4, 60))`, padding `(1, 2)`, indented to col 2.
     Inside the welcome box, kv values longer than `panel_width − 20` are
     left-truncated with a leading `…`. Nothing else is ever boxed.
-13. **Footer receipt (state-colored).** A `block()` at indent 2: marker `●` styled
-    `ok` / `warn` / `err`; body dim: `{label} · {n} iterations · {tokens} · {cost} ·
-    {elapsed}`. Label map (from the stop reasons in `agent/loop.py`):
+13. **Footer receipt (state-colored, stamped).** A `block()` at indent 2: marker `●`
+    styled `ok` / `warn` / `err`; body dim: `{label} · {n} iterations · {tokens} · {cost} ·
+    {elapsed} · {HH:MM}` — the wall clock when the turn ended (ADR-0185; injectable
+    `wall` like the monotonic `clock`), so with the operator line's stamp every turn shows
+    its time bracket. Label map (from the stop reasons in `agent/loop.py`):
     `completed → "done"` (`"done — struggled"` with a `warn` marker when
     `done.degraded` — a clean-looking footer over a turn that engaged failure
     recovery hid real give-ups, 2026-08-26; any label gains ` — N plan step(s) left
@@ -171,6 +187,19 @@ All content sits on this grid; nothing else exists:
     "deep_code"`, `routed_escalated` False, `stop_reason == "completed"`), print one `tip`
     line suggesting a cheaper `deep_code` model may keep up, pointing at `/cost`. It states
     an observation and an option — never auto-changes routing (the user owns the choice).
+18. **Body text wraps at the reading width.** `_layout.READ_WIDTH = 100` (ADR-0185): the
+    body cell of every `block()` and `rail()` row is capped at `min(100, console.width −
+    indent − 2)`, so the return sweep never exceeds a hundred characters however wide the
+    pane (the comfort band for body text is 50–75 characters; WCAG 1.4.8 caps it at 80;
+    a monospace column with a hanging indent reads well to about 100). Code blocks
+    (`Syntax`) keep the console width — they are not body text.
+19. **Inline markdown grammar** (`_inline_md` / `_inline_spans`, ADR-0185): bullets
+    `- ` / `* ` → the bullet glyph; ATX headings → `md.h`; `> quote` → `md.quote`; a lone
+    `---` / `***` / `___` → a gap (rule 6: no rules drawn); `**bold**` / `__bold__` →
+    bold; `*italic*` / `_italic_` → `md.italic`, word-bounded so `snake_case` and `2 * 3`
+    stay literal; `~~strike~~` → `md.strike`; `[label](url)` → the label in `md.link`
+    plus ` (url)` in `md.link.url` when they differ; `` `code` `` → `md.code`. Never
+    nested; never markup-parsed.
 
 **Say box (the cockpit's one input, ADR-0119):** the bottom tmux pane runs ONE
 persistent `SayBoxEditor` (`cli/saybox.py`) for the life of the box — never a prompt
@@ -220,11 +249,19 @@ downgrade (bold white on green/red) keeps contrast. No style assumes a dark back
 | `banner.hint` | `dim` | `/help for commands · /exit to quit` |
 | `tip` | `dim` | tip line text |
 | `prompt.marker` | `bold color(38)` | the `›` input chevron (incl. `permit … ›`) |
+| `user.marker` | `bold color(38)` | the `›` before the operator's echoed line (ADR-0185) |
+| `user.text` | `bold` | the operator's echoed message |
+| `user.meta` | `dim` | its door + wall-clock stamp `(say · 14:22)` |
 | `assistant.marker` | `color(38)` | the `●` before assistant prose |
 | `md.h` | `bold` | headings (blank line forced above) |
 | `md.code` | `dark_cyan` | inline code spans — dark_cyan, not cyan, so the 16-color downgrade of `color(38)` (→ cyan) never collides with inline code |
 | `md.bullet` | `dim` | list bullet glyph |
-| `tool.marker` | `dim` | the `●` before tool calls |
+| `md.italic` | `italic` | `*italic*` / `_italic_` spans |
+| `md.strike` | `strike` | `~~strike~~` spans |
+| `md.link` | `underline` | a link's label |
+| `md.link.url` | `dim` | a link's ` (url)` |
+| `md.quote` | `dim italic` | `> quote` lines |
+| `tool.marker` | `bold` | the `●` before tool calls — bright: the loudest line of its block (ADR-0185) |
 | `tool.name` | `bold` | Read / Edit / Run / Search |
 | `tool.paren` | `dim` | the `(` `)` and `$ ` |
 | `tool.args` | `default` | condensed argument |
@@ -234,7 +271,7 @@ downgrade (bold white on green/red) keeps contrast. No style assumes a dark back
 | `result.summary` | `dim` | "134 lines", "+6 -2", "· 0.1s" |
 | `result.output` | `dim` | preview body lines |
 | `result.more` | `dim italic` | `… +10 lines …` |
-| `ok` | `green` | `✓`, success receipts, footer marker on clean done, todo done |
+| `ok` | `green` | the `✓` that opens every success receipt, footer marker on clean done, todo done |
 | `err` | `bold red` | `✗`, error labels, footer marker on provider error |
 | `err.body` | `default` | error detail lines (full brightness — errors are shown, not dimmed) |
 | `warn` | `yellow` | `!` interrupt notice, footer marker on early stop |
@@ -440,8 +477,11 @@ the model is no longer one slug — it is a model *per task category*. The displ
 - **Diff bands paint to text extent** in the terminal (no full-width padded bands);
   the web paints full-width band divs inside tool cards.
 - **No density regressions**: the one-blank intra-turn rhythm, the two-blank turn
-  seam, and the 44rem web column are the spaciousness fix — do not tighten, do not
-  widen.
+  seam (on every door), the 100-column reading width and the 44rem web column are the
+  spaciousness fix — do not tighten, do not widen.
+- **Two bright lines per block, no more**: the operator's line and the tool call line
+  stay bright; receipts, rails and previews stay dim, with the outcome mark the only
+  colour in a receipt (ADR-0185).
 - **Append-only transcript** in both clients; the only live surfaces are the REPL
   wait line and the pinned web overlay, neither of which reflows history.
 
@@ -455,7 +495,7 @@ the model is no longer one slug — it is a model *per task category*. The displ
 | `│` rail region at col 4–6 (red on failure) | card inset `pre` / `--err` left border |
 | `·` status line | status row + pinned stream-status overlay |
 | `● done ·` state-colored footer receipt | state-colored turn-receipt row |
-| `›` echoed prompt + two-blank seam | user line + 2.25rem turn gap |
+| `›` operator line (bold, door + stamp) + two-blank seam on every door | user line + 2.25rem turn gap |
 | welcome box | empty-state identity card |
 | permission panel + `permit ›` | approval card + y/a/n keys |
 | consent answer echo | consent receipt row |

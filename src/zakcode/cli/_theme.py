@@ -1,13 +1,16 @@
 """The Zak Code CLI color theme (render-only).
 
-Doctrine, enforced everywhere: terminal-default ink does the talking and all chrome
-recedes to ``dim``; the brand azure ``color(38)`` may only ever paint 1–2 character
-marks (``✦ ✧ › ●`` and the spinner glyph) — never a run of text. Color is reserved
-for meaning (green ok / red err / yellow warn), diffs are painted bands (explicit fg
-AND bg, bold so the 16-color downgrade keeps contrast, text extent only), error
-detail stays at default fg (errors are shown, not dimmed), and the ``│`` rail under
-a failed tool turns red. The console is built with ``highlight=False`` so rich never
-auto-colors metadata — color is opted into only here and via Syntax.
+Doctrine, enforced everywhere: terminal-default ink does the talking and chrome
+recedes to ``dim`` — except the two lines the eye must find first (ADR-0185): the
+operator's own line and a tool's call line stay bright, so a day-long transcript scans
+as turns and tool blocks rather than as one grey stream. The brand azure ``color(38)``
+may only ever paint 1–2 character marks (``✦ ✧ › ●`` and the spinner glyph) — never a
+run of text. Color is reserved for meaning (green ok / red err / yellow warn), every
+success receipt opens with a green ``✓`` and every failure with a red ``✗``, diffs are
+painted bands (explicit fg AND bg, bold so the 16-color downgrade keeps contrast, text
+extent only), error detail stays at default fg (errors are shown, not dimmed), and the
+``│`` rail under a failed tool turns red. The console is built with ``highlight=False``
+so rich never auto-colors metadata — color is opted into only here and via Syntax.
 """
 
 from __future__ import annotations
@@ -28,6 +31,10 @@ ZAK_THEME = Theme(
         "tip": "dim",
         # input
         "prompt.marker": "bold color(38)",
+        # the operator's message — the turn's bright anchor on every door (ADR-0185)
+        "user.marker": "bold color(38)",
+        "user.text": "bold",
+        "user.meta": "dim",
         # assistant prose
         "assistant.marker": "color(38)",
         "md.h": "bold",
@@ -35,8 +42,14 @@ ZAK_THEME = Theme(
         # code must not collide with the brand marks (and stays legible on light bg).
         "md.code": "dark_cyan",
         "md.bullet": "dim",
-        # tool call headline
-        "tool.marker": "dim",
+        "md.italic": "italic",
+        "md.strike": "strike",
+        "md.link": "underline",
+        "md.link.url": "dim",
+        "md.quote": "dim italic",
+        # tool call headline — the loudest line of its block (ADR-0185): a bright marker
+        # and a bold name; only the parens recede
+        "tool.marker": "bold",
         "tool.name": "bold",
         "tool.paren": "dim",
         "tool.args": "default",

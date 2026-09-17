@@ -117,13 +117,13 @@ RENDER_CASES: list[RenderCase] = [
     ),
     RenderCase(
         # The tool call surfaces by DISPLAY name + arg (Write(parity.txt)); the
-        # result surfaces as the summarized receipt (written); the reply verbatim.
+        # result surfaces as the summarized receipt (Written); the reply verbatim.
         id="tool_then_reply",
         script=(
             call_tool("write_file", {"path": "parity.txt", "content": "hi"}, id="w1"),
             reply("Wrote parity.txt."),
         ),
-        expect_substrings=("Write(parity.txt)", "written", "Wrote parity.txt."),
+        expect_substrings=("Write(parity.txt)", "Written", "Wrote parity.txt."),
         expect_stop_reason="completed",
         expect_iterations=2,
     ),

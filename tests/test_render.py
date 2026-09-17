@@ -17,7 +17,7 @@ from rich.console import Console, Group
 from rich.text import Text
 
 from zakcode.cli._glyphs import resolve_glyphs
-from zakcode.cli._layout import panel
+from zakcode.cli._layout import panel, user_line
 from zakcode.cli._theme import ZAK_THEME
 from zakcode.cli.render import StreamRenderer, display_call, split_on_safe_boundary
 from zakcode.events import (
@@ -256,7 +256,7 @@ async def test_render_receipt_read_mockup_pin() -> None:
     await renderer.render(stream())
     out = buffer.getvalue()
     assert "● Read(src/config.py)" in out
-    assert "└ 134 lines · 0.1s" in out
+    assert "└ ✓ Read 134 lines · 0.1s" in out
     assert "line 7" not in out  # Read results carry no preview
 
 
@@ -272,7 +272,8 @@ async def test_render_receipt_attaches_without_blank_or_repeated_name() -> None:
     lines = buffer.getvalue().splitlines()
     i_call = next(i for i, ln in enumerate(lines) if "Read(a.txt)" in ln)
     assert "└" in lines[i_call + 1]  # contiguous: zero blanks inside the group
-    assert buffer.getvalue().count("Read") == 1  # name on the call line only
+    # The call line names the tool once; the receipt names it again in its verb.
+    assert buffer.getvalue().count("Read(") == 1
 
 
 @pytest.mark.asyncio
@@ -307,7 +308,7 @@ async def test_render_receipt_omits_duration_for_unknown_id() -> None:
     receipt = next(ln for ln in buffer.getvalue().splitlines() if "└" in ln)
     # No duration when the id is unknown; a result with no preceding call line is
     # DETACHED, so the receipt names its tool (UX.md rule 3 exception).
-    assert receipt.strip() == "└ Tool · 2 lines"
+    assert receipt.strip() == "└ ✓ Tool · 2 lines"
 
 
 @pytest.mark.asyncio
@@ -324,7 +325,7 @@ async def test_render_detached_result_names_tool_and_gaps() -> None:
     await renderer.render(_astream(events))
     lines = buffer.getvalue().splitlines()
     receipt_idx = next(i for i, ln in enumerate(lines) if "└" in ln)
-    assert "Read · 3 lines" in lines[receipt_idx]  # detached: named
+    assert "✓ Read 3 lines" in lines[receipt_idx]  # detached: the verb names it
     assert lines[receipt_idx - 1].strip() == ""  # detached: gapped off Search's call line
 
 
@@ -399,7 +400,7 @@ async def test_render_search_receipt_and_preview() -> None:
     await renderer.render(stream())
     out = buffer.getvalue()
     assert "● Search(os\\.environ\\[ in **/*.py)" in out
-    assert "└ 1 match · 0.2s" in out
+    assert "└ ✓ Found 1 match · 0.2s" in out
     assert "│ src/config.py:42:" in out
 
 
@@ -473,7 +474,7 @@ async def test_render_write_receipt() -> None:
         AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
     ]
     await renderer.render(_astream(events))
-    assert "written" in buffer.getvalue()
+    assert "✓ Written" in buffer.getvalue()
 
 
 @pytest.mark.asyncio
@@ -575,7 +576,7 @@ async def test_render_task_update_repeating_the_todo_result_is_silent() -> None:
     ]
     await renderer.render(_astream(events))
     out = buffer.getvalue()
-    assert out.count("design") == 1 and "Plan" not in out
+    assert out.count("design") == 1 and out.count("└") == 1  # one receipt: the Todo's
 
 
 @pytest.mark.asyncio
@@ -789,7 +790,7 @@ async def test_pinned_ascii_mode_same_columns(monkeypatch) -> None:
     ascii_out = await run(ascii_mode=True)
 
     assert "o Read(" in ascii_out  # marker_tool falls back to a distinct 'o'
-    assert "\\ 134 lines" in ascii_out  # single-char elbow keeps the receipt at col 6
+    assert "\\ + Read 134 lines" in ascii_out  # single-char elbow and ok mark: col 6 holds
     assert "| " in ascii_out  # the rail
     assert "x boom" in ascii_out  # single-char fail glyph
     assert "... +" in ascii_out  # inline-only multi-char ellipsis
@@ -1092,7 +1093,7 @@ def test_display_call_shapes() -> None:
 def test_display_call_truncation_directions() -> None:
     # Commands middle-truncate (head AND tail survive); paths left-truncate so
     # the filename survives.
-    long_cmd = "uv run " + "x" * 100 + " --flag tail-end"
+    long_cmd = "uv run " + "x" * 200 + " --flag tail-end"
     cmd = display_call("bash", {"command": long_cmd}).plain
     assert "uv run" in cmd and "tail-end" in cmd and "…" in cmd
     assert long_cmd not in cmd
@@ -1150,3 +1151,165 @@ def test_diff_preview_marks_truncation() -> None:
     assert rows is not None
     assert len(rows) == 13  # 12 shown + the hidden-count row
     assert rows[-1].plain == "… +2 lines"
+
+
+# ── ADR-0185: the transcript reads at a glance ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_receipts_open_with_the_outcome_mark_and_name_the_tool() -> None:
+    """Every success receipt reads as a sentence naming its tool behind a ✓ (ADR-0185), so
+    the eye never travels up to learn what happened; a failure keeps its ✗ first line, and
+    a DETACHED failure is prefixed with its tool because that first line does not name it."""
+    cases = [
+        ("read_file", {"path": "a.py"}, "x\ny", "✓ Read 2 lines"),
+        ("list_dir", {"path": "."}, "a\nb\nc", "✓ Listed 3 entries"),
+        ("web_fetch", {"url": "https://x"}, "hello", "✓ Fetched 1 line"),
+        ("bash", {"command": "ls"}, "a\nb", "✓ Ran · 2 lines"),
+        ("bash", {"command": "true"}, "", "✓ Ran · no output"),
+        ("grep", {"pattern": "x"}, "a:1:x", "✓ Found 1 match"),
+        ("glob", {"pattern": "*.py"}, "a.py\nb.py", "✓ Found 2 files"),
+        ("edit_file", {"path": "a.py"}, "@@ -1 +1 @@\n-old\n+new", "✓ Updated +1 -1"),
+        ("edit_file", {"path": "a.py"}, "ok", "✓ Edited · 1 line"),
+        ("write_file", {"path": "a.py"}, "wrote 9 bytes", "✓ Written"),
+        ("todo_write", {}, "[x] a\n[ ] b", "✓ Plan · 2 items"),
+        ("some_tool", {"x": "y"}, "one", "✓ SomeTool · 1 line"),
+    ]
+    for name, args, output, expected in cases:
+        renderer, buffer = _make_renderer()
+        await renderer.render(
+            _astream(
+                [
+                    AgentToolCall(id="t", name=name, arguments=args),
+                    AgentToolResult(tool_use_id="t", output=output, is_error=False),
+                    AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+                ]
+            )
+        )
+        receipt = next(ln for ln in buffer.getvalue().splitlines() if "└" in ln)
+        assert expected in receipt, (name, receipt)
+    renderer, buffer = _make_renderer()
+    await renderer.render(
+        _astream(
+            [
+                AgentToolCall(id="t1", name="bash", arguments={"command": "a"}),
+                AgentToolCall(id="t2", name="bash", arguments={"command": "b"}),
+                AgentToolResult(tool_use_id="t1", output="boom\nwhy", is_error=True),
+                AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+            ]
+        )
+    )
+    receipt = next(ln for ln in buffer.getvalue().splitlines() if "└" in ln)
+    assert "✗ Run · boom" in receipt
+
+
+@pytest.mark.asyncio
+async def test_the_call_line_is_the_loudest_line_of_its_block() -> None:
+    """The tool marker is bright and the ok mark green (ADR-0185). Before, the marker, the
+    receipt and every rail row were dim, so on a terminal that renders bold as brightness
+    (tmux's default) a tool block was one shade from the rail beneath it."""
+    buffer = io.StringIO()
+    console = Console(
+        file=buffer, force_terminal=True, color_system="standard", width=90, theme=ZAK_THEME
+    )
+    renderer = StreamRenderer(console=console, clock=FakeClock())
+    await renderer.render(
+        _astream(
+            [
+                AgentToolCall(id="t", name="read_file", arguments={"path": "a.py"}),
+                AgentToolResult(tool_use_id="t", output="x", is_error=False),
+                AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+            ]
+        )
+    )
+    lines = buffer.getvalue().splitlines()
+    call = next(ln for ln in lines if "a.py" in ln)  # name and paren are split by SGR codes
+    assert "\x1b[1m● " in call  # bold marker
+    assert "\x1b[2m● " not in call  # never dim
+    receipt = next(ln for ln in lines if "Read 1 line" in ln)
+    assert "\x1b[32m✓" in receipt  # the ok mark is green
+
+
+@pytest.mark.asyncio
+async def test_prose_and_results_wrap_at_the_reading_width() -> None:
+    """A 200-column pane no longer sets the line length (ADR-0185): body text wraps at
+    READ_WIDTH under the hanging indent; a narrower console still wraps at its own width."""
+    from zakcode.cli._layout import READ_WIDTH
+
+    renderer, buffer = _make_renderer(width=200)
+    words = " ".join(f"w{i:03d}" for i in range(60))  # 299 chars
+    await renderer.render(
+        _astream(
+            [
+                AgentTextDelta(text=words + "\n"),
+                AgentToolCall(id="r", name="bash", arguments={"command": "echo"}),
+                AgentToolResult(tool_use_id="r", output=words, is_error=False),
+                AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+            ]
+        )
+    )
+    lines = [ln.rstrip() for ln in buffer.getvalue().splitlines() if ln.strip()]
+    assert max(len(ln) for ln in lines) <= 6 + READ_WIDTH
+    assert sum(1 for ln in lines if "w0" in ln) >= 6  # both bodies wrapped into rows
+    renderer, buffer = _make_renderer(width=40)
+    await renderer.render(_astream([AgentTextDelta(text=words + "\n")]))
+    assert max(len(ln.rstrip()) for ln in buffer.getvalue().splitlines()) <= 40
+
+
+@pytest.mark.asyncio
+async def test_inline_markdown_grammar_covers_what_models_write() -> None:
+    """Italics (word-bounded), __bold__, strike, links, quotes and rules (ADR-0185)."""
+    renderer, buffer = _make_renderer()
+    text = (
+        "Use *care* with _names_ like snake_case_name and 2 * 3 = 6.\n"
+        "See [the docs](https://example.test/x) and __strong__ and ~~gone~~ text.\n"
+        "> a quoted line\n"
+        "---\n"
+        "after the rule\n"
+    )
+    await renderer.render(
+        _astream(
+            [
+                AgentTextDelta(text=text),
+                AgentDone(stop_reason="completed", iterations=1, usage=_usage()),
+            ]
+        )
+    )
+    out = buffer.getvalue()
+    assert "Use care with names like snake_case_name and 2 * 3 = 6." in out
+    assert "See the docs (https://example.test/x) and strong and gone text." in out
+    assert "a quoted line" in out and "> a quoted" not in out
+    assert "---" not in out and "\n\n\n" not in out
+    assert "after the rule" in out
+
+
+@pytest.mark.asyncio
+async def test_footer_carries_the_wall_clock_stamp() -> None:
+    import time as _time
+
+    at = 1_700_000_000.0
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, width=200, no_color=True, theme=ZAK_THEME)
+    renderer = StreamRenderer(console=console, clock=FakeClock(), wall=lambda: at)
+    await renderer.render(
+        _astream([AgentDone(stop_reason="completed", iterations=1, usage=_usage(5, 5))])
+    )
+    stamp = _time.strftime("%H:%M", _time.localtime(at))
+    assert f"· {stamp}" in buffer.getvalue()
+
+
+def test_user_line_is_the_turn_anchor() -> None:
+    """The operator's message through the say door: the seam's blanks, a bright `›` line
+    carrying the door and the wall clock, further lines under the body column (ADR-0185).
+    Before, a cockpit echoed it as one dim line behind a single blank — no anchor at all."""
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, width=90, no_color=True, theme=ZAK_THEME)
+    user_line(console, "first line\nsecond line", via="say", stamp="14:22", blanks=2)
+    out = buffer.getvalue()
+    assert out.startswith("\n\n  › first line  (say · 14:22)")
+    assert "\n    second line" in out
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, width=90, no_color=True, theme=ZAK_THEME)
+    user_line(console, "typed ahead", blanks=1)
+    assert buffer.getvalue().startswith("\n  › typed ahead")
+    assert "(" not in buffer.getvalue()

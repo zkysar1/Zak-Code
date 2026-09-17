@@ -55,6 +55,7 @@ from zakcode.cli._layout import (
     open_input_frame,
     panel,
     read_prompt,
+    user_line,
 )
 from zakcode.cli._theme import ZAK_THEME
 from zakcode.cli.render import StreamRenderer, display_call
@@ -2786,12 +2787,18 @@ def chat(
             # Echo input that never appeared in a frame — an injected say (with
             # provenance), the harness's own continuation (ADR-0090), or a line typed
             # ahead during the turn — where a typed line would have echoed: the
-            # transcript must show what the agent was just told.
-            tag = {"say": "(say) ", "harness": "(harness) "}.get(kind, "")
-            console.print()
+            # transcript must show what the agent was just told. It is the turn's bright
+            # anchor (ADR-0185): the operator's line, its door and the wall clock, behind
+            # the two-blank seam (the idle wait already printed one of the two).
             # A long message folds after a few lines (ADR-0119): the transcript shows
             # what the agent was told without a 200-line paste burying the turn.
-            console.print(f"  ▸ {tag}{escape(fold_lines(line))}", style="notice.dim")
+            user_line(
+                console,
+                fold_lines(line),
+                via=kind if kind in ("say", "harness") else "",
+                stamp=time.strftime("%H:%M"),
+                blanks=1 if framed else 2,
+            )
 
         stripped = line.strip()
         if not stripped:

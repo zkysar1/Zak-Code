@@ -1371,7 +1371,7 @@ def test_chat_say_inbox_consumes_messages_as_input(monkeypatch, tmp_path) -> Non
     result = runner.invoke(app, ["cli"], input="")
     block.set()
     assert result.exit_code == 0
-    assert "(say) hello from the inbox" in result.output
+    assert "hello from the inbox  (say" in result.output  # the stamped operator line
     assert CANNED_TEXT in result.output
     assert "goodbye" in result.output
 
@@ -1389,9 +1389,9 @@ def test_chat_delivers_pre_session_say_as_first_input(monkeypatch, tmp_path) -> 
     result = runner.invoke(app, ["cli"], input="/exit\n")
     assert result.exit_code == 0
     assert "discarded" not in result.output
-    assert "(say) typed while the agent was booting" in result.output
+    assert "typed while the agent was booting  (say" in result.output
     assert CANNED_TEXT in result.output  # it ran a real turn
-    assert "(say) malicious" not in result.output
+    assert "malicious" not in result.output
     assert not si.say_pending(si.say_path(tmp_path))
 
 
