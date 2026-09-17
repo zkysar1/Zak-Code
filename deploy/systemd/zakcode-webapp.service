@@ -1,0 +1,53 @@
+# zakcode-webapp.service — keep `zakcode webapp` (the served mind) running on a box.
+#
+# Install (as root):
+#   1. Create the service account and the workspace it serves:
+#        useradd --system --create-home --shell /usr/sbin/nologin zakcode
+#        install -d -o zakcode -g zakcode /srv/zakcode/workspace
+#   2. Install zakcode for that account (the command lands in ~zakcode/.local/bin):
+#        sudo -u zakcode uv tool install "zakcode[server] @ git+https://github.com/zkysar1/Zak-Code.git"
+#   3. Put keys and settings in /etc/zakcode/.env (owner root, group zakcode, mode 0640):
+#        ZAKCODE_DEFAULT_MODEL, the provider key, ZAKCODE_AUTH_TOKEN if you bind beyond loopback.
+#   4. cp deploy/systemd/zakcode-webapp.service /etc/systemd/system/
+#      systemctl daemon-reload && systemctl enable --now zakcode-webapp
+#   5. curl -s http://127.0.0.1:8000/health
+#
+# Update:  sudo -u zakcode zakcode update && systemctl restart zakcode-webapp
+# Logs:    journalctl -u zakcode-webapp -f
+# Lint:    systemd-analyze verify /etc/systemd/system/zakcode-webapp.service
+#
+# One shape, one policy: Restart=always with the start-rate limit off, so the server comes
+# back from every exit — a crash, an OOM kill, a `zakcode update` that replaced the install —
+# without a human relaunching it. Edit only the lines marked "box-specific".
+
+[Unit]
+Description=Zak Code webapp — the served mind (HTTP API + web client)
+Documentation=https://github.com/zkysar1/Zak-Code/blob/main/docs/DEPLOY.md
+After=network-online.target
+Wants=network-online.target
+# Never stop retrying: the default 5-starts-in-10-s limit would leave the box without its
+# mind after a burst of crashes (a bad key, a provider outage) until someone noticed.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=zakcode
+Group=zakcode
+# box-specific: the workspace the mind loads identity/rules/skills from, and serves.
+WorkingDirectory=/srv/zakcode/workspace
+# Keys and settings; the leading "-" makes a missing file a no-op, not a start failure.
+EnvironmentFile=-/etc/zakcode/.env
+# box-specific: where `uv tool install` (or pipx) put the zakcode command for the service user.
+Environment=PATH=/home/zakcode/.local/bin:/usr/local/bin:/usr/bin:/bin
+# box-specific: --host 127.0.0.1 keeps it loopback-only. To reach it from elsewhere put a
+# reverse proxy in front, or set ZAKCODE_AUTH_TOKEN in the env file and bind 0.0.0.0 — the
+# server refuses a non-loopback bind without a token unless you pass --insecure.
+ExecStart=/usr/bin/env zakcode webapp --host 127.0.0.1 --port 8000 --workspace /srv/zakcode/workspace
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -149,6 +149,9 @@ REST + SSE + WebSocket all wrap the same core; the WebSocket carries the live ev
 stream **and** the permission-approval prompts. The web client is a pure renderer with
 no agent logic.
 
+To keep it running on a box — a systemd unit with `Restart=always`, the container restart
+policy, the update path — see [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
 ## Features (M0–M10)
 
 - **Agent loop** — ReAct-style tool-use loop with layered stop conditions (completion,
@@ -325,6 +328,7 @@ documented seams ([`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)); the autonomou
 | [`docs/RISKS.md`](docs/RISKS.md) | Risk register |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Architecture Decision Records (ADRs) |
 | [`docs/WORKFLOW.md`](docs/WORKFLOW.md) | How the build is orchestrated |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | Keeping `zakcode webapp` running: the systemd unit, the container policy, updates |
 
 ## Repository layout
 
