@@ -489,11 +489,16 @@ class Agent:
         ingested_tool_modes: dict[str, str] = {}
         ingested_denied_tools: set[str] = set()
         if permission_policy is None:
-            from zakcode.permissions_settings import load_settings_permissions
+            from zakcode.permissions_settings import load_settings_permissions, summarize_skipped
 
             _ingested, _perm_errs = load_settings_permissions(workspace_root)
-            for _key, _err in _perm_errs.items():
-                logger.warning("settings.json permission %s: %s", _key, _err)
+            # One WARNING per construction, not one per gesture (g-357-17): a Mind workspace
+            # declares dozens of gestures with no tighten-only mapping here, and the per-gesture
+            # lines buried the warnings that matter. The detail stays available at DEBUG.
+            if _perm_errs:
+                logger.warning("settings.json permissions: %s", summarize_skipped(_perm_errs))
+                for _key, _err in _perm_errs.items():
+                    logger.debug("settings.json permission %s: %s", _key, _err)
             # Union, tighten-only: ingested deny patterns extend the operator's; ingested per-tool
             # modes go under the operator's (operator wins a conflict). Read-denies join the
             # operator's strict (read+write) pool; Edit/Write-denies compile write-only below

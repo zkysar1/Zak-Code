@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from zakcode.agent.degeneration import burst_repetition
+from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition
 from zakcode.agent.loop import (
     _CLAIM_NUDGE,
     _INTENT_NUDGE,
@@ -136,6 +136,12 @@ def test_degenerate_arguments_are_vetoed_not_executed(tmp_path: Path) -> None:
     assert "was not executed" in blocks[0].output
     assert not (tmp_path / "out.py").exists()
     assert loop._turn_struggle is True  # zakpick sees a struggle signal
+    # g-357-14: legitimate content can trip the veto (a fixture of identical rows); the rail
+    # names the way out — under the ceiling per call, then append — instead of leaving a
+    # model retrying the same correct call into the stuck ladder.
+    assert "If the repetition is INTENDED content" in blocks[0].output
+    assert f"fewer than {BURST_MIN_REPEATS} identical units per call" in blocks[0].output
+    assert "append the rest in a further call" in blocks[0].output
 
 
 def test_undecodable_arguments_name_the_real_defect(tmp_path: Path) -> None:

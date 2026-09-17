@@ -113,7 +113,7 @@ from pydantic import BaseModel, Field
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
-from zakcode.agent.degeneration import burst_repetition, repeated_tail
+from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition, repeated_tail
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import (
@@ -4388,11 +4388,18 @@ class AgentLoop:
             self._turn_struggle = True
             return ToolResultBlock(
                 tool_use_id=call.id,
+                # The veto is tuned for degenerate blobs, but legitimate content can trip it
+                # (a fixture of identical rows, repeated list items, duplicated inserts); a
+                # model retrying the same correct call then loops to the stuck ladder. So the
+                # rail names the way out: split the write under the ceiling and append.
                 output=(
                     f"Fix: these arguments have degenerated into repetition (the fragment "
                     f"{unit!r} repeats {repeats}× in a row); the call was not executed. "
                     "Stop. State in ONE sentence what you are trying to do, then issue a "
-                    "minimal, clean call."
+                    "minimal, clean call. If the repetition is INTENDED content (a fixture "
+                    "of identical rows, repeated list items), write it in smaller parts — "
+                    f"fewer than {BURST_MIN_REPEATS} identical units per call — and append "
+                    "the rest in a further call."
                 ),
                 is_error=True,
                 data={"degenerate_arguments": True, "unit": unit, "repeats": repeats},
