@@ -17,6 +17,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from rich.console import Console
@@ -428,3 +429,92 @@ def _no_restart_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     """``_restart_into_new_build`` sets the ADR-0090 marker for the process it execs into;
     with the exec monkeypatched the marker would outlive the test."""
     monkeypatch.delenv("ZAKCODE_RESTARTED_INTO", raising=False)
+
+
+# ── ADR-0187: a hook-named re-entry is delivered as the skill, at the REPL door too ──
+
+
+_LOOP_TURN = (
+    "<command-message>aspirations is running</command-message>\n"
+    "<command-name>/aspirations</command-name>\n<command-args>loop</command-args>\n\n"
+    "# Aspirations\n\nEnter the loop.\n"
+)
+
+
+def _composing_agent(tmp_path: Path, *, loop_skill: str = "", last_stop_reason: str = "") -> Any:
+    """A stand-in whose ``compose_skill_turn`` carries the ``source`` seam and records calls."""
+    calls: list[tuple[str, str, str]] = []
+    session = Session(cwd=str(tmp_path), model="m", build=bi.build_commit() or "")
+    session.loop_skill = loop_skill
+    session.last_stop_reason = last_stop_reason
+    compactions: list[str] = []
+
+    async def compose(name: str, args: str = "", *, fuzzy: bool = True, source: str = "command"):
+        calls.append((name, args, source))
+        return SimpleNamespace(
+            invoked=True, name=name, denied_reason=None, error=None, turn_text=_LOOP_TURN
+        )
+
+    async def compact_now(*, trigger: str) -> bool:
+        compactions.append(trigger)
+        return True
+
+    agent = SimpleNamespace(
+        session=session,
+        loop=SimpleNamespace(unattended=lambda: True, compact_now=compact_now),
+        compose_skill_turn=compose,
+    )
+    return agent, calls, compactions
+
+
+def test_a_stop_hook_restart_delivers_the_skill_the_hook_named(tmp_path: Path) -> None:
+    agent, calls, _ = _composing_agent(tmp_path)
+    carried = (
+        "Your FIRST action MUST be: Skill('aspirations') with args='loop'. Do NOT run Bash first."
+    )
+    line = cli._restart_kick(agent, restarted="new-build", carried=carried, boundary="stop-hook")
+    assert calls == [("aspirations", "loop", "harness")]
+    assert line is not None
+    head, _, rest = line.partition("\n")
+    assert head.startswith(
+        "<command-message>aspirations is running — [harness] this session was restarted"
+    )
+    assert "the hook said: Your FIRST action MUST be" in head
+    assert rest.startswith("<command-name>/aspirations</command-name>")
+    # A continuation naming no skill keeps the prose line, byte for byte.
+    plain = cli._restart_kick(agent, restarted="new-build", carried="invoke the loop again")
+    assert plain is not None and plain.startswith("[harness] this session was restarted")
+    assert calls == [("aspirations", "loop", "harness")]
+
+
+def test_the_loop_sentinel_resolves_to_the_last_hook_named_skill(tmp_path: Path) -> None:
+    agent, calls, compactions = _composing_agent(tmp_path, loop_skill="aspirations loop")
+    line = cli._loop_sentinel_turn(_console(), agent)
+    assert calls == [("aspirations", "loop", "harness")]
+    assert line is not None
+    head = line.split("\n", 1)[0]
+    assert head.startswith(
+        "<command-message>aspirations is running — [harness] the wake-up armed as the "
+        "autonomous-loop sentinel fired"
+    )
+    assert "Re-arm a wake-up with schedule_wakeup first" in head
+    assert compactions == []  # a healthy session's context is kept
+
+
+def test_the_loop_sentinel_compacts_a_stalled_turns_context_first(tmp_path: Path) -> None:
+    agent, calls, compactions = _composing_agent(
+        tmp_path, loop_skill="aspirations loop", last_stop_reason="veto_stall"
+    )
+    line = cli._loop_sentinel_turn(_console(), agent)
+    assert line is not None and calls == [("aspirations", "loop", "harness")]
+    assert compactions == ["resume"]  # the spiral is dropped before the loop re-enters
+
+
+def test_the_loop_sentinel_is_prose_when_no_skill_is_known(tmp_path: Path) -> None:
+    agent, calls, _ = _composing_agent(tmp_path)
+    assert cli._loop_sentinel_turn(_console(), agent) is None
+    assert calls == []
+    # …and a stand-in without the seam resolves nothing either (the ADR-0094 line stands).
+    bare = SimpleNamespace(session=Session(cwd=str(tmp_path), model="m"))
+    bare.session.loop_skill = "aspirations loop"
+    assert cli._loop_sentinel_turn(_console(), bare) is None

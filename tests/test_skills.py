@@ -330,3 +330,17 @@ def test_save_skill_refuses_out_of_tree_link(tmp_path: Path) -> None:
     with pytest.raises(SkillError):
         save_skill("evil", "d", "body text", skills_dir=skills_dir, overwrite=True)
     assert not (outside / "SKILL.md").exists()  # nothing written through the link
+
+
+def test_render_catalog_maps_claude_codes_tool_names() -> None:
+    # ADR-0187: a framework written for Claude Code says "Skill('aspirations') with
+    # args='loop'" and "ScheduleWakeup(...)" in its hook reasons and script output; a small
+    # model could not map those onto use_skill / schedule_wakeup on its own (measured
+    # 2026-09-17: hours of text against exactly that reason). One static line says how.
+    reg = SkillRegistry()
+    fm, _ = parse_frontmatter("---\nname: a\ndescription: alpha\n---\nbody a\n")
+    reg.add(Skill(fm, Path("a/SKILL.md")))
+    cat = reg.render_catalog()
+    assert "`Skill('<name>') with args='<args>'` means" in cat
+    assert 'use_skill(name="<name>", args="<args>")' in cat
+    assert "`ScheduleWakeup(prompt=…, delaySeconds=…)` means schedule_wakeup(" in cat

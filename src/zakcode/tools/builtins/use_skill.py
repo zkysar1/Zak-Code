@@ -115,6 +115,10 @@ class UseSkillTool(Tool):
                 "skills are not enabled in this session, so use_skill is unavailable."
             )
         name = args.get("name")
+        if name is None:
+            # Claude Code's ``Skill`` tool calls this parameter ``skill``; the registry routes
+            # a ``Skill(...)`` call here by alias (ADR-0187), so route its argument too.
+            name = args.get("skill")
         if not isinstance(name, str) or not name.strip():
             return ToolResult.error("'name' is required and must be a non-empty string.")
         name = name.strip()

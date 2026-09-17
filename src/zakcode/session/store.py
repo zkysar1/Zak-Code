@@ -55,7 +55,7 @@ CURRENT_SCHEMA_VERSION = 1
 #: Stop reasons after which a transcript must not be continued verbatim on resume
 #: (ADR-0033): the loop ended the last turn by giving up, degenerating, or doom-looping,
 #: and the messages that produced that end are exactly what would be re-fed to the model.
-RESUME_COMPACT_STOP_REASONS = frozenset({"gave_up", "degenerated", "doom_loop"})
+RESUME_COMPACT_STOP_REASONS = frozenset({"gave_up", "degenerated", "doom_loop", "veto_stall"})
 
 #: Suffix marking an in-progress temp file written during an atomic save.
 _TMP_SUFFIX = ".tmp"
@@ -211,6 +211,13 @@ class Session(BaseModel):
     #: that resumes it. Schema v1 stays append-only: an OLDER build drops the field and the
     #: wake-up is simply lost (fails SAFE — the pre-ADR-0094 behavior, no wake-up at all).
     pending_wakeup: Wakeup | None = None
+    #: The skill a turn-end hook last asked the loop to re-enter with, as ``"<name> <args>"``
+    #: (ADR-0187; ``"aspirations loop"`` on a Mind). The autonomous-loop sentinel wake-up
+    #: resolves to it when it fires, composed by the harness, instead of a prose line asking
+    #: the model to remember which skill runs the loop. Persisted: the net is for the process
+    #: that resumes this session as much as for this one. Schema v1 stays append-only: an
+    #: OLDER build drops it and the sentinel fires as prose (fails SAFE — ADR-0094's line).
+    loop_skill: str = ""
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""

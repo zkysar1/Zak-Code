@@ -10461,3 +10461,120 @@ pane or the log file. Column-offset tests move with the user line (col 0); every
 pinned offset holds. ``docs/UX.md`` rules 1 (grid), 5 (say door), 19 (web grammar parity),
 new rule 20 (log records), the theme table, the web token table and the discipline list
 change with this ADR; FEATURE_AUDIT CLI-39.
+
+## ADR-0187: a turn-end veto that names a skill is delivered as that skill; a re-entry nobody runs is fenced, with a net behind it
+
+**Status:** Accepted (2026-09-17)
+
+**Context.** A served Mind (serene: agent sera, gemini-3.5-flash, Zak Code vessel) was
+caught in a loop the operator described as "it would call this gate, and then repeat that
+it is fully started, then loop those two things repeatedly": `iteration-close.sh --phase
+productivity-check` → `echo "Return to orchestrator — continue to next phase"` →
+"Verdict: Autonomous Loop Successfully Started & Goal Completed" → the framework's Stop
+hook BLOCKs → the same again, for hours. Later, after a prompt typed into the say box had
+helped for a few iterations, the same shape came back around `liveness-check.sh`
+("Verdict: Autonomous Loop Successfully Resurrected & Running Autonomously").
+
+The mechanism, read from the transcript and the code. A Mind's whole autonomous session
+is ONE Zak Code turn: the orchestrator skill runs, the model ends an iteration in text, the
+framework's Stop hook returns `{"decision":"block","reason":…}`, and the loop re-prompts
+with `[harness] Hint: <reason>`. That reason — written for Claude Code, promoted verbatim
+down the Ayoai-Mind → Claude-Mind → ZDS-Mind chain — says *"Your FIRST action MUST be:
+Skill('aspirations') with args='loop'. … Call the Skill tool IMMEDIATELY."* Zak Code's
+tool is `use_skill(name, args)` (the registry aliases `Skill`, but the model's tool list
+shows `use_skill`), and the iteration-complete imperative the model had just read says
+`ScheduleWakeup(prompt='<<autonomous-loop-dynamic>>', delaySeconds=600)` where the tool
+here is `schedule_wakeup`. A small model cannot map one harness's tool names onto
+another's: it answered the instruction with prose. Nothing bounded that: vetoes are
+unbounded by design (the hook stands down; the cost budget is the hard bound), the
+doom-loop guard keys on identical tool batches (the batches alternated), the broken-record
+guard on identical text (the verdicts varied), and the framework's own exhaustion fence
+keys on a frozen execution diary, which the productivity check kept writing. The say-box
+prompt that helped was a memory in the model's context; compaction dropped it, and the
+loop returned. A fix that lives in the model's context is not a fix.
+
+Two principles decide the shape. First, a deterministic harness delivers what a hook asks
+for instead of asking the model to fetch it — the say inbox already runs a typed
+`/<skill>` this way (ADR-0073), composing the command frame plus page 1 and seeding the
+plan; a hook's "your first action must be Skill('aspirations') with args='loop'" is the
+same request from the framework. Second, a fence keys on a behavioural predicate the
+model supplies no input to — the framework's own `loop-exhaustion-fence` rule — so "the
+loop is spinning" is structurally distinguishable from "the model feels done", and a fence
+that ends a turn must leave a net, because a loop that ends at its prompt with no net is
+the dead loop every Mind incident is about ("worst case a slow loop, never a dead one").
+
+**Decision.**
+
+1. **A veto that names a skill re-entry delivers that skill.** `skill_reentry_in(reason)`
+   reads the skill and args a hook's continuation names in either harness's vocabulary
+   (`Skill('aspirations') with args='loop'`, `Skill(worker-loop)`, `use_skill(name=…,
+   args=…)`), skipping negated mentions ("ended without a Skill(aspirations) re-entry",
+   "NOT Skill('aspirations')") and preferring the first mention that carries arguments.
+   `_fire_turn_end` then composes the skill through the loop's `compose_skill` seam with
+   `source="harness"` — the command frame, the hook's reason folded into the frame's
+   `<command-message>` line (`harness_skill_turn_text`; one line, `[harness]`-tagged, the
+   frame still FIRST so provenance, the transcript and the turn-end elision all recognise
+   it), then page 1 — adds it to the session, seeds the skeleton (ADR-0062) and registers
+   page 1 (ADR-0067), in that order, and records `Session.loop_skill`. The seam now adds the
+   re-entry message itself and returns it; the ten veto sites no longer wrap a rail. A
+   reason that names no skill, or a skill that cannot be composed (unknown, refused,
+   unreadable, a composer without the seam), sends the plain `[harness] Hint:` rail as
+   before. `Agent._load_skill_body` gains the `harness` source: a `user-invocable: false`
+   skill (a framework's loop orchestrator) is allowed, `disable-model-invocation` still
+   refuses, no budget is drawn, and the load counts for the reload dedup so the model's own
+   `use_skill` of the same skill right after answers with the current section, not a
+   second body. `Agent.compose_skill_turn(source=)` passes it through.
+2. **The fence.** `_vetoes_without_skill` counts, per turn, vetoes that named a skill and
+   were honoured with no model `use_skill` load between them (a load that returned a body
+   resets it; a harness delivery does not). A skill-naming veto arriving when the count is
+   already `_VETO_STALL_THRESHOLD` (3) is refused: the turn ends with the new stop reason
+   `veto_stall` (degraded; label "stopped — re-entry stalled: the stop hook kept asking for
+   a skill that never ran"; in `RESUME_COMPACT_STOP_REASONS`, so a resume drops the
+   spiral), a trace note names the skill and the count. Vetoes whose reason names no skill
+   are neither counted nor ever refused: a generic Stop hook keeps Claude Code's unbounded
+   contract, and the fence bites only the shape measured.
+3. **The stall net.** Ending a turn against the hook's wish must not leave the session at
+   its prompt with nothing to bring it back: when no wake-up is held, the fence arms the
+   autonomous-loop sentinel (`<<autonomous-loop-dynamic>>`, 600 s). A held wake-up — the
+   framework's own net — is kept.
+4. **The sentinel resolves to the loop skill.** `Session.loop_skill` holds the skill the
+   last hook-named re-entry ran (`"aspirations loop"`), persisted. At the REPL door the
+   fired sentinel now composes that skill (`source="harness"`, the wake-up note in the
+   frame) instead of the ADR-0094 prose line asking the model to remember which skill runs
+   the loop — after compacting a `veto_stall`'s context, as a collapsed turn's is. With no
+   such skill known, the prose line stands. `WakeupSlot.take_due_prompt` hands the door the
+   raw prompt. The ADR-0099 restart at a Stop-hook boundary delivers the named skill in the
+   new process the same way.
+5. **The vocabulary line and the marker.** The skills catalog carries one static line:
+   `Skill(<name>)` / `Skill('<name>') with args='<args>'` means `use_skill(name=…, args=…)`
+   here and `ScheduleWakeup(…)` means `schedule_wakeup(…)`; `use_skill` also accepts Claude
+   Code's `skill` parameter name, so a `Skill(...)` call the registry already routes by
+   alias lands with its argument. And `Agent.__init__` exports `ZAKCODE_SESSION=<session
+   id>` into the process environment — Claude Code exports `CLAUDECODE=1` to every hook
+   and shell it spawns, and the Mind's harness detector (`harness-capabilities.sh`) keys on
+   exactly such a marker to name the vessel's tools; without it Zak Code read as "unknown"
+   and got Claude Code's names.
+
+The other half is the framework's (the dev origin): its hook reasons and the
+iteration-complete imperative are to name the vessel's tools through that harness
+capability, so promoted copies stop speaking Claude Code's names to a Zak Code model. This
+ADR makes the re-entry independent of that: a hook that still says `Skill('aspirations')`
+gets the skill delivered.
+
+Not decided: delivering a skill named by a `PreToolUse` deny reason (only the Stop seam
+carries a re-entry); counting a `Skill(...)` tool call the model makes under the alias as a
+skill call for the fence (it is — `use_skill` is what runs); a fence for plain-rail vetoes.
+
+**Consequences.** Against the measured spiral: the first BLOCK delivers `/aspirations
+loop` — frame, the hook's own words, page 1, plan steps — instead of an instruction in
+another harness's vocabulary; a model that then follows it runs sub-skills (each resets the
+fence); one that still ends in text gets two more deliveries, then the turn ends
+`veto_stall` with the sentinel armed, and ten minutes later the loop re-enters on the
+composed skill with the spiral compacted away. Ten trace notes and one status line name
+every step. Generic Stop hooks are byte-identical in behaviour. Tests:
+`tests/test_turn_end_reentry.py` (the parser table, delivery in both twins, the fallback
+rail, the fence, the net, the per-turn reset, the model skill call reset, generic vetoes
+unbounded), `tests/test_use_skill.py` (the harness source, the `skill` parameter, the
+marker), `tests/test_skills.py` (the vocabulary line), `tests/test_schedule_wakeup.py`
+(`take_due_prompt`), `tests/test_self_restart.py` (the restart and sentinel doors);
+FEATURE_AUDIT LOOP-92; CLAUDE-MIND-COMPAT rows for the veto seam and the sentinel.

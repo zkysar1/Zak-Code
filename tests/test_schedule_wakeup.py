@@ -359,3 +359,20 @@ def test_a_due_wakeup_fires_while_another_process_turn_holds_the_workspace(
     stale = time.time() - BUSY_STALE_SECONDS - 5
     os.utime(marker, (stale, stale))
     assert mux.try_input() == ("say", "for the runner")
+
+
+# ── ADR-0187: the REPL door resolves the sentinel itself ─────────────────────
+
+
+def test_take_due_prompt_hands_over_the_raw_prompt_and_consumes_the_slot() -> None:
+    clock = _Clock(1_000.0)
+    session, slot = _slot(clock)
+    slot.arm(LOOP_SENTINEL, 60)
+    assert slot.take_due_prompt() is None  # not due
+    clock.now = 1_060.0
+    assert slot.take_due_prompt() == LOOP_SENTINEL
+    assert session.pending_wakeup is None  # consumed, like take_due
+    assert slot.take_due_prompt() is None
+    slot.arm("poll the reducer", 60)
+    clock.now = 1_200.0
+    assert slot.take_due() == "[harness] scheduled wake-up: poll the reducer"  # still renders

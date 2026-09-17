@@ -815,6 +815,61 @@ def _announce_resume(console: Console, agent: Any) -> None:
     )
 
 
+def _harness_skill_turn(agent: Any, name: str, args: str, note: str) -> str | None:
+    """``/<name> <args>`` composed the way the loop delivers a hook-named skill (ADR-0187):
+    the command frame with ``note`` folded into its message line, plus page 1 — or ``None``
+    when this agent cannot compose it (a stand-in without the seam, an unknown, refused or
+    unreadable skill); the caller then falls back to its prose line."""
+    compose = getattr(agent, "compose_skill_turn", None)
+    if compose is None:
+        return None
+    import inspect
+
+    if "source" not in inspect.signature(compose).parameters:
+        return None
+    try:
+        result = _run_async(compose(name, args, source="harness"))
+    except Exception:  # noqa: BLE001 — a broken composer must never break the door
+        return None
+    turn_text = getattr(result, "turn_text", None)
+    if not getattr(result, "invoked", False) or not turn_text:
+        return None
+    if getattr(result, "denied_reason", None) or getattr(result, "error", None):
+        return None
+    from zakcode.agent.loop import harness_skill_turn_text
+
+    return harness_skill_turn_text(str(turn_text), note)
+
+
+def _hook_named_skill_turn(agent: Any, reason: str, note: str) -> str | None:
+    """The skill a Stop hook's continuation names, composed for delivery (ADR-0187), or
+    ``None`` when it names none or it cannot be composed."""
+    from zakcode.agent.loop import skill_reentry_in
+
+    reentry = skill_reentry_in(reason)
+    if reentry is None:
+        return None
+    return _harness_skill_turn(agent, reentry[0], reentry[1], note)
+
+
+def _loop_sentinel_turn(console: Console, agent: Any) -> str | None:
+    """The turn that resolves a fired autonomous-loop sentinel (ADR-0187): the skill the
+    session's last hook-named re-entry ran (``Session.loop_skill``), composed by the
+    harness — after a ``veto_stall``'s context is compacted, as a collapsed turn's is —
+    or ``None`` when no such skill is known, in which case the sentinel fires as the prose
+    line it always did (ADR-0094)."""
+    from zakcode.wakeup import LOOP_WAKE_NOTE
+
+    session = getattr(agent, "session", None)
+    spec = str(getattr(session, "loop_skill", "") or "").strip()
+    if not spec:
+        return None
+    name, _, args = spec.partition(" ")
+    if getattr(session, "last_stop_reason", "") == "veto_stall":
+        _announce_resume(console, agent)  # the stalled context is compacted, as on a resume
+    return _harness_skill_turn(agent, name, args.strip(), LOOP_WAKE_NOTE)
+
+
 #: Turn ends after which an unattended session is continued (ADR-0090): the turn collapsed
 #: with nobody at the prompt to notice.
 _KICK_STOP_REASONS = frozenset({"doom_loop", "gave_up", "degenerated", "stuck"})
@@ -878,6 +933,17 @@ def _restart_kick(
                 "update) at a skill boundary; the skill call it was about to make did not "
                 f"run. Nothing was lost; make that call now:\n{carried}"
             )
+        # ADR-0187: a continuation that names a skill re-entry is delivered as that skill
+        # in the new process too — the loop would have composed it had the veto been
+        # honoured in the old one; the restart must not hand the model the bare tool name.
+        composed = _hook_named_skill_turn(
+            agent,
+            carried,
+            f"this session was restarted into build {restarted} (a zakcode update) at a turn "
+            f"boundary where a Stop hook had asked it to continue; the hook said: {carried}",
+        )
+        if composed is not None:
+            return composed
         return (
             f"[harness] this session was restarted into build {restarted} (a zakcode update) "
             "at a turn boundary where a Stop hook had asked it to continue. Nothing was "
@@ -2706,8 +2772,23 @@ def chat(
         # ADR-0094: a wake-up the model armed with schedule_wakeup fires here, at the idle
         # prompt, as the session's own line. Late-bound through `agent` (rebuilt on /model
         # and /resume); an agent that holds no loop — a stand-in — holds no wake-up either.
+        # ADR-0187: the autonomous-loop sentinel resolves to the skill the session's last
+        # Stop-hook re-entry ran, composed by the harness — the model is not asked to
+        # remember which skill runs the loop, and a stalled turn's context is compacted
+        # first; with no such skill known it fires as the prose line it always did.
+        from zakcode.wakeup import LOOP_SENTINEL, fired_line
+
         slot = getattr(getattr(agent, "loop", None), "wakeup_slot", None)
-        return None if slot is None else slot.take_due()
+        if slot is None:
+            return None
+        prompt = slot.take_due_prompt()
+        if prompt is None:
+            return None
+        if prompt.strip() == LOOP_SENTINEL:
+            composed = _loop_sentinel_turn(console, agent)
+            if composed is not None:
+                return composed
+        return fired_line(prompt)
 
     mux = _InputMux(
         inbox_path,

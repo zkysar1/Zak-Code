@@ -633,7 +633,9 @@ async def test_turn_end_fire_refuses_non_vetoable_reasons(tmp_path: Path) -> Non
     prompt = await loop._fire_turn_end(
         "provider_error", iterations=1, veto_count=0, turn_assistant=[], stuck_took_action=False
     )
-    assert prompt == "Not done: verify your work."
+    # The seam returns the message to re-enter with, already framed (ADR-0187): the plain
+    # rail here, since this reason names no skill.
+    assert prompt == "[harness] Hint: Not done: verify your work."
     assert [p.stop_reason for p in hook.payloads] == ["provider_error"]
 
 
