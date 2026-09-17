@@ -37,7 +37,7 @@ async def test_the_result_is_a_receipt_naming_the_step_in_hand() -> None:
     # The checklist itself is NOT in the result — the reminder carries it, once, ephemerally.
     assert "Current plan (" not in result.output
     assert "[x]" not in result.output and "[ ]" not in result.output
-    assert net.render()  # the network still renders in full for the reminder and /todo
+    assert net.render()  # the whole record still renders for the UI and /todo (ADR-0184)
 
 
 async def test_a_finished_plan_says_so_and_the_advisories_survive() -> None:

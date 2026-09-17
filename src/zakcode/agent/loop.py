@@ -179,6 +179,7 @@ from zakcode.session.observation_inbox import (
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import (
+    COLLAPSED_ROW_RE,
     MAX_LINE_CHARS,
     MAX_REQUEST_CHARS,
     NULL_MARK,
@@ -2792,7 +2793,7 @@ class AgentLoop:
     def _plan_reminder(self) -> Message | None:
         """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
         network = self.session.task_network
-        rendered = network.render()
+        rendered = network.render(elide_done=True)  # the working-memory form (ADR-0184)
         if not rendered:
             return None
         request = network.context.request
@@ -2819,6 +2820,14 @@ class AgentLoop:
         if request:
             body += f"Goal: {request}\n\n"
         body += rendered
+        if any(COLLAPSED_ROW_RE.match(line.strip()) for line in rendered.splitlines()):
+            # ADR-0184: the fold is round-trip-safe, and the model is told so — an echoed row
+            # expands back and a left-out one is restored, so it need not retype done work.
+            body += (
+                "\n\nClosed steps are folded into rows like `[x] 1–5 (5 steps done)`: send "
+                "them back as shown (or leave them out) — the harness keeps the steps they "
+                "stand for."
+            )
         memory = self._plan_memory_lines()
         if memory:
             body += "\n\n" + "\n".join(memory)
