@@ -2144,8 +2144,11 @@ thinking DISABLED for that ONE request — `chat_template_kwargs.enable_thinking
 same fragment the zakpick per-category knob emits, now built by one shared
 `thinking_extra_body()` and passed per call (`_call_provider(extra_body=…)`; the streaming
 twin's `call_kw`). The provider merges a per-call `extra_body` OVER the instance's so a
-category knob and the one-shot override compose. A server without the key ignores it, so
-the retry degrades to the rail alone. (3) The default `Provider.astream` forwards
+category knob and the one-shot override compose. ~~A server without the key ignores it, so
+the retry degrades to the rail alone.~~ **Corrected by ADR-0181 (2026-09-17):** Vertex AI refuses
+the whole request over the unknown key (400 INVALID_ARGUMENT, measured), as do OpenAI and
+Anthropic; the provider now renders the switch per destination and drops a field a provider
+refuses by name. (3) The default `Provider.astream` forwards
 `result.thinking` as a `StreamThinkingDelta`, so the streaming twin sees from a
 non-streaming provider the same signal the real one emits. Overflows share the
 consecutive bound: a model that overflows even with thinking off is stuck, and `gave_up`
@@ -9981,3 +9984,115 @@ under the line the model opens the project's precedent test in 4 of 48 runs agai
 it still copies it (15 of 15 across both arms); runs that never open it miss at the same rate with or without the line
 (7/44 vs 9/37). The sentence works by keeping the model away from the precedent, not by making it resist one it has
 read. The write-surface lever (fallback C, thrust 35) is measured on top of it.
+
+## ADR-0181: a provider error is a turn end the framework may veto — bounded and paced — and a request field the provider refuses by name is dropped and the call re-issued; the thinking switch is rendered per backend
+
+**Status.** Accepted (2026-09-17).
+
+**Context.** A served Mind on `vertex_ai_beta` (the coach cockpit, 2026-09-17 12:23 UTC) ended
+its turn five iterations in — 2.15M tokens, 74% cached, $3.30, 4m29s, seven plan steps still
+open — with `stop_reason=provider_error` and this text:
+
+```
+litellm.BadRequestError: Vertex_ai_betaException BadRequestError - {"error": {"code": 400,
+"message": "Invalid JSON payload received. Unknown name \"chat_template_kwargs\": Cannot find
+field.", "status": "INVALID_ARGUMENT"}}
+```
+
+`chat_template_kwargs` is llama.cpp's / vLLM's thinking switch. Zak Code carries it as the ONE
+internal spelling for "thinking on/off" — the reasoning-overflow retry sends it for one call
+(ADR-0056) and a zakpick category's `thinking` knob sends it on every call — on the assumption,
+stated in three places, that "a server that does not understand the key ignores it, so setting
+this against a cloud model is inert rather than an error". Vertex AI validates the whole payload
+and refuses it; so do OpenAI ("Unrecognized request argument supplied") and Anthropic ("Extra
+inputs are not permitted"). The refusal mapped to a generic `RequestFailed`, which the loop never
+retries, so the turn ended `provider_error` — and `provider_error` was one of the stop reasons a
+TURN_END (Stop) hook was forbidden to veto, filed under "infrastructure — a hard bound". The
+Mind's stop hook, whose entire job is to re-enter the loop, was never consulted. The cockpit sat
+at its prompt until a human typed "continue", which worked only because the NEXT turn's first
+call carried no thinking override. Three defects, one incident: a spelling sent where it is
+refused; a provider that discards the one sentence naming exactly what it did wrong; and a turn
+end the framework could not overrule. The operator's ask was in two halves — "we need a self
+recovery mechanism when an LLM fails like this" and "how do we make sure they're told what they
+did wrong and correct it themselves" — and the fix has one part for each, plus the root cause.
+
+**Decision.** Three changes, at three seams.
+
+(1) *The thinking switch is rendered per destination* (`providers/thinking.py`, applied in
+`LiteLLMProvider._build_kwargs`, the one request chokepoint every path funnels through). The
+internal spelling is unchanged — the loop and the category knob still emit
+`thinking_extra_body()` — and the provider translates it: KEPT verbatim for an OpenAI-compatible
+server reached through a configured `api_base` (llama.cpp / vLLM / the zds pod — the measured,
+working case, byte-identical to before); litellm's first-class `reasoning_effort="minimal"` for a
+Gemini model (`vertex_ai` / `vertex_ai_beta` / `gemini` prefix AND "gemini" in the name — a
+Claude on Vertex takes Anthropic's mapping, not this one), which the installed litellm maps per
+model to the tightest thinking budget the model accepts (128 for 2.5-pro, which cannot switch
+thinking off at all; 1 for 2.5-flash; a `thinkingLevel` for Gemini 3) and drops under
+`drop_params` for a Gemini model it does not flag as reasoning-capable; DROPPED for every other
+destination (hosted OpenAI, Anthropic, Ollama, Bedrock, …), so the overflow retry there runs with
+its rail alone — the degraded path ADR-0056 already documents for a server without the key.
+`"disable"` was rejected for Gemini on purpose: it maps to a budget of 0, which 2.5-pro refuses.
+"On" is never rendered for a cloud model: thinking is the model's own default there. Nothing
+unmeasured is sent anywhere — a miss costs a retry that may overflow again; a wrong native
+parameter costs a 400 and the turn.
+
+(2) *A request field the provider refuses BY NAME is dropped for the session and the call
+re-issued once* (`rejected_request_field` in `providers/base.py`, `_refuse_rejected_field` +
+`rejected_request_fields` on the provider, both call paths). Seven vendor phrasings are
+recognised (Vertex's `Unknown name "x"`, OpenAI's `Unrecognized request argument supplied: x`,
+Anthropic's `x: Extra inputs are not permitted`, FastAPI/pydantic's `('body', 'x')`, and three
+generic forms), but a pattern alone never decides anything: the name must be one WE SENT — a
+top-level key of the `extra_body` this call carried, or a wire alias of the rendered thinking
+switch (`thinkingConfig`, `thinking_budget`, …, mapped back to the `reasoning_effort` kwarg).
+That gate is the whole safety of the mechanism: a provider refusing `tools` or `messages` is a
+defect to surface, never a field to strip. Only a 4xx request rejection qualifies (litellm's
+BadRequestError / UnprocessableEntityError, or a 400/422 status); a 5xx quoting a field name is
+the transient it always was. The refused name joins `rejected_request_fields`, `_build_kwargs`
+leaves it out of every later request, and the SAME logical call is re-issued once; a second
+refusal in the same call is reported as is. The streaming twin repairs only before the first
+chunk (nothing has been yielded, so the rebuilt request can be re-issued in place); a failure
+after a chunk reached the client stays terminal. A warning names the model, the field and the
+provider's sentence; the operator's configured `extra_body` is left intact so the config stays
+inspectable. This is the "told what it did wrong, corrects itself" half, at the harness level.
+
+(3) *`provider_error` joins the vetoable stop reasons — bounded and paced.* A provider failure is
+a fact about the MOMENT, not a hard bound like an iteration cap or a spend ceiling, and the
+framework whose Stop hook keeps a perpetual loop alive is exactly the party that should decide
+whether a turn the provider failed goes on. Unlike the other vetoes, which are unbounded (a
+registered Stop hook is in charge of standing down), this one re-issues a call against a provider
+that just failed, so it is capped and paced: up to `_MAX_PROVIDER_ERROR_VETOES` (6) CONSECUTIVE
+hook-vetoed re-entries per turn — any completed model call resets the count, so a loop that
+limps through one outage keeps its full allowance for the next — each preceded by a wait of
+15 s doubling to a 300 s ceiling (~13 minutes across the six). An error the in-turn retry already
+spent its 15-minute rate-limit horizon on (a 429 storm, a 5xx run) waits that horizon again
+inside every cycle, so six cycles outlast an outage of well over an hour; an INSTANT refusal (a
+dead key, a request the server will never take) is given up on in a quarter of an hour instead of
+forever. Past the cap the turn ends `provider_error` exactly as before — hooks unconsulted, the
+error text carrying "persisted through N hook-vetoed re-entries" — and a hook that lets the stop
+stand ends it at once with no wait. The veto's continuation prompt is the hook's own (a Mind's
+"re-enter the loop"), the wait is said out loud (status line, trace note, `_status_sink`), and
+the turn is marked `degraded`. A build that landed while the hook vetoed still restarts the REPL
+first (ADR-0099). Sub-agent loops (`turn_end_vetoable=False`) are unchanged.
+
+**Why not a wake-up instead of an in-turn veto.** Arming the session's ADR-0094 wake-up on a
+provider error (a self-typed "continue" after a backoff) would recover the REPL without any hook,
+but it delivers only at an idle REPL prompt — a served run's say consumer wakes on a say or a
+nudge and would never see it — and it replaces the single wake-up slot a Mind's deadman net or a
+parked Body's re-poll may be holding. The Stop seam already exists in every consumer, is the
+framework's declared authority over turn ends, and pairs with the in-turn retry the way Claude
+Code pairs them: the harness retries transient errors inside the turn; the framework decides
+whether a turn that still failed goes on. A plain session with no Stop hook keeps today's
+contract — the turn ends, the session is saved and resumable, the error is shown — because a
+blind auto-continue re-sends the request that just failed.
+
+**Consequences.** The incident's request no longer carries `chat_template_kwargs` to Vertex
+(rendering), any other refused body key costs one re-issued call rather than the turn (repair),
+and a Mind whose stop hook blocks the stop turns itself back on after a provider failure instead
+of waiting for a human (veto). ADR-0056's "a server without the key ignores it" is corrected in
+place. Pinned by tests/test_thinking_switch_rendering.py (the renderer's destination matrix; the
+incident's exact request against `vertex_ai_beta` carries no llama.cpp key; the pod request is
+byte-identical; a refused field stays out), tests/test_provider_field_rejection.py (every vendor
+phrasing; the "one we sent" gate; buffered and streaming repair; sticky for the session;
+per-call overrides; a 5xx is not a refusal; the repair is spent once; the rendered switch's wire
+alias), and tests/test_turn_end_loop.py (recovery after a veto, the cap and the 15/30/60/120/240/
+300 schedule, the consecutive reset, allow-ends-at-once, the sub-agent shape, both twins).

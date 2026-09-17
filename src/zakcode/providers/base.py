@@ -13,8 +13,9 @@ M0 implements the non-streaming path (:meth:`Provider.acomplete`); streaming
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
@@ -320,6 +321,56 @@ def quota_exhaustion_marker(text: str | BaseException) -> str | None:
     for marker in QUOTA_EXHAUSTION_MARKERS:
         if marker in lowered:
             return marker
+    return None
+
+
+#: How a provider names a request field it refuses, one pattern per vendor phrasing
+#: (case-insensitive; group 1 is the field). The list is a JUDGEMENT CALL like the quota
+#: markers above — the phrasings known at the time of writing — and the one place to
+#: extend when a vendor's wording is observed to differ. The Vertex form is the measured
+#: one (2026-09-17, a served Mind on ``vertex_ai_beta``), and it arrives with the JSON
+#: body's quotes backslash-escaped inside a bytes repr, which the ``\\*`` runs absorb.
+#:
+#: A pattern alone NEVER decides anything: :func:`rejected_request_field` returns a name
+#: only when it is one the caller SENT. That gate is what keeps the repair honest — a
+#: provider complaining about ``tools`` or ``messages`` is a real defect to surface, not
+#: a field to strip and retry.
+REJECTED_FIELD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Google (Vertex AI / Gemini): Invalid JSON payload received. Unknown name "x": …
+    re.compile(r"unknown name\s+\\*[\"']([\w.\[\]-]+)\\*[\"']", re.IGNORECASE),
+    # OpenAI: Unrecognized request argument supplied: x  (or "arguments … x, y")
+    re.compile(r"unrecognized request arguments?\s+supplied:\s*([\w.,\s-]+)", re.IGNORECASE),
+    # Anthropic (pydantic-style): x: Extra inputs are not permitted
+    re.compile(r"([\w.]+):\s*extra inputs are not permitted", re.IGNORECASE),
+    # FastAPI / pydantic v2 body validation (vLLM and kin): 'loc': ('body', 'x')
+    re.compile(r"[\(\[]\s*[\"']body[\"'],\s*[\"']([\w.]+)[\"']", re.IGNORECASE),
+    # Generic server phrasings.
+    re.compile(r"unexpected keyword argument\s+[\"']([\w.]+)[\"']", re.IGNORECASE),
+    re.compile(r"unknown (?:field|parameter|param|argument)s?[:\s]+[\"']?([\w.]+)", re.IGNORECASE),
+    re.compile(r"unsupported parameter:?\s*[\"']([\w.]+)[\"']", re.IGNORECASE),
+)
+
+
+def rejected_request_field(text: str | BaseException, sent: Iterable[str]) -> str | None:
+    """The field named in a request refusal ``text``, if it is one of the ``sent`` keys.
+
+    ``sent`` lists the request fields the caller is willing to give up (the keys it
+    added to the body itself, plus any wire-level aliases of a rendered kwarg). A dotted
+    or bracketed path in the message (``extra_body.x``, ``x[0]``) matches on any of its
+    segments, so a provider that reports the path still names the key. None when the
+    text names nothing, or nothing the caller sent — the refusal is then a defect to
+    surface, never a field to strip.
+    """
+    candidates = {key for key in sent if key}
+    if not candidates:
+        return None
+    message = str(text)
+    for pattern in REJECTED_FIELD_PATTERNS:
+        for match in pattern.finditer(message):
+            for raw in match.group(1).split(","):
+                for segment in re.split(r"[.\[\]]", raw.strip()):
+                    if segment in candidates:
+                        return segment
     return None
 
 

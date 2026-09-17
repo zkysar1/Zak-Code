@@ -378,7 +378,12 @@ class Settings(BaseSettings):
     # 6-second budget killed a 42-iteration run in the field). Timeouts and
     # provider-rejected tool calls retry a fixed _MAX_INTERRUPT_RETRIES times.
     # Other provider errors are never retried — the turn ends gracefully
-    # (stop_reason="provider_error") with the session persisted and resumable.
+    # (stop_reason="provider_error") with the session persisted and resumable,
+    # unless a TURN_END (Stop) hook vetoes that end: a perpetual-loop framework
+    # may re-enter a provider-failed turn up to six consecutive times, paced
+    # 15 s doubling to 300 s (ADR-0181; _MAX_PROVIDER_ERROR_VETOES). A request
+    # field the provider refuses BY NAME is dropped for the session and the call
+    # re-issued once, inside the provider (ADR-0181) — not a retry knob either.
     # The loop is still THE retry mechanism: litellm's own ``num_retries`` stays 0
     # so two layers can never compound (see the Provider ABC docstring). NOTE:
     # because this Settings model uses extra="ignore", a deleted field passed by

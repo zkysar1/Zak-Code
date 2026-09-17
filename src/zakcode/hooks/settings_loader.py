@@ -50,8 +50,9 @@ _EVENT_MAP: dict[str, HookEvent] = {
 #: Real Claude Code events deferred FOR SCOPE — recognised and skipped with a warning (not silently
 #: dropped), so a configured hook degrades loudly rather than vanishing. A robustness tail, not
 #: loop-blockers — but NOT no-ops for a framework that uses them: StopFailure (fired on a
-#: provider-error turn end, a non-vetoable terminal that would need new firing threaded through the
-#: critical finalize path) lets a framework leave a crash breadcrumb for the next session, and
+#: provider-error turn end; since ADR-0181 the ``Stop`` seam itself fires there, bounded, so a
+#: framework's stop hook already sees a provider-failed turn end — StopFailure would add only the
+#: past-the-cap breadcrumb) lets a framework leave a crash breadcrumb for the next session, and
 #: UserPromptExpansion captures human-typed slash invocations (distinct from the model-path
 #: ON_SKILL_SELECTED signal).
 #:

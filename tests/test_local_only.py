@@ -364,9 +364,12 @@ def test_per_call_extra_body_merges_over_the_instance_body() -> None:
         "chat_template_kwargs": {"enable_thinking": False},
         "seed": 42,
     }
+    # Hosted OpenAI (no api_base) gets NO switch (ADR-0181): api.openai.com refuses an
+    # unknown body argument with a 400, and there is no measured per-call "off" for it —
+    # the retry runs with its rail alone. The request shape stays the default.
     bare = LiteLLMProvider(Settings(default_model="openai/gpt-4o", _env_file=None))
     only = bare._build_kwargs(msgs, None, extra_body=thinking_extra_body(False))
-    assert only["extra_body"] == thinking_extra_body(False)
+    assert "extra_body" not in only and "reasoning_effort" not in only
 
 
 # ---- extra_headers: one config line, N distinguishable terminals ----
