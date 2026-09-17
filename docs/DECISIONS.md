@@ -10578,3 +10578,65 @@ unbounded), `tests/test_use_skill.py` (the harness source, the `skill` parameter
 marker), `tests/test_skills.py` (the vocabulary line), `tests/test_schedule_wakeup.py`
 (`take_due_prompt`), `tests/test_self_restart.py` (the restart and sentinel doors);
 FEATURE_AUDIT LOOP-92; CLAUDE-MIND-COMPAT rows for the veto seam and the sentinel.
+
+## ADR-0188: function tools on the gpt-5.6 chat route ride with `reasoning_effort="none"`, a remedy the provider names is applied in place, and the sidecar signs the stop it raises
+
+**Status:** Accepted (2026-09-17)
+
+**Context.** Two prod findings from one evening (Zachary's Alien 2 runs, vessel debc47de).
+
+*The model.* Every served Mind since the zakpick OpenAI mix landed (2026-09-01) has run on
+the `gpt-5-mini` FALLBACK, not on the `gpt-5.6-terra` / `-luna` it was pinned to. The first
+tool call of every session 400'd — *"Function tools with reasoning_effort are not supported
+for gpt-5.6-terra in /v1/chat/completions. To use function tools, use /v1/responses or set
+reasoning_effort to 'none'."* — and the runtime failover (PKG-AUTO, once per turn) moved the
+session to the fallback for good. A served session is one turn, so "once per turn" is "for
+the whole run". serve.log across the fleet: `model failover: openai/gpt-5.6-terra ->
+openai/gpt-5-mini` on 21 of 21 starts of one env, 2 of 2 on another; 167 vessel sessions
+with 0 completed loop iterations, all billed to `gpt-5-mini`; the one run measured end to
+end spent $8.20 on 243 fallback-model turns, 88 of them the parroting attractor ADR-0187
+fences. The pin was verified against the model catalog and by a real completion — WITHOUT
+tools. A request that never mentions `reasoning_effort` is refused too: the model's default
+depth counts as "with". Measured live against the fleet key (2026-09-17): terra unset →
+400, terra `low` → 400, terra `none` → 200 with a tool call, luna `none` → 200, `gpt-5-mini`
+`none` → 400 ("does not support 'none'"), `gpt-5-mini` unset → 200.
+
+*The stop.* The framework's `/start` Step 2.5 guard (`live_stop_decision`, g-373-16) keeps a
+`stop-requested` raised after the session started. "Started" is the binding's `started_at`,
+which `/start` writes pages into its ceremony; on run B the sidecar raised at 20:29:29, the
+binding said 20:31:43, the clear ran at 20:32:09, and the guard deleted the run's only
+ending as "stale". The race the guard was written against had 3m50s of headroom; a short cap
+or a `/run/stop` in the first minutes has none.
+
+**Decision.**
+
+1. `LiteLLMProvider` sends `reasoning_effort="none"` whenever tools ride on a gpt-5.6-tier
+   model's chat route (`_is_openai_gpt56_tools_effort_none_model`: `gpt-5.6*`, not
+   `gpt-5.6-chat*`, not the local-server case). Set LAST in `_build_kwargs`, so it wins over
+   a configured depth — with tools in the request a depth cannot be honoured on this route
+   at all, and the alternative is a 400 on every call. Without tools the configured/default
+   depth stands. The fallback tier (`gpt-5-mini`, which refuses `'none'`) is untouched.
+2. A request rejection whose message says *set reasoning_effort to 'none'*, on a call that
+   carried tools and did not already send `'none'`, latches `tools_require_effort_none` and
+   re-issues the SAME call once (`_wants_effort_none`, beside ADR-0181's rejected-field
+   seam) — a tier the predicate does not know costs one re-issued call, never a failover
+   to a model nobody chose. A second refusal maps through the taxonomy as before.
+3. `request_framework_stop` writes its signature INTO the signal it just raised
+   (`raised_by: vessel-sidecar` / `raised_at: <utc>`; `SIDECAR_RAISE_MARKER`). The framework
+   guard refuses a signed signal without consulting time (Ayoai-Mind `session.py`, same
+   day); the framework's own writers leave the marker empty, so nothing else changes, and
+   the two halves ship independently. Because a signed signal never reads as stale, its
+   lifetime is owned here: `abandon_framework_stop` at grace expiry (unchanged, g-373-92) and
+   `retire_expired_sidecar_stop` at server start for a signed raise older than the grace
+   that a previous process left behind. A fresher one — a restart inside the window — is
+   left for the mind.
+
+**Consequences.** The terra/luna mix actually drives the served Minds for the first time.
+Reasoning depth is OFF for tool calls on this tier by construction; keeping reasoning with
+tools means the Responses API, which is a separate decision. The temperature rule of
+`test_gpt5_temperature.py` and this one are the same defect one parameter apart: a pin is
+not verified until a real completion has been billed to it WITH the request shape the loop
+actually sends (tools). Tests: `tests/test_gpt56_tools_effort_none.py` (the predicate, the
+request shape, the re-issue, the fallback tier untouched), `tests/test_framework_stop.py`
+(the signature, the raise time, startup retirement only past the grace, unsigned and
+started stops left alone); FEATURE_AUDIT PROV-25.

@@ -15,11 +15,14 @@ from pathlib import Path
 
 from zakcode.session.framework_stop import (
     DEFAULT_STOP_TARGET_MODE,
+    SIDECAR_RAISE_MARKER,
     SIGNAL_SET_SCRIPT,
     STOP_CHECKPOINT_FILENAME,
     abandon_framework_stop,
     framework_session_dir,
     request_framework_stop,
+    retire_expired_sidecar_stop,
+    sidecar_raise_time,
 )
 
 AGENT = "alpha"
@@ -242,3 +245,69 @@ def test_both_overrun_branches_actually_call_the_retire(tmp_path: Path) -> None:
         assert window.index("_retire_unconsumed_framework_stop()") < window.index(
             "request_interrupt("
         ), "retire the pair BEFORE the interrupt -- the interrupt can end this process"
+
+
+# ── the sidecar's signature (ADR-0188) ───────────────────────────────────────────
+#
+# Measured 2026-09-17 (prod vessel debc47de, run B): the raise landed at 20:29:29,
+# the framework's /start wrote its binding — the stop-clear guard's "session start" —
+# at 20:31:43, and the guard read mtime < started_at as "stale" and deleted the run's
+# only ending. The framework now keeps a SIGNED signal without consulting time, so
+# the signature has to be there, and its lifetime has to be owned here.
+
+
+def test_signal_is_signed_after_the_setter_creates_it(tmp_path: Path) -> None:
+    _plant_signal_setter(tmp_path, _real_setter_body())
+    assert request_framework_stop(tmp_path, AGENT) is True
+    text = (framework_session_dir(tmp_path, AGENT) / "stop-requested").read_text(encoding="utf-8")
+    first, second = text.splitlines()[:2]
+    assert first == SIDECAR_RAISE_MARKER
+    assert second.startswith("raised_at: ") and second.endswith("Z")
+    assert sidecar_raise_time(tmp_path, AGENT) is not None
+
+
+def test_an_unsigned_or_absent_signal_has_no_raise_time(tmp_path: Path) -> None:
+    assert sidecar_raise_time(tmp_path, AGENT) is None
+    session_dir = framework_session_dir(tmp_path, AGENT)
+    session_dir.mkdir(parents=True)
+    (session_dir / "stop-requested").touch()  # the framework's own writers: empty
+    assert sidecar_raise_time(tmp_path, AGENT) is None
+    (session_dir / "stop-requested").write_text("note\n" + SIDECAR_RAISE_MARKER + "\n")
+    assert sidecar_raise_time(tmp_path, AGENT) is None, "first line only"
+    assert sidecar_raise_time(tmp_path, "") is None
+
+
+def _signed_pair(root: Path, raised_at: str) -> Path:
+    session_dir = framework_session_dir(root, AGENT)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "stop-target-mode").write_text("assistant", encoding="utf-8")
+    (session_dir / "stop-requested").write_text(
+        f"{SIDECAR_RAISE_MARKER}\nraised_at: {raised_at}\n", encoding="utf-8"
+    )
+    return session_dir
+
+
+def test_startup_retires_a_signed_stop_only_past_the_grace(tmp_path: Path) -> None:
+    session_dir = _signed_pair(tmp_path, "2026-09-17T20:29:29Z")
+    raised = sidecar_raise_time(tmp_path, AGENT)
+    assert raised is not None
+    # inside the window: a restart mid-grace leaves the ask for the mind
+    assert retire_expired_sidecar_stop(tmp_path, AGENT, grace_s=350, now=raised + 100) is False
+    assert (session_dir / "stop-requested").exists()
+    assert (session_dir / "stop-target-mode").exists()
+    # past it: the pair is an orphan of a previous process
+    assert retire_expired_sidecar_stop(tmp_path, AGENT, grace_s=350, now=raised + 351) is True
+    assert not (session_dir / "stop-requested").exists()
+    assert not (session_dir / "stop-target-mode").exists()
+
+
+def test_startup_leaves_an_unsigned_stop_and_a_started_stop_alone(tmp_path: Path) -> None:
+    session_dir = framework_session_dir(tmp_path, AGENT)
+    session_dir.mkdir(parents=True)
+    (session_dir / "stop-requested").touch()  # unsigned: the framework's mtime rule owns it
+    assert retire_expired_sidecar_stop(tmp_path, AGENT, grace_s=0, now=10**12) is False
+    assert (session_dir / "stop-requested").exists()
+    _signed_pair(tmp_path, "2026-09-17T20:29:29Z")
+    (session_dir / STOP_CHECKPOINT_FILENAME).write_text("{}", encoding="utf-8")  # a stop began
+    assert retire_expired_sidecar_stop(tmp_path, AGENT, grace_s=0, now=10**12) is False
+    assert (session_dir / "stop-requested").exists()
