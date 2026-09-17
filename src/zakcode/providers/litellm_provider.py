@@ -189,6 +189,39 @@ def _is_openai_gpt5_fixed_temperature_model(model: str) -> bool:
     return name.startswith("gpt-5") and not name.startswith("gpt-5-chat")
 
 
+def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
+    """Whether ``model`` is an OpenAI gpt-5.6-tier model that takes function tools on
+    ``/v1/chat/completions`` ONLY with ``reasoning_effort="none"``.
+
+    OpenAI rejects every other shape with a hard 400: "Function tools with
+    reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions. To use
+    function tools, use /v1/responses or set reasoning_effort to 'none'." The default
+    effort counts as "with" — a request that never mentions reasoning_effort is refused
+    too. Measured live against the fleet key 2026-09-17: terra unset -> 400, terra
+    ``low`` -> 400, terra ``none`` -> 200 (tool call), luna ``none`` -> 200; and
+    gpt-5-mini ``none`` -> 400 ("does not support 'none'"), so this is NOT the whole
+    gpt-5 family — the predicate is the 5.6 tier only, and the fallback tier is left
+    alone.
+
+    The result in production before this rule: a zakpick mix pinned to terra/luna
+    400'd on its FIRST tool call of every served session and failed over to the
+    gpt-5-mini fallback for the rest of it — 167 vessel sessions, 100% of them on the
+    fallback (serve.log: "model failover: openai/gpt-5.6-terra -> openai/gpt-5-mini"
+    on every start since the mix landed). Same shape as the temperature rule above,
+    one parameter over. The ``gpt-5.6-chat`` variants are not measured and are
+    excluded here; the generic re-issue path (``_wants_effort_none``) covers them if
+    they turn out to share the constraint.
+    """
+    name = model.split("/")[-1]
+    return name.startswith("gpt-5.6") and not name.startswith("gpt-5.6-chat")
+
+
+#: Substring of the OpenAI 400 that names the remedy. Matched on the provider's own
+#: words so a future model name outside the predicate above is caught on its first
+#: refusal, not after a failover.
+_EFFORT_NONE_REMEDY = "set reasoning_effort to 'none'"
+
+
 #: Re-exported from :mod:`zakcode.providers.endpoints`, which is the SINGLE SOURCE OF TRUTH.
 #: The allowlist and the ``local_only`` cost predicate must answer "where does this call
 #: actually go?" identically — a second copy here is how they drift into disagreeing, and a
@@ -575,6 +608,12 @@ class LiteLLMProvider(Provider):
         #: rejects a knob costs ONE re-issued call, not the turn — and never the same 400
         #: twice. Diagnostic: the operator's config is left intact.
         self.rejected_request_fields: list[str] = []
+        #: Function tools on this model's chat route need ``reasoning_effort="none"``
+        #: (the gpt-5.6 tier, see ``_is_openai_gpt56_tools_effort_none_model``). Pre-set
+        #: from the model name so the first tool call is already the accepted shape, and
+        #: latched at call time when a provider answers with the remedy text — one
+        #: re-issued call, never the same 400 twice, never a failover to another model.
+        self.tools_require_effort_none: bool = _is_openai_gpt56_tools_effort_none_model(self.model)
         #: Reasoning DEPTH (ADR-0182): litellm's ``reasoning_effort`` level, sent only where
         #: litellm flags the model reasoning-capable (providers/thinking.py); kept as
         #: configured even where it will not be sent — diagnostic, like ``extra_body``.
@@ -952,6 +991,32 @@ class LiteLLMProvider(Provider):
         code = getattr(exc, "status_code", None)
         return isinstance(code, int) and not isinstance(code, bool) and code in (400, 422)
 
+    def _wants_effort_none(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Latch ``tools_require_effort_none`` from the provider's own remedy text.
+
+        True when ``exc`` is a request rejection whose message says to set
+        reasoning_effort to 'none', the call carried tools, and the call did not already
+        send 'none' — the caller then re-issues once with the accepted shape. This is the
+        model-name-independent half of the gpt-5.6 rule: a tier the predicate does not
+        know yet still costs one re-issued call, not a failover to the fallback model.
+        """
+        if not self._is_request_rejection(exc):
+            return False
+        if not call_kwargs.get("tools") or call_kwargs.get("reasoning_effort") == "none":
+            return False
+        message = redact_secrets(str(exc))[0]
+        if _EFFORT_NONE_REMEDY not in message:
+            return False
+        self.tools_require_effort_none = True
+        logger.warning(
+            "%s takes function tools only with reasoning_effort='none' on this route (%s) "
+            "— sending 'none' with tools for the rest of this session and re-issuing "
+            "the call",
+            self.model,
+            " ".join(message.split())[:200],
+        )
+        return True
+
     def _refuse_rejected_field(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
         """Record a request field the provider refused BY NAME (ADR-0181).
 
@@ -1255,6 +1320,26 @@ class LiteLLMProvider(Provider):
             temperature = call_kwargs.get("temperature")
             if temperature is not None and temperature != 1:
                 call_kwargs.pop("temperature", None)
+        # Function tools + any reasoning depth (including the model's DEFAULT depth) is a
+        # 400 on the gpt-5.6 tier's chat route; the accepted shape is an explicit
+        # ``reasoning_effort="none"``. Set last so it wins over a configured depth — with
+        # tools in the request a depth cannot be honoured on this route at all, and a
+        # 400 on every call would have handed the whole session to the fallback model.
+        # Without tools the configured/default depth stands. Same LOCAL-server exemption
+        # as the temperature rule: a gpt-5.6-named self-hosted model has no such route.
+        if (
+            self.tools_require_effort_none
+            and tools
+            and not (self.api_base is not None and _model_uses_generic_endpoint(self.model))
+        ):
+            if call_kwargs.get("reasoning_effort") not in (None, "none"):
+                logger.info(
+                    "%s: reasoning_effort %r cannot ride with function tools on the chat "
+                    "route; sending 'none' for this tool call",
+                    self.model,
+                    call_kwargs.get("reasoning_effort"),
+                )
+            call_kwargs["reasoning_effort"] = "none"
         return call_kwargs
 
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
@@ -1329,11 +1414,16 @@ class LiteLLMProvider(Provider):
         try:
             response = await litellm.acompletion(**call_kwargs)
         except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
-            if not self._refuse_rejected_field(exc, call_kwargs):
+            if not (
+                self._wants_effort_none(exc, call_kwargs)
+                or self._refuse_rejected_field(exc, call_kwargs)
+            ):
                 raise self._map_error(exc) from exc
-            # The provider named a field of ours it will not take (ADR-0181): it is out
-            # of ``rejected_request_fields`` now, so the rebuilt request omits it — the
-            # SAME logical call, re-issued once. A second refusal is reported as is.
+            # The provider named a field of ours it will not take (ADR-0181), or named
+            # the one value it WILL take for the tools+reasoning pairing: the flag /
+            # ``rejected_request_fields`` is updated, so the rebuilt request has the
+            # accepted shape — the SAME logical call, re-issued once. A second refusal
+            # is reported as is.
             call_kwargs = self._build_kwargs(
                 wire_messages,
                 tools,

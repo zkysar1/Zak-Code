@@ -102,6 +102,7 @@ from zakcode.session.framework_stop import (
     abandon_framework_stop,
     framework_stop_complete,
     request_framework_stop,
+    retire_expired_sidecar_stop,
 )
 from zakcode.session.observation_inbox import (
     CHANGES_SLICE,
@@ -2534,6 +2535,16 @@ def create_app(
         # server accepts requests, so this always precedes the first /sidecar/health
         # poll — the clear cannot race the reader that the incident turned on.
         _clear_run_stop_reason()
+        # Same reasoning one layer down: a SIGNED stop a previous sidecar raised and never
+        # retired must not open this run's /start on a stop nobody asked for — the
+        # framework keeps a signed signal without consulting time, so its lifetime is
+        # ours to end. Only a raise whose grace has already run out qualifies.
+        if resolved_settings.run_stop_agent:
+            retire_expired_sidecar_stop(
+                resolved_settings.workspace_root,
+                resolved_settings.run_stop_agent,
+                grace_s=resolved_settings.run_consolidation_reserve,
+            )
         consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
 
     def _graceful_stop_budget() -> float:
