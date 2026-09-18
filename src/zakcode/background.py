@@ -19,8 +19,9 @@ The contract, matching Claude Code's:
 * The exit is observed two ways, so it survives the ADR-0034 restart into a new build: an
   in-process watcher reaps the child and writes ``<output>.exit``; where a real bash runs
   the command, a wrapper shell writes that file itself, so a process that did not spawn
-  the task still learns how it ended. Status is DERIVED from the files and the pid — never
-  stored — so no stale record can call a dead task alive.
+  the task still learns how it ended. Status is DERIVED from the files and the pid — with
+  the OS's own start time for that pid, so a pid reused after the task exited is not the
+  task — never stored, so no stale record can call a dead task alive.
 * The session's idle doors (the REPL's idle wait, the served consumer's beat) ask
   :meth:`BackgroundTasks.take_notifications`: every exited task not yet reported is
   reported ONCE, as one harness line carrying a ``<task-notification>`` block per task —
@@ -89,6 +90,10 @@ class BackgroundTask(BaseModel):
     exit_file: str
     pid: int
     started_at: str
+    #: The OS's start time for ``pid``, read at spawn — an identity beyond the pid, so a pid
+    #: the OS reused after the task exited (a restart in between, no exit file) is never
+    #: mistaken for it. ``None`` where the platform cannot say, or on an older record.
+    start_token: str | None = None
     #: Its exit was reported to the session (a notification is delivered once).
     notified: bool = False
     #: ``TaskStop`` asked for it: a missing exit code then means "killed", not "lost".
@@ -138,6 +143,78 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+class _FileTime(ctypes.Structure):
+    _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]  # noqa: RUF012
+
+
+def _windows_start_token(pid: int) -> str | None:
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return None
+    process_query_limited_information = 0x1000
+    handle = windll.kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return None
+    try:
+        creation, exited, kernel, user = (_FileTime() for _ in range(4))
+        ok = windll.kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        )
+        if not ok:
+            return None
+        return str((int(creation.high) << 32) | int(creation.low))
+    finally:
+        windll.kernel32.CloseHandle(handle)
+
+
+def process_start_token(pid: int) -> str | None:
+    """The OS's start time for the live process ``pid``, as an opaque string — the identity
+    :func:`task_is_live` checks beside the pid. Linux reads ``/proc/<pid>/stat`` (start time
+    in clock ticks since boot), Windows asks ``GetProcessTimes``, other POSIX ``ps -o
+    lstart=``. ``None`` when the process is gone or the platform cannot say — never a guess.
+    """
+    if pid <= 0:
+        return None
+    try:
+        if sys.platform == "win32":
+            return _windows_start_token(pid)
+        if sys.platform.startswith("linux"):
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+            # After the ")" that closes the (space-bearing) comm: state is field 3 of the
+            # documented layout, starttime field 22.
+            fields = stat.rsplit(")", 1)[1].split()
+            return fields[19] if len(fields) > 19 else None
+        out = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        token = out.stdout.strip()
+        return token or None
+    except Exception:  # noqa: BLE001 — an unreadable identity is "cannot say", never a crash
+        return None
+
+
+def task_is_live(task: BackgroundTask) -> bool:
+    """Whether the process at ``task.pid`` is still the task: alive, and — for a task this
+    process did not spawn, or has already reaped — carrying the start token the record took
+    at spawn. Our own unreaped child cannot have had its pid reused. A record without a
+    token, or a platform that cannot read one, keeps the pid's word: the token is only ever
+    held against ANOTHER process, never against the task."""
+    if not pid_alive(task.pid):
+        return False
+    if task.id in _PROCS or task.start_token is None:
+        return True
+    observed = process_start_token(task.pid)
+    return observed is None or observed == task.start_token
+
+
 def _read_exit_code(exit_file: str) -> int | None:
     try:
         text = Path(exit_file).read_text(encoding="utf-8").strip()
@@ -153,11 +230,12 @@ def task_status(task: BackgroundTask) -> tuple[str, int | None]:
     """``(status, exit_code)`` derived from the exit file and the pid: ``running``,
     ``completed`` (with its code), ``killed`` (``TaskStop`` asked; a code if the wrapper
     still wrote one), or ``lost`` (gone without a recorded code — the process that spawned
-    it, on a platform with no bash wrapper, restarted before it exited)."""
+    it, on a platform with no bash wrapper, restarted before it exited; or the pid now
+    names another process, see :func:`task_is_live`)."""
     code = _read_exit_code(task.exit_file)
     if code is not None:
         return ("killed" if task.stopped else "completed", code)
-    if pid_alive(task.pid):
+    if task_is_live(task):
         return ("running", None)
     return ("killed" if task.stopped else "lost", None)
 
@@ -190,8 +268,9 @@ def notification_block(task: BackgroundTask, status: str, code: int | None) -> s
         )
     else:
         summary = (
-            f'Background command "{task.label}" exited without reporting an exit code '
-            "(the process that started it restarted first); read the output file"
+            f'Background command "{task.label}" exited without a recorded exit code (the '
+            "process that started it restarted before the exit was observed); the output "
+            "file may still be complete — read it before deciding how it ended"
         )
     return (
         "<task-notification>\n"
@@ -340,6 +419,7 @@ class BackgroundTasks:
             exit_file=str(exit_file),
             pid=proc.pid,
             started_at=datetime.fromtimestamp(self._clock(), tz=UTC).isoformat(),
+            start_token=process_start_token(proc.pid),
         )
         _PROCS[task_id] = proc
         watcher = asyncio.create_task(_watch(task_id, proc, str(exit_file)))

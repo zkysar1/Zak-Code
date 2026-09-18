@@ -10847,6 +10847,17 @@ Output files live beside the session store (`~/.zakcode/tasks/<sid>/`;
 prunes them yet — a later ADR when the count is measured. Sub-agents are still
 synchronous: `TaskOutput`/`TaskStop` here cover background commands only.
 
+**Amended 2026-09-18 (fresh-eyes review, F-01/F-02).** Status is derived from the files,
+the pid *and the pid's start time*. The record carries `start_token`, the OS's own start
+time for the pid read at spawn (`/proc/<pid>/stat` on Linux, `GetProcessTimes` on Windows,
+`ps -o lstart=` elsewhere), and `task_is_live` checks it beside `pid_alive` for a task this
+process did not spawn or has already reaped — so a pid the OS reused after the task exited
+(the no-bash path after a restart leaves no exit file) is never "running", and `TaskStop`
+never kills the process that now owns it. The token is only ever held against another
+process: a record without one, or a platform that cannot read one, keeps the pid's word.
+The `lost` notification says the exit went unobserved and the output file may still be
+complete, so a Mind does not re-run a suite that finished.
+
 ## ADR-0192: a skill that fits is delivered whole — paging and the seeded skeleton are the shape of a body that cannot
 
 **Status:** Accepted (2026-09-18)
