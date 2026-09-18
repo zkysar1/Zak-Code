@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from zakcode.agent.loop import AgentLoop
 from zakcode.agent.trace import TraceEvent, TurnTrace
 from zakcode.config import load_settings
@@ -90,6 +92,31 @@ async def test_tool_call_is_traced(tmp_path: Path) -> None:
     tools = result.trace.of_kind("tool")
     assert len(tools) == 1  # one tool call, traced compactly (name + ok)
     assert tools[0].detail == "Write" and tools[0].data["ok"] is True
+
+
+@pytest.mark.parametrize("path", ["buffered", "streamed"])
+async def test_every_tool_call_is_traced_once_on_both_paths(tmp_path: Path, path: str) -> None:
+    # The note used to be written by the buffered batch alone, so a served run — which streams —
+    # left a decision trace with no tool sequence in it: sample 1 of the served-loop measurement
+    # could not count its own tool calls once the session had been compacted. It is written at
+    # the single execution seam now: one note per call, in call order, a failed call included.
+    write = call_tool("write_file", {"path": str(tmp_path / "f.txt"), "content": "hi"})
+    missing = call_tool("read_file", {"path": str(tmp_path / "not-there.txt")})
+
+    def responder(messages: object, system: object, i: int) -> object:
+        return [write, missing][i] if i < 2 else reply("done")
+
+    loop = _loop(tmp_path, ScriptedProvider([reply("u")], responder=responder))
+    if path == "buffered":
+        trace = (await loop.arun_turn("write, then read")).trace
+    else:
+        done = [ev async for ev in loop.astream_turn("write, then read")][-1]
+        assert isinstance(done, AgentDone)
+        trace = done.trace
+    assert [(e.detail, e.data["ok"]) for e in trace.of_kind("tool")] == [
+        ("Write", True),
+        ("Read", False),
+    ]
 
 
 async def test_trace_dump_writes_jsonl_when_trace_dir_set(tmp_path: Path) -> None:

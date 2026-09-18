@@ -4779,6 +4779,12 @@ class AgentLoop:
             critique = await self._judged_plan_critique()
             if critique:
                 block.output = f"{block.output}\n\n{critique}"
+        # One compact note per call (name + ok), HERE, so every path that runs a tool — a buffered
+        # batch, the streamed path, a harness-made call — leaves the same tool sequence on the
+        # decision trace, interleaved with the routing and gate events; the full args and output
+        # live in the session transcript. It used to be written by the buffered batch alone, so a
+        # served (streamed) run's trace carried no tool ledger at all.
+        self._note("tool", call.name, ok=not block.is_error)
         return block
 
     async def _execute_tool_call_gated(
@@ -5500,10 +5506,6 @@ class AgentLoop:
             blocks = []
             for call in calls:
                 blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
-        # Trace each call compactly (name + ok) so the decision trace shows the tool sequence
-        # interleaved with routing/gate events; the full args+output live in the session transcript.
-        for call, block in zip(calls, blocks, strict=True):
-            self._note("tool", call.name, ok=not block.is_error)
         return blocks
 
     @staticmethod
@@ -8442,6 +8444,12 @@ class AgentLoop:
                 provider_error_vetoes = 0  # a completed call resets the consecutive count
 
                 tool_calls = accumulator.finalize()
+                # Where a streamed call enters (ADR-0190): the buffered path rewrites names and
+                # Claude Code's argument spellings in _call_provider; a stream never passes
+                # there, so a served `Read(file_path=…)` reached the tool unrenamed and was
+                # refused, and an alias reached the transcript, the hooks and the trace as it
+                # was written.
+                self._canonicalize_calls(tool_calls)
                 assistant_text = "".join(text_parts)
 
                 # Degeneration guard (ADR-0018), streaming twin — see _run_turn. A
