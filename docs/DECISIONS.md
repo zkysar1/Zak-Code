@@ -11320,3 +11320,85 @@ skill with a section open; `tests/test_turn_end_reentry.py` — the note's order
 every word of the hook still arrives. The same `test_use_skill.py` against main's source
 (2ad5005): 7 fail, 3 of them on the behaviour itself — the after-work call answered with
 the pointer, buffered and streamed — while the control and the paged test pass there.
+
+## ADR-0197: the served process runs on the stdlib event loop — under uvloop a command that leaves anything running is never seen to finish
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** `zakcode webapp` built its server as `uvicorn.Config(app, host=…, port=…)`, and
+uvicorn's default loop is "auto": uvloop wherever it can be imported. The `server` extra
+depends on `uvicorn[standard]`, which installs uvloop on every non-Windows box. So the
+served path ran on uvloop, while the terminal client and this whole test suite run on the
+stdlib loop. Nothing chose that; it came with the install.
+
+Measured 2026-09-18. In sample 1 of the served-loop measurement
+(`bench/results/served-luna-preregistration.log`) the first served turn logged
+`lifecycle hook […sessionstart-orchestrator.sh] timed out after 95.0s`, and the first model
+call came 99 s into the run. The same hook through the same runner from a plain asyncio
+script took 0.7 s with no daemon running and 0.5 s with one. Everything the hook writes was
+on disk within 0.9 s of its start. A process snapshot during the stall shows the hook's own
+process gone by the fourth second and only two processes left: the web app, and the
+framework daemon the hook had started, with all three of its streams redirected.
+
+The cause, reproduced without zakcode or the framework: spawn
+`bash -c 'sleep 25 </dev/null >/dev/null 2>&1 & echo done'` with three pipes and wait with
+`communicate()`. On the stdlib loop it returns in 0.00 s. On uvloop 0.22.1 it never
+returns, although the exit code is already known. The background child's descriptor table
+says why: on the stdlib loop it holds 0, 1 and 2, all `/dev/null`; under uvloop it holds
+those and three sockets at 13, 17 and 19 — the child-side ends of the three streams,
+which uvloop creates as socket pairs and leaves open and inheritable in the process it
+spawns. Every descendant carries them whatever it redirects, so end-of-stream never
+arrives while any descendant lives. Killing the background child returns the call at once.
+`close_fds=True` changes nothing.
+
+Through zakcode's own shell-tool runner the same command returns `started`, exit 0, in
+0.00 s on the stdlib loop, and raises `CommandTimeout` at the tool's timeout under uvloop
+— after which the runner kills the process tree, the background process with it.
+
+Every spawn site is exposed: the four hook runners, the shell tool, the MCP stdio
+transport, the status line, background jobs. A production vessel showed none of it — no
+hook timeout in 3,567 log lines, no shell timeout in 282 tool results across two sessions
+— because its daemon is its own systemd unit, so its hook starts nothing. Any other
+install pays 95 s on its first served turn, and any shell command that leaves a process
+running — a playbook's `nohup … &`, a wrapper that starts the daemon on demand — would
+wait out its timeout and lose the process it started.
+
+**Decision.** The served process runs on the stdlib loop: `uvicorn.Config(…,
+loop="asyncio")`, at the one place the server is built (`serve` and `webapp` are one
+function, and the vessel's unit runs it).
+
+**Alternatives rejected.** *Keep uvloop and stop waiting for end-of-stream once the process
+has exited.* Every spawn site would need it, now and for every site added later, and it
+changes behaviour on the loop where nothing is wrong. *`close_fds=True` at each spawn.*
+Measured: no effect under uvloop. *Drop `[standard]` from the dependency.* The loop would
+still be chosen by whatever happens to be installed: a box that has uvloop for any other
+reason is exposed again, and the faster HTTP parser goes with it for nothing. *Close
+descriptors above 2 in a wrapper shell.* Per site, shell-specific, and the numbers are not
+fixed.
+
+**Consequences.** The served path, the terminal client and the suite now run on one loop,
+so the suite exercises the loop production runs on. uvloop's throughput is given up; the
+served process is a single-tenant sidecar whose time goes to model calls, no request
+throughput was measured and none is claimed. Windows is unchanged: "auto" already resolved
+to the stdlib loop there.
+
+Verified end to end in a sandboxed throwaway world with a dummy model key (both model
+calls refused with 401, no spend). Before: the hook started at 18:37:25.6 and
+`timed out after 95.0s` was logged at 18:39:00.6. After: startup at 18:48:19.1, the first
+model attempt refused at 18:48:20.3, no timeout line, and the daemon the hook started still
+running.
+
+**Not claimed.** That this explains any production stall: the production logs show none.
+That the defect is uvloop's rather than libuv's; it has not been reported upstream.
+
+**Noted, not changed.** A child that keeps the command's stdout ON PURPOSE
+(`sleep 25 </dev/null &`, no output redirect) holds `communicate()` for the whole timeout
+on BOTH loops. That is the ordinary pipe contract and no field case has been measured.
+Sample 1's 95 s is now an explained deviation; sample 2 runs on this build.
+
+Tests: `tests/test_cli_webapp.py` pins `config.loop == "asyncio"`; with the pin removed
+exactly that test fails, `'auto' == 'asyncio'`. Two POSIX controls hold the behaviour the
+served process now shares — `tests/test_proc.py` at the shell-tool seam and
+`tests/test_lifecycle_hooks.py` at the SessionStart hook seam: a command that leaves a
+fully redirected child running returns in under 4 s against a 6 s timeout. They pass with
+or without the pin, because the suite already runs on the stdlib loop.
