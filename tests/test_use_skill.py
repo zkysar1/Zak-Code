@@ -9,10 +9,13 @@ NEVER mutates the session (the body rides back as the tool result, not a mid-tur
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from zakcode import Agent
 from zakcode.agent.budget import IterationBudget
@@ -27,6 +30,7 @@ from zakcode.providers.base import (
     ProviderStreamEvent,
     StreamDone,
     StreamTextDelta,
+    StreamToolCallDelta,
     ToolCall,
 )
 from zakcode.tools.base import SkillLoad, ToolContext, ToolRegistry
@@ -741,6 +745,292 @@ async def test_no_veto_keeps_the_same_turn_dedup(tmp_path: Path) -> None:
     assert len(outputs) == 2
     assert "greet warmly" in (outputs[0] or "").lower()
     assert "[already loaded]" in (outputs[1] or "")
+
+
+# ── ADR-0196: a skill asked for again AFTER WORK is a re-entry ────────────────
+
+#: The framework's own words at a refused stop (the stop hook's reducer reason, in shape),
+#: naming the fixture skill: written for a harness that delivers nothing until the model
+#: calls the skill tool.
+_HOOK_WORDS = (
+    "Turn ended without a Skill(greeter) re-entry. Your FIRST action MUST be: "
+    "Skill('greeter') with args='loop'. Do NOT run Bash commands first."
+)
+
+
+def _call(tool: str, call_id: str, **arguments: Any) -> LLMResult:
+    return LLMResult(
+        tool_calls=[ToolCall(id=call_id, name=tool, arguments=dict(arguments))],
+        usage=Usage(total_tokens=1),
+    )
+
+
+class _StreamingReplay(_ReplayProvider):
+    """A replay that streams its tool calls too (the plain one streams text only), so one
+    script drives the buffered path and the served path's streamed twin alike."""
+
+    async def astream(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        result = await self.acomplete(messages, tools=tools, system=system)
+        for index, call in enumerate(result.tool_calls):
+            yield StreamToolCallDelta(
+                index=index, id=call.id, name=call.name, arguments_delta=json.dumps(call.arguments)
+            )
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        yield StreamDone()
+
+
+def _skill_outputs(agent: Agent) -> list[tuple[str, str]]:
+    """``(tool_use_id, output)`` of every tool result in the session, in order."""
+    return [
+        (block.tool_use_id, block.output or "")
+        for message in agent.session.messages
+        for block in message.blocks
+        if isinstance(block, ToolResultBlock)
+    ]
+
+
+def _door_notes(agent: Agent) -> list[str]:
+    """Which skill door answered, in order, from the turn's trace."""
+    return [
+        str(e.data.get("kind"))
+        for e in agent.loop._trace.events
+        if e.data.get("kind") in ("skill_pointer", "skill_reentry")
+    ]
+
+
+async def test_asked_for_again_with_nothing_run_since_is_still_the_pointer(tmp_path: Path) -> None:
+    """The control (ADR-0063 stands): a second load with NO work between the two is the
+    pointer, whatever it says — never a second copy of the body. Touches nothing this
+    change added, so it holds on the source before it as well (the mutation proof's
+    other half: the tests below fail there, this one does not)."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    await agent.loop._skill_resolver.load("greeter")
+    again = await agent.loop._skill_resolver.load("greeter", args="loop")
+    assert (again.body or "").startswith("[arguments: loop]\n\n[already loaded]")
+    assert "greet warmly" not in (again.body or "").lower()
+    assert agent._skill_invocations_this_turn == 1
+
+
+async def test_the_pointer_says_what_to_do_not_where_to_continue(tmp_path: Path) -> None:
+    """Nothing has run since the body arrived, so there is no "where you are": the pointer
+    names the next action. The bare one ("continue … from where you are; do not reload")
+    drew a summary and a stop from a model that had not started (2026-09-18, gpt-5.6-luna)."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    await agent.loop._skill_resolver.load("greeter")
+    pointer = (await agent.loop._skill_resolver.load("greeter")).body or ""
+    assert pointer.startswith("[already loaded] Nothing new was loaded")
+    assert "Loading a skill does not run it" in pointer
+    assert "starting from their first step" in pointer
+    assert "not another Skill call and not a summary" in pointer
+    assert "from where you are" not in pointer
+
+
+async def test_asked_for_again_after_work_gets_the_body(tmp_path: Path) -> None:
+    """A perpetual loop closes every iteration on ``Skill(<loop skill>)``: the model has
+    ACTED on the body since it arrived, so the call is a re-entry and the body comes back —
+    a real load (budget, selection signal), flagged for the trace."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    fired: list[LifecyclePayload] = []
+    agent.hook_manager.register_lifecycle(HookEvent.ON_SKILL_SELECTED, _capture(fired))
+
+    first = await agent.loop._skill_resolver.load("greeter", args="loop")
+    agent.loop._work_calls += 1  # one successful work call, as the execution seam counts it
+    second = await agent.loop._skill_resolver.load("greeter", args="loop")
+
+    assert first.reentry is False and second.reentry is True
+    assert second.body == first.body  # handed over exactly as a first load is
+    assert "[already loaded]" not in (second.body or "")
+    assert agent._skill_invocations_this_turn == 2 and len(fired) == 2
+    # …and the body just delivered is the new mark: asked for AGAIN with nothing run since,
+    # it is the pointer once more.
+    third = await agent.loop._skill_resolver.load("greeter", args="loop")
+    assert "[already loaded]" in (third.body or "") and third.reentry is False
+
+
+async def test_every_door_marks_where_the_work_count_stood(tmp_path: Path) -> None:
+    """The harness's own delivery (ADR-0187) and a typed ``/<skill>`` (ADR-0063) register the
+    same way the tool does: pointer until the model has acted, the body after."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    composed = await agent.compose_skill_turn("greeter", "loop", source="harness")
+    assert composed.turn_text is not None
+    for door in ("harness", "command"):
+        agent._begin_skill_turn()
+        if door == "harness":
+            await agent._load_skill_body("greeter", source="harness", args="loop")
+        else:
+            agent._register_composed_skill(composed.turn_text)
+        before = await agent.loop._skill_resolver.load("greeter")
+        assert "[already loaded]" in (before.body or ""), door
+        agent.loop._work_calls += 1
+        after = await agent.loop._skill_resolver.load("greeter")
+        assert after.reentry is True and "greet warmly" in (after.body or "").lower(), door
+
+
+async def test_a_fresh_skill_turn_forgets_the_marks(tmp_path: Path) -> None:
+    """A veto and a compaction both open a fresh skill turn: the next load is a FIRST load
+    again, not a re-entry, whatever ran before."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    await agent.loop._skill_resolver.load("greeter")
+    agent.loop._work_calls += 3
+    agent.loop._skill_resolver.forget_loads()
+    assert agent._skill_loaded_at_work == {}
+    fresh = await agent.loop._skill_resolver.load("greeter")
+    assert fresh.reentry is False and "greet warmly" in (fresh.body or "").lower()
+
+
+async def test_only_a_call_that_ran_and_was_work_makes_a_re_entry(tmp_path: Path) -> None:
+    """Keeping the plan, re-arming the wake-up and a call that FAILED are not acts on a
+    skill's instructions: the skill asked for again after only those is still the pointer.
+    One successful read is work, and the next ask is a re-entry."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+        provider=_ReplayProvider(
+            [
+                _call("Skill", "s1", skill="greeter"),
+                _call("update_plan", "p1", tasks=[{"title": "greet", "status": "in_progress"}]),
+                _call(
+                    "ScheduleWakeup",
+                    "w1",
+                    prompt="<<autonomous-loop-dynamic>>",
+                    delaySeconds=600,
+                    reason="net",
+                ),
+                _call("Read", "r1", file_path=str(tmp_path / "no-such-file.txt")),
+                _call("Skill", "s2", skill="greeter"),
+                _call("LS", "l1", path="."),
+                _call("Skill", "s3", skill="greeter"),
+                _call("update_plan", "p2", tasks=[{"title": "greet", "status": "done"}]),
+                LLMResult(text="done", usage=Usage(total_tokens=1)),
+            ]
+        ),
+    )
+    result = await agent.arun_turn("greet")
+    assert result.stop_reason == "completed"
+    outputs = dict(_skill_outputs(agent))
+    assert "greet warmly" in outputs["s1"].lower()
+    assert "[already loaded]" in outputs["s2"]  # plan + wake-up + a failed read: no work
+    # The behaviour under test, through the model's own calls and nothing else: before
+    # this change the answer here was the pointer too, and the pass that had just finished
+    # was told to "continue from where you are".
+    assert "greet warmly" in outputs["s3"].lower() and "[already loaded]" not in outputs["s3"]
+    assert _door_notes(agent) == ["skill_pointer", "skill_reentry"]
+    assert agent.loop.work_calls() == 1
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+async def test_the_veto_door_end_to_end(tmp_path: Path, streamed: bool) -> None:
+    """The served-loop stall of 2026-09-18 in miniature. The model ends in words; the hook
+    refuses the stop in Claude Code's vocabulary; the harness delivers the skill (ADR-0187)
+    and says so AHEAD of the hook's words; a literal model still calls the skill tool first
+    and gets the pointer that tells it to start; it acts; and the call that closes its
+    iteration is a re-entry — the body, and the fence starts over."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+        provider=_StreamingReplay(
+            [
+                LLMResult(
+                    text="Summary: the greeting loop is set up.", usage=Usage(total_tokens=1)
+                ),
+                _call("Skill", "s1", skill="greeter", args="loop"),
+                _call("LS", "l1", path="."),
+                _call("Skill", "s2", skill="greeter", args="loop"),
+                LLMResult(text="done", usage=Usage(total_tokens=1)),
+            ]
+        ),
+    )
+    agent.hook_manager.register_turn_end(_VetoOnce(_HOOK_WORDS))
+
+    if streamed:  # the served path streams; both funnel through one execution seam
+        _ = [event async for event in agent.astream_turn("greet")]
+    else:
+        assert (await agent.arun_turn("greet")).stop_reason == "completed"
+
+    delivered = [
+        m.text
+        for m in agent.session.messages
+        if m.role == "user" and m.text.startswith("<command-message>greeter is running")
+    ]
+    assert len(delivered) == 1
+    outputs = dict(_skill_outputs(agent))
+    assert "[already loaded]" in outputs["s1"]  # nothing run since the harness delivered it
+    # The behaviour under test: the call that closes the iteration gets the body, a real
+    # load, so the ADR-0187 fence starts over. Before this change it was a second pointer.
+    assert "greet warmly" in outputs["s2"].lower() and "[already loaded]" not in outputs["s2"]
+    assert agent.loop._vetoes_without_skill == 0
+    # …and the words either side of it.
+    assert "Carry those instructions out now" in outputs["s1"]
+    head = delivered[0].split("\n", 1)[0]
+    told, hook_words = head.index("The harness has made that skill call"), head.index("FIRST")
+    assert told < hook_words  # the harness speaks first; the hook's words follow, quoted
+    assert _door_notes(agent) == ["skill_pointer", "skill_reentry"]
+
+
+class _CountingReplay(_ReplayProvider):
+    """A replay whose token count tracks the text it is shown, under a 32k window — so a
+    skill body can be too large to arrive whole (ADR-0192) and is paged instead. Past its
+    script it keeps answering in words: a paged skill leaves plan steps open, and the turn
+    takes a few nudges to end."""
+
+    async def acomplete(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> LLMResult:
+        if not self._results:
+            self.calls += 1
+            return LLMResult(text=f"stopping here ({self.calls})", usage=Usage(total_tokens=1))
+        return await super().acomplete(messages, tools=tools, system=system, **kw)
+
+    def count_tokens(self, messages: list, *, system: str | None = None) -> int:
+        chars = len(system or "")
+        for message in messages:
+            for block in message.blocks:
+                chars += len(getattr(block, "text", "") or "")
+        return chars // 4
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=32_768)
+
+
+async def test_a_paged_skill_with_a_section_open_keeps_its_section_pointer(tmp_path: Path) -> None:
+    """Unchanged (ADR-0067), and so true of the source before this change as well: a skill
+    too large for the window arrives a section at a time, and while a section is OPEN the
+    skill asked for again is that section again — work or no work. The pointer there
+    carries the instructions; it was never the dead end."""
+    filler = ("do the thing carefully " * 1_800)[:40_000]
+    body = "# /big — a sectioned skill\n\nIntro.\n\n" + "".join(
+        f"## Step {i}: Part {i}\n\n{filler}\n\n" for i in range(1, 5)
+    )
+    _write_skill(tmp_path, "big", body=body)
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=32_768, workspace_root=tmp_path
+        ),
+        enable_skills=True,
+        provider=_CountingReplay(
+            [
+                _call("Skill", "s1", skill="big"),
+                _call("LS", "l1", path="."),
+                _call("Skill", "s2", skill="big"),
+            ]
+        ),
+    )
+    await agent.arun_turn("run the big skill")
+    outputs = dict(_skill_outputs(agent))
+    assert "## Step 1: Part 1" in outputs["s1"] and "## Step 2: Part 2" not in outputs["s1"]
+    assert outputs["l1"] and "[already loaded]" not in outputs["l1"]  # the model HAD acted
+    assert outputs["s2"].startswith("[already loaded] Skill 'big' is running this turn")
+    assert "here is the CURRENT section again" in outputs["s2"]
 
 
 # ── ADR-0187: the harness source ─────────────────────────────────────────────
