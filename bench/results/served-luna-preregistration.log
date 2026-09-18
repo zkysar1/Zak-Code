@@ -320,3 +320,117 @@ product's classes with no model.
      compacted away. The next sample's ledger must copy text-only completions from the first call.
   Not claimed: that fixing 1 and 2 closes an iteration. They remove a claim that cannot succeed and a ladder that
   fires on the harness's own words; what luna does in Phase 4 has still never been observed.
+
+=== 23:05 UTC 2026-09-18 CORRECTION -- SERVED LOOP ON LUNA, sample 2: one sentence of the results block above is wrong
+The results block says of cause 1: "luna followed the message four ways (5 claim calls, all errors) and never
+claimed." The second half is false, and the count is of the wrong thing. I counted claim calls in my ledger of the
+session file, which covered turn 3 only (one of its five is a --help call that never reached the daemon), and wrote
+the sentence about the whole run. The sandbox daemon's own access log was in the world the whole time and spans
+every turn: 400 requests, 0 non-JSON lines, 19:14:04 (my init control) to 20:11:40.
+  Claim requests, whole run: 7, every one carrying a session id. Six were refused 409 goal_id_collision, all naming
+  source=world (19:45:51, 19:45:54, 20:04:50, 20:04:53, 20:04:57, and 20:05:25 with a cross-lane reason). ONE WAS
+  GRANTED: 19:45:57, source=agent, in turn 2.
+  What it granted: the agent queue's g-001-01, "Reflect and journal" (recurring, 4 h) -- not the goal luna had
+  selected and had just retrieved for (19:45:45, the world queue's g-001-01, "Identify learning domain"). Same id,
+  different goal. Of the two re-issues the refusal recommends, the one the endpoint accepts claims a different goal
+  from the one selected.
+  What followed: the in-flight row and the claim post (19:45:57), one status update on the agent copy (19:46:08), a
+  write pass at 19:46:22-23 (queue meta, four working-memory writes, one of them an append to the
+  goals-completed-this-session slot, team state, a journal append), a live-phase row at 19:46:51, and loop-entry
+  reads from 19:46:54. Completion requests in the whole run (complete / complete-by / complete-intent): 0.
+  The store, read through the framework's own query script inside the sandbox on a COPY of the finished world, no
+  model call: the agent copy is claimed by mind since 19:45:57, status pending, achievedCount 0, never achieved; the
+  world copy is pending and unclaimed; the completed-status query returns nothing.
+P1 stays MISS, and now rests on three independent readings instead of one that compaction could have emptied: 0
+banner lines in the surviving session file, 0 completion requests in the whole-run access log, 0 achievements in the
+store. Cause 1 stands and is restated: the refusal's world branch cannot succeed, and its agent branch succeeds on a
+different goal. What these records do not say is what luna did with that goal between 19:46:08 and 19:46:51; the
+turn's tool results were compacted away before my ledger started. Cause 2's place in the run is clearer than the
+block says: the granted claim and everything after it sit in turn 2 (t+721..1201), the turn that ended veto_stall
+after 140 iterations with 8 stuck notes. Nothing else in the block changes.
+Instrument change that follows: the access log is now read by a script (claims by source and outcome, completion
+requests, writes by route, refusals by code), read back exactly on a synthetic log with a known answer, one non-JSON
+line included. On sample 2 its two new claim readings, defined in the block below, both read MISS.
+
+=== 23:05 UTC 2026-09-18 PRE-REGISTRATION -- SERVED LOOP ON LUNA, sample 3: the same arm on a new build, with one declared framework difference (second-sample rule: two named causes fixed and merged)
+Nothing has been run on this build or in this world with a model; every control below used a dummy key. The three
+fixed criteria are unchanged: at least one aspirations iteration closes, update_plan under 20% of tool calls, no run
+of more than 3 consecutive empty completions.
+
+What changed since sample 2 (zakcode main 19a13b6 -> cd98564, src tree 362b6475 -> 6bb0f172, published build 1344):
+  #551 ADR-0038  cause 2 of sample 2. The repeated-outcome signal counts observations of the world and skips the
+       amended   harness's own deliveries (Skill, ScheduleWakeup); every stuck note carries its signals, and for
+                 repeated-outcome the tool and the repeat count; a stuck STOP that the turn-end hook refuses leaves
+                 a note. 11 tests with positive controls, two-way mutation proof.
+  #549           the framework stop's signature never re-creates an ask the mind already consumed: a change on the
+                 served stop path, where sample 2's stop completed with the harness retiring one marker.
+  #548, #550     CI publishing and the sample 2 results block. No product code.
+Cause 1 of sample 2 is a FRAMEWORK defect. It is fixed and merged on the dev framework (commit 33cec52912: the
+collision refusal fires only when the caller named no queue; the two tests that had pinned the defect now pin the
+contract; two-way mutation proof) and it is in no release yet. So this sample carries ONE DECLARED ASSEMBLY
+DIFFERENCE: the world's copy of mind_api/src/endpoints/aspirations_write.py differs from the seed's by two lines, one
+added and one changed (sha256 50294cc7a8b53c72 -> 7779c82cc8ea41d5), the functional part of that commit. Its comment
+lines are left out: the seed's comments have goal ids scrubbed, so the dev patch's second hunk does not apply as text.
+NOT changed, and therefore still in the arm: cause 3 of sample 2 (turn 1's stall, four text-only completions after
+a re-entry body; not established); sample 1's cause 2 (the iteration body, which luna has not reached so far) and
+cause 3 (the plan-first gate reads a read-only shell query as mutating); the ADR-0027 decompose hint on whole bodies;
+the veto message quoting the hook's "MUST call Skill" words; the framework's stop-pending hook text.
+
+Same arm otherwise: the same seed tarball (release 2.12.76, sha256 71c88a26f3b953c0..., 15,999,157 bytes), a FRESH
+throwaway world assembled by the same steps, init_world.sh / served.env / run_served.sh / progress.py / the three
+control scripts byte-identical to sample 2's, the same sandbox, the same ceremony, the same bounds (cap 2400 s,
+reserve 350 s, supervisor wall clock 2520 s, spend stop $6.00, outer timeout 3000 s). Starting state verified equal
+to samples 1 and 2: IDLE, persona false, the two goal queries return the same byte counts (2 and 1569), price map
+luna 2e-07 / 2e-08, web app health 200 in 3 s, host daemon pid/port/health unchanged, 0 leaked mounts.
+Claim control, no model call, on COPIES of this world (the sample's world is untouched by it): the agent landed, the
+world queue initialized the way /boot does it, g-001-01 present in both queues, then the exact command luna issued
+in sample 2 (claim g-001-01 for mind, --source world):
+  seed copy of the endpoint       -> 409 goal_id_collision: sample 2's refusal, reproduced without a model
+  patched copy, with a session id -> 200; the store then shows the WORLD copy ("Identify learning domain") claimed
+                                     by mind and the agent copy ("Reflect and journal") untouched
+  patched copy, no session id     -> 400 missing_claim_sid, the next guard; a served session supplies the id (7 of
+                                     7 claim requests in sample 2 carried one)
+Instrument changes (mine, outside the product), each with a no-model control read back exactly: access.py (above);
+stucknotes.py tallies stuck notes by the evidence #551 writes, and on sample 2's traces, a build without #551, it
+reads 14 notes, 14 with no evidence fields, as it must. Diagnosis aid only, not part of the instrument: the session
+ledger now also copies every text-only message (the model's text-only completions and the harness's deliveries) from
+the first call, because sample 2's turn-1 stall was compacted away before anything copied it. It holds tool outputs
+and skill text, stays in scratch and is never committed.
+
+Measures and predictions. M1-M7 and D1-D4 keep sample 2's definitions.
+  P1  M1 >= 1 iteration closed.                           My estimate: 30% HIT.
+  P2  M2 < 20% on the whole-run trace ledger.             My estimate: 55% HIT (sample 2: 17.1%).
+  P3  M3 <= 3 consecutive empties.                        My estimate: 85% HIT.
+  P4  >= 70% of luna prompt tokens read from cache.       My estimate: 85% HIT (sample 2: 86.3%).
+  P5  no turn ends veto_stall.                            My estimate: 30% HIT. Cause 3 is untouched.
+  P6  duration_cap, IDLE, assistant, own exit.            My estimate: 55% HIT. #549 changed this path.
+  P7  recorded luna cost = list-rate re-price within 1%.  My estimate: 90% HIT.
+  D1  veto door, >= 50% of such pointers.                 My estimate: 65% HIT (sample 2: 6 of 8). UNTESTED if none.
+  D2  turns ended veto_stall <= 1.                        My estimate: 50% HIT.
+  D3  re-entry then a work call, >= 50%.                  My estimate: 65% HIT (sample 2: 3 of 4). UNTESTED if none.
+  D4  no hook timeout line, first luna call inside 30 s.  My estimate: 95% HIT.
+ New, read from the daemon's access log and the trace:
+  C1  0 claim requests that NAME a queue are refused goal_id_collision.
+                                                          My estimate: 95% HIT. UNTESTED if no claim names a queue.
+  C2  at least one goal id is granted on the queue its FIRST claim request in the run named (the model gets the
+      copy it first asked for; sample 2: asked world, granted agent).
+                                                          My estimate: 60% HIT. UNTESTED if there is no claim request.
+  S1  0 stuck notes whose repeated-outcome evidence names a harness delivery tool, and 0 stuck notes without
+      evidence fields.                                    My estimate: 95% HIT. UNTESTED if there is no stuck note.
+  A2  completion requests granted (complete / complete-by / complete-intent), reported beside M1 with no prediction
+      of its own. If M1 and A2 disagree, both are printed, P1 is read on M1 as written, and the disagreement is named.
+
+Reading rules: A-I apply unchanged, word for word. Added for this sample:
+  J  The declared difference bounds what a HIT means. A P1 HIT describes release 2.12.76 plus the two-line claim fix,
+     which no vessel runs today. It says nothing about today's vessels, where cause 1 is still present, and it is one
+     sample of one basin like every other reading here. The patched file found changed or absent at the end of the
+     run is an instrument failure under A.
+  K  If P1 MISSES, the follow-up is named by WHERE the loop stopped, read from the access log and the ledger and
+     from nothing else: no claim granted -> the selection and claim path, and C1/C2 say which; a claim granted and
+     no completion request -> the iteration body is the finding, and the last framework requests plus the ledger
+     name the step; a completion request granted and no banner -> the closing script. Each is reported as the
+     finding it is. None is a verdict on luna, and none is upgraded.
+  L  A turn ending veto_stall after text-only completions is cause 3 recurring: the ledger's copies are read
+     locally and the finding is reported in my words, never by quoting framework text.
+A fourth sample is taken only under the same second-sample rule. After a PASS, two more samples are owed before any
+rate is stated. Spend so far: sample 1 $0.27, sample 2 $1.14; this block's controls cost $0.00.
