@@ -50,6 +50,7 @@ from zakcode.session.framework_stop import (
 from zakcode.session.say_inbox import say_path, write_say
 from zakcode.session.store import Session, SessionStore
 from zakcode.usage import Usage
+from zakcode.wakeup import LOOP_SENTINEL, fired_line
 
 AGENT = "probe"
 
@@ -341,12 +342,17 @@ def test_the_cap_landing_between_beats_still_raises_the_mind_s_own_stop(tmp_path
     different trigger from the `/run/stop` one above.
     """
     app, endings = _build(tmp_path, reserve=0.6, max_duration=0.9)
+    signal = framework_session_dir(tmp_path, AGENT) / "stop-requested"
 
-    asyncio.run(asyncio.wait_for(app.state.consume_say_loop(), timeout=10))
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        # Observed WHILE the window is open: once it closes on a loop at rest the pair is
+        # retired (ADR-0189), so its presence after the run is no longer the evidence.
+        await _until(signal.exists, timeout=10)
+        await asyncio.wait_for(loop_task, timeout=10)
 
-    assert (framework_session_dir(tmp_path, AGENT) / "stop-requested").exists(), (
-        "the cap ended the run without ever asking the mind to stop"
-    )
+    asyncio.run(scenario())
+    assert not signal.exists(), "the unread stop was left on disk for the next boot"
     assert endings == ["duration_cap"]
 
 
@@ -452,14 +458,17 @@ def test_a_zero_reserve_run_stop_still_lets_the_turn_in_flight_finish(
     )
     assert write_say(say_path(tmp_path), "/start probe")
 
+    signal = framework_session_dir(tmp_path, AGENT) / "stop-requested"
+
     async def scenario() -> None:
         loop_task = asyncio.create_task(app.state.consume_say_loop())
         await _until(lambda: len(seen) == 1)
         await _post_stop(app)
+        await _until(signal.exists)  # raised, while the turn is still in flight
         await asyncio.wait_for(loop_task, timeout=10)
 
     asyncio.run(scenario())
-    assert (framework_session_dir(tmp_path, AGENT) / "stop-requested").exists()
+    assert not signal.exists()  # a zero window is spent at once: the unread pair is retired
     assert finished == ["/start probe"], "a zero-reserve stop interrupted the turn in flight"
     assert endings == ["stopped"]
 
@@ -574,3 +583,106 @@ def test_only_a_mode_a_stop_lands_in_reads_done(
 def test_framework_stop_complete_without_an_agent_is_false(tmp_path: Path) -> None:
     """No agent = no seed = nothing to wait for; never a wait on an empty path."""
     assert framework_stop_complete(tmp_path, "") is False
+
+
+# ── a stop raised between turns starts the turn that reads it (ADR-0189) ──
+
+
+class _LoopMindAtRest:
+    """A mind whose loop ran once (its hook-named re-entry is known) and whose turn then
+    ENDED — the prod shape of 2026-09-18: the loop turn died ``veto_stall`` 22 minutes
+    before the cap, so the signed stop landed with nothing in flight to read it. Its
+    second turn — the harness's re-entry — runs the graceful stop where Phase -1.4 would.
+    """
+
+    def __init__(self, session: Session, root: Path, seen: list[str]) -> None:
+        self.session = session
+        self._root = root
+        self._seen = seen
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self._seen.append(user_text)
+        self.session.add_message(Message.user(user_text))
+        if len(self._seen) == 1:
+            _boot(self._root)
+            self.session.loop_skill = "aspirations loop"  # what a Stop-hook re-entry records
+        else:
+            session_dir = framework_session_dir(self._root, AGENT)
+            assert (session_dir / STOP_REQUESTED_SIGNAL).exists(), "kicked with no stop to read"
+            _sign_off(self._root)
+        self.session.add_message(Message.assistant_text("ok"))
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+
+def test_a_stop_raised_between_turns_starts_the_loop_reentry_that_reads_it(
+    tmp_path: Path,
+) -> None:
+    """THE prod gap. Pre-fix the raise wrote the signal and the loop kept beating with
+    nothing to beat FOR: no say, no nudge, no turn — the signal was retired unconsumed at
+    grace expiry and the run ended as it would have without the raise."""
+    seen: list[str] = []
+    app, endings = _build(
+        tmp_path, reserve=30.0, agent_for=lambda session: _LoopMindAtRest(session, tmp_path, seen)
+    )
+    assert write_say(say_path(tmp_path), "/start probe")
+
+    async def scenario() -> float:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: len(seen) == 1)
+        await asyncio.sleep(0.3)  # at rest: the (instant) turn is over, nothing is queued
+        stopped = time.monotonic()
+        await _post_stop(app)
+        await asyncio.wait_for(loop_task, timeout=10)
+        return time.monotonic() - stopped
+
+    elapsed = asyncio.run(scenario())
+    assert seen == ["/start probe", fired_line(LOOP_SENTINEL)]
+    assert (framework_session_dir(tmp_path, AGENT) / "handoff.yaml").exists()
+    assert elapsed < 5.0, f"the re-entry signed off, yet the run waited {elapsed:.1f}s"
+    assert endings == ["stopped"]
+
+
+def test_a_mind_with_no_known_reentry_is_not_kicked(tmp_path: Path) -> None:
+    """No hook-named loop skill on the session => nothing composable to run: the raise
+    behaves exactly as before (the window opens, the grace bounds it)."""
+    seen: list[str] = []
+
+    class _Quiet(_QuietAgent):
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            seen.append(user_text)
+            async for event in super().astream_turn(user_text):
+                yield event
+
+    app, endings = _build(tmp_path, reserve=0.6, agent_for=_Quiet)
+    assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: len(seen) == 1)
+        await asyncio.sleep(0.3)  # at rest
+        await _post_stop(app)
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    asyncio.run(scenario())
+    assert seen == ["hello"]
+    assert endings == ["stopped"]
+
+
+def test_a_stop_nobody_read_is_retired_when_its_window_closes_with_no_turn(tmp_path: Path) -> None:
+    """The third orphan path (g-373-92). The watcher retires the pair when a TURN overruns
+    the window; a window that closes on a loop at rest used to leave the signed pair on
+    EFS for the next boot to read — measured on prod 2026-09-18 after teardown."""
+    app, endings = _build(tmp_path, reserve=0.6)
+    session_dir = framework_session_dir(tmp_path, AGENT)
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await asyncio.sleep(0.2)
+        await _post_stop(app)
+        await _until(lambda: (session_dir / STOP_REQUESTED_SIGNAL).exists())
+        await asyncio.wait_for(loop_task, timeout=10)  # never signed off; grace spent
+
+    asyncio.run(scenario())
+    assert not (session_dir / STOP_REQUESTED_SIGNAL).exists()
+    assert not (session_dir / STOP_TARGET_MODE_FILENAME).exists()
+    assert endings == ["stopped"]
