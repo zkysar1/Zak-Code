@@ -29,6 +29,7 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -41,6 +42,7 @@ from zakcode.server.app import IDLE_NUDGE_LINE, NUDGE_FRAME, create_app
 from zakcode.session.say_inbox import interrupt_path, say_path, write_say
 from zakcode.session.store import Session, SessionStore
 from zakcode.usage import Usage
+from zakcode.wakeup import LOOP_SENTINEL, LOOP_WAKE_NOTE, Wakeup, fired_line
 
 
 class _FakeAgent:
@@ -843,3 +845,117 @@ def test_the_deadline_watcher_cannot_interrupt_the_digest_turn(tmp_path: Path) -
     )
     assert finished == ["wrap up"], finished  # liveness: the digest really did run
     assert json.loads(out.read_text(encoding="utf-8"))["digest"] == "ok"
+
+
+# ── wake-ups reach a served session (ADR-0189) ───────────────────────────
+
+
+def _current(store: SessionStore, root: Path) -> Session:
+    marker = (root / ".current-session").read_text(encoding="utf-8").strip()
+    return store.load(marker)
+
+
+def _arm(store: SessionStore, root: Path, prompt: str, *, due_in: float) -> None:
+    """Hold ``prompt`` on the current session, due ``due_in`` seconds from now (negative:
+    already due) — exactly what a turn's ``schedule_wakeup`` leaves on disk."""
+    session = _current(store, root)
+    now = time.time()
+    session.pending_wakeup = Wakeup(
+        prompt=prompt, due_at=now + due_in, armed_at=now, delay_seconds=600
+    )
+    store.save(session)
+
+
+def test_a_due_wakeup_starts_a_turn_on_an_idle_inbox(tmp_path: Path) -> None:
+    """ADR-0189: the wake-up a turn armed fires HERE, on the consumer beat, with no say.
+
+    Pre-fix only the REPL's idle prompt serviced the slot; a served session has no prompt,
+    so the loop's own deadman's net (armed on every ``veto_stall``) could never fire —
+    measured on a prod vessel 2026-09-18, due 02:21:45Z and still armed at 02:35Z.
+    """
+    app, store = _build(tmp_path)
+    assert write_say(say_path(tmp_path), "hello")
+    assert asyncio.run(app.state.consume_one_say()) is True
+    _arm(store, tmp_path, "check the build", due_in=-1.0)
+
+    assert asyncio.run(app.state.consume_one_say()) is True  # no say, no nudge
+
+    session = _current(store, tmp_path)
+    assert session.pending_wakeup is None  # consumed exactly once
+    assert [m.role for m in session.messages] == ["user", "assistant", "user", "assistant"]
+    assert session.messages[2].text == fired_line("check the build")
+
+
+def test_a_wakeup_not_yet_due_is_a_noop_beat(tmp_path: Path) -> None:
+    app, store = _build(tmp_path)
+    assert write_say(say_path(tmp_path), "hello")
+    assert asyncio.run(app.state.consume_one_say()) is True
+    _arm(store, tmp_path, "check the build", due_in=600.0)
+
+    assert asyncio.run(app.state.consume_one_say()) is False
+
+    session = _current(store, tmp_path)
+    assert session.pending_wakeup is not None  # still held
+    assert len(session.messages) == 2
+
+
+class _ComposingAgent(_FakeAgent):
+    """A fake that can compose a skill turn the way the real Agent does (ADR-0187)."""
+
+    def __init__(self, session: Session, composed: list[tuple[str, str, str]]) -> None:
+        super().__init__(session)
+        self._composed = composed
+
+    async def compose_skill_turn(
+        self, name: str, args: str = "", *, fuzzy: bool = True, source: str = "command"
+    ) -> Any:
+        self._composed.append((name, args, source))
+        return SimpleNamespace(
+            invoked=True,
+            turn_text=(
+                "<command-message>aspirations is running</command-message>\n"
+                "<command-name>/aspirations</command-name>\n"
+                "<command-args>loop</command-args>\n"
+                "page 1 of the loop skill"
+            ),
+            denied_reason=None,
+            error=None,
+        )
+
+
+def test_the_loop_sentinel_runs_the_hook_named_reentry(tmp_path: Path) -> None:
+    """The sentinel resolves to the skill the session's last hook re-entry ran, composed by
+    the harness with the wake note in its frame — the REPL door's ADR-0187 turn, served."""
+    composed: list[tuple[str, str, str]] = []
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(
+        settings=settings,
+        store=store,
+        agent_factory=lambda session, model, prompter: _ComposingAgent(session, composed),
+    )
+    assert write_say(say_path(tmp_path), "hello")
+    assert asyncio.run(app.state.consume_one_say()) is True
+    session = _current(store, tmp_path)
+    session.loop_skill = "aspirations loop"
+    store.save(session)
+    _arm(store, tmp_path, LOOP_SENTINEL, due_in=-1.0)
+
+    assert asyncio.run(app.state.consume_one_say()) is True
+
+    assert composed == [("aspirations", "loop", "harness")]
+    text = _current(store, tmp_path).messages[2].text
+    assert text.startswith("<command-message>aspirations is running — [harness] ")
+    assert LOOP_WAKE_NOTE.split(":")[0] in text
+    assert "\n<command-name>/aspirations</command-name>" in text
+
+
+def test_the_loop_sentinel_without_a_known_loop_skill_fires_as_its_line(tmp_path: Path) -> None:
+    app, store = _build(tmp_path)
+    assert write_say(say_path(tmp_path), "hello")
+    assert asyncio.run(app.state.consume_one_say()) is True
+    _arm(store, tmp_path, LOOP_SENTINEL, due_in=-1.0)
+
+    assert asyncio.run(app.state.consume_one_say()) is True
+
+    assert _current(store, tmp_path).messages[2].text == fired_line(LOOP_SENTINEL)

@@ -10640,3 +10640,58 @@ actually sends (tools). Tests: `tests/test_gpt56_tools_effort_none.py` (the pred
 request shape, the re-issue, the fallback tier untouched), `tests/test_framework_stop.py`
 (the signature, the raise time, startup retirement only past the grace, unsigned and
 started stops left alone); FEATURE_AUDIT PROV-25.
+
+## ADR-0189: a served session services its own wake-up, and a stop raised between turns starts the turn that reads it
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** The first prod run on the ADR-0188 build (Zachary's Alien 2, vessel debc47de,
+2026-09-18) ran on its configured model with zero failovers — and still ended with nothing
+consolidated. The mind's loop turn died `veto_stall` at 02:11:45Z (three vetoes naming the
+`/aspirations loop` re-entry, then a `gave_up`, ADR-0187's fence), 22 minutes before the
+run's turn deadline. The fence had armed the loop's deadman's net — `pending_wakeup`
+`<<autonomous-loop-dynamic>>`, due 02:21:45Z — and the net never fired: `WakeupSlot.take_due`
+is serviced by the REPL's idle prompt (ADR-0094, ADR-0187) and by nothing else. A served
+session has no prompt; its consumer beat (`_consume_one_say`) started a turn for a say or a
+nudge (g-373-18) only. The wake-up was still armed at 02:35Z. At 02:33:29Z the sidecar
+signed and raised the framework stop (ADR-0188) with no turn in flight — the loop keeps
+beating inside the window for exactly this (g-373-16), but a beat with nothing to beat
+FOR reads the signal never — so the stop sat on disk until the window closed and was
+retired unconsumed. Verdict on the pre-registered ending prediction: the stop was raised
+and never read.
+
+**Decision.**
+
+1. **The consumer beat services the session's wake-up slot** (`_take_due_wakeup`): with no
+   say and no nudge, a due `pending_wakeup` on the current session is consumed and starts a
+   turn, the same slot semantics the REPL door has. The turn's text is composed as the REPL
+   composes it (`_wakeup_turn_text`): the loop sentinel resolves to the skill the session's
+   last hook-named re-entry ran (`Session.loop_skill`), via `compose_skill_turn(...,
+   source="harness")` with `LOOP_WAKE_NOTE` folded into its frame, after a `veto_stall`
+   context is compacted (`compact_now(trigger="resume")`); any other prompt, or a sentinel
+   this agent cannot compose, is `fired_line(prompt)`. A fired wake-up is never a slash
+   line and never has a nudge folded in front of it (a composed re-entry keeps its frame
+   FIRST). The watch marker shows the fired line, not the sentinel.
+2. **A framework stop raised with no turn to read it starts the loop's re-entry**
+   (`_take_stop_reentry`): `_begin_framework_stop` sets `stop_reentry_pending` once per
+   raise; the first idle beat inside the window runs the sentinel turn from (1). Only when
+   the session knows its hook-named re-entry — a mind that never ran the loop has nothing
+   composable to run, and the raise then behaves exactly as before. A turn in flight is
+   left alone: it reads the signal at its own next beat, and if it ends without having done
+   so the pending kick fires on the beat after.
+3. **The line between WHEN and WHAT is kept** (guard-1807, Zachary's ruling): the sidecar
+   still only decides WHEN — it starts a turn — and the turn it starts is the harness's own
+   composed re-entry of the mind's loop skill, in which Phase -1.4 reads the signal and the
+   mind runs its own graceful stop. No prompt of ours reaches the model.
+
+**Consequences.** The deadman's net the framework arms on every stall now means something in
+a served session: a dead loop resurrects within one beat of its due time, not at the next
+member say. A capped run whose loop is at rest gets its reserve spent on the mind's own
+ending instead of an unread signal. The kick costs one composed turn; the compaction on a
+stalled context is the same call the REPL makes on resume. Not changed here: WHY the loop
+turn stalled (a 360k-token context on a model whose registered 922k window kept the
+threshold compactor asleep while the model's completions went empty from ~150k tokens —
+a sizing decision for the zakpick entries' `context_window`, filed separately), and the
+env-server's reading of the sidecar-signed stop as `mind_stopped` (fixed on its side).
+Tests: `tests/test_server_consumer.py` (four wake-up cases) and
+`tests/test_run_stop_awaits_framework_stop.py` (the kick, and the no-re-entry hold).
