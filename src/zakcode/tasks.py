@@ -71,6 +71,13 @@ COLLAPSED_ROW_RE = re.compile(
 )
 #: The count suffix a folded closed compound carries — ``build (3 steps done)``.
 _CLOSED_SUFFIX_RE = re.compile(rf"\s*\((?:{_CLOSED_COUNT})\)$")
+#: The folded row with its count dropped — ``75.1–75.6`` — the shape a model retypes from
+#: memory. Measured 2026-09-18 (Vinheim prod, gpt-5.6-terra): nine such echoes stood as
+#: LITERAL steps in a plan that ended the run at 109 top-level steps. It expands only when
+#: the ids name a run of CLOSED siblings (ADR-0192).
+_BARE_RANGE_RE = re.compile(
+    r"^(?:\[[x\-]\]\s*)?(?P<first>\d+(?:\.\d+)*)\s*[–-]\s*(?P<last>\d+(?:\.\d+)*)$"
+)
 
 #: ADR-0116 — the evidence mark for a tool call that SUCCEEDED and found NOTHING (``✓`` is a
 #: hit, ``✗`` an error). A search, listing, or lookup that returns empty is a claim about the
@@ -709,17 +716,29 @@ class TaskNetwork(BaseModel):
                     node.children = expand(node.children, self._title_key(node.title))
                     out.append(node)
                     continue
-                match = COLLAPSED_ROW_RE.match(node.title.strip())
-                if match is not None:
-                    first = by_id.get(match["first"])
-                    last = by_id.get(match["last"])
+                title = node.title.strip()
+                match = COLLAPSED_ROW_RE.match(title)
+                bare_range = None if match is not None else _BARE_RANGE_RE.match(title)
+                ids = match if match is not None else bare_range
+                if ids is not None:
+                    first = by_id.get(ids["first"])
+                    last = by_id.get(ids["last"])
                     siblings = self._siblings_of(first) if first is not None else None
+                    run: list[Task] | None = None
                     if siblings is not None and last is not None:
                         start = next((i for i, s in enumerate(siblings) if s is first), None)
                         stop = next((i for i, s in enumerate(siblings) if s is last), None)
                         if start is not None and stop is not None and start <= stop:
-                            out.extend(siblings[start : stop + 1])
-                    continue
+                            run = siblings[start : stop + 1]
+                    if run is not None and (
+                        match is not None or all(s.status in _TERMINAL for s in run)
+                    ):
+                        out.extend(run)
+                        continue
+                    if match is not None:
+                        continue  # a suffixed fold whose ids no longer resolve: an artefact
+                    # A bare range naming no closed run is the model's own title (ADR-0192):
+                    # kept as sent, never dropped.
                 bare = self._title_key(_CLOSED_SUFFIX_RE.sub("", node.title))
                 prior = closed_parents.get((bare, parent_key))
                 suffixed = bare != self._title_key(node.title)
@@ -1240,8 +1259,13 @@ PAGE_BUDGET_CHARS = 12_000
 #: An ordered-work marker written as a pseudocode comment at column 0 inside a fenced
 #: block — the shape a Mind's loop skills use ("# Phase -0.5 — LIGHT PRIME …", "# Phase 1 —
 #: SELECT …"): /worker-loop is one fence carrying 23 of these and no heading at all.
+#: A separator (or the line's end) must follow the id — a prime may sit between them
+#: ("# Phase -0.5e': …" is a marker) (ADR-0192): "# Phase 6 for
+#: non-recurring deep closes rode on LLM memory …" is the second line of a comment, and it
+#: seeded a step titled with that sentence (Vinheim, 2026-09-18).
 _STEP_FENCED_RE = re.compile(
-    r"^#\s*(?:phase|step|lane|stage|part|task)\s+-?\d[\w.]*(?![\w-])", re.I
+    r"^#\s*(?:phase|step|lane|stage|part|task)\s+-?\d[\w.]*(?![\w-])['′]*\s*(?:[:)(\-—–]|\.(?=\s|$)|$)",
+    re.I,
 )
 #: Any heading outside a fence — the cut of last resort before paragraph breaks.
 _ANY_HEADING_RE = re.compile(r"^#{2,4}\s+\S")

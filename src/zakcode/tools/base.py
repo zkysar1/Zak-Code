@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -36,7 +37,7 @@ from pydantic import BaseModel, Field, model_validator
 from zakcode.artifacts import ArtifactRef
 from zakcode.background import BackgroundTasks
 from zakcode.config import PermissionTier
-from zakcode.tasks import TaskNetwork
+from zakcode.tasks import SkillPages, TaskNetwork
 from zakcode.wakeup import WakeupSlot
 
 logger = logging.getLogger("zakcode.tools")
@@ -285,6 +286,12 @@ class ToolContext(BaseModel):
     #: error rather than crashing. (A sub-agent gets the PARENT's resolver — shared registry +
     #: budget — but its own ``caller_query`` below, so attribution stays correct.)
     skill_resolver: SkillResolver | None = None
+    #: The loop's delivery decision for a skill about to be handed over (ADR-0192): the pages
+    #: of ``(name, body)`` when the body cannot sit in the model's window whole, else ``None``
+    #: — the whole body. Asked by the ``use_skill`` door so it never pages a skill the loop's
+    #: page-turning treats as whole (or the reverse). ``None`` (a bare context) pages every
+    #: sectioned body, the pre-0192 shape.
+    skill_pages_for: Callable[[str, str], SkillPages | None] | None = None
     #: The session's :class:`~zakcode.rules.RuleRegistry`, which the ``read_rule`` tool reads to
     #: return ONE rule body by name (Vinheim Lever A chunk 2). It is the retrieval half of
     #: ``lean_rules``: ``render_index()`` puts every rule's name + summary in the prompt and the

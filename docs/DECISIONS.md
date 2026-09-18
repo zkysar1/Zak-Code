@@ -10846,3 +10846,78 @@ Output files live beside the session store (`~/.zakcode/tasks/<sid>/`;
 `<workspace>/.zakcode/tasks/<sid>/` for a served mind, self-ignored for git); nothing
 prunes them yet — a later ADR when the count is measured. Sub-agents are still
 synchronous: `TaskOutput`/`TaskStop` here cover background commands only.
+
+## ADR-0192: a skill that fits is delivered whole — paging and the seeded skeleton are the shape of a body that cannot
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** ADR-0062 made a loaded skill's numbered sections the plan ("the harness
+decomposes, the model refines"; "no flag"), ADR-0067 paged a sectioned skill through that
+plan "one way, for every window size, no flag", and ADR-0088 packed small sections to a
+12,000-char page budget. The system prompt told the model paging happened only for "a skill
+whose body cannot sit in this model's context window" — the code never checked. Measured
+2026-09-18 on a served Mind (Vinheim prod vessel, env debc47de, gpt-5.6-terra behind a
+922,000-token window, the session read from its store): the one served turn loaded twelve
+skills (`/start`, `/boot`, `/prime`, `/aspirations` four times — three of them the ADR-0187
+re-deliveries — `/aspirations-precheck`, `/aspirations-strategic-scan`, `/aspirations-evolve`,
+`/curriculum-gates`, `/review-hypotheses`), every one paged and seeded: 45 page
+deliveries, twelve skeleton seedings, 101 `update_plan` calls out of 232 tool calls
+(each carrying the whole plan, which the round-trip restores forever), eight
+"you marked a section done before its instructions arrived" corrections, two
+"your plan dropped sections" restores. By bytes the stored session was 38% page
+deliveries, 20% `update_plan` payloads, 10% skill loads and 5% plan results against 17%
+command output; the prompt grew from 32k to 360k tokens, empty completions began past
+150k, and the turn died `veto_stall` after 243 calls and $155 with no loop iteration
+completed. The same Mind on Claude Code, whose Skill tool hands the body over whole and
+seeds nothing, runs the same iteration in a fraction of the calls. Three defects rode
+along. The fit check reserved the model's whole output cap as answer room — litellm
+registers 128,000 for the gpt-5.6 tier — so the recipe that pinned the window to 131,072
+that morning would have left 3,072 tokens for the prompt and the body together and ended
+every skill load `skill_too_large`. A fold row echoed without its count (`75.1–75.6`,
+the shape a model retypes from memory) was not a fold to `COLLAPSED_ROW_RE`, so nine such
+echoes stood as literal steps in a plan that ended at 109 top-level steps. And the fenced
+section marker matched any `# Phase N` at column 0, so the comment line
+`# Phase 6 for non-recurring deep closes rode on LLM memory alone and drifted,` — the
+second line of a comment — seeded a step titled with that sentence, in every Mind whose
+`/aspirations` carries it.
+
+**Decision.** One rule, keyed on the window and nothing else: a skill whose whole body
+fits this model's context window beside the system prompt with room to answer — the
+ADR-0066 arithmetic — is delivered WHOLE at every door and seeds NO plan, exactly as
+Claude Code's Skill tool hands a body over. A body that cannot fit is paged and seeded as
+ADR-0062/0067/0088 specify, unchanged. The loop decides once per skill
+(`AgentLoop._skill_fits_whole`, memoised in `_skill_whole`) and every door reads that
+decision — `use_skill` through `ToolContext.skill_pages_for`, a typed `/<name>` and the
+ADR-0187 re-entry through `Agent.compose_skill_turn`, the page-turning through
+`_ensure_skill_pages` — so a skill is never paged at one door and whole at another. A
+whole body gets the ADR-0027 decompose hint when it is long, nothing else: its steps are
+the model's to plan, as for any long request. The answer room is
+`min(max_output, 16,384)`, floored at 4,096 (`_answer_room`), for the in-turn check and
+the startup fit report alike. A bare id range (`_BARE_RANGE_RE`) expands like a counted
+fold when its ids name a run of closed siblings, and is otherwise the model's own title,
+never dropped. The fenced marker requires a separator — `:`, `.`, `)`, `(`, a dash — or the
+line's end after the id (`_STEP_FENCED_RE`).
+
+**Alternatives rejected.** A per-deployment knob ("page always" for small models): the
+Mind never branches on its harness (Ayoai-Mind loop-terminal-protocol.md §4.1) and the
+vessel should not either — the window IS the capability, and a body that fits a 32k
+window is small. Bounding the churn instead (a plan-only stall fence, a served budget):
+worth having as a net, but it would have capped the bill and left the iteration
+undone. Keeping the skeleton for a whole body without paging: ADR-0062's motivation
+(a small model that went straight to work with no plan) was a compliance concern
+argued by risk asymmetry — "the worst case of decomposing is a few extra plan steps" —
+and the measured worst case was $155 and a dead loop; a small model on a small window
+still gets the skeleton, because it gets paging.
+
+**Consequences.** Claude Code parity at the skill door for every model whose window
+holds the body: the Mind's loop skills run without a harness plan, `update_plan` is
+the model's tool again, and the `[plan]` reminder rides only a plan the model made. The
+seeding and paging tests keep their subject by opting into "never fits" (an autouse
+fixture in `test_skill_skeleton.py` and `test_skill_paging.py`; `whole_when_fits` opts
+out); `test_whole_when_fits.py` pins the decision at both doors with a positive control,
+the answer room under the pinned recipe, the bare-range echo, and the fenced marker. The
+Vinheim recipe's `context_window: 131072` pin now compacts a served run at ~105k tokens
+AND loads skills whole; both halves are needed. Not done here: a bound on consecutive
+plan-only completions and a served default cost budget (the nets), a delta form of
+`update_plan` so a full replace stops re-sending done work, and the reasoning-effort
+question for the 5.6 tier (ADR-0188) — each is its own measurement.

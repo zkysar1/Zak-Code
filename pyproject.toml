@@ -126,6 +126,7 @@ asyncio_mode = "auto"
 markers = [
   "cc_conformance: Claude Code compatibility conformance suite (the guardian)",
   "real_page_budget: keep the production page budget (test_skill_paging shrinks it by default)",
+  "whole_when_fits: a paging test that opts into the real fits-whole decision (ADR-0192)",
 ]
 # Bare `pytest` (no uv editable install) resolves the src/ layout via pythonpath, so a
 # fresh clone with deps can run the suite without `pip install -e .` first.

@@ -108,7 +108,7 @@ groups are listed individually; pure helpers are noted at the end).
 | ReadMcpResourceTool | Read a specific MCP resource (`server`, `uri`) | yes | Planned | P1 | M2 | NET. |
 | McpAuthTool | Authenticate to an MCP server (OAuth) | yes | Planned | P1 | M2 | NET. Tri-state auth + token cache. |
 | ConfigTool | Read/write supported CLI settings programmatically (`setting`, `value`) | yes | Planned | P1 | M2 | FS (settings). Restrict to supportedSettings allowlist. |
-| SkillTool | Discover and execute a registered skill (`skill`, `args`) | yes | Partial | P1 | M2 | FS, indirect NET/PROC. Skills are discovered (L0 catalog) + invoked via `/<name>` (M7) and authored via the `save_skill` tool (M11); a dedicated model-facing `skill` *execute* tool is not separately shipped. |
+| SkillTool | Discover and execute a registered skill (`skill`, `args`) | yes | Partial | P1 | M2 | FS, indirect NET/PROC. Skills are discovered (L0 catalog) + invoked via `/<name>` (M7) and authored via the `save_skill` tool (M11); a dedicated model-facing `skill` *execute* tool is not separately shipped. ADR-0192: a body that fits the window is delivered whole with no harness-seeded plan, as Claude Code's Skill tool does; only a body that cannot fit is paged and seeded. |
 | NotebookEditTool | Edit Jupyter notebook cells (`notebook_path`, `cell_id`, `source`, `cell_type`, `edit_mode`) | yes | Planned | P1 | M2 | FS. |
 | ToolSearchTool | Search for / lazily load deferred tool schemas (`query`, `max_results`) | yes | Planned | P1 | M2 | Keeps base prompt small; load schemas on demand. |
 | AskUserQuestionTool | Pause and ask the user a structured multiple-choice question (`question`, `options/header`) | yes | Planned | P1 | M2 | Interactive — force sequential (never parallel). |

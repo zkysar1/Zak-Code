@@ -153,6 +153,7 @@ from zakcode.hooks import (
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import (
+    Capabilities,
     ContextWindowExceeded,
     LLMResult,
     ModelOutputRejected,
@@ -402,6 +403,19 @@ _CLAMP_CHARS_PER_TOKEN = 3
 #: verbatim body that cannot sit beside the system prompt and still leave this much is too
 #: large for the model, full stop — no compaction changes that.
 _MIN_ANSWER_ROOM = 4_096
+#: The most the fit check reserves for the answer (ADR-0192). ``max_output`` is the model's
+#: generation CAP, not the room a skill turn needs: litellm registers 128,000 for the
+#: gpt-5.6 tier, so a recipe that pins its window to 131,072 (Vinheim, 2026-09-18) would
+#: have left 3,072 tokens for the system prompt and the body together — every page
+#: ``skill_too_large`` before the first tool call.
+_MAX_ANSWER_ROOM = 16_384
+
+
+def _answer_room(caps: Capabilities) -> int:
+    """The tokens the fit check keeps free for the answer: the model's output cap, bounded
+    below by :data:`_MIN_ANSWER_ROOM` and above by :data:`_MAX_ANSWER_ROOM`."""
+    return min(caps.max_output or _MIN_ANSWER_ROOM, _MAX_ANSWER_ROOM)
+
 
 #: How many times per turn a paged skill's dropped sections are put back into the plan
 #: (ADR-0075). Each restore tells the model how to close a section it means to skip; a
@@ -2118,7 +2132,12 @@ class AgentLoop:
         # Skill paging (ADR-0067): a sectioned skill's pages by lower-cased name, the highest
         # page delivered so far (session-lifetime — a page belongs to the plan, not the turn),
         # and this turn's delivery record for the summary note.
-        self._skill_pages: dict[str, SkillPages] = {}
+        self._skill_pages: dict[str, SkillPages | None] = {}
+        # Whether a skill's whole body fits this model's window beside the system prompt
+        # (ADR-0192), by lower-cased name: a body that fits is delivered whole and seeds no
+        # plan; only one that cannot is paged. Decided once per skill per loop, so the
+        # use_skill door, the typed door and the page-turning never disagree.
+        self._skill_whole: dict[str, bool] = {}
         self._skill_pages_delivered: dict[str, set[int]] = {
             key: set(pages) for key, pages in session.skill_pages_delivered.items()
         }
@@ -3324,6 +3343,10 @@ class AgentLoop:
         # delivered text is right for an unpaged load; for a paged one it is a defect that
         # would otherwise hide (a one-step plan, no page ever turned) — so it is named.
         whole = self._skill_body(skill)
+        if whole is not None and self._ensure_skill_pages(skill) is None:
+            # ADR-0192: a body that fits the window arrived whole and seeds nothing — its
+            # steps are the model's to plan, as for any long request.
+            return []
         if whole is None and PAGE_HEADER_RE.search(body):
             self._note(
                 "intervention",
@@ -3400,18 +3423,43 @@ class AgentLoop:
             return None
         return body if isinstance(body, str) and body.strip() else None
 
+    def _skill_fits_whole(self, name: str, body: str) -> bool:
+        """Whether ``/<name>``'s whole body sits in this model's window beside the system
+        prompt with room to answer (ADR-0192) — the ADR-0066 arithmetic, decided once per
+        skill per loop. A body that cannot be counted is taken to fit (never paged on a
+        guess, the same fail-open the fit check itself has)."""
+        key = name.lower()
+        verdict = self._skill_whole.get(key)
+        if verdict is None:
+            verdict = self._verbatim_overflow(body, what=f"skill {name!r}") is None
+            self._skill_whole[key] = verdict
+        return verdict
+
+    def _skill_pages_for_delivery(self, name: str, body: str) -> SkillPages | None:
+        """How ``/<name>`` is delivered (ADR-0192): its pages when the body cannot sit in
+        this model's window whole, else ``None`` — the whole body, as Claude Code's Skill
+        tool hands it over. Every door (``use_skill``, a typed ``/<name>``, the loop's own
+        re-entry) asks here, so a skill is never paged at one door and whole at another."""
+        pages = skill_pages(body, skill=name)
+        if pages is None or self._skill_fits_whole(name, body):
+            return None
+        return pages
+
     def _ensure_skill_pages(self, name: str) -> SkillPages | None:
-        """The pages of ``/<name>`` (cached), or ``None`` when it is not a sectioned skill.
+        """The pages of ``/<name>`` (cached), or ``None`` when it is not a sectioned skill —
+        or its body fits the window and is delivered whole (ADR-0192).
         How far it was paged comes with the session (ADR-0086); a document saved before the
         session carried that record is read from the transcript and the plan, once."""
         key = name.lower()
         if key in self._skill_pages:
             return self._skill_pages[key]
         body = self._skill_body(name)
-        pages = skill_pages(body, skill=name) if body else None
+        if not body:
+            return None
+        pages = self._skill_pages_for_delivery(name, body)
+        self._skill_pages[key] = pages
         if pages is None:
             return None
-        self._skill_pages[key] = pages
         if key not in self._skill_pages_delivered:
             # The page headers still in the transcript, plus the sections the plan has taken
             # up — closed under the old contract, so never reopened after the fact.
@@ -3772,8 +3820,8 @@ class AgentLoop:
         index = self._current_page(name)
         if index is None:
             return None
-        pages = self._skill_pages[name.lower()]
-        return pages.render(index)
+        pages = self._skill_pages.get(name.lower())
+        return pages.render(index) if pages is not None else None
 
     def _paged_skills_in_plan(self) -> list[str]:
         """Every skill whose sections may be in the plan: those seeded (the ``from /<skill>``
@@ -4868,7 +4916,7 @@ class AgentLoop:
             raise
         except Exception:  # noqa: BLE001 — counting is best-effort; never block on a guess
             return None
-        reserve = caps.max_output or _MIN_ANSWER_ROOM
+        reserve = _answer_room(caps)
         if body + system + reserve <= window:
             return None
         return (
@@ -6129,6 +6177,7 @@ class AgentLoop:
             plan_autoadvance=self.settings.plan_autoadvance,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
+            skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
@@ -7614,6 +7663,7 @@ class AgentLoop:
             plan_autoadvance=self.settings.plan_autoadvance,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
+            skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it

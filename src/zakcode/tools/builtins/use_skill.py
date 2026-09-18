@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.config import PermissionTier
-from zakcode.tasks import skill_pages, skill_skeleton
+from zakcode.tasks import skill_pages
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 from zakcode.tools.builtins._suggest import _display
 
@@ -152,7 +152,11 @@ class UseSkillTool(Tool):
             return ToolResult.ok(
                 load.body, data={"skill": load.name, "pointer": True}, verbatim=True
             )
-        pages = skill_pages(load.body, skill=load.name)
+        pages = (
+            ctx.skill_pages_for(load.name, load.body)
+            if ctx.skill_pages_for is not None
+            else skill_pages(load.body, skill=load.name)
+        )
         if pages is not None:
             # Page the skill through the plan (ADR-0067): the model gets the front matter and
             # section 1 now; the loop hands over each next section when update_plan marks
@@ -180,22 +184,9 @@ class UseSkillTool(Tool):
                 verbatim=True,
             )
         output = f"{load.body}\n\n{footer}" if footer else load.body
-        sections = len(skill_skeleton(load.body, skill=load.name))
-        if sections:
-            # The body's numbered sections are the plan (ADR-0062): the loop seeds them as
-            # steps the moment this result lands, so the hint describes a checklist that
-            # already exists — not one the model is asked to write.
-            return ToolResult.ok(
-                output,
-                data={"skill": load.name, "decompose": True, "sections": sections},
-                hint=(
-                    f"Its {sections} numbered sections are now steps in your plan. Work "
-                    "through them in order, marking each done with update_plan (send the "
-                    "whole plan) as you finish it; split any step that is several actions. "
-                    "If a step says to use another skill, call Skill with that name."
-                ),
-                verbatim=True,
-            )
+        # A body that fits arrives whole and seeds nothing (ADR-0192): its steps are the
+        # model's to plan, as for any long request. A harness-seeded checklist over a whole
+        # body was measured as a tax, not a rail (Vinheim prod, 2026-09-18).
         if len(load.body) >= _DECOMPOSE_HINT_MIN_CHARS:
             # The decompose rail (ADR-0027): a long body is a plan waiting to happen, not
             # working state to hold in the model's head. Fired at the exact moment the
