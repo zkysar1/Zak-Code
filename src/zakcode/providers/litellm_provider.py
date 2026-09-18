@@ -833,7 +833,7 @@ class LiteLLMProvider(Provider):
             # the hand-maintained Groq rate table it used to sit behind was removed with that
             # provider (g-369-295), and it had become a mispricing hazard — it matched by STEM,
             # so it priced `openai/gpt-oss-*` at Groq rates.
-            cost = cls._litellm_token_cost(model, prompt, completion)
+            cost = cls._litellm_token_cost(model, prompt, completion, cache_read, cache_creation)
 
         return Usage(
             prompt_tokens=prompt,
@@ -845,18 +845,48 @@ class LiteLLMProvider(Provider):
         )
 
     @staticmethod
-    def _litellm_token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    def _litellm_token_cost(
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+    ) -> float:
         """Cost from litellm's own price map by token counts — the streaming-path fallback when a
-        chunk carried no response_cost. Best-effort: any failure (unknown model) returns 0.0."""
+        chunk carried no response_cost. Best-effort: any failure (unknown model) returns 0.0.
+
+        The cached counts are priced at the model's cached rates, exactly as litellm prices a whole
+        (non-streamed) response. Measured 2026-09-18 on a streamed gpt-5.6-luna call: 9,231 of
+        9,234 prompt tokens were cache reads and this path recorded $0.00185 against $0.00019 at the
+        provider's rates — every prompt token at the uncached rate, 9.7x. ``max_cost_usd`` and the
+        served usage a vessel's budget meter reads count this figure.
+
+        A count is priced at a cached rate only when the price map HAS that rate. litellm prices it
+        at $0 otherwise (measured: 1,687 of its 3,096 priced chat models list no cache-read rate),
+        and an unpriced token must cost the input rate, never nothing: the ceiling this feeds is
+        better early than blind.
+        """
         if not model:
             return 0.0
         try:
             import litellm
 
+            prompt_tokens = max(0, prompt_tokens)
+            rates: dict[str, Any] = {}
+            # No rates to read leaves every prompt token at the input rate.
+            with contextlib.suppress(Exception):
+                rates = dict(litellm.get_model_info(model))
+            read = written = 0
+            if rates.get("cache_read_input_token_cost") is not None:
+                read = min(max(0, cache_read_tokens), prompt_tokens)
+            if rates.get("cache_creation_input_token_cost") is not None:
+                written = min(max(0, cache_creation_tokens), prompt_tokens - read)
             prompt_cost, completion_cost = litellm.cost_per_token(
                 model=model,
-                prompt_tokens=max(0, prompt_tokens),
+                prompt_tokens=prompt_tokens,
                 completion_tokens=max(0, completion_tokens),
+                cache_read_input_tokens=read,
+                cache_creation_input_tokens=written,
             )
             return float(prompt_cost) + float(completion_cost)
         except Exception:  # noqa: BLE001 — cost estimation is best-effort, never breaks a turn
