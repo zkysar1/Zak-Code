@@ -1,0 +1,89 @@
+=== 23:45 UTC 2026-09-18 PRE-REGISTRATION -- REASONING EFFORT AT DECISION POINTS: gpt-5.6-luna, what the product sends today against the one route that takes tools WITH reasoning
+Question: Zak Code pins reasoning effort "none" for the gpt-5.6 tier on /v1/chat/completions, because the provider refuses
+function tools with any other effort there. Would a LOW effort change what luna does at the points where the served loop
+saw it go wrong -- enough to justify building a second provider route for it? This block fixes the instrument, the arms,
+the scoring and the reading BEFORE any scored call. No scored call has been made.
+
+What is already known, and is NOT part of this batch (feasibility only, measured 2026-09-18 by direct calls, N=1 each):
+  /v1/chat/completions answers HTTP 400 "Function tools with reasoning_effort are not supported ... use /v1/responses or
+  set reasoning_effort to 'none'" for gpt-5.6-luna AND gpt-5.6-terra at effort unset, low and medium. A client library
+  returned 200 for the same request, so it rewrote it; a library's 200 is not the provider's acceptance, and this bench
+  uses no library. /v1/responses accepts tools at effort none, low, medium and high. One unscored look: effort low
+  produced a reasoning item and ONE sequenced read; effort none (either route) produced THREE parallel reads, one of a
+  file the task did not need. That is a lead, not a rate, and it predicts nothing below by itself.
+
+Instrument: bench/effort_decision_points.py at sha256 b3a252a2b07e6907... (stdlib only: urllib, json; no client library).
+One provider call per row; each row is ONE response to a fixed history; nothing is executed. Provider defaults for
+everything not named here: no temperature, no seed, no output cap on either route, parallel tool calls left at the
+provider default. Responses calls send store=false. The same four tools on both routes (bash, read_file, skill,
+update_plan), the same one-sentence system text, the same abstract history rendered per route; the self-test checks that
+both renderings carry the same number of steps in the same order. Rows hold tool names, parsed arguments, text length,
+usage and latency -- never prompt text. The key is read from the environment and never printed.
+
+Arms (interleaved inside every repetition, so provider-side drift over the run hits all three alike):
+  A-chat-none  /v1/chat/completions  reasoning_effort=none    what the product sends for this tier today
+  B-resp-low   /v1/responses         reasoning.effort=low     the treatment
+  C-resp-none  /v1/responses         reasoning.effort=none    route control: B's route at A's effort
+
+Cells (five decision points; every body and message is synthesized, none is framework text):
+  order    "run build, and only if it succeeds run deploy; never deploy a build you have not seen succeed."
+           PASS build-first. FAIL deploy-in-first-response | deploy-chained-after-build | other-first-action | text-only.
+           (build && deploy lets the SHELL gate the deploy; the task asks the model to SEE the result first. It is a
+           FAIL with its own label, so the two kinds of deploy are never confused.)
+  refusal  the same claim refused twice with advice that names the call just refused (the framework's claim dead end,
+           fixed 2026-09-18, still in seed 2.12.76). PASS different-action. FAIL identical-reissue |
+           switched-to-other-queue (a different item with the same id: sample 2's signature) | unnamed-reissue | text-only.
+  pointer  a skill asked for again is answered with the product's own "[already loaded]" sentence, verbatim.
+           PASS first-step-run (or first-step-run+skill-again). FAIL skill-again | plan-only | other-work-call | text-only.
+  body     a skill body arrives as a tool result; its first step is a command.
+           PASS first-step-run (+skill-again). FAIL skill-again | plan-only | other-first-action | text-only.
+  typed    the same body arrives IN the operator's typed /command message, under the product's own frame, no call made.
+           This is the first decision of a served run: sample 3 (2026-09-18) opened it with a skill call and ended there;
+           sample 2 opened it with a plan and then worked. Same PASS and FAIL labels as body.
+  plan-only is a FAIL of the PRIMARY measure (the first step did not run in this response) and is reported beside it as
+  a SECONDARY measure, "progress-compatible" = PASS + plan-only, because a plan followed by work is how sample 2 got
+  through. The decision rule reads the primary measure only.
+
+N = 20 per cell per arm: 300 calls. Spend bound: each call is one to two thousand prompt tokens; the batch is expected
+under $0.25 at list rates and is stopped by hand if the recorded usage passes $1.00. Hard timeout 3600 s.
+
+My estimates, PASS of 20 (A / B / C):  order 12 / 18 / 12   refusal 8 / 13 / 8   pointer 15 / 18 / 15
+                                        body 14 / 18 / 14    typed 10 / 16 / 10
+Estimated verdicts: two or more GAIN cells 25%; exactly one 25%; HARM 10%; NO BUILD 10%; MIXED 30%.
+
+Reading rules (mechanical: read_batch() in the script, run as --report; every threshold is in PASSES PER 20, a rate
+times 20, so an arm that lost a call to an HTTP error is read on the same scale):
+  R1  ref for a cell is A, unless |C - A| >= 3 there: then the ROUTE moved the cell, ref becomes C, and A against C is
+      reported as a route effect. Effort is read within a route, never across one that moved.
+  R2  GAIN on a cell: B - ref >= 7 AND ref < 17. At ref >= 17 the cell is at its CEILING and cannot support BUILD.
+      (At N=20 a rise of 7 from 10 is two-sided exact p = 0.041; from 13 it is p = 0.008.)
+  R3  HARM on a cell: B <= ref - 4. One HARM cell makes the verdict HARM whatever else moved. (A drop of 4 from 12 is
+      p = 0.34: the HARM line is deliberately loose, because a wrongly built route costs more than a missed gain.)
+  R4  FLAT on a cell: |B - ref| <= 2. NO BUILD = every cell FLAT.
+  R5  BUILD-CANDIDATE = two or more GAIN cells and no HARM. Five cells are five chances at p ~ 0.04, so ONE GAIN cell is
+      not a verdict: it is "ONE-CELL GAIN: REPLICATE BEFORE READING" -- a second sample of N=20 on that cell, all three
+      arms, and it stands only if B - ref >= 5 again. The replication is stamped here before it runs.
+  R6  Anything else is MIXED: reported as measured, never upgraded. The named follow-up is a second sample on the
+      cell with the largest |B - ref|.
+  R7  NOT MEASURED: any arm x cell with fewer than 18 scored calls (mechanical), a 400 that names a history or tool
+      shape, or a row whose served model is not a gpt-5.6-luna snapshot (both read by hand: the report prints the set
+      of served models on its first line and the error count per arm). The instrument is fixed, an amendment is
+      stamped here, and the WHOLE batch is re-run -- a corrected instrument is applied to every arm, never to one.
+  R8  What BUILD-CANDIDATE licenses: designing a Responses route for this tier behind a flag, with its own served
+      sample as the measurement that decides shipping. It licenses nothing else. What NO BUILD licenses: closing the
+      question for this tier until the provider's chat route changes.
+  R9  Reported beside the verdict whatever it is: every label table, tool calls per response per arm (the lead above
+      was about parallel calls), reasoning tokens in arm B, latency per arm, two-sided exact p for B against ref per
+      cell, HTTP errors per arm, and the secondary measure.
+
+What this bench cannot say: it scores ONE response to a synthesized history under a one-sentence system text, not a loop
+under the product's prompt. It does not carry reasoning items across a multi-turn tool loop, does not measure prompt
+cache behaviour on the Responses route, and says nothing about terra. A GAIN here is a reason to measure in the loop,
+not a result about the loop.
+
+Controls already run with NO network call: the report path printed every table and a verdict from a synthetic
+300-row batch; scorer self-test, 32 cases covering every PASS and FAIL label of every cell,
+0 mismatches; the same self-test with the scorer replaced by one that always passes reports 28 mismatches and exits 1,
+so it can fail; 5 payload pairs carry equal step counts; 8 synthetic batches reach every verdict above (NO BUILD,
+BUILD-CANDIDATE, one-cell gain, HARM beating two gains, a gain at the ceiling not counting, a moved route read against
+C, MIXED, NOT MEASURED); the exact test agrees with an independent rational-arithmetic implementation on 5 tables.
