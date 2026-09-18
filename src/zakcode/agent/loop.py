@@ -624,6 +624,15 @@ _BARE_STATUS_MAX_CHARS = 600
 #: needed") sent five times through five veto cycles, each cycle billing a full context.
 #: Below this floor repeats are conversation ("Done." twice), not parroting.
 _BROKEN_RECORD_MIN_CHARS = 80
+#: ...and the guard's own bound (ADR-0194). It is checked first and `continue`s, so nothing
+#: after it — not the ADR-0058 cascade cap, not the ADR-0187 veto fence — can end a turn whose
+#: model keeps re-sending one text: measured 2026-09-18 (gpt-5.6-luna, main and branch alike), a
+#: CORRECT answer the fresh-eyes review had flagged was re-sent and vetoed twenty times, to
+#: the iteration cap, each veto billing a 37k-token context. A rail that did not move the
+#: model twice will not move it a third time: after this many rails for one text the guard
+#: stands down for that text, the answer goes on to the gates every other completion meets
+#: (each bounded), and the turn is marked degraded.
+_MAX_BROKEN_RECORD_RAILS = 2
 
 
 def _broken_record_nudge(count: int) -> str:
@@ -6814,11 +6823,23 @@ class AgentLoop:
                 # Broken-record guard (ADR-0026): the same completion re-sent within one
                 # turn is the parroting attractor (a veto or gate nudge re-prompts and a
                 # small model re-emits its previous message verbatim, forever). Checked
-                # FIRST so a parrot never re-buys the critic or the quality gate.
+                # FIRST so a parrot never re-buys the critic or the quality gate — and
+                # bounded per text (ADR-0194), because checked-first means nothing later
+                # can end a turn the guard keeps vetoing.
                 if result.text and len(result.text) >= _BROKEN_RECORD_MIN_CHARS:
                     record_key = " ".join(result.text.split()).lower()
                     completion_counts[record_key] = completion_counts.get(record_key, 0) + 1
-                    if completion_counts[record_key] >= 2:
+                    repeats = completion_counts[record_key] - 1
+                    if repeats == _MAX_BROKEN_RECORD_RAILS + 1:
+                        turn_degraded = True  # ADR-0194: the rail had its say; the answer stands
+                        self._note(
+                            "intervention",
+                            f"the same completion {repeats + 1} times — "
+                            f"{_MAX_BROKEN_RECORD_RAILS} rails did not move it; the guard "
+                            "stands down and the answer stands",
+                            kind="broken_record_stand_down",
+                        )
+                    if 1 <= repeats <= _MAX_BROKEN_RECORD_RAILS:
                         self._turn_struggle = True
                         self._note(
                             "intervention",
@@ -8571,7 +8592,20 @@ class AgentLoop:
                     if assistant_text and len(assistant_text) >= _BROKEN_RECORD_MIN_CHARS:
                         record_key = " ".join(assistant_text.split()).lower()
                         completion_counts[record_key] = completion_counts.get(record_key, 0) + 1
-                        if completion_counts[record_key] >= 2:
+                        repeats = completion_counts[record_key] - 1
+                        if repeats == _MAX_BROKEN_RECORD_RAILS + 1:
+                            turn_degraded = True  # ADR-0194 — see the buffered twin
+                            self._note(
+                                "intervention",
+                                f"the same completion {repeats + 1} times — "
+                                f"{_MAX_BROKEN_RECORD_RAILS} rails did not move it; the guard "
+                                "stands down and the answer stands",
+                                kind="broken_record_stand_down",
+                            )
+                            yield AgentStatus(
+                                message="repeated the same message again — the answer stands"
+                            )
+                        if 1 <= repeats <= _MAX_BROKEN_RECORD_RAILS:
                             self._turn_struggle = True
                             self._note(
                                 "intervention",

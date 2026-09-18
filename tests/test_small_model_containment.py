@@ -19,11 +19,12 @@ from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition
 from zakcode.agent.loop import (
     _CLAIM_NUDGE,
     _INTENT_NUDGE,
+    _MAX_BROKEN_RECORD_RAILS,
     AgentLoop,
     _announces_future_work,
     _claims_file_work,
 )
-from zakcode.events import AgentStatus
+from zakcode.events import AgentDone, AgentStatus
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import (
     Capabilities,
@@ -574,3 +575,100 @@ def test_short_repeats_stay_below_the_floor(tmp_path: Path) -> None:
     result = asyncio.run(loop.arun_turn("quick check"))
     assert result.stop_reason == "completed"
     assert not any("already said exactly this" in m.text for m in loop.session.messages)
+
+
+# ── …and its bound (ADR-0194) ────────────────────────────────────────────────
+
+_PARROTED = (
+    "The plan shows all steps are complete and the loop is active. "
+    "No further action is needed - the perpetual learning loop is running."
+)
+
+
+def _veto_hook(times: int) -> Any:
+    """A Stop-hook stand-in that vetoes the first ``times`` turn ends, then allows."""
+    from zakcode.hooks import TurnEndResult
+
+    vetoes = [0]
+
+    def hook(payload: Any) -> TurnEndResult | None:
+        if vetoes[0] < times:
+            vetoes[0] += 1
+            return TurnEndResult(vetoed=True, continuation_prompt="continue with the work")
+        return None
+
+    return hook
+
+
+def _rails(loop: AgentLoop) -> list[str]:
+    return [
+        m.text
+        for m in loop.session.messages
+        if m.role == "user" and ("already said exactly this" in m.text or "of the SAME" in m.text)
+    ]
+
+
+def test_the_guard_stands_down_after_two_rails_and_the_answer_stands(tmp_path: Path) -> None:
+    """Measured 2026-09-18 (gpt-5.6-luna): a correct answer the fresh-eyes review had flagged
+    was re-sent and vetoed twenty times, to the iteration cap — the guard is checked first and
+    had no bound, so nothing after it could end the turn. The model here never says anything
+    else; before the bound this turn ended ``max_iterations`` with all eight calls spent."""
+    loop = _loop([LLMResult(text=_PARROTED)] * 8, tmp_path)
+    loop.turn_end_vetoable = True
+    loop.hook_manager.register_turn_end(_veto_once_hook())
+    result = asyncio.run(loop.arun_turn("keep the loop going"))
+    assert result.stop_reason == "completed"
+    assert loop.provider.calls == 4  # type: ignore[attr-defined]  # said; rail; sharper rail; stands
+    rails = _rails(loop)
+    assert len(rails) == _MAX_BROKEN_RECORD_RAILS == 2
+    assert "already said exactly this" in rails[0] and "occurrence 3" in rails[1]
+    assert result.degraded is True
+    kinds = [e.data.get("kind") for e in loop._trace.events]
+    assert kinds.count("broken_record") == 2
+    assert kinds.count("broken_record_stand_down") == 1
+
+
+def test_the_bound_is_per_text_and_a_rail_that_works_costs_nothing_more(tmp_path: Path) -> None:
+    other = _PARROTED.replace("perpetual learning loop", "second and unrelated background job")
+    loop = _loop(
+        [
+            LLMResult(text=_PARROTED),
+            LLMResult(text=_PARROTED),  # rail 1 for the first text
+            LLMResult(text=other),
+            LLMResult(text=other),  # rail 1 for the second text — its own count
+            LLMResult(text="New information: claimed goal g-1 and started execution."),
+        ],
+        tmp_path,
+    )
+    loop.turn_end_vetoable = True
+    loop.hook_manager.register_turn_end(_veto_hook(2))  # one veto ahead of each text's re-send
+    result = asyncio.run(loop.arun_turn("keep the loop going"))
+    assert result.stop_reason == "completed"
+    assert loop.provider.calls == 5  # type: ignore[attr-defined]
+    assert len(_rails(loop)) == 2
+    kinds = [e.data.get("kind") for e in loop._trace.events]
+    assert "broken_record_stand_down" not in kinds
+
+
+def test_the_streaming_twin_stands_down_the_same_way(tmp_path: Path) -> None:
+    provider = _StreamScript([_PARROTED] * 8)
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        max_iterations=8,
+    )
+    loop.turn_end_vetoable = True
+    loop.hook_manager.register_turn_end(_veto_once_hook())
+
+    async def _collect() -> list[Any]:
+        return [ev async for ev in loop.astream_turn("keep the loop going")]
+
+    events = asyncio.run(_collect())
+    assert provider.calls == 4
+    statuses = [ev.message for ev in events if isinstance(ev, AgentStatus)]
+    assert statuses.count("repeated the same message — asking for new action") == 2
+    assert statuses.count("repeated the same message again — the answer stands") == 1
+    done = [ev for ev in events if isinstance(ev, AgentDone)]
+    assert len(done) == 1 and done[0].stop_reason == "completed" and done[0].degraded is True
