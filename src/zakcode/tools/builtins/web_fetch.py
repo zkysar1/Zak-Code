@@ -109,10 +109,10 @@ class WebFetchTool(Tool):
     """Fetch a public http(s) URL and return its readable text content."""
 
     spec = ToolSpec(
-        name="web_fetch",
+        name="WebFetch",
         description=(
             "Fetch a public http(s) URL and return its readable text (HTML is converted to "
-            "plain text). For reading a web page or doc found via web_search. Output is "
+            "plain text). For reading a web page or doc found via WebSearch. Output is "
             "size-capped; localhost/private/internal addresses are refused. To call an API "
             "with a saved secret, write {{secret:NAME}} in the url or a header value — the "
             "real value is substituted outside your context (see the secret_names tool)."

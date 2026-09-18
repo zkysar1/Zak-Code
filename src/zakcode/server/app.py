@@ -284,7 +284,7 @@ def _reader_tool_for_artifact(artifact: ArtifactRef) -> str:
     if artifact.kind == "image":
         return "inspect_image"
     if artifact.kind == "text":
-        return "read_file"
+        return "Read"
     return ""
 
 

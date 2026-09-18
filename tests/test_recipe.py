@@ -936,7 +936,7 @@ def test_harness_shell_call_prefers_bash_verbatim(tmp_path: Path) -> None:
     loop = _loop(_ScriptedProvider([LLMResult(text="noop")]), tmp_path)
     call = loop._harness_shell_call('py "x.py"', "verify_run_0")
     assert call is not None
-    assert call.name == "bash"
+    assert call.name == "Bash"
     assert call.arguments["command"] == 'py "x.py"'  # no `&` prefix on the bash form
     assert call.id == "verify_run_0"
 
@@ -1034,7 +1034,7 @@ def test_recipe_streaming_harness_run_emits_status(tmp_path: Path) -> None:
     statuses = [e.message for e in events if isinstance(e, AgentStatus)]
     assert any("ran the file to verify" in m for m in statuses)
     # audit2 #9: the harness-issued bash run is surfaced on the live stream like any tool.
-    harness_calls = [e for e in events if isinstance(e, AgentToolCall) and e.name == "bash"]
+    harness_calls = [e for e in events if isinstance(e, AgentToolCall) and e.name == "Bash"]
     assert harness_calls and "p.py" in harness_calls[0].arguments["command"]
     assert any(isinstance(e, AgentToolResult) for e in events)
 

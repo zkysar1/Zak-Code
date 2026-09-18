@@ -161,7 +161,7 @@ def test_undecodable_arguments_name_the_real_defect(tmp_path: Path) -> None:
     assert len(blocks) == 1 and blocks[0].is_error is True
     assert "were not valid JSON" in blocks[0].output
     assert "cut off by the output limit" in blocks[0].output
-    assert "write_file the first part" in blocks[0].output
+    assert "call Write with the first part" in blocks[0].output
     assert "'path' is required" not in blocks[0].output
     assert blocks[0].data["undecodable_arguments"] is True and blocks[0].data["cut_off"] is True
     assert not (tmp_path / "out.py").exists()

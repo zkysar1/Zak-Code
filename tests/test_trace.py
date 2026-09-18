@@ -89,7 +89,7 @@ async def test_tool_call_is_traced(tmp_path: Path) -> None:
     result = await loop.arun_turn("write a file")
     tools = result.trace.of_kind("tool")
     assert len(tools) == 1  # one tool call, traced compactly (name + ok)
-    assert tools[0].detail == "write_file" and tools[0].data["ok"] is True
+    assert tools[0].detail == "Write" and tools[0].data["ok"] is True
 
 
 async def test_trace_dump_writes_jsonl_when_trace_dir_set(tmp_path: Path) -> None:

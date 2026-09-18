@@ -63,9 +63,10 @@ from zakcode.hooks import _CLAUDE_CODE_TOOL_NAMES
 logger = logging.getLogger("zakcode.permissions_settings")
 
 #: Inverse of :data:`zakcode.hooks._CLAUDE_CODE_TOOL_NAMES` — a Claude Code tool name (``"Bash"``,
-#: ``"Read"``, ``"MultiEdit"``) → the canonical Zak Code tool it gates (``"bash"``, ``"read_file"``,
-#: ``"edit_file"``). Built from the single source of truth in ``hooks`` so the two never drift; one
-#: CC name maps to exactly one Zak tool (``Edit`` and ``MultiEdit`` both fold onto ``edit_file``).
+#: ``"Read"``, ``"MultiEdit"``, ``"TodoWrite"``) → the canonical Zak Code tool it gates (``"Bash"``,
+#: ``"Read"``, ``"Edit"``, ``"update_plan"``). Built from the single source of truth in ``hooks`` so
+#: the two never drift; one CC name maps to exactly one tool (``Edit`` and ``MultiEdit`` both fold
+#: onto ``Edit``). Since ADR-0190 most rows are the identity.
 _CC_TO_ZAK_TOOL: dict[str, str] = {
     cc_name: zak_name
     for zak_name, cc_names in _CLAUDE_CODE_TOOL_NAMES.items()

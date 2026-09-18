@@ -91,9 +91,9 @@ def test_a_complete_cc_plugin_works_end_to_end(tmp_path: Path) -> None:
 
     # 3) PERMISSIONS — the denies bind: a read-only tool (WebFetch) is denied UNCONDITIONALLY, the
     #    ingested command rule escalates `rm -rf`, while a benign command still auto-allows.
-    assert policy.decide(_Spec("web_fetch", web), {"url": "http://x"})[0] is PermissionDecision.DENY
-    assert policy.decide(_Spec("bash", bash), {"command": "ls -la"})[0] is PermissionDecision.ALLOW
-    assert policy.decide(_Spec("bash", bash), {"command": "rm -rf /tmp/x"})[0] is not (
+    assert policy.decide(_Spec("WebFetch", web), {"url": "http://x"})[0] is PermissionDecision.DENY
+    assert policy.decide(_Spec("Bash", bash), {"command": "ls -la"})[0] is PermissionDecision.ALLOW
+    assert policy.decide(_Spec("Bash", bash), {"command": "rm -rf /tmp/x"})[0] is not (
         PermissionDecision.ALLOW
     )
 

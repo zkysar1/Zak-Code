@@ -449,6 +449,17 @@ class ToolRegistry:
     def _canonical(self, name: str) -> str:
         return self._aliases.get(name, name)
 
+    def canonical(self, name: str) -> str:
+        """The canonical name behind ``name`` (an alias resolves; anything else is returned
+        unchanged, so an unknown name stays visibly unknown)."""
+        return self._canonical(name)
+
+    def aliases_of(self, name: str) -> tuple[str, ...]:
+        """Every alias that routes to the tool ``name`` (canonical or alias) names, in
+        registration order — the spellings a hook matcher or an operator config may use."""
+        canonical = self._canonical(name)
+        return tuple(a for a, target in self._aliases.items() if target == canonical)
+
     def get(self, name: str) -> Tool | None:
         """Look up a tool by name or alias (``None`` if unknown)."""
         return self._tools.get(self._canonical(name))
@@ -508,11 +519,14 @@ class ToolRegistry:
         (the default) → always True.
         """
         canonical = self._canonical(name)
-        if any(fnmatchcase(canonical, pat) for pat in self._exposure_deny):
+        # A pattern matches the canonical name OR any alias (ADR-0190: an operator's ``web_*``
+        # written before the rename still covers WebFetch / WebSearch through their aliases).
+        spellings = (canonical, *self.aliases_of(canonical))
+        if any(fnmatchcase(s, pat) for s in spellings for pat in self._exposure_deny):
             return False
         if not self._exposure_allow:
             return True
-        return any(fnmatchcase(canonical, pat) for pat in self._exposure_allow)
+        return any(fnmatchcase(s, pat) for s in spellings for pat in self._exposure_allow)
 
     def exposed_names(self) -> list[str]:
         """Canonical names actually offered to the model now: active AND passing the filter."""
@@ -564,7 +578,7 @@ class ToolRegistry:
                     if match is not None:
                         return ToolResult.error(
                             f"{name!r} is a skill, not a tool.",
-                            fix=f'Run it with use_skill(name="{match}").',
+                            fix=f'Run it with Skill(skill="{match}").',
                         )
             except Exception:  # noqa: BLE001 — the skill hint is best-effort; a broken
                 # resolver must never turn a clean unknown-tool error into a crash

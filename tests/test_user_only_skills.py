@@ -109,8 +109,8 @@ def test_model_catalog_omits_user_only_skills_but_the_operator_catalog_keeps_the
 
 def test_the_prompt_names_user_only_commands_without_a_use_skill_call(tmp_path: Path) -> None:
     rendered = _registry(tmp_path).render_catalog()
-    assert 'use_skill(name="forge-skill")' in rendered
-    assert 'use_skill(name="start")' not in rendered
+    assert 'Skill(skill="forge-skill")' in rendered
+    assert 'Skill(skill="start")' not in rendered
     assert "User-only commands (/start)" in rendered
     assert "never call, plan, or seed one" in rendered
 

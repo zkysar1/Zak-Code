@@ -182,7 +182,7 @@ async def test_registry_unknown_tool_that_is_a_skill_points_at_use_skill() -> No
         result = await ToolRegistry().execute(called, {}, ctx)
         assert result.is_error
         assert "is a skill, not a tool" in result.output
-        assert 'use_skill(name="start")' in (result.fix or "")
+        assert 'Skill(skill="start")' in (result.fix or "")
     # a genuinely-unknown name (not a skill) still yields the bare unknown-tool error
     plain = await ToolRegistry().execute("definitely_not_a_thing", {}, ctx)
     assert plain.is_error

@@ -96,7 +96,7 @@ _HANDOFF = (
 #: offered them, rather than being offered them and refused at runtime. This is the
 #: structural, schema-level guarantee behind "a planner literally cannot edit" (see
 #: docs/ROADMAP.md M4 exit criteria).
-READ_ONLY_TOOLS = ["read_file", "list_dir", "glob", "grep"]
+READ_ONLY_TOOLS = ["Read", "LS", "Glob", "Grep"]
 
 #: A general-purpose sub-agent with the parent's full toolset (the default delegate).
 GENERAL_PURPOSE = SubAgentDefinition(

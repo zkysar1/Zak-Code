@@ -354,7 +354,7 @@ class Settings(BaseSettings):
     # invocation is operator-controlled and never throttled. 0 (default) = unlimited, so behavior
     # is unchanged.
     skill_invocation_budget: int = Field(
-        default=0, ge=0, description="Max model-driven use_skill invocations per turn (0 = off)."
+        default=0, ge=0, description="Max model-driven Skill invocations per turn (0 = off)."
     )
     # Fold the workspace README.md into the agent's project-context block (alongside the discovered
     # AGENTS.md / CLAUDE.md / ZAK.md guides). The guides are always loaded; this toggles ONLY the
@@ -679,14 +679,14 @@ class Settings(BaseSettings):
     # exfil residual (see docs/RISKS.md). Comma/space/JSON list from the env, like allowed_models.
     web_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
-        description="If non-empty, web_fetch may only reach these domains (and their subdomains).",
+        description="If non-empty, WebFetch may only reach these domains (and their subdomains).",
     )
     # Per-call confirmation gate for web_fetch egress (the other named hardening for the
     # public-egress residual). When true, every web_fetch is escalated to a confirmation prompt
     # (session-grantable, like a write); in ``deny`` mode it is blocked outright. Default off.
     web_fetch_confirm: bool = Field(
         default=False,
-        description="Require operator confirmation before each web_fetch (egress gate).",
+        description="Require operator confirmation before each WebFetch (egress gate).",
     )
     # Named secrets for {{secret:NAME}} substitution (tools/builtins/_secrets.py). These are
     # PATHS, not secrets — the values stay in the pointed-at file, consistent with the "secrets
@@ -870,7 +870,7 @@ class Settings(BaseSettings):
     # config change, never a code change. (web_fetch needs no backend — it is plain HTTP.)
     search_backend: Literal["ddgs", "tavily", "searxng"] = Field(
         default="ddgs",
-        description="web_search backend: ddgs (default, no key) | tavily | searxng.",
+        description="WebSearch backend: ddgs (default, no key) | tavily | searxng.",
     )
     searxng_url: str | None = Field(
         default=None,

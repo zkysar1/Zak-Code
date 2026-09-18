@@ -10695,3 +10695,82 @@ a sizing decision for the zakpick entries' `context_window`, filed separately), 
 env-server's reading of the sidecar-signed stop as `mind_stopped` (fixed on its side).
 Tests: `tests/test_server_consumer.py` (four wake-up cases) and
 `tests/test_run_stop_awaits_framework_stop.py` (the kick, and the no-re-entry hold).
+
+## ADR-0190: the model-visible tool names are Claude Code's; the old names are aliases, and every reader resolves a spelling before it matches one
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** A served Mind on a small model (serene, gemini-3.5-flash, 2026-09-17) read the
+framework's stop-hook imperative — `Skill('aspirations') with args='loop'` — and answered it in
+prose for hours, because its tool list showed `use_skill` and `schedule_wakeup`, not `Skill` and
+`ScheduleWakeup`. ADR-0187 closed the spiral on the harness side (a veto that names a skill is
+delivered; a re-entry nobody runs is fenced), and `Skill` had been an *alias* of `use_skill`
+since ADR-0187's precursor — the call would have resolved. It was never made. Aliases change
+what RESOLVES; a small model calls what it can SEE. A framework-side fix that spelled the
+imperative per detected harness (Ayoai-Mind, 2026-09-17) was reverted the next day on the
+operator's ruling: Zak Code must run outside the Mind, and the Mind must run on both harnesses
+without knowing which — one harness contract, implemented by the vessel (this repo's ADR-0071
+already says it for the hook wire: "the Claude Code contract in full, not just its aliases").
+The 2026-09-18 review (Ayoai-Mind findings board, tag `fresh-eyes-code`) measured the gap:
+of the fourteen tools the hook map translates, only two accepted Claude Code's name from the
+model (`Skill`, `ScheduleWakeup`); `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `LS`,
+`WebFetch`, `WebSearch`, `Task`, `TodoWrite`, `TodoRead` resolved to nothing.
+
+**Decision.**
+
+1. **Canonical names are Claude Code's** for every tool that IS the Claude Code tool: `Read`,
+   `Write`, `Edit`, `LS`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`, `Skill`,
+   `ScheduleWakeup`. The pre-0190 snake_case names (`read_file`, …, `use_skill`,
+   `schedule_wakeup`) are registered aliases — silent, never advertised — beside the POSIX
+   muscle-memory ones (`cat`, `ls`, `rg`, …). `Skill`'s parameter is `skill` (`name` accepted).
+2. **A tool whose SHAPE is Zak Code's own keeps its name** and takes Claude Code's as aliases
+   with a shape adapter: `task` (`Task`, `Agent`: the single-delegation form `description` /
+   `prompt` / `subagent_type` becomes one subtask), `update_plan` (`TodoWrite`: `todos:
+   [{content, status, activeForm}]` becomes the flat step list, `completed` → `done`),
+   `plan_recall` (`TodoRead`). A name promises a schema; these schemas are not Claude Code's.
+3. **The loop canonicalizes every model call where it enters** (`_canonicalize_calls`, inside
+   `_call_provider`): the name through the registry — falling back to the pre-0190 table
+   (`zakcode.tool_names`) for a registry built without the aliases — and Claude Code's argument
+   keys (`file_path` → `path` on `Read`/`Write`/`Edit`; `CLAUDE_CODE_ARG_KEYS`, the inverse of
+   the hook wire's rename). After that point nothing downstream — the loop's rails, hooks, the
+   permission policy, the transcript, the renderer — ever matches an alias.
+4. **Readers of history carry both spellings.** The loop's role sets (`_READ_TOOLS`,
+   `_WRITE_TOOLS`, `_EDIT_TOOLS`, `_SKILL_TOOLS`, `_SEARCH_TOOLS`, `_SHELL_TOOLS`,
+   `_LOOKUP_TOOLS`), the recipe, the verifier, grounding and `plan_recall`'s file-tool set list
+   `Write` beside `write_file`: a session resumed from before this ADR still has its writes
+   seen, its runs verified, its plan record read.
+5. **Hooks** (ADR-0071 extended): the name map is canonical → Claude Code spellings (identity
+   rows for the renamed tools; `Edit` also `MultiEdit`; `task` → `Task`, `Agent`;
+   `update_plan` → `TodoWrite`; `plan_recall` → `TodoRead`); the first spelling is the wire
+   name, so `update_plan` still travels as `TodoWrite`. A matcher fires on the canonical name,
+   every Claude Code spelling, every registry alias (`HookPayload.tool_aliases`, in-process
+   only) and the pre-0190 spelling — `bash` and `MultiEdit` and `Bash` all gate `Bash`.
+6. **Permissions and operator configuration resolve either spelling**: `tool_trust_overrides`
+   keys, ingested `permissions.deny` tools, confirm-on-call tools, session grants and the
+   exposure filter's globs (`web_*` still covers `WebFetch`) — through `canonical_tool_name`
+   and the registry's `aliases_of`.
+7. **Prose follows the names.** The system prompt, the skill catalog (which no longer carries a
+   translation line: `Skill(<name>) with args='<args>'` IS the call), the text-protocol
+   examples, the restart continuation, the bash tool's typed-as-command refusal, the renderer.
+   The sentinel's fallback line is generic ("invoke the skill that runs it, with the arguments
+   it was started with") — it no longer names a Mind's skill, and `ZAKCODE_SESSION` stays a
+   provenance marker the framework never branches on.
+8. **Deliberately not done.** The file tools' schema key stays `path` (Claude Code's own
+   `Glob`/`Grep`/`LS` say `path`; the schema is what a model sees and `path` is unambiguous;
+   `file_path` is accepted by rule 3 — 362 test lines were not worth a key a small model never
+   needs). `MultiEdit` is not a registry alias (its `edits` array is not accepted; it remains a
+   hook-matcher twin). Bench recipes under `bench/` keep their historical names.
+
+**Consequences.** A Mind's imperatives now name tools the model can see — on every model,
+without a mapping line and without the framework knowing what runs it; any prompt, skill or hook
+written for Claude Code runs here verbatim. The tool list shows Claude Code's names, so a
+prompt author reads one vocabulary in both places. Cost: 25 source files, ~100 test files
+(mostly literals), the docs that describe current behaviour (`README`, `PARITY`, `CONFIG`,
+`ARCHITECTURE`, `GUARDRAILS`, `TESTING`, `INTEGRATIONS`, `CLAUDE-MIND-COMPAT`); dated records
+(earlier ADRs, `IMPROVEMENT-LOG`, `DETERMINISM-REVIEW`, `ROADMAP`) keep the names they were
+written with. The pre-0190 aliases stay for at least one release cycle; retiring them is a
+future ADR with a measured alias-call count. The small-model benefit is the review's
+hypothesis, not yet a measurement: the pre-registered bench (arms: snake canonical vs Claude
+Code canonical vs snake plus an "also callable as Read" description line; N=12; HARM lines per
+the bench rules) runs when zakpod1 is back. Companion: ADR-0191 (background `Bash` with an exit
+notification) retires the last harness-capability branch in the framework.

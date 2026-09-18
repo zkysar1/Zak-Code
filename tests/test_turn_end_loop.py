@@ -118,7 +118,7 @@ class EchoTool(Tool):
 class UseSkillStub(Tool):
     """Stands in for the real ``use_skill`` (which needs a resolver): counts executions."""
 
-    spec = ToolSpec(name="use_skill", description="Load a skill by name.")
+    spec = ToolSpec(name="Skill", description="Load a skill by name.")
 
     def __init__(self) -> None:
         self.executed = 0
@@ -318,7 +318,7 @@ async def test_turn_end_veto_is_deferred_across_a_build_restart(
 
 def _re_entry(call_id: str, **arguments: str) -> LLMResult:
     """A perpetual loop's unit boundary: the lone use_skill call that loads the next body."""
-    return LLMResult(tool_calls=[ToolCall(id=call_id, name="use_skill", arguments=arguments)])
+    return LLMResult(tool_calls=[ToolCall(id=call_id, name="Skill", arguments=arguments)])
 
 
 @pytest.mark.asyncio
@@ -356,9 +356,7 @@ async def test_a_lone_use_skill_call_takes_a_newer_build_at_the_skill_boundary(
     assert hook.payloads == []  # not a vetoable break: the Stop hook never ran
     assert loop.restart_boundary == "skill"
     assert loop.restart_continuation is not None
-    assert loop.restart_continuation.startswith(
-        'Call use_skill(name="worker-loop", args="loop") now.'
-    )
+    assert loop.restart_continuation.startswith('Call Skill(skill="worker-loop", args="loop") now.')
     # The un-executed call is answered, so the transcript replays on the new build.
     answered = [
         b
@@ -392,7 +390,7 @@ async def test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call(
     stub2 = UseSkillStub()
     mixed = LLMResult(
         tool_calls=[
-            ToolCall(id="c2", name="use_skill", arguments={"name": "worker-loop"}),
+            ToolCall(id="c2", name="Skill", arguments={"name": "worker-loop"}),
             ToolCall(id="c3", name="echo", arguments={"text": "still working"}),
         ]
     )
@@ -431,7 +429,7 @@ async def test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first(
     paired = LLMResult(
         tool_calls=[
             ToolCall(id="p1", name="update_plan", arguments={"tasks": []}),
-            ToolCall(id="s1", name="use_skill", arguments={"name": "worker-loop"}),
+            ToolCall(id="s1", name="Skill", arguments={"name": "worker-loop"}),
         ]
     )
     provider = ScriptedProvider([paired, LLMResult(text="never reached")])
@@ -441,7 +439,7 @@ async def test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first(
     assert plan.executed == 1 and skill.executed == 0
     assert loop.restart_boundary == "skill"
     assert loop.restart_continuation is not None
-    assert loop.restart_continuation.startswith('Call use_skill(name="worker-loop") now.')
+    assert loop.restart_continuation.startswith('Call Skill(skill="worker-loop") now.')
     answered = {
         b.tool_use_id: b
         for m in loop.session.messages

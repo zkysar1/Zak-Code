@@ -38,15 +38,15 @@ DEFAULT_DELAY_SECONDS = 600
 LOOP_SENTINEL = "<<autonomous-loop-dynamic>>"
 LOOP_WAKE_NOTE = (
     "the wake-up armed as the autonomous-loop sentinel fired: the loop that armed it did not "
-    "re-enter on its own and nobody is at the prompt. Re-arm a wake-up with schedule_wakeup "
+    "re-enter on its own and nobody is at the prompt. Re-arm a wake-up with ScheduleWakeup "
     "first, then carry out these instructions from where the plan stands. Do not stop to "
     "wait for instructions."
 )
 LOOP_LINE = (
     "[harness] the wake-up armed as the autonomous-loop sentinel fired: the loop that armed it "
     "did not re-enter on its own and nobody is at the prompt. Re-arm a wake-up first, then "
-    "re-enter the loop — invoke the skill that runs it (the aspirations loop, args 'loop') "
-    "and carry on from where the plan stands. Do not stop to wait for instructions."
+    "re-enter the loop — invoke the skill that runs it, with the arguments it was started "
+    "with — and carry on from where the plan stands. Do not stop to wait for instructions."
 )
 
 

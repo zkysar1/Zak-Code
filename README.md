@@ -63,7 +63,7 @@ code change** — proven end-to-end against two independent providers:
 | **OpenAI** | cloud quality | `openai/gpt-4o-mini`, `openai/gpt-4o` | ✅ tested live |
 | _…and ~100 more_ | one config value | `anthropic/…`, `gemini/…`, `bedrock/…` | via litellm |
 
-> Each was driven through a real agentic task (model → `write_file` → a working Python
+> Each was driven through a real agentic task (model → `Write` → a working Python
 > file) with only the model string changed. See [`docs/SHAKEDOWN.md`](docs/SHAKEDOWN.md).
 
 ## Install
@@ -165,9 +165,9 @@ policy, the update path — see [`docs/DEPLOY.md`](docs/DEPLOY.md).
   and **best-of-N retry** (on a *stalled* turn, fan out N isolated attempts and adopt the
   first that verifies — by diff, never overwriting). The bet: ~10 cheap calls + selection
   beat one big call. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (`quality/`).
-- **Tools** — `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`, `bash`,
-  and **`powershell`** (Windows-first; uses `pwsh`/`powershell.exe`) — all scoped to the
-  workspace, with path-escape protection — plus **`web_search`** and **`web_fetch`**: a
+- **Tools** — `Read`, `Write`, `Edit`, `LS`, `Glob`, `Grep`, `Bash` (Claude Code's names, since
+  ADR-0190 — the snake_case `read_file`/`bash`/… spellings remain silent aliases), and **`powershell`** (Windows-first; uses `pwsh`/`powershell.exe`) — all scoped to the
+  workspace, with path-escape protection — plus **`WebSearch`** and **`WebFetch`**: a
   vendor-agnostic search backend (DuckDuckGo by default — free, no key; Tavily/SearXNG opt-in
   via `ZAKCODE_SEARCH_BACKEND`) and an SSRF-guarded page fetcher (install with `[web]` extra).
 - **Vendor-agnostic providers** — litellm; Ollama + OpenAI are first-class and live-tested.
@@ -199,7 +199,7 @@ policy, the update path — see [`docs/DEPLOY.md`](docs/DEPLOY.md).
 - **Plugins** — `register(ctx)` entrypoint, trust-gated (untrusted plugin code is **not
   imported** until trusted), error-isolated.
 - **Skills** — `SKILL.md` with progressive disclosure (cheap catalog → body on demand);
-  invokable by a human (`/<name>`) **or by the model** (the `use_skill` tool), so skills **chain**
+  invokable by a human (`/<name>`) **or by the model** (the `Skill` tool), so skills **chain**
   (and branch). Available to sub-agents too; a per-turn `skill_invocation_budget` bounds runaway chains.
 - **Claude Code compatible host (opt-in)** — speaks the generic Claude Code extension contract so a
   plug-in built for Claude Code (skills, `settings.json` hooks, `permissions.{allow,deny}`, statusLine,
@@ -237,7 +237,7 @@ write code, and capable cloud models are unaffected:
 - **One tool call per turn (text protocol).** When tools reach the model over the text
   protocol, the agent emits/parses exactly one tool call per turn and stops, so a weak
   model can't fabricate tool results or leak chat-template tokens.
-- **Write-grounding.** After a successful `write_file`/`edit_file`, the file is read back
+- **Write-grounding.** After a successful `Write`/`Edit`, the file is read back
   from disk and the real content + a syntax check are injected, so the model can't
   hallucinate that a write did what it intended. (No-ops when nothing was written.)
 - **The Recipe Cursor — a verify-before-finish gate.** Once the model writes a **runnable
@@ -268,11 +268,11 @@ ZAKCODE_DEFAULT_MODEL=ollama_chat/qwen2.5:3b
 
 ### Web search & fetch
 
-`web_search` and `web_fetch` are built in; install their (optional) deps with the `web` extra —
+`WebSearch` and `WebFetch` are built in; install their (optional) deps with the `web` extra —
 `uv sync --extra web` (or `pip install 'zakcode[web]'`). Without them the tools still register and
 return a clean "install the web extra" message rather than failing.
 
-`web_search` runs over a swappable, vendor-agnostic backend selected by `ZAKCODE_SEARCH_BACKEND`:
+`WebSearch` runs over a swappable, vendor-agnostic backend selected by `ZAKCODE_SEARCH_BACKEND`:
 
 | Backend | Free? | Setup |
 | --- | --- | --- |
@@ -280,11 +280,11 @@ return a clean "install the web extra" message rather than failing.
 | `tavily` | 1,000 searches/mo free | `export TAVILY_API_KEY=...` (cleaner, LLM-optimized results) |
 | `searxng` | yes (self-hosted) | `ZAKCODE_SEARXNG_URL=http://localhost:8080` (enable the JSON format) |
 
-`web_fetch` needs no backend — it GETs a public `http(s)` URL and returns readable text. It
+`WebFetch` needs no backend — it GETs a public `http(s)` URL and returns readable text. It
 **refuses** localhost / private / cloud-metadata addresses (an SSRF guard, re-checked across
 redirects) and size-caps the output; fetched content is treated as untrusted. Two opt-in egress
 controls lock it down: `ZAKCODE_WEB_ALLOWED_DOMAINS=example.com,docs.python.org` confines
-`web_fetch` to those domains (and their subdomains), or `ZAKCODE_WEB_FETCH_CONFIRM=true` prompts
+`WebFetch` to those domains (and their subdomains), or `ZAKCODE_WEB_FETCH_CONFIRM=true` prompts
 for confirmation before each fetch. Unset (the default), any public host is allowed.
 
 ## Platform support

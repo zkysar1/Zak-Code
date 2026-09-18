@@ -21,7 +21,8 @@ from zakcode.providers.base import ToolCall
 from zakcode.providers.text_tools import defang_untrusted
 
 #: Tools whose successful result triggers a read-back.
-_WRITE_TOOLS = {"write_file", "edit_file"}
+#: Both spellings: a session resumed from before ADR-0190 carries ``write_file`` blocks.
+_WRITE_TOOLS = {"Write", "Edit", "write_file", "edit_file"}
 
 #: Cap on re-injected content per file so a large write cannot blow the context window.
 _MAX_GROUNDING_CHARS = 4000

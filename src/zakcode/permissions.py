@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 
 from zakcode.config import PermissionTier
 from zakcode.deps_gate import display_name, installed_specs
+from zakcode.tool_names import canonical_tool_name
 
 if TYPE_CHECKING:
     from zakcode.tools.base import ToolSpec
@@ -542,8 +543,11 @@ class PermissionPolicy:
         # Per-tool trust overrides (audit P0-2b / D12): the named tool is judged under
         # ITS mode instead of the session mode — both directions (loosen or tighten).
         # The dangerous-command floor in an autonomous SESSION is never loosenable.
+        # Keys resolve either spelling of a tool's name (ADR-0190): an override written as
+        # ``bash`` before the rename still lands on ``Bash``.
         self.tool_mode_overrides: dict[str, PermissionMode] = {
-            name: PermissionMode.parse(value) for name, value in (tool_mode_overrides or {}).items()
+            canonical_tool_name(name): PermissionMode.parse(value)
+            for name, value in (tool_mode_overrides or {}).items()
         }
         # ``dangerous_patterns`` REPLACES the baseline (advanced); the common path
         # leaves it None and uses the built-in list. ``extra_dangerous_patterns`` is
@@ -554,7 +558,7 @@ class PermissionPolicy:
         # Tools the operator wants to confirm on EVERY call regardless of their declared tier
         # (e.g. ``web_fetch`` egress when ``web_fetch_confirm`` is on). Like the dangerous-pattern
         # check this can only TIGHTEN a verdict — but unlike it, the prompt is session-grantable.
-        self._confirm_tools = set(confirm_tools or ())
+        self._confirm_tools = {canonical_tool_name(n) for n in confirm_tools or ()}
         # Declared-vs-undeclared dependency gate (self-remediation Step 1, see
         # ``docs/SELF-REMEDIATION.md``). A callable that returns the project's declared
         # package set (read lazily from manifests). ``None`` = gate OFF (the default, so the
@@ -576,7 +580,9 @@ class PermissionPolicy:
         # Whole-tool denials (e.g. an ingested CC ``deny: ["WebFetch"]``): the named tool is denied
         # UNCONDITIONALLY in decide(), regardless of its tier — unlike a ``deny`` mode override,
         # which only lowers the tier ceiling and so cannot bind a read-only tool. Tighten-only.
-        self._denied_tools: frozenset[str] = frozenset(extra_denied_tools or ())
+        self._denied_tools: frozenset[str] = frozenset(
+            canonical_tool_name(n) for n in extra_denied_tools or ()
+        )
         # 'allow' grants are keyed by TOOL NAME — a grant covers the whole tool for the
         # session (the operator is not re-prompted for every new path/command). 'deny'
         # grants stay keyed by the exact (tool, args) so a block is narrow.
@@ -618,6 +624,13 @@ class PermissionPolicy:
         """The per-session 'deny' blocks (exact-call keys), sorted (a read-only copy)."""
         return sorted(self._session_deny)
 
+    def _session_allows(self, tool_name: str) -> bool:
+        """Whether a session grant covers ``tool_name`` — under either spelling of the grant
+        (ADR-0190: a grant recorded as ``bash`` still covers ``Bash``)."""
+        return tool_name in self._session_allow or any(
+            canonical_tool_name(granted) == tool_name for granted in self._session_allow
+        )
+
     def auto_allows(self, spec: ToolSpec | None, arguments: dict) -> bool:
         """True iff a call would be allowed WITHOUT prompting (allow-mode or already granted).
 
@@ -625,11 +638,11 @@ class PermissionPolicy:
         it would not raise an uninitiated prompt. Never relaxes the gate: a dangerous
         command is not auto-allowed even under a session grant (it re-decides to ASK/DENY).
         """
-        tool_name = spec.name if spec is not None else "<unknown>"
+        tool_name = canonical_tool_name(spec.name) if spec is not None else "<unknown>"
         if self._key(tool_name, arguments) in self._session_deny:
             return False
         if (
-            tool_name in self._session_allow
+            self._session_allows(tool_name)
             and self._dangerous_reason(arguments) is None
             and not self._undeclared_install(arguments)
             and self._protected_path_reason(arguments) is None
@@ -796,7 +809,7 @@ class PermissionPolicy:
         applied after the dangerous-pattern one: an install of a package the project's
         manifests/lockfile do not declare escalates to ASK (hard DENY in autonomous).
         """
-        tool_name = spec.name if spec is not None else "<unknown>"
+        tool_name = canonical_tool_name(spec.name) if spec is not None else "<unknown>"
         # A configuration-denied tool is denied UNCONDITIONALLY, regardless of tier — a whole-tool
         # deny (e.g. an ingested ``deny: ["WebFetch"]``) must bind even a read-only tool, which a
         # mere ``deny`` mode override cannot (that only lowers the tier ceiling). Tighten-only.
@@ -923,7 +936,7 @@ class PermissionPolicy:
         fails closed (denied). A denial is never an exception — the caller turns it
         into an error ``ToolResult`` so the loop continues and the model can adapt.
         """
-        tool_name = spec.name if spec is not None else "<unknown>"
+        tool_name = canonical_tool_name(spec.name) if spec is not None else "<unknown>"
         key = self._key(tool_name, arguments)
 
         if key in self._session_deny:
@@ -937,7 +950,7 @@ class PermissionPolicy:
         # Step 2: a blanket grant must not silently authorize a sensitive write), and a static
         # DENY — re-decide so a grant restored into a tighter posture cannot override a block.
         if (
-            tool_name in self._session_allow
+            self._session_allows(tool_name)
             and self._dangerous_reason(arguments) is None
             and not self._undeclared_install(arguments)
             and self._protected_path_reason(arguments) is None

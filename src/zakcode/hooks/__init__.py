@@ -30,6 +30,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from zakcode._subprocess import new_group_kwargs, terminate_process_tree
+from zakcode.tool_names import PRE_0190_TOOL_NAMES
 from zakcode.wakeup import clamp_delay
 
 logger = logging.getLogger("zakcode.hooks")
@@ -136,15 +137,19 @@ class HookPayload(BaseModel):
     resolve the agent and inject env). The in-process attribute stays ``arguments``.
 
     The wire goes one step further than the alias (:func:`wire_payload`, ADR-0071): a tool
-    with a Claude Code counterpart is NAMED as that counterpart (``write_file`` → ``Write``)
-    and the file tools' ``path`` travels as ``file_path``, resolved against the workspace the
-    way the tool will resolve it — so a hook written against Claude Code's ``Write`` /
+    with a Claude Code counterpart is NAMED as that counterpart (since ADR-0190 the canonical
+    names already are Claude Code's; ``update_plan`` still travels as ``TodoWrite``) and the
+    file tools' ``path`` travels as ``file_path``, resolved against the workspace the way the
+    tool will resolve it — so a hook written against Claude Code's ``Write`` /
     ``tool_input.file_path`` judges the path Zak Code is about to touch instead of approving
     a shape it does not recognise. In-process hooks keep the Zak names and keys.
     """
 
     event: HookEvent
     tool_name: str
+    #: The registry's other spellings of ``tool_name`` (ADR-0190): a matcher written as
+    #: ``bash`` before the rename still fires on ``Bash``. In-process only — never on the wire.
+    tool_aliases: tuple[str, ...] = Field(default=(), exclude=True)
     arguments: dict[str, Any] = Field(default_factory=dict, serialization_alias="tool_input")
     session_id: str = ""
     cwd: str = ""
@@ -285,26 +290,28 @@ def _carry_wakeup(carried: dict[str, Any], result: TurnEndResult) -> dict[str, A
     }
 
 
-#: Claude-Code tool names → the Zak Code tools they map to. A hook ``matcher`` written for Claude
-#: Code (``"Skill"``, ``"Read"``, ``"Bash"``) thus fires on the equivalent Zak Code tool
-#: (``use_skill``, ``read_file``, ``bash``) — so a Claude-Code framework's ``PreToolUse`` gates
-#: (e.g. claude-mind's skill-dedup gate) apply to the model's calls unchanged. Also corrects case
-#: (``Bash`` vs ``bash``; ``fnmatch`` is case-sensitive on POSIX). Only clear counterparts mapped.
+#: Canonical tool name → the Claude Code spelling(s) of that tool. Since ADR-0190 the canonical
+#: names of the counterpart tools ARE Claude Code's (identity rows), so the wire name is the
+#: model-visible name; the rows that still differ are the two tools whose SHAPE is Zak Code's
+#: own (the plan pair, the batch delegator) and a second spelling Claude Code has used
+#: (``MultiEdit`` for Edit, ``Agent`` for Task). A hook ``matcher`` written for Claude Code
+#: fires on every spelling listed here (``fnmatch`` is case-sensitive on POSIX); the first
+#: spelling is the wire name (:func:`wire_payload`, ADR-0071).
 _CLAUDE_CODE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
-    "use_skill": ("Skill",),
-    "read_file": ("Read",),
-    "write_file": ("Write",),
-    "edit_file": ("Edit", "MultiEdit"),
-    "bash": ("Bash",),
-    "glob": ("Glob",),
-    "grep": ("Grep",),
-    "list_dir": ("LS",),
-    "web_search": ("WebSearch",),
-    "web_fetch": ("WebFetch",),
-    "task": ("Task",),
+    "Skill": ("Skill",),
+    "Read": ("Read",),
+    "Write": ("Write",),
+    "Edit": ("Edit", "MultiEdit"),
+    "Bash": ("Bash",),
+    "Glob": ("Glob",),
+    "Grep": ("Grep",),
+    "LS": ("LS",),
+    "WebSearch": ("WebSearch",),
+    "WebFetch": ("WebFetch",),
+    "task": ("Task", "Agent"),
     "update_plan": ("TodoWrite",),
     "plan_recall": ("TodoRead",),
-    "schedule_wakeup": ("ScheduleWakeup",),
+    "ScheduleWakeup": ("ScheduleWakeup",),
 }
 
 #: Argument keys renamed on the wire so a Claude-Code hook reads the shape it was written
@@ -312,9 +319,27 @@ _CLAUDE_CODE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
 #: Values are the Zak key → wire key; :func:`_unwire_arguments` applies the inverse to an
 #: ``updatedInput`` rewrite coming back. Keys not listed travel unchanged.
 _WIRE_ARG_KEYS: dict[str, dict[str, str]] = {
-    "read_file": {"path": "file_path"},
-    "write_file": {"path": "file_path"},
-    "edit_file": {"path": "file_path"},
+    "Read": {"path": "file_path"},
+    "Write": {"path": "file_path"},
+    "Edit": {"path": "file_path"},
+}
+
+#: The pre-ADR-0190 canonical names → today's (:mod:`zakcode.tool_names`). A payload built by
+#: an older in-process caller (or a hook matcher written back then) still reaches the same
+#: wire name and the same matcher outcome; the loop itself canonicalizes before it builds one.
+_PRE_0190_NAMES: dict[str, str] = PRE_0190_TOOL_NAMES
+#: canonical → the pre-0190 spelling(s) of that tool, so a matcher written before the rename
+#: (``use_skill``, ``bash``) fires on the canonical tool even when no registry aliases ride
+#: along (a payload built outside the loop carries none).
+_PRE_0190_SPELLINGS: dict[str, tuple[str, ...]] = {}
+for _old, _new in _PRE_0190_NAMES.items():
+    _PRE_0190_SPELLINGS[_new] = (*_PRE_0190_SPELLINGS.get(_new, ()), _old)
+
+#: The inverse, for a call the MODEL makes in Claude Code's spelling (``Read(file_path=...)``):
+#: the loop rewrites the key to the tool's own before anything reads it (ADR-0190).
+CLAUDE_CODE_ARG_KEYS: dict[str, dict[str, str]] = {
+    tool: {wire_key: key for key, wire_key in renames.items()}
+    for tool, renames in _WIRE_ARG_KEYS.items()
 }
 
 
@@ -333,8 +358,9 @@ def wire_payload(payload: HookPayload) -> bytes:
     they must be able to read what they are gating.
     """
     doc = payload.model_dump(mode="json", by_alias=True)
-    doc["tool_name"] = _CLAUDE_CODE_TOOL_NAMES.get(payload.tool_name, (payload.tool_name,))[0]
-    renames = _WIRE_ARG_KEYS.get(payload.tool_name)
+    canonical = _PRE_0190_NAMES.get(payload.tool_name, payload.tool_name)
+    doc["tool_name"] = _CLAUDE_CODE_TOOL_NAMES.get(canonical, (canonical,))[0]
+    renames = _WIRE_ARG_KEYS.get(canonical)
     if renames:
         wire_input: dict[str, Any] = {}
         for key, value in payload.arguments.items():
@@ -349,7 +375,7 @@ def wire_payload(payload: HookPayload) -> bytes:
 
 def _unwire_arguments(tool_name: str, mutated: dict[str, Any] | None) -> dict[str, Any] | None:
     """Map a hook's ``updatedInput`` (wire keys) back to the tool's own argument keys."""
-    renames = _WIRE_ARG_KEYS.get(tool_name)
+    renames = _WIRE_ARG_KEYS.get(_PRE_0190_NAMES.get(tool_name, tool_name))
     if not renames or mutated is None:
         return mutated
     inverse = {wire_key: key for key, wire_key in renames.items()}
@@ -368,10 +394,18 @@ class HookSpec(BaseModel):
     # applies to ALL workspace hooks, not just TURN_END).
     drop_env: list[str] = Field(default_factory=list)
 
-    def matches(self, tool_name: str) -> bool:
-        # Match the tool's own name OR its Claude-Code equivalent(s), so a matcher written for
-        # Claude Code (e.g. "Skill") fires on the corresponding Zak Code tool ("use_skill").
-        names = (tool_name, *_CLAUDE_CODE_TOOL_NAMES.get(tool_name, ()))
+    def matches(self, tool_name: str, aliases: tuple[str, ...] = ()) -> bool:
+        # Match the tool's own name, its Claude Code spelling(s), OR any registry alias the
+        # caller passes — so a matcher written for Claude Code ("MultiEdit", "TodoWrite") and
+        # one written before ADR-0190 ("bash", "use_skill") both fire on the canonical tool.
+        canonical = _PRE_0190_NAMES.get(tool_name, tool_name)
+        names = (
+            tool_name,
+            canonical,
+            *_CLAUDE_CODE_TOOL_NAMES.get(canonical, ()),
+            *_PRE_0190_SPELLINGS.get(canonical, ()),
+            *aliases,
+        )
         return any(fnmatch.fnmatch(name, self.matcher) for name in names)
 
 
@@ -495,7 +529,9 @@ class HookManager:
                 return self._result(decision, messages, arguments, mutated, extras)
 
         for spec in self.shell_hooks:
-            if spec.event is not payload.event or not spec.matches(payload.tool_name):
+            if spec.event is not payload.event or not spec.matches(
+                payload.tool_name, payload.tool_aliases
+            ):
                 continue
             current = payload.model_copy(update={"arguments": arguments})
             one = await self._run_shell(spec, current)

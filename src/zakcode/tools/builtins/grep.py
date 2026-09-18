@@ -57,7 +57,7 @@ class GrepTool(Tool):
     """Search for a regular expression across files in the workspace."""
 
     spec = ToolSpec(
-        name="grep",
+        name="Grep",
         description=(
             "Search file contents for a regular expression within the workspace. "
             "Skips binary files and ignored paths (.git, build/vendor/cache dirs, and "

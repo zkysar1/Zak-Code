@@ -201,10 +201,10 @@ not a permissions or networking problem.
 
 | Field | Env var | Default | Meaning |
 | --- | --- | --- | --- |
-| `skill_invocation_budget` | `ZAKCODE_SKILL_INVOCATION_BUDGET` | `0` | Max model-driven `use_skill` invocations per turn, shared across the whole sub-agent tree (one counter, reset each top-level turn) — a tight bound on a runaway or cyclic skill chain. A human `/<name>` invocation is operator-controlled and never throttled. `0` = unlimited (off). |
+| `skill_invocation_budget` | `ZAKCODE_SKILL_INVOCATION_BUDGET` | `0` | Max model-driven `Skill` invocations per turn, shared across the whole sub-agent tree (one counter, reset each top-level turn) — a tight bound on a runaway or cyclic skill chain. A human `/<name>` invocation is operator-controlled and never throttled. `0` = unlimited (off). |
 | `context_include_readme` | `ZAKCODE_CONTEXT_INCLUDE_README` | `true` | Fold the workspace `README.md` into the agent's project-context block, alongside the discovered `AGENTS.md` / `CLAUDE.md` / `ZAK.md` agent guides (which are always loaded). README is human-facing and can be large, so it is read only at the workspace root and bounded by the per-file/total context caps; set `false` to load only the agent guides. |
 | `context_workspace_survey` | `ZAKCODE_CONTEXT_WORKSPACE_SURVEY` | `true` | Fold a capped (150 entries, depth 3), ignore-aware listing of the workspace's files into the project context, snapshotted once per session. Review lever L2 (ADR-0164); default on since its addendum (basin sampling: 6/6 vs 5/6, median turns 18 → 10 on the near-tie task). Set `false` to opt out. |
-| `lean_rules` | `ZAKCODE_LEAN_RULES` | `false` | Render mind rules as a compact **index** (titles only) instead of full bodies, so the model pulls a rule's body on demand via `read_file` when a summary is relevant. Default off (full render) for parity; set true for token-constrained deployments (e.g. the Vinheim research runtime). Only takes effect when the agent is constructed with `enable_rules=True`. |
+| `lean_rules` | `ZAKCODE_LEAN_RULES` | `false` | Render mind rules as a compact **index** (titles only) instead of full bodies, so the model pulls a rule's body on demand via `Read` when a summary is relevant. Default off (full render) for parity; set true for token-constrained deployments (e.g. the Vinheim research runtime). Only takes effect when the agent is constructed with `enable_rules=True`. |
 | `max_cost_usd` | `ZAKCODE_MAX_COST_USD` | _(unset)_ | Stop the turn (and its whole sub-agent tree) once cumulative model cost in USD reaches this ceiling (`stop_reason="budget_exhausted"`). Unset = no cost bound. |
 | `max_tokens` | `ZAKCODE_MAX_TOKENS` | _(unset)_ | Stop the turn-tree once cumulative total tokens reach this ceiling (`stop_reason="budget_exhausted"`). Unset = no token bound. A cumulative spend guard, not a per-call output cap. |
 | `completion_review_attempts` | `ZAKCODE_COMPLETION_REVIEW_ATTEMPTS` | `0` | When a turn CHANGED code (wrote a runnable file) and the model tries to finish, send it back this many times to re-read the request and verify every requirement against what is actually on disk — and finish any abandoned/failed operation — before completing. Bounded so it converges (an unbounded "don't finish until perfect" loops forever on a model that can't reach it). Scoped to **complex** (non-`quick_code`) turns under zakpick, so it never slows a simple one-line fix. `0` (default) disables it; `2` is a good value for higher autonomous quality on hard, multi-part tasks. |
@@ -241,11 +241,11 @@ The small-model fan-out engine (`src/zakcode/quality/`) wired into the loop (inc
 | --- | --- | --- | --- |
 | `search_backend` | `ZAKCODE_SEARCH_BACKEND` | `ddgs` | `ddgs` (free, no key) \| `tavily` (needs `TAVILY_API_KEY`) \| `searxng`. |
 | `searxng_url` | `ZAKCODE_SEARXNG_URL` | unset | Self-hosted SearXNG base URL (when `search_backend=searxng`). |
-| `web_allowed_domains` | `ZAKCODE_WEB_ALLOWED_DOMAINS` | `[]` | When non-empty, `web_fetch` may only reach these domains (+ subdomains), enforced per redirect hop. |
-| `web_fetch_confirm` | `ZAKCODE_WEB_FETCH_CONFIRM` | `false` | Escalate every `web_fetch` to a confirmation prompt (denied outright in `deny`/`autonomous`). |
+| `web_allowed_domains` | `ZAKCODE_WEB_ALLOWED_DOMAINS` | `[]` | When non-empty, `WebFetch` may only reach these domains (+ subdomains), enforced per redirect hop. |
+| `web_fetch_confirm` | `ZAKCODE_WEB_FETCH_CONFIRM` | `false` | Escalate every `WebFetch` to a confirmation prompt (denied outright in `deny`/`autonomous`). |
 | `egress_proxy` | `ZAKCODE_EGRESS_PROXY` | `false` | Route bash/powershell egress through a localhost domain-allowlisting proxy. |
 | `egress_allowed_domains` | `ZAKCODE_EGRESS_ALLOWED_DOMAINS` | `[]` | Domains the egress proxy permits; empty + proxy on = deny all subprocess egress. |
-| `secrets_file` | `ZAKCODE_SECRETS_FILE` | unset | JSON `name -> value` file backing `{{secret:NAME}}` substitution in `web_fetch` (see GUARDRAILS §6, "Named secrets"). Unset = feature off. |
+| `secrets_file` | `ZAKCODE_SECRETS_FILE` | unset | JSON `name -> value` file backing `{{secret:NAME}}` substitution in `WebFetch` (see GUARDRAILS §6, "Named secrets"). Unset = feature off. |
 | `secrets_usage_file` | `ZAKCODE_SECRETS_USAGE_FILE` | unset | JSONL file where names-only secret-usage events are appended (for "last used" surfacing by an orchestrator). |
 
 ## Settings ingestion (Claude Code `.claude/settings.json`)

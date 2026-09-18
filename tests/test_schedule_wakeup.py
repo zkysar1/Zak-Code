@@ -108,7 +108,9 @@ def test_a_new_arm_replaces_the_held_wakeup_and_stop_cancels_it() -> None:
 def test_the_loop_sentinel_fires_as_the_re_entry_line() -> None:
     assert fired_line(LOOP_SENTINEL) == LOOP_LINE
     assert fired_line(f"  {LOOP_SENTINEL} ") == LOOP_LINE
-    assert "aspirations loop" in LOOP_LINE and "Re-arm" in LOOP_LINE
+    # Generic since ADR-0190: no framework's skill is named — the loop's own is.
+    assert "invoke the skill that runs it" in LOOP_LINE and "Re-arm" in LOOP_LINE
+    assert "aspirations" not in LOOP_LINE
     assert fired_line("  poll CI  ") == "[harness] scheduled wake-up: poll CI"
 
 

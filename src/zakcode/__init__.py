@@ -520,13 +520,21 @@ class Agent:
             ingested_denied_tools = set(_ingested.denied_tools)
         # Operator tool_trust_overrides overlay the ingested ones (operator is the trusted local
         # authority); the merged map feeds tool_mode_overrides below.
-        merged_tool_modes = {**ingested_tool_modes, **dict(self.settings.tool_trust_overrides)}
+        # Keys are canonicalized through the registry (ADR-0190): an override written as
+        # ``bash`` or ``web_fetch`` before the rename still lands on Bash / WebFetch.
+        merged_tool_modes = {
+            self.registry.canonical(name): mode
+            for name, mode in {
+                **ingested_tool_modes,
+                **dict(self.settings.tool_trust_overrides),
+            }.items()
+        }
         self.permission_policy = permission_policy or PermissionPolicy(
             self.settings.permission_mode,
             prompter=prompter,
             extra_dangerous_patterns=compile_deny_patterns(denied_command_regexes),
             # Opt-in egress gate: confirm every web_fetch before it reaches the network.
-            confirm_tools={"web_fetch"} if self.settings.web_fetch_confirm else None,
+            confirm_tools={"WebFetch"} if self.settings.web_fetch_confirm else None,
             # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load — merged
             # with any ingested CC bare-tool deny/allow gestures (operator wins a conflict).
             tool_mode_overrides=merged_tool_modes,
@@ -539,7 +547,7 @@ class Agent:
                 + compile_protected_paths(write_only_path_regexes, write_only=True)
             ),
             # Ingested whole-tool CC deny gestures — denied unconditionally, regardless of tier.
-            extra_denied_tools=ingested_denied_tools,
+            extra_denied_tools={self.registry.canonical(n) for n in ingested_denied_tools},
             # Relative path arguments resolve against the workspace before the protected-path
             # scan (ADR-0031) so a ``*/``-prefixed deny glob binds a relative spelling too.
             workspace_root=workspace_root,
@@ -636,10 +644,10 @@ class Agent:
             # name (and lets skills chain). It reads the resolver off the ToolContext, which the
             # loop is handed below; only registered when skills are on, so the default tool
             # surface is unchanged. (Gated identically to the catalog so the two stay consistent.)
-            # Claude Code's name too (the ADR-0094 pattern): a Mind's loop calls
-            # Skill(aspirations) by that name, and the bash tool's typed-as-command refusal
-            # (ADR-0098) resolves it through this alias.
-            self.registry.register(UseSkillTool(), aliases=["Skill"])
+            # Canonical name ``Skill`` (ADR-0190) — a Mind's loop calls Skill(aspirations) by
+            # that name; ``use_skill`` stays as the pre-0190 alias (the bash tool's
+            # typed-as-command refusal, ADR-0098, resolves either through the registry).
+            self.registry.register(UseSkillTool(), aliases=["use_skill"])
             skill_resolver = _SkillToolResolver(self)
 
         # Rules: always-on guidance (bundled + user + project, incl. .claude/rules for
@@ -838,7 +846,7 @@ class Agent:
             if self.skill_registry is not None:
                 from zakcode.tools.builtins.use_skill import UseSkillTool
 
-                child_registry.register(UseSkillTool(), aliases=["Skill"])
+                child_registry.register(UseSkillTool(), aliases=["use_skill"])
             runner = SubAgentRunner(
                 provider=self.provider,
                 registry=child_registry,
@@ -872,7 +880,9 @@ class Agent:
             )
             plan_def = PLAN.model_copy(update={"model": roles.get("planner"), "category": "plan"})
             spawner = SubAgentManager(runner, [general_def, plan_def], default=general_def.name)
-            self.registry.register(TaskTool())
+            # Claude Code's names for the delegator as aliases (ADR-0190); the tool accepts
+            # its single-delegation shape (description, prompt, subagent_type) too.
+            self.registry.register(TaskTool(), aliases=["Task", "Agent"])
 
         # MCP (M5), opt-in. Build (but do NOT start) a client per configured server;
         # __init__ stays side-effect-free. The servers are spawned and their tools
@@ -1724,7 +1734,7 @@ class Agent:
         await self._emit_skill_selected(skill.name, query, source=source)
         rendered = defang_untrusted(body)
         if args.strip() and source == "tool":
-            # use_skill arguments (use_skill(name, args="loop")): surfaced to the model ahead of
+            # Skill arguments (Skill(skill, args="loop")): surfaced to the model ahead of
             # the body so a skill whose steps branch on an argument (a sub-command like `loop`)
             # can see it. A presentation frame the model reads — NOT a trust boundary: defang
             # only neutralizes tool-call sentinels, not brackets, and body + args share the same
