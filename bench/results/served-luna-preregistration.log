@@ -1,0 +1,83 @@
+=== 15:31 UTC 2026-09-18 PRE-REGISTRATION -- SERVED LOOP ON LUNA: one bounded served run of the Mind framework on gpt-5.6-luna
+Question: production serves the Mind on gpt-5.6-luna for every work category (zakpick: deep_code/plan/quick_code/
+summarize/delegate -> luna, classify -> gpt-5-nano, fallback gpt-5-mini). Can luna carry that loop? The three criteria
+were fixed before this block was written: at least one aspirations iteration closes, update_plan stays under 20% of
+tool calls, and no run of more than 3 consecutive empty completions. Nothing has been run; no model call has been made.
+
+Instrument (local, never a live Mind): zakcode = this repo's main ec2a059 (editable install; HEAD and `git status`
+recorded at start and end, the checkout is not touched during the run). Framework = the production seed tarball
+(mind-seed.tar.gz, release 2.12.76, sha256 71c88a26f3b953c0...), extracted into a throwaway world and landed the way the
+vessel recipe lands it (env-server main a55ab24, bootstrap 3.4-3.5): agent dir initialised, state IDLE, persona false,
+the recipe's resident identity plus one research topic. Environment = the non-secret lines of a vessel's .env.local
+verbatim, plus the bounded-run lines: ZAKCODE_RUN_MAX_DURATION=2400, ZAKCODE_RUN_CONSOLIDATION_RESERVE=350,
+ZAKCODE_RUN_STOP_AGENT=mind. So the stop signal is raised at 2050 s -- the span of the production 09-17 session was
+2005 s -- and the mind has 350 s for its own graceful stop. Ceremony = the vessel's: "/start mind" queued in .say, then
+`zakcode webapp`. Isolation: private mount + PID namespaces, tmpfs over the host Mind tree and /tmp, `env -i`; the
+host's live daemon (pid, port, health) is read before and after. Supervisor bounds, outside the product: wall clock
+2520 s (cap + the recipe's 120 s margin), spend stop at $6.00 computed as max(recorded, list-rate re-price with cache
+reads) so a price map without the 5.6 tier cannot blind it, outer timeout 3000 s.
+Controls already run with NO model call: sandbox (masked tree empty, 0 leaked env names, host PID unreachable);
+framework dry run (init rc=0, own daemon on its own port); web app smoke (health 200 in 3 s, /config shows zakpick ->
+luna, context 163840); the world's own goal queries (completed = 0 goals, pending = the seeded ones); price map inside
+the sandbox (luna 2e-07 / 2e-08 / 1.2e-06 per token); analyzer positive and negative controls (a real close counts;
+a grep of the closing script's source, the banner text from another command, and an errored close do not; a synthetic
+4-long empty run reads 4; the spend stop fires on a $0-recorded / $3.18-repriced workspace).
+Declared deviations from a vessel: root instead of ec2-user; local editable install instead of the published artifact
+under `uv run` (same commit); no Vinheim skill pack, theme or knowledge tools (bootstrap 3.6/3.65); no mail; one
+write-only addition, ZAKCODE_TRACE_DIR. ZAKCODE_CONTINUE_MESSAGE is omitted: 0 references in the package at ec2a059.
+
+Reference rows -- production sessions on EARLIER builds and OTHER models. They are context, NOT arms of this batch:
+  09-18 gpt-5.6-terra: 243 calls, 232 tool calls, update_plan 101 (44%), 15 empties (longest run 3), 0 iterations
+        closed, 13.4% of prompt tokens read from cache, mean prompt 207k tokens, last turn ended veto_stall.
+  09-17 gpt-5-mini:    243 calls,  50 tool calls, update_plan  10 (20%),  0 empties,               0 iterations
+        closed, 97.3% read from cache, mean prompt 128k tokens, 2005 s.
+
+Measures and channel-scoped predictions (each branch says only what the number will do):
+  M1 iterations closed = tool results where a bash call that RAN iteration-close.sh or recurring-close.sh printed the
+     banner as a line. Secondary, from the world's own store: goals completed (baseline 0).
+     P1  M1 >= 1.                                   My estimate: 30% HIT. Both reference rows are 0.
+  M2 update_plan share of all tool calls (the denominator is reported beside it).
+     P2  M2 < 20%.                                  My estimate: 55% HIT. Strictly inside both references (44%, 20%).
+  M3 longest run of consecutive empty main-model calls (trace: a usage note followed by an empty_completion note).
+     P3  M3 <= 3.                                   My estimate: 70% HIT.
+  M4 share of luna prompt tokens read from cache over the whole run; tail_sparse_models; the call index of the switch.
+     P4  M4 >= 70%.                                 My estimate: 65% HIT. Reference 13.4% before ADR-0193.
+  M5 turn endings and guard notes: stop reasons per turn, broken_record / broken_record_stand_down / veto_stall counts.
+     P5  no turn ends veto_stall.                   My estimate: 75% HIT.
+  M6 the ending: .run-stop-reason, agent-state, agent-mode, whether the web app exited before the supervisor clock.
+     P6  duration_cap, IDLE, assistant, own exit.   My estimate: 45% HIT.
+  M7 recorded luna cost_usd vs the list-rate re-price of the same usage rows with cache reads.
+     P7  equal within 1%.                           My estimate: 90% HIT (ADR-0195, first served-path reading).
+  Reported without a prediction: spend, calls, tokens, tool mix, skills invoked, every intervention kind and count,
+  compactions, goals pending/completed, and REST = the longest stretch of 30 s samples with no new model call.
+
+Conditional mechanisms (a clean reading counts only if the trigger occurred inside the sample; otherwise UNTESTED):
+  P3 speaks to the empty-completion handling only if empty_completion notes > 0. P5 speaks to the ADR-0194 bound only
+  if broken_record notes > 0. P4 speaks to the ADR-0193 tail only if a cache_friendly_tail note marks the switch and
+  the calls before it show flat reads in this same session. P6 only if the run reaches the cap with a turn loop alive.
+  P7 only if streamed luna calls carried cache reads > 0. Each is reported HIT / MISS / UNTESTED, never HIT by absence.
+
+Reading rules, over every outcome:
+  A  INSTRUMENT FAILURE = NOT MEASURED; fix the instrument, re-run this same arm, and it is not a sample: the web app
+     never healthy or gone inside 120 s with zero model calls; /start refused for a reason traced to my assembly
+     (sandbox mask, env file) rather than to the recipe; provider auth failure or 10+ consecutive provider errors; the
+     spend stop or the outer timeout firing; zakcode HEAD or status changing mid-run; the host daemon disturbed (then
+     everything stops until that is understood).
+  B  VALID SAMPLE = at least one luna call and none of A. Every P is then reported as measured.
+  C  The three fixed criteria: "PASS, 1 of 1" only if P1 and P2 and P3 all HIT. Anything else is "MISS on <Pn>", stated
+     with its number. N=1 is one sample of one basin: no rate is claimed in either direction, a PASS does not ship
+     anything, a MISS does not refuse anything.
+  D  A loop at REST for most of the window (no say, no wakeup, no re-entry after a turn ends) is a named outcome: it is
+     reported as the finding it is, and P1's MISS is then read as "no re-entry", not as "could not close".
+  E  Any outcome not named here is reported as measured and never upgraded to a HIT.
+Second-sample rule: a second sample is taken only as the re-run after an instrument failure (same arm, same settings),
+or after a NAMED product cause is fixed and merged (same arm, new build, new block here). Never to improve a number.
+After a PASS, two more samples are owed before any rate is stated.
+
+Causal reading (kept apart from the predictions on purpose): this run cannot say WHY an iteration did or did not
+close -- model capability, window length, the size of the framework's skills and harness defects are not separated by
+one arm. A P2 HIT does not establish that ADR-0194 caused it: there is no pre-ADR arm in this batch and the reference
+rows are other models on other builds. Attribution is claimed for P4 only under the within-run before/after named
+above, and for P7 only as arithmetic on the same rows. If P1 MISSES, the discriminating follow-up is a second arm on
+the same instrument with another model, pre-registered separately; the live-vessel reading stays a separate
+instrument (the committed pearl-live-verify driver, a billed dev-lane launch, not part of this batch).
