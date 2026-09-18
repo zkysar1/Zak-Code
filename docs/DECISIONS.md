@@ -11027,3 +11027,32 @@ recorded at `_anchor_prompt`. Three arms, same task, same batch:
 
 If A is not flat the premise failed today: stop and explain, it is not a pass. A passing B
 is run a second time and both must pass; a failing B is investigated, not re-rolled.
+
+**Results, first batch (2026-09-18, 13:53–14:02 UTC; logs kept out of the repo).**
+
+| arm | build · model | main calls · stop | what the cache read did | cached share | cost (per main call) |
+|---|---|---|---|---|---|
+| A control | main `57f32e2` · luna | 40 · `max_iterations` | 9,387 on calls 2–20 while the prompt grew 10,356 → 36,434; 9,271 on calls 21–40 | 30% | $0.1875 ($0.00469) |
+| B treatment | branch · luna | 40 · `max_iterations` | suspected on calls 2–5 (flat 9,384 across 5,913 tokens of growth); call 6 went out tail-less at 16,199; call 7 read 16,196 — confirmed; all 8 tailed calls that followed a tail-less one read it back whole | 87% | $0.0611 ($0.00153) |
+| B2 second sample | branch · luna | 23 · `completed` | the same (flat 9,382; probe 16,362; read 16,359); 8 of 8 | 87% | $0.0328 ($0.00143) |
+| C negative control | branch · gpt-5-mini | 19 · `completed` | never suspected: from call 3 the read advanced on 13 of 17 calls and never held for more than two (one zero read at call 6); tail on every call; nothing written to the session | 85% | $0.0445 ($0.00234) |
+
+Every arm did the job (8 Bash calls, all 8 checksum words in the answer). Read by the letter
+of the rule above, as measured:
+
+- **A** missed its prediction of one value within 64 tokens: the read stepped DOWN once, by
+  116 tokens at call 21, from call 1's whole prompt to the system block alone. It never grew
+  while the prompt grew by 28,000 tokens, so the premise held. Two explanations were tested
+  and ruled out against the API — age (an entry was still read back whole after 150 quiet
+  seconds, and after 180 seconds of hits) and a per-key entry limit (still read back after 26
+  newer whole prompts). The cause is provider-side and unmeasured.
+- **B** met every cache criterion, and at an equal call count cost a third of A. It missed
+  `completed`: it ended `max_iterations`, exactly as control A did on main. The transcript
+  tail kept by B2 shows why, and it is not the tail: the fresh-eyes plan review flagged the
+  correct answer, the model re-sent the same correct answer, and the ADR-0026 broken-record
+  guard — checked first, with no bound of its own — vetoed every identical re-send until the
+  iteration cap (twenty calls in A and in B). B2 ended only because the model reworded its
+  fifth answer. That outcome is neither this rule's PASS nor its FAIL, and an unnamed outcome
+  is not upgraded: the guard gets its bound first (ADR-0194), and these same arms are run
+  again on a build where a turn can end.
+- **C** passed.

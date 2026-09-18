@@ -417,7 +417,7 @@ _MAX_ANSWER_ROOM = 16_384
 #: cached; an explicit cache breakpoint was ignored). The plan reminder rides the END of
 #: every call and is never persisted, so no call's prompt is ever a prefix of the next: a
 #: served turn's cache reads sat at 28,079 tokens for 241 calls while its prompt grew to
-#: 360k — the same 243 calls price at $139 against $19 with the cache working.
+#: 360k — the same 243 calls price at $139 against under $18 with the cache working.
 #:
 #: Nothing is changed on a guess. A SUSPICION is read from the provider's own usage: this
 #: many main-conversation calls in a row, each carrying a tail, whose cache read stayed
