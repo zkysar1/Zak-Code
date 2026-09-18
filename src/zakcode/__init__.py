@@ -230,6 +230,49 @@ def _skill_digest(body: str) -> str:
     return hashlib.sha1(body.encode("utf-8", errors="replace")).hexdigest()
 
 
+def _already_loaded_pointer(name: str, page: str | None, args: str, *, worked: bool) -> str:
+    """What a ``Skill`` call gets when the body it names is already in context this turn.
+
+    Three situations, three sentences — each says what to DO, because a bare "already loaded"
+    drew a summary and a stop from a model that had not started. ``worked`` is reached only
+    for a user-only skill the operator typed (ADR-0198): every other skill asked for again
+    after work is a re-entry and gets its body (ADR-0196).
+    """
+    from zakcode.providers.text_tools import defang_untrusted
+
+    if page is not None:
+        pointer = (
+            f"[already loaded] Skill {name!r} is running this turn, "
+            "delivered one section at a time; here is the CURRENT section "
+            f"again. Continue from where you are in it.\n\n{page}"
+        )
+    elif worked:
+        pointer = (
+            "[already loaded] Nothing new was loaded: the operator ran "
+            f"/{name} themselves this turn, so its full instructions are in the /command "
+            "message you were given and you have been working through them. Continue from "
+            "the step you are on: your next action is that step's tool call, not another "
+            "Skill call and not a summary."
+        )
+    else:
+        # Nothing has run since the body arrived, so there is no "where you
+        # are" to continue from: the pointer says what to DO. The bare one
+        # drew a summary and a stop from a model that had not started.
+        pointer = (
+            "[already loaded] Nothing new was loaded: the full instructions "
+            f"for skill {name!r} are already in your context THIS turn, "
+            "unchanged — in the /command message you were given, or an "
+            "earlier Skill result — and you have run no tool on them since "
+            "they arrived. Loading a skill does not run it. Carry those "
+            "instructions out now, starting from their first step: your next "
+            "action is that step's tool call, not another Skill call and not "
+            "a summary."
+        )
+    if args.strip():
+        pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
+    return pointer
+
+
 class _SkillToolResolver:
     """Adapts the Agent's skill registry + selection signal into the
     :class:`~zakcode.tools.base.SkillResolver` the ``use_skill`` tool calls.
@@ -1150,6 +1193,31 @@ class Agent:
             return
         self._note_skill_delivered(skill.name, _skill_digest(body))
 
+    def _typed_this_turn_pointer(self, skill: Any, args: str) -> str | None:
+        """The answer to the model's ``Skill(<name>)`` of a USER-ONLY skill the operator typed
+        THIS turn (ADR-0198), else ``None`` — and the refusal stands.
+
+        Only :meth:`_register_composed_skill` can have registered a user-only skill: the tool
+        and harness doors are refused before they register anything. So a matching digest
+        means the operator's own ``/<name>`` put this body in context this turn. Never the
+        body: after work the answer is "continue", not a second 65 KB through the door
+        ADR-0109 closed. A digest that no longer matches (the file changed mid-turn), an
+        unreadable skill, or a fresh skill turn (a veto, a compaction) all return ``None``.
+        """
+        registered = self._skills_loaded_this_turn.get(skill.name)
+        if registered is None:
+            return None
+        try:
+            if registered != _skill_digest(skill.body()):
+                return None
+        except Exception:  # noqa: BLE001 — an unreadable skill keeps the refusal
+            return None
+        loop = getattr(self, "loop", None)
+        page = loop.current_skill_page(skill.name) if loop is not None else None
+        arrived_at = self._skill_loaded_at_work.get(skill.name)
+        worked = arrived_at is not None and self._loop_work_calls() > arrived_at
+        return _already_loaded_pointer(skill.name, page, args, worked=worked)
+
     def _loop_work_calls(self) -> int:
         """The loop's work-call count (ADR-0196); 0 for an Agent with no loop to ask."""
         reader = getattr(getattr(self, "loop", None), "work_calls", None)
@@ -1681,6 +1749,16 @@ class Agent:
         # OPERATOR alone may run — a framework's control commands (start/stop an agent). Refuse
         # the model's tool path; the human ``/<name>`` path is untouched.
         if source in ("tool", "harness") and not skill.model_invocable:
+            # …unless the operator typed it THIS turn (ADR-0198). Then its instructions are in
+            # context by the operator's own hand and "it cannot be run from here" is false: a
+            # small model obeys that sentence and abandons the command it was just given
+            # (measured 2026-09-18, gpt-5.6-luna: the served /start died at its first call).
+            # The tool door still LOADS nothing — the answer points at what the operator's
+            # command put there. The harness door stays shut either way.
+            typed = self._typed_this_turn_pointer(skill, args) if source == "tool" else None
+            if typed is not None:
+                logger.info("skill %r use_skill answered: the operator typed it", skill.name)
+                return SkillLoad(found=True, name=skill.name, body=typed)
             return SkillLoad(
                 found=True,
                 name=skill.name,
@@ -1732,28 +1810,7 @@ class Agent:
                     page is None and arrived_at is not None and self._loop_work_calls() > arrived_at
                 )
                 if not reentry:
-                    if page is not None:
-                        pointer = (
-                            f"[already loaded] Skill {skill.name!r} is running this turn, "
-                            "delivered one section at a time; here is the CURRENT section "
-                            f"again. Continue from where you are in it.\n\n{page}"
-                        )
-                    else:
-                        # Nothing has run since the body arrived, so there is no "where you
-                        # are" to continue from: the pointer says what to DO. The bare one
-                        # drew a summary and a stop from a model that had not started.
-                        pointer = (
-                            "[already loaded] Nothing new was loaded: the full instructions "
-                            f"for skill {skill.name!r} are already in your context THIS turn, "
-                            "unchanged — in the /command message you were given, or an "
-                            "earlier Skill result — and you have run no tool on them since "
-                            "they arrived. Loading a skill does not run it. Carry those "
-                            "instructions out now, starting from their first step: your next "
-                            "action is that step's tool call, not another Skill call and not "
-                            "a summary."
-                        )
-                    if args.strip():
-                        pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
+                    pointer = _already_loaded_pointer(skill.name, page, args, worked=False)
                     logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
                     return SkillLoad(found=True, name=skill.name, body=pointer)
                 logger.info("skill %r asked for again after work — a re-entry", skill.name)

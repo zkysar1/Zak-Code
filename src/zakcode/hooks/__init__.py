@@ -648,6 +648,7 @@ class HookManager:
         - Exit 0 + stdout JSON ``{"decision":"block","reason":"..."}`` → vetoed
         - Exit 0 + empty stdout (or ``{"decision":"allow"}``) → allow
         - Exit 2 + stdout message → vetoed (native Zak-Code exit-2 protocol)
+        - Exit 2 + stderr message → vetoed (Claude Code: on exit 2 the reason IS stderr; ADR-0198)
         - Non-zero (except 2) / timeout / crash / spawn failure → fail-open allow
         """
         if not spec.command:
@@ -675,7 +676,7 @@ class HookManager:
             return TurnEndResult()
 
         try:
-            stdout, _stderr = await asyncio.wait_for(
+            stdout, stderr = await asyncio.wait_for(
                 proc.communicate(stdin_bytes), timeout=spec.timeout
             )
         except (TimeoutError, asyncio.CancelledError) as exc:
@@ -691,9 +692,12 @@ class HookManager:
         code = proc.returncode
         text = (stdout or b"").decode("utf-8", errors="replace").strip()
 
-        # Native exit-2 protocol: vetoed with the stdout text as the prompt.
+        # Exit-2 protocol: vetoed, with the hook's words as the prompt — stdout (native) or,
+        # when stdout is empty, stderr (where a Claude Code hook writes its reason).
         if code == 2:
-            return TurnEndResult(vetoed=True, continuation_prompt=text or "Continue.")
+            return TurnEndResult(
+                vetoed=True, continuation_prompt=text or _stderr_reason(stderr) or "Continue."
+            )
 
         if code != 0:
             # Non-zero (non-2) exit: fail-open.
@@ -972,6 +976,13 @@ class HookManager:
         Protocol: exit 0 = allow, exit 2 = block, anything else = warn. stdout, if
         valid JSON, may provide ``message`` and (PreToolUse) ``arguments``. Spawn
         failure / timeout / weirdness all degrade to a warning.
+
+        A BLOCK's reason is stdout's message or, when there is none, the hook's stderr
+        (ADR-0198): Claude Code feeds an exit-2 hook's stderr to the model, so a hook written
+        to that contract says WHY there. Dropped, the model read a bare "blocked by hook" —
+        measured 2026-09-18, fourteen times running, under a gate whose stderr said the
+        instructions were already in context and to follow them. Allow and warn are
+        unchanged: their stderr is noise the model never needed.
         """
         if not spec.command:
             return None
@@ -992,7 +1003,7 @@ class HookManager:
             return HookResult(decision=HookDecision.WARN, messages=[f"hook failed to start: {exc}"])
 
         try:
-            stdout, _stderr = await asyncio.wait_for(
+            stdout, stderr = await asyncio.wait_for(
                 proc.communicate(stdin_bytes), timeout=spec.timeout
             )
         except (TimeoutError, asyncio.CancelledError) as exc:
@@ -1011,13 +1022,14 @@ class HookManager:
         code = proc.returncode
         message, mutated_args, deny, additional = self._parse_stdout(stdout)
         mutated_args = _unwire_arguments(payload.tool_name, mutated_args)
+        block_reason = message or _stderr_reason(stderr)
 
         # Claude Code blocks via {"hookSpecificOutput": {"permissionDecision": "deny"}} on
         # exit 0 (not exit 2). Honor it as a BLOCK regardless of exit code.
         if deny:
             return HookResult(
                 decision=HookDecision.BLOCK,
-                messages=_msgs(message) or ["blocked by hook"],
+                messages=_msgs(block_reason) or ["blocked by hook"],
                 mutated_arguments=mutated_args,
             )
         if code == 0:
@@ -1030,7 +1042,7 @@ class HookManager:
         if code == 2:
             return HookResult(
                 decision=HookDecision.BLOCK,
-                messages=_msgs(message) or ["blocked by hook"],
+                messages=_msgs(block_reason) or ["blocked by hook"],
                 mutated_arguments=mutated_args,
             )
         return HookResult(
@@ -1098,6 +1110,19 @@ def _valid_cwd(cwd: str) -> str | None:
 
 def _msgs(message: str) -> list[str]:
     return [message] if message else []
+
+
+#: How much of a blocking hook's stderr reaches the model (ADR-0198). A reason is a sentence
+#: or a paragraph; a hook that floods stderr must not flood the context with it.
+_MAX_HOOK_STDERR_CHARS = 4000
+
+
+def _stderr_reason(stderr: bytes | None) -> str:
+    """A blocking hook's stderr as the reason the model reads, bounded; ``""`` when empty."""
+    text = (stderr or b"").decode("utf-8", errors="replace").strip()
+    if len(text) > _MAX_HOOK_STDERR_CHARS:
+        text = text[:_MAX_HOOK_STDERR_CHARS].rstrip() + " … [hook stderr truncated]"
+    return text
 
 
 __all__ = [

@@ -11459,3 +11459,88 @@ served process now shares — `tests/test_proc.py` at the shell-tool seam and
 `tests/test_lifecycle_hooks.py` at the SessionStart hook seam: a command that leaves a
 fully redirected child running returns in under 4 s against a 6 s timeout. They pass with
 or without the pin, because the suite already runs on the stdlib loop.
+
+---
+
+## ADR-0198: what the harness tells the model must be true for THIS turn — the operator's own command, the hook's own words, and a sentence that is not a command
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** Sample 3 of the served-loop measurement
+(`bench/results/served-luna-preregistration.log`, gpt-5.6-luna, 2026-09-18) ended at its
+first decision. The operator's `/start` opened the turn, so the skill's instructions were in
+the turn's own message. Sample 2 had opened the same turn with a plan and seven shell calls
+and reached `RUNNING` inside a minute. This time the model's first call was `Skill(start)`.
+Three things the harness said next were each false for that turn, and together they ended
+the turn 42 seconds in, with no loop started and no wake-up armed to start another.
+
+1. **The refusal.** `start` carries `disable-model-invocation: true`, and ADR-0109 refuses
+   the tool door for such a skill BEFORE the reload dedup (ADR-0063) is consulted. The
+   answer was "the operator types it in their terminal; it cannot be run from here. Tell
+   them — do not retry." The operator HAD typed it; it was being run from here. ADR-0063's
+   own field case was `use_skill start` inside a typed `/start`, and it exists so that call
+   gets the pointer at the instructions. ADR-0109 put a check in front of it that makes the
+   pointer unreachable for exactly the skills an operator types most. The model obeyed the
+   sentence, marked its plan done, and said the command could not be run.
+2. **The routing.** It said so in one line that opened with the command in backticks and
+   went on to explain. `_slash_invocation` strips wrapping backticks and then takes
+   everything after the skill name as arguments, so the sentence was routed as
+   `Skill(start, args="mind` must be executed by the operator's …")` — fourteen times in
+   the turn, each a provider call, until the stuck ladder stepped in.
+3. **The block.** Each routed call was stopped by the framework's own `PreToolUse[Skill]`
+   gate, which exits 2 and writes its reason to stderr: the instructions are already in
+   context, follow them, do not re-invoke. That is Claude Code's contract — on exit 2 the
+   hook's stderr is what the model reads. `_run_shell` read stdout only and discarded
+   stderr, so fourteen times the model read `Blocked by hook for 'Skill': blocked by hook`.
+   The one sentence that would have put it back on the instructions never arrived.
+
+**Decision.**
+
+- **A user-only skill the operator typed THIS turn answers the model's `Skill` call with the
+  pointer, never the refusal and never the body.** `_typed_this_turn_pointer` holds when the
+  skill's digest is registered for this turn — and for a user-only skill only the command
+  door can have registered it, because the tool and harness doors are refused before they
+  register anything. Before any work the answer is the ADR-0196 sentence ("carry those
+  instructions out now, starting from their first step"); after work it is a new one
+  ("continue from the step you are on"). The tool door still LOADS nothing: a second 65 KB
+  does not come through the door ADR-0109 closed, and no budget is spent. Everything else
+  keeps the refusal — a turn the operator did not open with the command (ADR-0109's own
+  incident), the harness door even inside a typed turn, a fresh skill turn after a veto or
+  a compaction, and a body that changed since it was typed. The three pointer sentences
+  now live in one function, `_already_loaded_pointer`.
+- **A backtick left inside the line is prose.** After the wrapping backticks and a trailing
+  period are gone, `_slash_invocation` refuses a line that still contains one: a code span
+  that closes mid-sentence is followed by words ABOUT the command. Every spelling the door
+  took before still routes.
+- **A block's reason is stdout's message or, when there is none, the hook's stderr**, in
+  both blocking runners: the tool hooks (`exit 2`, and a `permissionDecision: deny` that
+  carries no reason) and the turn-end hooks (`exit 2`). Bounded at 4,000 characters.
+  Allow and warn are unchanged — their stderr is noise the model never needed.
+
+**Alternatives rejected.** Moving the user-only refusal behind the whole dedup block — that
+also reaches the re-entry branch, which delivers the BODY, and a user-only body must never
+come through the tool door. Dropping the refusal's "do not retry" — it is the right sentence
+when the operator did not type the command. Refusing to route ANY text that names a
+user-only skill — a model that echoes the operator's own `/start mind` as its whole
+completion is now answered with the pointer, which is the help it needed. A per-turn fence
+on routing the same text twice — a perpetual loop legitimately types `/aspirations loop` at
+the end of every iteration of one turn; the stuck ladder already bounds a routed call that
+keeps failing. Appending stderr to a stdout message — a hook that speaks on stdout has
+chosen its words, and its stderr is usually noise.
+
+**Consequences.** The first decision of a served run no longer has a fatal branch: whichever
+way a small model opens a typed command, the next thing it reads tells it to carry the
+instructions out. A Claude Code hook that blocks the way Claude Code documents is heard the
+way Claude Code would let it be heard, with no change on the framework's side. NOT changed,
+and measured in the same run: the ended-turn marker still tells the model to reload an
+elided skill with `use_skill`, which a user-only skill will refuse; and nothing restarts a
+served run whose first turn ends before the loop arms its own wake-up.
+
+Tests: `tests/test_user_only_skills.py` (the typed turn, after work, and the four controls
+that keep the refusal), `tests/test_use_skill.py` (the same through the real turn door, with
+the trace naming the pointer), `tests/test_slash_text.py` (the sentence, and every clean
+spelling as the positive control), `tests/test_claude_code_hook_contract.py` part 9 and
+`tests/test_turn_end.py` (stderr as the reason, stdout first, the wordless default, allow and
+warn untouched, the bound). Each fix was removed in turn and its tests went red with the
+field symptom in the message: the user-only refusal, the routed call, `blocked by hook`,
+`Continue.`.

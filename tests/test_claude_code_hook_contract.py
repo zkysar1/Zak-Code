@@ -11,7 +11,10 @@ The contract, in five parts (each a fix proven here):
   5. the hook stdin names tool args ``tool_input`` (not Zak-native ``arguments``);
   6. the hook stdin names the tool as Claude Code does (``write_file`` → ``Write``) and the
      file tools' argument ``file_path`` (workspace-resolved); an ``updatedInput`` rewrite
-     maps back onto ``path`` (ADR-0071).
+     maps back onto ``path`` (ADR-0071);
+  9. a BLOCK's reason is stdout's message or, when there is none, the hook's **stderr** —
+     Claude Code feeds an exit-2 hook's stderr to the model, so that is where a hook written
+     to the contract says why (ADR-0198).
 
 All hermetic: tmp-dir workspaces, scripted Python hooks, no network.
 """
@@ -349,3 +352,69 @@ async def test_shell_hook_gates_write_file_by_file_path_and_maps_the_rewrite_bac
     assert not allowed.blocked
     expected = os.path.normpath(os.path.join(str(tmp_path), "notes/x.md")) + ".rewritten"
     assert allowed.mutated_arguments == {"path": expected, "content": "c"}
+
+
+# ── (9) a block's reason: stdout's message, else stderr (ADR-0198) ───────────────────────
+
+
+def _pre_tool(tmp_path: Path, name: str, body: str) -> HookManager:
+    return HookManager(
+        [HookSpec(event=HookEvent.PRE_TOOL_USE, command=_script(tmp_path, name, body))]
+    )
+
+
+async def test_an_exit_2_reason_written_to_stderr_reaches_the_model(tmp_path: Path) -> None:
+    """Measured 2026-09-18 (gpt-5.6-luna, served): a gate said "instructions already in
+    context — follow them" on stderr and exited 2; the model read "blocked by hook" fourteen
+    times and never learned what to do instead."""
+    body = (
+        "import sys; sys.stdin.read()\n"
+        "print('Skill /greeter instructions already in context. Follow them.', file=sys.stderr)\n"
+        "sys.exit(2)\n"
+    )
+    res = await _pre_tool(tmp_path, "gate.py", body).run(_payload(tmp_path))
+    assert res.blocked
+    assert res.message == "Skill /greeter instructions already in context. Follow them."
+
+
+async def test_a_deny_json_without_a_reason_reads_stderr_too(tmp_path: Path) -> None:
+    body = (
+        "import sys, json; sys.stdin.read()\n"
+        "print('not while a run is in flight', file=sys.stderr)\n"
+        "print(json.dumps({'hookSpecificOutput': {'permissionDecision': 'deny'}}))\n"
+    )
+    res = await _pre_tool(tmp_path, "deny.py", body).run(_payload(tmp_path))
+    assert res.blocked and res.message == "not while a run is in flight"
+
+
+async def test_stdout_still_wins_and_a_wordless_block_keeps_the_default(tmp_path: Path) -> None:
+    """The two controls: a hook that speaks on stdout is quoted from stdout (its stderr is
+    not appended), and one with no words anywhere still says the old sentence."""
+    both = (
+        "import sys; sys.stdin.read()\n"
+        "print('the stdout reason'); print('noise', file=sys.stderr); sys.exit(2)\n"
+    )
+    res = await _pre_tool(tmp_path, "both.py", both).run(_payload(tmp_path))
+    assert res.blocked and res.message == "the stdout reason"
+    mute = "import sys; sys.stdin.read(); sys.exit(2)\n"
+    res = await _pre_tool(tmp_path, "mute.py", mute).run(_payload(tmp_path))
+    assert res.blocked and res.message == "blocked by hook"
+
+
+async def test_stderr_is_a_reason_only_on_a_block(tmp_path: Path) -> None:
+    """An allowing hook's stderr is noise the model never needed, and a warning keeps its
+    exit-code sentence: the change is scoped to the one decision that stops a tool call."""
+    allow = "import sys; sys.stdin.read(); print('slow disk', file=sys.stderr)\n"
+    res = await _pre_tool(tmp_path, "allow.py", allow).run(_payload(tmp_path))
+    assert not res.blocked and "slow disk" not in res.message
+    warn = "import sys; sys.stdin.read(); print('traceback...', file=sys.stderr); sys.exit(1)\n"
+    res = await _pre_tool(tmp_path, "warn.py", warn).run(_payload(tmp_path))
+    assert not res.blocked and "traceback" not in res.message
+    assert "hook exited with code 1" in res.message
+
+
+async def test_a_flood_of_stderr_is_bounded(tmp_path: Path) -> None:
+    body = "import sys; sys.stdin.read(); sys.stderr.write('x' * 20000); sys.exit(2)\n"
+    res = await _pre_tool(tmp_path, "flood.py", body).run(_payload(tmp_path))
+    assert res.blocked and res.message.endswith("[hook stderr truncated]")
+    assert len(res.message) < 4100
