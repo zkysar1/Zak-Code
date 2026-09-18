@@ -1186,6 +1186,12 @@ _SKILL_TOOLS = frozenset({"Skill", "use_skill"})
 #: The wake-up tool under both spellings (ADR-0190). Re-arming the net is not work on a
 #: skill's instructions (ADR-0196) — a resurrected loop is told to do it FIRST.
 _WAKEUP_TOOLS = frozenset({"ScheduleWakeup", "schedule_wakeup"})
+#: Tools whose result is the harness's own delivery or acknowledgement -- a skill's body, its
+#: "[already loaded]" pointer, a wake-up's "armed" line. Identical by construction, so the stuck
+#: ladder's repeated-outcome signal never counts them (ADR-0038, amended 2026-09-18). The plan
+#: tools are NOT here: their result echoes what the model sent, and the same plan sent again
+#: and again is the churn that signal exists to catch.
+_UNOBSERVING_TOOLS = _SKILL_TOOLS | _WAKEUP_TOOLS
 _READ_TOOLS = frozenset({"Read", "read_file"})
 _WRITE_TOOLS = frozenset({"Write", "write_file"})
 _EDIT_TOOLS = frozenset({"Edit", "edit_file"})
@@ -6491,7 +6497,7 @@ class AgentLoop:
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
-        stuck = StuckTracker()
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
         restrict_readonly_next = False
 
         while True:
@@ -7700,6 +7706,13 @@ class AgentLoop:
                     stuck_took_action=stuck.took_action,
                 )
                 if prompt is not None:
+                    self._note(
+                        "intervention",
+                        "stuck — the turn-end hook refused the stop; continuing",
+                        kind="stuck",
+                        vetoed=True,
+                        **stuck.evidence(),
+                    )
                     turn_end_vetoes += 1
                     self._persist()
                     last_signature = None
@@ -7707,7 +7720,12 @@ class AgentLoop:
                     stuck.reset()
                     continue
                 stop_reason = "stuck"
-                self._note("intervention", "stuck — repeated steps made no progress", kind="stuck")
+                self._note(
+                    "intervention",
+                    "stuck — repeated steps made no progress",
+                    kind="stuck",
+                    **stuck.evidence(),
+                )
                 break
             if action is StuckAction.NUDGE:
                 # Decompose-on-stuck (ADR-0057): rung 1 adds investigative steps to the plan
@@ -7722,12 +7740,15 @@ class AgentLoop:
                     f"no progress — {'added' if fresh else 're-pointed at'} "
                     f"{len(open_steps)} investigative steps in the plan",
                     kind="stuck",
+                    **stuck.evidence(),
                 )
                 rail = _investigation_rail(stuck.nudge_message(), open_steps, fresh=fresh)
                 self.session.add_message(Message.user(_control_rail(rail)))
                 self._persist()
             elif action is StuckAction.NARROW:
-                self._note("intervention", "limiting to read-only tools", kind="stuck")
+                self._note(
+                    "intervention", "limiting to read-only tools", kind="stuck", **stuck.evidence()
+                )
                 self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                 restrict_readonly_next = True
                 self._persist()
@@ -7739,6 +7760,7 @@ class AgentLoop:
                     "intervention",
                     "still stuck — stepping back to re-check assumptions",
                     kind="stuck",
+                    **stuck.evidence(),
                 )
                 self.session.add_message(Message.user(_control_rail(stuck.step_back_message())))
                 self._persist()
@@ -7988,7 +8010,7 @@ class AgentLoop:
         # it reads the one the workspace declares (review lever L4).
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
-        stuck = StuckTracker()
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
         restrict_readonly_next = False
 
         try:
@@ -9506,6 +9528,13 @@ class AgentLoop:
                         stuck_took_action=stuck.took_action,
                     )
                     if prompt is not None:
+                        self._note(
+                            "intervention",
+                            "stuck — the turn-end hook refused the stop; continuing",
+                            kind="stuck",
+                            vetoed=True,
+                            **stuck.evidence(),
+                        )
                         turn_end_vetoes += 1
                         self._persist()
                         last_signature = None
@@ -9515,7 +9544,10 @@ class AgentLoop:
                         continue
                     stop_reason = "stuck"
                     self._note(
-                        "intervention", "stuck — repeated steps made no progress", kind="stuck"
+                        "intervention",
+                        "stuck — repeated steps made no progress",
+                        kind="stuck",
+                        **stuck.evidence(),
                     )
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break
@@ -9531,6 +9563,7 @@ class AgentLoop:
                         "intervention",
                         f"no progress — {verb} {len(open_steps)} investigative steps in the plan",
                         kind="stuck",
+                        **stuck.evidence(),
                     )
                     rail = _investigation_rail(stuck.nudge_message(), open_steps, fresh=fresh)
                     self.session.add_message(Message.user(_control_rail(rail)))
@@ -9544,7 +9577,12 @@ class AgentLoop:
                         "investigative steps in the plan"
                     )
                 elif action is StuckAction.NARROW:
-                    self._note("intervention", "limiting to read-only tools", kind="stuck")
+                    self._note(
+                        "intervention",
+                        "limiting to read-only tools",
+                        kind="stuck",
+                        **stuck.evidence(),
+                    )
                     self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                     restrict_readonly_next = True
                     self._persist()
@@ -9558,6 +9596,7 @@ class AgentLoop:
                         "intervention",
                         "still stuck — stepping back to re-check assumptions",
                         kind="stuck",
+                        **stuck.evidence(),
                     )
                     self.session.add_message(Message.user(_control_rail(stuck.step_back_message())))
                     self._persist()

@@ -86,6 +86,16 @@ SIG_NO_PROGRESS = "no-progress"
 #: errored. Re-observing a known result is not progress; this signal is STRONG (it counts as
 #: stuck on its own) and it drives the ladder by the repeat count, not by a consecutive streak,
 #: because the re-measurements were interleaved with other probes.
+#:
+#: It counts OBSERVATIONS of the world. A tool whose result is the harness's own delivery or
+#: acknowledgement -- a skill's body, its "[already loaded]" pointer, a wake-up's "armed" line --
+#: is identical by construction and measures nothing, so the loop names those tools in
+#: ``uncounted_outcome_tools`` and they never feed this signal (amended 2026-09-18). Measured on
+#: a served Mind loop (gpt-5.6-luna): the stop hook orders ``Skill('aspirations')``, the loader
+#: answers with the same pointer every time, and the 3rd, 4th and 5th pointer of one turn drew
+#: nudge, narrow and step-back although distinct, successful work ran between them; the
+#: graceful-stop body, asked for again after work, drew the whole ladder and a STOP in the
+#: middle of the stop itself. Every OTHER signal still sees those calls.
 SIG_REPEATED_OUTCOME = "repeated-outcome"
 
 #: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``
@@ -150,6 +160,7 @@ class StuckTracker:
         stop_at: int = 6,
         repeated_failure_at: int = 2,
         outcome_repeat_at: int = 3,
+        uncounted_outcome_tools: frozenset[str] = frozenset(),
     ) -> None:
         self.vote_threshold = vote_threshold
         self.nudge_at = nudge_at
@@ -158,11 +169,13 @@ class StuckTracker:
         self.stop_at = stop_at
         self.repeated_failure_at = repeated_failure_at
         self.outcome_repeat_at = outcome_repeat_at
+        self.uncounted_outcome_tools = uncounted_outcome_tools
         self._streak = 0  # consecutive stuck (>= vote_threshold signals) iterations
         self._prev_sig: tuple[tuple[str, str], ...] | None = None
         self._error_counts: Counter[tuple[str, str]] = Counter()  # per-call failures this turn
         self._outcome_counts: Counter[str] = Counter()  # identical outcomes this turn (ADR-0038)
         self._last_outcome_repeats = 0  # the worst repeat count seen on the most recent observe
+        self._last_outcome_tool = ""  # the tool that worst count belongs to
         self._last_signals: list[str] = []  # signals fired on the most recent observe
         self._actions: list[str] = []  # ladder actions taken this turn (observability)
         self._step_back_used = False  # the reassessment rung is once per turn
@@ -187,6 +200,20 @@ class StuckTracker:
     def took_action(self) -> bool:
         """Whether any recovery step (nudge/narrow/stop) has fired this turn."""
         return bool(self._actions)
+
+    def evidence(self) -> dict[str, object]:
+        """What the ladder acted on, for the trace note: the signals that fired on the most
+        recent :meth:`observe` and, when a repeated outcome is among them, the tool and how
+        many times its result has now come back. Names and counts only, never the output.
+
+        A served run's trace said ``no progress`` eight times in one turn and nothing could say
+        which signal or which tool (2026-09-18); the outputs had been compacted away.
+        """
+        data: dict[str, object] = {"signals": ",".join(self._last_signals)}
+        if SIG_REPEATED_OUTCOME in self._last_signals:
+            data["tool"] = self._last_outcome_tool
+            data["repeats"] = self._last_outcome_repeats
+        return data
 
     def error_signatures(self) -> list[tuple[str, str]]:
         """Call signatures ``(name, canonical-args)`` that failed at least ``repeated_failure_at``
@@ -259,17 +286,21 @@ class StuckTracker:
 
         # Repeated outcome (ADR-0038): count identical (tool, epoch, output) observations
         # across the whole turn — NOT consecutively — and read the worst count this batch.
-        worst = 0
+        worst, worst_tool = 0, ""
         for call in calls:
             result = by_id.get(call.id)
             if result is None:
                 continue
+            if call.name in self.uncounted_outcome_tools:
+                continue  # the harness's own delivery: identical by construction, no measurement
             osig = outcome_signature(call.name, result.output or "", epoch)
             if osig is None:
                 continue
             self._outcome_counts[osig] += 1
-            worst = max(worst, self._outcome_counts[osig])
+            if self._outcome_counts[osig] > worst:
+                worst, worst_tool = self._outcome_counts[osig], call.name
         self._last_outcome_repeats = worst
+        self._last_outcome_tool = worst_tool
         if worst >= self.outcome_repeat_at:
             signals.append(SIG_REPEATED_OUTCOME)
 
