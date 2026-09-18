@@ -138,6 +138,79 @@ async def test_use_skill_refuses_a_user_only_skill_and_the_command_path_runs_it(
     assert other.found and other.denied_reason is None and other.body is not None
 
 
+# ── the operator typed it THIS turn: the tool door answers, and still loads nothing ─────
+
+
+@pytest.mark.asyncio
+async def test_a_user_only_skill_the_operator_typed_this_turn_gets_the_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0198. Measured 2026-09-18 (gpt-5.6-luna, served): the operator's ``/start`` had
+    put the instructions in context, the model's first call was ``Skill(start)``, and the
+    refusal told it "it cannot be run from here. Tell them — do not retry". It obeyed, and
+    the run ended at its first decision. The truth for THAT turn is the pointer."""
+    agent = zakcode.Agent(workspace_root=tmp_path)
+    monkeypatch.setattr(agent, "skill_registry", _registry(tmp_path))
+    typed = await agent.compose_skill_turn("start", "coach")
+    assert typed.turn_text is not None
+    agent._begin_skill_turn()
+    agent._register_composed_skill(typed.turn_text)  # what both top-level doors do
+
+    first = await agent._load_skill_body("start", source="tool", args="coach")
+    assert first.found and first.denied_reason is None and first.body is not None
+    assert first.body.startswith("[arguments: coach]\n\n[already loaded]")
+    assert "Carry those instructions out now" in first.body
+    assert "Bring the agent up." not in first.body  # the door loads NOTHING, even now
+    assert agent._skill_invocations_this_turn == 0  # …and spends no budget doing it
+
+    # After work the model has a place to continue from; the answer says so — and it is
+    # still not the body (every other skill gets its body here: ADR-0196).
+    monkeypatch.setattr(agent, "_loop_work_calls", lambda: 3)
+    later = await agent._load_skill_body("start", source="tool")
+    assert later.denied_reason is None and later.body is not None
+    assert later.body.startswith("[already loaded]") and "Continue from the step" in later.body
+    assert "Bring the agent up." not in later.body
+
+
+@pytest.mark.asyncio
+async def test_the_refusal_stands_wherever_the_operator_did_not_type_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The controls that keep ADR-0109 whole: a turn the operator did not open with the
+    command, the harness's own door even in a turn they did, a fresh skill turn (a veto, a
+    compaction), and a skill whose body changed since it was typed."""
+    agent = zakcode.Agent(workspace_root=tmp_path)
+    monkeypatch.setattr(agent, "skill_registry", _registry(tmp_path))
+
+    async def refused(source: str) -> bool:
+        load = await agent._load_skill_body("start", source=source)  # type: ignore[arg-type]
+        return load.body is None and "user-only" in (load.denied_reason or "")
+
+    agent._begin_skill_turn()
+    agent._register_composed_skill("clear that plan, and lets start from scratch")
+    assert await refused("tool")  # the ADR-0109 incident: never typed
+
+    typed = await agent.compose_skill_turn("start", "coach")
+    assert typed.turn_text is not None
+    agent._register_composed_skill(typed.turn_text)
+    assert await refused("harness")  # operator-only stays operator-only for the harness
+    assert not await refused("tool")  # the positive control: THIS is the typed turn
+
+    agent._begin_skill_turn()  # a veto or a compaction: the registration is gone
+    assert await refused("tool")
+
+    agent._register_composed_skill(typed.turn_text)
+    assert not await refused("tool")  # registered again: the pointer is back…
+    changed = tmp_path / "rediscovered"
+    changed.mkdir()
+    monkeypatch.setattr(  # …until the skills are rediscovered with a different body
+        agent,
+        "skill_registry",
+        _registry(changed, START_MD.replace("Bring the agent up.", "Bring it up differently.")),
+    )
+    assert await refused("tool")  # not the text the operator's command delivered
+
+
 # ── the classify side-call names a user-only command APART, and the floor still applies ──
 
 

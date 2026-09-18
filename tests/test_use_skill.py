@@ -1072,6 +1072,34 @@ async def test_harness_source_still_refuses_an_operator_only_skill(tmp_path: Pat
     assert human.turn_text is not None
 
 
+async def test_the_operators_own_command_survives_the_models_redundant_skill_call(
+    tmp_path: Path,
+) -> None:
+    """ADR-0198, through the real turn door. Measured 2026-09-18 (gpt-5.6-luna, served): the
+    operator typed ``/start``, the model's FIRST call was ``Skill(start)``, the refusal said
+    "it cannot be run from here. Tell them — do not retry", and the run ended there. The
+    body is already in the turn's own message, so the answer is the pointer at it: not an
+    error, not the body a second time, and visible in the trace as the pointer door."""
+    _write_skill_with(
+        tmp_path, "start", "disable-model-invocation: true", body="# /start\n\nStep 1: say up."
+    )
+    provider = _ReplayProvider(
+        [_call("Skill", "s1", skill="start", args="coach")]
+        + [LLMResult(text="The agent is up.", usage=Usage(total_tokens=1))] * 6
+    )
+    agent = _agent(tmp_path, enable_skills=True, provider=provider)
+    typed = await agent.compose_skill_turn("start", "coach")
+    assert typed.turn_text is not None and "Step 1: say up." in typed.turn_text
+    await agent.arun_turn(typed.turn_text)
+
+    (answer,) = [
+        b for m in agent.session.messages for b in m.blocks if isinstance(b, ToolResultBlock)
+    ]
+    assert answer.is_error is False and "user-only" not in answer.output
+    assert "[already loaded]" in answer.output and "Step 1: say up." not in answer.output
+    assert "skill_pointer" in [e.data.get("kind") for e in agent.loop._trace.events]
+
+
 async def test_harness_source_is_unbudgeted_but_counts_as_loaded(tmp_path: Path) -> None:
     _write_skill(tmp_path, "aspirations", body="Loop body.")
     agent = _agent(

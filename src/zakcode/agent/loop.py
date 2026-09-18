@@ -3432,11 +3432,17 @@ class AgentLoop:
         a discovered skill — a request the model made of itself, not an answer — else
         ``None``. Strict on purpose: one line, nothing but the invocation (a trailing period
         or wrapping backticks tolerated); prose that mentions a skill is not an invocation.
+
+        A backtick left INSIDE the line after the wrapping ones are gone closes a code span
+        mid-sentence, so what follows it is prose about the command (ADR-0198). Measured
+        2026-09-18 (gpt-5.6-luna, served): a one-line refusal that opened with the command in
+        backticks and went on to say why it would not be run was routed as that command, with
+        the rest of the sentence as its arguments — fourteen times in one turn.
         """
         if self._skill_resolver is None:
             return None
         line = re.sub(r"^[\s`]+|[\s`.]+$", "", text)
-        if not line or "\n" in line:
+        if not line or "\n" in line or "`" in line:
             return None
         match = re.match(r"^/([a-z0-9][a-z0-9_-]*)(?:\s+(.*))?$", line, re.I)
         if match is None:

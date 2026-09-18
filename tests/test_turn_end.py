@@ -186,6 +186,39 @@ async def test_run_turn_end_shell_block_native_exit2(tmp_path: Path) -> None:
     assert result.continuation_prompt == "continue please"
 
 
+async def test_run_turn_end_shell_exit2_reads_the_reason_from_stderr(tmp_path: Path) -> None:
+    """ADR-0198: on exit 2 a Claude Code hook writes its reason to STDERR. With stdout empty
+    that reason is the continuation — not a bare "Continue."."""
+    body = "import sys; print('finish the open step first', file=sys.stderr); sys.exit(2)\n"
+    cmd = _script(tmp_path, "stderr.py", body)
+    mgr = HookManager([HookSpec(event=HookEvent.TURN_END, command=cmd)])
+    result = await mgr.run_turn_end(_te_payload())
+    assert result.vetoed is True
+    assert result.continuation_prompt == "finish the open step first"
+
+
+async def test_run_turn_end_shell_exit2_prefers_stdout_and_falls_back_to_continue(
+    tmp_path: Path,
+) -> None:
+    """stdout still wins when both speak (the native protocol is unchanged), and a hook with
+    no words at all keeps the old default."""
+    both = "import sys; print('from stdout'); print('noise', file=sys.stderr); sys.exit(2)\n"
+    mgr = HookManager(
+        [HookSpec(event=HookEvent.TURN_END, command=_script(tmp_path, "both.py", both))]
+    )
+    assert (await mgr.run_turn_end(_te_payload())).continuation_prompt == "from stdout"
+    mute = HookManager(
+        [
+            HookSpec(
+                event=HookEvent.TURN_END,
+                command=_script(tmp_path, "mute.py", "import sys; sys.exit(2)\n"),
+            )
+        ]
+    )
+    silent = await mute.run_turn_end(_te_payload())
+    assert silent.vetoed is True and silent.continuation_prompt == "Continue."
+
+
 async def test_run_turn_end_shell_timeout(tmp_path: Path) -> None:
     """Hook sleeps past timeout -> process killed, fail-open allow."""
     cmd = _script(tmp_path, "slow.py", "import time; time.sleep(30)")

@@ -129,6 +129,42 @@ def test_prose_that_mentions_a_skill_is_an_answer(tmp_path: Path) -> None:
     assert _use_skill_results(loop) == []
 
 
+def test_a_sentence_that_opens_with_the_command_in_backticks_is_an_answer(tmp_path: Path) -> None:
+    """ADR-0198. Measured 2026-09-18 (gpt-5.6-luna, served): a one-line refusal that opened
+    with the command in backticks was routed as that command, the rest of the sentence its
+    arguments — fourteen times in one turn. A backtick left inside the line closes a code
+    span mid-sentence: what follows is prose ABOUT the command."""
+
+    def script(n: int) -> LLMResult:
+        return LLMResult(
+            text="`/boot now` has to be typed by the operator; this session cannot run `/boot`."
+        )
+
+    loop = _loop(_Scripted(script), tmp_path)
+    asyncio.run(loop.arun_turn("go"))
+    assert not [e for e in loop._trace.events if e.data.get("kind") == "slash_text_routed"]
+    assert _use_skill_results(loop) == []
+
+
+def test_the_clean_spellings_of_an_invocation_still_route(tmp_path: Path) -> None:
+    """The positive control for the rule above: every wrapping the door tolerated before is
+    still an invocation, arguments and all."""
+    loop = _loop(_Scripted(lambda n: LLMResult(text="unused")), tmp_path)
+    for text, expected in (
+        ("/boot", ("boot", "")),
+        ("`/boot`", ("boot", "")),
+        ("`/boot`.", ("boot", "")),
+        ("  /boot --recover --force  ", ("boot", "--recover --force")),
+        ("`/boot --recover --force`.", ("boot", "--recover --force")),
+    ):
+        assert loop._slash_invocation(text) == expected, text
+    for prose in (
+        "`/boot` must be run by the operator.",
+        "/boot `--recover` is what I would type, but the state is wrong.",
+    ):
+        assert loop._slash_invocation(prose) is None, prose
+
+
 def test_an_unknown_slash_stays_text(tmp_path: Path) -> None:
     def script(n: int) -> LLMResult:
         return LLMResult(text="/nothing")
