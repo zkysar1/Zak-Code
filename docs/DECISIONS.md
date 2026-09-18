@@ -10932,3 +10932,52 @@ AND loads skills whole; both halves are needed. Not done here: a bound on consec
 plan-only completions and a served default cost budget (the nets), a delta form of
 `update_plan` so a full replace stops re-sending done work, and the reasoning-effort
 question for the 5.6 tier (ADR-0188) — each is its own measurement.
+
+## ADR-0194: the broken-record guard speaks twice for one text, then the answer stands
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** ADR-0026's broken-record guard vetoes a completion the model has already sent
+verbatim this turn. It is checked FIRST among the finish gates — so a parrot never re-buys
+the critic or the quality gate — and it `continue`s. Every other veto in the ending flow is
+bounded: the plan gate by `_MAX_PLAN_NUDGES`, each evidence gate by its one-shot flag, the
+fresh-eyes review by `_MAX_PLAN_REVIEWS`, consecutive text-only completions by the ADR-0058
+cascade cap, a skill-naming Stop-hook veto by the ADR-0187 fence. The guard had no bound,
+and being first, nothing after it could end a turn it kept vetoing; the iteration cap was
+the only stop. Measured 2026-09-18 while measuring something else (ADR-0193's control and
+treatment arms, `gpt-5.6-luna`, main `57f32e2` and a branch alike): the model finished an
+eight-step task and answered correctly; the fresh-eyes review flagged that answer ("only
+reports that the plan and steps were completed" — the reviewer reads the answer and the plan
+record, not the tool results that substantiate it); the model closed the reviewer's step and
+re-sent the same correct answer; and the guard vetoed the identical re-send twenty times, to
+`max_iterations`, each veto billing a 37,000-token context. Half of each run's calls, and —
+on main, where none of it was cached — more than half its cost, bought nothing. A third run
+ended `completed` only because the model reworded its fifth answer, at which point the
+cascade cap, reached for the first time, let it stand. The guard was written against a
+small model that parrots "forever"; its own veto loop was the forever.
+
+**Decision.** The guard speaks at most `_MAX_BROKEN_RECORD_RAILS = 2` times for one text —
+its first wording, then the sharper "occurrence 3" wording, each used once. The next
+identical re-send is not vetoed: one `broken_record_stand_down` note, the turn marked
+degraded, and the completion goes on to the gates every other completion meets — by then
+the ADR-0058 cap has stood the evidence gates down, the review is spent, and the Stop-hook
+seam keeps its own contract (unbounded by design, with the ADR-0187 fence for a skill
+re-entry). The count stays per text, as ADR-0026 made it: a rail that works costs nothing
+more, and a second parroted text later in a long turn gets its own two rails. Both twins.
+
+**Alternatives rejected.** Letting the cascade cap run ahead of the guard: the guard is first
+for a reason, and the cap counts consecutive text-only completions, which a tool call
+between re-sends resets. A per-turn bound instead of per text: a served turn runs for
+hundreds of calls, and an early episode the rail cured would silence the guard for a later
+one. Ending the turn with a stop reason of its own: the text the model insists on is its
+answer, and "the answer stands, degraded" is what ADR-0058 already does with a model that
+answers every nudge in words. Fixing the reviewer instead: it is bounded, fail-open and
+worth its own measurement (it cannot see the tool results that prove an answer — noted, not
+changed here); the unbounded loop was the defect whatever starts it.
+
+**Consequences.** A model that has nothing new to say costs three extra calls, not the rest
+of the iteration budget; on a served run that is the difference between a finished turn and
+a `max_iterations` stop with the answer already given. `test_small_model_containment.py`
+pins the bound in both twins (the same file run against main's source fails exactly those
+two tests, `max_iterations` where `completed` is expected), that the count is per text, and
+that a rail that works is unchanged.
