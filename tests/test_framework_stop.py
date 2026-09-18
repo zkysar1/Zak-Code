@@ -13,13 +13,19 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
+from zakcode.session import framework_stop
 from zakcode.session.framework_stop import (
+    AGENT_MODE_FILENAME,
     DEFAULT_STOP_TARGET_MODE,
     SIDECAR_RAISE_MARKER,
     SIGNAL_SET_SCRIPT,
     STOP_CHECKPOINT_FILENAME,
+    STOP_TARGET_MODE_FILENAME,
     abandon_framework_stop,
     framework_session_dir,
+    framework_stop_complete,
     request_framework_stop,
     retire_expired_sidecar_stop,
     sidecar_raise_time,
@@ -269,6 +275,39 @@ def test_signal_is_signed_after_the_setter_creates_it(tmp_path: Path) -> None:
     assert first == SIDECAR_RAISE_MARKER
     assert second.startswith("raised_at: ") and second.endswith("Z")
     assert sidecar_raise_time(tmp_path, AGENT) is not None
+
+
+def test_signing_never_recreates_an_ask_the_mind_already_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ask is live from the setter's touch, so a quick mind can consume it before the
+    signature is written. The signature must not put it back.
+
+    Measured 2026-09-18 on windows-latest: the R4 end-to-end test timed out at 10 s against
+    a 30 s grace. ``Path.write_text`` had re-created the ``stop-requested`` the mind had just
+    removed, so ``framework_stop_complete`` read "not yet" until the grace ran out. The
+    window is opened here by hand, with no timing: the mind's whole stop lands between the
+    setter's verification and the signing.
+    """
+    _plant_signal_setter(tmp_path, _real_setter_body())
+    session_dir = framework_session_dir(tmp_path, AGENT)
+    session_dir.mkdir(parents=True)
+    (session_dir / AGENT_MODE_FILENAME).write_text("autonomous\n", encoding="utf-8")
+    real_setter = framework_stop.invoke_signal_setter
+
+    def setter_then_the_mind_stops(*args: object) -> bool:
+        raised = real_setter(*args)  # type: ignore[arg-type]
+        assert raised and (session_dir / "stop-requested").exists()
+        (session_dir / "stop-requested").unlink()  # D3: the mind consumes the ask
+        (session_dir / AGENT_MODE_FILENAME).write_text("assistant\n", encoding="utf-8")  # D7
+        (session_dir / STOP_TARGET_MODE_FILENAME).unlink()  # D7: the target mode is consumed
+        return raised
+
+    monkeypatch.setattr(framework_stop, "invoke_signal_setter", setter_then_the_mind_stops)
+
+    assert request_framework_stop(tmp_path, AGENT) is True, "the ask WAS raised, and read"
+    assert not (session_dir / "stop-requested").exists(), "the signature re-created the ask"
+    assert framework_stop_complete(tmp_path, AGENT) is True, "a finished stop reads finished"
 
 
 def test_an_unsigned_or_absent_signal_has_no_raise_time(tmp_path: Path) -> None:

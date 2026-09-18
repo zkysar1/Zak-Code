@@ -175,10 +175,27 @@ def _sign_signal(signal_file: Path) -> None:
 
     Best effort: the signal is already raised, and an unsigned one still works
     through the framework's mtime rule, so a write failure is logged, never raised.
+
+    NEVER CREATES the marker. The ask is live from the moment the setter touches it, and a
+    mind that reads it at once can consume it (D3 removes the file) before this line runs.
+    ``Path.write_text`` creates, so it put a consumed ``stop-requested`` BACK: the raise
+    reported success, ``framework_stop_complete`` read "not yet" for the whole grace, and a
+    run whose mind had finished its stop beat on until the window closed. Measured
+    2026-09-18 on windows-latest as a bare TimeoutError in the R4 end-to-end test (30 s
+    grace against a 10 s wait), then reproduced with no timing at all by consuming the ask
+    between the setter's verification and this write. Opened without ``O_CREAT``, a
+    consumed ask stays consumed.
     """
     stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        signal_file.write_text(f"{SIDECAR_RAISE_MARKER}\nraised_at: {stamp}\n", encoding="utf-8")
+        descriptor = os.open(signal_file, os.O_WRONLY | os.O_TRUNC)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"{SIDECAR_RAISE_MARKER}\nraised_at: {stamp}\n")
+    except FileNotFoundError:
+        logger.info(
+            "framework stop: %s was consumed before it could be signed; leaving it consumed",
+            signal_file,
+        )
     except OSError as exc:
         logger.warning("framework stop: raised but could not sign %s (%s)", signal_file, exc)
 
