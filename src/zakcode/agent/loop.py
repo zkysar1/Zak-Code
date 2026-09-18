@@ -1183,6 +1183,9 @@ _LOOKUP_TOOLS = frozenset(
     {"Read", "LS", "Glob", "Grep", "Skill", "read_file", "list_dir", "glob", "grep", "use_skill"}
 )
 _SKILL_TOOLS = frozenset({"Skill", "use_skill"})
+#: The wake-up tool under both spellings (ADR-0190). Re-arming the net is not work on a
+#: skill's instructions (ADR-0196) — a resurrected loop is told to do it FIRST.
+_WAKEUP_TOOLS = frozenset({"ScheduleWakeup", "schedule_wakeup"})
 _READ_TOOLS = frozenset({"Read", "read_file"})
 _WRITE_TOOLS = frozenset({"Write", "write_file"})
 _EDIT_TOOLS = frozenset({"Edit", "edit_file"})
@@ -1405,6 +1408,22 @@ def skill_reentry_in(reason: str) -> tuple[str, str] | None:
 
 
 _COMMAND_MESSAGE_RE = re.compile(r"\A<command-message>(?P<message>[^\n]*)</command-message>")
+
+#: What the harness says at the head of a skill a turn-end hook asked for (ADR-0196), ahead
+#: of the hook's own words. Those words were written for a harness that delivers nothing
+#: until the model calls the skill tool ("Your FIRST action MUST be: Skill('aspirations')
+#: … Do NOT run Bash commands first") — and here the harness has just made that call.
+#: Relayed bare, a literal model obeys them: measured 2026-09-18 (gpt-5.6-luna, served
+#: loop), it called the skill tool, was told the body was already loaded, summarised and
+#: ended — four vetoes in a row, twice, each ending in a ten-minute rest. The wake-up
+#: door's note says "carry out these instructions" and the same model ran the skill's
+#: entry steps in order, so this note says what that one says.
+_VETO_SKILL_NOTE = (
+    "a turn-end hook refused the stop and asked for this skill. The harness has made that "
+    "skill call for you: the instructions below are its result. Carry them out now, from "
+    "their first step. Do not call the skill tool for it again and do not stop to "
+    "summarize. The hook's words: {reason}"
+)
 
 
 def harness_skill_turn_text(turn_text: str, note: str) -> str:
@@ -2229,6 +2248,10 @@ class AgentLoop:
         self._vetoes_without_skill = 0
         self._veto_stall = False
         self._veto_delivered: str | None = None
+        # Work calls this loop has run (ADR-0196): successful calls to anything but the
+        # plan, the skill tool and the wake-up. Never reset — the skill door compares two
+        # readings of it, and only ever within one skill turn.
+        self._work_calls = 0
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -3576,11 +3599,29 @@ class AgentLoop:
             if call.name not in _SKILL_TOOLS:
                 continue
             block = by_id.get(call.id)
-            if block is None or block.is_error or "[already loaded]" in block.output[:300]:
+            if block is None or block.is_error:
                 continue
-            name = str((block.data or {}).get("skill") or call.arguments.get("name", "")).strip()
+            data = block.data or {}
+            name = str(data.get("skill") or call.arguments.get("name", "")).strip()
+            if "[already loaded]" in block.output[:300]:
+                # Which door answered is the first thing a stalled loop's trace is asked
+                # (ADR-0196): the pointer is not a load, and the fence keeps counting.
+                self._note(
+                    "intervention",
+                    f"/{name} asked for again — already loaded, answered with the pointer",
+                    kind="skill_pointer",
+                    skill=name,
+                )
+                continue
             if not name:
                 continue
+            if data.get("reentry"):
+                self._note(
+                    "intervention",
+                    f"/{name} asked for again after work — a re-entry, the body delivered",
+                    kind="skill_reentry",
+                    skill=name,
+                )
             self._register_skill_load(name)  # a paged skill starts over at page 1 (ADR-0067)
             self._vetoes_without_skill = 0  # a skill ran: the ADR-0187 fence starts over
             steps = self._seed_skill_skeleton(name, block.output, seeded)
@@ -3992,6 +4033,14 @@ class AgentLoop:
             return None
 
         return walk(self.session.task_network.tasks)
+
+    def work_calls(self) -> int:
+        """How many work calls this loop has run (ADR-0196): successful calls to any tool
+        but the plan's, the skill tool and the wake-up. The skill door reads it when a skill
+        is delivered and again when the same skill is asked for: a difference means the
+        model acted on the instructions in between, so the second call is a re-entry and
+        gets the body, not the pointer."""
+        return self._work_calls
 
     def current_skill_page(self, name: str) -> str | None:
         """The rendered page ``/<name>`` is on, for a mid-skill re-load (the ADR-0063 pointer
@@ -4662,6 +4711,15 @@ class AgentLoop:
                 )
             else:
                 self._turn_awaiting = question or "the model is waiting for your answer"
+        if (
+            not block.is_error
+            and call.name not in _PLAN_TOOLS
+            and call.name not in _SKILL_TOOLS
+            and call.name not in _WAKEUP_TOOLS
+        ):
+            # The model ACTED (ADR-0196). Keeping the plan, loading a skill and re-arming the
+            # wake-up are not acts on a skill's instructions; anything else that ran is.
+            self._work_calls += 1
         if call.name in _READ_TOOLS and not block.is_error:
             raw_path = call.arguments.get("path") or call.arguments.get("file_path") or ""
             if isinstance(raw_path, str) and raw_path:
@@ -5990,7 +6048,7 @@ class AgentLoop:
             logger.info("turn-end hook asked for /%s — not delivered: %s", name, why)
             return None
         skill = str(getattr(result, "name", name) or name)
-        text = harness_skill_turn_text(str(turn_text), f"a turn-end hook asked for it: {reason}")
+        text = harness_skill_turn_text(str(turn_text), _VETO_SKILL_NOTE.format(reason=reason))
         self.session.add_message(Message.user(text))
         self._persist()
         # The skill's sections become plan steps (ADR-0062) and page 1 counts as delivered

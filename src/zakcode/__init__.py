@@ -223,6 +223,13 @@ _SKILL_SUGGEST_RATIO = 0.72
 _SKILL_AUTOCORRECT_RATIO = 0.8
 
 
+def _skill_digest(body: str) -> str:
+    """The reload dedup's fingerprint of a skill body (ADR-0063)."""
+    import hashlib
+
+    return hashlib.sha1(body.encode("utf-8", errors="replace")).hexdigest()
+
+
 class _SkillToolResolver:
     """Adapts the Agent's skill registry + selection signal into the
     :class:`~zakcode.tools.base.SkillResolver` the ``use_skill`` tool calls.
@@ -625,6 +632,11 @@ class Agent:
         #: times). Compaction fires only at turn START, so the earlier body is still in
         #: context for the whole turn; the dict resets with the invocation counter.
         self._skills_loaded_this_turn: dict[str, str] = {}
+        #: The loop's work-call count when each of those bodies arrived (ADR-0196). A skill
+        #: asked for again after the model ACTED is a re-entry — a perpetual loop closes every
+        #: iteration on one — and gets the body; asked for again with nothing run since, it
+        #: gets the pointer. Written and cleared with the dedup map, never apart from it.
+        self._skill_loaded_at_work: dict[str, int] = {}
         skill_resolver: SkillResolver | None = None
         skills_catalog = ""
         if enable_skills:
@@ -1112,6 +1124,7 @@ class Agent:
         """
         self._skill_invocations_this_turn = 0
         self._skills_loaded_this_turn.clear()
+        self._skill_loaded_at_work.clear()
 
     def _register_composed_skill(self, user_text: str) -> None:
         """Count a typed ``/<skill>`` turn's body as loaded for the reload dedup (ADR-0063).
@@ -1135,11 +1148,19 @@ class Agent:
             body = skill.body()
         except Exception:  # noqa: BLE001 — an unreadable skill is the load's problem, not ours
             return
-        import hashlib
+        self._note_skill_delivered(skill.name, _skill_digest(body))
 
-        self._skills_loaded_this_turn[skill.name] = hashlib.sha1(
-            body.encode("utf-8", errors="replace")
-        ).hexdigest()
+    def _loop_work_calls(self) -> int:
+        """The loop's work-call count (ADR-0196); 0 for an Agent with no loop to ask."""
+        reader = getattr(getattr(self, "loop", None), "work_calls", None)
+        return int(reader()) if callable(reader) else 0
+
+    def _note_skill_delivered(self, name: str, digest: str) -> None:
+        """Record that the body with ``digest`` is in context from here on (the reload dedup,
+        ADR-0063) and where the loop's work count stood when it arrived (ADR-0196). Every
+        door — the tool, a typed ``/<skill>``, the harness's own delivery — registers here."""
+        self._skills_loaded_this_turn[name] = digest
+        self._skill_loaded_at_work[name] = self._loop_work_calls()
 
     def _assert_local_only(self) -> None:
         """Refuse to start when ``local_only`` is set but a configured model is metered.
@@ -1688,47 +1709,61 @@ class Agent:
             return SkillLoad(found=True, name=skill.name, error=str(exc))
         from zakcode.providers.text_tools import defang_untrusted
 
+        reentry = False
         if source == "tool":
             # Per-turn reload dedup: the SAME unchanged body already injected this turn is
             # not re-injected — a short pointer back to it is returned instead (args still
             # surfaced below so a sub-command chain like `tree add` -> `tree read` works).
             # Costs no invocation budget and fires no selection signal: nothing new loaded.
-            import hashlib
-
-            digest = hashlib.sha1(body.encode("utf-8", errors="replace")).hexdigest()
+            digest = _skill_digest(body)
             if self._skills_loaded_this_turn.get(skill.name) == digest:
                 # A paged skill (ADR-0067) is re-delivered at its CURRENT section — the one
                 # recovery a model that lost the page (compaction, a long detour) needs —
                 # instead of a bare pointer to text that may no longer be in context.
                 loop = getattr(self, "loop", None)
                 page = loop.current_skill_page(skill.name) if loop is not None else None
-                if page is not None:
-                    pointer = (
-                        f"[already loaded] Skill {skill.name!r} is running this turn, delivered "
-                        "one section at a time; here is the CURRENT section again. Continue "
-                        f"from where you are in it.\n\n{page}"
-                    )
-                else:
-                    pointer = (
-                        f"[already loaded] The full instructions for skill {skill.name!r} are "
-                        "already in your context THIS turn — the /command you were given, or "
-                        "an earlier use_skill call — unchanged. Continue those instructions "
-                        "from where you are; do not reload them."
-                    )
-                if args.strip():
-                    pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
-                logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
-                return SkillLoad(found=True, name=skill.name, body=pointer)
-            self._skills_loaded_this_turn[skill.name] = digest
+                arrived_at = self._skill_loaded_at_work.get(skill.name)
+                # No section is open — a body that arrived whole (ADR-0192), or a paged one
+                # with every section closed — and the model has ACTED since it arrived: this
+                # is a re-entry, the call a perpetual loop closes every iteration on, and it
+                # gets the body (ADR-0196). "Continue from where you are" sent a pass that had
+                # finished nowhere: measured 2026-09-18 (gpt-5.6-luna, served loop).
+                reentry = (
+                    page is None and arrived_at is not None and self._loop_work_calls() > arrived_at
+                )
+                if not reentry:
+                    if page is not None:
+                        pointer = (
+                            f"[already loaded] Skill {skill.name!r} is running this turn, "
+                            "delivered one section at a time; here is the CURRENT section "
+                            f"again. Continue from where you are in it.\n\n{page}"
+                        )
+                    else:
+                        # Nothing has run since the body arrived, so there is no "where you
+                        # are" to continue from: the pointer says what to DO. The bare one
+                        # drew a summary and a stop from a model that had not started.
+                        pointer = (
+                            "[already loaded] Nothing new was loaded: the full instructions "
+                            f"for skill {skill.name!r} are already in your context THIS turn, "
+                            "unchanged — in the /command message you were given, or an "
+                            "earlier Skill result — and you have run no tool on them since "
+                            "they arrived. Loading a skill does not run it. Carry those "
+                            "instructions out now, starting from their first step: your next "
+                            "action is that step's tool call, not another Skill call and not "
+                            "a summary."
+                        )
+                    if args.strip():
+                        pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
+                    logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
+                    return SkillLoad(found=True, name=skill.name, body=pointer)
+                logger.info("skill %r asked for again after work — a re-entry", skill.name)
+            self._note_skill_delivered(skill.name, digest)
         elif source == "harness":
             # A harness-composed re-entry counts as loaded this turn (ADR-0187): the model's
             # own use_skill of the same skill, prompted by the hook's words, then answers
-            # with the ADR-0067 section pointer instead of a second copy of the body.
-            import hashlib
-
-            self._skills_loaded_this_turn[skill.name] = hashlib.sha1(
-                body.encode("utf-8", errors="replace")
-            ).hexdigest()
+            # with a pointer instead of a second copy of the body — until it has acted on
+            # it (ADR-0196).
+            self._note_skill_delivered(skill.name, _skill_digest(body))
         if source == "tool":  # count only model-driven loads that actually inject a body
             self._skill_invocations_this_turn += 1
             self._skill_invocations_total += 1
@@ -1752,7 +1787,9 @@ class Agent:
             # command-expansion frame instead, and the two shapes staying DISTINCT is what lets
             # the model tell a user-typed slash from a model-chained load (provenance).
             rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
-        return SkillLoad(found=True, name=skill.name, body=rendered, path=str(skill.path))
+        return SkillLoad(
+            found=True, name=skill.name, body=rendered, path=str(skill.path), reentry=reentry
+        )
 
     async def compose_skill_turn(
         self, name: str, args: str = "", *, fuzzy: bool = True, source: str = "command"

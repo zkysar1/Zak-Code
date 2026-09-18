@@ -11210,3 +11210,101 @@ Anthropic shape, the unrated model (with litellm's own behavior as the control f
 fence: when it stops holding, the fence can go), the junk count, and the unchanged uncached
 and whole-response cases. The same file against main's source fails exactly the three tests
 that need the change.
+
+## ADR-0196: a skill asked for again after the model has acted is a re-entry and gets the body — and at a refused stop the harness speaks before the hook
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** Four decisions meet at one tool result. ADR-0063 answers a second `Skill(X)`
+in a turn with a pointer ("[already loaded] … continue those instructions from where you
+are; do not reload them") instead of a second copy of the body. ADR-0048 forgets that at
+every refused stop, because four such pointers killed a live loop (2026-08-26, ~29 h dark).
+ADR-0187 has the harness deliver the skill a turn-end hook names and counts that delivery
+as loaded, so the model's own call for it "answers with the ADR-0067 section pointer" — a
+pointer that carries the current section's text. ADR-0192 then delivers a body that fits
+the window whole, with no sections: the pointer ADR-0187 leaned on carries nothing again.
+
+Measured 2026-09-18, a served loop on gpt-5.6-luna against a Mind (sample 1,
+`bench/results/served-luna-preregistration.log`): 10 refused stops, 8 harness deliveries,
+11 "[already loaded]" answers against 3 real loads, two turns ended `veto_stall` after
+four refusals in a row, each followed by a 600 s rest — about 330 s of model activity in a
+2,101 s run, and no iteration closed. Two doors were shut by the same sentence. At the
+refused stop the hook's words arrive at the head of the delivered skill — "Your FIRST
+action MUST be: Skill('aspirations') with args='loop' … Do NOT run Bash commands first",
+written for a harness that delivers nothing until the model calls the skill tool. The
+model obeyed them to the letter, called the tool, was told the body was already loaded and
+to continue from where it was — it had not started — summarised, and ended; the hook
+refused again. And mid-turn, the framework's own contract closes every iteration on
+`Skill('aspirations') args='loop'`: the pass that had just FINISHED was told to continue
+from where it was. The same model, at the wake-up door, whose note says "carry out these
+instructions from where the plan stands", ran the skill's twelve entry steps in order. So
+the model can carry a skill; the harness was telling it not to.
+
+Claude Code's Skill tool answers every call with the body, and the framework's own
+re-invocation gate on that harness exempts its loop orchestrators because deduplicating
+the per-iteration re-invocation, in its words, kills the loop. A paged skill whose every
+section is closed has no current section either, so the bare pointer was never only a
+whole-body problem.
+
+**Decision.** *A skill asked for again after the model has acted on it is a re-entry, and
+gets the body.* The loop counts WORK calls at its one execution seam: a call that
+succeeded and is not the plan's bookkeeping, the skill tool or the wake-up re-arm (the
+first thing a resurrected loop is told to do). Every door that puts a body in context —
+the tool, a typed `/<skill>`, the harness's own delivery — records that count beside the
+dedup's digest, and the two are cleared together (turn start, a refused stop, a
+compaction). When the same unchanged body is asked for again and no section of it is open
+— it arrived whole, or every section is closed — a count that has moved means the model
+ran something since it arrived: the load is a real one, handed over exactly as a first
+load is (budget, selection signal, a paged skill starts over at page 1, and the ADR-0187
+fence starts over because a skill ran), flagged `reentry` for the trace only. A count that
+has not moved is ADR-0063's case and stays a pointer, but one that says what to DO:
+nothing new was loaded, loading a skill does not run it, carry the instructions out now
+from their first step, the next action is that step's tool call — not another Skill call
+and not a summary. A paged skill with a section open is untouched: its pointer always
+carried the section. The trace names which door answered (`skill_pointer`,
+`skill_reentry`), because that is the first thing a stalled loop's trace is asked.
+
+*At a refused stop the harness speaks first.* The note folded into the delivered skill's
+frame now says, in the wake-up door's measured words, that a hook refused the stop and
+asked for this skill, that the harness has made that skill call and the instructions below
+are its result, and to carry them out now from their first step without calling the skill
+tool for it again or stopping to summarise; the hook's words follow, whole, as the hook's.
+
+**Alternatives rejected.** Answering every call with the body (Claude Code exactly): at the
+refused stop a literal model then pays for two bodies per refusal, 55 KB each for the loop
+skill measured, and ADR-0063's own case (65 KB landing twice inside `/start`)
+returns unconditionally; it stays the fallback for that one door if the pointer is measured
+not to move such a model. Exempting named loop skills, as the framework's gate does on
+Claude Code: the harness must not know a framework's skill names. Keying on the arguments
+(`loop`): one framework's convention. A threshold above one work call: no count separates
+"lost my place" from "finished a pass", and the costs are not symmetric — a duplicate body
+against a dead loop. Starting the ADR-0187 fence over on work: the spin it was built for
+(2026-09-17) ran `echo` between refusals, which this counter calls work; the fence keeps
+counting real loads and nothing else. Dropping the hook's words: they carry more than the
+skill's name — the agent binding, a phase's next action. Writing the skill call into the
+transcript as if the model had made it: a fabricated model action, and not a valid
+assistant turn on every provider.
+
+**Consequences.** A loop that closes its iteration on the skill call gets the body each
+time — one body per iteration in context, the price Claude Code pays, and an earlier
+compaction for it. A model that re-asks mid-skill after acting now gets the body where it
+got the pointer (ADR-0063's measured 65 KB among them): accepted for the asymmetry above.
+NOT claimed: that gpt-5.6-luna closes an iteration on this build. The re-entry half is
+deterministic; the refused-stop half is wording aimed at a literal model, and the second
+sample of the served-loop measurement reads it off the two trace kinds. If that door still
+stalls with the new pointer served, the first rejected alternative is the next step, at
+that door only. Noted, not changed: a sub-agent shares its parent's resolver, and `load`
+takes no caller, so a sub-agent asking for a skill its parent holds is told the body is in
+ITS context, where it never was (probed 2026-09-18). And the ADR-0027 decompose hint
+("FIRST call update_plan and decompose…") rides every whole body of 2,000 characters or
+more, re-entries included; sample 1 spent 31–42% of its tool calls on the plan against a
+target under 20%, and whether the hint drives that is unmeasured.
+
+Tests: `tests/test_use_skill.py` — the no-work control, the pointer's words, the re-entry
+through the resolver, every door's mark, the marks forgotten at a fresh skill turn, the
+classification through the loop (plan, wake-up and a failed read are not work; one read
+is), the refused stop end to end on both the buffered and the streamed path, and the paged
+skill with a section open; `tests/test_turn_end_reentry.py` — the note's order and that
+every word of the hook still arrives. The same `test_use_skill.py` against main's source
+(2ad5005): 7 fail, 3 of them on the behaviour itself — the after-work call answered with
+the pointer, buffered and streamed — while the control and the paged test pass there.

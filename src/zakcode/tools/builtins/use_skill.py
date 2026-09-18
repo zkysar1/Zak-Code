@@ -146,6 +146,9 @@ class UseSkillTool(Tool):
                 f"skill {name!r} could not be loaded: {load.error or 'unreadable'}."
             )
         footer = skill_directory_line(load.path, ctx.workspace_root)
+        # A re-entry (ADR-0196) is handed over exactly as a first load is — the way Claude
+        # Code's Skill tool answers every call; only the trace is told which it was.
+        extra: dict[str, Any] = {"reentry": True} if load.reentry else {}
         if load.body.startswith("[already loaded]"):
             # The per-turn reload pointer (ADR-0063) — or, for a paged skill, the current
             # section again (ADR-0067). Nothing new to seed or decompose; hand it over as is.
@@ -172,6 +175,7 @@ class UseSkillTool(Tool):
                     "sections": pages.count,
                     "paged": True,
                     "page": 1,
+                    **extra,
                 },
                 hint=(
                     f"Its {pages.count} numbered sections are now steps in your plan, and this "
@@ -195,7 +199,7 @@ class UseSkillTool(Tool):
             # the plan — the concrete steps are the model's to write.)
             return ToolResult.ok(
                 output,
-                data={"skill": load.name, "decompose": True},
+                data={"skill": load.name, "decompose": True, **extra},
                 hint=(
                     "These instructions are long. FIRST call update_plan and decompose "
                     "them into the concrete steps THIS request needs, so the plan holds "
@@ -207,7 +211,7 @@ class UseSkillTool(Tool):
             )
         return ToolResult.ok(
             output,
-            data={"skill": load.name},
+            data={"skill": load.name, **extra},
             hint=(
                 "Follow these skill instructions now. If a step says to use another skill, "
                 "call Skill with that name."
