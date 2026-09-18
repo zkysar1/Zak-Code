@@ -125,6 +125,7 @@ from zakcode.agent.recipe import (
 from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate, derive_verify_command
+from zakcode.background import BackgroundTasks, tasks_dir_for
 from zakcode.build_info import install_changed, running_build
 from zakcode.config import PermissionTier, Settings, load_settings, zakcode_home
 from zakcode.events import (
@@ -2130,6 +2131,17 @@ class AgentLoop:
         # through the tool context; the REPL's idle wait takes it once due. Persisted on
         # every change so the held wake-up outlives the turn — and the process.
         self.wakeup_slot = WakeupSlot(session, on_change=self._persist)
+        # The session's background commands (ADR-0191): Bash(run_in_background=true) starts
+        # one through the tool context; the idle doors report the ones that exited. Output
+        # lives beside the session store; the table is persisted on every change.
+        self.background_tasks = BackgroundTasks(
+            session,
+            on_change=self._persist,
+            tasks_dir=tasks_dir_for(
+                getattr(self.store, "base_dir", None) if self.store is not None else None,
+                session.id,
+            ),
+        )
         # Turn-end re-entry state (ADR-0187): vetoes that named a skill, honoured in a row
         # with no skill call between them (the fence's count); whether the fence tripped;
         # and the skill the last veto delivered (the streaming status line). Per turn.
@@ -6121,6 +6133,7 @@ class AgentLoop:
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
+            background_tasks=self.background_tasks,  # Bash(run_in_background) seam (ADR-0191)
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
@@ -7605,6 +7618,7 @@ class AgentLoop:
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
+            background_tasks=self.background_tasks,  # Bash(run_in_background) seam (ADR-0191)
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn

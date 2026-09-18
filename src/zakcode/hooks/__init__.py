@@ -312,6 +312,8 @@ _CLAUDE_CODE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "update_plan": ("TodoWrite",),
     "plan_recall": ("TodoRead",),
     "ScheduleWakeup": ("ScheduleWakeup",),
+    "TaskOutput": ("TaskOutput",),
+    "TaskStop": ("TaskStop",),
 }
 
 #: Argument keys renamed on the wire so a Claude-Code hook reads the shape it was written

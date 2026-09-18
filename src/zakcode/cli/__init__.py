@@ -2778,7 +2778,15 @@ def chat(
         # first; with no such skill known it fires as the prose line it always did.
         from zakcode.wakeup import LOOP_SENTINEL, fired_line
 
-        slot = getattr(getattr(agent, "loop", None), "wakeup_slot", None)
+        loop = getattr(agent, "loop", None)
+        # ADR-0191: a background command that exited is reported first, as the harness's
+        # own line — the <task-notification> Claude Code delivers, at this same door.
+        tasks = getattr(loop, "background_tasks", None)
+        if tasks is not None:
+            note = tasks.take_notifications()
+            if note is not None:
+                return note
+        slot = getattr(loop, "wakeup_slot", None)
         if slot is None:
             return None
         prompt = slot.take_due_prompt()

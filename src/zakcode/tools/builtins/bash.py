@@ -876,6 +876,19 @@ class BashTool(Tool):
                     "minimum": 1,
                     "maximum": _MAX_TIMEOUT,
                 },
+                "description": {
+                    "type": "string",
+                    "description": "Optional one-line note on what the command does (recorded).",
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": (
+                        "true starts the command detached and returns at once with a task id "
+                        "and an output file; the session is notified when it exits (a "
+                        "<task-notification> harness line at its next idle prompt). Read its "
+                        "output with TaskOutput, kill it with TaskStop. No '&' needed."
+                    ),
+                },
             },
             "required": ["command"],
         },
@@ -902,6 +915,9 @@ class BashTool(Tool):
                 missing, data={"command": command, "script_path_missing": True}, fix=missing
             )
 
+        if args.get("run_in_background") is True:
+            return await self._start_background(command, args, ctx)
+
         # ``bool`` is an ``int`` subclass; treat True/False as "no timeout given".
         timeout = args.get("timeout")
         if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
@@ -927,6 +943,47 @@ class BashTool(Tool):
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to run command: {exc}", data={"command": command})
 
+        return self._finish(command, output, exit_code, ctx)
+
+    async def _start_background(self, command: str, args: dict, ctx: ToolContext) -> ToolResult:
+        """Claude Code's ``run_in_background`` (ADR-0191): spawn detached, return at once with
+        the task id and the output file; the exit is reported at the session's next idle
+        prompt as a ``<task-notification>`` harness line."""
+        tasks = ctx.background_tasks
+        if tasks is None:
+            return ToolResult.error(
+                "background commands are not available here (no session to hold one); run "
+                "the command in the foreground.",
+                data={"command": command, "background": False},
+            )
+        description = args.get("description")
+        try:
+            task = await tasks.start(
+                command,
+                cwd=str(ctx.workspace_root),
+                description=description if isinstance(description, str) else "",
+                extra_env=ctx.egress_env,
+                drop_env=list(ctx.scrub_env),
+            )
+        except Exception as exc:  # noqa: BLE001 - handlers must never raise
+            return ToolResult.error(
+                f"Failed to start command in the background: {exc}", data={"command": command}
+            )
+        return ToolResult.ok(
+            f"Command running in background with ID: {task.id}. Output is being written to: "
+            f"{task.output_file}. You will be notified when it completes. To check interim "
+            f'output, call TaskOutput(task_id="{task.id}", block=false) or Read that file.',
+            data={
+                "command": command,
+                "background": True,
+                "task_id": task.id,
+                "output_file": task.output_file,
+            },
+        )
+
+    def _finish(self, command: str, output: str, exit_code: int, ctx: ToolContext) -> ToolResult:
+        """The foreground result: the combined output under the budget, the exit code, and
+        the fix a failure suggests."""
         output = _strip_apport_noise(output)  # before the budget: the noise must not spend it
         truncated = False
         if len(output) > _MAX_OUTPUT:

@@ -64,6 +64,7 @@ from zakcode.artifacts import (
     artifact_from_path,
     resolve_artifact_path,
 )
+from zakcode.background import BackgroundTasks
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
 from zakcode.knowledge import okf_bundle, read_knowledge_bundle
@@ -1992,7 +1993,7 @@ def create_app(
         except OSError:  # includes FileNotFoundError — nothing pending
             return False
 
-    async def _run_turn_for_say(text: str, *, wakeup: bool = False) -> None:
+    async def _run_turn_for_say(text: str, *, wakeup: bool = False, verbatim: bool = False) -> None:
         sid = _current_session_id()
         session: Session | None = None
         if sid is not None:
@@ -2027,6 +2028,10 @@ def create_app(
                 # line, and a composed re-entry keeps its frame FIRST, so no nudge is
                 # folded in front of it.
                 message = await _wakeup_turn_text(agent, session, text)
+            elif verbatim:
+                # A harness notification (ADR-0191): delivered as it is — never a slash
+                # line, and no nudge folded in front of it.
+                message = text
             else:
                 slash = await dispatch_slash(agent, text)
                 if slash.refusal:
@@ -2137,6 +2142,21 @@ def create_app(
         slot = WakeupSlot(session, on_change=_persist)
         return slot.take_due_prompt()
 
+    def _take_task_notification() -> str | None:
+        """Every background command of the current session that exited and was not yet
+        reported, as ONE harness line — the ``<task-notification>`` Claude Code delivers —
+        else ``None`` (ADR-0191). The REPL reports these at its idle prompt; a served
+        session has no prompt, so this beat is where its background commands are reported.
+        """
+        session = _load_current_session()
+        if session is None:
+            return None
+
+        def _persist() -> None:
+            resolved_store.save(session)
+
+        return BackgroundTasks(session, on_change=_persist).take_notifications()
+
     def _take_stop_reentry() -> str | None:
         """The loop sentinel, ONCE, after a framework stop was raised with no turn to read
         it — else ``None`` (ADR-0189).
@@ -2210,6 +2230,12 @@ def create_app(
             if _nudge_pending():
                 text = IDLE_NUDGE_LINE
             else:
+                # ADR-0191: a background command that exited is reported first, as the
+                # harness's own line (Claude Code's <task-notification>), at this door.
+                note = _take_task_notification()
+                if note is not None:
+                    await _run_turn_for_say(note, verbatim=True)
+                    return True
                 # ADR-0189: the third trigger. A stop raised with nothing in flight, or
                 # the session's own wake-up coming due, starts the turn that reads it.
                 fired = _take_stop_reentry() or _take_due_wakeup()

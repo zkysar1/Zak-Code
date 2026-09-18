@@ -95,7 +95,7 @@ groups are listed individually; pure helpers are noted at the end).
 | FileEditTool (Edit) | Exact-string replace edit in a file (`old_string`, `new_string`, `replace_all`) | yes | Planned | P0 | M1 | FS. Keep tool input structured (dict), not raw string. |
 | GlobTool | Fast filename pattern matching (`pattern`, `path`) | yes | Planned | P0 | M1 | FS. Read-only; parallel-safe. |
 | GrepTool | Ripgrep-based content search (`pattern`, `glob/type`, `output_mode`, context flags) | yes | Planned | P0 | M1 | FS. Read-only; parallel-safe. |
-| BashTool | Run a shell command with sandbox/permission/security/destructive-command/read-only/path validation (`command`, `timeout`, `description`, `run_in_background`) | yes | Planned | P0 | M1 | FS/NET/PROC. DangerFullAccess tier; DANGEROUS_PATTERNS blocklist + background promotion. |
+| BashTool | Run a shell command with sandbox/permission/security/destructive-command/read-only/path validation (`command`, `timeout`, `description`, `run_in_background`) | yes | Implemented | P0 | M1 | FS/NET/PROC. DangerFullAccess tier; DANGEROUS_PATTERNS blocklist. `run_in_background` (ADR-0191) returns a task id + output file at once; the exit is reported as a `<task-notification>` harness line at the session's next idle prompt. |
 | PowerShellTool | Windows PowerShell equivalent of Bash (CLM types, git-safety, common-parameters, security/permission validation) | yes | Done | M10 | M1 | Shipped: `pwsh`/`powershell.exe` (prefers pwsh), workspace cwd, 60s cap, combined streams, graceful missing-PS error; shares the deny-first gate + PowerShell-aware blocklist (Remove-Item -Recurse, Format-Volume, iwr\|iex). |
 | TodoWriteTool | Maintain the in-session todo list (`todos[]`: content, status, activeForm) | yes | Planned | P0 | M1 | State (FS). Re-inject live TODO at end of context to fight instruction fade-out. |
 | AgentTool (Task) | Spawn a sub-agent to autonomously run a sub-task; built-in types (general-purpose, explore, plan, verification, claude-code-guide, statusline-setup), fork/resume/run, agent memory/color (`description`, `prompt`, `subagent_type`) | yes | Planned | P1 | M2 | Indirect FS/NET/PROC. Start with general-purpose/explore/plan; sub-agents return condensed summaries. |
@@ -115,8 +115,8 @@ groups are listed individually; pure helpers are noted at the end).
 | TaskCreateTool | Create a background/tracked task (task spec/description) | yes | Planned | P2 | M4 | State (FS), indirect NET/PROC. |
 | TaskGetTool | Fetch a task's status/details (`task_id`) | yes | Planned | P2 | M4 | State (FS). |
 | TaskListTool | List tracked tasks (filters) | yes | Planned | P2 | M4 | State (FS). |
-| TaskOutputTool | Retrieve a task's output (`task_id`) | yes | Planned | P2 | M4 | State (FS). |
-| TaskStopTool | Stop/cancel a running task (`task_id`) | yes | Planned | P2 | M4 | State (FS), PROC. |
+| TaskOutputTool | Retrieve a task's output (`task_id`) | yes | Implemented | P2 | M4 | State (FS). ADR-0191: status, exit code and the last 64KB of a background command's output; `block` waits (default 30 s, max 600 s). Background commands only — sub-agents stay synchronous. |
+| TaskStopTool | Stop/cancel a running task (`task_id`) | yes | Implemented | P2 | M4 | State (FS), PROC. ADR-0191: kills the background command's whole process group (by handle, or by pid after a restart). |
 | TaskUpdateTool | Update a task's fields/status (`task_id`, fields) | yes | Planned | P2 | M4 | State (FS). |
 | TeamCreateTool | Create a multi-agent team (team spec) | yes | Planned | P2 | M4 | State (FS), NET. Multi-agent orchestration. |
 | TeamDeleteTool | Delete a multi-agent team (`team_id`) | yes | Planned | P2 | M4 | State (FS), NET. |

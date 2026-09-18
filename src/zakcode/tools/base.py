@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, model_validator
 
 from zakcode.artifacts import ArtifactRef
+from zakcode.background import BackgroundTasks
 from zakcode.config import PermissionTier
 from zakcode.tasks import TaskNetwork
 from zakcode.wakeup import WakeupSlot
@@ -305,6 +306,10 @@ class ToolContext(BaseModel):
     #: tool arms and cancels through; the REPL's idle wait fires it. ``None`` for a bare
     #: loop that holds no session, so the tool returns a clean error rather than crashing.
     wakeup_slot: WakeupSlot | None = None
+    #: The session's background commands (ADR-0191): ``Bash(run_in_background=true)`` starts
+    #: one here; ``TaskOutput`` / ``TaskStop`` read and kill them. ``None`` where no session
+    #: holds a table (the tool then refuses, like a wake-up with no slot).
+    background_tasks: BackgroundTasks | None = None
 
     @property
     def all_workspace_roots(self) -> list[Path]:

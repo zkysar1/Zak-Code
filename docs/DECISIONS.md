@@ -10774,3 +10774,75 @@ hypothesis, not yet a measurement: the pre-registered bench (arms: snake canonic
 Code canonical vs snake plus an "also callable as Read" description line; N=12; HARM lines per
 the bench rules) runs when zakpod1 is back. Companion: ADR-0191 (background `Bash` with an exit
 notification) retires the last harness-capability branch in the framework.
+
+## ADR-0191: `Bash(run_in_background=true)` — a background command with its exit reported at the session's idle door
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** Claude Code's `Bash` takes `run_in_background: true`: the command runs
+detached, the tool returns at once with a task id and an output file, and the model is
+re-invoked with a `<task-notification>` when the command exits; `TaskOutput` reads the
+output, `TaskStop` kills it. A Mind's playbooks are written against exactly that
+("background the suite, END the turn; the harness notifies"), and its rules forbid polling
+a background job with `ScheduleWakeup` *because* the harness reports on it. Zak Code had no
+background command: a suite run held the turn for its whole duration, and the framework
+carried a per-harness capability table (`background_job_notify`) with a branch in its
+all-blocked skill (an idle sleep whose wake-up IS the re-entry) so a Mind could run on
+either harness. That table was the last place the framework had to ask which harness ran
+it — the 2026-09-18 review's finding F5, and the branch ADR-0190's one-contract principle
+(loop-terminal-protocol §4.1) leaves no room for.
+
+**Decision.**
+
+1. **`Bash` takes Claude Code's two remaining parameters**: `run_in_background` and
+   `description` (recorded only). With `run_in_background: true` the command is spawned in
+   its own process group with stdout+stderr in ONE output file, recorded on the session
+   (`Session.background_tasks`: id, command, files, pid, started_at, `notified`,
+   `stopped`), and the tool returns at once in Claude Code's words ("Command running in
+   background with ID: … Output is being written to: … You will be notified when it
+   completes"). `zakcode.background` holds the mechanics; the loop hands the table to tools
+   through `ToolContext.background_tasks`, beside the wake-up slot.
+2. **Status is derived, never stored.** `task_status` reads `<output>.exit` (the code) and
+   the pid: `completed` with its code; `running`; `killed` when `TaskStop` asked; `lost`
+   when the process is gone and nothing recorded a code. A stale record cannot call a dead
+   task alive.
+3. **The exit survives the process that spawned the task** (the ADR-0034 restart into a
+   new build execs without closing). Where a real bash exists — every platform we run,
+   Git Bash included — a wrapper shell runs the command, owns the redirect and writes the
+   exit file itself; an in-process watcher additionally reaps the child and writes the
+   file when the wrapper could not (the no-bash platform-shell fallback). A process that
+   never spawned the task reads the same files and pid, and kills by pid (`killpg`;
+   `taskkill /T`) when asked to stop it.
+4. **The notification rides the idle doors, once.** `BackgroundTasks.take_notifications`
+   reports every exited task not yet reported and marks it reported (persisted). The
+   REPL's idle wait asks it before the wake-up slot (`_due_wakeup`); the served consumer's
+   beat asks it before the ADR-0189 triggers (`_take_task_notification`, delivered
+   verbatim — no nudge folded in, no slash dispatch). The line is a `[harness]` provenance
+   head (not a person speaking; read the output file before trusting the exit code)
+   followed by one `<task-notification>` block per task in Claude Code's shape
+   (`task-id`, `output-file`, `status`, `summary` "Background command "…" completed (exit
+   code N)"), so a rule written for Claude Code ("read the log before accepting the
+   verdict") reads the same text here. Never mid-turn — Claude Code's timing.
+5. **`TaskOutput(task_id, block=true, timeout=30000)`** returns status, exit code and the
+   last 64KB of output, waiting up to `timeout` ms when blocking (max 600 s); a completed
+   non-zero exit is an error result. **`TaskStop(task_id)`** kills the whole process
+   group. Both are registered under Claude Code's names (snake aliases, silent), tier
+   read-only like `ScheduleWakeup`: they touch only what the session started.
+6. **A session's end kills what it started** (`Agent.aclose`), as Claude Code does — not
+   the restart, and not a served turn's release (`_release_agent` closes only the loop's
+   egress listener; the served mind's tasks run across turns).
+7. **The foreground path is unchanged**, and the two spawns share one environment builder
+   (`_proc.child_environment`: no-color, the egress overlay, the provider-key scrub, the
+   workspace venv on PATH, the `.zakcode/env` bash hook) so they never drift.
+
+**Consequences.** "Background the run, end the turn, the harness notifies" is true on Zak
+Code; `ScheduleWakeup`'s "never to poll work the harness already reports on" is now a
+rule the vessel honours rather than a Claude Code fact the framework had to fence. The
+framework's harness-capability table and its all-blocked idle-sleep branch can be deleted
+(the companion framework change, step D of the 2026-09-18 plan); a Mind served by a
+vessel older than this ADR gets `unknown tool` for `TaskOutput` and a foreground `Bash`
+that ignores `run_in_background` — the version floor is recorded in CLAUDE-MIND-COMPAT.
+Output files live beside the session store (`~/.zakcode/tasks/<sid>/`;
+`<workspace>/.zakcode/tasks/<sid>/` for a served mind, self-ignored for git); nothing
+prunes them yet — a later ADR when the count is measured. Sub-agents are still
+synchronous: `TaskOutput`/`TaskStop` here cover background commands only.

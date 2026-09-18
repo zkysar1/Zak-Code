@@ -2028,6 +2028,11 @@ class Agent:
                     )
                 )
         with contextlib.suppress(Exception):
+            # ADR-0191: the session ends, so do the background commands it started (Claude
+            # Code kills its background shells on exit, too). Not on the ADR-0034 restart —
+            # that path execs without closing, and the resumed session reports them.
+            await self.loop.background_tasks.kill_all()
+        with contextlib.suppress(Exception):
             await self.loop.aclose()  # tear down the egress-proxy listener (no-op when off)
         await self.aclose_mcp()
 

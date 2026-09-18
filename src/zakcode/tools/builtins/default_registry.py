@@ -21,6 +21,8 @@ from zakcode.tools.builtins.powershell import PowerShellTool
 from zakcode.tools.builtins.read_file import ReadFileTool
 from zakcode.tools.builtins.schedule_wakeup import ScheduleWakeupTool
 from zakcode.tools.builtins.secret_names import SecretNamesTool
+from zakcode.tools.builtins.task_output import TaskOutputTool
+from zakcode.tools.builtins.task_stop import TaskStopTool
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.tools.builtins.web_fetch import WebFetchTool
 from zakcode.tools.builtins.web_search import WebSearchTool
@@ -75,6 +77,10 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     registry.register(AwaitUserTool(), aliases=["ask_user", "wait_for_user"])
     registry.register(ScheduleWakeupTool(), aliases=["schedule_wakeup", "schedulewakeup", "wakeup"])
     registry.register(BashTool(), aliases=["bash", "sh", "shell"])
+    # Background commands (ADR-0191): Bash(run_in_background=true) starts one; these read it
+    # back and kill it — Claude Code's names, since they ARE Claude Code's tools.
+    registry.register(TaskOutputTool(), aliases=["task_output"])
+    registry.register(TaskStopTool(), aliases=["task_stop"])
     registry.register(PowerShellTool(), aliases=["pwsh"])
     web_allowlist = settings.web_allowed_domains if settings else None
     # One provider instance shared by every secrets-aware tool, so web_fetch's
