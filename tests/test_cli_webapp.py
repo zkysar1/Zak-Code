@@ -142,3 +142,23 @@ def test_run_end_callback_asks_the_server_to_exit(
 
     asyncio.run(on_run_end("duration_cap"))
     assert captured["server"].should_exit is True
+
+
+# ── the served process runs on the stdlib event loop (ADR-0197) ────────────────────
+
+
+def test_the_served_process_runs_on_the_stdlib_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """uvicorn's "auto" picks uvloop wherever it is installed, and ``uvicorn[standard]``
+    installs it on every non-Windows box. Under uvloop a child's own ends of its three
+    streams stay open in every descendant, whatever that descendant redirects, so a hook or
+    a shell command that leaves anything running is never seen to finish: a SessionStart
+    hook that spawned a daemon took 95.0 s served and 0.7 s from the CLI (2026-09-18). The
+    served path runs on the loop the CLI and this suite run on.
+    """
+    captured: dict[str, Any] = {}
+    _patch(monkeypatch, captured)
+
+    result = runner.invoke(app, ["webapp"])
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["server"].config.loop == "asyncio"

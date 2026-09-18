@@ -3384,7 +3384,15 @@ def serve(
         f"[bold]Zak Code[/bold] {__version__} — serving on "
         f"http://{host}:{port}{where}{auth_note}{bound_note}"
     )
-    server = uvicorn.Server(uvicorn.Config(fastapi_app, host=host, port=port))
+    # The stdlib event loop, never uvicorn's "auto" (ADR-0197). "auto" picks uvloop wherever it is
+    # installed, and `uvicorn[standard]` installs it on every non-Windows box. Under uvloop a
+    # child's own ends of its stdin/stdout/stderr stay open at high descriptor numbers in every
+    # descendant, whatever that descendant redirects, so a hook or a shell command that leaves
+    # anything running — the framework's daemon, a `nohup ... &` — is never seen to finish: the
+    # read waits out the whole timeout and the tree is then killed. Measured 2026-09-18: a
+    # SessionStart hook that spawned a daemon took 95.0 s here and 0.7 s on the stdlib loop. The
+    # CLI and the test suite already run on the stdlib loop; the served path now runs on it too.
+    server = uvicorn.Server(uvicorn.Config(fastapi_app, host=host, port=port, loop="asyncio"))
     server_holder["server"] = server
     server.run()
 
