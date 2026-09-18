@@ -10935,7 +10935,7 @@ question for the 5.6 tier (ADR-0188) — each is its own measurement.
 
 ## ADR-0193: the per-call reminder rests every other call — on a provider measured to reuse only a whole earlier prompt, and on no other
 
-**Status:** Proposed — measurement pre-registered 2026-09-18 13:52 UTC; results are appended below
+**Status:** Accepted (2026-09-18) — measurement pre-registered 2026-09-18 13:52 UTC; both batches are below as measured
 
 **Context.** `_messages_for_call` appends an ephemeral tail to every main-conversation
 call — PRE_LLM_CALL hook context, the turn's UserPromptSubmit context, and the `[plan]`
@@ -11064,6 +11064,42 @@ A's prediction reads "the cache read on tailed calls never GROWS while the promp
 least 8,000 tokens; it may step down to the system block" — the provider stepped it down once
 on its own, and a read that cannot grow is the premise, not a read that cannot move. Nothing
 else changes: B must pass every criterion, twice; C must end with `tail_sparse_models` empty.
+
+**Results, second batch (2026-09-18, 14:24–14:32 UTC; main `b4e084b`, which carries ADR-0194).**
+
+| arm | build · model | main calls · stop | what the cache read did | cached share | cost (per main call) |
+|---|---|---|---|---|---|
+| A control | main `b4e084b` · luna | 23 · `completed` | 9,387 on 19 tailed calls, then 9,271 on 3; never grew while the prompt grew 10,360 → 37,033 | 35% | $0.0862 ($0.00375) |
+| B treatment | branch · luna | 24 · `completed` | flat 9,385 on calls 2–5; probe 16,326; next call read 16,323 — confirmed; 9 of 9 tailed calls after a tail-less one read it back whole | 87% | $0.0337 ($0.00140) |
+| B second sample | branch · luna | 22 · `completed` | flat 9,386; probe 16,357; read 16,354 — confirmed; 8 of 8 | 86% | $0.0299 ($0.00136) |
+| C negative control | branch · gpt-5-mini | 20 · `completed` | never suspected: the read advanced on 17 of 18 calls from call 3; tail on every call; nothing written to the session | 88% | $0.0565 ($0.00282) |
+
+By the rule: A held its (amended) prediction; B passed every criterion, twice — one note, no
+miss, every tail-less prompt read back whole, the job done, `completed`, a cached share at
+least 51 points above A's at 36–37% of A's cost per main call; C passed. Across both batches the
+mechanism was suspected, probed and confirmed four times out of four on luna, inside the
+first seven calls each time, and never touched on gpt-5-mini. One thing stays unexplained
+and changes nothing: in all three all-tailed luna runs the read fell back to the system
+block exactly 20 calls after the entry it had been reading was created, and an API probe
+that sent 26 same-size prompts after one entry did not reproduce it. A loop that sends a
+fresh tail-less prompt every other call never waits that long.
+
+
+**Consequences.** On the recorded production churn turn (243 terra calls, ADR-0192) a
+simulation over the per-call usage — validated by reproducing the billed $155.63 under that
+build's no-discount pricing before any other figure is read from it — prices today's build
+at $139.31 and this rule at $17.68, confirmed at call 8; an append-only ideal would be
+$17.19. `docs/INTEGRATIONS.md` now says what a context hook can rely on: background text
+reaches every call except, on a measured provider, every other one — a hook that must be
+seen on every call is the wrong seam. `tests/test_cache_friendly_tail.py` drives whole turns
+against four modelled caches (whole-prompt, prefix, system-block-only, silent), both verdicts
+across loops, the measured gpt-5-mini lump, and the probes that measured nothing. Not done
+here, each its own decision: carrying the turn's prompt context in history once, as Claude
+Code does, instead of in a tail that no cache of any kind ever covers; history breakpoints
+for Anthropic models, which today cache the system block alone; handing a parent's verdict
+to its sub-agents; and the fresh-eyes reviewer's blind spot (ADR-0194) — it flagged the
+correct answer in all four luna runs that kept a transcript here, and in neither gpt-5-mini
+run; it cannot see the tool results.
 
 ## ADR-0194: the broken-record guard speaks twice for one text, then the answer stands
 
