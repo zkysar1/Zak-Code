@@ -6,9 +6,13 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel superseded runs on the same ref.
+# Cancel superseded runs on the same ref -- for pull requests. A push to main gets a group of
+# its own, keyed on the commit: with one shared group for main, RE-RUNNING an older run's failed
+# job cancelled the newest commit's run in flight ("a higher priority waiting request for
+# ci-refs/heads/main exists"), and a cancelled run alerts nobody and publishes nothing.
+# Measured 2026-09-18: a re-run of 853178e's run cancelled 1b7842a's.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -135,14 +139,24 @@ jobs:
         run: |
           set -euo pipefail
           META="commit_sha=${SHA},repo=${REPO},build_number=${RUN}"
+          # The latest/ pointer only ever moves to main's TIP. A re-run of an OLDER run is
+          # a push-to-main run too, and it used to publish its older build over a newer one:
+          # measured 2026-09-18, latest/ went acbd40e -> 853178e for 18 minutes. Read the
+          # tip BEFORE anything is written, and refuse to guess when it cannot be read.
+          TIP="$(git ls-remote origin refs/heads/main | cut -f1)" || TIP=""
+          [ -n "$TIP" ] || { echo "::error::could not read the tip of main -- refusing to decide which build latest/ carries"; exit 1; }
           # 1. Immutable, versioned copy — the rollback source (repoint by copy).
           aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/${SHA}/zak-code-main.tar.gz" --metadata "$META"
           # 2. New canonical channel pointer.
-          aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/latest/zak-code-main.tar.gz" --metadata "$META"
+          if [ "$TIP" = "$SHA" ]; then
+            aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/latest/zak-code-main.tar.gz" --metadata "$META"
+            echo "✅ published sha=${SHA} and latest pointer"
+          else
+            echo "::warning::main is at ${TIP} and this run built ${SHA}: published the immutable copy only. latest/ belongs to the run for main's tip."
+          fi
           # The legacy mind-sidecar-deployments/artifacts/ bridge write was retired
           # here (g-357-10 item 2) once provision-env.sh was repointed to the
           # zak-code-deployments/latest/ pointer above; it had no remaining reader.
-          echo "✅ published sha=${SHA} and latest pointer"
 
   # Single alert job that runs ONCE after the whole matrix (needs: verify + publish-sidecar),
   # not once per py-version cell. `failure()` here is true iff any verify cell
