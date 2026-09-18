@@ -118,6 +118,80 @@ async def test_trace_dumps_are_per_session_so_a_restart_keeps_the_previous_turns
     assert not (trace_dir / "turn_1.jsonl").exists()
 
 
+async def test_a_new_loop_on_the_same_session_numbers_on_from_the_traces_on_disk(
+    tmp_path: Path,
+) -> None:
+    # `zakcode serve` builds a fresh Agent (so a fresh loop) for every served turn, and a
+    # --resume is a new process: each counted its turns from 1 and wrote turn_1 over the
+    # last one. Measured 2026-09-18: a five-turn served run left ONE trace file.
+    trace_dir = tmp_path / "traces"
+    session = Session(cwd=str(tmp_path), model="t/m")
+    settings = load_settings(workspace_root=tmp_path, max_iterations=10, trace_dir=str(trace_dir))
+
+    def fresh(text: str) -> AgentLoop:
+        return AgentLoop(
+            ScriptedProvider([reply(text), reply(text + " again")]),
+            default_registry(),
+            session,
+            settings=settings,
+        )
+
+    first = fresh("one")
+    await first.arun_turn("hi")
+    kept = (trace_dir / session.id / "turn_1.jsonl").read_text(encoding="utf-8")
+    second = fresh("two")
+    await second.arun_turn("hi")
+    await second.arun_turn("hi")  # …and a loop's own later turns follow its first
+    third = fresh("three")
+    await third.arun_turn("hi")
+
+    names = sorted(p.name for p in (trace_dir / session.id).iterdir())
+    assert names == ["turn_1.jsonl", "turn_2.jsonl", "turn_3.jsonl", "turn_4.jsonl"]
+    assert (trace_dir / session.id / "turn_1.jsonl").read_text(encoding="utf-8") == kept
+
+
+async def test_a_turns_checkpoint_dumps_rewrite_its_own_file_only(tmp_path: Path) -> None:
+    # A turn dumps at every tool batch (a runner's turn may never end) and again at its
+    # end: the number is fixed at the loop's first dump, so those land on ONE file.
+    trace_dir = tmp_path / "traces"
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    loop = _loop(
+        tmp_path,
+        ScriptedProvider([call_tool("Read", {"file_path": "a.txt"}), reply("done")]),
+        trace_dir=str(trace_dir),
+    )
+    await loop.arun_turn("read it")
+    assert [p.name for p in (trace_dir / loop.session.id).iterdir()] == ["turn_1.jsonl"]
+
+
+async def test_a_labelled_child_numbers_on_within_its_own_label(tmp_path: Path) -> None:
+    # A served turn's fresh Agent restarts the sub-agent spawn sequence as well, so the
+    # next turn's first child is "sub1-…" again: its file follows the earlier one, and the
+    # root loop's turn files are not counted into it (nor its into theirs).
+    trace_dir = tmp_path / "traces"
+    session = Session(cwd=str(tmp_path), model="t/m")
+    settings = load_settings(workspace_root=tmp_path, max_iterations=10, trace_dir=str(trace_dir))
+
+    def child() -> AgentLoop:
+        return AgentLoop(
+            ScriptedProvider([reply("ok")]),
+            default_registry(),
+            Session(cwd=str(tmp_path), model="t/m"),
+            settings=settings,
+            trace_label="sub1-general",
+            trace_session=session.id,
+        )
+
+    root = AgentLoop(
+        ScriptedProvider([reply("ok")]), default_registry(), session, settings=settings
+    )
+    await root.arun_turn("hi")
+    await child().arun_turn("task")
+    await child().arun_turn("task")
+    names = sorted(p.name for p in (trace_dir / session.id).iterdir())
+    assert names == ["sub1-general_turn_1.jsonl", "sub1-general_turn_2.jsonl", "turn_1.jsonl"]
+
+
 async def test_trace_dump_is_best_effort(tmp_path: Path) -> None:
     # trace_dir pointing at an EXISTING FILE (not a dir) must not raise into the turn.
     clash = tmp_path / "not_a_dir"

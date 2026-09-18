@@ -1437,6 +1437,19 @@ _TEXT_ONLY_STALL = 2
 _MAX_GATE_CASCADE = 2
 
 
+def _last_trace_turn(trace_dir: Path, prefix: str) -> int:
+    """The highest ``N`` among ``<prefix><N>.jsonl`` in ``trace_dir``; 0 when there is none.
+    ``prefix`` is matched as text, never as a pattern — a sub-agent's label is part of it."""
+    last = 0
+    for entry in trace_dir.iterdir():
+        name = entry.name
+        if name.startswith(prefix) and name.endswith(".jsonl"):
+            number = name[len(prefix) : -len(".jsonl")]
+            if number.isdigit():
+                last = max(last, int(number))
+    return last
+
+
 def _provider_label(provider: object) -> str:
     """The model a provider serves, for human-facing status lines (class name if unnamed).
 
@@ -2008,6 +2021,9 @@ class AgentLoop:
         # skill registry and fires ON_SKILL_SELECTED (source="tool") on each load.
         self._skill_resolver = skill_resolver
         self._trace_label = trace_label
+        #: The highest turn number this session's trace directory already held for this
+        #: loop's file stem when the loop first dumped (``None`` until then).
+        self._trace_turn_base: int | None = None
         # The session whose trace directory this loop writes into: its own, or — for a child
         # loop — the parent's, so a delegation tree's traces sit together.
         self._trace_session = trace_session
@@ -2339,7 +2355,8 @@ class AgentLoop:
         ``turn_<n>.jsonl`` was overwritten by the next session's turn ``n`` — every coach
         restart erased the previous session's turn 1, the very turn a boot's paging and
         silence telemetry lands in (measured 2026-08-28). A child loop writes under its
-        PARENT's session (``trace_session``), beside the turns that spawned it.
+        PARENT's session (``trace_session``), beside the turns that spawned it. ``<n>``
+        runs on across every loop the session has had, not from 1 in each.
 
         Best-effort observability: a missing directory is created, and any filesystem error is
         swallowed so tracing can never raise into (or abort) the turn it is recording.
@@ -2353,9 +2370,15 @@ class AgentLoop:
             # so unlabeled children would silently OVERWRITE the parent's turn_N.jsonl
             # (measured 2026-08-22: a 4-child fan-out clobbered the session's turn_1). The
             # spawner labels each child; the root loop keeps the bare turn_N name.
-            stem = f"turn_{self._turn_count}"
-            if self._trace_label:
-                stem = f"{self._trace_label}_{stem}"
+            prefix = f"{self._trace_label}_turn_" if self._trace_label else "turn_"
+            # Turn numbers also restart with every LOOP, and a session outlives its loops:
+            # `zakcode serve` builds a fresh Agent for every served turn and a `--resume`
+            # is a new process, so each of those wrote turn_1 over the last one — measured
+            # 2026-09-18, a five-turn served run left one trace file. This loop numbers on
+            # from what the session already has on disk, read once, at its first dump.
+            if self._trace_turn_base is None:
+                self._trace_turn_base = _last_trace_turn(trace_dir, prefix)
+            stem = f"{prefix}{self._trace_turn_base + self._turn_count}"
             (trace_dir / f"{stem}.jsonl").write_text(self._trace.to_jsonl(), encoding="utf-8")
         except OSError:
             pass
