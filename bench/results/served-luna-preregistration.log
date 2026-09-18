@@ -144,3 +144,86 @@ Cause, named from the run's own transcript and logs (the second-sample rule asks
   3  The plan-first gate refused luna's first step three times in two turns. That step was a read-only state query;
      the gate reads every shell call as mutating. The plan it forced was written before anything had been read.
   Not claimed: that fixing 1 closes an iteration. It removes the stall; what luna does with a live loop is sample 2.
+
+=== 19:23 UTC 2026-09-18 PRE-REGISTRATION -- SERVED LOOP ON LUNA, sample 2: the same arm on a new build (second-sample rule: a named product cause fixed and merged)
+Nothing has been run on this build with a model: the web app smoke on the new world makes no model call, and the two
+hook reproductions (on 853178e, before and after the ADR-0197 change) used a dummy key, so every model call in them was
+refused with 401. The three fixed criteria are unchanged: at least one aspirations iteration closes, update_plan under
+20% of tool calls, no run of more than 3 consecutive empty completions.
+
+What changed since sample 1 (zakcode main ec2a059 -> 1b7842a, four merges):
+  #543 ADR-0196  cause 1 of sample 1. A skill asked for again after the model has run a work call is a re-entry and
+                 gets the body; asked for again with nothing run since, it gets a pointer that says what to do next;
+                 at a refused stop the harness speaks before the hook's words. Trace kinds skill_reentry, skill_pointer.
+  #544           every served beat's trace file is kept (turn_N numbers on across the loops of one session).
+  #545 ADR-0197  the served process runs on the stdlib event loop. CORRECTION to the sample 1 block: the 95 s
+                 SessionStart hook timeout I assigned to my sandbox "until shown otherwise" is a product defect, shown
+                 otherwise and reproduced without a model: under uvloop the child-side ends of a spawned process's
+                 three streams stay open in every descendant, so a hook that starts the framework's daemon is never
+                 seen to finish. Same sandbox, same hook: before, started 18:37:25.6 and "timed out after 95.0s";
+                 after, startup 18:48:19.1, first model attempt refused 18:48:20.3, no timeout line, the daemon it
+                 started still running. A vessel does not show it because its daemon is its own unit. Also corrected:
+                 the first model call of sample 1 came 99 s into the run (15:33:31 -> 15:35:10), not 104 s.
+  #546           streamed calls are rewritten to canonical names and argument spellings like buffered ones, and every
+                 tool call leaves one {kind: tool} note on the trace on every path.
+NOT changed, and therefore still in the arm exactly as in sample 1: cause 2 (luna ran the loop skill's twelve entry
+steps and went to the terminal Skill call without the iteration body) and cause 3 (the plan-first gate reads a
+read-only shell query as mutating). The ADR-0027 decompose hint still rides every whole skill body.
+
+Same arm: the same seed tarball (release 2.12.76, sha256 71c88a26f3b953c0..., 15,999,157 bytes), a FRESH throwaway
+world assembled by the same steps, init_world.sh / served.env / run_served.sh / the three control scripts byte-identical
+to sample 1's, the same sandbox, the same ceremony ("/start mind" in .say, then zakcode webapp), the same bounds (cap
+2400 s, reserve 350 s, supervisor wall clock 2520 s, spend stop $6.00, outer timeout 3000 s). Starting state verified
+equal to sample 1's: IDLE, persona false, 0 goals completed, the same 9 pending goal ids (the two goal queries return
+the same byte counts, 2 and 1569). One assembly difference, in init only: sample 1's init (15:16:30) ran on a revision
+of my launcher that set MIND_AGENT, AYOAI_AGENT and AYOAI_AGENT_NAME itself; at 15:18:34, before sample 1's run, I moved
+the agent name into served.env, where a vessel keeps it and where the run reads it. init_world.sh does not read
+served.env, so this world's init was given MIND_AGENT=mind through the launcher's extra-env line; without it the state
+and persona writes are refused (found on the first assembly of this world, which was discarded and rebuilt). The run
+itself uses the same launcher and the same served.env as sample 1's run.
+Instrument changes (mine, outside the product): analyze.py reads the main loop's turn files in turn order and a
+sub-agent's apart; M2 gains a whole-run denominator from the trace's tool notes; door counters D1-D3 below; the
+progress line shows tools / work / pointers / re-entries / stalls. Controls with NO model call: a synthetic trace
+fixture with known answers read back exactly (11 tool notes, plan share 1/11, 2 deliveries, D1 veto door 1 of 2,
+mid-turn pointer with no completion after it counted apart, D2 = 1, D3 = 1 of 1, a sub-agent's note kept apart).
+The fixture discriminates the work-call definition: its second veto-door pointer is followed by a plan_recall, which
+the product's counter does not count; my first draft of the instrument did, and reads 2 of 2 on the same fixture.
+The extended script reproduces sample 1's session and trace figures unchanged and reports "no tool notes" for it;
+framework dry run, goal queries, price map (luna 2e-07 / 2e-08) and web app smoke (health 200 in 3 s) repeated on
+the new world; host daemon pid/port/health unchanged, 0 leaked mounts.
+
+Measures and predictions. M1-M7 keep sample 1's definitions. M2 is now read on the WHOLE-RUN trace ledger (plan-tool
+notes over all tool notes); the session-file share is reported beside it as before.
+  P1  M1 >= 1 iteration closed.                          My estimate: 35% HIT.
+  P2  M2 < 20% (sample 1: 31-42%).                        My estimate: 30% HIT. Nothing merged targets the plan share.
+  P3  M3 <= 3 consecutive empties.                        My estimate: 85% HIT (sample 1: 0 empties in 99 calls).
+  P4  >= 70% of luna prompt tokens read from cache.       My estimate: 80% HIT.
+  P5  no turn ends veto_stall (sample 1: 2).              My estimate: 50% HIT.
+  P6  duration_cap, IDLE, assistant, own exit.            My estimate: 40% HIT. Speaks only if a loop is alive at the cap.
+  P7  recorded luna cost = list-rate re-price within 1%.  My estimate: 90% HIT.
+  D1  the veto door: after a skill_pointer that follows a harness delivery with no work call between, the NEXT
+      completion runs a work call, in >= 50% of such pointers.   My estimate: 50% HIT. UNTESTED if there is none.
+  D2  turns ended veto_stall <= 1 (the direction; P5 is the strict form).   My estimate: 65% HIT.
+  D3  after a skill_reentry at least one work call runs before that turn ends, in >= 50% of re-entries.
+                                                          My estimate: 55% HIT. UNTESTED if there is none.
+  D4  no "lifecycle hook ... timed out" line, and the first luna call inside 30 s of the run's start.
+                                                          My estimate: 95% HIT.
+  "Work call" is ADR-0196's, on the product's own sets: a tool note with ok=true whose tool is not a plan tool
+  (update_plan and its aliases, plan_recall, plan_history), Skill or ScheduleWakeup. Reported without a prediction:
+  everything sample 1 reported, plus the per-turn table.
+
+Reading rules: A-E of the sample 1 block apply unchanged, word for word. Added for the pair:
+  F  Two samples of one arm, N=1 each. Differences are reported as measured. The only attribution claimed is
+     mechanical and read off the trace: a door that was shut in sample 1's transcript (pointer, summary, veto) is or
+     is not walked through here (pointer or re-entry, then a work call). No rate, and no "ADR-0196 closed an
+     iteration": P1 HIT with D1 and D3 UNTESTED says nothing about ADR-0196.
+  G  Fallback named in advance. If D1 MISSES on 3 or more veto-door pointers, the next product change is to answer
+     with the body at the veto door only, and it is tested by a pre-registered door bench (arms: this build / body at
+     the veto door), not by another served sample.
+  H  If P1 MISSES with no stall (P5 HIT), the finding is sample 1's cause 2, and the follow-up is the iteration-body
+     work (the digest's 98 lines of tables before its first phase, the blind plan, the plan-first gate), separately
+     pre-registered. If P1 MISSES with a stall, G or the stall's own named cause comes first.
+  I  The framework's own loop-exhaustion fence stopping the loop (sample 1, t+1528 s) is a named outcome: reported as
+     the finding it is, and P6 is then UNTESTED on its condition.
+A third sample is taken only under the same second-sample rule. After a PASS, two more samples are owed before any
+rate is stated. Spend: sample 1 cost $0.27; this block's controls cost $0.00.
