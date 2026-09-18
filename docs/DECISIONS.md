@@ -11149,3 +11149,64 @@ a `max_iterations` stop with the answer already given. `test_small_model_contain
 pins the bound in both twins (the same file run against main's source fails exactly those
 two tests, `max_iterations` where `completed` is expected), that the count is per text, and
 that a rail that works is unchanged.
+
+## ADR-0195: a streamed call is priced with its cached tokens — and a token the price map has no cached rate for costs the input rate
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** A whole response carries litellm's own cost (`_hidden_params.response_cost`),
+and that figure prices cache reads at the cached rate: five recorded gpt-5.6-luna calls
+reconcile to the token against (prompt − read) × input + read × cached + completion ×
+output. A streamed chunk carries no `response_cost` — litellm computes it in a callback the
+consumer never sees — so `_extract_usage` rebuilds the cost from the counts (PROV-12). The
+rebuild passed the prompt and completion counts and nothing else, so every streamed call
+was priced as if nothing had been cached. Streaming is the path the CLI and `zakcode serve`
+take (`astream_turn`). Measured 2026-09-18 on a streamed luna call through the provider
+itself: 9,231 of 9,234 prompt tokens read from the cache, and the call recorded $0.00185280
+— the uncached price exactly — against $0.00019122 at the provider's rates, 9.7x. A vessel
+run of 2026-09-17 (243 streamed gpt-5-mini calls, 97% of the prompt read from the cache)
+recorded $8.20 for $1.38 of spend. The figure is not decoration: `max_cost_usd` ends a turn
+on it, the shared sub-agent budget counts it, `/cost` shows it, and a vessel's budget meter
+can bill only what the served usage says. ADR-0193 makes it matter more — it moves the 5.6
+tier from about a third cached to about 87%, and none of that saving would have shown in
+the session's own cost.
+
+**Decision.** `_litellm_token_cost` passes the call's cache-read and cache-write counts to
+`litellm.cost_per_token`, which prices them as it prices a whole response: the tier above
+272k tokens, Anthropic's write premium, and both vendor shapes, since litellm's
+`prompt_tokens` includes the cached counts in each. Two fences, both measured. A count is
+passed only when the price map lists that cached rate for the model: handed a cached count
+for a model with no cached rate, litellm prices those tokens at nothing (gpt-4, 800 of 1,000
+cached: $0.006 for a $0.03 prompt), and 1,687 of the 3,096 priced chat models in its map
+list none — a backend reporting cache reads for one of them would make the session look
+nearly free and the ceiling unreachable. Such a token costs the input rate: a ceiling reached
+early is a nuisance, one never reached is the incident. And a count larger than the prompt is
+clamped to it, so a junk count never prices a call above what its prompt could have cost. The
+oldest litellm the project allows (1.55.0) already takes both arguments, so there is no
+second code path for an older one.
+
+**Alternatives rejected.** Assembling the stream into a whole response and asking litellm
+for its cost: it needs every chunk kept, and the provider keeps a bounded sample by design.
+A rate table of our own: the last one was removed (g-369-295) after it mispriced by stem.
+Applying an observed hit rate: the call's own count is exact and needs no model of the
+cache. Putting the whole-response path behind the same fences: that figure is litellm's
+price for litellm's parse of the response, it reconciles to the token on the models we run,
+and re-pricing it would put two sources of truth where there is one.
+
+**Consequences.** A streamed session's cost is what the provider charges for the counts it
+reported: the same probe after the change records $0.00019118 for a call that read 9,229 of
+9,232 tokens. A ceiling sized from earlier recorded figures is reached later for the same
+work, by the cached share times the discount, and should be re-read against real spend: the
+2026-09-18 churn run recorded $155.63 for $139.31 at the provider's rates — close only
+because so little of it was cached — and the same calls under ADR-0193's rule come to
+$17.68. Still unknown: litellm's map lists a cache-WRITE rate for the 5.6 tier (1.25x
+input), and the tier's usage reports no write count at all, streamed or whole, so whether
+writes are billed can be read only off the provider's invoice. Noted, not changed here: the
+5.6 tier is priced only in the map litellm fetches at import; its bundled map (what a box
+gets when that fetch fails, or under `LITELLM_LOCAL_MODEL_COST_MAP`) has no such entry, and
+a streamed luna call then costs $0.0 — a ceiling that cannot be reached. Tests:
+`tests/test_provider_stream.py` — the measured luna shape through `astream`, the flat
+Anthropic shape, the unrated model (with litellm's own behavior as the control for that
+fence: when it stops holding, the fence can go), the junk count, and the unchanged uncached
+and whole-response cases. The same file against main's source fails exactly the three tests
+that need the change.

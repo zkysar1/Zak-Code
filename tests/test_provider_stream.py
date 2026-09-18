@@ -236,6 +236,138 @@ async def test_usage_on_final_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
     assert usages[0].usage.total_tokens == 18
 
 
+# ── The cost of a streamed call ───────────────────────────────────────────────
+# A streamed chunk carries no ``response_cost`` (litellm computes it in a callback the consumer
+# never sees), so the provider rebuilds the cost from the counts. Until 2026-09-18 that rebuild
+# left the cached counts out and charged every prompt token the uncached rate.
+
+
+def _rates(model: str) -> dict[str, Any]:
+    return dict(provider_mod.litellm.get_model_info(model))
+
+
+def _streamed_usage(model: str, usage: SimpleNamespace) -> Any:
+    chunk = SimpleNamespace(choices=[], usage=usage, model=model, _hidden_params={})
+    return LiteLLMProvider._extract_usage(chunk)
+
+
+async def test_a_streamed_call_prices_its_cache_reads_at_the_cached_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The shape and the counts are the ones measured on a live gpt-5.6-luna stream: 9,231 of
+    # 9,234 prompt tokens read from the cache, and no response_cost on the usage chunk. Priced
+    # as gpt-4o-mini, because litellm's BUNDLED price map (the one an offline box gets) has no
+    # 5.6 tier.
+    usage = SimpleNamespace(
+        prompt_tokens=9_234,
+        completion_tokens=5,
+        total_tokens=9_239,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=9_231),
+    )
+    final = SimpleNamespace(choices=[], usage=usage, model="gpt-4o-mini", _hidden_params={})
+    chunks = [_chunk(content="OK", finish_reason="stop"), final]
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _fake_stream(chunks))
+
+    events = await _collect(_make_provider().astream(_MSGS))
+
+    rates = _rates("gpt-4o-mini")
+    expected = (
+        3 * rates["input_cost_per_token"]
+        + 9_231 * rates["cache_read_input_token_cost"]
+        + 5 * rates["output_cost_per_token"]
+    )
+    uncached = 9_234 * rates["input_cost_per_token"] + 5 * rates["output_cost_per_token"]
+    [streamed] = [e.usage for e in events if isinstance(e, StreamUsage)]
+    assert streamed.cache_read_tokens == 9_231
+    assert streamed.cost_usd == pytest.approx(expected)
+    assert streamed.cost_usd < uncached  # the figure this path recorded before
+
+
+def test_a_streamed_call_with_nothing_cached_costs_what_it_always_did() -> None:
+    usage = SimpleNamespace(prompt_tokens=1_000, completion_tokens=500, total_tokens=1_500)
+    rates = _rates("gpt-4o-mini")
+    expected = 1_000 * rates["input_cost_per_token"] + 500 * rates["output_cost_per_token"]
+    assert _streamed_usage("gpt-4o-mini", usage).cost_usd == pytest.approx(expected)
+
+
+def test_a_streamed_call_prices_cache_writes_and_reads_in_the_flat_shape() -> None:
+    # Anthropic's shape: both counts sit on the usage object, and both are part of prompt_tokens.
+    model = "claude-sonnet-4-5-20250929"
+    usage = SimpleNamespace(
+        prompt_tokens=20_000,
+        completion_tokens=100,
+        total_tokens=20_100,
+        cache_read_input_tokens=15_000,
+        cache_creation_input_tokens=3_000,
+    )
+    rates = _rates(model)
+    expected = (
+        2_000 * rates["input_cost_per_token"]
+        + 15_000 * rates["cache_read_input_token_cost"]
+        + 3_000 * rates["cache_creation_input_token_cost"]
+        + 100 * rates["output_cost_per_token"]
+    )
+    assert _streamed_usage(model, usage).cost_usd == pytest.approx(expected)
+
+
+def test_a_model_with_no_cached_rate_pays_the_input_rate_for_every_prompt_token() -> None:
+    # litellm prices a cached token at NOTHING when its price map lists no cached rate for the
+    # model, so a backend that reports cache reads for such a model would look almost free and
+    # the turn's cost ceiling would never be reached. An unpriced token costs the input rate.
+    model = "gpt-4"
+    rates = _rates(model)
+    assert rates.get("cache_read_input_token_cost") is None, "pick a model with no cached rate"
+    usage = SimpleNamespace(
+        prompt_tokens=1_000,
+        completion_tokens=0,
+        total_tokens=1_000,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=800),
+    )
+    assert _streamed_usage(model, usage).cost_usd == pytest.approx(
+        1_000 * rates["input_cost_per_token"]
+    )
+    # The control for the rate check: what litellm does with the same counts when it is given
+    # them. If this ever stops holding, litellm prices an unrated cached token itself and the
+    # check in ``_litellm_token_cost`` can go.
+    given = sum(
+        provider_mod.litellm.cost_per_token(
+            model=model, prompt_tokens=1_000, completion_tokens=0, cache_read_input_tokens=800
+        )
+    )
+    assert given == pytest.approx(200 * rates["input_cost_per_token"])
+
+
+def test_a_junk_cache_count_never_costs_more_than_the_uncached_price() -> None:
+    # More "cached" tokens than the prompt holds is a backend's mistake; the cost stays inside
+    # what the prompt could have cost.
+    usage = SimpleNamespace(
+        prompt_tokens=1_000,
+        completion_tokens=0,
+        total_tokens=1_000,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=20_000),
+    )
+    rates = _rates("gpt-4o-mini")
+    cost = _streamed_usage("gpt-4o-mini", usage).cost_usd
+    assert cost == pytest.approx(1_000 * rates["cache_read_input_token_cost"])
+    assert 0.0 < cost <= 1_000 * rates["input_cost_per_token"]
+
+
+def test_a_whole_response_keeps_the_cost_litellm_gave_it() -> None:
+    # The non-streamed path already carried a cache-aware cost; the counts never re-price it.
+    response = SimpleNamespace(
+        choices=[],
+        usage=SimpleNamespace(
+            prompt_tokens=9_234,
+            completion_tokens=5,
+            total_tokens=9_239,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=9_231),
+        ),
+        model="gpt-4o-mini",
+        _hidden_params={"response_cost": 0.4242},
+    )
+    assert LiteLLMProvider._extract_usage(response).cost_usd == pytest.approx(0.4242)
+
+
 async def test_done_always_emitted_for_empty_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(provider_mod.litellm, "acompletion", _fake_stream([]))
 
