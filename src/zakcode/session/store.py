@@ -168,6 +168,14 @@ class Session(BaseModel):
     #: the pre-#32 behavior).
     plan_signature: str = ""
     plan_idle_turns: int = 0
+    #: ADR-0193: the models whose prompt cache this session MEASURED reusing a whole tail-less
+    #: prompt and nothing sent with the per-call tail — while the session runs on one of them
+    #: the tail rides every other call — and, per model, the probes that showed no such reuse
+    #: (at the limit the model is left alone for good). Persisted because a served mind builds
+    #: a loop per turn and must not pay the measurement again each turn. Schema v1 stays
+    #: append-only: an older build drops both fields and simply keeps the every-call tail.
+    tail_sparse_models: list[str] = Field(default_factory=list)
+    tail_probe_misses: dict[str, int] = Field(default_factory=dict)
     #: Skill paging (ADR-0067 / ADR-0086): per lower-cased skill name, the pages of that skill
     #: the model has HELD — page 1 at the load, later pages as the plan reached them. A section
     #: is finished only once its page was held, so the record must outlive a restart (ADR-0034
