@@ -195,6 +195,10 @@ class SkillLoad(BaseModel):
     #: describes the skill from memory of its own writing ("it is a python file, not a skill").
     #: ``use_skill`` lists the siblings from this path so the answer is in the tool result.
     path: str | None = None
+    #: True when this load delivered a body the turn ALREADY held, because the model had
+    #: acted on it since (ADR-0196): a loop's re-entry, not a redundant reload. The body is
+    #: handed over exactly as a first load is; the flag is for the trace.
+    reentry: bool = False
 
 
 @runtime_checkable

@@ -14,6 +14,7 @@ import pytest
 
 from zakcode.agent.loop import (
     _MAX_PLAN_NUDGES,
+    _VETO_SKILL_NOTE,
     _VETO_STALL_THRESHOLD,
     AgentLoop,
     harness_skill_turn_text,
@@ -216,6 +217,29 @@ def test_harness_skill_turn_text_folds_the_note_into_the_frame() -> None:
     assert harness_skill_turn_text(ASPIRATIONS_TURN, "   ") == ASPIRATIONS_TURN
 
 
+def test_the_veto_note_speaks_before_the_hooks_words() -> None:
+    """ADR-0196. The hook's words were written for a harness that delivers nothing until the
+    model calls the skill tool — "Your FIRST action MUST be: Skill('aspirations') … Do NOT
+    run Bash commands first" — and here the harness has just made that call. Relayed bare, a
+    literal model obeys them (2026-09-18, gpt-5.6-luna: skill tool → "already loaded" →
+    a summary → the stop, four vetoes running). So the harness says what happened and what
+    to do FIRST, in the words the wake-up door was measured to work with, and the hook's
+    words follow as the hook's."""
+    note = _VETO_SKILL_NOTE.format(reason=REDUCER_REASON)
+    told = note.index("The harness has made that skill call for you")
+    act = note.index("Carry them out now, from their first step")
+    dont = note.index("Do not call the skill tool for it again")
+    quoted = note.index("The hook's words: ")
+    assert told < act < dont < quoted < note.index("Your FIRST action MUST be")
+    assert note.endswith(REDUCER_REASON)  # every word of the hook still reaches the model
+    # A reason holding braces is text, never a format field.
+    assert _VETO_SKILL_NOTE.format(reason="{x} {0}").endswith("{x} {0}")
+    # Folded into the frame it stays one line, [harness]-tagged, the frame still first.
+    first = harness_skill_turn_text(ASPIRATIONS_TURN, note).split("\n", 1)[0]
+    assert first.startswith("<command-message>aspirations is running — [harness] a turn-end hook")
+    assert first.endswith("</command-message>")
+
+
 # ── delivery ─────────────────────────────────────────────────────────────────
 
 
@@ -254,9 +278,10 @@ async def test_a_veto_naming_a_skill_delivers_that_skill(tmp_path: Path) -> None
     # At turn end the body is elided (ADR-0045) — the frame stays, with the hook's words.
     head = delivered[0].text.split("\n", 1)[0]
     assert head.startswith(
-        "<command-message>aspirations is running — [harness] a turn-end hook asked for it: "
-        "Turn ended without"
+        "<command-message>aspirations is running — [harness] a turn-end hook refused the stop "
+        "and asked for this skill. The harness has made that skill call for you"
     )
+    assert "The hook's words: Turn ended without" in head
     assert "<command-body elided" in delivered[0].text
 
 
