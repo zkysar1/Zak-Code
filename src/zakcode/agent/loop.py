@@ -411,6 +411,33 @@ _MIN_ANSWER_ROOM = 4_096
 _MAX_ANSWER_ROOM = 16_384
 
 
+#: ADR-0193 — when the per-call tail defeats the provider's prompt cache. Some hosted tiers
+#: reuse only a previously sent FULL prompt that is a prefix of the new one (measured
+#: 2026-09-18, gpt-5.6-luna/terra: a changing last message left only the system prompt
+#: cached; an explicit cache breakpoint was ignored). The plan reminder rides the END of
+#: every call and is never persisted, so no call's prompt is ever a prefix of the next: a
+#: served turn's cache reads sat at 28,079 tokens for 241 calls while its prompt grew to
+#: 360k — the same 243 calls price at $139 against under $18 with the cache working.
+#:
+#: Nothing is changed on a guess. A SUSPICION is read from the provider's own usage: this
+#: many main-conversation calls in a row, each carrying a tail, whose cache read stayed
+#: above zero and did not grow while the prompt grew by this many tokens. The growth bar is
+#: sized from where the money is and from what a healthy cache looks like: a prefix cache
+#: advances in lumps (gpt-5-mini held one read for six calls across 969 tokens of growth,
+#: same day), and under 4k uncached tokens a call the waste is a fraction of a cent. A flat
+#: read alone proves nothing about the tail — a provider that caches only the system block
+#: reads flat forever — so the suspicion buys exactly ONE tail-less call, the probe, and the
+#: call after it is the measurement: a cache read within this slack of the probe's WHOLE
+#: prompt is the mechanism observed, and only then does the tail start resting every other
+#: call. A probe that shows no such reuse is a miss; at the limit the model is left alone
+#: for the rest of the session. A backend that reports no cache reads (most local pods)
+#: reads zero, is never suspected, and keeps its every-call reminder untouched.
+_CACHE_FLAT_MIN_CALLS = 3
+_CACHE_FLAT_MIN_GROWTH = 4_096
+_CACHE_PROBE_SLACK = 128
+_CACHE_PROBE_LIMIT = 2
+
+
 def _answer_room(caps: Capabilities) -> int:
     """The tokens the fit check keeps free for the answer: the model's output cap, bounded
     below by :data:`_MIN_ANSWER_ROOM` and above by :data:`_MAX_ANSWER_ROOM`."""
@@ -2147,6 +2174,16 @@ class AgentLoop:
         # plan; only one that cannot is paged. Decided once per skill per loop, so the
         # use_skill door, the typed door and the page-turning never disagree.
         self._skill_whole: dict[str, bool] = {}
+        #: ADR-0193: whether the call being assembled / the last completed main call carried
+        #: an ephemeral tail; the current run of tailed calls whose cache read did not grow —
+        #: ``(model, calls, first_prompt_tokens, last_prompt_tokens, cache_read_tokens)``; and
+        #: the probe that run buys: the next call rests its tail, then
+        #: ``(model, rested_prompt_tokens, flat_cache_read_tokens)`` waits for the call after.
+        self._call_has_tail = False
+        self._prev_call_had_tail = False
+        self._cache_flat_run: tuple[str, int, int, int, int] | None = None
+        self._cache_probe_rests_next = False
+        self._cache_probe_rested: tuple[str, int, int] | None = None
         self._skill_pages_delivered: dict[str, set[int]] = {
             key: set(pages) for key, pages in session.skill_pages_delivered.items()
         }
@@ -2909,6 +2946,12 @@ class AgentLoop:
         (prompt-cache safe) and the conversation on disk stays clean. With no
         context hooks this is exactly ``self.session.messages``.
         """
+        self._call_has_tail = False
+        if self._tail_rests_this_call():
+            # ADR-0193: this call goes out as the persisted history alone, so the provider
+            # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
+            # is not sent.
+            return self.session.messages
         tail: list[Message] = []
         if self.hook_manager.has_context_hooks():
             texts = await self.hook_manager.gather_context(
@@ -2936,7 +2979,111 @@ class AgentLoop:
             tail.append(plan_msg)
         if not tail:
             return self.session.messages
+        self._call_has_tail = True
         return [*self.session.messages, *tail]
+
+    def _tail_rests_this_call(self) -> bool:
+        """Whether this call goes out WITHOUT its ephemeral tail (ADR-0193).
+
+        On a model this session measured (``tail_sparse_models``): whenever the previous main
+        call carried a tail — never two tail-less calls in a row, so the reminder still rides
+        every other call, and a turn's first call always carries it. Otherwise only for the
+        single probe call a flat cache read has bought. The finished plan's "answer now" line
+        (ADR-0108) always rides: it is one line, it is what makes the closing call produce
+        the answer, and a turn that is ending has no later call to save. A pure read of
+        state — a retried call decides the same way; :meth:`_observe_prompt_cache` moves it.
+        """
+        network = self.session.task_network
+        if network.tasks and network.is_complete():
+            return False
+        if self.provider.model_id() in self.session.tail_sparse_models:
+            return self._prev_call_had_tail
+        return self._cache_probe_rests_next
+
+    def _observe_prompt_cache(self, usage: Usage) -> None:
+        """Read one main-conversation call's cache usage (ADR-0193); called beside
+        :meth:`_anchor_prompt`, the one point both twins pass and no side call reaches.
+
+        Three steps, each driven by what the provider reported (:data:`_CACHE_FLAT_MIN_GROWTH`
+        carries the reasoning): a run of tailed calls whose cache read held still while the
+        prompt grew makes the next call the probe; the probe's prompt size is held; the call
+        after it either read that whole prompt back from the cache — the model joins the
+        session's ``tail_sparse_models`` — or did not, which is a miss counted on the session.
+        """
+        had_tail = self._call_has_tail
+        self._prev_call_had_tail = had_tail
+        model = self.provider.model_id()
+        session = self.session
+        if (
+            not model
+            or model in session.tail_sparse_models
+            or session.tail_probe_misses.get(model, 0) >= _CACHE_PROBE_LIMIT
+        ):
+            return
+        prompt, read = int(usage.prompt_tokens), int(usage.cache_read_tokens)
+        run = self._cache_flat_run
+        if self._cache_probe_rests_next:
+            # This was the probe — unless the "answer now" line rode it, or another model
+            # answered (a route change lands after the messages are assembled).
+            self._cache_probe_rests_next = False
+            self._cache_flat_run = None
+            if not had_tail and run is not None and run[0] == model and prompt > 0:
+                self._cache_probe_rested = (model, prompt, run[4])
+            return
+        rested, self._cache_probe_rested = self._cache_probe_rested, None
+        if rested is not None:
+            self._cache_flat_run = None
+            rested_model, rested_prompt, flat_read = rested
+            if rested_model != model or prompt < rested_prompt:
+                return  # another model, or a compaction rewrote the history: says nothing
+            if read >= rested_prompt - _CACHE_PROBE_SLACK:
+                session.tail_sparse_models.append(model)
+                self._note(
+                    "intervention",
+                    f"prompt cache: {model} read a flat {flat_read:,} cached tokens while the "
+                    f"prompt grew, then {read:,} right after the one call sent without the plan "
+                    f"reminder ({rested_prompt:,} tokens) — it reuses only a whole earlier "
+                    "prompt, so the reminder now rides every other call",
+                    kind="cache_friendly_tail",
+                    model=model,
+                    flat_cache_read_tokens=flat_read,
+                    probe_prompt_tokens=rested_prompt,
+                    cache_read_tokens=read,
+                )
+                logger.info(
+                    "prompt cache defeated by the per-call tail on %s (flat at %d, then %d after "
+                    "a %d-token tail-less call); the tail now rests every other call (ADR-0193)",
+                    model,
+                    flat_read,
+                    read,
+                    rested_prompt,
+                )
+                return
+            misses = session.tail_probe_misses.get(model, 0) + 1
+            session.tail_probe_misses[model] = misses
+            logger.info(
+                "prompt cache probe on %s: cache read %d after a %d-token tail-less call — the "
+                "tail is not what holds it at %d (miss %d of %d; ADR-0193)",
+                model,
+                read,
+                rested_prompt,
+                flat_read,
+                misses,
+                _CACHE_PROBE_LIMIT,
+            )
+            return
+        if not had_tail or read <= 0 or prompt <= 0:
+            self._cache_flat_run = None  # a tail-less call, or nothing to read
+            return
+        if run is None or run[0] != model or read > run[4] or prompt < run[3]:
+            # Another model, the cache advanced (it works), or the prompt shrank (a
+            # compaction): start over.
+            self._cache_flat_run = (model, 1, prompt, prompt, read)
+            return
+        calls, first = run[1] + 1, run[2]
+        self._cache_flat_run = (model, calls, first, prompt, read)
+        if calls >= _CACHE_FLAT_MIN_CALLS and prompt - first >= _CACHE_FLAT_MIN_GROWTH:
+            self._cache_probe_rests_next = True
 
     def _reset_stale_or_completed_plan(self) -> None:
         """Drop a finished plan (always) or an abandoned one (static for N turns) at turn start.
@@ -4298,6 +4445,7 @@ class AgentLoop:
             # The measured size of what was just sent floors the next pre-call
             # compaction check (ADR-0077).
             self._anchor_prompt(result.usage.prompt_tokens)
+            self._observe_prompt_cache(result.usage)  # ADR-0193
             self._canonicalize_calls(result.tool_calls)
             return result
 
@@ -6083,6 +6231,12 @@ class AgentLoop:
         ``gather_user_prompt_context`` isolates every hook failure.
         """
         self._turn_prompt_context = []
+        # ADR-0193: a turn's first call always carries its tail, and no measurement spans
+        # turns (both turn paths pass here).
+        self._prev_call_had_tail = False
+        self._cache_flat_run = None
+        self._cache_probe_rests_next = False
+        self._cache_probe_rested = None
         if not self.hook_manager.has_user_prompt_hooks():
             return
         self._turn_prompt_context = await self.hook_manager.gather_user_prompt_context(
@@ -7996,6 +8150,7 @@ class AgentLoop:
                             )
                             # Streaming twin of _call_provider's anchor (ADR-0077).
                             self._anchor_prompt(attempt_usage.prompt_tokens)
+                            self._observe_prompt_cache(attempt_usage)  # ADR-0193
                     except RateLimited as exc:
                         # Retried whether or not deltas already streamed (ADR-0070 — see
                         # the attempt-loop comment above). Same budgets as _call_provider:

@@ -108,7 +108,13 @@ A **context hook** contributes background text before each model call. The loop
 folds it into an *ephemeral* tail message — appended after all real history, never
 persisted, and **fenced + defanged as untrusted** (`<injected_context>…`) — so the
 cached system+history prefix is untouched (prompt-cache safe) and recalled content
-is never treated as instructions.
+is never treated as instructions. One exception, measured and never guessed (ADR-0193):
+a provider that reuses only a WHOLE earlier prompt gets nothing from a shared prefix, so
+once a session has watched such a provider read back a tail-less prompt, the whole tail —
+hook context, the turn's prompt context and the plan reminder — rides every OTHER model
+call there (the turn's first call always carries it). Background text still reaches the
+model on the next call; a hook that must be seen on every call is the wrong seam — gate
+the action with a `PreToolUse` hook instead.
 
 ```python
 agent.hook_manager.register_context(lambda payload: retrieve_relevant(payload.user_text))

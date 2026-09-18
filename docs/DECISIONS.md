@@ -10933,6 +10933,174 @@ plan-only completions and a served default cost budget (the nets), a delta form 
 `update_plan` so a full replace stops re-sending done work, and the reasoning-effort
 question for the 5.6 tier (ADR-0188) — each is its own measurement.
 
+## ADR-0193: the per-call reminder rests every other call — on a provider measured to reuse only a whole earlier prompt, and on no other
+
+**Status:** Accepted (2026-09-18) — measurement pre-registered 2026-09-18 13:52 UTC; both batches are below as measured
+
+**Context.** `_messages_for_call` appends an ephemeral tail to every main-conversation
+call — PRE_LLM_CALL hook context, the turn's UserPromptSubmit context, and the `[plan]`
+reminder last, whose memory lines change with every tool call — and never persists it.
+The design assumption was that this is free: history stays append-only, so two consecutive
+prompts share the whole persisted history as a prefix and a prefix cache keeps working.
+Measured 2026-09-18 against the API, four calls per series, each appending one short turn
+to a ~12.6k-token conversation: `gpt-5-mini` behaves that way (append-only reads 12,544 of
+12,741; a changing tail on every call still reads 11,776 of 12,957). The gpt-5.6 tier
+(`-luna`, `-terra`; chat completions with tools, `reasoning_effort: none`) does not. It
+reuses only a previously sent FULL prompt that is a prefix of the new one, plus the
+system/tools block: append-only reads 12,639 of 12,661 (the whole previous prompt less 3
+tokens); a tail on every call reads 2,450 of 12,874 on every call (the system block, and
+nothing sent since); a tail on every other call reads 12,639 of 12,875 on the tailed call
+and 12,677 of 12,913 two calls later — the tail-less prompt before it, whole. An explicit
+`cache_control` breakpoint ahead of the tail changed nothing on that tier. So with a tail on
+every call no call's prompt is ever a prefix of the next, and everything past the system
+block is billed uncached on every call, forever. On the Vinheim prod vessel's churn turn
+(ADR-0192) the cache read sat at 28,079 tokens for 241 calls while the prompt grew to 360k.
+In a live loop on main (`57f32e2`, luna, a five-step plan) the read froze at 13,707 for
+fourteen calls while the prompt grew 14,323 → 16,418. The same loop on `gpt-5-mini` read
+13,568 → 13,824 → 14,848: a working cache, but a lumpy one — one read held for six calls
+across 969 tokens of growth.
+
+**Decision.** Nothing changes on a guess, and nothing is keyed on a model name. Three
+steps, each read from the provider's own usage on main-conversation calls (the two
+`_anchor_prompt` sites, which no side call reaches):
+
+1. *Suspect.* At least 3 consecutive tailed calls on one model whose cache read stayed
+   above zero and did not grow while the prompt grew by at least 4,096 tokens
+   (`_CACHE_FLAT_MIN_CALLS`, `_CACHE_FLAT_MIN_GROWTH`). A read that advances, a prompt that
+   shrinks (a compaction), a tail-less call, a route change or a zero read starts the run
+   over. The bar is sized from where the money is and from what a healthy cache looks
+   like: under 4k uncached tokens a call the waste is a fraction of a cent even on terra,
+   and it is four times the longest flat stretch measured on a cache that works.
+2. *Probe.* The next call goes out as the persisted history alone — once. A flat read by
+   itself proves nothing about the tail: a provider that caches only a system breakpoint
+   (Anthropic, through this provider layer's single `cache_control` stamp) reads flat
+   forever and gains nothing from a resting tail.
+3. *Read.* The call after the probe is the measurement. A cache read within 128 tokens
+   (`_CACHE_PROBE_SLACK`) of the probe's WHOLE prompt is the mechanism observed: the model
+   joins `Session.tail_sparse_models`, one `intervention` note says so with the numbers, and
+   from then on the tail rests whenever the previous main call carried one. Never two
+   tail-less calls in a row; a turn's first call is always tailed; the finished plan's
+   ADR-0108 "answer now" line always rides. Anything else is a miss, counted per model in
+   `Session.tail_probe_misses`; at 2 (`_CACHE_PROBE_LIMIT`) the model is left alone for the
+   rest of the session. A probe that measured nothing — the "answer now" line rode it, a
+   compaction rewrote the history before the reading, another model answered — is not a
+   miss.
+
+Both verdicts live on the session because a served mind builds a loop per turn and must
+not pay the measurement again each turn; schema v1 stays append-only (an older build drops
+the two fields and keeps the every-call tail). A backend that reports no cache reads —
+most local pods — is never suspected, so the small-model every-call reminder is untouched
+by construction, and a cache whose read advances is never suspected either.
+
+**Alternatives rejected.** A provider-layer cache breakpoint: measured, ignored by the
+tier. Persisting the reminder into history: append-only would hold, and every call would
+add a plan copy to the history ADR-0192 just finished shrinking. A per-model flag or a name
+list: the next tier with this cache shape pays until someone notices, and the usage already
+says it. Resting the tail for every provider: it halves the reminder for small models on
+no evidence that they tolerate it, while the pod that could measure that is down. A
+cache-priming request (the tail-less prompt as its own call): doubles the request count.
+Switching on the flat read alone — this ADR's first draft, with a 1,024-token bar: the
+`gpt-5-mini` control came within 55 tokens of tripping it, and every Anthropic session
+would have been switched for nothing. Switching first and reverting when it does not help:
+the same information, but the sticky state would be written before the evidence.
+
+**Measurement (pre-registered 2026-09-18 13:52 UTC, before any run of this design).** Instrument:
+a real `Agent` for one turn in a throwaway workspace — eight ~2.5k-token files, the task is
+to plan eight steps, `cat` each file with Bash, mark each step done, and answer with the
+eight checksum words; per main call the tail flag, prompt tokens and cache read are
+recorded at `_anchor_prompt`. Three arms, same task, same batch:
+
+- **A — control:** main `57f32e2` (a detached worktree on `PYTHONPATH`), `gpt-5.6-luna`.
+  Predicted: one cache-read value (spread ≤ 64) on every tailed call while the prompt grows
+  by at least 8,000 tokens.
+- **B — treatment:** this branch, `gpt-5.6-luna`. PASS needs all of: the session ends with
+  `tail_sparse_models == ["openai/gpt-5.6-luna"]` and no miss; exactly one
+  `cache_friendly_tail` note; every tailed call that follows a tail-less call reads at least
+  that call's prompt less 128; the turn completes (`completed`, at least 8 Bash calls, all
+  8 checksum words in the answer); and B's cached share of main-call prompt tokens exceeds
+  A's by at least 10 points with a lower cost per main call. FAIL: no switch although A read
+  flat, a recorded miss, a tailed-after-tail-less call that did not reuse, or a turn that
+  did not do its job.
+- **C — negative control:** this branch, `gpt-5-mini`. PASS: `tail_sparse_models` stays
+  empty and the turn completes. A recorded probe miss is allowed by design and is reported
+  as measured. FAIL: the model ends in sparse mode.
+
+If A is not flat the premise failed today: stop and explain, it is not a pass. A passing B
+is run a second time and both must pass; a failing B is investigated, not re-rolled.
+
+**Results, first batch (2026-09-18, 13:53–14:02 UTC; logs kept out of the repo).**
+
+| arm | build · model | main calls · stop | what the cache read did | cached share | cost (per main call) |
+|---|---|---|---|---|---|
+| A control | main `57f32e2` · luna | 40 · `max_iterations` | 9,387 on calls 2–20 while the prompt grew 10,356 → 36,434; 9,271 on calls 21–40 | 30% | $0.1875 ($0.00469) |
+| B treatment | branch · luna | 40 · `max_iterations` | suspected on calls 2–5 (flat 9,384 across 5,913 tokens of growth); call 6 went out tail-less at 16,199; call 7 read 16,196 — confirmed; all 8 tailed calls that followed a tail-less one read it back whole | 87% | $0.0611 ($0.00153) |
+| B2 second sample | branch · luna | 23 · `completed` | the same (flat 9,382; probe 16,362; read 16,359); 8 of 8 | 87% | $0.0328 ($0.00143) |
+| C negative control | branch · gpt-5-mini | 19 · `completed` | never suspected: from call 3 the read advanced on 13 of 17 calls and never held for more than two (one zero read at call 6); tail on every call; nothing written to the session | 85% | $0.0445 ($0.00234) |
+
+Every arm did the job (8 Bash calls, all 8 checksum words in the answer). Read by the letter
+of the rule above, as measured:
+
+- **A** missed its prediction of one value within 64 tokens: the read stepped DOWN once, by
+  116 tokens at call 21, from call 1's whole prompt to the system block alone. It never grew
+  while the prompt grew by 28,000 tokens, so the premise held. Two explanations were tested
+  and ruled out against the API — age (an entry was still read back whole after 150 quiet
+  seconds, and after 180 seconds of hits) and a per-key entry limit (still read back after 26
+  newer whole prompts). The cause is provider-side and unmeasured.
+- **B** met every cache criterion, and at an equal call count cost a third of A. It missed
+  `completed`: it ended `max_iterations`, exactly as control A did on main. The transcript
+  tail kept by B2 shows why, and it is not the tail: the fresh-eyes plan review flagged the
+  correct answer, the model re-sent the same correct answer, and the ADR-0026 broken-record
+  guard — checked first, with no bound of its own — vetoed every identical re-send until the
+  iteration cap (twenty calls in A and in B). B2 ended only because the model reworded its
+  fifth answer. That outcome is neither this rule's PASS nor its FAIL, and an unnamed outcome
+  is not upgraded: the guard gets its bound first (ADR-0194), and these same arms are run
+  again on a build where a turn can end.
+- **C** passed.
+
+**Second batch — the rule, amended once before it runs (2026-09-18 14:24 UTC).** The same three arms,
+task, instrument and criteria, on a main that carries ADR-0194 (so a turn can end). One
+amendment, made because of what the first batch showed and before any run of the second:
+A's prediction reads "the cache read on tailed calls never GROWS while the prompt grows by at
+least 8,000 tokens; it may step down to the system block" — the provider stepped it down once
+on its own, and a read that cannot grow is the premise, not a read that cannot move. Nothing
+else changes: B must pass every criterion, twice; C must end with `tail_sparse_models` empty.
+
+**Results, second batch (2026-09-18, 14:24–14:32 UTC; main `b4e084b`, which carries ADR-0194).**
+
+| arm | build · model | main calls · stop | what the cache read did | cached share | cost (per main call) |
+|---|---|---|---|---|---|
+| A control | main `b4e084b` · luna | 23 · `completed` | 9,387 on 19 tailed calls, then 9,271 on 3; never grew while the prompt grew 10,360 → 37,033 | 35% | $0.0862 ($0.00375) |
+| B treatment | branch · luna | 24 · `completed` | flat 9,385 on calls 2–5; probe 16,326; next call read 16,323 — confirmed; 9 of 9 tailed calls after a tail-less one read it back whole | 87% | $0.0337 ($0.00140) |
+| B second sample | branch · luna | 22 · `completed` | flat 9,386; probe 16,357; read 16,354 — confirmed; 8 of 8 | 86% | $0.0299 ($0.00136) |
+| C negative control | branch · gpt-5-mini | 20 · `completed` | never suspected: the read advanced on 17 of 18 calls from call 3; tail on every call; nothing written to the session | 88% | $0.0565 ($0.00282) |
+
+By the rule: A held its (amended) prediction; B passed every criterion, twice — one note, no
+miss, every tail-less prompt read back whole, the job done, `completed`, a cached share at
+least 51 points above A's at 36–37% of A's cost per main call; C passed. Across both batches the
+mechanism was suspected, probed and confirmed four times out of four on luna, inside the
+first seven calls each time, and never touched on gpt-5-mini. One thing stays unexplained
+and changes nothing: in all three all-tailed luna runs the read fell back to the system
+block exactly 20 calls after the entry it had been reading was created, and an API probe
+that sent 26 same-size prompts after one entry did not reproduce it. A loop that sends a
+fresh tail-less prompt every other call never waits that long.
+
+
+**Consequences.** On the recorded production churn turn (243 terra calls, ADR-0192) a
+simulation over the per-call usage — validated by reproducing the billed $155.63 under that
+build's no-discount pricing before any other figure is read from it — prices today's build
+at $139.31 and this rule at $17.68, confirmed at call 8; an append-only ideal would be
+$17.19. `docs/INTEGRATIONS.md` now says what a context hook can rely on: background text
+reaches every call except, on a measured provider, every other one — a hook that must be
+seen on every call is the wrong seam. `tests/test_cache_friendly_tail.py` drives whole turns
+against four modelled caches (whole-prompt, prefix, system-block-only, silent), both verdicts
+across loops, the measured gpt-5-mini lump, and the probes that measured nothing. Not done
+here, each its own decision: carrying the turn's prompt context in history once, as Claude
+Code does, instead of in a tail that no cache of any kind ever covers; history breakpoints
+for Anthropic models, which today cache the system block alone; handing a parent's verdict
+to its sub-agents; and the fresh-eyes reviewer's blind spot (ADR-0194) — it flagged the
+correct answer in all four luna runs that kept a transcript here, and in neither gpt-5-mini
+run; it cannot see the tool results.
+
 ## ADR-0194: the broken-record guard speaks twice for one text, then the answer stands
 
 **Status:** Accepted (2026-09-18)
