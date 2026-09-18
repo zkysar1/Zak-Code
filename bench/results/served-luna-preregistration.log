@@ -81,3 +81,66 @@ rows are other models on other builds. Attribution is claimed for P4 only under 
 above, and for P7 only as arithmetic on the same rows. If P1 MISSES, the discriminating follow-up is a second arm on
 the same instrument with another model, pre-registered separately; the live-vessel reading stays a separate
 instrument (the committed pearl-live-verify driver, a billed dev-lane launch, not part of this batch).
+
+=== 16:11 UTC 2026-09-18 RESULTS -- SERVED LOOP ON LUNA, sample 1 (launched 15:33:31Z, web app exited 16:08:32Z at t+2101 s)
+Validity: a VALID SAMPLE under rule B. 99 luna calls and 1 gpt-5-nano classify call; none of rule A fired (web app
+healthy in 3 s, /start accepted, no provider error, no failover, spend $0.27 against the $6.00 stop, zakcode HEAD
+ec2a059 and a clean status at start and end, host daemon pid/port/health unchanged, 0 leaked mounts). One deviation I
+had not declared, reported under rule E: the framework's SessionStart hook hit zakcode's 95 s hook timeout at the first
+turn, so the first model call came at t+104 s. The production serve.log I hold shows 0 hook timeouts in 3,567 lines,
+so this belongs to my sandbox until shown otherwise; it cost at most 95 s of a window the loop then left unused.
+Two instrument limits found by the run, both mine to fix before sample 2: each wake-up compacted the session, so
+the stored message list has no whole-run tool-call denominator; and the trace dir holds ONE file, because every
+served beat builds a fresh loop on the same session id and each writes turn_1.jsonl over the last (the usage list is
+append-only and complete, the serve.log is complete, and I read the session twice mid-run).
+
+  P1  MISS.      0 iterations closed; the world's own store shows 0 goals completed, 9 pending (the baseline).
+  P2  MISS.      update_plan was 8 of 19 tool calls at the turn-1 snapshot (42%), 11 of 36 in turn 2 (31%), 12 of 31
+                 in the surviving session file at the end (39%). Every window is above 30%.
+  P3  HIT, UNTESTED. 0 empty completions: the smallest of 99 luna completions was 17 tokens (reasoning is off on
+                 this route, so every token is visible output). The empty-completion handling was never exercised.
+  P4  HIT.       86.9% of 5,990,586 luna prompt tokens were cache reads. Attribution under the pre-registered
+                 within-run rule: calls 3-15 read a flat 44,202 tokens while the prompt grew 44k -> 85k (99% -> 52%
+                 per call); the tail rested at call 15, call 16 read 84,617 of 85,295, and the checkpoint then
+                 advanced every other call (99% per call). Two full misses rode along: call 22, where a "stuck"
+                 narrowing to read-only tools changed the tools block (85,113 tokens, 0 read), and each wake-up
+                 after 600 s at rest (a cold 42k-token prompt).
+  P5  MISS.      Two turns ended veto_stall (23 and 40 iterations). broken_record never fired in the turn traced,
+                 so the ADR-0194 bound is UNTESTED; the "stuck" rail fired instead, twice per stalled turn.
+  P6  UNTESTED on its own condition, with the ending itself clean: duration_cap, IDLE, assistant, own exit at
+                 t+2101 s, 419 s before the supervisor clock. But no loop was alive at the cap. The FRAMEWORK's own
+                 loop-exhaustion fence had stopped it at t+1528 s (its record: turn-end #10 for the session with
+                 the execution diary frozen 1,392 s), luna ran the framework's graceful stop to IDLE/assistant in
+                 18 iterations, and at the cap the harness raised a second stop that luna answered the same way
+                 in 9 iterations and 34 s.
+  P7  HIT.       Recorded $0.2739 on 99 streamed luna calls with 5,207,055 cached tokens; the list-rate re-price of
+                 the same rows is $0.2739. ADR-0195 holds on the served path.
+  Reported: 10 turn-end vetoes, 8 harness deliveries of /aspirations loop, 11 Skill calls answered "[already
+  loaded]", 3 real skill loads by the model (boot, the graceful stop twice), 5 turns (veto_stall, veto_stall,
+  completed x3). REST: two 600 s stretches with no model call (t+180..780, t+900..1500) and 458 s at IDLE before
+  the cap; model activity covered about 330 s of 2,101. Max prompt 103,089 tokens. Each wake-up opened on a
+  compacted session (101k -> 43k prompt tokens at the first; a [Conversation summary] leads the stored file).
+The three fixed criteria: MISS on P1 and P2, P3 a HIT that tested nothing. One sample; no rate is claimed.
+
+Cause, named from the run's own transcript and logs (the second-sample rule asks for a named cause before a re-run):
+  1  The loop has two doors it should continue through, and zakcode shuts both the same way. After a veto the
+     hook's words lead the delivered message ("FIRST action MUST be Skill('aspirations') ... Do NOT run Bash
+     commands first") although the harness has already made that call; luna makes it again, and the answer is
+     "[already loaded] ... Continue those instructions from where you are; do not reload them." The other door is
+     the framework's own contract -- every iteration ends on Skill(aspirations, loop) -- and mid-turn that call gets
+     the same sentence. ADR-0187 counted on the paged form of that reply, which carries the current section; since
+     ADR-0192 a body that fits arrives whole, there is no section to carry, and the reply is a dead end. luna reads
+     it literally ("the skill loader reports it is already loaded rather than advancing the loop body"), summarises,
+     ends the turn, is vetoed, and goes round: four vetoes, veto_stall, 600 s at rest, twice. The framework met this
+     defect on Claude Code and wrote it down in its own Skill gate: deduplicating the loop skill's per-iteration
+     re-invocation "KILLS the loop", so that gate exempts those skills.
+  2  luna CAN carry a skill when the message says so. At the wake-up door the harness text reads "carry out these
+     instructions from where the plan stands", and luna ran twelve entry steps in order (state gate, runner identity,
+     stop and interrupt checks, loop-state restore, entry battery, compact restore, stranded-claim sweep, quiescence
+     checks, digest load and read) -- then went straight to the terminal Skill call without the iteration body. It
+     also ran /start and the graceful stop (twice) end to end. Why the body was skipped is NOT established by this
+     sample: its blind three-step plan ended in "the required loop terminal action", and the digest it had just read
+     opens with 98 lines of reference tables before its first phase.
+  3  The plan-first gate refused luna's first step three times in two turns. That step was a read-only state query;
+     the gate reads every shell call as mutating. The plan it forced was written before anything had been read.
+  Not claimed: that fixing 1 closes an iteration. It removes the stall; what luna does with a live loop is sample 2.
