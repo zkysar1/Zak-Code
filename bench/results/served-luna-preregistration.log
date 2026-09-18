@@ -227,3 +227,96 @@ Reading rules: A-E of the sample 1 block apply unchanged, word for word. Added f
      the finding it is, and P6 is then UNTESTED on its condition.
 A third sample is taken only under the same second-sample rule. After a PASS, two more samples are owed before any
 rate is stated. Spend: sample 1 cost $0.27; this block's controls cost $0.00.
+
+=== 20:17 UTC 2026-09-18 RESULTS -- SERVED LOOP ON LUNA, sample 2 (launched 19:31:06Z, web app exited at t+2432 s, run done 20:11:40Z)
+Validity: a VALID SAMPLE under rule B. 316 luna calls and no other model; none of rule A fired (7 luna calls inside
+the first 30 s, /start accepted, 0 provider-error aborts, 0 failovers, 0 tracebacks, spend $1.14 against the $6.00
+stop, zakcode HEAD 19a13b6 on main with a clean status and the same src tree 362b6475 at start and end, host daemon
+pid/port/health unchanged, 0 leaked mounts). Zak-Code #548 and #549 merged to origin/main DURING the run; the checkout
+was not fetched or synced until the end lines were on file. One slip of mine, recorded in the instrument file: my
+end-of-run health probe first hit a path that is not a route (404); the launcher's own probe read 200.
+Instrument limit, as in sample 1: every compaction rewrites the stored message list (6 compactions), so the session
+file holds only a tail (55 tool calls at the end). The whole-run ledger is the per-turn trace files (#544, #546): 322
+tool notes across 4 turn files, 0 sub-agent files, 0 non-JSON lines.
+
+  P1  MISS.      0 iterations closed (0 banner lines from a closing script, 0 loose mentions); the world's own store
+                 shows 0 goals completed, 15 pending. luna got further than sample 1 -- loop entry, the precheck, goal
+                 selection (iteration checkpoint: goal g-001-01, source world, phase "selected") -- and was then
+                 stopped by the FRAMEWORK, not by the harness: cause 1 below. P1 as written cannot be read as a
+                 harness verdict on this seed.
+  P2  HIT.       update_plan was 55 of 322 tool notes on the whole-run trace ledger (17.1%). Beside it, as
+                 pre-registered: 7 of 55 in the surviving session file (12.7%). Sample 1 read 31-42%.
+  P3  HIT.       Longest run of consecutive empty completions: 1 (one in 316 calls; the next call carried on). Still
+                 a thin test of the empty-completion handling.
+  P4  HIT.       86.3% of 24,614,447 luna prompt tokens were cache reads; max prompt 128,201 tokens.
+  P5  MISS.      Two turns ended veto_stall (29 and 140 iterations). Sample 1: two.
+  P6  HIT.       duration_cap, IDLE, assistant, own exit at t+2432 s (88 s inside the supervisor clock, no supervisor
+                 signal). Rule I did not apply: the framework's exhaustion fence never fired, and a loop WAS at work
+                 when the harness raised the stop at 20:05:21Z (the cap minus the 350 s reserve). luna noticed it
+                 from the framework's stop-pending hook text, ran the graceful stop, and reached IDLE at 20:07 and
+                 assistant at 20:08; both closing turns ended "completed" (20:08:46Z, 20:09:06Z). Not complete in the
+                 framework's own terms: no handoff.yaml and no session summary were written, and luna re-wrote the
+                 skill's D7 line into one long shell command whose "rm -f $root/stop-target-mode" used a variable
+                 that command never assigned, so it removed nothing and said nothing. The harness waited out the
+                 window and retired the marker itself at 20:11:11Z (its log line calls that "went unconsumed",
+                 which overstates it: the ask was consumed, one marker was left).
+  P7  HIT.       Recorded $1.1379 on 316 streamed luna calls with 21,233,748 cached tokens; the list-rate re-price of
+                 the same rows is $1.1379. ADR-0195 holds on the served path, a second time.
+  D1  HIT.       8 skill_pointer notes at the veto door; the NEXT completion ran a work call after 6 (75%). Counted
+                 apart, as pre-registered: 1 at the mid-turn door, 0 of 1.
+  D2  MISS.      2 turns ended veto_stall; the bound was 1.
+  D3  HIT.       4 skill_reentry notes (aspirations twice in turn 1, aspirations-graceful-stop twice in turn 3); a
+                 work call ran before the turn ended after 3 (75%). The fourth is turn 1's stall (cause 3).
+  D4  HIT.       0 hook timeout lines in 1,558 serve.log lines; 7 luna calls inside the first 30 s.
+  Reported: 12 honoured turn-end vetoes, each answered by a harness delivery of /aspirations loop, and 2 refused by
+  the fence; 9 Skill calls answered "[already loaded]"; 4 re-entries given the body; 14 wake-up notes; 14 "stuck"
+  notes (0, 8, 6, 0 by turn); 1 empty completion; 4 turns (veto_stall 29 it, veto_stall 140 it, completed 140 it,
+  completed 7 it). Tool notes: Bash 167 (23 failed), update_plan 55, Read 52 (1 failed), Skill 32, LS 10,
+  ScheduleWakeup 4, Grep 2; 207 work calls under the ADR-0196 definition. REST: t+120..721 (601 s) and
+  t+1201..1771 (570 s) behind the two stalls, and t+2282..2432 (150 s) waiting out the stop window; model activity
+  covered about 1,110 s of 2,432 (sample 1: about 330 of 2,101).
+
+Reading, under the rules as written. F: two samples, N=1 each, no rate is claimed; the door attribution is mechanical.
+D1 and D3 were both TESTED and both hit, so ADR-0196's two doors carried luna back to work in 9 of 12 cases. G: not
+triggered (D1 did not miss). H: P1 missed WITH stalls, so the stalls' causes come before any iteration-body work; they
+are causes 2 and 3. I: not triggered. The iteration body (sample 1's cause 2) stays UNTESTED: no run has yet reached
+Phase 4, this time because of cause 1.
+
+Causes, each named from this run's own record. Two instruments beyond the pre-registered one were used for 2 and are
+EXPLORATORY: a read-only ledger that copied tool calls and results out of the live session file from 20:02Z (it
+never wrote to the world; it holds tool outputs, so it stays in scratch), and deterministic probes against the
+product's classes with no model.
+  1  FRAMEWORK, blocks P1 on this seed. g-001-01 exists in BOTH queues of a fresh seed world (world queue: 6 goal
+     ids, agent queue: 9, one shared: per-agent asp-001 queues reuse the g-001-NN id space) and it is the goal the
+     selector picks first. The claim endpoint refuses it with 409 goal_id_collision and advises "&source=world
+     claims the world copy". That advice cannot work: the refusal is scoped to source == "world", which is also the
+     DEFAULT, so an explicit --source world gets the same 409. luna followed the message four ways (5 claim calls, all
+     errors) and never claimed. The same lines are on the dev framework's origin/main today. A dev-first framework
+     fix, not a harness change; filed and fixed separately.
+  2  HARNESS, the turn-2 stall and the disrupted stop. ADR-0038's repeated-outcome signal counts identical
+     (tool, output) pairs over the WHOLE turn, the tracker's reset at a veto does not clear those counts, and the
+     harness's own skill deliveries are identical by construction. Probe, no model: with distinct successful work
+     between the doors and the tracker reset at every veto exactly as loop.py does, the 3rd, 4th, 5th and 6th
+     "[already loaded]" reply in one turn draw nudge, narrow, step_back and STOP. Turn 2's trace shows exactly that:
+     the 3rd, 4th and 5th pointer notes are each followed at once by the matching stuck note (positions 156/157,
+     206/207, 304/305). The step-back rail ("do not retry anything yet") landed on the completion right after the
+     last veto-door pointer, luna answered in text, and that was the third counted veto: veto_stall. The call that
+     earns the pointer is the one the framework's stop hook orders ("Your FIRST action MUST be Skill('aspirations')
+     with args='loop'"), so the ladder punishes obedience. Turn 3, replayed from the ledger through the product's
+     StuckTracker (148 of the turn's 149 calls), reproduces the trace's notes one for one: nudge and narrow on the
+     failing claim (legitimate: all-errors, no-progress, then repeated-outcome), then nudge, narrow, step_back and
+     STOP on the 3rd..6th delivery of the graceful-stop BODY -- ADR-0196 re-entries, which the framework's
+     stop-pending hook text asks for after every tool call -- so the read-only narrowing and the STOP rung both fired
+     in the middle of the consolidation window (the hook vetoed the "stuck" turn end and the loop went on), then a
+     nudge on the pointer again. 5 of turn 3's 7 ladder actions and 3 of turn 2's 8 were drawn by the harness's own
+     deliveries; turn 2's other 5 are UNATTRIBUTED (their outputs were compacted away before the ledger started,
+     and the trace's stuck note carries no signal names -- an observability gap to close with the fix).
+     Sample 1's results already recorded "the stuck rail fired instead, twice per stalled turn"; that is consistent
+     with this cause and was not attributed then.
+  3  NOT ESTABLISHED, the turn-1 stall. No stuck note in turn 1. After the second re-entry body arrived (the prompt
+     grew 88,946 -> 103,177 tokens) luna answered with four text-only completions in a row (28, 30, 71 and 82
+     tokens), each vetoed and answered by another delivery of the same body; the third drew "3 text-only completions
+     in a row -- the evidence gates stand down", the fourth veto was the fence. What those completions said was
+     compacted away. The next sample's ledger must copy text-only completions from the first call.
+  Not claimed: that fixing 1 and 2 closes an iteration. They remove a claim that cannot succeed and a ladder that
+  fires on the harness's own words; what luna does in Phase 4 has still never been observed.
