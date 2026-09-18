@@ -29,6 +29,8 @@ from zakcode.background import (
     notification_block,
     output_tail,
     pid_alive,
+    process_start_token,
+    task_is_live,
     task_status,
     tasks_dir_for,
 )
@@ -328,7 +330,8 @@ def test_a_task_gone_without_a_recorded_exit_is_lost_not_alive(tmp_path: Path) -
     )
     assert task_status(record) == ("lost", None)
     block = notification_block(record, "lost", None)
-    assert "<status>lost</status>" in block and "without reporting an exit code" in block
+    assert "<status>lost</status>" in block and "without a recorded exit code" in block
+    assert "may still be complete" in block  # the exit went unobserved; the work may not have
     assert task_status(record.model_copy(update={"stopped": True})) == ("killed", None)
 
 
@@ -472,3 +475,53 @@ async def test_a_session_end_kills_what_it_started(tmp_path: Path) -> None:
     await agent.aclose()
     await _until_dead(task.pid)
     assert agent.loop.background_tasks.status(task)[0] == "killed"
+
+
+# ── a pid the OS reused is not the task ───────────────────────────────────────────
+
+
+async def test_start_records_the_process_start_token(tmp_path: Path) -> None:
+    """The record carries the OS's start time for the pid, and it matches the live child."""
+    _session, tasks = _tasks(tmp_path)
+    task = await tasks.start(LONG, cwd=str(tmp_path))
+    try:
+        assert task.start_token is not None  # Linux /proc, Windows GetProcessTimes, else ps
+        assert process_start_token(task.pid) == task.start_token
+        assert task_is_live(task)
+    finally:
+        await tasks.stop(task.id)
+        await _settle(tasks, task)
+
+
+async def test_a_pid_the_os_reused_after_a_restart_is_not_the_task(tmp_path: Path) -> None:
+    """No exit file and a live pid whose start token is not the record's (the ADR-0034
+    restart in between, then the OS handed the pid to another process): the task is LOST,
+    never "running" — and TaskStop refuses, so whatever now owns the pid is left alone."""
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        session, tasks = _tasks(tmp_path)
+        record = BackgroundTask(
+            id="t1",
+            command="ghost",
+            cwd=str(tmp_path),
+            output_file=str(tmp_path / "t1.out"),
+            exit_file=str(tmp_path / "t1.exit"),
+            pid=bystander.pid,
+            started_at="2026-09-18T00:00:00+00:00",
+            start_token="an-earlier-process",
+        )
+        session.background_tasks = [record]
+        assert pid_alive(bystander.pid)
+        assert task_status(record) == ("lost", None)
+        stopped, reason = await tasks.stop("t1")
+        assert not stopped and "not running" in reason
+        assert bystander.poll() is None
+        # Positive controls: the bystander's own token reads running; a record without a
+        # token (older, or a platform that cannot say) keeps the pid's word, as before.
+        token = process_start_token(bystander.pid)
+        assert token is not None
+        assert task_status(record.model_copy(update={"start_token": token})) == ("running", None)
+        assert task_status(record.model_copy(update={"start_token": None})) == ("running", None)
+    finally:
+        bystander.kill()
+        bystander.wait()
