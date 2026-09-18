@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
+import pytest
+
+from zakcode._subprocess import find_bash
 from zakcode.hooks import HookEvent, HookManager, HookSpec, LifecyclePayload
 
 
@@ -75,6 +79,28 @@ async def test_shell_lifecycle_hook_receives_payload(tmp_path: Path) -> None:
     spec = HookSpec(event=HookEvent.SESSION_START, command=[sys.executable, str(script)])
     await HookManager([spec]).fire(_payload())
     assert marker.read_text() == "s1"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX shell's `&` child")
+async def test_a_session_start_hook_that_leaves_a_daemon_running_is_over_when_it_exits(
+    tmp_path: Path,
+) -> None:
+    # A mind world's SessionStart hook starts the framework's daemon when none is running. The
+    # daemon redirects all three of its streams, so the hook is over when its own process is.
+    # Measured 2026-09-18 on the served path under uvloop: 95.0 s, the hook's whole timeout,
+    # against 0.7 s on the stdlib loop (ADR-0197 pins the served process to the stdlib loop).
+    bash = find_bash()
+    assert bash is not None
+    spec = HookSpec(
+        event=HookEvent.SESSION_START,
+        command=[bash, "-c", "sleep 8 </dev/null >/dev/null 2>&1 & echo started"],
+        timeout=6,
+    )
+    start = time.monotonic()
+    await HookManager([spec]).fire(
+        LifecyclePayload(event=HookEvent.SESSION_START, session_id="s1", cwd=str(tmp_path))
+    )
+    assert time.monotonic() - start < 4  # did NOT wait out the timeout
 
 
 # ── fire points through the agent loop / facade ───────────────────────────────
