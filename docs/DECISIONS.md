@@ -10641,6 +10641,26 @@ request shape, the re-issue, the fallback tier untouched), `tests/test_framework
 (the signature, the raise time, startup retirement only past the grace, unsigned and
 started stops left alone); FEATURE_AUDIT PROV-25.
 
+**Amended 2026-09-18 (the signature never creates the marker).** The signature was written
+with `Path.write_text`, which creates the file. The ask is live from the moment the setter
+touches it, so a mind that reads it at once can consume it (D3 removes `stop-requested`)
+before the signature lands, and the signature then put the consumed ask BACK:
+`request_framework_stop` reported success, `framework_stop_complete` read "not yet" for the
+whole grace, and a run whose mind had finished its stop beat on until the window closed.
+Measured as a bare `TimeoutError` on windows-latest in
+`test_a_stop_finished_inside_the_turn_ends_the_run_when_that_turn_ends` (main run
+35380778365: a 30 s grace against the test's 10 s wait, so the window decided the wait) and
+green on re-run, which a race also is. Reproduced with no timing by consuming the ask
+between the setter's verification and the signing: `stop-requested` back on disk at 58
+bytes, `framework_stop_complete` False. The test double polls every 20 ms and signs off in
+microseconds, so a slow runner finds the window; a vessel's consumer is model-paced and
+practically never does. `_sign_signal` now opens the existing marker without `O_CREAT`; a
+consumed ask stays consumed and is logged at INFO. With `O_CREAT` put back exactly the new
+test fails (`test_signing_never_recreates_an_ask_the_mind_already_consumed`) and the
+signature test passes. **Noted, not changed:** the setter's verification reads an absent
+marker as "the setter failed" and reverts the target mode; a mind that consumed the ask
+before that read would lose its target mode. No consumer is that fast outside a test double.
+
 ## ADR-0189: a served session services its own wake-up, and a stop raised between turns starts the turn that reads it
 
 **Status:** Accepted (2026-09-18)
