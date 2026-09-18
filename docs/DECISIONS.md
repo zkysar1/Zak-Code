@@ -11057,6 +11057,14 @@ of the rule above, as measured:
   again on a build where a turn can end.
 - **C** passed.
 
+**Second batch — the rule, amended once before it runs (2026-09-18 14:24 UTC).** The same three arms,
+task, instrument and criteria, on a main that carries ADR-0194 (so a turn can end). One
+amendment, made because of what the first batch showed and before any run of the second:
+A's prediction reads "the cache read on tailed calls never GROWS while the prompt grows by at
+least 8,000 tokens; it may step down to the system block" — the provider stepped it down once
+on its own, and a read that cannot grow is the premise, not a read that cannot move. Nothing
+else changes: B must pass every criterion, twice; C must end with `tail_sparse_models` empty.
+
 ## ADR-0194: the broken-record guard speaks twice for one text, then the answer stands
 
 **Status:** Accepted (2026-09-18)
