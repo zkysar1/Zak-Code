@@ -234,9 +234,13 @@ def test_both_overrun_branches_actually_call_the_retire(tmp_path: Path) -> None:
         encoding="utf-8"
     )
     assert "abandon_framework_stop," in src, "imported"
-    assert src.count("_retire_unconsumed_framework_stop()") == 3, (
-        "one definition + both overrun branches"
+    assert src.count("_retire_unconsumed_framework_stop()") == 4, (
+        "one definition + both overrun branches + the window closing on a loop at rest"
     )
+    # The third orphan path (ADR-0189): no turn to interrupt, the window just closes.
+    idle_close = src.index("time.monotonic() >= framework_stop_until:")
+    assert "_retire_unconsumed_framework_stop()" in src[idle_close : idle_close + 200]
+    assert idle_close < src.index("await _end_run()"), "retired before the run ends"
     mid = src.index("overran its %.0fs window")
     cap = src.index("run cap: framework stop overran its window")
     for start in (mid, cap):
