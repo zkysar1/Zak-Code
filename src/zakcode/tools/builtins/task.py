@@ -74,6 +74,14 @@ class TaskTool(Tool):
             )
 
         tasks = args.get("tasks")
+        if tasks is None and isinstance(args.get("prompt"), str):
+            # Claude Code's single-delegation shape (``Task`` / ``Agent``: description, prompt,
+            # subagent_type) — the aliases resolve here (ADR-0190). One subtask; ``description``
+            # is a label the batch form has no slot for.
+            one: dict[str, Any] = {"prompt": args["prompt"]}
+            if args.get("subagent_type"):
+                one["subagent_type"] = args["subagent_type"]
+            tasks = [one]
         if not isinstance(tasks, list) or not tasks:
             return ToolResult.error(
                 "'tasks' must be a non-empty array of {subagent_type?, prompt} objects"

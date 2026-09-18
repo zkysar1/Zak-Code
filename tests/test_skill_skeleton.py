@@ -248,7 +248,7 @@ def _loop(provider: Provider, tmp_path: Path, bodies: dict[str, str]) -> AgentLo
 
 
 def _use(name: str, call_id: str = "t1") -> LLMResult:
-    return LLMResult(tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": name})])
+    return LLMResult(tool_calls=[ToolCall(id=call_id, name="Skill", arguments={"name": name})])
 
 
 def _finish_plan(call_id: str = "p1") -> LLMResult:
@@ -433,7 +433,7 @@ async def test_use_skill_names_the_seeded_sections_in_its_hint(
     # Five sections: paged (ADR-0067) — the result carries section 1 and says so.
     assert res.data == {"skill": "e", "decompose": True, "sections": 5, "paged": True, "page": 1}
     assert res.hint and "5 numbered sections are now steps in your plan" in res.hint
-    assert "use_skill" in res.hint  # the chaining nudge survives
+    assert "Skill" in res.hint  # the chaining nudge survives
 
 
 async def test_a_skill_that_packs_into_one_page_arrives_whole_with_its_steps(

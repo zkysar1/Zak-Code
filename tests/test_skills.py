@@ -178,7 +178,7 @@ def test_registry_catalog_and_get() -> None:
     cat = reg.render_catalog()
     # Skills render as the exact `use_skill(...)` call, NOT a bare "name: desc" line
     # (which small models mistake for a tool). See the render_catalog anti-confusion fix.
-    assert 'use_skill(name="a")' in cat
+    assert 'Skill(skill="a")' in cat
     assert "alpha" in cat
     assert "a: alpha" not in cat
     assert reg.get("a") is not None
@@ -341,6 +341,7 @@ def test_render_catalog_maps_claude_codes_tool_names() -> None:
     fm, _ = parse_frontmatter("---\nname: a\ndescription: alpha\n---\nbody a\n")
     reg.add(Skill(fm, Path("a/SKILL.md")))
     cat = reg.render_catalog()
-    assert "`Skill('<name>') with args='<args>'` means" in cat
-    assert 'use_skill(name="<name>", args="<args>")' in cat
-    assert "`ScheduleWakeup(prompt=…, delaySeconds=…)` means schedule_wakeup(" in cat
+    # ADR-0190: the tool IS named Skill, so the catalog states the imperative's meaning in the
+    # tool's own name and carries no translation table.
+    assert "`Skill(<name>) with args='<args>'` means exactly this call" in cat
+    assert "use_skill" not in cat and "schedule_wakeup" not in cat

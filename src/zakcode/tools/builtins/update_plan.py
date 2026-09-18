@@ -169,6 +169,32 @@ def _build_task(raw: dict[str, Any], depth: int) -> Task:
     )
 
 
+#: Claude Code's ``TodoWrite`` statuses → this plan's (``completed`` is ``done`` here).
+_TODO_STATUS = {
+    "pending": "pending",
+    "in_progress": "in_progress",
+    "completed": "done",
+    "done": "done",
+    "cancelled": "cancelled",
+}
+
+
+def _from_todos(todos: list[Any]) -> list[dict[str, Any]]:
+    """Claude Code's ``TodoWrite`` shape (``todos: [{content, status, activeForm}]``) as this
+    plan's flat step list — the ``TodoWrite`` alias resolves here (ADR-0190). A todo with no
+    usable text is dropped rather than refused: the plan it describes is still the model's."""
+    steps: list[dict[str, Any]] = []
+    for todo in todos:
+        if not isinstance(todo, dict):
+            continue
+        title = todo.get("content") or todo.get("title") or todo.get("activeForm")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        status = _TODO_STATUS.get(str(todo.get("status", "pending")), "pending")
+        steps.append({"title": title.strip(), "status": status})
+    return steps
+
+
 class UpdatePlanTool(Tool):
     """Lay out or update the hierarchical task plan for the current goal."""
 
@@ -210,6 +236,8 @@ class UpdatePlanTool(Tool):
                 "planning is not available here (no task network on the context)"
             )
         tasks = args.get("tasks")
+        if tasks is None and isinstance(args.get("todos"), list):
+            tasks = _from_todos(args["todos"])  # the TodoWrite alias (ADR-0190)
         if not isinstance(tasks, list):
             return ToolResult.error(
                 "'tasks' must be an array of step objects ({title, status?, note?, subtasks?})",

@@ -188,7 +188,7 @@ def test_deny_bare_tool_denies_the_whole_tool(tmp_path: Path) -> None:
     # (See test_extra_denied_tools_binds_a_read_only_tool — not a mode override.)
     _write_permissions(tmp_path, {"deny": ["Bash"]})
     ingested, _ = load_settings_permissions(tmp_path)
-    assert "bash" in ingested.denied_tools
+    assert "Bash" in ingested.denied_tools
     agent = _agent(tmp_path, mode="allow")
     decision, reason = agent.permission_policy.decide(_spec(agent, "bash"), {"command": "ls"})
     assert decision is PermissionDecision.DENY
@@ -260,7 +260,7 @@ def test_non_string_and_empty_entries_are_recorded_not_dropped(tmp_path: Path) -
     # cannot even be keyed on its text is recorded under its position.
     _write_permissions(tmp_path, {"deny": [123, "", "   ", "Bash"]})
     ingested, errors = load_settings_permissions(tmp_path)
-    assert "bash" in ingested.denied_tools
+    assert "Bash" in ingested.denied_tools
     assert errors["settings.json:deny[0]"] == "not a string (int); gesture skipped"
     assert errors["settings.json:deny[1]"] == "empty gesture; skipped"
     assert errors["settings.json:deny[2]"] == "empty gesture; skipped"
@@ -421,7 +421,7 @@ def test_deny_beats_allow_for_same_tool(tmp_path: Path) -> None:
     # bash lands in denied_tools (unconditional) and the allow is dropped, not applied as a mode.
     _write_permissions(tmp_path, {"deny": ["Bash"], "allow": ["Bash(*)"]})
     ingested, errors = load_settings_permissions(tmp_path)
-    assert "bash" in ingested.denied_tools
+    assert "Bash" in ingested.denied_tools
     assert "bash" not in ingested.tool_mode_overrides
     assert any("deny wins" in v.lower() for v in errors.values())
 
@@ -461,7 +461,7 @@ class _BashSpecStub:
 class _WebFetchSpecStub:
     """A READ_ONLY tool stub — the tier a deny MODE override silently fails to bind."""
 
-    name = "web_fetch"
+    name = "WebFetch"
 
     @property
     def required_permission(self):  # noqa: ANN202 - tiny stub

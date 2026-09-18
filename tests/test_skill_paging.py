@@ -330,7 +330,7 @@ def _loop(
 
 
 def _use(call_id: str = "t1", name: str = "demo") -> LLMResult:
-    return LLMResult(tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": name})])
+    return LLMResult(tool_calls=[ToolCall(id=call_id, name="Skill", arguments={"name": name})])
 
 
 def _plan(tasks: list[dict[str, Any]], call_id: str = "p1") -> LLMResult:

@@ -351,7 +351,7 @@ def test_restart_exports_the_boundary_beside_the_continuation(
     process words the restart honestly; a carry with no boundary recorded is a Stop-hook
     carry (ADR-0099), and a stale boundary is cleared with the continuation."""
     agent, _store = _agent(tmp_path)
-    agent.loop.restart_continuation = 'Call use_skill(name="worker-loop") now.'
+    agent.loop.restart_continuation = 'Call Skill(skill="worker-loop") now.'
     agent.loop.restart_boundary = "skill"
     monkeypatch.setenv("ZAKCODE_RESTART_CONTINUATION", "stale from an earlier restart")
     monkeypatch.setenv("ZAKCODE_RESTART_BOUNDARY", "stale")
@@ -359,7 +359,7 @@ def test_restart_exports_the_boundary_beside_the_continuation(
     monkeypatch.setattr(cli.os, "execv", lambda path, argv: None)
     monkeypatch.setattr(cli.sys, "argv", ["zakcode", "cli", "-s", "stale-id"])
     cli._restart_into_new_build(_console(), agent)
-    assert os.environ["ZAKCODE_RESTART_CONTINUATION"].startswith("Call use_skill(")
+    assert os.environ["ZAKCODE_RESTART_CONTINUATION"].startswith("Call Skill(")
     assert os.environ["ZAKCODE_RESTART_BOUNDARY"] == "skill"
     agent.loop.restart_boundary = None
     cli._restart_into_new_build(_console(), agent)
@@ -374,7 +374,7 @@ def test_restart_kick_words_a_skill_boundary_restart(tmp_path: Path) -> None:
     """The preface says a skill call did not run — not that a Stop hook asked to continue
     — and ends on the call itself; the Stop-hook wording is unchanged for its boundary."""
     complete = _unattended_agent(tmp_path, statuses=("done", "done"))
-    carried = 'Call use_skill(name="worker-loop") now.'
+    carried = 'Call Skill(skill="worker-loop") now.'
     line = cli._restart_kick(complete, restarted="new-build", carried=carried, boundary="skill")
     assert line is not None
     assert line.startswith("[harness] this session was restarted into build new-build")
@@ -497,7 +497,7 @@ def test_the_loop_sentinel_resolves_to_the_last_hook_named_skill(tmp_path: Path)
         "<command-message>aspirations is running — [harness] the wake-up armed as the "
         "autonomous-loop sentinel fired"
     )
-    assert "Re-arm a wake-up with schedule_wakeup first" in head
+    assert "Re-arm a wake-up with ScheduleWakeup first" in head
     assert compactions == []  # a healthy session's context is kept
 
 

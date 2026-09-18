@@ -134,7 +134,7 @@ def _write_skill(workspace: Path, name: str, body: str) -> None:
 
 def _use(name: str, call_id: str) -> LLMResult:
     return LLMResult(
-        tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": name})],
+        tool_calls=[ToolCall(id=call_id, name="Skill", arguments={"name": name})],
         usage=Usage(total_tokens=1),
     )
 

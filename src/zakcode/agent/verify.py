@@ -31,9 +31,10 @@ from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
 
 #: Tools whose successful result means code changed this turn (arms the gate).
-_WRITE_TOOLS = {"write_file", "edit_file"}
+#: Both spellings: a session resumed from before ADR-0190 carries ``write_file`` blocks.
+_WRITE_TOOLS = {"Write", "Edit", "write_file", "edit_file"}
 #: Tools that can execute the verify command.
-_RUN_TOOLS = {"bash", "powershell"}
+_RUN_TOOLS = {"Bash", "powershell", "bash"}
 #: Makefile targets a project uses to declare its own checks, in the order they should run.
 _CHECK_TARGETS = ("lint", "check", "test")
 _MAKE_RULE_RE = re.compile(r"^([A-Za-z_][\w.-]*)\s*:(?!=)")

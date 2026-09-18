@@ -70,7 +70,7 @@ async def test_use_skill_returns_body_as_result(tmp_path: Path) -> None:
     assert res.is_error is False
     assert res.output == "DO THE THING"  # the body IS the tool result
     assert res.data == {"skill": "alpha"}
-    assert res.hint and "use_skill" in res.hint  # nudges the chain
+    assert res.hint and "Skill" in res.hint  # nudges the chain
 
 
 async def test_long_skill_body_gets_the_decompose_hint(tmp_path: Path) -> None:
@@ -84,7 +84,7 @@ async def test_long_skill_body_gets_the_decompose_hint(tmp_path: Path) -> None:
     assert res.data == {"skill": "alpha", "decompose": True}
     assert res.hint is not None
     assert "decompose" in res.hint and "update_plan" in res.hint
-    assert "use_skill" in res.hint  # the chaining nudge survives
+    assert "Skill" in res.hint  # the chaining nudge survives
 
 
 async def test_short_skill_body_keeps_the_plain_hint(tmp_path: Path) -> None:
@@ -120,7 +120,7 @@ async def test_use_skill_requires_a_name(tmp_path: Path) -> None:
     resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body="x")})
     for args in ({}, {"name": ""}, {"name": "   "}, {"name": 5}):
         res = await UseSkillTool().execute(args, _ctx(tmp_path, resolver))  # type: ignore[arg-type]
-        assert res.is_error is True and "'name' is required" in res.output
+        assert res.is_error is True and "'skill' is required" in res.output
     assert resolver.loaded == []  # never reached the resolver
 
 
@@ -164,17 +164,17 @@ def _write_skill(workspace: Path, name: str, body: str = "Do the thing.") -> Non
 
 def test_use_skill_registered_only_when_skills_enabled(tmp_path: Path) -> None:
     on = _agent(tmp_path, enable_skills=True)
-    assert "use_skill" in on.registry.names()
+    assert "Skill" in on.registry.names()
     # Off by default: the tool surface is unchanged when skills are disabled.
     off = _agent(tmp_path, enable_skills=False)
-    assert "use_skill" not in off.registry.names()
+    assert "Skill" not in off.registry.names()
 
 
 def test_catalog_tells_the_model_to_use_the_tool(tmp_path: Path) -> None:
     _write_skill(tmp_path, "greeter")
     agent = _agent(tmp_path, enable_skills=True)
     prompt = agent.loop.prompt_builder.build(agent.settings)
-    assert "use_skill" in prompt  # the model is told HOW to invoke, not just that skills exist
+    assert "Skill" in prompt  # the model is told HOW to invoke, not just that skills exist
 
 
 def _capture(into: list[LifecyclePayload]):
@@ -203,7 +203,7 @@ async def test_tool_load_fires_signal_with_source_tool(tmp_path: Path) -> None:
 async def test_full_execute_through_wired_agent(tmp_path: Path) -> None:
     _write_skill(tmp_path, "greeter", body="Greet warmly.")
     agent = _agent(tmp_path, enable_skills=True)
-    tool = agent.registry.get("use_skill")
+    tool = agent.registry.get("Skill")
     assert tool is not None
     ctx = _ctx(tmp_path, agent.loop._skill_resolver)
     before = len(agent.session.messages)
@@ -353,7 +353,7 @@ async def test_skills_chain_across_invocations_in_one_turn(tmp_path: Path) -> No
     resolver = _RecordingResolver()
     registry = ToolRegistry()
     registry.register(UseSkillTool())
-    chain = [("use_skill", {"name": "step-a"}), ("use_skill", {"name": "step-b"})]
+    chain = [("Skill", {"name": "step-a"}), ("Skill", {"name": "step-b"})]
     runner = SubAgentRunner(
         provider=_SequenceProvider(chain),
         registry=registry,
@@ -412,7 +412,7 @@ async def test_subagent_can_invoke_a_skill_through_the_wired_resolver(tmp_path: 
     registry = ToolRegistry()
     registry.register(UseSkillTool())
     runner = SubAgentRunner(
-        provider=_ToolThenTextProvider("use_skill", {"name": "greeter"}),
+        provider=_ToolThenTextProvider("Skill", {"name": "greeter"}),
         registry=registry,
         settings=Settings(
             default_model="scripted/test", context_window=8192, workspace_root=tmp_path
@@ -439,7 +439,7 @@ async def test_subagent_attributes_the_signal_to_the_child_prompt(tmp_path: Path
     registry = ToolRegistry()
     registry.register(UseSkillTool())
     runner = SubAgentRunner(
-        provider=_ToolThenTextProvider("use_skill", {"name": "greeter"}),
+        provider=_ToolThenTextProvider("Skill", {"name": "greeter"}),
         registry=registry,
         settings=Settings(
             default_model="scripted/test", context_window=8192, workspace_root=tmp_path
@@ -463,15 +463,15 @@ def test_agent_wires_skill_resolver_into_subagents(tmp_path: Path) -> None:
     assert runner._skill_resolver is not None
     # The general-purpose delegate (full toolset) gets use_skill; the read-only planner does not.
     defs = agent.loop.spawner._defs
-    assert "use_skill" in runner.child_registry(defs["general-purpose"]).names()
-    assert "use_skill" not in runner.child_registry(defs["plan"]).names()
+    assert "Skill" in runner.child_registry(defs["general-purpose"]).names()
+    assert "Skill" not in runner.child_registry(defs["plan"]).names()
 
 
 def test_subagents_have_no_skill_seam_when_skills_off(tmp_path: Path) -> None:
     agent = _agent(tmp_path, enable_skills=False, enable_subagents=True)
     runner = agent.loop.spawner._runner
     assert runner._skill_resolver is None  # nothing to resolve …
-    assert "use_skill" not in runner.registry.names()  # … and the tool isn't on the child surface
+    assert "Skill" not in runner.registry.names()  # … and the tool isn't on the child surface
 
 
 # ── per-turn skill-invocation budget ─────────────────────────────────────────────
@@ -541,7 +541,7 @@ async def test_use_skill_tool_surfaces_a_budget_denial(tmp_path: Path) -> None:
         ),
         enable_skills=True,
     )
-    tool = agent.registry.get("use_skill")
+    tool = agent.registry.get("Skill")
     assert tool is not None
     ctx = ToolContext(workspace_root=tmp_path, skill_resolver=agent.loop._skill_resolver)
     ok = await tool.execute({"name": "greeter"}, ctx)
@@ -671,7 +671,7 @@ class _VetoOnce:
 
 def _use(name: str, call_id: str) -> LLMResult:
     return LLMResult(
-        tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": name})],
+        tool_calls=[ToolCall(id=call_id, name="Skill", arguments={"name": name})],
         usage=Usage(total_tokens=1),
     )
 

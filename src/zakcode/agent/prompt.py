@@ -148,7 +148,7 @@ _TOOL_GUIDANCE = (
     "same sentence.\n"
     "- A refused write or edit is about the content you sent, never about the environment: "
     "the refusal names the line and the file is unchanged. Fix the content and retry (a "
-    "smaller edit_file when a whole-file write keeps failing). Never hand the user an edit "
+    "smaller Edit when a whole-file write keeps failing). Never hand the user an edit "
     "you have the tools to make."
 )
 

@@ -1707,7 +1707,7 @@ def _render_skills(console: Console, agent: Agent) -> None:
         _dim(console, f"run a skill with /<name> [args] {g['dash']} it executes as this turn.")
         invoked = getattr(agent, "skill_invocations_this_session", 0)
         if invoked:
-            _dim(console, f"the model has invoked skills {invoked}x this session (use_skill).")
+            _dim(console, f"the model has invoked skills {invoked}x this session (Skill).")
     for name, err in getattr(agent, "skill_errors", {}).items():
         line = Text.assemble(("  ", ""), (name, "err"))
         line.append(f" ({err})", style="notice.dim")

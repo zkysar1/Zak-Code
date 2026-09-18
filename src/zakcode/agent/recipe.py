@@ -34,8 +34,9 @@ import sys
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
 
-_WRITE_TOOLS = {"write_file", "edit_file"}
-_RUN_TOOLS = {"bash", "powershell"}
+#: Both spellings: a session resumed from before ADR-0190 carries ``write_file`` blocks.
+_WRITE_TOOLS = {"Write", "Edit", "write_file", "edit_file"}
+_RUN_TOOLS = {"Bash", "powershell", "bash"}
 
 # Programs that actually EXECUTE a script (vs. merely naming it). Used to require a real
 # run before the gate is satisfied, so ``echo``/``cat``/``ls``/``rm <file>`` no longer

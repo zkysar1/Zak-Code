@@ -370,7 +370,7 @@ async def test_request_carries_tier_and_reason() -> None:
     policy = PermissionPolicy(PermissionMode.ASK, prompter=prompter)
     await policy.authorize(BASH, {"command": "ls"})
     req = prompter.requests[0]
-    assert req.tool_name == "bash"
+    assert req.tool_name == "Bash"  # canonical (ADR-0190), whatever spelling the spec carried
     assert req.tier is PermissionTier.DANGER_FULL_ACCESS
     assert req.reason
 

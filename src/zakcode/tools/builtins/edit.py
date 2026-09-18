@@ -38,12 +38,12 @@ class EditFileTool(Tool):
     """Replace an exact ``old_string`` with ``new_string`` in a workspace file."""
 
     spec = ToolSpec(
-        name="edit_file",
+        name="Edit",
         description=(
             "Replace an exact string in a text file within the workspace. By default "
             "the 'old_string' must match exactly once; pass 'replace_all=true' to "
             "replace every occurrence. The edit is atomic (temp file + os.replace). "
-            "To create a new file, use write_file instead."
+            "To create a new file, use Write instead."
         ),
         parameters={
             "type": "object",

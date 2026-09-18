@@ -85,7 +85,7 @@ class EchoTool(Tool):
 
 
 class UseSkillStub(Tool):
-    spec = ToolSpec(name="use_skill", description="Load a skill by name.")
+    spec = ToolSpec(name="Skill", description="Load a skill by name.")
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult.ok(output=f"[skill body of {args.get('name')}]")
@@ -180,8 +180,8 @@ def _delivered(loop: AgentLoop) -> list[Message]:
     [
         (REDUCER_REASON, ("aspirations", "loop")),
         (WORKER_REASON, ("worker-loop", "")),
-        ('Call use_skill(name="aspirations", args="loop") now.', ("aspirations", "loop")),
-        ("Run use_skill(name='worker-loop') as your first action.", ("worker-loop", "")),
+        ('Call Skill(skill="aspirations", args="loop") now.', ("aspirations", "loop")),
+        ("Run Skill(skill='worker-loop') as your first action.", ("worker-loop", "")),
         (
             "Skill(aspirations-spark) first, then Skill(aspirations) with args='loop'.",
             ("aspirations", "loop"),
@@ -417,7 +417,7 @@ async def test_a_model_skill_call_starts_the_fence_over(tmp_path: Path) -> None:
             texts[1],  # veto 2 (count 2)
             LLMResult(
                 tool_calls=[
-                    ToolCall(id="s1", name="use_skill", arguments={"name": "aspirations-execute"})
+                    ToolCall(id="s1", name="Skill", arguments={"name": "aspirations-execute"})
                 ]
             ),
             texts[2],  # veto 3 → the skill ran: count 1

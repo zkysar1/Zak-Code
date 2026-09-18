@@ -139,6 +139,7 @@ from zakcode.events import (
     AgentUsage,
 )
 from zakcode.hooks import (
+    CLAUDE_CODE_ARG_KEYS,
     HookEvent,
     HookManager,
     HookPayload,
@@ -195,6 +196,7 @@ from zakcode.tasks import (
     skill_skeleton,
     step_skill,
 )
+from zakcode.tool_names import canonical_tool_name
 from zakcode.tools.base import (
     ConcurrencyClass,
     Sampler,
@@ -840,7 +842,11 @@ _MISSING_CLAIM_RE = re.compile(
     r"|\bno\s+such\s+(?:file|directory|script|path)\b",
     re.IGNORECASE,
 )
-_SEARCH_TOOLS = frozenset({"grep", "glob"})
+#: Role sets carry BOTH spellings (ADR-0190): the loop canonicalizes a live call through the
+#: registry, but a transcript resumed from before the rename — and any registry that names a
+#: tool the old way — still says ``grep`` / ``bash`` / ``read_file``, and a rail that reads
+#: history must see those too.
+_SEARCH_TOOLS = frozenset({"Grep", "Glob", "grep", "glob"})
 _MISSING_NUDGE = (
     "You concluded that something could not be found, but no content search ran this turn. "
     "A not-found answer is about the ONE path you tried, not the workspace. Run "
@@ -850,7 +856,7 @@ _MISSING_NUDGE = (
 )
 
 #: Shell tools whose ``command`` argument this module inspects for evidence (ADR-0138).
-_SHELL_TOOLS = frozenset({"bash", "powershell"})
+_SHELL_TOOLS = frozenset({"Bash", "powershell", "bash"})
 
 #: Silenced-evidence gate (ADR-0144). A zero is only a measurement when the instrument that
 #: produced it could have reported non-zero. Two ways a turn loses that guarantee, both
@@ -1122,7 +1128,13 @@ _APOLOGY_NUDGE = (
 #: directly reported by the tree stats command" in a one-iteration, no-tool-call turn (the
 #: number appears in no tool output of the session; the real count was 1,510). Each fires at
 #: most once per turn and only on a completion that makes no tool call.
-_LOOKUP_TOOLS = frozenset({"read_file", "list_dir", "glob", "grep", "use_skill"})
+_LOOKUP_TOOLS = frozenset(
+    {"Read", "LS", "Glob", "Grep", "Skill", "read_file", "list_dir", "glob", "grep", "use_skill"}
+)
+_SKILL_TOOLS = frozenset({"Skill", "use_skill"})
+_READ_TOOLS = frozenset({"Read", "read_file"})
+_WRITE_TOOLS = frozenset({"Write", "write_file"})
+_EDIT_TOOLS = frozenset({"Edit", "edit_file"})
 _IDENTITY_CLAIM_RE = re.compile(
     r"(?<![\w/.-])((?:[\w.-]*[-_.][\w.-]*)|(?:[\w./-]*/[\w./-]*))"
     r"\s+(?:is|was|isn['’]t|is\s+not|was\s+not)\s+(?:actually\s+|just\s+|only\s+)?(?:a|an)\s+"
@@ -1292,11 +1304,12 @@ def _composed_skill_body(text: str) -> str:
 
 
 #: A turn-end hook's continuation that names the skill the loop must re-enter with, in
-#: either harness's vocabulary (ADR-0187): Claude Code's ``Skill('aspirations') with
-#: args='loop'`` / ``Skill(worker-loop)``, Zak Code's ``use_skill(name='aspirations',
-#: args='loop')``. The name may be bare or quoted; the args ride ``with args=`` or the keyword.
+#: any spelling (ADR-0187, ADR-0190): ``Skill('aspirations') with args='loop'`` /
+#: ``Skill(worker-loop)`` / ``Skill(skill='aspirations', args='loop')``, and the pre-0190
+#: ``use_skill(name='aspirations', args='loop')``. The name may be bare or quoted; the args
+#: ride ``with args=`` or the keyword.
 _SKILL_REENTRY_RE = re.compile(
-    r"\b(?:Skill|use_skill)\(\s*(?:name\s*=\s*)?['\"]?(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)['\"]?"
+    r"\b(?:Skill|use_skill)\(\s*(?:(?:name|skill)\s*=\s*)?['\"]?(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)['\"]?"
     r"\s*(?:,\s*args\s*=\s*['\"](?P<kw>[^'\"]*)['\"])?\s*\)"
     r"(?:\s+with\s+args\s*=\s*['\"](?P<with>[^'\"]*)['\"])?"
 )
@@ -3207,19 +3220,17 @@ class AgentLoop:
         if routed is None:
             return None
         name, args = routed
-        arguments: dict[str, Any] = {"name": name}
+        arguments: dict[str, Any] = {"skill": name}
         if args:
             arguments["args"] = args
         self._note(
             "intervention",
-            f"'/{name}' typed as text — routed to use_skill",
+            f"'/{name}' typed as text — routed to Skill",
             kind="slash_text_routed",
             skill=name,
             args=args,
         )
-        return ToolCall(
-            id=f"slash-{len(self.session.messages)}", name="use_skill", arguments=arguments
-        )
+        return ToolCall(id=f"slash-{len(self.session.messages)}", name="Skill", arguments=arguments)
 
     def _plan_mentions_skill(self, name: str) -> bool:
         """True when any plan step's title or note names ``/<skill>`` (any status).
@@ -3348,7 +3359,7 @@ class AgentLoop:
         by_id = {r.tool_use_id: r for r in results}
         out: list[tuple[str, list[Task]]] = []
         for call in calls:
-            if call.name != "use_skill":
+            if call.name not in _SKILL_TOOLS:
                 continue
             block = by_id.get(call.id)
             if block is None or block.is_error or "[already loaded]" in block.output[:300]:
@@ -4035,7 +4046,7 @@ class AgentLoop:
         """
         by_id = {r.tool_use_id: r for r in results}
         for call in calls:
-            if call.name != "use_skill":
+            if call.name not in _SKILL_TOOLS:
                 continue
             result = by_id.get(call.id)
             if result is not None and not result.is_error:
@@ -4218,9 +4229,30 @@ class AgentLoop:
             # The measured size of what was just sent floors the next pre-call
             # compaction check (ADR-0077).
             self._anchor_prompt(result.usage.prompt_tokens)
+            self._canonicalize_calls(result.tool_calls)
             return result
 
         return await self._complete_with_retry(complete)
+
+    def _canonicalize_calls(self, calls: list[ToolCall]) -> None:
+        """Rewrite each call's tool name — and Claude Code's argument spellings — to the
+        registry's canonical form IN PLACE, so everything downstream (the loop's own rails,
+        hooks, the permission policy, the transcript) sees ONE name whichever alias the model
+        used. Aliases route silently (ADR-0190); nothing after this point matches an alias.
+        An unknown name is left as it is, so it stays visibly unknown."""
+        for call in calls:
+            canonical = self.registry.canonical(call.name)
+            if canonical == call.name and self.registry.get(canonical) is None:
+                # Not an alias this registry knows: a registry built by hand without the
+                # aliases (a host's, a test's) still resolves the pre-0190 spelling.
+                canonical = canonical_tool_name(call.name)
+            if canonical != call.name:
+                call.name = canonical
+            renames = CLAUDE_CODE_ARG_KEYS.get(canonical)
+            if renames and isinstance(call.arguments, dict):
+                for cc_key, key in renames.items():
+                    if cc_key in call.arguments and key not in call.arguments:
+                        call.arguments[key] = call.arguments.pop(cc_key)
 
     async def _complete_with_retry(
         self, complete: Callable[[dict[str, Any]], Awaitable[LLMResult]]
@@ -4390,12 +4422,12 @@ class AgentLoop:
                 )
             else:
                 self._turn_awaiting = question or "the model is waiting for your answer"
-        if call.name == "read_file" and not block.is_error:
+        if call.name in _READ_TOOLS and not block.is_error:
             raw_path = call.arguments.get("path") or call.arguments.get("file_path") or ""
             if isinstance(raw_path, str) and raw_path:
                 # ADR-0144: the instrument was opened, so a claim drawn from it is informed.
                 self._turn_files_read.add(os.path.basename(raw_path.replace("\\", "/")).lower())
-        if call.name in _SEARCH_TOOLS or (call.name == "read_file" and not block.is_error):
+        if call.name in _SEARCH_TOOLS or (call.name in _READ_TOOLS and not block.is_error):
             # A search ran (ADR-0040), whatever it found — or a file was actually read
             # (ADR-0058); a failed read stays the one-path-tried miss the gate is for.
             self._turn_search_calls += 1
@@ -4524,9 +4556,9 @@ class AgentLoop:
                 if cut_off
                 else "a quote, backslash or newline inside a string value is not escaped"
             )
-            if call.name in ("write_file", "edit_file"):
+            if call.name in _WRITE_TOOLS or call.name in _EDIT_TOOLS:
                 remedy = (
-                    "Write the file in pieces: write_file the first part (keep each call "
+                    "Write the file in pieces: call Write with the first part (keep each call "
                     "well under the output limit), then edit_file to append the rest."
                 )
             else:
@@ -4592,6 +4624,7 @@ class AgentLoop:
             HookPayload(
                 event=HookEvent.PRE_TOOL_USE,
                 tool_name=call.name,
+                tool_aliases=self.registry.aliases_of(call.name),
                 arguments=arguments,
                 cwd=cwd,
                 session_id=self.session.id,  # Claude-Code hooks key off it (agent/env injection)
@@ -4691,6 +4724,7 @@ class AgentLoop:
             HookPayload(
                 event=HookEvent.POST_TOOL_USE,
                 tool_name=call.name,
+                tool_aliases=self.registry.aliases_of(call.name),
                 arguments=arguments,
                 cwd=cwd,
                 session_id=self.session.id,  # Claude-Code hooks key off it
@@ -4741,10 +4775,10 @@ class AgentLoop:
         # See _WRITE_AFTER_FAILED_READ_NOTE for why this is a note on success, not a veto.
         if spec is not None and isinstance(arguments.get("path"), str):
             key = self._anomaly_path_key(arguments["path"])
-            if spec.name == "read_file" and tool_res.is_error:
+            if spec.name in _READ_TOOLS and tool_res.is_error:
                 self._turn_read_failed.add(key)
             elif (
-                spec.name == "write_file"
+                spec.name in _WRITE_TOOLS
                 and not tool_res.is_error
                 and key in self._turn_read_failed
             ):
@@ -4791,11 +4825,11 @@ class AgentLoop:
     @staticmethod
     def _verbatim_label(spec: ToolSpec | None, arguments: dict[str, Any]) -> str:
         """What a verbatim body IS, for the skill-fit message: ``skill 'x'`` / ``rule 'y'``."""
-        name = arguments.get("name")
+        name = arguments.get("skill") or arguments.get("name")
         if spec is not None and isinstance(name, str) and name.strip():
             kind = (
                 "skill"
-                if spec.name == "use_skill"
+                if spec.name in _SKILL_TOOLS
                 else "rule"
                 if spec.name == "read_rule"
                 else spec.name
@@ -4890,16 +4924,18 @@ class AgentLoop:
         caller nudges the model. With no permission policy the gate is unsuppressed, so the
         first registered shell (``bash``) wins.
         """
-        for name in ("bash", "powershell"):
+        seen: set[str] = set()
+        for name in ("Bash", "bash", "powershell"):  # "bash": a registry from before ADR-0190
             tool = self.registry.get(name)
-            if tool is None:
+            if tool is None or tool.spec.name in seen:
                 continue
-            run = command if name == "bash" else f"& {command}"
+            seen.add(tool.spec.name)
+            run = command if name != "powershell" else f"& {command}"
             arguments = {"command": run}
             if self.permission_policy is None or self.permission_policy.auto_allows(
                 tool.spec, arguments
             ):
-                return ToolCall(id=call_id, name=name, arguments=arguments)
+                return ToolCall(id=call_id, name=tool.spec.name, arguments=arguments)
         return None
 
     async def _try_harness_verify(
@@ -5256,19 +5292,22 @@ class AgentLoop:
         new build. Any other batch returns None and executes as usual: work in flight is
         never abandoned for a restart.
         """
-        skill_calls = [c for c in tool_calls if c.name == "use_skill"]
+        skill_calls = [c for c in tool_calls if c.name in _SKILL_TOOLS]
         if len(skill_calls) != 1 or any(
-            c.name != "use_skill" and c.name not in _SKILL_BOUNDARY_COMPANIONS for c in tool_calls
+            c.name not in _SKILL_TOOLS and c.name not in _SKILL_BOUNDARY_COMPANIONS
+            for c in tool_calls
         ):
             return None
         if install_changed() is None:
             return None
         call = skill_calls[0]
-        name = str(call.arguments.get("name") or "").strip().lstrip("/")
+        name = (
+            str(call.arguments.get("skill") or call.arguments.get("name") or "").strip().lstrip("/")
+        )
         if not name:
             return None  # an invalid call: the tool refuses it as usual
         skill_args = str(call.arguments.get("args") or "").strip()
-        shown = f'use_skill(name="{name}"' + (f', args="{skill_args}")' if skill_args else ")")
+        shown = f'Skill(skill="{name}"' + (f', args="{skill_args}")' if skill_args else ")")
         blocks: list[ToolResultBlock] = []
         for c in tool_calls:
             if c is not call:
@@ -8156,7 +8195,7 @@ class AgentLoop:
                     tool_calls = [routed_call]
                     yield AgentStatus(
                         message=(
-                            f"'/{routed_call.arguments['name']}' typed as text — "
+                            f"'/{routed_call.arguments['skill']}' typed as text — "
                             "running it as a skill"
                         )
                     )

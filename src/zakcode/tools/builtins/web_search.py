@@ -65,10 +65,10 @@ class WebSearchTool(Tool):
     """
 
     spec = ToolSpec(
-        name="web_search",
+        name="WebSearch",
         description=(
             "Search the web and get back a ranked list of results (title, URL, snippet). "
-            "Use it to find pages, docs, or current information; follow up with web_fetch to "
+            "Use it to find pages, docs, or current information; follow up with WebFetch to "
             "read a result. Returns up to 10 results. PRIVACY (hard rules): the query is sent "
             "to a third-party search engine — use only generic, public-vocabulary terms. "
             "Never include secrets or tokens, private or proprietary code, file contents, "

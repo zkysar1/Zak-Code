@@ -100,7 +100,7 @@ def test_a_slash_line_typed_as_text_runs_the_skill(tmp_path: Path) -> None:
     # The transcript pairs the synthesized use_skill call with its result, so the provider
     # sees a well-formed exchange, and the skill's sections became the plan.
     uses = [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolUseBlock)]
-    assert uses and uses[0].name == "use_skill" and uses[0].input == {"name": "boot"}
+    assert uses and uses[0].name == "Skill" and uses[0].input == {"skill": "boot"}
     (res,) = _use_skill_results(loop)
     # Two short sections pack into one page (ADR-0088): the whole body arrives at once.
     assert res.tool_use_id == uses[0].id and "Print status." in res.output
@@ -115,7 +115,7 @@ def test_args_after_the_slash_travel_with_it(tmp_path: Path) -> None:
     loop = _loop(_Scripted(script), tmp_path)
     asyncio.run(loop.arun_turn("go"))
     uses = [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolUseBlock)]
-    assert uses and uses[0].input == {"name": "boot", "args": "--recover --force"}
+    assert uses and uses[0].input == {"skill": "boot", "args": "--recover --force"}
 
 
 def test_prose_that_mentions_a_skill_is_an_answer(tmp_path: Path) -> None:

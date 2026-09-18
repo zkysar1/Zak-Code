@@ -77,18 +77,18 @@ class UseSkillTool(Tool):
     """Load a discovered skill's instructions by name and return them for the model to follow."""
 
     spec = ToolSpec(
-        name="use_skill",
+        name="Skill",
         description=(
             "Load a skill's full step-by-step instructions by name and follow them. Call this "
             "when one of the skills listed in your context fits the task. The skill's body is "
             "returned as this tool's result — act on it. For a LONG skill, first decompose its "
             "steps into your plan with update_plan, then execute the plan. Skills can chain: if "
-            "a skill's steps tell you to use another skill, call use_skill again with that name."
+            "a skill's steps tell you to use another skill, call Skill again with that name."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "name": {
+                "skill": {
                     "type": "string",
                     "description": "The skill name to load, exactly as it appears in the catalog.",
                 },
@@ -100,7 +100,7 @@ class UseSkillTool(Tool):
                     ),
                 },
             },
-            "required": ["name"],
+            "required": ["skill"],
         },
         required_permission=PermissionTier.READ_ONLY,
         # Loading instructions changes the turn's control flow; it is not a fan-out-friendly
@@ -112,15 +112,15 @@ class UseSkillTool(Tool):
         resolver = ctx.skill_resolver
         if resolver is None:
             return ToolResult.error(
-                "skills are not enabled in this session, so use_skill is unavailable."
+                "skills are not enabled in this session, so Skill is unavailable."
             )
-        name = args.get("name")
+        name = args.get("skill")
         if name is None:
-            # Claude Code's ``Skill`` tool calls this parameter ``skill``; the registry routes
-            # a ``Skill(...)`` call here by alias (ADR-0187), so route its argument too.
-            name = args.get("skill")
+            # The pre-ADR-0190 spelling (``use_skill(name=...)``): an older prompt or skill body
+            # may still send it, so it is accepted — never advertised.
+            name = args.get("name")
         if not isinstance(name, str) or not name.strip():
-            return ToolResult.error("'name' is required and must be a non-empty string.")
+            return ToolResult.error("'skill' is required and must be a non-empty string.")
         name = name.strip()
         skill_args = args.get("args", "")
         if not isinstance(skill_args, str):
@@ -175,7 +175,7 @@ class UseSkillTool(Tool):
                     "at a time. Carry out section 1 now; when it is done, mark its step done "
                     "with update_plan (send the whole plan) and section 2 arrives in the next "
                     "message. Split any step that is several actions. If a step says to use "
-                    "another skill, call use_skill with that name."
+                    "another skill, call Skill with that name."
                 ),
                 verbatim=True,
             )
@@ -192,7 +192,7 @@ class UseSkillTool(Tool):
                     f"Its {sections} numbered sections are now steps in your plan. Work "
                     "through them in order, marking each done with update_plan (send the "
                     "whole plan) as you finish it; split any step that is several actions. "
-                    "If a step says to use another skill, call use_skill with that name."
+                    "If a step says to use another skill, call Skill with that name."
                 ),
                 verbatim=True,
             )
@@ -210,7 +210,7 @@ class UseSkillTool(Tool):
                     "them into the concrete steps THIS request needs, so the plan holds "
                     "the steps instead of your memory. Then execute them in order, "
                     "marking each done as you finish. If a step says to use another "
-                    "skill, call use_skill with that name."
+                    "skill, call Skill with that name."
                 ),
                 verbatim=True,
             )
@@ -219,7 +219,7 @@ class UseSkillTool(Tool):
             data={"skill": load.name},
             hint=(
                 "Follow these skill instructions now. If a step says to use another skill, "
-                "call use_skill with that name."
+                "call Skill with that name."
             ),
             verbatim=True,
         )

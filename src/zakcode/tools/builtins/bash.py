@@ -857,7 +857,7 @@ class BashTool(Tool):
     """Execute an arbitrary shell command with the workspace as the cwd."""
 
     spec = ToolSpec(
-        name="bash",
+        name="Bash",
         description=(
             "Run a shell command with the workspace as the working directory. "
             "stdout and stderr are combined. Default 60s timeout (max 600). Returns a "

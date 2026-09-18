@@ -106,6 +106,18 @@ _COMMAND_LIMIT = 160
 #: Map a tool name to the bold display name on the call line; unknown tools
 #: title-case their parts (``some_tool`` -> ``SomeTool``).
 _DISPLAY_NAME = {
+    # Canonical names since ADR-0190 (Claude Code's); the snake_case rows below are the
+    # pre-0190 aliases, kept so a stored transcript from an older session renders the same.
+    "Read": "Read",
+    "Write": "Write",
+    "Edit": "Edit",
+    "LS": "List",
+    "Glob": "Glob",
+    "Grep": "Search",
+    "Bash": "Run",
+    "WebFetch": "Fetch",
+    "WebSearch": "WebSearch",
+    "ScheduleWakeup": "WakeUp",
     "read_file": "Read",
     "write_file": "Write",
     "edit_file": "Edit",

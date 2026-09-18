@@ -226,8 +226,10 @@ def test_facade_wires_allow_filter(tmp_path) -> None:
 
     agent = zakcode.Agent(workspace_root=tmp_path, tool_exposure_allow=["read_file", "grep"])
     exposed = {d["function"]["name"] for d in agent.registry.definitions()}
-    assert exposed <= {"read_file", "grep"}
-    assert "bash" not in exposed
+    # The allow list is written in the pre-0190 spelling; the definitions carry the canonical
+    # names, and a pattern covers a tool through any of its spellings (ADR-0190).
+    assert exposed <= {"Read", "Grep"}
+    assert "Bash" not in exposed
     assert agent.registry.exposure_allows("write_file") is False
 
 

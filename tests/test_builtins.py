@@ -233,12 +233,12 @@ async def test_write_path_escape_is_error(ctx: ToolContext) -> None:
 def test_default_registry_has_all_tools_and_aliases() -> None:
     reg = default_registry()
     assert set(reg.names()) == {
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "glob",
-        "grep",
+        "Read",
+        "Write",
+        "Edit",
+        "LS",
+        "Glob",
+        "Grep",
         "read_docx",
         "read_xlsx",
         "create_docx",
@@ -248,15 +248,15 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "inspect_image",
         "save_image",
         "create_chart_image",
-        "bash",
+        "Bash",
         "powershell",
-        "web_search",
-        "web_fetch",
+        "WebSearch",
+        "WebFetch",
         "secret_names",
         "update_plan",
         "plan_recall",
         "await_user",
-        "schedule_wakeup",
+        "ScheduleWakeup",
         "deep_think",
     }
     # Aliases resolve to the canonical tools (M1 added "edit" -> edit_file).
@@ -302,9 +302,9 @@ def test_register_rejects_colliding_alias() -> None:
 
     # An alias that shadows another tool's canonical name is rejected.
     reg = ToolRegistry()
-    reg.register(ReadFileTool())  # canonical "read_file"
+    reg.register(ReadFileTool())  # canonical "Read"
     with pytest.raises(ValueError, match="collides with a registered tool name"):
-        reg.register(WriteFileTool(), aliases=["read_file"])
+        reg.register(WriteFileTool(), aliases=["Read"])
 
     # An alias already mapped to a different tool is rejected.
     reg2 = ToolRegistry()
@@ -719,9 +719,9 @@ async def test_bash_refuses_a_tool_written_as_a_shell_call_and_names_the_tool(tm
     assert res.is_error
     assert res.data is not None and res.data.get("tool_typed_as_command") is True
     assert "[exit code" not in res.output  # nothing ran
-    assert "schedule_wakeup" in res.output
+    assert "ScheduleWakeup" in res.output
     assert "prompt" in res.output and "delaySeconds" in res.output
-    assert res.fix is not None and "schedule_wakeup" in res.fix
+    assert res.fix is not None and "ScheduleWakeup" in res.fix
 
 
 async def test_bash_still_runs_ordinary_commands_and_shell_functions(tmp_path) -> None:

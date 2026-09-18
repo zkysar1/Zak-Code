@@ -25,7 +25,7 @@ class ListDirTool(Tool):
     """List the entries of a directory inside the workspace."""
 
     spec = ToolSpec(
-        name="list_dir",
+        name="LS",
         description=(
             "List the entries of a directory within the workspace. Directories are "
             "suffixed with '/'. Defaults to the workspace root. Ignored entries (.git, "

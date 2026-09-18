@@ -331,7 +331,7 @@ async def test_use_skill_tool_passes_arguments_to_the_body(tmp_path: Path) -> No
     # use_skill(name, args='loop') carries the sub-command through to the body it returns.
     _write_claude_skill(tmp_path, "looper", "Loop body.")
     agent = _scripted_agent(tmp_path)
-    tool = agent.registry.get("use_skill")
+    tool = agent.registry.get("Skill")
     assert tool is not None
     ctx = ToolContext(workspace_root=tmp_path, skill_resolver=agent.loop._skill_resolver)
     res = await tool.execute({"name": "looper", "args": "loop"}, ctx)
@@ -399,7 +399,7 @@ async def test_user_invocable_false_blocks_human_path_not_model_chaining(tmp_pat
     assert refused.denied_reason is not None and "user-invocable" in refused.denied_reason
     assert len(agent.session.messages) == before
     # The model may still reach it via use_skill (internal chaining is allowed).
-    tool = agent.registry.get("use_skill")
+    tool = agent.registry.get("Skill")
     assert tool is not None
     ctx = ToolContext(workspace_root=tmp_path, skill_resolver=agent.loop._skill_resolver)
     res = await tool.execute({"name": "boot"}, ctx)
