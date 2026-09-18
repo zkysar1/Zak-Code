@@ -1497,6 +1497,43 @@ provider layer, not a vendor special case leaking into the loop.
   permission mode. Residual: outputs that differ only in a trailing verdict line (the
   HELD line appeared in ~45 of 135 outputs inside otherwise-different probes) are not
   caught; the identical-probe case that preceded the destruction is.
+- **Amended 2026-09-18 (the signal counts observations of the world, never the harness's
+  own deliveries).** Measured on a served Mind loop (gpt-5.6-luna, 316 calls; sample 2 in
+  `bench/results/served-luna-preregistration.log`). The framework's stop hook orders
+  `Skill('aspirations') with args='loop'`; the harness has already delivered that skill
+  (ADR-0187), so the loader answers the model's call with the same "[already loaded]"
+  pointer every time (ADR-0196). That pointer is a tool output of more than 24 characters,
+  identical by construction, so the 3rd, 4th and 5th pointer of one turn drew nudge,
+  narrow and step-back although distinct, successful work ran between them and the tracker
+  was reset at every veto (`reset()` clears the streak, not the outcome counts). The
+  step-back rail ("do not retry anything yet") landed on the completion right after a
+  veto, the model answered in text, and the turn ended `veto_stall`. One turn later the
+  graceful-stop BODY, asked for again after work six times because the framework's
+  stop-pending hook asks for it after every tool call, drew the whole ladder: read-only
+  narrowing and a STOP in the middle of the consolidation window. Both are reproduced
+  with no model: a probe against `StuckTracker`, and a replay of the turn's recorded calls
+  that matches the trace's notes one for one. A third case is proven from the tool's own
+  text and not yet seen in the field: a Mind re-arms its deadman wake-up before EVERY
+  re-entry by contract, the acknowledgement differs only in a clock time the signature
+  masks, so a healthy loop's fourth re-arm in one turn would read as a third identical
+  observation and its seventh would end the turn `stuck`.
+  The rule: a tool whose result is the harness's own delivery or acknowledgement measures
+  nothing, and `repeated-outcome` does not count it. The loop names them once
+  (`_UNOBSERVING_TOOLS` = the skill tool and the wake-up tool, under both spellings) and
+  hands the set to the tracker; every OTHER signal still sees those calls, so a skill call
+  that fails the same way three times still climbs. What bounds a model that only calls
+  `Skill` is unchanged: the doom guard (the same batch three times running), the
+  ADR-0187 fence (three vetoes with no skill body between them) and the per-turn skill
+  invocation budget (which meters body loads). NOT exempt: the plan tools. Their result echoes what the model sent,
+  and the same plan sent again and again is the churn this signal exists to catch.
+  Alongside, because nothing could say which signal had fired eight times in that turn:
+  every `stuck` trace note now carries `signals`, and `tool` and `repeats` when a repeated
+  outcome is among them (names and counts, never the output), and a `stuck` stop that the
+  turn-end hook refuses leaves a note where it left none.
+  Noted, not changed: `reset()` keeps the outcome counts across a veto, so a genuine
+  repeat that ended the turn `stuck` ends it again at the next identical observation if
+  the hook keeps the loop alive. That is the bound doing its job on a model that is
+  still repeating; no run has shown it to be wrong.
 
 ## ADR-0039: A run is bounded by wall-clock, and the reserve is carved out of the cap so it ends in a receipt
 
