@@ -43,6 +43,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 
 from zakcode.artifacts import ArtifactRef
+from zakcode.background import BackgroundTask
 from zakcode.config import zakcode_home
 from zakcode.messages import Message
 from zakcode.tasks import TaskNetwork
@@ -218,6 +219,14 @@ class Session(BaseModel):
     #: that resumes this session as much as for this one. Schema v1 stays append-only: an
     #: OLDER build drops it and the sentinel fires as prose (fails SAFE — ADR-0094's line).
     loop_skill: str = ""
+    #: The background commands this session started (ADR-0191): id, command, output and exit
+    #: files, pid, and whether the exit was reported. Status is never stored — it is derived
+    #: from the files and the pid when read — so a record cannot call a dead task alive.
+    #: Persisted so the process that resumes this session (the ADR-0034 restart) still
+    #: reports a task the previous one started. Schema v1 stays append-only: an OLDER build
+    #: drops the field and only forgets the table — the processes run on and their output
+    #: files remain (fails SAFE — nothing is killed, nothing is invented).
+    background_tasks: list[BackgroundTask] = Field(default_factory=list)
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""

@@ -257,6 +257,8 @@ def test_default_registry_has_all_tools_and_aliases() -> None:
         "plan_recall",
         "await_user",
         "ScheduleWakeup",
+        "TaskOutput",  # ADR-0191: background commands
+        "TaskStop",
         "deep_think",
     }
     # Aliases resolve to the canonical tools (M1 added "edit" -> edit_file).

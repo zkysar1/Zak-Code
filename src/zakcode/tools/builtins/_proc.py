@@ -57,6 +57,39 @@ def _project_venv_bin(cwd: str) -> str | None:
     return None
 
 
+def child_environment(
+    cwd: str,
+    *,
+    extra_env: dict[str, str] | None = None,
+    drop_env: Iterable[str] | None = None,
+) -> dict[str, str]:
+    """The environment a shell child gets — foreground (:func:`run_capturing`) or background
+    (ADR-0191, :mod:`zakcode.background`) alike, so the two never drift.
+
+    Inherit the parent env; suppress child-emitted ANSI color (the output is fed to the
+    model, and raw escape codes are token-noise); overlay ``extra_env`` (e.g. ``HTTP(S)_PROXY``
+    for the egress sandbox); then REMOVE ``drop_env`` names (the provider-key scrub — applied
+    last so an overlay can never resurrect a scrubbed credential). Prefer the project's
+    virtualenv interpreter for the child (see :func:`_project_venv_bin`): an agent that runs
+    ``python -m pytest`` / ``pip`` should hit the WORKSPACE's installed deps, not a bare
+    system python — the venv's bin dir goes FIRST on PATH, mirroring an activated venv.
+    Workspace env hook: when ``<workspace>/.zakcode/env`` exists, ``BASH_ENV`` makes every
+    non-interactive bash source it first, so a workspace can extend PATH (a mind world
+    putting its scripts on PATH so bare script names in its playbooks resolve) without
+    zakcode learning any domain layout; other shells ignore the variable.
+    """
+    child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(extra_env or {})}
+    for name in drop_env or ():
+        child_env.pop(name, None)
+    venv_bin = _project_venv_bin(cwd)
+    if venv_bin:
+        child_env["PATH"] = venv_bin + os.pathsep + child_env.get("PATH", "")
+    env_hook = Path(cwd) / ".zakcode" / "env"
+    if env_hook.is_file():
+        child_env["BASH_ENV"] = env_hook.as_posix()
+    return child_env
+
+
 async def run_capturing(
     *,
     argv: list[str] | None = None,
@@ -84,15 +117,7 @@ async def run_capturing(
     # Suppress child-emitted ANSI color: the combined stdout+stderr is fed straight to the
     # model, and raw escape codes are token-noise it can't use. Inherit the full parent env
     # (unchanged behavior) and add the standard no-color signals most CLIs honor. (#5)
-    child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(extra_env or {})}
-    for name in drop_env or ():
-        child_env.pop(name, None)
-    # Prefer the project's virtualenv interpreter for the child (see _project_venv_bin): an agent
-    # that runs `python -m pytest` / `pip` / ... should hit the WORKSPACE's installed deps, not a
-    # bare system python. Put the venv's bin dir FIRST on PATH, mirroring an activated venv.
-    venv_bin = _project_venv_bin(cwd)
-    if venv_bin:
-        child_env["PATH"] = venv_bin + os.pathsep + child_env.get("PATH", "")
+    child_env = child_environment(cwd, extra_env=extra_env, drop_env=drop_env)
     spawn_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "stdout": subprocess.PIPE,
@@ -115,9 +140,6 @@ async def run_capturing(
         # resolve) without zakcode learning any domain layout.
         bash = find_bash()
         if bash is not None:
-            env_hook = Path(cwd) / ".zakcode" / "env"
-            if env_hook.is_file():
-                child_env["BASH_ENV"] = env_hook.as_posix()
             proc = await asyncio.create_subprocess_exec(bash, "-c", shell_command, **spawn_kwargs)
         else:
             proc = await asyncio.create_subprocess_shell(shell_command, **spawn_kwargs)
