@@ -16,6 +16,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from zakcode.agent.loop import AgentLoop
 from zakcode.agent.subagent import SubAgentResult
 from zakcode.config import load_settings
@@ -139,6 +141,15 @@ def _loop(
     )
 
 
+async def _run(loop: AgentLoop, prompt: str, path: str) -> None:
+    """One turn on the buffered path or the streamed one — the served path streams."""
+    if path == "buffered":
+        await loop.arun_turn(prompt)
+        return
+    async for _ in loop.astream_turn(prompt):
+        pass
+
+
 def _tool_uses(loop: AgentLoop) -> list[ToolUseBlock]:
     return [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolUseBlock)]
 
@@ -147,15 +158,16 @@ def _tool_results(loop: AgentLoop) -> list[ToolResultBlock]:
     return [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolResultBlock)]
 
 
+@pytest.mark.parametrize("path", ["buffered", "streamed"])
 async def test_a_pre_0190_call_lands_in_the_transcript_under_the_canonical_name(
-    tmp_path: Path,
+    tmp_path: Path, path: str
 ) -> None:
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     registry = ToolRegistry()
     registry.register(ReadFileTool(), aliases=["read_file"])
     provider = ScriptedProvider([call_tool("read_file", {"path": "a.txt"}), reply("done")])
     loop = _loop(provider, tmp_path, registry)
-    await loop.arun_turn("read a.txt")
+    await _run(loop, "read a.txt", path)
     (use,) = _tool_uses(loop)
     assert use.name == "Read"
     (res,) = _tool_results(loop)
@@ -177,15 +189,18 @@ async def test_a_bare_registry_still_resolves_the_old_spelling(tmp_path: Path) -
     assert not res.is_error and "alpha" in res.output
 
 
-async def test_claude_codes_argument_key_is_accepted_on_read(tmp_path: Path) -> None:
+@pytest.mark.parametrize("path", ["buffered", "streamed"])
+async def test_claude_codes_argument_key_is_accepted_on_read(tmp_path: Path, path: str) -> None:
     # ``Read(file_path=...)`` is Claude Code's spelling; the schema says ``path``. Rewritten
-    # where the call enters — the tool never sees ``file_path``.
+    # where the call enters — the tool never sees ``file_path``. A streamed call enters
+    # somewhere else than a buffered one, and until 2026-09-18 nothing rewrote it there: the
+    # served path refused this call with "'path' is required".
     (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
     registry = ToolRegistry()
     registry.register(ReadFileTool())
     provider = ScriptedProvider([call_tool("Read", {"file_path": "a.txt"}), reply("done")])
     loop = _loop(provider, tmp_path, registry)
-    await loop.arun_turn("read a.txt")
+    await _run(loop, "read a.txt", path)
     (use,) = _tool_uses(loop)
     assert use.name == "Read" and use.input == {"path": "a.txt"}
     (res,) = _tool_results(loop)

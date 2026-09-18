@@ -10775,6 +10775,18 @@ Code canonical vs snake plus an "also callable as Read" description line; N=12; 
 the bench rules) runs when zakpod1 is back. Companion: ADR-0191 (background `Bash` with an exit
 notification) retires the last harness-capability branch in the framework.
 
+**Amended 2026-09-18 (the streamed path).** The rewrite "where the call enters" was made in
+`_call_provider`, which only a buffered completion passes. A streamed completion enters
+where the stream is finalized, and nothing rewrote it there — and the served path streams.
+Measured with the same three calls on both paths. Buffered: `read_file` recorded as `Read`,
+`Read(file_path=…)` renamed and read, `write_file(file_path=…)` written. Streamed: the alias
+recorded as it was written, and both `file_path` calls refused with "'path' is required and
+must be a string." No field case: two production sessions (282 tool results) and the
+served-loop sample (31) show no such refusal, because those models sent `path`, as the
+schema says. `_canonicalize_calls` now also runs where a stream is finalized. The two loop
+tests in `tests/test_claude_code_tool_names.py` run on both paths; with the streamed rewrite
+removed exactly their streamed cases fail, and the buffered ones pass.
+
 ## ADR-0191: `Bash(run_in_background=true)` — a background command with its exit reported at the session's idle door
 
 **Status:** Accepted (2026-09-18)
