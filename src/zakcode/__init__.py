@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
-from zakcode.agent.loop import _MIN_ANSWER_ROOM, AgentLoop, TurnResult, _composed_skill_name
+from zakcode.agent.loop import AgentLoop, TurnResult, _answer_room, _composed_skill_name
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
@@ -1272,7 +1272,7 @@ class Agent:
             system_tokens = self.provider.count_tokens([], system=self.loop._build_system())
         except Exception:  # noqa: BLE001 — a fit report is advisory; never block startup on it
             system_tokens = 0
-        reserve = self.provider.capabilities().max_output or _MIN_ANSWER_ROOM
+        reserve = _answer_room(self.provider.capabilities())
         from zakcode.tasks import skill_pages
 
         def count(text: str) -> int:
@@ -1290,6 +1290,15 @@ class Agent:
                 continue
             pages = skill_pages(body, skill=skill.name)
             if pages is None:
+                skills.append((skill.name, body))
+                continue
+            try:
+                # ADR-0192: a body that fits is delivered whole, so the whole body is what
+                # the model holds — the loop's own arithmetic, at the smallest window.
+                whole = count(body) + system_tokens + reserve <= min(windows)
+            except Exception:  # noqa: BLE001 — measured below by the same counter; skip here
+                whole = False
+            if whole:
                 skills.append((skill.name, body))
                 continue
             paged.add(skill.name)
@@ -1817,13 +1826,19 @@ class Agent:
         ]
         if args.strip():
             frame.append(f"<command-args>{defang_untrusted(args.strip())}</command-args>")
-        # A sectioned skill is paged through the plan (ADR-0067): the turn text carries the
-        # front matter and section 1; the loop seeds every section from the whole body and
-        # hands over the next one as update_plan marks the previous done — the same delivery
-        # the use_skill door gets, so both doors run a long skill one section at a time.
+        # A sectioned skill whose body cannot fit the window is paged through the plan
+        # (ADR-0067): the turn text carries the front matter and section 1; the loop seeds
+        # every section from the whole body and hands over the next one as update_plan marks
+        # the previous done. One that fits arrives whole (ADR-0192). The loop decides, so
+        # both doors deliver a skill the same way.
         from zakcode.tasks import skill_pages
 
-        pages = skill_pages(load.body, skill=load.name)
+        loop = getattr(self, "loop", None)
+        pages = (
+            loop._skill_pages_for_delivery(load.name, load.body)
+            if loop is not None
+            else skill_pages(load.body, skill=load.name)
+        )
         body_text = pages.first() if pages is not None else load.body
         return SkillInvocation(
             invoked=True,

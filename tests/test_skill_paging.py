@@ -72,6 +72,15 @@ def _small_page_budget(request: pytest.FixtureRequest, monkeypatch: pytest.Monke
         monkeypatch.setattr(tasks, "PAGE_BUDGET_CHARS", 100)
 
 
+@pytest.fixture(autouse=True)
+def _bodies_never_fit(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A body that fits the window is delivered whole and pages nothing (ADR-0192), and the
+    bodies here fit any window. The paging contract is what this file tests, so by default a
+    body never fits; ``whole_when_fits`` opts a test into the real decision."""
+    if request.node.get_closest_marker("whole_when_fits") is None:
+        monkeypatch.setattr(AgentLoop, "_skill_fits_whole", lambda self, name, body: False)
+
+
 # ── the pure splitter ─────────────────────────────────────────────────────────────
 
 

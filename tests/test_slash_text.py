@@ -98,14 +98,15 @@ def test_a_slash_line_typed_as_text_runs_the_skill(tmp_path: Path) -> None:
     (note,) = [e for e in loop._trace.events if e.data.get("kind") == "slash_text_routed"]
     assert note.data["skill"] == "boot"
     # The transcript pairs the synthesized use_skill call with its result, so the provider
-    # sees a well-formed exchange, and the skill's sections became the plan.
+    # sees a well-formed exchange; a body that fits arrives whole and seeds no plan (ADR-0192).
     uses = [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolUseBlock)]
     assert uses and uses[0].name == "Skill" and uses[0].input == {"skill": "boot"}
     (res,) = _use_skill_results(loop)
-    # Two short sections pack into one page (ADR-0088): the whole body arrives at once.
+    # Two short sections pack into one page (ADR-0088): the whole body arrives at once —
+    # and a whole body seeds no plan (ADR-0192): its steps are the model's to write.
     assert res.tool_use_id == uses[0].id and "Print status." in res.output
     assert "Prime." in res.output and "— page 1 of" not in res.output
-    assert [t.title for t in loop.session.task_network.tasks] == ["Step 1: Status", "Step 2: Prime"]
+    assert loop.session.task_network.tasks == []
 
 
 def test_args_after_the_slash_travel_with_it(tmp_path: Path) -> None:
