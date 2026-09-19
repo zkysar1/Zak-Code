@@ -94,6 +94,29 @@ def _boot(root: Path, agent: str = AGENT) -> Path:
     return session_dir
 
 
+def _remove(path: Path, *, patience: float = 2.0) -> None:
+    """Remove a signal file as a mind's script does, waiting out a Windows sharing violation.
+
+    POSIX removes a name another process still has open. Windows refuses: ``unlink`` raises
+    ``PermissionError`` (WinError 32) until the other handle closes. The sidecar raises the
+    stop on a worker thread and holds ``stop-requested`` open for the instant it signs it,
+    and these stand-in minds consume the ask within a millisecond of seeing it, which no
+    model-driven mind can do. Measured 2026-09-19 on windows-latest (run 35410055874, a
+    commit with no product code): the unlink raised inside the turn, the turn failed, the
+    run never ended, and the test read a bare ``TimeoutError``. The wait below is the
+    ordering a real mind gets for free; a handle that never closes still fails, loudly.
+    """
+    deadline = time.monotonic() + patience
+    while True:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
 def _sign_off(
     root: Path,
     agent: str = AGENT,
@@ -112,7 +135,7 @@ def _sign_off(
         if name == STOP_CHECKPOINT_FILENAME and not checkpoint:
             continue
         if content is None:
-            (session_dir / name).unlink(missing_ok=True)
+            _remove(session_dir / name)
         else:
             (session_dir / name).write_text(content, encoding="utf-8")
         if after_each is not None:
@@ -226,6 +249,42 @@ async def _until(condition: Callable[[], bool], timeout: float = 5.0) -> None:
 
 
 # ── the defect itself ────────────────────────────────────────────────────────────
+
+
+def test_the_stand_in_mind_waits_out_a_sharing_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Windows ordering, reproduced on any platform: the first two removals meet the
+    sidecar's open handle, the third lands. Without the wait the first one ends the turn."""
+    marker = tmp_path / STOP_REQUESTED_SIGNAL
+    marker.write_text("", encoding="utf-8")
+    real_unlink = Path.unlink
+    refusals: list[Path] = []
+
+    def held_open_twice(self: Path, missing_ok: bool = False) -> None:
+        if self == marker and len(refusals) < 2:
+            refusals.append(self)
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", held_open_twice)
+    _remove(marker)
+    assert len(refusals) == 2
+    assert not marker.exists()
+
+
+def test_a_handle_that_never_closes_still_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / STOP_REQUESTED_SIGNAL
+    marker.write_text("", encoding="utf-8")
+
+    def always_held(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError(13, "The process cannot access the file", str(self))
+
+    monkeypatch.setattr(Path, "unlink", always_held)
+    with pytest.raises(PermissionError):
+        _remove(marker, patience=0.05)
 
 
 def test_run_stop_keeps_beating_until_the_mind_signs_off(tmp_path: Path) -> None:
