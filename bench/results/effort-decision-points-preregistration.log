@@ -363,3 +363,85 @@ What it decides.
   REVERSED on either cell: withdrawn, and a third batch of that cell comes before any design.
   NOT MEASURED, or NOT READ: an instrument failure. The same batch is re-run once, and the failure is reported.
 My estimates: order REPLICATES 85%; refusal REPLICATES 95%; the wire gate holds 97%.
+
+=== 09:30 UTC 2026-09-19 RESULTS: the product's own route, batch 2 — the pre-registered replication ===
+
+Read under the rules of the 04:03 UTC 2026-09-19 pre-registration above, which fixed the reading before this
+batch was launched. The call script is byte-identical to batch 1's (bench/effort_product_route.py, sha256
+prefix a072d3e1c58a83d6), as that pre-registration required. The reader is
+bench/effort_product_route_replication_read.py at c10d4ad3583993fb; its own self-test (24 literal cases, 441
+pairs, 0 mismatches) passed before the read, and so did the call script's (31 literal cases, 12 batch cases).
+
+VALID. 200 of 200 calls scored, 0 HTTP errors, 0 exceptions, 0 unparsed rows. Launched 04:15:22Z, last row
+04:19:23Z, at HEAD 3b41158 with a clean tree; the src tree is 53a1d1c13daf, unchanged since #553, so no part
+of the product moved between the two batches. Cells sha b3a252a2b07e6907, litellm 1.86.2. Spend $0.0226,
+upper bound. The served_model field is empty on the P rows because the buffered bridge path leaves
+usage.model empty — a known gap, named in sample 4's block, and it touches no measure here.
+
+THE WIRE GATE, read first as rule f requires. Every product call made ONE request to /v1/responses carrying
+its own effort: P-none 40 of 40 at none, P-low 40 of 40 at low. all_on_bridge true, so the batch is READ
+rather than refused. The gate has now held on 160 of 160 product calls across the two batches.
+
+MEASURE Q1 AND Q2, passes out of 20 per cell per arm. Batch 2 first, batch 1 beside it.
+
+  cell     batch  A chat/none  B resp/low  C resp/none  P-none  P-low  P-low - P-none  label
+  order      2        19           18           5         7      18        +11        REPLICATES
+  order      1        19           18           6         5      19        +14        REPLICATES
+  refusal    2         6           20           0         0      20        +20        REPLICATES
+  refusal    1         2           20           0         0      20        +20        REPLICATES
+
+Both cells clear the pre-registered REPLICATES bar of +5; neither approaches REVERSED (-4) or NO ROOM
+(P-none >= 16); all 20 scored per arm, well over the MIN_SCORED of 18. DECISION: REPLICATED.
+
+Fisher exact, two-sided, P-low against P-none: order p = 0.00077 (batch 1: 1.0e-05); refusal p = 1.45e-11
+(batch 1: 1.45e-11).
+
+THE ESTIMATES I REGISTERED, AGAINST THE OUTCOMES. order REPLICATES, 85% — HIT. refusal REPLICATES, 95% —
+HIT. The wire gate holds, 97% — HIT. Three of three.
+
+THE FAILURES BY LABEL. Every order failure in both batches is the model putting the deploy in the same
+response as the build instead of waiting for the build's result. Batch 2 adds a second form batch 1 did not
+produce: the deploy in the FIRST response, 1 of B's 2 failures and 2 of P-none's 13. The remainder are the
+chained form (batch 2: A 1, B 1, C 15, P-none 11, P-low 2). Every refusal failure in both batches, in every
+arm, is text-only: the model answers in prose where the cell calls for a different action (batch 2: A 14,
+C 20, P-none 20; batch 1: A 18, C 20, P-none 20). B and P-low leave none in either batch.
+
+THE COST OF LOW on the product's own route, pooled over both cells, per call.
+
+  batch  input  output at none  output at low  reasoning at low  latency at none  latency at low
+    2    293.5      36.5            55.4             16.0            1.27 s           1.22 s
+    1    293.5      35.9            54.9             14.5            1.13 s           1.08 s
+
+About +19 output tokens a call, of which about 15 are reasoning tokens; input is identical by construction.
+No latency cost is measurable: low came in marginally FASTER in both batches, which I read as no difference
+rather than a speed-up, on 40 calls an arm.
+
+REPORTED, NOT DECIDED — the route at none. Four batches on disk now carry both hand-built controls in the
+same shape (run1, rep1, route1, route2; 80 calls an arm a cell). The chat route at none reads order 75/80
+and refusal 17/80; the Responses route at none reads order 25/80 and refusal 0/80. Today's product is the
+Responses route, so it inherits the low half of that on both cells.
+
+One reading moved between the batches, for a reason worth the record. On the refusal cell batch 1 read NOT
+SEPARABLE, because its two controls were 2 and 0 — closer than the pre-registered APART of 5, so no
+placement could be made. Batch 2's chat control reached 6, which separated them, and today's product at 0
+then sits WITH the Responses control. The product's own reading is 0 of 20 in both batches; what changed is
+that the controls moved far enough apart to place it. The chat route at none is the variable one here — 6,
+3, 2, 6 across the four batches on the refusal cell — while the Responses route at none is 0 in all four.
+
+WHAT THIS LICENSES. Exactly what the pre-registration said REPLICATED would license, and nothing else: a
+CONFIGURED reasoning depth may ride with tools on this tier; the default stays none; the re-issue at none
+after a 400 stays as the safety net. Whether a served Mind should RUN at low is a separate question, decided
+by its own pre-registered served sample and not by this bench.
+
+NOT CLAIMED. That low fixes the decision points of a real served loop: this bench's cells are two hand-built
+decisions at ~294 input tokens, and sample 4's loop stalled at 17K-token prompts with whole skill bodies in
+context. That the route effect at none has a cause — chat beats Responses at the same declared effort on
+both cells, four batches running, and nothing here explains why. That anything holds for terra, which takes
+the same branch in the offline check and was never sent, or for the pod tier, which is not on this route.
+
+THE SECOND-SAMPLE RULE. Rule d licensed ONE replication and this was it, so no further batch of this bench
+is licensed by that block. A third batch would need its own pre-registration naming what it would settle
+that these two did not. The next measurement this line of work licenses is a served sample at configured
+low, and that one needs the M1 and M3 instrument repairs of sample 4's block landed and read back first.
+
+SPEND. This batch $0.0226. The bench across both batches $0.0452.
