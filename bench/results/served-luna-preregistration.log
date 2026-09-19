@@ -817,3 +817,96 @@ plan-gate nudges (product, observability). Still open from sample 3: the ended-t
 elided skill with use_skill, and nothing restarting a served run whose first turn ends before the loop is RUNNING.
 Second-sample rule: no named product cause is fixed and merged yet, so no fifth sample is licensed by this block.
 Spend so far: sample 1 $0.27, sample 2 $1.14, sample 3 $0.03, sample 4 $1.28.
+
+=== 10:05 UTC 2026-09-19 PRE-REGISTRATION -- SERVED LOOP ON LUNA, sample 5: the loop at a CONFIGURED depth ===
+
+THE QUESTION. Sample 4 reached the loop body and stopped at goal selection. Its proximate cause was a
+model decision, not a framework crash: luna finished the start ceremony correctly in 9 calls, loaded
+the boot skill as the ceremony's last act (one Skill call, 38,142 characters) and then answered with
+83 tokens of TEXT. No step of boot ran; 0 of the run's 140 shell commands named an initialization
+script. Everything after that -- the selector's 9 of 9 failures on a file only full initialization
+creates, the three goal-less closes -- is downstream of that one text answer.
+
+Answering a delivered body with text instead of acting on it is exactly what the effort bench
+measures on its refusal cell, where today's forced none scores 0 of 20 and a configured low scores
+20 of 20 across two pre-registered batches (ADR-0200, this file above). Sample 5 asks whether that
+carries into a real served loop at 38K-character bodies and 17K-token prompts, where the bench's
+~294-token cells say nothing.
+
+THE ONE DECLARED DIFFERENCE. reasoning_effort="low" on the five gpt-5.6-luna categories of
+ZAKCODE_ZAKPICK_MODELS (deep_code, plan, quick_code, summarize, delegate). classify (gpt-5-nano) and
+the gpt-5-mini fallback are untouched. Verified offline before launch, through the product's own
+factory in this exact configuration: the luna providers send reasoning_effort='low' WITH tools and
+without, classify sends none, tools ride NATIVELY (the text-tool-calling wrapper is transparent
+because the inner model reports native support), so the ADR-0200 branch is on the live path.
+
+EVERYTHING ELSE IS SAMPLE 4'S ASSEMBLY. Seed release 2.12.76 (sha256 71c88a26f3b953c0, the same
+tarball, re-extracted), the same sandbox, the same vessel ceremony (/start mind queued, then zakcode
+webapp), cap 2400 s, reserve 350 s, the same supervisor bounds, the same trace directory.
+
+ONE HONEST DEVIATION, and it is mine. Sample 4's world was deleted before these repairs were
+written, so the exact bytes of its patched claim endpoint are gone. Sample 5 re-applies the SAME
+two-line functional change (capture whether the caller named a queue; fire the collision 409 only
+when it did not) to the same seed file. The sha differs because the comment wording does:
+50294cc7a8b53c72 -> 74b5eca7c44d0189, where sample 4 carried 7779c82cc8ea41d5. The patched file is
+kept this time, so sample 6 can be byte-identical to sample 5.
+
+THE INSTRUMENT, repaired as sample 4's own block required. M1 and M3 are new measures and are read
+by served/measures5.py, whose self-test (20 fixtures, one per form, with a positive control for
+every compliant shape) passes and which reproduces sample 4's known answer on its surviving
+whole-run ledger: M1 = 0, 3 banners, 3 EMPTY CLOSES.
+  M1  An iteration is CLOSED only when one goal id both appears in a closing-script call whose
+      output carries the banner LINE and which did not error, AND has a granted completion request
+      in the same run. The goal must be named by the CALL; a goal id merely mentioned in the OUTPUT
+      does not count (that reading turned sample 4's known 3 into 2 and is why this clause exists).
+      Banner closes naming no goal are reported as EMPTY CLOSES and never counted.
+  M3  The longest run of consecutive empty main-model calls over the UNION of three sources, all
+      three reported: a trace empty_completion intervention, the persisted placeholder, and a usage
+      row whose assistant turn carries neither text nor a tool call. A call no source can read is
+      reported and never counted.
+
+MEASURES AND PREDICTIONS. Every other measure keeps sample 4's definition.
+  P1  M1 >= 1 iteration closed.                          My estimate: 35% HIT.
+  P2  M2 (plan-tool share of the whole-run ledger) < 20%. My estimate: 60% HIT.
+  P3  M3 <= 3 consecutive empties.                        My estimate: 85% HIT.
+  B1  BOOT RUNS. At least one shell command of the run names an initialization script
+      (init-world.sh, init-meta.sh, init-agent.sh or init-mind.sh). This is the measure the
+      question turns on; sample 4 read 0 of 140. My estimate: 55% HIT.
+  B2  The turn that loads the boot skill is followed by a tool call rather than a text-only
+      completion. My estimate: 60% HIT.
+  S1  The selector runs without an unhandled traceback on at least one invocation.
+      My estimate: 50% HIT.
+  E1  The run reaches agent-state RUNNING and holds it for the majority of samples.
+  W1  WIRE GATE. Every luna call carries reasoning_effort='low'. Read FIRST: if any luna call
+      carries a different effort, the batch is NOT READ for B1, B2, P1 and S1, and the failure is
+      reported. (Read from the serve log and the trace, not from the config.)
+  C1  Cost: total spend, uncached prompt tokens, and the cached share, reported beside sample 4's
+      (231 calls, $1.2786, 4,981,976 uncached, three flat stretches holding 67%).
+
+THE READING RULE, over every outcome, fixed before launch.
+  NOT READ      -- W1 fails. Nothing about effort is concluded. The run is reported and the
+                   instrument is repaired before any re-run.
+  MOVED         -- W1 holds AND B1 HITs. A configured depth got the served loop past the decision
+                   sample 4 died at. This licenses ONE replication at the same assembly, and
+                   nothing else; it does NOT license raising the product default.
+  NOT MOVED     -- W1 holds AND B1 MISSES. A configured depth does not carry to a 38K-character
+                   body at served prompt sizes. The bench result stands as a bench result and the
+                   served default stays none. Report which decision the loop died at instead.
+  BLOCKED EARLIER -- W1 holds, B1 unreachable because the run never reached the boot load (a
+                   crash, a failover, a refusal before it). B1 is UNTESTED, not a MISS, and the new
+                   blocker is named.
+  Rule E stands: an outcome nobody named is reported as measured and never upgraded to a HIT.
+  Rule K stands: where the loop stopped is read from the whole-run ledger and the access log.
+
+THE SECOND-SAMPLE RULE. MOVED licenses exactly one replication, pre-registered separately, same
+assembly, same declared difference. NOT MOVED licenses no further sample at this depth: the next
+measurement would have to change something else and say what. Neither outcome licenses a change to
+the product's default, which stays none whatever this run reads.
+
+WHAT THIS CANNOT SETTLE. Whether low helps a loop that gets PAST selection -- the iteration body is
+UNTESTED after four samples and would stay untested unless P1 HITs. Whether the three framework
+findings of sample 4 (the selector's raw traceback, the goal-less close, the stop hook demanding
+re-entry in an uninitialised world) are fixed; none of them is, and a MOVED reading would only mean
+the loop no longer arrives at them by that route. Anything about terra, the pod tier, or azure.
+
+SPEND. Bounded by the supervisor at $6.00 and 2400 s; sample 4 cost $1.2786 at the same bounds.
