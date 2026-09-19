@@ -87,3 +87,77 @@ Controls already run with NO network call: the report path printed every table a
 so it can fail; 5 payload pairs carry equal step counts; 8 synthetic batches reach every verdict above (NO BUILD,
 BUILD-CANDIDATE, one-cell gain, HARM beating two gains, a gain at the ceiling not counting, a moved route read against
 C, MIXED, NOT MEASURED); the exact test agrees with an independent rational-arithmetic implementation on 5 tables.
+
+=== 00:22 UTC 2026-09-19 RESULTS -- REASONING EFFORT AT DECISION POINTS, batch 1 (launched 00:10:48Z 2026-09-19, done 00:15:37Z, 300 of 300 calls scored)
+Validity: MEASURED under R7. 300 rows, 20 scored calls in every arm x cell, 0 HTTP errors, and every row served by
+"gpt-5.6-luna" (the provider returned the name as sent, with no dated snapshot). Instrument sha256 b3a252a2b07e6907
+at start and end; zakcode HEAD 860e54d with a clean status at start and end. Spend: 123,040 input and 9,048 output
+tokens, $0.0355 with every input token priced uncached, which is an upper bound. The $1.00 stop never came near.
+
+VERDICT, as the script prints it: BUILD-CANDIDATE. Two GAIN cells, no HARM, three cells FLAT at their ceiling.
+  passes of 20    A chat/none   B resp/low   C resp/none   ref   B - ref   reading           exact p, B vs ref
+  order           17            19            6            C     +13       GAIN              0.00004
+  refusal          6            20            0            C     +20       GAIN              1.5e-11
+  pointer         20            20           20            A       0       FLAT (ceiling)    1
+  body            20            20           20            A       0       FLAT (ceiling)    1
+  typed           20            20           20            A       0       FLAT (ceiling)    1
+
+What the verdict does not say. The rules are applied as written; these are the things they did not anticipate.
+  1  R1 made C the reference in both moved cells, and in both the route control is WORSE than what the product
+     sends today: order 17 -> 6 (p = 0.001), refusal 6 -> 0 (p = 0.02). B - C therefore overstates what the product
+     would gain by switching routes. Against A, the comparison a build decision rests on: order +2 (p = 0.61,
+     nothing; with A as its reference the cell sits on R2's ceiling line), refusal +14 (p = 0.000003). Read against
+     today's product this is ONE cell, not two.
+  2  The order GAIN rests on the strict label. Every order FAIL in the batch is the chained form (build && deploy:
+     A 3, B 1, C 14); not one response of 60 deployed unconditionally. The label was fixed before the data and it
+     stands, but under the lenient reading the cell is 20 of 20 on every arm and carries nothing.
+  3  What is robust under every reading is refusal. At effort none luna answered the twice-refused claim with a short
+     text and no call (A 14 of 20, C 20 of 20; 140 to 197 characters); A's 6 calls all asked the script for its help,
+     4 of them reading its source as well. At effort low it made a call 20 of 20 times: 19 read the refusing script's
+     source outright and 1 asked for its help first. No row of the 60 re-issued the claim or chose the other queue,
+     so sample 2's signature did not appear at all: at this decision point the failure at effort none is going
+     silent, which in a served loop is a stall, since no operator is there to read the text.
+  4  The three skill cells do not discriminate: 180 of 180 PASS. In particular typed, built after sample 3's fatal
+     first decision, passes 20 of 20 on every arm. A short synthesized body under a one-sentence system text does
+     not reproduce what luna did with the product's prompt and a 65,686-character body. The cell says nothing about
+     that decision, in either direction.
+  5  My estimates were poor (A / B / C, estimated then measured): order 12/18/12 then 17/19/6; refusal 8/13/8 then
+     6/20/0; pointer 15/18/15, body 14/18/14 and typed 10/16/10, each then 20/20/20. I put the verdict reached at 25%.
+  R9, beside the verdict. Tool calls per response: 1.00 in every arm x cell except refusal (A 0.30, C 0.00), so the
+  parallel-call lead was not exercised by these cells. Reasoning tokens in arm B: order 16 to 24 (median 17), refusal
+  9 to 12 (10), typed 12 to 14 (13), and 0 in all 40 pointer and body responses. Mean latency per response: A 0.88 s,
+  B 1.01 s, C 0.99 s. The secondary measure equals the primary in every cell: 0 plan-only rows.
+
+What I take from it: R8's licence and nothing more, which is designing a Responses route for this tier behind a
+flag, whose own served sample decides shipping. This batch puts two constraints on that design. The route must
+never run this tier at effort none: C is the worst arm in both moved cells. And the route effect is not understood:
+my Responses rendering carries the system text in the instructions field where the chat rendering uses a system
+message, so "route" here means the endpoint AND the rendering. Which of the two moves the cell is measured before
+anything is designed, in a block of its own.
+Because caveat 1 makes this a one-cell reading against today's product, I apply R5's replication to it, although
+the letter of R5 asks for none after BUILD-CANDIDATE. It is stamped below before any call of it is made.
+
+=== 00:22 UTC 2026-09-19 PRE-REGISTRATION -- REASONING EFFORT AT DECISION POINTS, replication of the two moved cells (order, refusal)
+Same instrument for the calls (bench/effort_decision_points.py, sha256 b3a252a2b07e6907, unchanged), the same three
+arms interleaved inside every repetition, cells order and refusal only, N = 20 per cell per arm: 120 calls, expected
+under $0.02, the same $1.00 hand stop and 3600 s timeout. No call of it has been made.
+Reader: bench/effort_replication_read.py at sha256 3a69244293ca4cd6... (stdlib only, no network). Its self-test
+enumerates all 9,261 count triples, pins every threshold with literal cases one pass either side of it, and FAILS
+under each of ten sabotages (every constant moved by one in each direction). Run on batch 1 it prints refusal
+REPLICATES on all three lines, and order NO ROOM / REPLICATES / REPLICATES.
+Reading, per cell, three lines, each stated whatever it is. A, B and C are passes per 20. A cell with any arm under
+18 scored calls is NOT MEASURED (mechanical); an HTTP 400 naming a history or tool shape, or a served model other
+than gpt-5.6-luna, makes the batch NOT MEASURED (read by hand from the reader's first line).
+  against today's product   REPLICATES if B - A >= 5. REVERSED if A - B >= 4. Otherwise DOES NOT REPLICATE, marked
+                            NO ROOM when A >= 16, so that a ceiling is never read as a contradiction.
+  within the route          the same three labels on B against C.
+  route effect              REPLICATES if A - C >= 3. REVERSED if C - A >= 3. Otherwise ABSENT.
+  Every (A, B, C) in 0..20 maps to exactly one label on each line. There is no pooling: the second sample is read
+  on its own counts, with batch 1's printed beside it.
+What it decides. BUILD-CANDIDATE stands against today's product only if refusal REPLICATES on the first line. If it
+DOES NOT REPLICATE there, the verdict is withdrawn to MIXED and R6 names the follow-up. A REVERSED on the first line
+of either cell withdraws it as well, and a third sample of that cell comes before any design. order is expected NOT
+to replicate against today's product (batch 1: +2, no room); if it does, that is reported as new information and
+not as confirmation.
+My estimates: refusal REPLICATES against today's product 85%, within the route 95%. Route effect REPLICATES on
+order 80%, on refusal 50% (batch 1's 6 against 0, p = 0.02, is the weakest of the four comparisons).
