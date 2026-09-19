@@ -1162,3 +1162,111 @@ protocol is unsatisfiable by construction in a served context).
 
 Spend: sample 1 $0.27, sample 2 $1.14, sample 3 $0.03, sample 4 $1.2786, attempt 1 $0.0292
 (aborted), attempt 2 $0.0338 (INVALID), attempt 3 $2.3455.
+
+=== 12:15 UTC 2026-09-19 PRE-REGISTRATION -- SAMPLE 5 CONTROL: the same world at effort NONE ===
+
+WHY THIS AND NOTHING ELSE. Attempt 3 read MOVED, and its own block says the reading cannot be
+attributed to depth ALONE: sample 4's world was deleted before its repairs were written, so
+byte-identity with attempt 3's assembly cannot be established, and build-world.sh is a
+RECONSTRUCTION. Two candidate causes therefore survive -- the declared difference (a configured
+low), and the assembly (a world provisioned to the point where /start takes its IDLE branch). One
+run separates them, and the MOVED branch licenses exactly one. This is it. It is spent on a CONTROL
+rather than a replication because a replication can only re-confirm what is already confounded.
+
+THE ONE DECLARED DIFFERENCE FROM ATTEMPT 3: the five gpt-5.6-luna categories of
+ZAKCODE_ZAKPICK_MODELS carry NO reasoning_effort, so the product's forced none applies (ADR-0200).
+That is byte-for-byte the kit's own served.env, unedited -- i.e. sample 4's configuration. classify
+(gpt-5-nano) and the gpt-5-mini fallback are untouched, as in every sample.
+
+EVERYTHING ELSE IS ATTEMPT 3'S ASSEMBLY, and the one thing that could not be held constant was
+MEASURED rather than argued. Same seed (2.12.76, sha256 71c88a26f3b953c0, the same tarball
+re-extracted), same build-world.sh with the provisioning step and its three assertions, same
+sandbox, same ceremony, same caps (2520 s hard, $6.00), same trace directory, same patched claim
+endpoint (sha256 prefix 74b5eca7c44d0189), same instrument.
+
+The BUILD differs: attempt 3 ran 6b5a527, this runs 60e0a8e, which carries ADR-0202 (the
+plan-autoadvance flag removed). For a SERVED loop that change is inert -- the flag was already
+default-on and a served loop is Settings-wired, so both builds took the same branch -- but "inert"
+was not left as an argument. bench/served_path_identity.py (committed with this block) drives the planning surface a served loop
+actually uses (the doom-loop resend walked to completion, a never-worked resend, an
+outcome-without-status resend, a real edit, a finished plan resent) through a Settings-wired
+context on each build and prints every output, hint, data dict and error flag. The two runs are
+BYTE-IDENTICAL on all 32 compared lines. Recorded because a control whose build differs is not a
+control until that is shown.
+
+THE GATE, same two parts, same order, asserted before any spend.
+  W1a-C  CONFIGURATION, offline, in the launcher. AS FIRST WRITTEN, this said the factory must
+         send reasoning_effort='none' on all five luna categories "with tools and without". That
+         was an ASSUMPTION and it is WRONG, caught by measuring the gate before spending anything
+         against it. What the product actually sends on this configuration: 'none' WITH tools, and
+         NOTHING AT ALL without tools; classify sends nothing either way. The wrong version is left
+         above rather than quietly replaced, because a gate nobody re-measured is how a run gets
+         read against a condition it was never in.
+         The corrected assertion, which is what the launcher enforces: the five luna categories
+         send reasoning_effort='none' WITH tools and no reasoning_effort field WITHOUT tools, and
+         classify sends none in both shapes. A run that fails it is CONTROL NOT READ.
+         This asymmetry is ADR-0200's own mechanism and it sharpens the comparison rather than
+         muddying it: the explicit none rides only on the TOOL-CALLING path, which is exactly the
+         path sample 4 died on when it answered a delivered body with text instead of a tool call.
+         It also means the declared difference is not simply "low -> none": it is "low on both
+         shapes" against "none with tools, absent without". Stated plainly so the results block
+         cannot describe the arms more neatly than they are.
+  W1b-C  EFFECT, read from the run's SESSION file (never the trace projection). The EXPECTED
+         reading is ALL ZERO reasoning tokens, and here that is the confirmation, not a failure:
+         attempt 3 recorded 279 of 381 rows non-zero at low. A NON-ZERO count on this arm would
+         mean the depth did not actually differ between the two runs and the whole comparison is
+         void -- so W1b-C is read as a two-sided check, and that is the opposite of how W1b was
+         read on the treatment arm. Stated now so it cannot be re-read afterwards.
+
+B1 IS READ EXACTLY AS ATTEMPT 3'S WAS, from the artifact and not the command, because the
+instrument defect is unchanged: compaction destroys the text of the run's shell calls and the trace
+records tool names without arguments. The chain, fixed here before the run: meta/.initialized
+present with an mtime inside the run window AND absent at launch; its sole writer in the seed is
+init-meta.sh:272; no daemon path exists (zero references in mind_api/src); init-mind.sh excluded
+when knowledge/.initialized is absent; corroborated by meta/changelog.jsonl's first row. If the
+control produces that artifact, B1 HITS. Any other reading of B1 is NOT a hit.
+
+THE READING RULE, over every outcome, fixed before launch.
+  CONTROL NOT READ    -- W1a-C fails, or the world fails a provisioning assertion, or W1b-C comes
+                         back NON-ZERO. Nothing is concluded about either candidate cause, the
+                         instrument or the assembly is repaired, and attempt 3's MOVED stands
+                         exactly as written, neither upheld nor downgraded.
+  DEPTH CONFIRMED     -- W1a-C holds, W1b-C is all zero, and the control MISSES B1. The difference
+                         tracks the DEPTH. Attempt 3's MOVED stands and is strengthened from one
+                         arm to a matched pair. Still no product default change: that is fixed
+                         separately and this block does not revisit it.
+  ASSEMBLY NOT DEPTH  -- W1a-C holds, W1b-C is all zero, and the control HITS B1. Then a provisioned
+                         world is what got the loop past the decision and the depth is not shown to
+                         matter at served sizes. Attempt 3's MOVED reading is DOWNGRADED in this log
+                         to "the assembly moved it", written into this file citing this block, and
+                         the campaign's claim about configured depth on a served loop is withdrawn.
+  CONTROL BLOCKED EARLIER -- W1a-C holds, W1b-C is all zero, but the run never reaches the point
+                         where boot could act (crash, failover, await_user, refusal). B1 is
+                         UNTESTED for the control, attempt 3's MOVED is UNRESOLVED rather than
+                         upheld, and the new blocker is named.
+  Rule E stands: an outcome nobody named is reported as measured and never upgraded to a HIT.
+  Rule K stands: where the loop stopped is read from the whole-run ledger and the access log.
+
+PREDICTION, with my estimate, before the run. B1 on the control: 30% HIT. The reasoning, so it can
+be scored honestly either way -- sample 4 sat at this same depth and missed B1, which argues for a
+MISS; but sample 4's world was NOT provisioned by this script and its selector failed 9 of 9 on a
+file only full initialization creates, so part of its failure was assembly, which argues the control
+could hit. I do not know which dominates, and that is precisely why the run is worth its cost. I am
+recording the estimate rather than a hedge so that a 30% call landing either way is scoreable.
+
+SECONDARY MEASURES, reported beside attempt 3's, none of them deciding the branch: P1/M1 iterations
+closed (attempt 3: 0), P2/M2 plan share on the whole-run ledger (16.6%), P3/M3 longest empty run (0),
+S1 selector without an unhandled traceback (HIT, 3 invocations), E1 reaches and holds RUNNING (HIT),
+C1 cost and cache (381 calls, $2.3455, 72.3% cached).
+
+SECOND-SAMPLE RULE. This control is the one run MOVED licensed. A further sample is licensed ONLY
+if this one reads CONTROL NOT READ or CONTROL BLOCKED EARLIER -- an instrument or assembly failure,
+re-run at the same arm and the same settings. Neither DEPTH CONFIRMED nor ASSEMBLY NOT DEPTH
+licenses another run at this depth; each would have answered the question it was bought for.
+
+WHAT THIS CANNOT SETTLE, whatever it reads. Whether a configured depth helps a loop that gets past
+selection (the iteration body ran once, at N=1, and closed no goal). Whether sample 4's world
+carried the file whose absence invalidated attempt 2 -- that world is gone and no measurement here
+recovers it. Anything about terra, the pod tier, or azure. The four framework findings remain open.
+
+SPEND. Bounded by the supervisor at $6.00 and 2520 s; attempt 3 cost $2.3455 at the same bounds.
