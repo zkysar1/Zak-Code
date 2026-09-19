@@ -9,6 +9,7 @@ normalization edges, token-count fallback, and the registry's safe default.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -661,3 +662,79 @@ def test_map_error_classifies_a_wrapper_by_its_original_exception() -> None:
     loop_exc = MidStreamFallbackError(inner)
     loop_exc.original_exception = loop_exc
     assert isinstance(lp.LiteLLMProvider._map_error(loop_exc), RateLimited)
+
+
+def test_unpriced_model_is_flagged_not_guessed() -> None:
+    # A model with no price anywhere still records $0 — never guessed (the guarantee above) —
+    # but the Usage now says WHY it is zero. Without that flag "this call was free" and "I
+    # cannot price this call" are the same 0.0, and a max_cost_usd ceiling reads the second as
+    # the first and can never trip on that lane.
+    usage = LiteLLMProvider._extract_usage(
+        _FakeResponse([], _FakeUsage(1000, 100, 1100), model="madeup-vendor/no-such-model-xyz")
+    )
+    assert usage.cost_usd == 0.0
+    assert usage.cost_unpriced is True
+
+
+def test_priced_model_is_not_flagged_unpriced() -> None:
+    usage = LiteLLMProvider._extract_usage(
+        _FakeResponse([], _FakeUsage(1000, 100, 1100), model="gpt-4o-mini")
+    )
+    assert usage.cost_usd > 0.0
+    assert usage.cost_unpriced is False
+
+
+def test_real_response_cost_is_never_flagged_unpriced() -> None:
+    # The price-map fallback is not consulted at all when litellm reported a cost.
+    usage = LiteLLMProvider._extract_usage(
+        _FakeResponse(
+            [],
+            _FakeUsage(1000, 100, 1100),
+            hidden={"response_cost": 0.5},
+            model="madeup-vendor/no-such-model-xyz",
+        )
+    )
+    assert usage.cost_usd == pytest.approx(0.5)
+    assert usage.cost_unpriced is False
+
+
+def test_unpriced_flag_survives_aggregation() -> None:
+    # A total containing one unpriceable call is itself an underestimate. If the flag did not
+    # stick under +, the session total would launder it back into a clean-looking number.
+    priced = Usage(prompt_tokens=10, total_tokens=10, cost_usd=0.5)
+    unpriced = Usage(prompt_tokens=10, total_tokens=10, cost_usd=0.0, cost_unpriced=True)
+    assert (priced + unpriced).cost_unpriced is True
+    assert (unpriced + priced).cost_unpriced is True
+    assert (priced + priced).cost_unpriced is False
+
+
+def test_bundled_price_map_degrades_visibly_not_silently() -> None:
+    """Environment axis: the same defect reaches a NORMALLY-PRICED model.
+
+    litellm fetches its price map at import; under the bundled map (fetch failed, or
+    LITELLM_LOCAL_MODEL_COST_MAP=True) the gpt-5.6 tier is absent, so a model that prices
+    fine in production degrades to the unpriced path. Before this fix that degradation was a
+    silent $0.00. Subprocess because the map is chosen at import time.
+    """
+    import json
+    import subprocess
+    import sys
+
+    program = (
+        "import json;"
+        "from zakcode.providers.litellm_provider import LiteLLMProvider as P;"
+        "print(json.dumps({"
+        "'tiered': P._litellm_token_cost('gpt-5.6-luna', 1000000, 10000),"
+        "'bundled_anchor': P._litellm_token_cost('gpt-4o-mini', 1000000, 10000)}))"
+    )
+    env = {**os.environ, "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
+    proc = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, env=env, check=True
+    )
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    # Absent from the bundled map -> None (unpriceable), NOT a silent 0.0 that reads as free.
+    assert out["tiered"] is None
+    # A model that IS in the bundled map still prices, so this proves the map swap, not a
+    # blanket failure to price anything.
+    assert out["bundled_anchor"] is not None and out["bundled_anchor"] > 0

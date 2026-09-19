@@ -35,12 +35,25 @@ class Usage(BaseModel):
     #: ``/cost`` breakdown under zakpick, where a session spans several models). Empty for older
     #: persisted records and for aggregate totals (a sum across models has no single model).
     model: str = ""
+    #: True when ``cost_usd`` could NOT be determined for at least one call folded in here —
+    #: the model is absent from litellm's price map, so the call was priced at nothing because
+    #: nothing is known, not because it was free. Without this flag those two facts are the same
+    #: ``0.0`` and a cost ceiling reads "no spend" on a lane it cannot price at all. The price is
+    #: deliberately never guessed (``test_extract_cost_unknown_model_stays_zero``); the
+    #: uncertainty is carried instead, so :class:`~zakcode.agent.budget.IterationBudget` can tell
+    #: an unenforceable ceiling from an unspent one and no reader mistakes the 0.0 for a
+    #: measurement.
+    cost_unpriced: bool = False
 
     def __add__(self, other: Usage) -> Usage:
         """Combine two usage records (for accumulating a session total).
 
         ``model`` survives only when both operands share it — a sum across different models is a
-        mixed total with no single model, so it collapses to empty.
+        mixed total with no single model, so it collapses to empty. ``cost_unpriced`` is sticky
+        under addition: a total containing one unpriceable call is itself an underestimate, so
+        the flag must survive into the aggregate or the session total silently launders it back
+        into a clean-looking number (the rb-7829 shape — a missingness flag that sibling fields
+        and aggregates do not consult).
         """
         return Usage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
@@ -50,6 +63,7 @@ class Usage(BaseModel):
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_creation_tokens=self.cache_creation_tokens + other.cache_creation_tokens,
             model=self.model if self.model == other.model else "",
+            cost_unpriced=self.cost_unpriced or other.cost_unpriced,
         )
 
 

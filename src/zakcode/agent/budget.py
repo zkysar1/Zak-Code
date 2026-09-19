@@ -78,6 +78,7 @@ class IterationBudget:
         self._max_tokens = max_tokens
         self._cost_spent = 0.0
         self._tokens_spent = 0
+        self._unpriced_calls = 0
 
     # ── reporting ────────────────────────────────────────────────────────────
 
@@ -123,15 +124,25 @@ class IterationBudget:
 
     # ── cost / token ceilings (parity #4) ─────────────────────────────────────
 
-    def add_usage(self, cost_usd: float = 0.0, total_tokens: int = 0) -> None:
+    def add_usage(
+        self, cost_usd: float = 0.0, total_tokens: int = 0, cost_unpriced: bool = False
+    ) -> None:
         """Fold one completed call's actuals into the shared cost/token totals.
 
         Called by each loop after a model call returns. ``await``-free, so atomic against
         concurrently-scheduled siblings (like :meth:`try_consume`). Negative inputs are
         clamped to 0 so a junk usage record can never *reduce* the running total.
+
+        ``cost_unpriced`` (``Usage.cost_unpriced``) says the call's $0.00 means "unknown", not
+        "free". Such a call adds nothing to ``_cost_spent`` — correctly, since guessing a rate
+        would be worse — so without counting it a cost ceiling would sit at $0.00 forever on a
+        lane it cannot price, and never fire. :meth:`cost_ceiling_unenforceable` is that count
+        made visible.
         """
         self._cost_spent += max(0.0, cost_usd)
         self._tokens_spent += max(0, total_tokens)
+        if cost_unpriced:
+            self._unpriced_calls += 1
 
     def cost_exhausted(self) -> bool:
         """True once cumulative cost has reached the ``max_cost_usd`` ceiling (if set)."""
@@ -145,6 +156,27 @@ class IterationBudget:
         """True if either the cost or token ceiling has been crossed — the loop's signal to
         stop with ``stop_reason="budget_exhausted"``. False when neither ceiling is set."""
         return self.cost_exhausted() or self.tokens_exhausted()
+
+    @property
+    def unpriced_calls(self) -> int:
+        """How many folded-in calls could not be priced at all (see ``Usage.cost_unpriced``)."""
+        return self._unpriced_calls
+
+    def cost_ceiling_unenforceable(self) -> bool:
+        """True when a ``max_cost_usd`` ceiling is set but at least one call could not be priced.
+
+        Deliberately SEPARATE from :meth:`over_budget`, which must keep meaning "the ceiling was
+        crossed": routing this through it would stop a turn that has spent nothing and report
+        ``budget_exhausted``, and a forced value that borrows a real condition's label is
+        indistinguishable from a measurement downstream. The honest report is its own reason.
+
+        This is a statement about KNOWLEDGE, not spend. With a cost ceiling set and an unpriceable
+        model in play there are only bad options — enforce against a guessed rate (a fabricated
+        number, reported as spend), or let the turn run unbounded while the meter reads $0.00 —
+        so the caller is told which situation it is in and decides. ``max_tokens`` is unaffected
+        and remains a real bound on the same lane, since token counts are always reported.
+        """
+        return self._max_cost_usd is not None and self._unpriced_calls > 0
 
     # ── consuming ────────────────────────────────────────────────────────────
 
@@ -203,6 +235,7 @@ class IterationBudget:
         self._consumed = 0
         self._cost_spent = 0.0
         self._tokens_spent = 0
+        self._unpriced_calls = 0
         self._children_spawned = 0
 
     # ── child accounting ─────────────────────────────────────────────────────

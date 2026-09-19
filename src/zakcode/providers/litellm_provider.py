@@ -739,6 +739,7 @@ class LiteLLMProvider(Provider):
         cache_creation = cls._coerce_int(_get(usage_obj, "cache_creation_input_tokens"))
 
         cost = 0.0
+        unpriced = False
         hidden = _get(response, "_hidden_params")
         if isinstance(hidden, dict):
             cost = cls._coerce_cost(hidden.get("response_cost"))
@@ -751,7 +752,13 @@ class LiteLLMProvider(Provider):
             # the hand-maintained Groq rate table it used to sit behind was removed with that
             # provider (g-369-295), and it had become a mispricing hazard — it matched by STEM,
             # so it priced `openai/gpt-oss-*` at Groq rates.
-            cost = cls._litellm_token_cost(model, prompt, completion)
+            priced = cls._litellm_token_cost(model, prompt, completion)
+            # None = the model has no price anywhere. Keep cost at 0.0 (never guess a rate) and
+            # carry the fact that this 0.0 is an absence of knowledge, not an absence of spend.
+            if priced is None:
+                unpriced = True
+            else:
+                cost = priced
 
         return Usage(
             prompt_tokens=prompt,
@@ -760,14 +767,36 @@ class LiteLLMProvider(Provider):
             cost_usd=cost,
             cache_read_tokens=cache_read,
             cache_creation_tokens=cache_creation,
+            cost_unpriced=unpriced,
         )
 
     @staticmethod
-    def _litellm_token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    def _litellm_token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
         """Cost from litellm's own price map by token counts — the streaming-path fallback when a
-        chunk carried no response_cost. Best-effort: any failure (unknown model) returns 0.0."""
+        chunk carried no response_cost.
+
+        Returns ``None`` when the cost CANNOT BE DETERMINED (no model string, or the model is
+        absent from litellm's price map so ``cost_per_token`` raises), and a real float —
+        possibly a genuine ``0.0`` for a free model — when it can. That distinction is the whole
+        point of the signature: returning ``0.0`` for both made "this call was free" and "I
+        cannot price this call" the same value, and the budget meter reads the second as the
+        first, so ``max_cost_usd`` can never trip on a lane whose model is unpriced (measured on
+        ``openai/gpt-oss-20b``; predicted as its third unfixed hazard by the ADR-0195 work, which
+        noted the same degradation hits a normally-priced model whenever litellm's fetched price
+        map is unavailable and the bundled one is used).
+
+        The price is deliberately NOT guessed on the ``None`` path — a fabricated rate is a
+        mispricing hazard, not a conservative default (the hand-maintained Groq rate table was
+        removed for exactly that reason: it matched by stem and priced ``openai/gpt-oss-*`` at
+        Groq rates), and a guessed number would then be reported as measured spend. The caller
+        records the uncertainty instead. Still best-effort: never raises, never breaks a turn.
+
+        Note the discriminator is whether the lookup RAISES, not whether the model appears in
+        ``litellm.model_cost`` — litellm strips the provider prefix, so ``openai/gpt-5.6-luna``
+        is absent from that mapping and still prices correctly.
+        """
         if not model:
-            return 0.0
+            return None
         try:
             import litellm
 
@@ -778,7 +807,7 @@ class LiteLLMProvider(Provider):
             )
             return float(prompt_cost) + float(completion_cost)
         except Exception:  # noqa: BLE001 — cost estimation is best-effort, never breaks a turn
-            return 0.0
+            return None
 
     @classmethod
     def _normalize(cls, response: Any) -> LLMResult:
