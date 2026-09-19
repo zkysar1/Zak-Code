@@ -1270,3 +1270,114 @@ carried the file whose absence invalidated attempt 2 -- that world is gone and n
 recovers it. Anything about terra, the pod tier, or azure. The four framework findings remain open.
 
 SPEND. Bounded by the supervisor at $6.00 and 2520 s; attempt 3 cost $2.3455 at the same bounds.
+
+=== 13:12 UTC 2026-09-19 RESULTS -- SAMPLE 5 CONTROL: READING = ASSEMBLY NOT DEPTH ===
+
+THE READING, under the four-branch rule fixed at 12:15 before launch: ASSEMBLY NOT DEPTH. W1a-C
+holds, W1b-C is all zero, and the control HITS B1. Per that block, verbatim: "a provisioned world is
+what got the loop past the decision and the depth is not shown to matter at served sizes."
+
+W1a-C  PASS, offline, in the launcher before any spend. The five luna categories send
+       reasoning_effort='none' WITH tools and no reasoning_effort field WITHOUT tools; classify
+       (gpt-5-nano) sends none in both shapes; no category leaks the treatment's 'low'. This is the
+       CORRECTED assertion -- the version first written ("none with tools and without") was wrong
+       and was caught by measuring the gate before spending anything against it.
+
+W1b-C  ALL ZERO, and on this arm all-zero is the CONFIRMATION, not a failure, exactly as the
+       two-sided rule was fixed before launch. Read from the run's SESSION file, never the trace
+       projection: 0 of 184 usage rows carry non-zero reasoning_tokens; sum = 0.
+       POSITIVE CONTROL for the reader, run BEFORE it was pointed at this arm and again after: the
+       same script reproduces attempt 3's published 279 of 381 EXACTLY off attempt 3's session file
+       (sum 12,714). A census whose zero would license a conclusion was not believed until it had
+       first produced a known non-zero.
+
+B1     HIT. Read from the artifact and not the command, by the chain fixed before the run:
+       - meta/.initialized PRESENT, mtime 12:37:24Z, inside the run window (launch 12:25:12Z).
+       - ABSENT AT LAUNCH, scripted rather than recalled: launch_ctl.sh:39 asserts
+         [ ! -f .../meta/.initialized ] and exits 21 otherwise. The run launched, so the guard passed.
+       - init-mind.sh EXCLUDED: knowledge/.initialized is absent from the workspace.
+       - CORROBORATED: meta/changelog.jsonl's first row is 2026-09-19T12:37:39, 15 s after the mtime.
+       - Sole writer in the seed is init-meta.sh:272; no daemon path (zero refs in mind_api/src).
+
+THE DOWNGRADE, which this block owes and now pays. Attempt 3's reading of MOVED is DOWNGRADED here
+to "THE ASSEMBLY MOVED IT", citing the 12:15 control pre-registration. The campaign's claim that a
+CONFIGURED REASONING DEPTH moved this loop past the decision point on a served run is WITHDRAWN. It
+was never separable from the assembly in attempt 3 alone: sample 4's world was deleted before its
+repairs were written, so byte-identity could not be established and build-world.sh is a
+RECONSTRUCTION. This run was bought to separate the two candidate causes and it did -- at effort
+'none', with the same provisioned assembly, the loop initialised the meta tier anyway.
+
+PREDICTION, scored. I estimated 30% HIT before the run and recorded the reasoning so a 30% call
+landing either way would be scoreable. IT HIT. My estimate was on the wrong side; the half of my own
+reasoning that argued for a hit (sample 4's selector failed on a file only full initialization
+creates, so part of its failure was assembly) is the half that was right.
+
+SECONDARY MEASURES, beside attempt 3's, none of them deciding the branch.
+                                      ATTEMPT 3 (low)          CONTROL (none)
+  P1/M1 iterations closed             0                        0
+  goals completed (artifact)          0                        0  (goals-completed.json = [])
+  P2/M2 plan share, whole-run ledger  16.6%  (69/415)          25.1%  (44/175)
+  P3/M3 longest empty-completion run  0                        0
+  S1  selector, no unhandled traceback HIT (3 invocations)     HIT (verdict 12:52:16, 0 tracebacks)
+  E1  reaches and holds RUNNING       HIT                      HIT (69 RUNNING samples of 81)
+  C1  calls / cost / cache            381 / $2.3455 / 72.3%    184 / $0.8305 / 80.1%
+  turns ended veto_stall              1                        3
+  veto-door pointer -> work call      12 of 12 (100%)          4 of 8 (50%)
+Neither arm closed a goal. Both reached and held RUNNING. The control paid less and cached better
+because it spent most of its wall clock not calling the model at all -- see below.
+
+A FINDING MEASURED ON BOTH ARMS, not what this run was bought for and not touching its branch.
+A served turn that ends veto_stall is followed by an idle window in which the loop makes NO model
+call, because the armed 600 s wake-up is the only re-entry left. Measured on the control, with the
+window boundaries read off serve.log:
+  12:26:01.841 turn 1 end (veto_stall, 18 iters) -> 12:36:02.142 turn 2 boot   600.30 s
+  12:41:32.763 turn 2 end (veto_stall, 96 iters) -> 12:51:33.054 turn 3 boot   600.29 s
+  12:54:24.192 turn 3 end (veto_stall, 53 iters) -> 12:59:26.252 RUN STOP      302.06 s
+The third window is NOT a shorter wake-up and must not be read as one: the loop was waiting on a
+wake-up due 13:04:24 and the supervisor's duration cap arrived first, logged as
+"zakcode.session.framework_stop framework stop requested for agent mind (target mode assistant)".
+All 14 wake-up armings in the traces record 600 s; the session's surviving pending_wakeup reads
+armed_at 12:59:33.536 / due_at 13:09:33.536 / delay 600 -- the stop turn's own net, never needed.
+So of the 2054 s between launch and the run-stop request, 1502.65 s = 73.2% was spent with no model
+call. Attempt 3: one such window of 600.16 s, 733 s of 2194 s = 33% idle. The window after the stop
+(13:00:24 -> 13:05:46) is TEARDOWN and is deliberately NOT counted as idle.
+
+THE REST ITSELF IS NOT NEW. zakcode's own loop.py:1417-1425 records it from 2026-09-18 on this same
+model. I wrote it up as an undocumented interaction before reading the comment on the constant I was
+reasoning about; rb-11349 and board msg-20260919-123734-alpha-6068 carry that correction. What IS
+new is that ADR-0196's remedy for it is present in both builds and does not hold on this model. Its
+note reads, verbatim, "The harness has made that skill call for you ... Do not call the skill tool
+for it again and do not stop to summarize." Control turn 1, build 60e0a8e (_VETO_SKILL_NOTE present,
+2 hits; likewise in 6b5a527):
+  12:25:45 veto 1 -> delivered -> 12:25:46 use_skill deduped (already loaded this turn)
+  12:25:53 veto 2 -> delivered -> 12:25:55 use_skill deduped
+  12:25:56 veto 3 -> delivered -> 12:25:59 use_skill deduped
+  12:26:01 veto 4 -> turn ended: stop_reason=veto_stall iterations=18
+3 deliveries, 3 dedupes, 0 skills actually run: 0 for 3, 46 s from boot to a ten-minute rest. The
+arms differ -- at 'low' the model ran a skill 5 times of 17 deliveries, and a skill run RESETS the
+counter (loop.py:3638), so it stalled once at iteration 268; at 'none' it never ran one in turn 1
+and stalled at iteration 18. Reported as measured, N=1 per arm, no rate claimed.
+DISCRIMINATED against request_timeout=600.0, the same number: the log is SILENT across each window
+(12:55-12:58 inclusive carry 0 lines each) rather than showing a call start then a timeout, and the
+run carries no timeout / timed out / rate-limit / 429 / 503 / APIError line anywhere.
+NO FIX IS SHIPPED HERE, and the prompt-side option is ruled out by evidence rather than by taste.
+The pre-apply consultation (two queries, subject and mechanism, run before any design) returned
+rb-10615 (same task, same model, one variable: prompt instruction 0/3, instruction + thinking ON
+0/3, ENGINE GATE 3/3 -- "prompt text is advisory and only the engine binds"), rb-10927 (a cue moves
+a small model only when it lands on an action it already takes), rb-11311 (the SAME model making the
+SAME redundant Skill call, fixed by ADR-0198 by making the ENGINE answer for THIS turn, and naming
+this very door as NOT FIXED), and guard-399. Encoded rb-11349; board msg-20260919-123329-alpha-6067
+and its correction msg-20260919-123734-alpha-6068.
+
+WHAT THIS STILL CANNOT SETTLE, unchanged from the pre-registration. Whether a configured depth helps
+a loop that gets PAST selection -- neither arm closed a goal and neither ran a long iteration body.
+Whether sample 4's world carried the file whose absence invalidated attempt 2: that world is gone
+and no measurement here recovers it. Anything about terra, the pod tier, or azure. The four
+framework findings from sample 4 remain open and unfixed.
+
+SECOND-SAMPLE RULE, applied. ASSEMBLY NOT DEPTH does NOT license another run at this depth -- it
+answered the question it was bought for. No further sample is taken at this arm.
+
+SPEND. Control $0.8305 of a $6.00 bound; the run ended on the 2520 s duration cap at 13:05:46Z.
+W1b-C preflight $0.000116. Attempt 3 cost $2.3455 at the same bounds. Campaign live spend to date
+approximately $6.06.
