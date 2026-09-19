@@ -464,6 +464,34 @@ class Settings(BaseSettings):
         gt=0,
         description="Wall-clock ceiling (seconds) for the whole run; None = unbounded.",
     )
+    # The SECOND bound, and it answers a different question. `run_max_duration` is a
+    # PATIENCE CAP — total elapsed duration, anchored once at run start. This is a
+    # LIVENESS CLOCK — time since the last say, re-stamped on every one. A member who
+    # walks away mid-conversation is bounded by neither `request_timeout` (one model
+    # call) nor `max_cost_usd` (an idle vessel spends nothing and bills wall-clock
+    # anyway); the cap alone makes them pay the whole price they agreed to for a
+    # conversation that ended twenty minutes in.
+    #
+    # THIS IS NOT THE AUTO-EXTEND KNOB THE RULING ABOVE REFUSES, and the distinction is
+    # one-directional rather than a matter of degree: this value can only ever end a run
+    # EARLIER than it would otherwise have ended. It cannot lengthen a run, cannot
+    # re-stamp `run_max_duration`, and is not consulted while a turn is in flight. A
+    # misconfiguration here costs a conversation, never an invoice — which is the exact
+    # inverse of the failure the no-knobs ruling protects against.
+    #
+    # It also stays strictly INSIDE the host's own reaper rather than replacing it: the
+    # environment server stops an idle vessel through the seeded file world's tick at
+    # roughly 33 minutes (idle cutoff + the streaming reaper). Nothing here publishes on
+    # that channel or touches that dial — this fires first, or not at all, and the host
+    # bound remains the backstop it always was.
+    run_idle_timeout: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Seconds without a say before the run stops itself (reason `idle`); "
+            "None = no idle stop. Measures time since the last say, not total duration."
+        ),
+    )
     run_consolidation_reserve: float = Field(
         default=0.0,
         ge=0,
